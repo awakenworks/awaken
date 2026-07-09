@@ -368,6 +368,17 @@ async fn renew_owned_leases_on_postgres() {
 }
 
 #[tokio::test]
+async fn renew_skips_far_from_expiry_on_postgres() {
+    let Some(pool) = harness::schema_pool("t_pg_renewnear").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
+        .await
+        .expect("dispatch");
+    harness::assert_renew_skips_far_from_expiry(&store).await;
+}
+
+#[tokio::test]
 async fn list_dispatches_on_postgres() {
     let Some(pool) = harness::schema_pool("t_pg_list").await else {
         return;

@@ -289,12 +289,17 @@ impl DispatchQueue for PostgresDispatchStore {
         now_ms: u64,
     ) -> Result<usize, DispatchError> {
         let p = NS;
+        // Only rows within half a lease of expiring — a fresh claim's lease is a
+        // full length out, so it is skipped until it approaches expiry, bounding
+        // the heartbeat's write amplification (ADR-0024).
         let result = sqlx::query(&format!(
             "UPDATE {p}_dispatch SET lease_until = $1 \
-             WHERE status = 'running' AND lease_owner = $2"
+             WHERE status = 'running' AND lease_owner = $2 \
+             AND lease_until IS NOT NULL AND lease_until < $3"
         ))
         .bind((now_ms + lease_ms) as i64)
         .bind(owner)
+        .bind((now_ms + lease_ms / 2) as i64)
         .execute(&self.pool)
         .await
         .map_err(reject)?;

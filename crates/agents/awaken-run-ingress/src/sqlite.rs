@@ -333,13 +333,20 @@ impl DispatchQueue for SqliteDispatchStore {
     ) -> Result<usize, DispatchError> {
         let owner = owner.to_string();
         self.with_conn(move |conn, p| {
+            // Only rows within half a lease of expiring; a fresh claim is a full
+            // length out and is skipped until it approaches expiry (ADR-0024).
             let n = conn
                 .execute(
                     &format!(
                         "UPDATE {p}_dispatch SET lease_until = ?1 \
-                         WHERE status = 'running' AND lease_owner = ?2"
+                         WHERE status = 'running' AND lease_owner = ?2 \
+                         AND lease_until IS NOT NULL AND lease_until < ?3"
                     ),
-                    params![(now_ms + lease_ms) as i64, owner],
+                    params![
+                        (now_ms + lease_ms) as i64,
+                        owner,
+                        (now_ms + lease_ms / 2) as i64
+                    ],
                 )
                 .map_err(reject)?;
             Ok(n)

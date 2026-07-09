@@ -694,6 +694,36 @@ pub async fn assert_renew_owned_leases<S: awaken_run_ingress::Dispatch>(store: &
     assert!(store.claim("owner-b", 100, 200).await.unwrap().is_some());
 }
 
+/// Shared spec for the near-expiry heartbeat (ADR-0024, O3): a bulk renewal only
+/// touches leases within half a lease of expiring, so a fresh claim — a full lease
+/// out — is left untouched and its original lease still expires on schedule. Every
+/// backend matches.
+pub async fn assert_renew_skips_far_from_expiry<S: awaken_run_ingress::Dispatch>(store: &S) {
+    use awaken_run_ingress::RunExecutionRequest;
+
+    // owner-a claims r1 at t=0 with a 100ms lease (expires at 100).
+    store
+        .enqueue(RunExecutionRequest::new(activation("r1")))
+        .await
+        .unwrap();
+    assert!(store.claim("owner-a", 100, 0).await.unwrap().is_some());
+
+    // At t=10 the lease still has 90ms left — more than half the 100ms lease — so
+    // the bulk renewal skips it and reports zero renewed.
+    assert_eq!(
+        store.renew_owned_leases("owner-a", 100, 10).await.unwrap(),
+        0,
+        "a far-from-expiry lease is not renewed"
+    );
+
+    // Because it was left untouched, the original lease still expires at 100, so at
+    // t=101 recovery reclaims it — proving the skip did not silently extend it.
+    assert!(
+        store.claim("owner-b", 100, 101).await.unwrap().is_some(),
+        "the skipped lease expired on its original schedule"
+    );
+}
+
 /// Shared spec for time-windowed dead-letter GC (ADR-0023): GC removes only
 /// dead-letters older than the cutoff; younger ones stay. Every backend matches.
 pub async fn assert_dead_letter_ttl_gc<S: awaken_run_ingress::Dispatch>(store: &S) {

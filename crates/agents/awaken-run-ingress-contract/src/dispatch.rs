@@ -180,10 +180,19 @@ pub trait DispatchQueue: Send + Sync {
         now_ms: u64,
     ) -> Result<bool, DispatchError>;
 
-    /// Renew the lease on every running dispatch owned by `owner` to
-    /// `now_ms + lease_ms` — the daemon's bulk heartbeat that keeps its in-flight
-    /// runs from being reclaimed while they are still executing (ADR-0024).
-    /// Returns how many leases were renewed.
+    /// Renew, to `now_ms + lease_ms`, the lease on every running dispatch owned by
+    /// `owner` that is *within half a lease of expiring* — the daemon's heartbeat
+    /// that keeps its in-flight runs from being reclaimed while still executing
+    /// (ADR-0024). Returns how many leases were renewed.
+    ///
+    /// Renewing only near-expiry leases (`lease_until < now_ms + lease_ms/2`), not
+    /// every running row on every tick, bounds the write amplification of the
+    /// heartbeat: with hundreds of thousands of in-flight runs, a blanket renewal
+    /// every few seconds is a storm of no-op-equivalent writes. It stays safe as
+    /// long as the heartbeat cadence is under half the lease (the ADR-0024
+    /// recommendation), so a lease is always caught within the window before it
+    /// expires; a fresh claim, whose lease is a full length out, is skipped until
+    /// it approaches expiry.
     async fn renew_owned_leases(
         &self,
         owner: &str,

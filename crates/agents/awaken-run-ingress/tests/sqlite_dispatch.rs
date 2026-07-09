@@ -189,6 +189,12 @@ async fn renew_owned_leases_on_sqlite() {
 }
 
 #[tokio::test]
+async fn renew_skips_far_from_expiry_on_sqlite() {
+    let store = SqliteDispatchStore::open_in_memory().expect("open");
+    harness::assert_renew_skips_far_from_expiry(&store).await;
+}
+
+#[tokio::test]
 async fn list_dispatches_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory().expect("open");
     harness::assert_list_dispatches(&store).await;
