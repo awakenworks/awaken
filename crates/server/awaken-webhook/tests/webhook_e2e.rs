@@ -1,7 +1,7 @@
 //! End-to-end webhook delivery: a REAL HTTP receiver on an ephemeral port, a
 //! SQLite-backed (versioned scoped-migration) subscription, and the production
 //! `ReqwestSender` — proving a committed lifecycle fact is projected into a signed
-//! `webhook-*`-headed POST, stamped with the owning `workspace_id` (S3), that the
+//! `webhook-*`-headed POST, stamped with the owning `workspace_id`, that the
 //! receiver's Standard-Webhooks verification accepts. No mocks in the transport.
 
 use std::net::SocketAddr;
@@ -118,7 +118,7 @@ async fn a_committed_fact_is_delivered_signed_and_scoped_to_a_real_receiver() {
         "the delivered signature verifies against the received body"
     );
 
-    // The payload carries the owning workspace (S3) and, self-hosted, no org.
+    // The payload carries the owning workspace and, self-hosted, no org.
     let v: serde_json::Value = serde_json::from_str(&got.body).unwrap();
     assert_eq!(v["type"], "event");
     assert_eq!(v["data"]["type"], "session.status_idled");

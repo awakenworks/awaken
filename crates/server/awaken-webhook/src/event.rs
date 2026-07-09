@@ -1,8 +1,9 @@
 //! The webhook event wire shape, byte-compatible with Claude Managed Agents:
 //! a thin envelope carrying the event `type` + object `id`, and — crucially for
 //! the org/workspace alignment (ADR-0048) — both `organization_id` and
-//! `workspace_id` stamped in `data`, projected from the session's persisted owner
-//! (S3). The receiver GETs the full object by id; the event carries only the key.
+//! `workspace_id` stamped in `data`, resolved at the edge (authz is a
+//! cross-cutting aspect; the core session stores no tenancy). The receiver GETs
+//! the full object by id; the event carries only the key.
 //!
 //! ```json
 //! { "type": "event", "id": "event_01ABC", "created_at": "…",
@@ -24,7 +25,8 @@ pub struct WebhookEventData {
     /// Org (ADR-0048 D4); omitted self-hosted, where the chain roots at workspace.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub organization_id: Option<String>,
-    /// The owning workspace — always present; the session's persisted owner (S3).
+    /// The owning workspace — resolved at the edge and stamped here (the core
+    /// session record is tenancy-agnostic).
     pub workspace_id: String,
 }
 

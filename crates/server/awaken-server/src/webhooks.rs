@@ -23,6 +23,30 @@ use axum::routing::post;
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
+/// Assembly-layer glue (aspect → core seam): map the guard's edge-resolved
+/// [`awaken_authz_enforce::RequestTenancy`] to the wire crate's
+/// [`awaken_protocol_managed::WorkspaceScope`], so `create_session` receives the
+/// owning workspace without either crate depending on the other. Apply this as a
+/// layer INSIDE the guard (guard resolves tenancy → this maps it → handler reads
+/// it). A request with no resolved tenancy passes through unstamped.
+pub async fn stamp_workspace_scope(
+    mut request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if let Some(tenancy) = request
+        .extensions()
+        .get::<awaken_authz_enforce::RequestTenancy>()
+        .cloned()
+    {
+        request
+            .extensions_mut()
+            .insert(awaken_protocol_managed::WorkspaceScope(
+                tenancy.workspace_id,
+            ));
+    }
+    next.run(request).await
+}
+
 /// Bridges the managed session lifecycle to the webhook dispatcher: on a committed
 /// lifecycle fact it builds the Anthropic-shaped event (stamping the session's
 /// owner) and delivers out-of-band, so a slow endpoint never blocks the session.
