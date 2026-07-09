@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use awaken_runtime_contract::tool::RawTool;
 use futures_util::{SinkExt, StreamExt};
-use tokio::io::{AsyncRead, AsyncWrite};
+use awaken_agent_channel::AgentChannel;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 use crate::wire::{HandError, HandErrorKind, HandReply, HandRequest, HandResult};
@@ -98,7 +98,7 @@ pub enum ServeError {
 /// writes `HandReply` frames. Returns `Ok(())` on a clean peer disconnect.
 pub async fn serve_hand<S>(channel: S, mut session: HandSession) -> Result<(), ServeError>
 where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
+    S: AgentChannel,
 {
     let mut framed = Framed::new(channel, LengthDelimitedCodec::new());
     while let Some(frame) = framed.next().await {
