@@ -129,7 +129,9 @@ async fn the_global_bootstrap_binding_mints_cross_workspace_tokens() {
     .await;
     assert_eq!(s, StatusCode::CREATED, "{minted}");
     let cleartext = minted["token"].as_str().unwrap();
-    assert!(cleartext.starts_with("sk-ant-"), "{cleartext}");
+    // Awaken-branded scheme: management tokens are `sk-awaken-…`, distinct from
+    // real Anthropic provider keys (`sk-ant-…`, now legacy-verify only).
+    assert!(cleartext.starts_with("sk-awaken-"), "{cleartext}");
     let view = &minted["api_token"];
     assert_eq!(view["workspace_id"], json!(OTHER_WORKSPACE));
     assert_eq!(view["role"], json!("workspace_admin"));
