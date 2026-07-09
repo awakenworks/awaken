@@ -6,7 +6,8 @@
 //! Opt-in via `AWAKEN_MGMT_IAM=embedded` (requires `AWAKEN_MGMT_DIR`); the
 //! default — the variable unset — is today's open single-machine behavior,
 //! byte-identical. When enabled, every management route demands a bearer
-//! credential in the Anthropic `sk-ant-<prefix>.<secret>` shape (either
+//! credential in the Awaken `sk-awaken-<prefix>.<secret>` shape (`sk-ant-` is
+//! accepted as a legacy alias during the deprecation window) — either
 //! `Authorization: Bearer …` or the SDK's `x-api-key` header). Secrets are
 //! argon2id-hashed at rest by `awaken-iam-core`; the cleartext exists only in
 //! the mint response and — for the bootstrap admin token — in
@@ -176,7 +177,7 @@ pub struct TokenSpec {
 impl ManagementAuthz {
     /// Mint a token: engine write (directory + workspace role binding) and the
     /// durable rows, atomically under the state lock. Returns the one-time
-    /// cleartext `sk-ant-…` credential.
+    /// cleartext `sk-awaken-…` credential.
     pub fn mint_service_token(&self, spec: TokenSpec) -> Result<String, String> {
         self.mint_token(spec).map(|issued| issued.secret)
     }

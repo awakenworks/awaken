@@ -107,7 +107,7 @@ impl EnforceEngine {
     }
 
     /// Mint a service token bound to `role` at `workspace` (in-memory only).
-    /// Returns the one-time cleartext `sk-ant-…` secret.
+    /// Returns the one-time cleartext `sk-awaken-…` secret.
     pub fn mint(&self, spec: TokenSpec) -> Result<String, IamError> {
         let principal = PrincipalRef::Service {
             service_id: spec.service_id,
@@ -310,8 +310,8 @@ mod tests {
     fn seeded_engine_mints_and_authenticates() {
         let (_engine, secret, principal) = engine_with_admin();
         assert!(
-            secret.starts_with("sk-ant-"),
-            "cleartext is Anthropic-shaped"
+            secret.starts_with("sk-awaken-"),
+            "cleartext is Awaken-branded (sk-awaken-), distinct from provider keys"
         );
         assert!(matches!(principal, PrincipalRef::Service { .. }));
     }

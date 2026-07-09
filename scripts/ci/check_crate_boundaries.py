@@ -887,6 +887,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-iam-preset",
         # SqlStore/migrations for the embedded authz rows (links-safe since ADR-0005).
         "awaken-iam-server",
+        # dev-dep (ADR-0048): the iam-host assembly, validated in an integration
+        # test (IamGate + auth_layer, zero-config Local mode) ahead of full adoption.
+        "awaken-iam-host",
         # The embedded IAM's durable token/binding rows under
         # <AWAKEN_MGMT_DIR>/iam.sqlite — the same rusqlite generation every
         # other sqlite store in the workspace uses.
