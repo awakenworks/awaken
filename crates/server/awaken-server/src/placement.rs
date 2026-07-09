@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::tool::{ToolExecutor, ToolExecutorProvider};
 
@@ -64,8 +65,11 @@ impl ConfigToolExecutorProvider {
     }
 }
 
+#[async_trait]
 impl ToolExecutorProvider for ConfigToolExecutorProvider {
-    fn provide(&self, activation: &RunActivation) -> Option<Arc<dyn ToolExecutor>> {
+    async fn provide(&self, activation: &RunActivation) -> Option<Arc<dyn ToolExecutor>> {
+        // Static config: a pure lookup that resolves in a ready future — the async
+        // seam (ADR-0046, G2) exists for dynamic drivers that must await I/O.
         self.entries
             .iter()
             .find(|entry| entry.matches(activation))
@@ -140,11 +144,19 @@ mod tests {
         )]);
 
         // The named agent is placed on the hand.
-        let placed = provider.provide(&activation_for("remote-agent")).unwrap();
+        let placed = provider
+            .provide(&activation_for("remote-agent"))
+            .await
+            .unwrap();
         assert_eq!(returned_marker(&placed).await, "HAND");
 
         // Any other agent is unplaced → None → the kernel's in-process executor.
-        assert!(provider.provide(&activation_for("local-agent")).is_none());
+        assert!(
+            provider
+                .provide(&activation_for("local-agent"))
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -155,17 +167,20 @@ mod tests {
         ]);
 
         // The specific rule wins for its agent...
-        let special = provider.provide(&activation_for("special")).unwrap();
+        let special = provider.provide(&activation_for("special")).await.unwrap();
         assert_eq!(returned_marker(&special).await, "SPECIAL");
 
         // ...and the catch-all places every other run.
-        let other = provider.provide(&activation_for("anything-else")).unwrap();
+        let other = provider
+            .provide(&activation_for("anything-else"))
+            .await
+            .unwrap();
         assert_eq!(returned_marker(&other).await, "DEFAULT");
     }
 
-    #[test]
-    fn no_entries_places_nothing() {
+    #[tokio::test]
+    async fn no_entries_places_nothing() {
         let provider = ConfigToolExecutorProvider::new(Vec::new());
-        assert!(provider.provide(&activation_for("a")).is_none());
+        assert!(provider.provide(&activation_for("a")).await.is_none());
     }
 }
