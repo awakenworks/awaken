@@ -11,17 +11,15 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Path, Request, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
-use axum::routing::{get, post, put};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use tokio_stream::Stream;
-
-use awaken_agent_contract::agent::content::ContentBlock;
 
 use crate::dto::{
     CreateSessionRequest, ErrorResponse, ListEventsResponse, SendEventsRequest, SendEventsResponse,
     Session,
 };
-use crate::state::{LiveInboxError, LiveInboxSnapshot, ManagedState, RunErrorKind, StateError};
+use crate::state::{LiveInboxError, ManagedState, RunErrorKind, StateError};
 
 /// A JSON body extractor scoped to the Managed Agents routes. On a decode failure
 /// (malformed JSON, missing/mistyped field, wrong content-type, or an unknown
@@ -94,22 +92,16 @@ pub fn router(state: Arc<ManagedState>) -> Router {
                 .post(update_resource)
                 .delete(delete_resource),
         )
-        .route(
-            "/v1/sessions/:id/live-inbox",
-            get(live_inbox_snapshot).post(live_inbox_queue),
-        )
-        .route("/v1/sessions/:id/live-inbox/order", put(live_inbox_reorder))
-        .route(
-            "/v1/sessions/:id/live-inbox/:msg",
-            put(live_inbox_replace).delete(live_inbox_remove),
-        )
-        .with_state(state)
+        .with_state(state.clone())
+        // The live-inbox is a separate Awaken protocol, not part of the
+        // managed-compatible surface; it merely rides the same host + state port.
+        .merge(crate::live_inbox::live_inbox_router(state))
 }
 
 /// Map a domain error to `(status, Anthropic error envelope)`. The `error.type`
 /// is the status-keyed discriminator the SDK expects; the message is preserved so
 /// a caller sees *why* (e.g. a mismatched resume id), not a bare status code.
-fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse>) {
+pub(crate) fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse>) {
     let (status, kind, message) = match err {
         StateError::NotFound => (
             StatusCode::NOT_FOUND,
@@ -150,84 +142,6 @@ fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse>) {
         }
     };
     (status, Json(ErrorResponse::new(kind, message)))
-}
-
-/// Body of `POST /v1/sessions/:id/live-inbox` (queue) and
-/// `PUT /v1/sessions/:id/live-inbox/:msg` (replace): the message's block list.
-#[derive(serde::Deserialize)]
-struct LiveInboxMessageBody {
-    content: Vec<ContentBlock>,
-}
-
-/// Body of `PUT /v1/sessions/:id/live-inbox/order`: the full permutation of
-/// currently queued ids, in the desired consumption order.
-#[derive(serde::Deserialize)]
-struct LiveInboxOrderBody {
-    order: Vec<u64>,
-}
-
-/// Response of a successful queue: the id to edit or withdraw the message by.
-#[derive(serde::Serialize)]
-struct LiveInboxQueuedResponse {
-    id: u64,
-}
-
-async fn live_inbox_snapshot(
-    State(state): State<Arc<ManagedState>>,
-    Path(id): Path<String>,
-) -> Result<Json<LiveInboxSnapshot>, (StatusCode, Json<ErrorResponse>)> {
-    state
-        .live_inbox_snapshot(&id)
-        .await
-        .map(Json)
-        .map_err(error_response)
-}
-
-async fn live_inbox_queue(
-    State(state): State<Arc<ManagedState>>,
-    Path(id): Path<String>,
-    ManagedJson(body): ManagedJson<LiveInboxMessageBody>,
-) -> Result<Json<LiveInboxQueuedResponse>, (StatusCode, Json<ErrorResponse>)> {
-    state
-        .live_inbox_queue(&id, body.content)
-        .await
-        .map(|id| Json(LiveInboxQueuedResponse { id }))
-        .map_err(error_response)
-}
-
-async fn live_inbox_remove(
-    State(state): State<Arc<ManagedState>>,
-    Path((id, msg)): Path<(String, u64)>,
-) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
-    state
-        .live_inbox_remove(&id, msg)
-        .await
-        .map(|()| StatusCode::NO_CONTENT)
-        .map_err(error_response)
-}
-
-async fn live_inbox_replace(
-    State(state): State<Arc<ManagedState>>,
-    Path((id, msg)): Path<(String, u64)>,
-    ManagedJson(body): ManagedJson<LiveInboxMessageBody>,
-) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
-    state
-        .live_inbox_replace(&id, msg, body.content)
-        .await
-        .map(|()| StatusCode::NO_CONTENT)
-        .map_err(error_response)
-}
-
-async fn live_inbox_reorder(
-    State(state): State<Arc<ManagedState>>,
-    Path(id): Path<String>,
-    ManagedJson(body): ManagedJson<LiveInboxOrderBody>,
-) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
-    state
-        .live_inbox_reorder(&id, body.order)
-        .await
-        .map(|()| StatusCode::NO_CONTENT)
-        .map_err(error_response)
 }
 
 /// The consumption-side project a request arrived through, stamped into the

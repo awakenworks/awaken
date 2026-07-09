@@ -15,6 +15,7 @@ pub mod agents_registry;
 pub mod deployments;
 pub mod dto;
 pub mod environments;
+pub mod live_inbox;
 pub mod pagination;
 pub mod project;
 mod router;
