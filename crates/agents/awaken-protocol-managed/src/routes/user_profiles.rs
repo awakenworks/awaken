@@ -19,7 +19,9 @@ use axum::{Json, Router};
 use std::sync::Arc;
 
 use crate::routes::ManagedJson;
-use crate::types::user_profile::{CreateParams, Relationship, UpdateParams, UserProfile};
+use crate::types::user_profile::{
+    CreateParams, EnrollmentUrl, Relationship, UpdateParams, UserProfile,
+};
 use crate::types::{ErrorResponse, Page};
 
 /// Deterministic timestamps, matching the vault surface's convention.
@@ -181,14 +183,14 @@ async fn update_profile(
 async fn enrollment_url(
     State(state): State<Arc<UserProfileState>>,
     Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, WireError> {
+) -> Result<Json<EnrollmentUrl>, WireError> {
     let store = state.inner.lock().unwrap();
     if !store.contains_key(&id) {
         return Err(not_found());
     }
-    Ok(Json(serde_json::json!({
-        "type": "enrollment_url",
-        "url": format!("https://enroll.awaken.local/{id}"),
-        "expires_at": ENROLL_EXPIRES_AT,
-    })))
+    Ok(Json(EnrollmentUrl {
+        object_type: "enrollment_url",
+        url: format!("https://enroll.awaken.local/{id}"),
+        expires_at: ENROLL_EXPIRES_AT,
+    }))
 }
