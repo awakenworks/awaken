@@ -39,7 +39,7 @@ async function main() {
         environment_id: 'env_local',
         betas: BETAS,
       });
-      assert.equal(fast.agent.model, 'fast', 'R6: create echoes the requested model');
+      assert.equal(fast.agent.model.id, 'fast', 'R6: create echoes the requested model (ModelConfig)');
       await ask(client, fast.id, 'hi');
       let texts = await latestAgentText(client, fast.id);
       assert.ok(texts.some((t) => t.startsWith('model=fast')), `R2: fast session ran fast, got ${texts}`);

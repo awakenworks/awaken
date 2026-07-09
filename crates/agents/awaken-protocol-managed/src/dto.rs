@@ -133,15 +133,38 @@ impl Serialize for McpServerWire {
     }
 }
 
-/// The agent object echoed inside a session response.
+/// The `BetaManagedAgentsModelConfig` object: `{ id, speed? }`. A session/agent's
+/// `model` is this object on the wire, never a bare string (the SDK reads
+/// `agent.model.id`).
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelConfig {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed: Option<String>,
+}
+
+impl ModelConfig {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            speed: None,
+        }
+    }
+}
+
+/// The agent object echoed inside a session response
+/// (`BetaManagedAgentsSessionAgent`).
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionAgent {
     pub id: String,
     #[serde(rename = "type")]
     pub kind: &'static str,
     pub version: u32,
-    pub model: String,
+    pub model: ModelConfig,
     pub name: String,
+    /// SDK-required (nullable) fields; emitted as `null` when the host has none.
+    pub description: Option<String>,
+    pub system: Option<String>,
     pub tools: Vec<Value>,
     pub mcp_servers: Vec<Value>,
     pub skills: Vec<Value>,
