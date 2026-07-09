@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use crate::routes::ManagedJson;
 use crate::types::user_profile::{
-    CreateParams, EnrollmentUrl, Relationship, UpdateParams, UserProfile,
+    EnrollmentUrl, Relationship, UserProfile, UserProfileCreateParams, UserProfileUpdateParams,
 };
 use crate::types::{ErrorResponse, Page};
 
@@ -111,7 +111,7 @@ fn check_len(field: &str, value: &Option<String>) -> Result<(), WireError> {
 
 async fn create_profile(
     State(state): State<Arc<UserProfileState>>,
-    ManagedJson(params): ManagedJson<CreateParams>,
+    ManagedJson(params): ManagedJson<UserProfileCreateParams>,
 ) -> Result<Json<UserProfile>, WireError> {
     check_len("external_id", &params.external_id)?;
     check_len("name", &params.name)?;
@@ -149,7 +149,7 @@ async fn list_profiles(State(state): State<Arc<UserProfileState>>) -> Json<Page<
 async fn update_profile(
     State(state): State<Arc<UserProfileState>>,
     Path(id): Path<String>,
-    ManagedJson(params): ManagedJson<UpdateParams>,
+    ManagedJson(params): ManagedJson<UserProfileUpdateParams>,
 ) -> Result<Json<UserProfile>, WireError> {
     check_len("external_id", &params.external_id)?;
     check_len("name", &params.name)?;

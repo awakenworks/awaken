@@ -31,15 +31,15 @@ pub struct Environment {
 
 /// `BetaEnvironmentDeleteResponse` — the `DELETE /v1/environments/:id` receipt.
 #[derive(Debug, Clone, Serialize)]
-pub struct EnvironmentDeleted {
+pub struct DeletedEnvironment {
     pub id: String,
     #[serde(rename = "type")]
     pub object_type: &'static str,
 }
 
-/// A work item on an environment's queue. `data` is the work payload union
-/// (`BetaSessionWorkData | BetaHealthCheckWorkData`); `secret` is always `null` on
-/// this surface (no lease secret is minted).
+/// `BetaSelfHostedWork` — a work item on an environment's queue. `data` is the
+/// work payload union (`BetaSessionWorkData | BetaHealthCheckWorkData`); `secret`
+/// is always `null` on this surface (no lease secret is minted).
 #[derive(Debug, Clone, Serialize)]
 pub struct Work {
     pub id: String,
@@ -59,7 +59,8 @@ pub struct Work {
     pub stopped_at: Option<String>,
 }
 
-/// The work queue's depth + pending count (`GET .../work/stats`).
+/// `BetaSelfHostedWorkQueueStats` — the queue's depth + pending count
+/// (`GET .../work/stats`).
 #[derive(Debug, Clone, Serialize)]
 pub struct WorkQueueStats {
     #[serde(rename = "type")]
@@ -70,7 +71,8 @@ pub struct WorkQueueStats {
     pub workers_polling: i64,
 }
 
-/// The heartbeat receipt (`POST .../work/:wid/heartbeat`): lease extended + TTL.
+/// `BetaSelfHostedWorkHeartbeatResponse` — the heartbeat receipt
+/// (`POST .../work/:wid/heartbeat`): lease extended + TTL.
 #[derive(Debug, Clone, Serialize)]
 pub struct WorkHeartbeat {
     #[serde(rename = "type")]

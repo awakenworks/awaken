@@ -14,6 +14,8 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::types::agent::AgentReference;
+
 /// `BetaManagedAgentsDeployment` — an agent bound to an environment with initial
 /// events and a schedule.
 #[derive(Debug, Clone, Serialize)]
@@ -21,8 +23,7 @@ pub struct Deployment {
     pub id: String,
     #[serde(rename = "type")]
     pub object_type: &'static str,
-    /// Normalized `BetaManagedAgentsAgentReference` (`{id, type:'agent', version}`).
-    pub agent: Value,
+    pub agent: AgentReference,
     pub archived_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -47,8 +48,7 @@ pub struct DeploymentRun {
     pub id: String,
     #[serde(rename = "type")]
     pub object_type: &'static str,
-    /// Normalized `BetaManagedAgentsAgentReference`.
-    pub agent: Value,
+    pub agent: AgentReference,
     pub created_at: String,
     pub deployment_id: String,
     /// `BetaManagedAgentsRunError` union, or `null` on success.

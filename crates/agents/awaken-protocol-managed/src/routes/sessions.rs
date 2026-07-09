@@ -17,8 +17,8 @@ use tokio_stream::Stream;
 
 use crate::state::{LiveInboxError, ManagedState, RunErrorKind, StateError};
 use crate::types::{
-    CreateSessionRequest, ErrorResponse, ListEventsResponse, SendEventsRequest, SendEventsResponse,
-    Session,
+    ErrorResponse, ListEventsResponse, SendEventsRequest, SendEventsResponse, Session,
+    SessionCreateParams,
 };
 
 /// A JSON body extractor scoped to the Managed Agents routes. On a decode failure
@@ -154,7 +154,7 @@ pub struct ProjectScope(pub String);
 async fn create_session(
     State(state): State<Arc<ManagedState>>,
     project: Option<axum::Extension<ProjectScope>>,
-    ManagedJson(req): ManagedJson<CreateSessionRequest>,
+    ManagedJson(req): ManagedJson<SessionCreateParams>,
 ) -> Result<Json<Session>, (StatusCode, Json<ErrorResponse>)> {
     // Session preparation (MCP provisioning, ADR-0043 Phase 3) can fail; map the
     // RunError to the envelope exactly like a turn's failure, so a failed create

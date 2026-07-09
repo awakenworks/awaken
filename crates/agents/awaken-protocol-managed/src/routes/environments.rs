@@ -25,7 +25,7 @@ use serde_json::{Value, json};
 
 use crate::routes::ManagedJson;
 use crate::types::environment::{
-    Environment, EnvironmentDeleted, Work, WorkHeartbeat, WorkQueueStats,
+    DeletedEnvironment, Environment, Work, WorkHeartbeat, WorkQueueStats,
 };
 use crate::types::{ErrorResponse, Page};
 
@@ -316,7 +316,7 @@ async fn update_env(
 async fn delete_env(
     State(state): State<Arc<EnvironmentState>>,
     Path(id): Path<String>,
-) -> Result<Json<EnvironmentDeleted>, WireError> {
+) -> Result<Json<DeletedEnvironment>, WireError> {
     if state.envs.lock().unwrap().remove(&id).is_none() {
         return Err(not_found("environment"));
     }
@@ -325,7 +325,7 @@ async fn delete_env(
         .lock()
         .unwrap()
         .retain(|_, w| w.environment_id != id);
-    Ok(Json(EnvironmentDeleted {
+    Ok(Json(DeletedEnvironment {
         id,
         object_type: "environment_deleted",
     }))

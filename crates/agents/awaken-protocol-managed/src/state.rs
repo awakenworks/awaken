@@ -19,9 +19,9 @@ use crate::project::{self, project_messages, project_turn};
 use crate::routes::vaults::{McpRefreshBinding, VaultState};
 use crate::session_repo::{InMemorySessionRepository, ManagedSessionRepository, PersistedSession};
 use crate::types::{
-    ConfirmResult, CreateSessionRequest, Event, EventReceipt, InboundEvent, ListEventsResponse,
-    ModelConfig, OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent,
-    SessionError, StopReason,
+    ConfirmResult, Event, EventReceipt, InboundEvent, ListEventsResponse, ModelConfig,
+    OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent,
+    SessionCreateParams, SessionError, StopReason,
 };
 
 /// A fixed projection timestamp (M1). Real per-event timestamps arrive with a
@@ -711,7 +711,7 @@ impl ManagedState {
     /// the one validation that must hold *before* an id is minted or a thread is
     /// prepared, so it lives in a single method rather than inline — a dry-run
     /// bind check calls exactly this, and gets exactly the error create would.
-    pub fn check_bind(&self, req: &CreateSessionRequest) -> Result<(), StateError> {
+    pub fn check_bind(&self, req: &SessionCreateParams) -> Result<(), StateError> {
         if let Some(vaults) = &self.vaults
             && let Some(unknown) = req.vault_ids.iter().find(|v| !vaults.has_vault(v))
         {
@@ -722,7 +722,7 @@ impl ManagedState {
 
     pub async fn create_session(
         &self,
-        req: CreateSessionRequest,
+        req: SessionCreateParams,
         project_id: Option<String>,
     ) -> Result<Session, StateError> {
         self.check_bind(&req)?;
@@ -1090,16 +1090,27 @@ impl ManagedState {
     /// A subagent child thread: a `session_thread` whose parent is the primary and
     /// whose `agent` is a minimal snapshot of the delegate `agent_name`.
     fn child_thread(session: &Session, thread_id: &str, agent_name: &str) -> serde_json::Value {
+        // Reuse the one `SessionAgent` shape rather than rebuild the agent object
+        // inline; the delegate's config is unknown here, so it is a minimal snapshot.
+        let agent = SessionAgent {
+            id: agent_name.to_string(),
+            kind: "agent",
+            version: 1,
+            model: ModelConfig::new(""),
+            name: agent_name.to_string(),
+            description: None,
+            system: None,
+            tools: Vec::new(),
+            mcp_servers: Vec::new(),
+            skills: Vec::new(),
+            multiagent: None,
+        };
         serde_json::json!({
             "id": thread_id,
             "type": "session_thread",
             "session_id": session.id,
             "parent_thread_id": format!("{}:primary", session.id),
-            "agent": {
-                "id": agent_name, "type": "agent", "name": agent_name, "version": 1,
-                "model": "", "description": null, "system": null,
-                "tools": [], "mcp_servers": [], "skills": [],
-            },
+            "agent": agent,
             "created_at": session.created_at,
             "updated_at": session.updated_at,
             "archived_at": null,

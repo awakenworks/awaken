@@ -12,6 +12,30 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::types::ModelConfig;
+
+/// `BetaManagedAgentsAgentReference` — how an agent is *referenced* (by a
+/// deployment, a session): `{ id, type: "agent", version }`. The single typed form
+/// of the normalized reference; the deserialize-only input form a client may send
+/// (a bare id string or `{id, version?}`) is [`super::session::AgentRef`].
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentReference {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub object_type: &'static str,
+    pub version: u64,
+}
+
+impl AgentReference {
+    pub fn new(id: impl Into<String>, version: u64) -> Self {
+        Self {
+            id: id.into(),
+            object_type: "agent",
+            version,
+        }
+    }
+}
+
 /// `BetaManagedAgentsAgent` — an agent configuration at a given version.
 #[derive(Debug, Clone, Serialize)]
 pub struct Agent {
@@ -23,8 +47,7 @@ pub struct Agent {
     pub updated_at: String,
     pub name: String,
     pub description: Option<String>,
-    /// Normalized `BetaManagedAgentsModelConfig` (`{id, speed?}`).
-    pub model: Value,
+    pub model: ModelConfig,
     pub system: Option<String>,
     pub metadata: BTreeMap<String, String>,
     pub mcp_servers: Vec<Value>,

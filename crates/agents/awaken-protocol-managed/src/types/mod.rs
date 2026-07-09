@@ -6,6 +6,22 @@
 //! state lives in `project` and `state`; the routes that serve them live in
 //! `routes`; our non-SDK vocabulary lives in `ext`.
 //!
+//! ## Naming convention (uniform across every submodule)
+//!
+//! We do *not* copy the SDK's TypeScript type names verbatim: they are both
+//! verbose (redundant with the module path — `types::vault::Vault`) and internally
+//! inconsistent (`BetaManagedAgentsVault` / `BetaManagedAgentsDeployment` but plain
+//! `BetaEnvironment` / `BetaUserProfile`). Instead the correspondence is exact but
+//! expressed two ways, applied to every type:
+//!
+//! - **Idiomatic Rust name, namespaced by resource module.** Response objects are
+//!   the bare resource noun (`Session`, `Vault`, `Credential`, `Deployment`,
+//!   `Environment`, `Work`, …); request bodies are `<Resource>{Create,Update}Params`;
+//!   delete receipts are `Deleted<Resource>`.
+//! - **The exact SDK type in the doc.** Every wire type's doc opens with its SDK
+//!   counterpart in backticks (e.g. `` `BetaManagedAgentsSession` ``), so `rg
+//!   'BetaManagedAgentsSession' src/types` finds the Rust type 1:1.
+//!
 //! One submodule per SDK resource, plus the shared cursor-page shape:
 //! - [`session`] — sessions, events, and the error envelope.
 //! - [`agent`] — the `agents` resource (versioned agent configurations).

@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 
 use crate::routes::ManagedJson;
 use crate::types::agent::Agent;
-use crate::types::{ErrorResponse, Page};
+use crate::types::{ErrorResponse, ModelConfig, Page};
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 
@@ -32,8 +32,7 @@ const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 struct Record {
     name: String,
     description: Option<String>,
-    /// Normalized `BetaManagedAgentsModelConfig` (`{id, speed?}`).
-    model: Value,
+    model: ModelConfig,
     system: Option<String>,
     metadata: BTreeMap<String, String>,
     mcp_servers: Vec<Value>,
@@ -129,7 +128,7 @@ fn project_config_view(id: &str, view: &AgentConfigView) -> Agent {
         updated_at: OBJECT_AT.to_string(),
         name: id.to_string(),
         description: None,
-        model: json!({ "id": view.model.clone().unwrap_or_default() }),
+        model: ModelConfig::new(view.model.clone().unwrap_or_default()),
         system: view.system.clone(),
         metadata: BTreeMap::new(),
         mcp_servers: Vec::new(),
@@ -166,12 +165,13 @@ fn bad_request(message: impl Into<String>) -> WireError {
     )
 }
 
-/// Normalize the `model` field: a bare string becomes `{id: <string>}`; an object
-/// (`{id, speed?}`) passes through. Anything else is a `400`.
-fn normalize_model(model: &Value) -> Result<Value, WireError> {
+/// Normalize the `model` field into the shared [`ModelConfig`]: a bare string
+/// becomes `{ id }`; an object (`{id, speed?}`) is parsed. Anything else is a `400`.
+fn normalize_model(model: &Value) -> Result<ModelConfig, WireError> {
     match model {
-        Value::String(s) => Ok(json!({ "id": s })),
-        Value::Object(_) => Ok(model.clone()),
+        Value::String(s) => Ok(ModelConfig::new(s)),
+        Value::Object(_) => serde_json::from_value(model.clone())
+            .map_err(|e| bad_request(format!("invalid model config: {e}"))),
         _ => Err(bad_request(
             "model must be a string or a model-config object",
         )),

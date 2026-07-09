@@ -42,7 +42,7 @@ pub struct UserProfile {
 
 /// `UserProfileCreateParams`.
 #[derive(Debug, Clone, Deserialize)]
-pub struct CreateParams {
+pub struct UserProfileCreateParams {
     #[serde(default)]
     pub external_id: Option<String>,
     #[serde(default)]
@@ -68,7 +68,7 @@ pub struct EnrollmentUrl {
 /// string** value removes the key (the SDK's documented convention) and keys not
 /// present are preserved.
 #[derive(Debug, Clone, Deserialize)]
-pub struct UpdateParams {
+pub struct UserProfileUpdateParams {
     #[serde(default)]
     pub external_id: Option<String>,
     #[serde(default)]

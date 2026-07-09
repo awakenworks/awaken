@@ -19,6 +19,7 @@ use axum::{Json, Router};
 use serde_json::{Value, json};
 
 use crate::routes::ManagedJson;
+use crate::types::agent::AgentReference;
 use crate::types::deployment::{Deployment, DeploymentRun};
 use crate::types::{ErrorResponse, Page};
 
@@ -26,8 +27,7 @@ const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 
 #[derive(Clone)]
 struct DeploymentRecord {
-    /// Normalized `BetaManagedAgentsAgentReference` (`{id, type:'agent', version}`).
-    agent: Value,
+    agent: AgentReference,
     environment_id: String,
     name: String,
     description: Option<String>,
@@ -68,7 +68,7 @@ impl DeploymentRecord {
 #[derive(Clone)]
 struct RunRecord {
     deployment_id: String,
-    agent: Value,
+    agent: AgentReference,
 }
 
 impl RunRecord {
@@ -141,19 +141,19 @@ fn bad_request(message: impl Into<String>) -> WireError {
     )
 }
 
-/// Normalize `agent` into a `BetaManagedAgentsAgentReference`: a bare id string
-/// becomes `{id, type:'agent', version:1}`; an object with an `id` passes through
-/// (defaulting `version` to 1); anything else is a `400`.
-fn normalize_agent(agent: &Value) -> Result<Value, WireError> {
+/// Normalize `agent` into the shared [`AgentReference`]: a bare id string becomes
+/// `{id, type:'agent', version:1}`; an object with an `id` keeps its `version`
+/// (defaulting to 1); anything else is a `400`.
+fn normalize_agent(agent: &Value) -> Result<AgentReference, WireError> {
     match agent {
-        Value::String(s) => Ok(json!({ "id": s, "type": "agent", "version": 1 })),
+        Value::String(s) => Ok(AgentReference::new(s, 1)),
         Value::Object(o) => {
             let id = o
                 .get("id")
                 .and_then(Value::as_str)
                 .ok_or_else(|| bad_request("agent object must carry an id"))?;
             let version = o.get("version").and_then(Value::as_u64).unwrap_or(1);
-            Ok(json!({ "id": id, "type": "agent", "version": version }))
+            Ok(AgentReference::new(id, version))
         }
         _ => Err(bad_request("agent must be a string id or an agent object")),
     }
