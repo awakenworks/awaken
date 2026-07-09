@@ -256,9 +256,15 @@ pub fn pending(
 }
 
 pub fn activation(run: &str) -> RunActivation {
+    activation_on(run, THREAD)
+}
+
+/// An activation for an explicit thread, so a routing test can enqueue runs on
+/// distinct threads and assert each is driven on its own thread's runtime.
+pub fn activation_on(run: &str, thread: &str) -> RunActivation {
     RunActivation {
         run_id: RunId(run.to_string()),
-        thread_id: ThreadId(THREAD.to_string()),
+        thread_id: ThreadId(thread.to_string()),
         snapshot: snapshot(),
         input: vec![Message {
             id: MessageId("m1".to_string()),

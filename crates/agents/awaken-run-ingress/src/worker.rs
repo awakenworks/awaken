@@ -24,7 +24,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::Error;
-use crate::dispatch::{Dispatch, DispatchOutcome, PendingInput};
+use crate::dispatch::{Claimed, Dispatch, DispatchOutcome, PendingInput};
 use crate::request::RunExecutionContext;
 
 /// Default lease: how long a claimed dispatch is owned before it is reclaimable.
@@ -134,12 +134,36 @@ impl<S: Dispatch> DispatchWorker<S> {
             .await?)
     }
 
+    /// Claim at most one runnable dispatch for this worker's owner, without
+    /// driving it. Returns the claimed work (request, lease, pending input) or
+    /// `None` when the queue is idle. A process-level pool claims here and then
+    /// drives the result on the *owning session's* worker via
+    /// [`drive_claimed`](Self::drive_claimed), so a run always executes on the
+    /// runtime carrying its thread's model/tools/config (not whichever worker
+    /// happened to claim it).
+    pub async fn claim_one(&self, now_ms: u64) -> Result<Option<Claimed>, Error> {
+        Ok(self.store.claim(&self.owner, self.lease_ms, now_ms).await?)
+    }
+
     /// Claim and process at most one runnable dispatch. Returns the processed
     /// run's id and resulting phase, or `None` when the queue is idle.
     pub async fn tick(&self, now_ms: u64) -> Result<Option<(RunId, Phase)>, Error> {
-        let Some(claimed) = self.store.claim(&self.owner, self.lease_ms, now_ms).await? else {
+        let Some(claimed) = self.claim_one(now_ms).await? else {
             return Ok(None);
         };
+        self.drive_claimed(claimed, now_ms).await
+    }
+
+    /// Drive an already-[`claim_one`](Self::claim_one)ed dispatch to a settled
+    /// outcome on *this* worker's runtime and commit boundary, then settle it.
+    /// Splitting claim from drive lets a process-level pool claim centrally and
+    /// route each run to its owning session's worker, so the run executes with
+    /// its thread's model/tools/config. Returns the run's id and resulting phase.
+    pub async fn drive_claimed(
+        &self,
+        claimed: Claimed,
+        now_ms: u64,
+    ) -> Result<Option<(RunId, Phase)>, Error> {
         let run_id = claimed.request.run_id().clone();
         // Continue the admitting request's trace across the durable queue boundary:
         // this `wake.dispatch` span's remote parent is the persisted traceparent, so
