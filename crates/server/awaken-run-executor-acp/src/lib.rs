@@ -347,7 +347,11 @@ struct CollectingAppender {
 
 #[async_trait]
 impl RunFactAppender for CollectingAppender {
-    async fn append(&mut self, seq: u64, event: &AgentEvent) -> std::result::Result<(), AppendError> {
+    async fn append(
+        &mut self,
+        seq: u64,
+        event: &AgentEvent,
+    ) -> std::result::Result<(), AppendError> {
         if seq <= self.last {
             return Err(AppendError::NonMonotonic {
                 got: seq,
