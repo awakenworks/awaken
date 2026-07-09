@@ -186,7 +186,9 @@ async fn environment_crud_and_work_lifecycle() {
     .await;
     assert_eq!(stats["type"], "work_queue_stats");
     assert_eq!(stats["depth"], 1);
-    assert_eq!(stats["pending"], 1);
+    // Nothing claimed yet: the seeded healthcheck is queued, so `pending` (claimed &
+    // processing) is 0, not the queue depth.
+    assert_eq!(stats["pending"], 0);
 
     // Poll leases the item -> active.
     let (s, leased) = call(

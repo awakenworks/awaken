@@ -418,10 +418,12 @@ async fn work_stats(
     require_env(&state, &id)?;
     let works = state.works.lock().unwrap();
     let in_env: Vec<&WorkRecord> = works.values().filter(|w| w.environment_id == id).collect();
+    // `depth` = items waiting to be claimed; `pending` = items a worker has claimed
+    // and is currently processing (per the SDK's queue-stats semantics).
     let queued = in_env.iter().filter(|w| w.state == "queued").count();
     let pending = in_env
         .iter()
-        .filter(|w| matches!(w.state, "queued" | "starting" | "active"))
+        .filter(|w| matches!(w.state, "starting" | "active" | "stopping"))
         .count();
     let workers_polling = i64::from(in_env.iter().any(|w| w.state == "active"));
     Ok(Json(WorkQueueStats {
