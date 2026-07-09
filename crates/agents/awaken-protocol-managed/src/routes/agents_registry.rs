@@ -21,7 +21,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
-use crate::router::ManagedJson;
+use crate::routes::ManagedJson;
 use crate::types::ErrorResponse;
 use crate::types::Page;
 

@@ -18,7 +18,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use std::sync::Arc;
 
-use crate::router::ManagedJson;
+use crate::routes::ManagedJson;
 use crate::types::user_profile::{CreateParams, Relationship, UpdateParams, UserProfile};
 use crate::types::{ErrorResponse, Page};
 

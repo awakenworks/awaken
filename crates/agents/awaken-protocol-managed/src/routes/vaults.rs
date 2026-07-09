@@ -46,7 +46,7 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
-use crate::router::ManagedJson;
+use crate::routes::ManagedJson;
 use crate::types::vault::{
     Credential, CredentialAuth, CredentialCreateParams, CredentialNetworking, CredentialUpdateAuth,
     CredentialUpdateParams, CredentialValidation, CredentialValidationStatus, DeletedCredential,

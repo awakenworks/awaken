@@ -16,13 +16,13 @@ use awaken_credential_vault::CredentialSourceId;
 
 use crate::ext::AwakenModelSelection;
 use crate::project::{self, project_messages, project_turn};
+use crate::routes::vaults::{McpRefreshBinding, VaultState};
 use crate::session_repo::{InMemorySessionRepository, ManagedSessionRepository, PersistedSession};
 use crate::types::{
     ConfirmResult, CreateSessionRequest, Event, EventReceipt, InboundEvent, ListEventsResponse,
     ModelConfig, OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent,
     SessionError, StopReason,
 };
-use crate::vaults::{McpRefreshBinding, VaultState};
 
 /// A fixed projection timestamp (M1). Real per-event timestamps arrive with a
 /// clock port; the wire only needs a valid RFC 3339 value here.
@@ -612,7 +612,7 @@ pub struct ManagedState {
     /// The environments surface, when the server mounts one: a session's
     /// `environment_id` is resolved to its networking policy (egress on/off) at
     /// creation. `None` → every session gets host network (unrestricted).
-    environments: Option<Arc<crate::environments::EnvironmentState>>,
+    environments: Option<Arc<crate::routes::environments::EnvironmentState>>,
     sessions: Mutex<HashMap<String, SessionRecord>>,
     /// Durable-config source of truth for the session aggregate: `create` writes
     /// it, rehydration reads it so a restored session reports its real
@@ -664,7 +664,7 @@ impl ManagedState {
     #[must_use]
     pub fn with_environments(
         mut self,
-        environments: Arc<crate::environments::EnvironmentState>,
+        environments: Arc<crate::routes::environments::EnvironmentState>,
     ) -> Self {
         self.environments = Some(environments);
         self
