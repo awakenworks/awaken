@@ -95,3 +95,45 @@ impl WakeSignal for NatsWakeSignal {
         }
     }
 }
+
+/// Postgres `LISTEN`/`NOTIFY` wake signal (B-P2, ADR-0021 §9). When the dispatch
+/// store *is* Postgres, this fans the hint across every node connected to the same
+/// database with **no extra infrastructure** — `publish` fires `pg_notify` (emit it
+/// inside the enqueue transaction for same-commit delivery) and `wait` blocks on a
+/// [`PgListener`]. Like every [`WakeSignal`] it is a hint; the poll fallback stays
+/// authoritative, so a dropped notification only defers a drain.
+pub struct PgNotifyWake {
+    pool: sqlx::postgres::PgPool,
+    channel: String,
+}
+
+impl PgNotifyWake {
+    /// Wake over `channel` on the same database as the dispatch store `pool`.
+    pub fn new(pool: sqlx::postgres::PgPool, channel: impl Into<String>) -> Self {
+        Self {
+            pool,
+            channel: channel.into(),
+        }
+    }
+}
+
+#[async_trait]
+impl WakeSignal for PgNotifyWake {
+    async fn publish(&self) -> Result<(), DispatchError> {
+        sqlx::query("SELECT pg_notify($1, '')")
+            .bind(&self.channel)
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
+            .map_err(|err| DispatchError::Rejected(err.to_string()))
+    }
+
+    async fn wait(&self) {
+        // A failed listen is tolerable — the poll fallback still drains.
+        if let Ok(mut listener) = sqlx::postgres::PgListener::connect_with(&self.pool).await {
+            if listener.listen(&self.channel).await.is_ok() {
+                let _ = listener.recv().await;
+            }
+        }
+    }
+}
