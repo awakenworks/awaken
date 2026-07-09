@@ -256,9 +256,15 @@ pub fn pending(
 }
 
 pub fn activation(run: &str) -> RunActivation {
+    activation_on(run, THREAD)
+}
+
+/// An activation for an explicit thread, so a routing test can enqueue runs on
+/// distinct threads and assert each is driven on its own thread's runtime.
+pub fn activation_on(run: &str, thread: &str) -> RunActivation {
     RunActivation {
         run_id: RunId(run.to_string()),
-        thread_id: ThreadId(THREAD.to_string()),
+        thread_id: ThreadId(thread.to_string()),
         snapshot: snapshot(),
         input: vec![Message {
             id: MessageId("m1".to_string()),
@@ -692,6 +698,36 @@ pub async fn assert_renew_owned_leases<S: awaken_dispatch::Dispatch>(store: &S) 
     );
     // Past the renewed expiry, recovery reclaims.
     assert!(store.claim("owner-b", 100, 200).await.unwrap().is_some());
+}
+
+/// Shared spec for the near-expiry heartbeat (ADR-0024, O3): a bulk renewal only
+/// touches leases within half a lease of expiring, so a fresh claim — a full lease
+/// out — is left untouched and its original lease still expires on schedule. Every
+/// backend matches.
+pub async fn assert_renew_skips_far_from_expiry<S: awaken_dispatch::Dispatch>(store: &S) {
+    use awaken_dispatch::RunExecutionRequest;
+
+    // owner-a claims r1 at t=0 with a 100ms lease (expires at 100).
+    store
+        .enqueue(RunExecutionRequest::new(activation("r1")))
+        .await
+        .unwrap();
+    assert!(store.claim("owner-a", 100, 0).await.unwrap().is_some());
+
+    // At t=10 the lease still has 90ms left — more than half the 100ms lease — so
+    // the bulk renewal skips it and reports zero renewed.
+    assert_eq!(
+        store.renew_owned_leases("owner-a", 100, 10).await.unwrap(),
+        0,
+        "a far-from-expiry lease is not renewed"
+    );
+
+    // Because it was left untouched, the original lease still expires at 100, so at
+    // t=101 recovery reclaims it — proving the skip did not silently extend it.
+    assert!(
+        store.claim("owner-b", 100, 101).await.unwrap().is_some(),
+        "the skipped lease expired on its original schedule"
+    );
 }
 
 /// Shared spec for time-windowed dead-letter GC (ADR-0023): GC removes only

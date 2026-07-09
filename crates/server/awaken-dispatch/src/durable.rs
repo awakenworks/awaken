@@ -83,6 +83,13 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         &self.worker
     }
 
+    /// A shared handle to this session's worker, for a process-level
+    /// [`DispatchPool`](crate::DispatchPool) to drive claimed runs on the runtime
+    /// that carries this thread's model/tools/config.
+    pub fn worker_handle(&self) -> Arc<DispatchWorker<S>> {
+        self.worker.clone()
+    }
+
     /// A fail-closed live-control service over this ingress's worker (G18): cancel
     /// a live/queued/parked run, or wake a live one, by correlation id (ADR-0018).
     /// Shares the same worker/store/runtime, so it owns no second commit boundary.

@@ -840,6 +840,11 @@ async fn renew_owned_leases_store_spec() {
 }
 
 #[tokio::test]
+async fn renew_skips_far_from_expiry_store_spec() {
+    harness::assert_renew_skips_far_from_expiry(&MemoryDispatchStore::new()).await;
+}
+
+#[tokio::test]
 async fn list_dispatches_store_spec() {
     harness::assert_list_dispatches(&MemoryDispatchStore::new()).await;
 }
