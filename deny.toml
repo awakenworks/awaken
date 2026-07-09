@@ -17,7 +17,7 @@
 #   awaken-store-sqlite       -> contracts + schema; durable commit-store adapter (rusqlite)
 #   awaken-run-ingress        -> kernel + store adapter; the durable run host (ADR-0009)
 #   awaken-connection-plan    -> agent-channel only; topology value object (ADR-0045, no kernel)
-#   awaken-tool-relay         -> runtime-contract only; the remote hand (ADR-0044, no kernel/store/model — G33)
+#   awaken-tool-relay         -> runtime-contract + agent-channel marker; the remote hand (ADR-0044/0045 D6, no kernel/store/model — G33)
 #
 # Each rule denies a crate, then lists via `wrappers` the ONLY crates allowed to
 # depend on it (its legitimate upper layers). A depender not in the list is a

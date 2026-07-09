@@ -302,6 +302,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # composition end-to-end test lives in awaken-runtime-examples, not here.
     "awaken-tool-relay": {
         "awaken-runtime-contract",
+        # The channel-bound marker (ADR-0045 D6): the hand's framed I/O runs over
+        # any `AgentChannel`, the one bound shared by every brain/hand use site.
+        # A pure marker (no kernel/store/model), so G33 isolation is unaffected.
+        "awaken-agent-channel",
         "async-trait",
         "serde",
         "serde_json",

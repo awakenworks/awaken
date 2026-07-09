@@ -1141,6 +1141,7 @@ name = "awaken-tool-relay"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "awaken-agent-channel",
  "awaken-runtime-contract",
  "bytes",
  "futures-util",

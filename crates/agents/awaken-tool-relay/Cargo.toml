@@ -6,6 +6,11 @@ license.workspace = true
 
 [dependencies]
 awaken-runtime-contract.workspace = true
+# The one channel-bound marker (ADR-0045 D6): the hand's framed I/O runs over any
+# `AgentChannel` (AsyncRead + AsyncWrite + Unpin + Send), same as every other
+# brain/hand use site — not a re-derived local bound. Pure marker, no kernel/
+# store/model, so G33 holds.
+awaken-agent-channel.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
