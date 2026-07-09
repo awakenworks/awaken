@@ -24,22 +24,21 @@
 // are self-contained modules — each bundles its own wire types, state, and router
 // for one resource — plus the shared `session_repo`/`pagination` helpers.
 
+/// 4. Our extensions: non-SDK vocabulary and surfaces (awaken model/runtime
+/// selection, the live-inbox edit protocol) kept apart from the compatible core.
+pub mod ext;
+/// 2. The projection: committed `Message`s and engine events → public wire events.
+pub mod project;
+/// 3. The routing: the axum router and handlers over [`state::ManagedState`].
+mod router;
 /// 1. The wire transfer objects: the Managed Agents request/response/event shapes,
 /// each mapping 1:1 onto the `@anthropic-ai/sdk` beta `managed-agents` types.
 /// Pure serde types only — the logic that *assembles* them from neutral domain
 /// state lives in [`project`] and [`state`].
 pub mod types;
-/// 2. The projection: committed `Message`s and engine events → public wire events.
-pub mod project;
-/// 3. The routing: the axum router and handlers over [`state::ManagedState`].
-mod router;
-/// 4. Our extensions: non-SDK vocabulary and surfaces (awaken model/runtime
-/// selection, the live-inbox edit protocol) kept apart from the compatible core.
-pub mod ext;
 
-mod state;
 mod session_repo;
-pub mod pagination;
+mod state;
 
 // Management-plane resource surfaces (self-contained per-resource modules).
 pub mod agents_registry;

@@ -23,9 +23,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
-use crate::pagination::Page;
 use crate::router::ManagedJson;
 use crate::types::ErrorResponse;
+use crate::types::Page;
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 const HEARTBEAT_TTL_SECONDS: u64 = 60;

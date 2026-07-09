@@ -16,79 +16,16 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::pagination::Page;
 use crate::router::ManagedJson;
-use crate::types::ErrorResponse;
+use crate::types::user_profile::{CreateParams, Relationship, UpdateParams, UserProfile};
+use crate::types::{ErrorResponse, Page};
 
 /// Deterministic timestamps, matching the vault surface's convention.
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 /// The enrollment URL's fixed validity horizon (deterministic for tests).
 const ENROLL_EXPIRES_AT: &str = "2026-12-31T23:59:59Z";
-
-/// How the entity behind a profile relates to the API-key owner.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Relationship {
-    External,
-    Resold,
-    Internal,
-}
-
-impl Default for Relationship {
-    fn default() -> Self {
-        Self::External
-    }
-}
-
-/// `BetaUserProfile` — the wire projection.
-#[derive(Debug, Clone, Serialize)]
-pub struct UserProfile {
-    pub id: String,
-    pub created_at: String,
-    pub updated_at: String,
-    pub metadata: BTreeMap<String, String>,
-    pub relationship: Relationship,
-    /// Trust grants keyed by grant name; empty on this single-machine surface.
-    pub trust_grants: BTreeMap<String, serde_json::Value>,
-    #[serde(rename = "type")]
-    pub object_type: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub external_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-}
-
-/// `UserProfileCreateParams`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct CreateParams {
-    #[serde(default)]
-    pub external_id: Option<String>,
-    #[serde(default)]
-    pub metadata: BTreeMap<String, String>,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub relationship: Relationship,
-}
-
-/// `UserProfileUpdateParams` — a partial update. `external_id` / `name` /
-/// `relationship` replace when present; `metadata` is a merge where an **empty
-/// string** value removes the key (the SDK's documented convention) and keys not
-/// present are preserved.
-#[derive(Debug, Clone, Deserialize)]
-pub struct UpdateParams {
-    #[serde(default)]
-    pub external_id: Option<String>,
-    #[serde(default)]
-    pub metadata: Option<BTreeMap<String, String>>,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub relationship: Option<Relationship>,
-}
 
 #[derive(Clone)]
 struct Record {
