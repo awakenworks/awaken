@@ -94,6 +94,7 @@ awaken-run-ingress = { path = "crates/agents/awaken-run-ingress" }
 awaken-runtime-host = { path = "crates/agents/awaken-runtime-host" }
 awaken-server-local = { path = "crates/agents/awaken-server-local" }
 awaken-authz-enforce = { path = "crates/agents/awaken-authz-enforce" }
+awaken-webhook = { path = "crates/agents/awaken-webhook" }
 awaken-standalone = { path = "crates/agents/awaken-standalone" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
