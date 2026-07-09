@@ -64,6 +64,28 @@ pub struct ResolvedModel {
     pub api_key: String,
 }
 
+impl ResolvedModel {
+    /// Cloud-managed egress (D-R2, ADR-0021 §9/R2). An ACP CLI runs inside the
+    /// untrusted sandbox, so it must never hold a raw provider key: its egress is
+    /// mediated by the gateway. `base_url` is the **gateway**, and the CLI's "API
+    /// key" is a short-lived **lease token** — the gateway injects the real provider
+    /// credential out of the sandbox's address space. Build the ACP model this way
+    /// from a `ModelAccessGrant::CloudManagedGateway` so the raw key never enters the
+    /// launch env.
+    #[must_use]
+    pub fn cloud_managed_gateway(
+        gateway_base_url: impl Into<String>,
+        model: impl Into<String>,
+        lease_token: impl Into<String>,
+    ) -> Self {
+        Self {
+            base_url: gateway_base_url.into(),
+            model: model.into(),
+            api_key: lease_token.into(),
+        }
+    }
+}
+
 impl AcpCli {
     /// Project the resolved model + optional compaction window + per-agent env
     /// overrides onto a concrete [`AcpLaunch`]. Precedence (low→high):
@@ -232,6 +254,35 @@ mod tests {
         assert!(acp_cli("codex").is_some());
         assert!(acp_cli("gemini").is_some());
         assert!(acp_cli("no_such_cli").is_none());
+    }
+
+    #[test]
+    fn cloud_managed_gateway_puts_the_lease_token_not_a_raw_key_in_the_env() {
+        // D-R2: an ACP CLI in the untrusted sandbox must egress through the gateway
+        // with a lease token, never a raw provider key.
+        let raw_provider_key = "sk-REAL-PROVIDER-SECRET"; // awaken-allow: secret
+        let model = ResolvedModel::cloud_managed_gateway(
+            "https://gateway.awaken.internal",
+            "claude-opus-4-8",
+            "lease-abc123", // awaken-allow: secret
+        );
+        let cli = acp_cli("claude").unwrap();
+        let launch = cli.project(&model, None, &[]);
+
+        // The CLI's base_url is the gateway and its "key" env is the lease token.
+        assert_eq!(
+            env_of(&launch, "ANTHROPIC_BASE_URL").as_deref(),
+            Some("https://gateway.awaken.internal")
+        );
+        assert_eq!(
+            env_of(&launch, "ANTHROPIC_API_KEY").as_deref(),
+            Some("lease-abc123")
+        );
+        // The raw provider key never appears in any launch env value.
+        assert!(
+            launch.env.iter().all(|(_, v)| v != raw_provider_key),
+            "raw provider key must never enter the ACP launch env"
+        );
     }
 
     #[test]
