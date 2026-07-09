@@ -619,8 +619,34 @@ pub struct ManagedState {
     /// agent/model/title/metadata/MCP instead of placeholder defaults. The
     /// in-memory `sessions` map is a per-process read-through cache over it.
     sessions_repo: Arc<dyn ManagedSessionRepository>,
+    /// Optional projection sink for committed session lifecycle facts (ADR-0048):
+    /// the assembly wires a webhook dispatcher here so a created/terminated session
+    /// fans out to workspace-scoped subscriptions. `None` = no projection (the
+    /// default, byte-identical to before). The wire crate stays webhook-agnostic —
+    /// it only knows this narrow port.
+    lifecycle_sink: Option<Arc<dyn SessionLifecycleSink>>,
     session_seq: AtomicU64,
     event_seq: AtomicU64,
+}
+
+/// A sink for committed session lifecycle facts, projected to external consumers
+/// (webhooks). The Managed adapter calls it after a lifecycle transition commits,
+/// handing the session's persisted owner (S3) so the consumer can stamp tenancy.
+/// Implemented in the assembly layer over a webhook dispatcher; kept here so the
+/// wire crate depends on no delivery machinery.
+#[async_trait]
+pub trait SessionLifecycleSink: Send + Sync {
+    /// `event_type` is the `OutboundKind` wire name (e.g. `session.status_idle`);
+    /// `workspace_id`/`org_id` are the session's owner (both may be absent on the
+    /// bare/self-hosted surface). Must not block the caller for long — deliver
+    /// out-of-band.
+    async fn emit(
+        &self,
+        session_id: &str,
+        workspace_id: Option<&str>,
+        org_id: Option<&str>,
+        event_type: &str,
+    );
 }
 
 /// Why a session operation failed (mapped to an HTTP status by the router).
@@ -652,9 +678,18 @@ impl ManagedState {
             environments: None,
             sessions: Mutex::new(HashMap::new()),
             sessions_repo: Arc::new(InMemorySessionRepository::default()),
+            lifecycle_sink: None,
             session_seq: AtomicU64::new(0),
             event_seq: AtomicU64::new(0),
         }
+    }
+
+    /// Wire a projection sink (a webhook dispatcher) so committed session lifecycle
+    /// facts fan out to workspace-scoped subscribers (ADR-0048). Default: none.
+    #[must_use]
+    pub fn with_lifecycle_sink(mut self, sink: Arc<dyn SessionLifecycleSink>) -> Self {
+        self.lifecycle_sink = Some(sink);
+        self
     }
 
     /// Wire the environments surface, so `POST /v1/sessions` resolves the session's
@@ -872,10 +907,17 @@ impl ManagedState {
                 // The owning workspace resolved at ingress (ADR-0048 D6). Org stays
                 // `None` self-hosted (D4/D6 — the chain roots at the workspace);
                 // a cloud deployment sets it when a real Org wraps the workspace.
-                workspace_id,
+                workspace_id: workspace_id.clone(),
                 org_id: None,
             })
             .await;
+        // Project the committed create as a lifecycle fact: a fresh session is idle,
+        // so fan out `session.status_idle` to any workspace-scoped subscribers. The
+        // sink delivers out-of-band; it never blocks or fails the create.
+        if let Some(sink) = &self.lifecycle_sink {
+            sink.emit(&id, workspace_id.as_deref(), None, "session.status_idle")
+                .await;
+        }
         self.sessions.lock().unwrap().insert(
             id,
             SessionRecord {
