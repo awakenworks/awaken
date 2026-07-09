@@ -32,6 +32,27 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tokio",
         "tower",
     },
+    # Webhooks (ADR-0048 / S10): a protocol-neutral projection sink. Signing +
+    # HTTP delivery + a versioned scoped-migration subscription store. No dep on
+    # the Managed wire crate — it takes event type / id / tenancy as data.
+    "awaken-webhook": {
+        "serde",
+        "serde_json",
+        "hmac",
+        "sha2",
+        "base64",
+        "subtle",
+        "async-trait",
+        "reqwest",
+        "tokio",
+        "rusqlite",
+        "awaken-scoped-migration",
+        "awaken-scoped-migration-sqlite",
+        # dev-only: the e2e stands up a real axum receiver on an ephemeral port.
+        "axum",
+        "tempfile",
+        "hyper",
+    },
     # The open single-machine assembly. Composes ONLY open crates — this closure
     # is the zero-BuSL invariant (no admin-config-api write plane, no iam-server,
     # no store-postgres). Adding a BuSL dep here should fail review.
