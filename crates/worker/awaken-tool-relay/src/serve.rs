@@ -9,9 +9,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use awaken_agent_channel::AgentChannel;
 use awaken_runtime_contract::tool::RawTool;
 use futures_util::{SinkExt, StreamExt};
-use awaken_agent_channel::AgentChannel;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 use crate::wire::{HandError, HandErrorKind, HandReply, HandRequest, HandResult};

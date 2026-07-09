@@ -8,9 +8,9 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
+use awaken_agent_channel::AgentChannel;
 use awaken_runtime_contract::tool::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 use futures_util::{SinkExt, StreamExt};
-use awaken_agent_channel::AgentChannel;
 use tokio::sync::Mutex;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
