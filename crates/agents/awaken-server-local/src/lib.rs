@@ -733,17 +733,45 @@ pub fn build_remote_hand_router() -> Router {
         .filter(|v| !v.is_empty())
     {
         // Reverse topology (ADR-0045): the hand has no inbound reachability
-        // (NAT / outbound-only), so it dials US. We bind a rendezvous and use
-        // the accepted connection as the executor channel — the brain stays
-        // the requester; only the dial direction flips.
-        Arc::new(RemoteToolExecutor::new(accept_hand_blocking(&listen)))
+        // (NAT / outbound-only), so it dials US. Bind a rendezvous through the
+        // one ChannelFactory and use the accepted channel as the executor
+        // channel — the brain stays the requester; only the dial direction flips.
+        let plan = awaken_connection_plan::ConnectionPlan::tcp_listen(&listen);
+        let channel = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                let listener = awaken_connection_plan::bind_tcp(&plan).await.unwrap_or_else(|e| {
+                    panic!("brain failed to bind reverse rendezvous {listen}: {e}")
+                });
+                eprintln!("awaken brain: awaiting a reverse-dial hand on tcp://{listen}");
+                listener
+                    .accept()
+                    .await
+                    .unwrap_or_else(|e| panic!("brain rendezvous accept failed: {e}"))
+            })
+        });
+        Arc::new(RemoteToolExecutor::new(channel))
     } else if let Some(remote) = std::env::var("AWAKEN_REMOTE_HAND")
         .ok()
         .filter(|v| !v.is_empty())
     {
-        // Direct topology: the brain dials the hand's host:port (a k8s Service).
+        // Direct topology (ADR-0045): the brain dials the hand's host:port (a k8s
+        // Service) through the one ChannelFactory, retrying while the hand pod /
+        // cluster DNS warms up.
         let addr = remote.strip_prefix("tcp://").unwrap_or(&remote).to_string();
-        Arc::new(RemoteToolExecutor::new(connect_tcp_blocking(&addr)))
+        let plan = awaken_connection_plan::ConnectionPlan::tcp_dial(&addr);
+        let channel = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                awaken_connection_plan::connect_with_retry(
+                    &awaken_connection_plan::TokioChannelFactory,
+                    &plan,
+                    240,
+                    std::time::Duration::from_millis(500),
+                )
+                .await
+                .unwrap_or_else(|e| panic!("could not reach remote hand at {addr}: {e}"))
+            })
+        });
+        Arc::new(RemoteToolExecutor::new(channel))
     } else {
         // InProcess degenerate: a framed duplex to a serve_hand task in-process.
         let (brain_end, hand_end) = awaken_connection_plan::in_process_pair();
@@ -779,49 +807,6 @@ impl awaken_runtime_contract::permission::ToolGateHook for AllowAllGate {
     ) -> awaken_runtime_contract::permission::GateOutcome {
         awaken_runtime_contract::permission::GateOutcome::Allow
     }
-}
-
-/// Dial the hand with retry (the hand pod / cluster DNS may still be coming up
-/// when the brain boots), returning a tokio stream for the `RemoteToolExecutor`.
-/// Uses tokio's async connect under a per-attempt timeout so a momentarily-slow
-/// DNS resolution retries instead of hanging on `getaddrinfo` forever. Called once
-/// at startup, before serving.
-fn connect_tcp_blocking(addr: &str) -> tokio::net::TcpStream {
-    let addr = addr.to_string();
-    tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(async move {
-            for _ in 0..120 {
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(2),
-                    tokio::net::TcpStream::connect(&addr),
-                )
-                .await
-                {
-                    Ok(Ok(s)) => {
-                        let _ = s.set_nodelay(true);
-                        return s;
-                    }
-                    _ => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
-                }
-            }
-            panic!("could not reach remote hand at {addr} after retries");
-        })
-    })
-}
-
-/// Blocking rendezvous accept for the Reverse topology: bind `addr` and wait for
-/// the hand to dial in, returning the accepted channel for a `RemoteToolExecutor`.
-/// Called once at startup, before serving.
-fn accept_hand_blocking(addr: &str) -> tokio::net::TcpStream {
-    let listener = std::net::TcpListener::bind(addr)
-        .unwrap_or_else(|e| panic!("brain failed to bind reverse rendezvous {addr}: {e}"));
-    eprintln!("awaken brain: awaiting a reverse-dial hand on tcp://{addr}");
-    let (s, _peer) = listener
-        .accept()
-        .unwrap_or_else(|e| panic!("brain rendezvous accept failed: {e}"));
-    s.set_nonblocking(true).expect("set_nonblocking");
-    let _ = s.set_nodelay(true);
-    tokio::net::TcpStream::from_std(s).expect("std->tokio TcpStream")
 }
 
 /// A `ToolExecutor` that relays each call to a hand through a NATS broker (ADR-0045
