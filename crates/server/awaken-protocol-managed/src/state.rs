@@ -14,7 +14,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
 use awaken_credential_vault::CredentialSourceId;
 
-use crate::dto::{
+use crate::types::{
     ConfirmResult, CreateSessionRequest, Event, EventReceipt, InboundEvent, ListEventsResponse,
     ModelConfig, OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent,
     StopReason,
@@ -781,8 +781,8 @@ impl ManagedState {
                     mcp_servers: bindings,
                     resources,
                     project_id,
-                    model: req.agent.model().map(str::to_string),
-                    runtime: req.agent.runtime().map(str::to_string),
+                    model: req.awaken_model().map(str::to_string),
+                    runtime: req.awaken_runtime().map(str::to_string),
                     deny_egress,
                 },
             )
@@ -803,8 +803,7 @@ impl ManagedState {
                 // R6: echo the session's actual model — the requested override, else
                 // the host default — so the client sees which model the session runs.
                 model: ModelConfig::new(
-                    req.agent
-                        .model()
+                    req.awaken_model()
                         .map(str::to_string)
                         .unwrap_or_else(|| self.runtime.model()),
                 ),
@@ -1653,9 +1652,6 @@ impl ManagedState {
                 InboundEvent::UserInterrupt { .. } => {
                     self.runtime.interrupt(session_id).await?;
                 }
-                // `user.pause`, `user.resume`: accept-only; the receipt is the
-                // acknowledgement.
-                _ => {}
             }
         }
         // Refresh the session's accumulated token usage from the runtime's committed

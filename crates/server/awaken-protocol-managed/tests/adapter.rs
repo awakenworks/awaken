@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
-use awaken_protocol_managed::dto::StopReason;
+use awaken_protocol_managed::types::StopReason;
 use awaken_protocol_managed::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, ManagedState, OutcomeIteration,
     OutcomeReport, Pending, RunError, RunErrorKind, SessionRuntime, TurnOutcome, router,
@@ -816,9 +816,9 @@ async fn custom_tool_use_park_and_result() {
 
 #[tokio::test]
 async fn accept_only_events_are_acknowledged() {
-    // `system.message` is buffered; `user.interrupt` / `user.pause` /
-    // `user.resume` are acknowledged with a receipt but drive no projected event
-    // in the single-machine model (there is no in-flight turn between requests).
+    // `system.message` is buffered; `user.interrupt` is acknowledged with a receipt
+    // but drives no projected event in the single-machine model (there is no
+    // in-flight turn between requests).
     let app = router(Arc::new(ManagedState::new(EchoFake)));
     let id = create(&app).await;
 
@@ -828,9 +828,7 @@ async fn accept_only_events_are_acknowledged() {
         &format!("/v1/sessions/{id}/events"),
         serde_json::json!({ "events": [
             { "type": "system.message", "content": [{ "type": "text", "text": "be terse" }] },
-            { "type": "user.interrupt" },
-            { "type": "user.pause" },
-            { "type": "user.resume" }
+            { "type": "user.interrupt" }
         ] }),
     )
     .await;
@@ -840,15 +838,7 @@ async fn accept_only_events_are_acknowledged() {
         .iter()
         .map(|r| r["type"].as_str().unwrap())
         .collect();
-    assert_eq!(
-        receipt_types,
-        vec![
-            "system.message",
-            "user.interrupt",
-            "user.pause",
-            "user.resume"
-        ]
-    );
+    assert_eq!(receipt_types, vec!["system.message", "user.interrupt"]);
 
     let list = json_call(
         &app,

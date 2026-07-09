@@ -13,7 +13,7 @@ use awaken_agent_contract::project::{
     AgentEvent, ToolDisposition, Transcoder, project_messages as fold, terminal_waiting,
 };
 
-use crate::dto::{OutboundKind, StopReason};
+use crate::types::{OutboundKind, StopReason};
 use crate::state::{AgentCapabilities, OutcomeIteration};
 
 /// The versioned built-in toolset id (Managed Agents wire vocabulary, G16).

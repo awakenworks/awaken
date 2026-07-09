@@ -2,7 +2,6 @@
 // cases, restricted to our SDK surface). Drives the managed sessions API through
 // the official @anthropic-ai/sdk. Ported scenarios:
 //   - user.interrupt with no active run          -> accepted, session stays usable
-//   - user.pause / user.resume                   -> accept-only receipts
 //   - concurrent sends to ONE session            -> all settle, server stays responsive
 //   - server recovers after a malformed request  -> 4xx, then a valid call succeeds
 //   - duplicate tool_confirmation of a resolved tool -> fail closed (no double-run)
@@ -65,16 +64,6 @@ async function resilientPaths(echoUp) {
       pass('user.interrupt with no active run -> accepted, session still usable');
     }
 
-    // 2. user.pause / user.resume are accept-only (receipts, no crash).
-    {
-      const s = await newSession(c);
-      const res = await c.beta.sessions.events.send(s.id, {
-        events: [{ type: 'user.pause' }, { type: 'user.resume' }],
-        betas: BETAS,
-      });
-      assert.equal(res.data.length, 2, 'pause + resume each acknowledged with a receipt');
-      pass('user.pause / user.resume -> accept-only receipts');
-    }
 
     // 3. Concurrent sends to ONE session: the host serializes per thread; every
     //    request settles and the server stays responsive afterward (no crash/hang).

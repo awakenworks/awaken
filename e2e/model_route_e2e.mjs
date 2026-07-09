@@ -35,7 +35,7 @@ async function main() {
 
       // R1/R2/R6: a session bound to `fast` resolves the fast executor and echoes it.
       const fast = await client.beta.sessions.create({
-        agent: { id: 'assistant', model: 'fast' },
+        agent: 'assistant', metadata: { 'awaken.model': 'fast' },
         environment_id: 'env_local',
         betas: BETAS,
       });
@@ -47,7 +47,7 @@ async function main() {
 
       // A second session bound to `slow` resolves a distinct executor.
       const slow = await client.beta.sessions.create({
-        agent: { id: 'assistant', model: 'slow' },
+        agent: 'assistant', metadata: { 'awaken.model': 'slow' },
         environment_id: 'env_local',
         betas: BETAS,
       });
@@ -69,7 +69,7 @@ async function main() {
 
       // R5: a per-turn `model` override switches the thread mid-conversation.
       const sw = await client.beta.sessions.create({
-        agent: { id: 'assistant', model: 'fast' },
+        agent: 'assistant', metadata: { 'awaken.model': 'fast' },
         environment_id: 'env_local',
         betas: BETAS,
       });

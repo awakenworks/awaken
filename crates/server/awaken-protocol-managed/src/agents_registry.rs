@@ -21,7 +21,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
-use crate::dto::ErrorResponse;
+use crate::types::ErrorResponse;
 use crate::pagination::Page;
 use crate::router::ManagedJson;
 
@@ -276,7 +276,8 @@ async fn update_agent(
         return Err((
             StatusCode::CONFLICT,
             Json(ErrorResponse::new(
-                "conflict_error",
+                // The SDK has no `conflict_error`; a 409 carries `invalid_request_error`.
+                "invalid_request_error",
                 format!(
                     "version mismatch: expected {}, got {expected}",
                     record.version
