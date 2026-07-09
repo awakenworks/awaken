@@ -42,6 +42,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "sha2",
         "base64",
         "subtle",
+        "getrandom",
         "async-trait",
         "reqwest",
         "tokio",
@@ -911,6 +912,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # dev-dep (ADR-0048): the iam-host assembly, validated in an integration
         # test (IamGate + auth_layer, zero-config Local mode) ahead of full adoption.
         "awaken-iam-host",
+        # The webhook plane (ADR-0048 / S10): the lifecycle-sink bridge + CRUD router
+        # over the neutral dispatcher/store. Env-gated by AWAKEN_WEBHOOK_DIR.
+        "awaken-webhook",
         # The embedded IAM's durable token/binding rows under
         # <AWAKEN_MGMT_DIR>/iam.sqlite — the same rusqlite generation every
         # other sqlite store in the workspace uses.
