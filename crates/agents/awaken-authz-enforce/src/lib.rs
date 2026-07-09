@@ -193,7 +193,7 @@ pub struct RequestTenancy {
 /// router. A missing/invalid credential is 401; a denied decision is 403.
 pub async fn guard(
     State(engine): State<Arc<EnforceEngine>>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     let Some(presented) = presented_bearer(request.headers()) else {
@@ -209,7 +209,16 @@ pub async fn guard(
     let scope = request_scope(&workspace_id);
     let action = session_action(request.method().as_str());
     match engine.authorize(principal, &action, scope) {
-        AuthorizationDecision::Allow => next.run(request).await,
+        AuthorizationDecision::Allow => {
+            // Publish the edge-resolved owning workspace so a downstream projection
+            // (webhooks/usage) can stamp it — the aspect resolves tenancy, the core
+            // never stores it. Idempotent: a project-less deployment has no prior
+            // `RequestTenancy`, a future one would already carry the same value.
+            request
+                .extensions_mut()
+                .insert(RequestTenancy { workspace_id });
+            next.run(request).await
+        }
         AuthorizationDecision::Deny | AuthorizationDecision::RequireApproval => {
             reject(StatusCode::FORBIDDEN, "not authorized for this scope")
         }
