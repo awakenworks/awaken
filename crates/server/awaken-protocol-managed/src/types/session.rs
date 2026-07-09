@@ -71,12 +71,6 @@ impl AgentRef {
     }
 }
 
-/// Metadata key for the awaken per-session model override (extension carried on the
-/// Claude-native `metadata` bag, not on the SDK `agent` object).
-pub const AWAKEN_MODEL_META_KEY: &str = "awaken.model";
-/// Metadata key for the awaken runtime selection (`awaken` / `acp:<cli>`).
-pub const AWAKEN_RUNTIME_META_KEY: &str = "awaken.runtime";
-
 /// `POST /v1/sessions` request body (only the fields the runtime slice reads;
 /// unknown fields are ignored so the full SDK payload is accepted).
 #[derive(Debug, Clone, Deserialize)]
@@ -101,22 +95,6 @@ pub struct CreateSessionRequest {
     /// differ per kind); the state layer parses each into a `SessionResource`.
     #[serde(default)]
     pub resources: Vec<Value>,
-}
-
-impl CreateSessionRequest {
-    /// The awaken per-session model override (R2), read from `metadata` rather than
-    /// the Claude `agent` object. Absent → the host default model.
-    pub fn awaken_model(&self) -> Option<&str> {
-        self.metadata.get(AWAKEN_MODEL_META_KEY).map(String::as_str)
-    }
-
-    /// The awaken runtime selection (R3): `"awaken"` (native) or `"acp:<cli>"`,
-    /// read from `metadata`. Absent → native.
-    pub fn awaken_runtime(&self) -> Option<&str> {
-        self.metadata
-            .get(AWAKEN_RUNTIME_META_KEY)
-            .map(String::as_str)
-    }
 }
 
 /// One MCP server on the wire (`BetaManagedAgentsMCPServerURLDefinition` /
@@ -559,20 +537,6 @@ mod tests {
         let obj: AgentRef =
             serde_json::from_str(r#"{"id":"assistant","type":"agent","version":3}"#).unwrap();
         assert_eq!(obj.id(), "assistant");
-    }
-
-    #[test]
-    fn create_session_request_reads_awaken_overrides_from_metadata() {
-        let req: CreateSessionRequest = serde_json::from_str(
-            r#"{"agent":"a","metadata":{"awaken.model":"m2","awaken.runtime":"acp:claude"}}"#,
-        )
-        .unwrap();
-        assert_eq!(req.awaken_model(), Some("m2"));
-        assert_eq!(req.awaken_runtime(), Some("acp:claude"));
-        // Absent → None (host default / native).
-        let bare: CreateSessionRequest = serde_json::from_str(r#"{"agent":"a"}"#).unwrap();
-        assert_eq!(bare.awaken_model(), None);
-        assert_eq!(bare.awaken_runtime(), None);
     }
 
     #[test]
