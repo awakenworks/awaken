@@ -888,8 +888,10 @@ impl SharedHost {
     ) -> Result<awaken_agent_contract::agent::run::Phase, HostError> {
         let run_id = activation.run_id.clone();
         // Register for the settle event BEFORE enqueue, so the pool cannot drive and
-        // settle the run before this caller is listening (no lost wakeup).
-        let settled = self.completion.register(&run_id);
+        // settle the run before this caller is listening (no lost wakeup). The guard
+        // removes the waiter if this future is dropped (client disconnect) before it
+        // settles — held to the end of this method.
+        let (settled, _waiter_guard) = self.completion.register(&run_id);
         let pool = self.dispatch_pool_or_err()?;
         // Enqueue only — never drive here; the pool is the sole claimer. The common
         // path goes through `pool.submit` (which stamps the trace); a superseding
@@ -937,9 +939,9 @@ impl SharedHost {
             // The pool signalled the settled phase the instant it settled.
             Ok(Ok(phase)) => Ok(phase),
             // Sender dropped without sending (pool died) or the wait timed out: fall
-            // back to one committed-truth read, else surface a hard error.
+            // back to one committed-truth read, else surface a hard error. The
+            // waiter entry is cleaned up by the caller's `WaiterGuard` on return.
             Ok(Err(_)) | Err(_) => {
-                self.completion.cancel(run_id);
                 self.read_settled_phase(ctx, run_id).ok_or_else(|| {
                     HostError::internal(
                         "durable run did not settle: the dispatch pool never drove it to completion",
@@ -1802,23 +1804,77 @@ pub(crate) struct CompletionRegistry {
 
 impl CompletionRegistry {
     /// Register interest in `run_id` BEFORE it is enqueued, so the pool cannot
-    /// settle it before this caller is listening (no lost wakeup). The receiver
-    /// resolves with the settled phase.
-    fn register(&self, run_id: &RunId) -> tokio::sync::oneshot::Receiver<Phase> {
+    /// settle it before this caller is listening (no lost wakeup). Returns the
+    /// receiver plus a [`WaiterGuard`] that removes the waiter if the caller's
+    /// future is dropped before the run settles (e.g. a client disconnect), so an
+    /// unwaited entry never lingers in the map.
+    fn register(
+        self: &Arc<Self>,
+        run_id: &RunId,
+    ) -> (tokio::sync::oneshot::Receiver<Phase>, WaiterGuard) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.waiters
             .lock()
             .expect("completion registry poisoned")
             .insert(run_id.0.clone(), tx);
-        rx
+        let guard = WaiterGuard {
+            registry: Arc::downgrade(self),
+            run_id: run_id.0.clone(),
+        };
+        (rx, guard)
+    }
+}
+
+/// Removes a completion waiter on drop, so a foreground submit whose future is
+/// dropped (client disconnect) or which timed out never leaves a stale sender in
+/// the registry. On normal completion the sender is already gone (consumed by
+/// [`CompletionSink::settled`]), so the removal is a harmless no-op.
+struct WaiterGuard {
+    registry: std::sync::Weak<CompletionRegistry>,
+    run_id: String,
+}
+
+impl Drop for WaiterGuard {
+    fn drop(&mut self) {
+        if let Some(registry) = self.registry.upgrade()
+            && let Ok(mut waiters) = registry.waiters.lock()
+        {
+            waiters.remove(&self.run_id);
+        }
+    }
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::{CompletionRegistry, RunId};
+    use awaken_agent_contract::agent::run::Phase;
+    use awaken_run_ingress::CompletionSink;
+    use std::sync::Arc;
+
+    /// A3: dropping the guard (caller future dropped / timed out) removes the
+    /// waiter, so a run that never settles does not leak an entry.
+    #[tokio::test]
+    async fn dropping_the_guard_removes_the_registration() {
+        let registry = Arc::new(CompletionRegistry::default());
+        let (rx, guard) = registry.register(&RunId("r".into()));
+        assert_eq!(registry.waiters.lock().unwrap().len(), 1);
+        drop(guard);
+        drop(rx);
+        assert!(
+            registry.waiters.lock().unwrap().is_empty(),
+            "the guard removed the leaked waiter"
+        );
     }
 
-    /// Drop a waiter (e.g. after a timeout fallback) so its slot does not leak.
-    fn cancel(&self, run_id: &RunId) {
-        self.waiters
-            .lock()
-            .expect("completion registry poisoned")
-            .remove(&run_id.0);
+    /// The happy path: `settled` delivers the phase to the waiter and clears the
+    /// slot, so the later guard drop is a no-op.
+    #[tokio::test]
+    async fn settled_delivers_the_phase_and_clears_the_slot() {
+        let registry = Arc::new(CompletionRegistry::default());
+        let (rx, _guard) = registry.register(&RunId("r".into()));
+        registry.settled(&RunId("r".into()), &Phase::Waiting);
+        assert!(matches!(rx.await, Ok(Phase::Waiting)));
+        assert!(registry.waiters.lock().unwrap().is_empty());
     }
 }
 

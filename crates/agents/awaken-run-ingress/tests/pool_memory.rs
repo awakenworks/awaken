@@ -20,9 +20,9 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::store::run_store::RunStore;
 use awaken_agent_contract::agent::run::Phase;
 use awaken_run_ingress::{
-    CompletionSink, DEFAULT_LEASE_MS, DispatchPool, DispatchQueue, DispatchServiceConfig,
-    DispatchWorker, Error, Inbox, ManualClock, MemoryDispatchStore, PendingInput,
-    RunExecutionRequest, SystemClock, WorkerResolver,
+    CompletionSink, DEFAULT_LEASE_MS, DispatchError, DispatchPool, DispatchQueue,
+    DispatchServiceConfig, DispatchWorker, Error, Inbox, ManualClock, MemoryDispatchStore,
+    PendingInput, RunExecutionRequest, SystemClock, WakeSignal, WorkerResolver,
 };
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
@@ -110,6 +110,69 @@ async fn routing_drives_each_run_on_its_own_threads_runtime() {
     assert!(RunStore::get(&*commit_a, &RunId("run-b".into())).is_none());
     assert!(RunStore::get(&*commit_b, &RunId("run-b".into())).is_some());
     assert!(RunStore::get(&*commit_b, &RunId("run-a".into())).is_none());
+
+    pool.shutdown().await;
+}
+
+/// The pool drains through an INJECTED wake signal (`spawn_with_wake`) — the seam a
+/// fleet fills with a durable/cross-node wake. A recording wake double proves the
+/// pool's `submit` publishes on it and the run drains.
+#[tokio::test]
+async fn pool_uses_the_injected_wake_signal() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct RecordingWake {
+        published: AtomicUsize,
+        notify: tokio::sync::Notify,
+    }
+    #[async_trait]
+    impl WakeSignal for RecordingWake {
+        async fn publish(&self) -> Result<(), DispatchError> {
+            self.published.fetch_add(1, Ordering::SeqCst);
+            self.notify.notify_one();
+            Ok(())
+        }
+        async fn wait(&self) {
+            self.notify.notified().await;
+        }
+    }
+
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = worker_over(text_runtime(), store.clone(), commit.clone());
+    let resolver = Arc::new(MapResolver {
+        workers: HashMap::from([(harness::THREAD.to_string(), worker)]),
+    });
+    let wake = Arc::new(RecordingWake {
+        published: AtomicUsize::new(0),
+        notify: tokio::sync::Notify::new(),
+    });
+
+    let pool = DispatchPool::spawn_with_wake(
+        store.clone(),
+        Arc::new(SystemClock),
+        "pool",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig {
+            // A long poll so ONLY the injected wake can drive the drain.
+            poll_interval: std::time::Duration::from_secs(3600),
+            ..Default::default()
+        },
+        resolver,
+        1,
+        wake.clone() as Arc<dyn WakeSignal>,
+    );
+
+    pool.submit(activation("run-1")).await.unwrap();
+
+    assert!(
+        wait_for(|| wake.published.load(Ordering::SeqCst) >= 1).await,
+        "submit published on the injected wake"
+    );
+    assert!(
+        wait_for(|| commit.commit_count() >= 1).await,
+        "the run drained via the injected wake (poll is disabled)"
+    );
 
     pool.shutdown().await;
 }
