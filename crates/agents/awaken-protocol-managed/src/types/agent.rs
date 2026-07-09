@@ -9,10 +9,77 @@
 
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::types::ModelConfig;
+
+/// A client's `model` input: a bare id string or a full `{id, speed?}` config
+/// (the SDK's `string | BetaManagedAgentsModelConfig`). Normalized to the shared
+/// [`ModelConfig`] via [`ModelInput::into_config`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum ModelInput {
+    Id(String),
+    Config(ModelConfig),
+}
+
+impl ModelInput {
+    pub fn into_config(self) -> ModelConfig {
+        match self {
+            ModelInput::Id(id) => ModelConfig::new(id),
+            ModelInput::Config(config) => config,
+        }
+    }
+}
+
+/// `AgentCreateParams` — the `POST /v1/agents` body. The composite fields the SDK
+/// models as unions (`mcp_servers`, `skills`, `tools`, `multiagent`) stay opaque
+/// `Value`s.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AgentCreateParams {
+    pub name: String,
+    pub model: ModelInput,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub system: Option<String>,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, String>,
+    #[serde(default)]
+    pub mcp_servers: Vec<Value>,
+    #[serde(default)]
+    pub skills: Vec<Value>,
+    #[serde(default)]
+    pub tools: Vec<Value>,
+    #[serde(default)]
+    pub multiagent: Option<Value>,
+}
+
+/// `AgentUpdateParams` — a partial update under optimistic concurrency: `version`
+/// must match the agent's current version. Other fields replace when present.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AgentUpdateParams {
+    pub version: u64,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub model: Option<ModelInput>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub system: Option<String>,
+    #[serde(default)]
+    pub metadata: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub mcp_servers: Option<Vec<Value>>,
+    #[serde(default)]
+    pub skills: Option<Vec<Value>>,
+    #[serde(default)]
+    pub tools: Option<Vec<Value>>,
+    #[serde(default)]
+    pub multiagent: Option<Value>,
+}
 
 /// `BetaManagedAgentsAgentReference` — how an agent is *referenced* (by a
 /// deployment, a session): `{ id, type: "agent", version }`. The single typed form
@@ -32,6 +99,17 @@ impl AgentReference {
             id: id.into(),
             object_type: "agent",
             version,
+        }
+    }
+
+    /// Normalize a client's input reference ([`super::session::AgentRef`], a bare id
+    /// or `{id, version?}`) into the wire reference — `version` defaults to 1.
+    pub fn from_input(input: &super::session::AgentRef) -> Self {
+        match input {
+            super::session::AgentRef::Id(id) => Self::new(id, 1),
+            super::session::AgentRef::Obj { id, version } => {
+                Self::new(id, version.unwrap_or(1) as u64)
+            }
         }
     }
 }

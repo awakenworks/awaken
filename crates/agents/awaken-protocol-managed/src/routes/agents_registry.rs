@@ -22,7 +22,7 @@ use axum::{Json, Router};
 use serde_json::{Value, json};
 
 use crate::routes::ManagedJson;
-use crate::types::agent::Agent;
+use crate::types::agent::{Agent, AgentCreateParams, AgentUpdateParams};
 use crate::types::{ErrorResponse, ModelConfig, Page};
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
@@ -158,69 +158,22 @@ fn not_found() -> WireError {
     )
 }
 
-fn bad_request(message: impl Into<String>) -> WireError {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ErrorResponse::new("invalid_request_error", message)),
-    )
-}
-
-/// Normalize the `model` field into the shared [`ModelConfig`]: a bare string
-/// becomes `{ id }`; an object (`{id, speed?}`) is parsed. Anything else is a `400`.
-fn normalize_model(model: &Value) -> Result<ModelConfig, WireError> {
-    match model {
-        Value::String(s) => Ok(ModelConfig::new(s)),
-        Value::Object(_) => serde_json::from_value(model.clone())
-            .map_err(|e| bad_request(format!("invalid model config: {e}"))),
-        _ => Err(bad_request(
-            "model must be a string or a model-config object",
-        )),
-    }
-}
-
-fn value_array(body: &Value, key: &str) -> Vec<Value> {
-    body.get(key)
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
-}
-
-fn value_opt_string(body: &Value, key: &str) -> Option<String> {
-    body.get(key).and_then(Value::as_str).map(str::to_string)
-}
-
-fn value_metadata(body: &Value, key: &str) -> BTreeMap<String, String> {
-    body.get(key)
-        .and_then(Value::as_object)
-        .map(|o| {
-            o.iter()
-                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 async fn create_agent(
     State(state): State<Arc<AgentRegistryState>>,
-    ManagedJson(body): ManagedJson<Value>,
+    ManagedJson(params): ManagedJson<AgentCreateParams>,
 ) -> Result<Json<Agent>, WireError> {
-    let name = value_opt_string(&body, "name").ok_or_else(|| bad_request("name is required"))?;
-    let model = normalize_model(
-        body.get("model")
-            .ok_or_else(|| bad_request("model is required"))?,
-    )?;
     let n = state.seq.fetch_add(1, Ordering::SeqCst);
     let id = format!("agent_{n:016}");
     let mut record = Record {
-        name,
-        description: value_opt_string(&body, "description"),
-        model,
-        system: value_opt_string(&body, "system"),
-        metadata: value_metadata(&body, "metadata"),
-        mcp_servers: value_array(&body, "mcp_servers"),
-        skills: value_array(&body, "skills"),
-        tools: value_array(&body, "tools"),
-        multiagent: body.get("multiagent").filter(|v| !v.is_null()).cloned(),
+        name: params.name,
+        description: params.description,
+        model: params.model.into_config(),
+        system: params.system,
+        metadata: params.metadata,
+        mcp_servers: params.mcp_servers,
+        skills: params.skills,
+        tools: params.tools,
+        multiagent: params.multiagent.filter(|v| !v.is_null()),
         version: 1,
         archived_at: None,
         history: Vec::new(),
@@ -264,54 +217,50 @@ async fn list_agents(State(state): State<Arc<AgentRegistryState>>) -> Json<Page<
 async fn update_agent(
     State(state): State<Arc<AgentRegistryState>>,
     Path(id): Path<String>,
-    ManagedJson(body): ManagedJson<Value>,
+    ManagedJson(params): ManagedJson<AgentUpdateParams>,
 ) -> Result<Json<Agent>, WireError> {
-    let expected = body
-        .get("version")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| bad_request("version is required for an update"))?;
     let mut store = state.inner.lock().unwrap();
     let record = store.get_mut(&id).ok_or_else(not_found)?;
-    if expected != record.version {
+    if params.version != record.version {
         return Err((
             StatusCode::CONFLICT,
             Json(ErrorResponse::new(
                 // The SDK has no `conflict_error`; a 409 carries `invalid_request_error`.
                 "invalid_request_error",
                 format!(
-                    "version mismatch: expected {}, got {expected}",
-                    record.version
+                    "version mismatch: expected {}, got {}",
+                    record.version, params.version
                 ),
             )),
         ));
     }
     // Each field replaces only when present in the body.
-    if let Some(name) = value_opt_string(&body, "name") {
+    if let Some(name) = params.name {
         record.name = name;
     }
-    if let Some(model) = body.get("model") {
-        record.model = normalize_model(model)?;
+    if let Some(model) = params.model {
+        record.model = model.into_config();
     }
-    if body.get("description").is_some() {
-        record.description = value_opt_string(&body, "description");
+    if let Some(description) = params.description {
+        record.description = Some(description);
     }
-    if body.get("system").is_some() {
-        record.system = value_opt_string(&body, "system");
+    if let Some(system) = params.system {
+        record.system = Some(system);
     }
-    if body.get("metadata").is_some() {
-        record.metadata = value_metadata(&body, "metadata");
+    if let Some(metadata) = params.metadata {
+        record.metadata = metadata;
     }
-    if body.get("mcp_servers").is_some() {
-        record.mcp_servers = value_array(&body, "mcp_servers");
+    if let Some(mcp_servers) = params.mcp_servers {
+        record.mcp_servers = mcp_servers;
     }
-    if body.get("skills").is_some() {
-        record.skills = value_array(&body, "skills");
+    if let Some(skills) = params.skills {
+        record.skills = skills;
     }
-    if body.get("tools").is_some() {
-        record.tools = value_array(&body, "tools");
+    if let Some(tools) = params.tools {
+        record.tools = tools;
     }
-    if body.get("multiagent").is_some() {
-        record.multiagent = body.get("multiagent").filter(|v| !v.is_null()).cloned();
+    if let Some(multiagent) = params.multiagent {
+        record.multiagent = Some(multiagent).filter(|v| !v.is_null());
     }
     record.version += 1;
     let projected = record.project(&id);

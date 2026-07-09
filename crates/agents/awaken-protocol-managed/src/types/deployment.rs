@@ -11,10 +11,57 @@
 
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::types::agent::AgentReference;
+use crate::types::session::AgentRef;
+
+/// `DeploymentCreateParams` — the `POST /v1/deployments` body. `agent` is the
+/// client input reference (id string or `{id, version?}`); the composite fields
+/// the SDK models as unions (`initial_events`, `resources`, `schedule`) stay opaque
+/// `Value`s.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeploymentCreateParams {
+    pub agent: AgentRef,
+    pub environment_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, String>,
+    #[serde(default)]
+    pub initial_events: Vec<Value>,
+    #[serde(default)]
+    pub resources: Vec<Value>,
+    #[serde(default)]
+    pub schedule: Option<Value>,
+    #[serde(default)]
+    pub vault_ids: Vec<String>,
+}
+
+/// `DeploymentUpdateParams` — a partial update; every field replaces when present.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeploymentUpdateParams {
+    #[serde(default)]
+    pub agent: Option<AgentRef>,
+    #[serde(default)]
+    pub environment_id: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub metadata: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub initial_events: Option<Vec<Value>>,
+    #[serde(default)]
+    pub resources: Option<Vec<Value>>,
+    #[serde(default)]
+    pub schedule: Option<Value>,
+    #[serde(default)]
+    pub vault_ids: Option<Vec<String>>,
+}
 
 /// `BetaManagedAgentsDeployment` — an agent bound to an environment with initial
 /// events and a schedule.

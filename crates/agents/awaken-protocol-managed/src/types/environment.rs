@@ -10,8 +10,45 @@
 
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+/// `EnvironmentCreateParams` — the `POST /v1/environments` body. `config` is the
+/// `BetaCloudConfig | BetaSelfHostedConfig` union (opaque `Value`); absent defaults
+/// to `{ type: "self_hosted" }`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct EnvironmentCreateParams {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, String>,
+    #[serde(default)]
+    pub config: Option<Value>,
+}
+
+/// `EnvironmentUpdateParams` — a partial update. `name` / `description` / `config`
+/// replace when present; `metadata` is a patch where an entry's `null` value
+/// removes the key.
+#[derive(Debug, Clone, Deserialize)]
+pub struct EnvironmentUpdateParams {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub config: Option<Value>,
+    #[serde(default)]
+    pub metadata: Option<BTreeMap<String, Option<String>>>,
+}
+
+/// `BetaSelfHostedWorkUpdateRequest` — the `POST .../work/:wid` body: a metadata
+/// merge (each present key upserts).
+#[derive(Debug, Clone, Deserialize)]
+pub struct WorkUpdateParams {
+    #[serde(default)]
+    pub metadata: Option<BTreeMap<String, String>>,
+}
 
 /// `BetaEnvironment` — where a self-hosted worker runs sessions.
 #[derive(Debug, Clone, Serialize)]

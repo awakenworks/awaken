@@ -20,7 +20,9 @@ use serde_json::{Value, json};
 
 use crate::routes::ManagedJson;
 use crate::types::agent::AgentReference;
-use crate::types::deployment::{Deployment, DeploymentRun};
+use crate::types::deployment::{
+    Deployment, DeploymentCreateParams, DeploymentRun, DeploymentUpdateParams,
+};
 use crate::types::{ErrorResponse, Page};
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
@@ -134,85 +136,20 @@ fn not_found(what: &str) -> WireError {
     )
 }
 
-fn bad_request(message: impl Into<String>) -> WireError {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ErrorResponse::new("invalid_request_error", message)),
-    )
-}
-
-/// Normalize `agent` into the shared [`AgentReference`]: a bare id string becomes
-/// `{id, type:'agent', version:1}`; an object with an `id` keeps its `version`
-/// (defaulting to 1); anything else is a `400`.
-fn normalize_agent(agent: &Value) -> Result<AgentReference, WireError> {
-    match agent {
-        Value::String(s) => Ok(AgentReference::new(s, 1)),
-        Value::Object(o) => {
-            let id = o
-                .get("id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| bad_request("agent object must carry an id"))?;
-            let version = o.get("version").and_then(Value::as_u64).unwrap_or(1);
-            Ok(AgentReference::new(id, version))
-        }
-        _ => Err(bad_request("agent must be a string id or an agent object")),
-    }
-}
-
-fn value_array(body: &Value, key: &str) -> Vec<Value> {
-    body.get(key)
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
-}
-
-fn value_str_array(body: &Value, key: &str) -> Vec<String> {
-    body.get(key)
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn value_opt_string(body: &Value, key: &str) -> Option<String> {
-    body.get(key).and_then(Value::as_str).map(str::to_string)
-}
-
-fn value_metadata(body: &Value, key: &str) -> BTreeMap<String, String> {
-    body.get(key)
-        .and_then(Value::as_object)
-        .map(|o| {
-            o.iter()
-                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 async fn create_deployment(
     State(state): State<Arc<DeploymentState>>,
-    ManagedJson(body): ManagedJson<Value>,
+    ManagedJson(params): ManagedJson<DeploymentCreateParams>,
 ) -> Result<Json<Deployment>, WireError> {
-    let agent = normalize_agent(
-        body.get("agent")
-            .ok_or_else(|| bad_request("agent is required"))?,
-    )?;
-    let environment_id = value_opt_string(&body, "environment_id")
-        .ok_or_else(|| bad_request("environment_id is required"))?;
-    let name = value_opt_string(&body, "name").ok_or_else(|| bad_request("name is required"))?;
     let record = DeploymentRecord {
-        agent,
-        environment_id,
-        name,
-        description: value_opt_string(&body, "description"),
-        metadata: value_metadata(&body, "metadata"),
-        initial_events: value_array(&body, "initial_events"),
-        resources: value_array(&body, "resources"),
-        schedule: body.get("schedule").filter(|v| !v.is_null()).cloned(),
-        vault_ids: value_str_array(&body, "vault_ids"),
+        agent: AgentReference::from_input(&params.agent),
+        environment_id: params.environment_id,
+        name: params.name,
+        description: params.description,
+        metadata: params.metadata,
+        initial_events: params.initial_events,
+        resources: params.resources,
+        schedule: params.schedule.filter(|v| !v.is_null()),
+        vault_ids: params.vault_ids,
         status: "active",
         paused_reason: None,
         archived_at: None,
@@ -242,36 +179,36 @@ async fn list_deployments(State(state): State<Arc<DeploymentState>>) -> Json<Pag
 async fn update_deployment(
     State(state): State<Arc<DeploymentState>>,
     Path(id): Path<String>,
-    ManagedJson(body): ManagedJson<Value>,
+    ManagedJson(params): ManagedJson<DeploymentUpdateParams>,
 ) -> Result<Json<Deployment>, WireError> {
     let mut store = state.deployments.lock().unwrap();
     let record = store.get_mut(&id).ok_or_else(|| not_found("deployment"))?;
-    if let Some(agent) = body.get("agent") {
-        record.agent = normalize_agent(agent)?;
+    if let Some(agent) = &params.agent {
+        record.agent = AgentReference::from_input(agent);
     }
-    if let Some(env) = value_opt_string(&body, "environment_id") {
+    if let Some(env) = params.environment_id {
         record.environment_id = env;
     }
-    if let Some(name) = value_opt_string(&body, "name") {
+    if let Some(name) = params.name {
         record.name = name;
     }
-    if body.get("description").is_some() {
-        record.description = value_opt_string(&body, "description");
+    if let Some(description) = params.description {
+        record.description = Some(description);
     }
-    if body.get("metadata").is_some() {
-        record.metadata = value_metadata(&body, "metadata");
+    if let Some(metadata) = params.metadata {
+        record.metadata = metadata;
     }
-    if body.get("initial_events").is_some() {
-        record.initial_events = value_array(&body, "initial_events");
+    if let Some(initial_events) = params.initial_events {
+        record.initial_events = initial_events;
     }
-    if body.get("resources").is_some() {
-        record.resources = value_array(&body, "resources");
+    if let Some(resources) = params.resources {
+        record.resources = resources;
     }
-    if body.get("schedule").is_some() {
-        record.schedule = body.get("schedule").filter(|v| !v.is_null()).cloned();
+    if let Some(schedule) = params.schedule {
+        record.schedule = Some(schedule).filter(|v| !v.is_null());
     }
-    if body.get("vault_ids").is_some() {
-        record.vault_ids = value_str_array(&body, "vault_ids");
+    if let Some(vault_ids) = params.vault_ids {
+        record.vault_ids = vault_ids;
     }
     Ok(Json(record.project(&id)))
 }

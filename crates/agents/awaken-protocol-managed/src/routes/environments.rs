@@ -25,7 +25,8 @@ use serde_json::{Value, json};
 
 use crate::routes::ManagedJson;
 use crate::types::environment::{
-    DeletedEnvironment, Environment, Work, WorkHeartbeat, WorkQueueStats,
+    DeletedEnvironment, Environment, EnvironmentCreateParams, EnvironmentUpdateParams, Work,
+    WorkHeartbeat, WorkQueueStats, WorkUpdateParams,
 };
 use crate::types::{ErrorResponse, Page};
 
@@ -190,48 +191,20 @@ fn not_found(what: &str) -> WireError {
     )
 }
 
-fn bad_request(message: impl Into<String>) -> WireError {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ErrorResponse::new("invalid_request_error", message)),
-    )
-}
-
-fn metadata_of(body: &Value) -> BTreeMap<String, String> {
-    body.get("metadata")
-        .and_then(Value::as_object)
-        .map(|o| {
-            o.iter()
-                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 // ---- Environment routes ----------------------------------------------------
 
 async fn create_env(
     State(state): State<Arc<EnvironmentState>>,
-    ManagedJson(body): ManagedJson<Value>,
+    ManagedJson(params): ManagedJson<EnvironmentCreateParams>,
 ) -> Result<Json<Environment>, WireError> {
-    let name = body
-        .get("name")
-        .and_then(Value::as_str)
-        .ok_or_else(|| bad_request("name is required"))?
-        .to_string();
-    let config = body
-        .get("config")
+    let config = params
+        .config
         .filter(|v| !v.is_null())
-        .cloned()
         .unwrap_or_else(|| json!({ "type": "self_hosted" }));
     let record = EnvRecord {
-        name,
-        description: body
-            .get("description")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        metadata: metadata_of(&body),
+        name: params.name,
+        description: params.description.unwrap_or_default(),
+        metadata: params.metadata,
         config,
         // No `scope` on the wire: ownership is credential-implicit (authz enforces
         // the workspace from the credential) and any awaken tenancy is an ingress
@@ -284,29 +257,29 @@ async fn list_envs(State(state): State<Arc<EnvironmentState>>) -> Json<Page<Envi
 async fn update_env(
     State(state): State<Arc<EnvironmentState>>,
     Path(id): Path<String>,
-    ManagedJson(body): ManagedJson<Value>,
+    ManagedJson(params): ManagedJson<EnvironmentUpdateParams>,
 ) -> Result<Json<Environment>, WireError> {
     let mut envs = state.envs.lock().unwrap();
     let record = envs.get_mut(&id).ok_or_else(|| not_found("environment"))?;
-    if let Some(name) = body.get("name").and_then(Value::as_str) {
-        record.name = name.to_string();
+    if let Some(name) = params.name {
+        record.name = name;
     }
-    if let Some(desc) = body.get("description") {
-        record.description = desc.as_str().unwrap_or_default().to_string();
+    if let Some(description) = params.description {
+        record.description = description;
     }
-    if let Some(config) = body.get("config").filter(|v| !v.is_null()) {
-        record.config = config.clone();
+    if let Some(config) = params.config.filter(|v| !v.is_null()) {
+        record.config = config;
     }
-    if let Some(patch) = body.get("metadata").and_then(Value::as_object) {
+    if let Some(patch) = params.metadata {
+        // A `null` value removes the key; a string upserts it.
         for (k, v) in patch {
             match v {
-                Value::Null => {
-                    record.metadata.remove(k);
+                Some(s) => {
+                    record.metadata.insert(k, s);
                 }
-                Value::String(s) => {
-                    record.metadata.insert(k.clone(), s.clone());
+                None => {
+                    record.metadata.remove(&k);
                 }
-                _ => {}
             }
         }
     }
@@ -444,17 +417,13 @@ async fn retrieve_work(
 async fn update_work(
     State(state): State<Arc<EnvironmentState>>,
     Path((id, wid)): Path<(String, String)>,
-    ManagedJson(body): ManagedJson<Value>,
+    ManagedJson(params): ManagedJson<WorkUpdateParams>,
 ) -> Result<Json<Work>, WireError> {
     work_belongs(&state, &id, &wid)?;
     let mut works = state.works.lock().unwrap();
     let work = works.get_mut(&wid).expect("belongs");
-    if let Some(patch) = body.get("metadata").and_then(Value::as_object) {
-        for (k, v) in patch {
-            if let Some(s) = v.as_str() {
-                work.metadata.insert(k.clone(), s.to_string());
-            }
-        }
+    if let Some(patch) = params.metadata {
+        work.metadata.extend(patch);
     }
     Ok(Json(work.project(&wid)))
 }
