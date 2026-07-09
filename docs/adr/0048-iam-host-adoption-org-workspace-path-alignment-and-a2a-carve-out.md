@@ -175,12 +175,46 @@ threads, and stay entirely within the D3 envelope (no A2A, no URL tenancy).
   revs) and promoting the scope tree into `awaken-foundation` — shared-substrate
   mechanics tracked with the cross-repo work.
 
+## Amendment (2026-07-10): Authorization is a cross-cutting aspect — Project fully removed, core is tenancy-agnostic
+
+Two decisions here are **superseded** after the principle was made explicit:
+*authorization/tenancy is a cross-cutting aspect at the edge, and the internal
+core processing logic must be tenancy-agnostic.* A change to the permission model
+must touch only the aspect (ingress + guard/PEP + PDP), never core processing.
+
+- **D5 superseded — Project is fully removed, not frozen.** Tenancy is strictly
+  **Org → Workspace**. Removed across the tree: `awaken-scope`'s `Tier::Project`
+  (+ `project.rs`); `config-resolver`'s `Project`/`ProjectId`/`ProjectAgentConfig`/
+  `ProjectStore`; `admin-config-api`'s `/v1/config/projects` routes + the project
+  schema migrations; `protocol-managed`'s `ProjectScope` + `SessionInit.project_id`;
+  `authz-enforce`'s `request_scope` now always returns `ScopeRef::Workspace` (never
+  `ScopeRef::Project` — the external variant stays, we just never construct it);
+  and the `/projects/{id}` ingress in `server-local` + `standalone`. This
+  supersedes ADR-0042 D6's "workspace + project" skeleton and its Project-addressing
+  Amendment: the skeleton is now **workspace only** (org cloud-only per D4).
+  A session is reachable only at the flat `/v1/sessions`; the workspace is
+  resolved from the key by the edge guard.
+- **D6 superseded — the core session record is tenancy-agnostic.** The S3
+  `workspace_id`/`org_id` columns on `PersistedSession` (and the runtime-host
+  session-store migration v2) are reverted. The core stores no tenancy. The
+  owning workspace still reaches the webhook lifecycle sink, but as an **edge
+  value** passed to `create_session` (`WorkspaceScope`, resolved by the guard),
+  never read back from the core aggregate. A durable session→owner map, if
+  needed, belongs to the aspect layer, not the core.
+- **Decoupled core selection.** `runtime-host`'s per-project MCP selection
+  (`with_mcp(projects)` + `init.project_id → get_project_agent`) is removed; MCP
+  is resolved by agent id (workspace-default), tenancy-agnostic.
+
+Net: the permission-model change (add Org / remove Project) is confined to the
+aspect + edge; the runtime engine, projection, session processing, and MCP
+resolution are untouched by tenancy.
+
 ## References
 
 - [ADR-0042](0042-public-api-tenancy-authz-and-front-door-consistency.md) — the
   envelope this ADR implements and reconciles (D2 key-based tenancy, D3 one
   envelope, D4 full IAM reuse, D6 org cloud-only, the Project-addressing
-  Amendment).
+  Amendment — the latter now superseded by this ADR's 2026-07-10 amendment).
 - [ADR-0043](0043-management-plane-config-credential-model-and-runtime-unaware-secret-seam.md)
   — management plane owns the model; unaffected by the addressing change.
 - `awaken-iam-host` (`HostMode`, `IamGate`, `embed_local`, `auth_layer`) — the

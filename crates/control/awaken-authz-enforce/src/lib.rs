@@ -3,19 +3,18 @@
 //!
 //! It does four things and nothing else: (1) authenticate a presented bearer
 //! credential against an in-memory [`ApiTokenDirectory`], (2) derive the
-//! request's authorization scope from the URL (a `/projects/{id}` prefix anchors
-//! at [`ScopeRef::Project`], a bare request at the token's home
-//! [`ScopeRef::Workspace`]), (3) map the route to an [`ActionKey`], and (4)
-//! authorize via the same default-deny [`PolicySet`] engine every Awaken product
-//! shares. It is in-memory and seeded, so the single-machine standalone needs no
-//! durable IAM store — that (minting HTTP surface, `awaken-iam-server`
-//! persistence, multi-tenant provisioning) is the BuSL authoring half and lives
-//! elsewhere.
+//! request's authorization scope — every request anchors at its
+//! [`ScopeRef::Workspace`] (tenancy is strictly Org → Workspace), (3) map the
+//! route to an [`ActionKey`], and (4) authorize via the same default-deny
+//! [`PolicySet`] engine every Awaken product shares. It is in-memory and seeded,
+//! so the single-machine standalone needs no durable IAM store — that (minting
+//! HTTP surface, `awaken-iam-server` persistence, multi-tenant provisioning) is
+//! the BuSL authoring half and lives elsewhere.
 //!
 //! Scope fencing is free: a token whose `RoleBinding` sits at
-//! `Workspace{ws_local}` cannot reach a `Project{ws_other, …}`, because the scope
-//! graph resolves that project up to `Workspace{ws_other} → Global`, never to
-//! `ws_local`. So an out-of-tenant request is denied even for an `admin` token.
+//! `Workspace{ws_local}` cannot reach `Workspace{ws_other}`, because the scope
+//! graph resolves that up through `Global`, never to `ws_local`. So an
+//! out-of-tenant request is denied even for an `admin` token.
 
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -26,8 +25,8 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
 use awaken_iam_contract::{
-    ActionKey, AuthorizationDecision, AuthorizationRequest, PrincipalRef, ProjectId, ScopeRef,
-    Timestamp, WorkspaceId,
+    ActionKey, AuthorizationDecision, AuthorizationRequest, PrincipalRef, ScopeRef, Timestamp,
+    WorkspaceId,
 };
 use awaken_iam_core::{
     ApiTokenDirectory, ApiTokenMinter, Effect, Grant, GrantId, GrantSubject, IamError,
@@ -158,20 +157,13 @@ impl EnforceEngine {
     }
 }
 
-/// Derive the authorization scope from a request's tenancy: a `/projects/{id}`
-/// prefix anchors at [`ScopeRef::Project`] (fenced to `workspace_id`, which is
-/// the *project's* workspace); a bare request anchors at the token's home
-/// [`ScopeRef::Workspace`].
+/// Derive the authorization scope from a request's tenancy. Tenancy is strictly
+/// Org → Workspace: every request anchors at its [`ScopeRef::Workspace`] (the
+/// token's home workspace). Project is not a tenancy tier.
 #[must_use]
-pub fn request_scope(workspace_id: &str, project_id: Option<&str>) -> ScopeRef {
-    match project_id {
-        Some(project_id) => ScopeRef::Project {
-            workspace_id: WorkspaceId(workspace_id.to_string()),
-            project_id: ProjectId(project_id.to_string()),
-        },
-        None => ScopeRef::Workspace {
-            workspace_id: WorkspaceId(workspace_id.to_string()),
-        },
+pub fn request_scope(workspace_id: &str) -> ScopeRef {
+    ScopeRef::Workspace {
+        workspace_id: WorkspaceId(workspace_id.to_string()),
     }
 }
 
@@ -187,13 +179,11 @@ pub fn session_action(method: &str) -> ActionKey {
 }
 
 /// The tenancy the ingress resolved for a request, stamped into the request
-/// extensions before the [`guard`] runs. Present for a `/projects/{id}` request
-/// (carrying the *project's* workspace, so the fence is correct); absent for a
-/// bare request, where the guard falls back to the token's home workspace.
+/// extensions before the [`guard`] runs. Absent for a bare request, where the
+/// guard falls back to the token's home workspace.
 #[derive(Debug, Clone)]
 pub struct RequestTenancy {
     pub workspace_id: String,
-    pub project_id: Option<String>,
 }
 
 /// The session-axis guard: authenticate the bearer, derive the scope from the
@@ -212,12 +202,11 @@ pub async fn guard(
     let Ok((principal, token_workspace)) = engine.authenticate(&presented) else {
         return reject(StatusCode::UNAUTHORIZED, "invalid credential");
     };
-    let tenancy = request.extensions().get::<RequestTenancy>().cloned();
-    let (workspace_id, project_id) = match tenancy {
-        Some(t) => (t.workspace_id, t.project_id),
-        None => (token_workspace.0, None),
+    let workspace_id = match request.extensions().get::<RequestTenancy>().cloned() {
+        Some(t) => t.workspace_id,
+        None => token_workspace.0,
     };
-    let scope = request_scope(&workspace_id, project_id.as_deref());
+    let scope = request_scope(&workspace_id);
     let action = session_action(request.method().as_str());
     match engine.authorize(principal, &action, scope) {
         AuthorizationDecision::Allow => next.run(request).await,
@@ -288,7 +277,6 @@ mod tests {
     use super::*;
 
     const WS: &str = "wrkspc_local";
-    const PROJ: &str = "proj_local";
 
     fn engine_with_admin() -> (EnforceEngine, String, PrincipalRef) {
         let engine = EnforceEngine::seeded();
@@ -327,42 +315,32 @@ mod tests {
     }
 
     #[test]
-    fn admin_is_authorized_at_its_own_project_and_workspace() {
+    fn admin_is_authorized_at_its_workspace() {
         let (engine, _secret, principal) = engine_with_admin();
-        // Project under the token's workspace: resolves up to Workspace{WS}.
-        let at_project = engine.authorize(
+        let write = engine.authorize(
             principal.clone(),
             &session_action("POST"),
-            request_scope(WS, Some(PROJ)),
+            request_scope(WS),
         );
-        assert_eq!(at_project, AuthorizationDecision::Allow);
-        // Bare (workspace-scoped) request.
-        let at_workspace =
-            engine.authorize(principal, &session_action("GET"), request_scope(WS, None));
-        assert_eq!(at_workspace, AuthorizationDecision::Allow);
+        assert_eq!(write, AuthorizationDecision::Allow);
+        let read = engine.authorize(principal, &session_action("GET"), request_scope(WS));
+        assert_eq!(read, AuthorizationDecision::Allow);
     }
 
     #[test]
-    fn a_project_in_another_workspace_is_denied_even_for_admin() {
+    fn another_workspace_is_denied_even_for_admin() {
         let (engine, _secret, principal) = engine_with_admin();
         let cross = engine.authorize(
             principal,
             &session_action("POST"),
-            request_scope("wrkspc_other", Some("proj_x")),
+            request_scope("wrkspc_other"),
         );
         assert_eq!(cross, AuthorizationDecision::Deny, "the scope fence holds");
     }
 
     #[test]
-    fn request_scope_distinguishes_project_from_bare() {
-        assert!(matches!(
-            request_scope(WS, Some(PROJ)),
-            ScopeRef::Project { .. }
-        ));
-        assert!(matches!(
-            request_scope(WS, None),
-            ScopeRef::Workspace { .. }
-        ));
+    fn request_scope_anchors_at_the_workspace() {
+        assert!(matches!(request_scope(WS), ScopeRef::Workspace { .. }));
     }
 
     #[test]
@@ -444,11 +422,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn guard_allows_a_project_in_the_tokens_workspace() {
+    async fn guard_allows_the_tokens_workspace() {
         let (engine, secret) = admin_engine();
         let tenancy = RequestTenancy {
             workspace_id: WS.into(),
-            project_id: Some(PROJ.into()),
         };
         assert_eq!(
             call(engine, Method::POST, Some(&secret), Some(tenancy)).await,
@@ -457,11 +434,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn guard_forbids_a_project_in_another_workspace() {
+    async fn guard_forbids_another_workspace() {
         let (engine, secret) = admin_engine();
         let tenancy = RequestTenancy {
             workspace_id: "wrkspc_other".into(),
-            project_id: Some("proj_x".into()),
         };
         assert_eq!(
             call(engine, Method::POST, Some(&secret), Some(tenancy)).await,

@@ -20,4 +20,4 @@ pub mod vaults;
 // The session surface defines the shared error-envelope conventions; re-export the
 // plumbing so sibling resource routers answer bad bodies and domain errors alike.
 pub(crate) use sessions::{ManagedJson, error_response};
-pub use sessions::{ProjectScope, WorkspaceScope, router};
+pub use sessions::{WorkspaceScope, router};

@@ -14,10 +14,9 @@ use std::sync::Arc;
 use awaken_agent_contract::RedactedString;
 use awaken_api_contract::{ApiError, PROBLEM_JSON_CONTENT_TYPE, REQUEST_ID_HEADER};
 use awaken_config_resolver::{
-    AgentMcpConfig, AgentResourceConfig, InferenceProfile, InferenceProfileStore, InvalidProjectId,
-    McpServerDef, McpServerId, McpStore, Project, ProjectAgentConfig, ProjectId, ProjectStore,
-    ResolveError, ResolvedInference, ResourceStore, SourceLookup, resolve_inference,
-    resolve_mcp_servers, resolve_profile,
+    AgentMcpConfig, AgentResourceConfig, InferenceProfile, InferenceProfileStore, McpServerDef,
+    McpServerId, McpStore, ResolveError, ResolvedInference, ResourceStore, SourceLookup,
+    resolve_inference, resolve_mcp_servers, resolve_profile,
 };
 use awaken_credential_vault::repo::{CredentialRepo, enter_credential};
 use awaken_credential_vault::{
@@ -45,10 +44,6 @@ pub struct AdminState {
     /// Authored [`McpServerDef`]s + per-agent [`AgentMcpConfig`] bindings
     /// (ADR-0043 Phase 3; the resolver materializes these at run bind time).
     pub mcp: Arc<dyn McpStore>,
-    /// Authored [`Project`]s + per-(project, agent) [`ProjectAgentConfig`]
-    /// consumption bindings (a project SELECTS from workspace supply; the
-    /// session ingress consults these when a run arrives via `/projects/{id}`).
-    pub projects: Arc<dyn ProjectStore>,
     /// Per-agent [`AgentResourceConfig`] bindings (ADR-0038): which resources an
     /// agent mounts. Rendered into the agent's system prompt at compile (A3a) and
     /// realized into the sandbox at run bind time.
@@ -123,12 +118,6 @@ pub fn admin_router(state: AdminState) -> Router {
         .route(
             "/v1/config/mcp-servers/:id",
             put(put_mcp_server).get(get_mcp_server),
-        )
-        .route("/v1/config/projects", get(list_projects))
-        .route("/v1/config/projects/:id", put(put_project).get(get_project))
-        .route(
-            "/v1/config/projects/:project_id/agents/:agent_id/mcp",
-            put(put_project_agent_mcp).get(get_project_agent_mcp),
         )
         .route(
             "/v1/config/agents/:agent_id/mcp",
@@ -674,113 +663,6 @@ async fn resolve_agent_mcp(
                 credential_present: s.credential.is_some(),
             })
             .collect(),
-    ))
-}
-
-/// Author a project. The path id is authoritative and doubles as the ingress
-/// address segment, so it must be a DNS-safe lowercase slug (the shared tenancy
-/// rule, [`ProjectId::parse`]); fail closed on anything else.
-async fn put_project(
-    State(state): State<AdminState>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-    Json(mut project): Json<Project>,
-) -> Result<Json<Project>, Problem> {
-    let rid = req_id(&headers);
-    let project_id = ProjectId::parse(id).map_err(|InvalidProjectId(id)| {
-        Problem(ApiError::new(
-            422,
-            "invalid_project_id",
-            "Invalid project id",
-            format!(
-                "project id `{id}` must be a DNS-safe lowercase slug ([a-z0-9-], 1-50 chars, no leading/trailing `-`)"
-            ),
-            &rid,
-        ))
-    })?;
-    if project.workspace_id.is_empty() {
-        return Err(Problem(ApiError::new(
-            422,
-            "invalid_project",
-            "Invalid project",
-            "workspace_id must not be empty".to_string(),
-            &rid,
-        )));
-    }
-    project.id = project_id;
-    state.projects.put_project(project.clone());
-    Ok(Json(project))
-}
-
-async fn get_project(
-    State(state): State<AdminState>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-) -> Result<Json<Project>, Problem> {
-    state
-        .projects
-        .get_project(&id)
-        .map(Json)
-        .ok_or_else(|| project_missing(&id, &req_id(&headers)))
-}
-
-async fn list_projects(State(state): State<AdminState>) -> Json<Vec<Project>> {
-    Json(state.projects.list_projects())
-}
-
-/// Bind which MCP servers an agent uses WITHIN one project. Path ids are
-/// authoritative; the project and every referenced server must already be
-/// authored (fail-closed — a project binding can only select existing supply).
-async fn put_project_agent_mcp(
-    State(state): State<AdminState>,
-    Path((project_id, agent_id)): Path<(String, String)>,
-    headers: HeaderMap,
-    Json(mut config): Json<ProjectAgentConfig>,
-) -> Result<Json<ProjectAgentConfig>, Problem> {
-    let rid = req_id(&headers);
-    if state.projects.get_project(&project_id).is_none() {
-        return Err(project_missing(&project_id, &rid));
-    }
-    for server_id in &config.mcp_server_ids {
-        if state.mcp.get_server(&server_id.0).is_none() {
-            return Err(mcp_server_missing(&server_id.0, &rid));
-        }
-    }
-    config.project_id = ProjectId(project_id);
-    config.agent_id = agent_id;
-    state.projects.put_project_agent(config.clone());
-    Ok(Json(config))
-}
-
-async fn get_project_agent_mcp(
-    State(state): State<AdminState>,
-    Path((project_id, agent_id)): Path<(String, String)>,
-    headers: HeaderMap,
-) -> Result<Json<ProjectAgentConfig>, Problem> {
-    state
-        .projects
-        .get_project_agent(&project_id, &agent_id)
-        .map(Json)
-        .ok_or_else(|| project_agent_mcp_missing(&project_id, &agent_id, &req_id(&headers)))
-}
-
-fn project_missing(id: &str, rid: &str) -> Problem {
-    Problem(ApiError::new(
-        404,
-        "not_found",
-        "Project not found",
-        format!("no project `{id}`"),
-        rid,
-    ))
-}
-
-fn project_agent_mcp_missing(project_id: &str, agent_id: &str, rid: &str) -> Problem {
-    Problem(ApiError::new(
-        404,
-        "not_found",
-        "Project agent MCP config not found",
-        format!("no mcp config for agent `{agent_id}` in project `{project_id}`"),
-        rid,
     ))
 }
 

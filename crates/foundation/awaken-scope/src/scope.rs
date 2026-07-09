@@ -1,4 +1,4 @@
-//! The scope tree — Org, Workspace, Project — as plain persistent entities.
+//! The scope tree — Org ⊃ Workspace — as plain persistent entities.
 //!
 //! These are tenancy/addressing config, not aggregates whose history or ordering
 //! is load-bearing, so they are **not** fact-sourced: each is a plain row read
@@ -35,12 +35,13 @@ pub enum Status {
     Archived,
 }
 
-/// The three tiers of the scope tree (ADR-0006).
+/// The two tiers of the scope tree: `org` ⊃ `workspace`. Tenancy is strictly
+/// Org → Workspace; there is no Project tier (authorization is a cross-cutting
+/// aspect at the edge, and Project addressing was removed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Tier {
     Org,
     Workspace,
-    Project,
 }
 
 impl Tier {
@@ -49,7 +50,6 @@ impl Tier {
         match self {
             Tier::Org => None,
             Tier::Workspace => Some(Tier::Org),
-            Tier::Project => Some(Tier::Workspace),
         }
     }
 
@@ -58,7 +58,6 @@ impl Tier {
         match self {
             Tier::Org => "org",
             Tier::Workspace => "workspace",
-            Tier::Project => "project",
         }
     }
 }
