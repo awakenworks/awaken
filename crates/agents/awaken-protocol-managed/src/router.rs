@@ -15,11 +15,11 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use tokio_stream::Stream;
 
+use crate::state::{LiveInboxError, ManagedState, RunErrorKind, StateError};
 use crate::types::{
     CreateSessionRequest, ErrorResponse, ListEventsResponse, SendEventsRequest, SendEventsResponse,
     Session,
 };
-use crate::state::{LiveInboxError, ManagedState, RunErrorKind, StateError};
 
 /// A JSON body extractor scoped to the Managed Agents routes. On a decode failure
 /// (malformed JSON, missing/mistyped field, wrong content-type, or an unknown

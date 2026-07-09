@@ -199,6 +199,16 @@ pub fn build_compaction_router() -> Router {
     mount(Arc::new(host))
 }
 
+/// A router whose model fails a turn on the `BOOM` trigger (the session-error
+/// e2e): the failed turn surfaces an internal `RunError` (HTTP `api_error`) and
+/// commits a `session.error` event, while other turns echo — proving the session
+/// stays usable after a failure. `AWAKEN_MODEL_MODE=error`.
+pub fn build_error_router() -> Router {
+    let (model, model_ref) = scenario_model(Arc::new(crate::models::ErrorModel), "error");
+    let host = SharedHost::new(model, model_ref);
+    mount(Arc::new(host))
+}
+
 /// A fake ACP agent speaking the OFFICIAL JSON-RPC 2.0 wire (shell builtins only,
 /// so it survives `env_clear`): answer `initialize` (id 1) and `session/new`
 /// (id 2), then on `session/prompt` (id 3) stream one `session/update`

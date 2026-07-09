@@ -319,6 +319,46 @@ pub enum StopReason {
     RetriesExhausted,
 }
 
+/// What a client should do next in response to a `session.error` — a tagged
+/// object (the SDK's `BetaManagedAgentsRetryStatus` union), never a bare string.
+/// Only `Exhausted` is emitted today (the runtime surfaces a failed turn without
+/// classifying it as retryable-`Retrying` or session-ending-`Terminal`); those
+/// variants join when the runtime distinguishes them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RetryStatus {
+    Exhausted,
+}
+
+/// The `error` object of a `session.error` event. We only emit the fallback
+/// `unknown_error` variant (`BetaManagedAgentsUnknownError`): a human-readable
+/// `message` plus the `retry_status` the client keys recovery on. The richer
+/// typed variants (model-overloaded, MCP-auth, billing, …) need failure
+/// classification the neutral runtime does not yet surface, so the SDK's
+/// documented fallback is the honest projection.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionError {
+    /// Always `"unknown_error"` — the SDK's catch-all error type.
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    pub message: String,
+    pub retry_status: RetryStatus,
+}
+
+impl SessionError {
+    /// An unknown error whose retry budget is exhausted: the runtime tried and gave
+    /// up, surfacing the failure to the client, but the session stays usable (the
+    /// next turn may still succeed). This is what an internal `RunError` projects
+    /// to — we don't force-terminate the session on one failed turn.
+    pub fn exhausted(message: impl Into<String>) -> Self {
+        Self {
+            kind: "unknown_error",
+            message: message.into(),
+            retry_status: RetryStatus::Exhausted,
+        }
+    }
+}
+
 /// The payload of an outbound event (its `type` plus kind-specific fields).
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
@@ -360,6 +400,12 @@ pub enum OutboundKind {
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
     },
+    /// A problem occurred during session execution (`session.error`). Carries the
+    /// SDK error object; a `retry_status: terminal` error means the run failed
+    /// unrecoverably. Committed to the event log so a streaming/listing client
+    /// observes the failure, not just the POST caller who gets the HTTP envelope.
+    #[serde(rename = "session.error")]
+    SessionError { error: SessionError },
     #[serde(rename = "session.status_running")]
     SessionStatusRunning {},
     #[serde(rename = "session.status_idle")]
@@ -453,6 +499,7 @@ impl OutboundKind {
             OutboundKind::AgentCustomToolUse { .. } => "agent.custom_tool_use",
             OutboundKind::AgentMcpToolUse { .. } => "agent.mcp_tool_use",
             OutboundKind::AgentMcpToolResult { .. } => "agent.mcp_tool_result",
+            OutboundKind::SessionError { .. } => "session.error",
             OutboundKind::SessionStatusRunning {} => "session.status_running",
             OutboundKind::SessionStatusIdle { .. } => "session.status_idle",
             OutboundKind::SessionStatusTerminated {} => "session.status_terminated",

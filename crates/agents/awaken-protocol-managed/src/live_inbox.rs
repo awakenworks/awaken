@@ -20,9 +20,9 @@ use axum::{Json, Router};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 
-use crate::types::ErrorResponse;
-use crate::router::{error_response, ManagedJson};
+use crate::router::{ManagedJson, error_response};
 use crate::state::{LiveInboxSnapshot, ManagedState};
+use crate::types::ErrorResponse;
 
 /// Build the live-inbox router. Merged into the managed router at the same host,
 /// but a distinct protocol: its own routes, bodies, and error mapping.

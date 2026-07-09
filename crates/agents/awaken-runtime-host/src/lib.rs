@@ -51,7 +51,7 @@ use awaken_protocol_managed::types::StopReason;
 use awaken_protocol_managed::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, OutcomeIteration, OutcomeReport, Pending, RunError, SessionRuntime,
-    TurnOutcome,
+    TurnFailure, TurnOutcome,
 };
 use awaken_protocol_transport::{
     DriverError, Pending as PortPending, ProtocolRuntime, Resume as PortResume, StepOutcome,
@@ -135,7 +135,10 @@ fn phase_to_stop(phase: &Phase) -> StopReason {
         Phase::Waiting => StopReason::RequiresAction {
             event_ids: Vec::new(),
         },
-        Phase::Ended(EndCause::MaxSteps) => StopReason::RetriesExhausted,
+        // A step ceiling or a terminal fault both mean the run gave up rather than
+        // ending naturally — `retries_exhausted` (the fault also projects a
+        // `session.error`; the idle carries the exhausted stop reason).
+        Phase::Ended(EndCause::MaxSteps | EndCause::Error(_)) => StopReason::RetriesExhausted,
         _ => StopReason::EndTurn,
     }
 }
@@ -150,11 +153,21 @@ fn to_pending(pending: Option<PendingTool>) -> Option<Pending> {
 }
 
 fn to_turn_outcome(result: TurnResult) -> TurnOutcome {
+    // Carry a terminal fault through so the adapter projects `session.error`; the
+    // neutral `Failure` owns the classification (code + message), not a string.
+    let failure = match &result.phase {
+        Phase::Ended(EndCause::Error(fault)) => Some(TurnFailure {
+            code: fault.code().to_string(),
+            message: fault.message(),
+        }),
+        _ => None,
+    };
     TurnOutcome {
         stop: phase_to_stop(&result.phase),
         messages: result.new_messages,
         pending: to_pending(result.pending),
         compacted: result.compacted,
+        failure,
     }
 }
 

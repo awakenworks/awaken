@@ -19,9 +19,9 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::types::ErrorResponse;
 use crate::pagination::Page;
 use crate::router::ManagedJson;
+use crate::types::ErrorResponse;
 
 /// Deterministic timestamps, matching the vault surface's convention.
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
