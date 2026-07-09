@@ -8,6 +8,7 @@ pub mod control;
 pub mod execution;
 pub mod live_inbox;
 pub mod llm;
+pub mod model_access;
 pub mod permission;
 pub mod plugin;
 pub mod plugin_config;
