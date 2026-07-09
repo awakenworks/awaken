@@ -18,10 +18,11 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::store::run_store::RunStore;
+use awaken_agent_contract::agent::run::Phase;
 use awaken_run_ingress::{
-    DEFAULT_LEASE_MS, DispatchPool, DispatchQueue, DispatchServiceConfig, DispatchWorker, Error,
-    Inbox, ManualClock, MemoryDispatchStore, PendingInput, RunExecutionRequest, SystemClock,
-    WorkerResolver,
+    CompletionSink, DEFAULT_LEASE_MS, DispatchPool, DispatchQueue, DispatchServiceConfig,
+    DispatchWorker, Error, Inbox, ManualClock, MemoryDispatchStore, PendingInput,
+    RunExecutionRequest, SystemClock, WorkerResolver,
 };
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
@@ -109,6 +110,64 @@ async fn routing_drives_each_run_on_its_own_threads_runtime() {
     assert!(RunStore::get(&*commit_a, &RunId("run-b".into())).is_none());
     assert!(RunStore::get(&*commit_b, &RunId("run-b".into())).is_some());
     assert!(RunStore::get(&*commit_b, &RunId("run-a".into())).is_none());
+
+    pool.shutdown().await;
+}
+
+/// Event-driven completion: the pool signals a `CompletionSink` the instant it
+/// settles a run — the mechanism that lets a foreground submitter wait by event,
+/// not by polling committed truth.
+#[tokio::test]
+async fn pool_signals_completion_sink_on_settle() {
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecordingSink {
+        settled: Mutex<Vec<(String, Phase)>>,
+    }
+    impl CompletionSink for RecordingSink {
+        fn settled(&self, run_id: &RunId, phase: &Phase) {
+            self.settled
+                .lock()
+                .unwrap()
+                .push((run_id.0.clone(), phase.clone()));
+        }
+    }
+
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = worker_over(text_runtime(), store.clone(), commit.clone());
+    let resolver = Arc::new(MapResolver {
+        workers: HashMap::from([(harness::THREAD.to_string(), worker)]),
+    });
+    let sink = Arc::new(RecordingSink::default());
+
+    let pool = DispatchPool::spawn_with_completion(
+        store.clone(),
+        Arc::new(SystemClock),
+        "pool",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig::default(),
+        resolver,
+        1,
+        sink.clone() as Arc<dyn CompletionSink>,
+    );
+
+    pool.submit(activation("run-1")).await.unwrap();
+
+    // The sink is notified with the run and its settled (Ended) phase.
+    assert!(
+        wait_for(|| !sink.settled.lock().unwrap().is_empty()).await,
+        "the pool signalled completion"
+    );
+    let recorded = sink.settled.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].0, "run-1");
+    assert!(
+        matches!(recorded[0].1, Phase::Ended(_)),
+        "signalled the settled Ended phase, got {:?}",
+        recorded[0].1
+    );
 
     pool.shutdown().await;
 }

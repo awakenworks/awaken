@@ -25,8 +25,9 @@ use awaken_ext_goal::{DelegateGrader, GoalPlugin, GoalSpec, Grader, KeywordGrade
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
 use awaken_protocol_a2a::Transport;
 use awaken_run_ingress::{
-    AnyDispatchStore, DEFAULT_LEASE_MS, DispatchPool, DispatchQueue, DispatchServiceConfig,
-    DurableRunIngress, RunExecutionRequest, SubmitOptions, SystemClock, WorkerResolver,
+    AnyDispatchStore, CompletionSink, DEFAULT_LEASE_MS, DispatchPool, DispatchQueue,
+    DispatchServiceConfig, DurableRunIngress, RunExecutionRequest, SubmitOptions, SystemClock,
+    WorkerResolver,
 };
 use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamCheckpointStore};
 use awaken_runtime::{DirectRunIngress, RunIngress, Runtime};
@@ -375,6 +376,10 @@ pub struct SharedHost {
     /// its thread. Held here so background submit / cross-thread relay nudge it and
     /// so it lives for the process's lifetime.
     pub(crate) dispatch_pool: std::sync::OnceLock<Arc<DispatchPool<AnyDispatchStore>>>,
+    /// Wakes a foreground durable submitter the instant the pool settles its run
+    /// (event-driven completion), so the durable foreground path never pays a poll
+    /// interval. Injected into the pool as its `CompletionSink`.
+    pub(crate) completion: Arc<CompletionRegistry>,
     /// When set (ADR-0044), every run's tool calls are routed through this remote
     /// hand instead of the in-process registry. The host owns no placement policy:
     /// a caller connects a hand and injects the executor via [`with_remote_hand`].
@@ -437,6 +442,7 @@ impl SharedHost {
             memory_stores,
             gate_override: None,
             dispatch_pool: std::sync::OnceLock::new(),
+            completion: Arc::new(CompletionRegistry::default()),
             remote_hand: None,
             tool_executor_provider: None,
         }
@@ -843,7 +849,7 @@ impl SharedHost {
         let concurrency = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4);
-        let pool = DispatchPool::spawn(
+        let pool = DispatchPool::spawn_with_completion(
             store,
             Arc::new(SystemClock),
             crate::dispatch_backend::dispatch_owner(),
@@ -851,6 +857,7 @@ impl SharedHost {
             config,
             resolver,
             concurrency,
+            self.completion.clone() as Arc<dyn CompletionSink>,
         );
         let _ = self.dispatch_pool.set(Arc::new(pool));
     }
@@ -870,9 +877,9 @@ impl SharedHost {
     /// Submit a durable run and wait for the pool to drive it to a settled phase.
     /// Under the shared queue a session's own worker must not claim (it would grab
     /// foreign threads' runs), so the foreground durable path enqueues, nudges the
-    /// pool, and observes completion through committed truth — the pool drives it on
-    /// this very session's worker. `supersede` marks the thread's prior pending work
-    /// superseded first (ADR-0022).
+    /// pool, and waits for the pool to signal completion — **by event**, not by
+    /// polling committed truth, so it pays no poll-interval latency. `supersede`
+    /// marks the thread's prior pending work superseded first (ADR-0022).
     pub(crate) async fn submit_durable_foreground(
         &self,
         ctx: &Arc<SessionCtx>,
@@ -880,6 +887,9 @@ impl SharedHost {
         supersede: bool,
     ) -> Result<awaken_agent_contract::agent::run::Phase, HostError> {
         let run_id = activation.run_id.clone();
+        // Register for the settle event BEFORE enqueue, so the pool cannot drive and
+        // settle the run before this caller is listening (no lost wakeup).
+        let settled = self.completion.register(&run_id);
         let pool = self.dispatch_pool_or_err()?;
         // Enqueue only — never drive here; the pool is the sole claimer. The common
         // path goes through `pool.submit` (which stamps the trace); a superseding
@@ -908,32 +918,47 @@ impl SharedHost {
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?;
         }
-        self.await_run_settled(ctx, &run_id).await
+        self.await_settled_event(ctx, &run_id, settled).await
     }
 
-    /// Poll committed truth until the pool has driven `run_id` to a settled phase
-    /// (`Ended` or `Waiting`), the durable analogue of an inline drive returning.
-    async fn await_run_settled(
+    /// Wait for the pool's settle signal for `run_id` (sub-millisecond wakeup), with
+    /// a bounded timeout after which a single committed-truth read is the safety net
+    /// (in case the pool died mid-drive). The event path replaces the old poll loop,
+    /// removing the poll-interval floor from every durable foreground turn.
+    async fn await_settled_event(
         &self,
         ctx: &Arc<SessionCtx>,
         run_id: &RunId,
-    ) -> Result<awaken_agent_contract::agent::run::Phase, HostError> {
-        use awaken_agent_contract::agent::run::Phase;
-        use awaken_agent_contract::store::run_store::RunStore;
-        // ~60s at 10ms — generous enough for a multi-step run's inference, bounded so
-        // a stuck run surfaces as an error rather than hanging the request forever.
-        for _ in 0..6_000 {
-            if let Some(record) = RunStore::get(&*ctx.commit, run_id) {
-                match record.phase {
-                    Phase::Ended(_) | Phase::Waiting => return Ok(record.phase),
-                    Phase::Running => {}
-                }
+        settled: tokio::sync::oneshot::Receiver<Phase>,
+    ) -> Result<Phase, HostError> {
+        // ~60s ceiling — generous for a multi-step run's inference, bounded so a
+        // stuck run surfaces as an error rather than hanging the request forever.
+        match tokio::time::timeout(std::time::Duration::from_secs(60), settled).await {
+            // The pool signalled the settled phase the instant it settled.
+            Ok(Ok(phase)) => Ok(phase),
+            // Sender dropped without sending (pool died) or the wait timed out: fall
+            // back to one committed-truth read, else surface a hard error.
+            Ok(Err(_)) | Err(_) => {
+                self.completion.cancel(run_id);
+                self.read_settled_phase(ctx, run_id).ok_or_else(|| {
+                    HostError::internal(
+                        "durable run did not settle: the dispatch pool never drove it to completion",
+                    )
+                })
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        Err(HostError::internal(
-            "durable run did not settle: the dispatch pool never drove it to completion",
-        ))
+    }
+
+    /// One committed-truth read: the run's phase if it has settled (`Ended` or
+    /// `Waiting`), else `None`. The fallback path for `await_settled_event`.
+    fn read_settled_phase(&self, ctx: &Arc<SessionCtx>, run_id: &RunId) -> Option<Phase> {
+        use awaken_agent_contract::store::run_store::RunStore;
+        match RunStore::get(&*ctx.commit, run_id) {
+            Some(record) if matches!(record.phase, Phase::Ended(_) | Phase::Waiting) => {
+                Some(record.phase)
+            }
+            _ => None,
+        }
     }
 
     pub(crate) async fn ctx_for(
@@ -1764,6 +1789,51 @@ fn pending_from_ticket(
         input: tool.arguments,
         client_executed,
     })
+}
+
+/// Wakes a foreground durable submitter the instant the pool settles its run, so
+/// the durable foreground path waits by **event** rather than polling committed
+/// truth — removing the poll-interval latency floor. Keyed by run id; a run with no
+/// registered waiter (a fire-and-forget background submit) settles as a no-op.
+#[derive(Default)]
+pub(crate) struct CompletionRegistry {
+    waiters: std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<Phase>>>,
+}
+
+impl CompletionRegistry {
+    /// Register interest in `run_id` BEFORE it is enqueued, so the pool cannot
+    /// settle it before this caller is listening (no lost wakeup). The receiver
+    /// resolves with the settled phase.
+    fn register(&self, run_id: &RunId) -> tokio::sync::oneshot::Receiver<Phase> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.waiters
+            .lock()
+            .expect("completion registry poisoned")
+            .insert(run_id.0.clone(), tx);
+        rx
+    }
+
+    /// Drop a waiter (e.g. after a timeout fallback) so its slot does not leak.
+    fn cancel(&self, run_id: &RunId) {
+        self.waiters
+            .lock()
+            .expect("completion registry poisoned")
+            .remove(&run_id.0);
+    }
+}
+
+impl CompletionSink for CompletionRegistry {
+    fn settled(&self, run_id: &RunId, phase: &Phase) {
+        if let Some(tx) = self
+            .waiters
+            .lock()
+            .expect("completion registry poisoned")
+            .remove(&run_id.0)
+        {
+            // The receiver may have already gone (timed out) — a dropped send is fine.
+            let _ = tx.send(phase.clone());
+        }
+    }
 }
 
 /// Routes a claimed run to the worker that owns its thread, opening (or reusing)

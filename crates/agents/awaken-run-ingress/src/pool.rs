@@ -22,6 +22,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::run::{Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -48,6 +49,14 @@ use crate::worker::DispatchWorker;
 pub trait WorkerResolver<S>: Send + Sync {
     /// The worker whose runtime owns `thread_id`, opening the session if needed.
     async fn worker_for(&self, thread_id: &ThreadId) -> Result<Arc<DispatchWorker<S>>, Error>;
+}
+
+/// Notified the instant the pool settles a run, so a foreground submitter can await
+/// its own run's completion by **event** rather than polling committed truth —
+/// removing the poll-interval latency floor from the durable foreground path.
+pub trait CompletionSink: Send + Sync {
+    /// The pool drove `run_id` to a settled `phase` (`Ended` or `Waiting`).
+    fn settled(&self, run_id: &RunId, phase: &Phase);
 }
 
 /// A running pool of drain tasks over one shared dispatch queue.
@@ -97,6 +106,49 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
         concurrency: usize,
         wake: Arc<dyn WakeSignal>,
     ) -> Self {
+        Self::spawn_inner(
+            store, clock, owner, lease_ms, config, resolver, concurrency, wake, None,
+        )
+    }
+
+    /// Spawn the pool with a [`CompletionSink`] notified the instant each run
+    /// settles, so a foreground submitter waits for its run by event, not by poll.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_with_completion(
+        store: Arc<S>,
+        clock: Arc<dyn Clock>,
+        owner: impl Into<String>,
+        lease_ms: u64,
+        config: DispatchServiceConfig,
+        resolver: Arc<dyn WorkerResolver<S>>,
+        concurrency: usize,
+        completion: Arc<dyn CompletionSink>,
+    ) -> Self {
+        Self::spawn_inner(
+            store,
+            clock,
+            owner,
+            lease_ms,
+            config,
+            resolver,
+            concurrency,
+            Arc::new(LocalWakeSignal::new()),
+            Some(completion),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_inner(
+        store: Arc<S>,
+        clock: Arc<dyn Clock>,
+        owner: impl Into<String>,
+        lease_ms: u64,
+        config: DispatchServiceConfig,
+        resolver: Arc<dyn WorkerResolver<S>>,
+        concurrency: usize,
+        wake: Arc<dyn WakeSignal>,
+        completion: Option<Arc<dyn CompletionSink>>,
+    ) -> Self {
         let owner = owner.into();
         let shutdown = CancellationToken::new();
         let drains = (0..concurrency.max(1))
@@ -110,6 +162,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
                     lease_ms,
                     resolver.clone(),
                     config.poll_interval,
+                    completion.clone(),
                 ))
             })
             .collect();
@@ -197,6 +250,7 @@ async fn drain_loop<S: Dispatch + 'static>(
     lease_ms: u64,
     resolver: Arc<dyn WorkerResolver<S>>,
     poll_interval: Duration,
+    completion: Option<Arc<dyn CompletionSink>>,
 ) {
     loop {
         if shutdown.is_cancelled() {
@@ -204,7 +258,9 @@ async fn drain_loop<S: Dispatch + 'static>(
         }
         // Drain everything runnable now. A store error is transient — the next
         // tick retries — so swallow it rather than kill the task.
-        match claim_and_drive(&store, &clock, &owner, lease_ms, resolver.as_ref()).await {
+        match claim_and_drive(&store, &clock, &owner, lease_ms, resolver.as_ref(), &completion)
+            .await
+        {
             Ok(true) => continue,
             Ok(false) | Err(_) => {}
         }
@@ -217,13 +273,15 @@ async fn drain_loop<S: Dispatch + 'static>(
 }
 
 /// Claim one runnable dispatch from the shared queue and drive it on the worker
-/// that owns its thread. Returns whether a run was claimed.
+/// that owns its thread. Returns whether a run was claimed. On settle, notifies the
+/// [`CompletionSink`] so a foreground waiter wakes by event, not by poll.
 async fn claim_and_drive<S: Dispatch + 'static>(
     store: &Arc<S>,
     clock: &Arc<dyn Clock>,
     owner: &str,
     lease_ms: u64,
     resolver: &dyn WorkerResolver<S>,
+    completion: &Option<Arc<dyn CompletionSink>>,
 ) -> Result<bool, Error> {
     let now = clock.now_ms();
     let Some(claimed) = store.claim(owner, lease_ms, now).await? else {
@@ -234,7 +292,12 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     // acts on the same row this task just claimed.
     let thread_id = claimed.request.thread_id().clone();
     let worker = resolver.worker_for(&thread_id).await?;
-    worker.drive_claimed(claimed, now).await?;
+    if let Some((run_id, phase)) = worker.drive_claimed(claimed, now).await?
+        && let Some(sink) = completion
+    {
+        // Signal the foreground waiter (if any) the instant the run settles.
+        sink.settled(&run_id, &phase);
+    }
     Ok(true)
 }
 
