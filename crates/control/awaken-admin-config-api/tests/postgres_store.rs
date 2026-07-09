@@ -1,6 +1,6 @@
-//! Live Postgres admin-store conformance (feature `postgres`): the same four sync
+//! Live Postgres admin-store conformance (feature `postgres`): the same three sync
 //! store ports the sqlite backend serves — [`InferenceProfileStore`], [`McpStore`],
-//! [`ProjectStore`], [`ResourceStore`] — exercised against a real Postgres.
+//! [`ResourceStore`] — exercised against a real Postgres.
 //! Isolated in its own schema (baked into the connection URL's `search_path`), so
 //! it coexists with any other schema in the test database. Skips when no Postgres
 //! is reachable (`AWAKEN_TEST_DATABASE_URL`).
@@ -9,8 +9,7 @@
 use awaken_admin_config_api::PostgresAdminStore;
 use awaken_config_resolver::{
     AgentMcpConfig, AgentResourceConfig, InferenceProfile, InferenceProfileStore, McpServerDef,
-    McpServerId, McpStore, Project, ProjectAgentConfig, ProjectId, ProjectStore, ResourceAccess,
-    ResourceBinding, ResourceKind, ResourceStore,
+    McpServerId, McpStore, ResourceAccess, ResourceBinding, ResourceKind, ResourceStore,
 };
 use awaken_credential_vault::CredentialBinding;
 use sqlx::Executor;
@@ -112,34 +111,6 @@ async fn postgres_admin_store_serves_every_port() {
         cfg.mcp_server_ids
     );
     assert!(store.get_agent_config("agent-2").is_none());
-
-    // ProjectStore: project row + sorted list + project-scoped agent binding.
-    let project = |id: &str, ws: &str| Project {
-        id: ProjectId(id.into()),
-        workspace_id: ws.into(),
-        display_name: id.into(),
-        version: 1,
-    };
-    store.put_project(project("proj-b", "ws"));
-    store.put_project(project("proj-a", "ws"));
-    assert_eq!(store.get_project("proj-a").unwrap().workspace_id, "ws");
-    let proj_ids: Vec<String> = store.list_projects().into_iter().map(|p| p.id.0).collect();
-    assert_eq!(proj_ids, vec!["proj-a".to_string(), "proj-b".to_string()]);
-    let pac = ProjectAgentConfig {
-        project_id: ProjectId("proj-a".into()),
-        agent_id: "agent-1".into(),
-        mcp_server_ids: vec![McpServerId("alpha".into())],
-        version: 1,
-    };
-    store.put_project_agent(pac.clone());
-    assert_eq!(
-        store
-            .get_project_agent("proj-a", "agent-1")
-            .unwrap()
-            .mcp_server_ids,
-        pac.mcp_server_ids
-    );
-    assert!(store.get_project_agent("proj-a", "agent-x").is_none());
 
     // ResourceStore: agent resource binding round-trip + overwrite.
     assert!(store.get_agent_resource("agent-1").is_none());

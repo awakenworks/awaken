@@ -1,7 +1,7 @@
 //! Postgres adapter (feature `postgres`, ADR-0043) for the admin-plane
 //! aggregates, over the crate's own `admin` migration scope ([`admin_bundle`]):
 //! one [`PostgresAdminStore`] serves the same four sync store ports the sqlite
-//! backend does — [`InferenceProfileStore`], [`McpStore`], [`ProjectStore`] and
+//! backend does — [`InferenceProfileStore`], [`McpStore`] and
 //! [`ResourceStore`] — from a single connection pool.
 //!
 //! The store ports are **sync and infallible** (a broken store is a
@@ -24,7 +24,7 @@ use tokio::runtime::{Builder, Handle, Runtime};
 
 use awaken_config_resolver::{
     AgentMcpConfig, AgentResourceConfig, InferenceProfile, InferenceProfileStore, McpServerDef,
-    McpStore, Project, ProjectAgentConfig, ProjectStore, ResourceStore,
+    McpStore, ResourceStore,
 };
 
 use crate::schema::admin_bundle;
@@ -233,71 +233,5 @@ impl McpStore for PostgresAdminStore {
     }
     fn get_agent_config(&self, agent_id: &str) -> Option<AgentMcpConfig> {
         self.get_json("agent_mcp", "agent_id", agent_id)
-    }
-}
-
-impl ProjectStore for PostgresAdminStore {
-    fn put_project(&self, project: Project) {
-        let sql = format!(
-            "INSERT INTO {NS}_project (id, workspace_id, data) VALUES ($1, $2, $3) \
-             ON CONFLICT (id) DO UPDATE SET workspace_id = excluded.workspace_id, data = excluded.data"
-        );
-        let pool = self.pool.clone();
-        let id = project.id.0.clone();
-        let workspace_id = project.workspace_id.clone();
-        let data = serde_json::to_value(&project).expect("encode project row");
-        block(&self.handle, move || async move {
-            sqlx::query(&sql)
-                .bind(id)
-                .bind(workspace_id)
-                .bind(Json(data))
-                .execute(&pool)
-                .await
-                .expect("persist project row");
-        });
-    }
-    fn get_project(&self, id: &str) -> Option<Project> {
-        self.get_json("project", "id", id)
-    }
-    fn list_projects(&self) -> Vec<Project> {
-        self.list_json("project", "id")
-    }
-    fn put_project_agent(&self, config: ProjectAgentConfig) {
-        let sql = format!(
-            "INSERT INTO {NS}_project_agent_mcp (project_id, agent_id, data) VALUES ($1, $2, $3) \
-             ON CONFLICT (project_id, agent_id) DO UPDATE SET data = excluded.data"
-        );
-        let pool = self.pool.clone();
-        let project_id = config.project_id.0.clone();
-        let agent_id = config.agent_id.clone();
-        let data = serde_json::to_value(&config).expect("encode project agent row");
-        block(&self.handle, move || async move {
-            sqlx::query(&sql)
-                .bind(project_id)
-                .bind(agent_id)
-                .bind(Json(data))
-                .execute(&pool)
-                .await
-                .expect("persist project agent row");
-        });
-    }
-    fn get_project_agent(&self, project_id: &str, agent_id: &str) -> Option<ProjectAgentConfig> {
-        let sql = format!(
-            "SELECT data FROM {NS}_project_agent_mcp WHERE project_id = $1 AND agent_id = $2"
-        );
-        let pool = self.pool.clone();
-        let project_id = project_id.to_string();
-        let agent_id = agent_id.to_string();
-        block(&self.handle, move || async move {
-            let row = sqlx::query(&sql)
-                .bind(project_id)
-                .bind(agent_id)
-                .fetch_optional(&pool)
-                .await
-                .expect("read project agent row")?;
-            let Json(config): Json<ProjectAgentConfig> =
-                row.try_get("data").expect("decode project agent row");
-            Some(config)
-        })
     }
 }

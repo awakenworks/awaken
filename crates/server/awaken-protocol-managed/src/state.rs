@@ -134,11 +134,6 @@ pub struct SessionInit {
     /// files, memory stores, repos. The host realizes each into the run's sandbox and
     /// appends a prompt fragment to the system prompt (A3a). Empty = no mounts.
     pub resources: Vec<SessionResource>,
-    /// The consumption-side project the session arrived through
-    /// (`/projects/{id}/v1/sessions`), stamped by the ingress middleware.
-    /// `None` = the bare workspace-default surface — byte-identical behavior
-    /// to before projects existed.
-    pub project_id: Option<String>,
     /// The session's requested model (R2), staged so the run binds it; `None` →
     /// the host default.
     pub model: Option<String>,
@@ -758,7 +753,8 @@ impl ManagedState {
     pub async fn create_session(
         &self,
         req: SessionCreateParams,
-        project_id: Option<String>,
+        // The edge-resolved owning workspace (aspect): handed to the lifecycle
+        // sink for webhook/usage stamping, but NEVER stored on the core session.
         workspace_id: Option<String>,
     ) -> Result<Session, StateError> {
         self.check_bind(&req)?;
@@ -829,7 +825,6 @@ impl ManagedState {
                     agent_id: agent_id.clone(),
                     mcp_servers: bindings,
                     resources,
-                    project_id,
                     model: req.awaken_model().map(str::to_string),
                     runtime: req.awaken_runtime().map(str::to_string),
                     deny_egress,
@@ -895,6 +890,8 @@ impl ManagedState {
         };
         // Persist the session's config (secret-free) so a restart or a peer process
         // rehydrates its real agent/model/title/metadata/MCP, not a placeholder.
+        // The core session record is tenancy-agnostic (authz is an edge aspect) —
+        // it never stores a workspace/org.
         self.sessions_repo
             .save(PersistedSession {
                 session_id: id.clone(),
@@ -904,16 +901,12 @@ impl ManagedState {
                 metadata: session.metadata.clone(),
                 environment_id: session.environment_id.clone(),
                 mcp_servers: session.agent.mcp_servers.clone(),
-                // The owning workspace resolved at ingress (ADR-0048 D6). Org stays
-                // `None` self-hosted (D4/D6 — the chain roots at the workspace);
-                // a cloud deployment sets it when a real Org wraps the workspace.
-                workspace_id: workspace_id.clone(),
-                org_id: None,
             })
             .await;
         // Project the committed create as a lifecycle fact: a fresh session is idle,
         // so fan out `session.status_idle` to any workspace-scoped subscribers. The
-        // sink delivers out-of-band; it never blocks or fails the create.
+        // owning workspace comes from the edge (the aspect), passed in — never read
+        // back from the core record. The sink delivers out-of-band.
         if let Some(sink) = &self.lifecycle_sink {
             sink.emit(&id, workspace_id.as_deref(), None, "session.status_idle")
                 .await;
@@ -1897,8 +1890,6 @@ mod tests {
             mcp_servers: vec![
                 serde_json::json!({"name": "calc", "type": "url", "url": "https://x"}),
             ],
-            workspace_id: Some("wrkspc_default".to_string()),
-            org_id: None,
         }
     }
 
@@ -1950,44 +1941,5 @@ mod tests {
         );
         assert_eq!(session.title.as_deref(), Some("My session"));
         assert_eq!(session.agent.mcp_servers.len(), 1);
-    }
-
-    /// ADR-0048 D6: the workspace resolved at ingress is recorded as the created
-    /// session's owner on the durable row; the bare surface persists no owner.
-    #[tokio::test]
-    async fn create_session_records_the_owning_workspace() {
-        let repo: Arc<dyn ManagedSessionRepository> =
-            Arc::new(InMemorySessionRepository::default());
-        let state = ManagedState::new(RehydrateFake).with_session_repo(repo.clone());
-
-        let params = |agent: &str| SessionCreateParams {
-            agent: crate::types::AgentRef::Id(agent.into()),
-            environment_id: None,
-            title: None,
-            metadata: Default::default(),
-            mcp_servers: Vec::new(),
-            vault_ids: Vec::new(),
-            resources: Vec::new(),
-        };
-
-        let owned = state
-            .create_session(params("assistant"), None, Some("wrkspc_acme".to_string()))
-            .await
-            .expect("create owned session");
-        assert_eq!(
-            repo.get(&owned.id).await.and_then(|s| s.workspace_id),
-            Some("wrkspc_acme".to_string()),
-            "the resolved workspace is the session's persisted owner"
-        );
-
-        let bare = state
-            .create_session(params("assistant"), None, None)
-            .await
-            .expect("create bare session");
-        assert_eq!(
-            repo.get(&bare.id).await.and_then(|s| s.workspace_id),
-            None,
-            "the bare surface records no owner"
-        );
     }
 }

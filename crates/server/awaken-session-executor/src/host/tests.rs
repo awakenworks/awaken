@@ -590,7 +590,6 @@ async fn prepare_session_stages_egress_into_the_sandbox_spec() {
         agent_id: "a".into(),
         mcp_servers: Vec::new(),
         resources: Vec::new(),
-        project_id: None,
         model: None,
         runtime: None,
         deny_egress: deny,

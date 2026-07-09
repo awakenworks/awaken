@@ -32,11 +32,10 @@ const NS: &str = "managed";
 fn session_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(
         "awaken.managed_session",
-        vec![
-            Migration::new(
-                1,
-                "managed session config: one row per session id (secret-free)",
-                "CREATE TABLE {prefix}_session (\
+        vec![Migration::new(
+            1,
+            "managed session config: one row per session id (secret-free)",
+            "CREATE TABLE {prefix}_session (\
                  session_id     TEXT PRIMARY KEY, \
                  agent_id       TEXT NOT NULL, \
                  model          TEXT NOT NULL, \
@@ -44,17 +43,7 @@ fn session_bundle() -> Result<MigrationBundle, MigrationError> {
                  metadata_json  TEXT NOT NULL, \
                  environment_id TEXT NOT NULL, \
                  mcp_json       TEXT NOT NULL)",
-            )?,
-            // ADR-0048 D6: record the session's owning workspace (and, in cloud,
-            // org) so webhooks/usage/audit project from the durable row. Nullable
-            // so pre-owner rows migrate untouched (byte-identical read).
-            Migration::new(
-                2,
-                "managed session owner: nullable workspace_id + org_id",
-                "ALTER TABLE {prefix}_session ADD COLUMN workspace_id TEXT; \
-                 ALTER TABLE {prefix}_session ADD COLUMN org_id TEXT",
-            )?,
-        ],
+        )?],
     )
 }
 
@@ -66,7 +55,6 @@ fn mcp_str(session: &PersistedSession) -> String {
     serde_json::to_string(&session.mcp_servers).expect("session mcp servers serialize")
 }
 
-#[allow(clippy::too_many_arguments)]
 fn decode(
     session_id: String,
     agent_id: String,
@@ -75,8 +63,6 @@ fn decode(
     metadata_json: &str,
     environment_id: String,
     mcp_json: &str,
-    workspace_id: Option<String>,
-    org_id: Option<String>,
 ) -> PersistedSession {
     PersistedSession {
         session_id,
@@ -86,8 +72,6 @@ fn decode(
         metadata: serde_json::from_str(metadata_json).unwrap_or_default(),
         environment_id,
         mcp_servers: serde_json::from_str(mcp_json).unwrap_or_default(),
-        workspace_id,
-        org_id,
     }
 }
 
@@ -129,18 +113,15 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         let conn = self.conn.lock().expect("session store mutex poisoned");
         conn.execute(
             "INSERT INTO managed_session
-                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json,
-                 workspace_id, org_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(session_id) DO UPDATE SET
                 agent_id = excluded.agent_id,
                 model = excluded.model,
                 title = excluded.title,
                 metadata_json = excluded.metadata_json,
                 environment_id = excluded.environment_id,
-                mcp_json = excluded.mcp_json,
-                workspace_id = excluded.workspace_id,
-                org_id = excluded.org_id",
+                mcp_json = excluded.mcp_json",
             params![
                 session.session_id,
                 session.agent_id,
@@ -149,8 +130,6 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 metadata_json,
                 session.environment_id,
                 mcp_json,
-                session.workspace_id,
-                session.org_id,
             ],
         )
         .expect("persist managed session");
@@ -159,8 +138,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
     async fn get(&self, session_id: &str) -> Option<PersistedSession> {
         let conn = self.conn.lock().expect("session store mutex poisoned");
         conn.query_row(
-            "SELECT agent_id, model, title, metadata_json, environment_id, mcp_json,
-                    workspace_id, org_id
+            "SELECT agent_id, model, title, metadata_json, environment_id, mcp_json
              FROM managed_session WHERE session_id = ?1",
             params![session_id],
             |row| {
@@ -174,8 +152,6 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                     &metadata_json,
                     row.get(4)?,
                     &mcp_json,
-                    row.get(6)?,
-                    row.get(7)?,
                 ))
             },
         )
@@ -215,18 +191,15 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
     async fn save(&self, session: PersistedSession) {
         sqlx::query(
             "INSERT INTO managed_session \
-                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, \
-                 workspace_id, org_id) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) \
              ON CONFLICT (session_id) DO UPDATE SET \
                 agent_id = excluded.agent_id, \
                 model = excluded.model, \
                 title = excluded.title, \
                 metadata_json = excluded.metadata_json, \
                 environment_id = excluded.environment_id, \
-                mcp_json = excluded.mcp_json, \
-                workspace_id = excluded.workspace_id, \
-                org_id = excluded.org_id",
+                mcp_json = excluded.mcp_json",
         )
         .bind(&session.session_id)
         .bind(&session.agent_id)
@@ -235,8 +208,6 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         .bind(metadata_str(&session))
         .bind(&session.environment_id)
         .bind(mcp_str(&session))
-        .bind(&session.workspace_id)
-        .bind(&session.org_id)
         .execute(&self.pool)
         .await
         .expect("persist managed session");
@@ -244,8 +215,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
 
     async fn get(&self, session_id: &str) -> Option<PersistedSession> {
         let row = sqlx::query(
-            "SELECT agent_id, model, title, metadata_json, environment_id, mcp_json, \
-                    workspace_id, org_id \
+            "SELECT agent_id, model, title, metadata_json, environment_id, mcp_json \
              FROM managed_session WHERE session_id = $1",
         )
         .bind(session_id)
@@ -262,8 +232,6 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
             &metadata_json,
             row.get("environment_id"),
             &mcp_json,
-            row.get("workspace_id"),
-            row.get("org_id"),
         ))
     }
 }
@@ -285,8 +253,6 @@ mod tests {
             metadata,
             environment_id: "env_local".to_string(),
             mcp_servers: vec![serde_json::json!({"name":"calc","type":"url","url":"https://x"})],
-            workspace_id: Some("wrkspc_acme".to_string()),
-            org_id: None,
         }
     }
 
@@ -310,29 +276,6 @@ mod tests {
             "the session config survives a restart"
         );
         assert!(reopened.get("sesn_missing").await.is_none());
-    }
-
-    /// ADR-0048 D6: the owning workspace is persisted and restored, and the bare
-    /// pre-owner surface (`workspace_id: None`) round-trips as absent.
-    #[tokio::test]
-    async fn records_the_owning_workspace() {
-        let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
-
-        let owned = sample("sesn_owned");
-        assert_eq!(owned.workspace_id.as_deref(), Some("wrkspc_acme"));
-        repo.save(owned.clone()).await;
-        assert_eq!(
-            repo.get("sesn_owned").await.and_then(|s| s.workspace_id),
-            Some("wrkspc_acme".to_string()),
-            "the owning workspace survives a reopen"
-        );
-
-        let mut bare = sample("sesn_bare");
-        bare.workspace_id = None;
-        repo.save(bare.clone()).await;
-        let restored = repo.get("sesn_bare").await.unwrap();
-        assert_eq!(restored.workspace_id, None, "bare surface stays owner-less");
-        assert_eq!(restored, bare, "the full bare row round-trips");
     }
 
     #[tokio::test]

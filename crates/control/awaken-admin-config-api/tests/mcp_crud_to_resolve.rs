@@ -21,7 +21,6 @@ fn harness() -> Router {
         secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
         profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
         mcp: Arc::new(awaken_admin_config_api::InMemoryMcpStore::new()),
-        projects: Arc::new(awaken_admin_config_api::InMemoryProjectStore::new()),
         resources: Arc::new(awaken_admin_config_api::InMemoryResourceStore::new()),
         probe: None,
     })

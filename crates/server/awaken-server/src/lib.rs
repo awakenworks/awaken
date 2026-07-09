@@ -1151,7 +1151,6 @@ struct ManagementStores {
     secrets: Arc<dyn awaken_credential_vault::SecretStore>,
     profiles: Arc<dyn awaken_admin_config_api::InferenceProfileStore>,
     mcp: Arc<dyn awaken_admin_config_api::McpStore>,
-    projects: Arc<dyn awaken_admin_config_api::ProjectStore>,
     /// Durable home for the Managed session aggregate (its own `sessions.db`), so a
     /// rehydrated session reports its real config across a restart / peer process.
     sessions: Arc<dyn awaken_protocol_managed::ManagedSessionRepository>,
@@ -1165,7 +1164,6 @@ fn in_memory_management_stores() -> ManagementStores {
         secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
         profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
         mcp: Arc::new(awaken_admin_config_api::InMemoryMcpStore::new()),
-        projects: Arc::new(awaken_admin_config_api::InMemoryProjectStore::new()),
         sessions: Arc::new(awaken_protocol_managed::InMemorySessionRepository::default()),
     }
 }
@@ -1210,8 +1208,7 @@ fn durable_management_stores(dir: &std::path::Path, key: &[u8; 32]) -> Managemen
             Arc::new(blobs),
         )),
         profiles: admin.clone(),
-        mcp: admin.clone(),
-        projects: admin,
+        mcp: admin,
         // A separate `sessions.db` (not a table in admin.db): a live session
         // instance is a different aggregate from the agent/MCP definitions admin.db
         // holds (ADR-0039 one-repository-per-aggregate).
@@ -1345,7 +1342,6 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
         secrets,
         profiles,
         mcp: mcp_store,
-        projects,
         sessions,
     } = stores;
     // ONE MCP store across the admin router and the ManagedHost, and ONE
@@ -1358,7 +1354,6 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
         secrets: secrets.clone(),
         profiles,
         mcp: mcp_store.clone(),
-        projects: projects.clone(),
         // Per-agent resource bindings (ADR-0038). Ephemeral in-memory for now; the
         // durable SqliteAdminStore also implements `ResourceStore` for a later wire.
         resources: Arc::new(awaken_admin_config_api::InMemoryResourceStore::new()),
@@ -1418,101 +1413,12 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
     let (model, model_ref) = scenario_model(Arc::new(McpToolModel), "management");
     let host = Arc::new(SharedHost::new(model, model_ref));
     let managed_state = Arc::new(
-        ManagedState::new(ManagedHost::new(host.clone()).with_mcp(
-            credentials,
-            secrets,
-            mcp_store,
-            projects.clone(),
-        ))
-        .with_vaults(vault_state)
-        .with_environments(env_state)
-        .with_session_repo(sessions),
+        ManagedState::new(ManagedHost::new(host.clone()).with_mcp(credentials, secrets, mcp_store))
+            .with_vaults(vault_state)
+            .with_environments(env_state)
+            .with_session_repo(sessions),
     );
-    // The project ingress (ADR-0042 amendment): the SAME session surface
-    // reachable under `/projects/{id}` — the stock SDK reaches it by baseURL
-    // alone, no wire change. Implemented as a prefix-stripping proxy rather
-    // than `nest` so the inner handlers' `Path<…>` extractors see exactly the
-    // params they declare (a nest path param would leak into every route).
-    // The proxy 404s an unauthored project and stamps the ProjectScope
-    // extension `create_session` consumes.
-    let project_sessions = Router::new().route(
-        "/projects/:project_id/*rest",
-        axum::routing::any(project_ingress).with_state((
-            projects,
-            awaken_protocol_managed::router(managed_state.clone()),
-        )),
-    );
-    mount_with_managed(host, managed_state)
-        .merge(mgmt)
-        .merge(project_sessions)
-}
-
-/// Resolve the `/projects/{id}` ingress segment against the authored projects:
-/// 404 (managed envelope) when unauthored; otherwise strip the prefix, stamp
-/// [`awaken_protocol_managed::ProjectScope`] into the request extensions, and
-/// forward to the shared session router — the same handlers as the bare
-/// surface, so wire behavior is identical. The segment is ADDRESSING only —
-/// authority still flows from the API key (ADR-0042 amendment); the sessions
-/// surface keeps its own authz axis (P1 does not gate it).
-async fn project_ingress(
-    axum::extract::State((projects, sessions)): axum::extract::State<(
-        Arc<dyn awaken_admin_config_api::ProjectStore>,
-        Router,
-    )>,
-    axum::extract::Path((project_id, rest)): axum::extract::Path<(String, String)>,
-    request: axum::extract::Request,
-) -> axum::response::Response {
-    use axum::response::IntoResponse;
-    use tower::ServiceExt;
-    let Some(project) = projects.get_project(&project_id) else {
-        return (
-            axum::http::StatusCode::NOT_FOUND,
-            axum::Json(awaken_protocol_managed::types::ErrorResponse::new(
-                "not_found_error",
-                format!("project `{project_id}` not found"),
-            )),
-        )
-            .into_response();
-    };
-    // Rebuild the request against the bare path the inner router serves (keep
-    // method/headers/body/query, drop the OUTER router's routing extensions —
-    // stale `UrlParams` would otherwise stack onto the inner match and break
-    // the inner handlers' `Path<…>` extractors).
-    let stripped = match request.uri().query() {
-        Some(query) => format!("/{rest}?{query}"),
-        None => format!("/{rest}"),
-    };
-    let (parts, body) = request.into_parts();
-    let mut forwarded = axum::extract::Request::builder()
-        .method(parts.method)
-        .uri(stripped)
-        .body(body)
-        .expect("a stripped project path re-parses as a URI");
-    *forwarded.headers_mut() = parts.headers;
-    forwarded
-        .extensions_mut()
-        .insert(awaken_protocol_managed::ProjectScope(project_id.clone()));
-    // The session's owning workspace (ADR-0048 D6): the project's OWN workspace,
-    // recorded on the created session so webhooks/usage/audit project from the
-    // durable row. Same value the guard fences against below.
-    forwarded
-        .extensions_mut()
-        .insert(awaken_protocol_managed::WorkspaceScope(
-            project.workspace_id.clone(),
-        ));
-    // The tenancy the session-axis guard authorizes against: the project's OWN
-    // workspace (so the scope fence is correct), plus the project id. Additive —
-    // inert unless a guard layer wraps this router (the standalone does).
-    forwarded
-        .extensions_mut()
-        .insert(awaken_authz_enforce::RequestTenancy {
-            workspace_id: project.workspace_id.clone(),
-            project_id: Some(project_id),
-        });
-    match sessions.oneshot(forwarded).await {
-        Ok(response) => response,
-        Err(err) => match err {},
-    }
+    mount_with_managed(host, managed_state).merge(mgmt)
 }
 
 /// A tool gate that defers every tool call as a committed `ScheduledAction`

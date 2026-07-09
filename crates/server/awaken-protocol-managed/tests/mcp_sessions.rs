@@ -463,7 +463,6 @@ async fn minting_skips_session_ids_that_own_committed_truth() {
                 resources: Vec::new(),
             },
             None,
-            None,
         )
         .await
         .expect("create skips haunted ids");
@@ -514,7 +513,6 @@ async fn create_session_fires_the_lifecycle_sink_with_the_owner() {
                 vault_ids: Vec::new(),
                 resources: Vec::new(),
             },
-            None,
             Some("wrkspc_acme".to_string()),
         )
         .await

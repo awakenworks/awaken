@@ -187,7 +187,6 @@ struct ManagedMcp {
     credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
     secrets: Arc<dyn awaken_credential_vault::SecretStore>,
     mcp_store: Arc<dyn awaken_config_resolver::McpStore>,
-    projects: Arc<dyn awaken_config_resolver::ProjectStore>,
 }
 
 /// The system-prompt fragment (ADR-0038 A3a) for a bound resource — the realized
@@ -297,13 +296,11 @@ impl ManagedHost {
         credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
         secrets: Arc<dyn awaken_credential_vault::SecretStore>,
         mcp_store: Arc<dyn awaken_config_resolver::McpStore>,
-        projects: Arc<dyn awaken_config_resolver::ProjectStore>,
     ) -> Self {
         self.mcp = Some(ManagedMcp {
             credentials,
             secrets,
             mcp_store,
-            projects,
         });
         self
     }
@@ -680,25 +677,12 @@ impl SessionRuntime for ManagedHost {
                 refresh,
             });
         }
-        // Consumption-side selection: a session that arrived through
-        // `/projects/{id}` uses that project's agent binding when authored;
-        // otherwise (or on the bare surface) the workspace-level binding
-        // applies — so bare-path behavior is byte-identical to before
-        // projects existed, and two projects can give the same agent id
-        // different tool surfaces.
-        let authored = init
-            .project_id
-            .as_ref()
-            .and_then(|project| {
-                mcp.projects
-                    .get_project_agent(project, &init.agent_id)
-                    .map(|c| c.mcp_server_ids)
-            })
-            .or_else(|| {
-                mcp.mcp_store
-                    .get_agent_config(&init.agent_id)
-                    .map(|c| c.mcp_server_ids)
-            });
+        // The agent's authored workspace-level MCP binding (tenancy-agnostic core:
+        // MCP selection is by agent id, not by any tenancy tier).
+        let authored = mcp
+            .mcp_store
+            .get_agent_config(&init.agent_id)
+            .map(|c| c.mcp_server_ids);
         if let Some(mcp_server_ids) = authored {
             let config_ids = mcp_server_ids;
             let mut defs = Vec::with_capacity(config_ids.len());

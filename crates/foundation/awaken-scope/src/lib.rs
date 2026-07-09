@@ -1,8 +1,9 @@
-//! Tenancy scope tree — `org` ⊃ `workspace` ⊃ `project` — as plain persistent
+//! Tenancy scope tree — `org` ⊃ `workspace` — as plain persistent
 //! entities behind a [`scope::ScopeRepo`] port (in-memory reference here; SQL
-//! backends in the adapter layer).
+//! backends in the adapter layer). Authorization is a cross-cutting aspect at
+//! the edge; tenancy is strictly Org → Workspace (no Project tier).
 //!
-//! These are tenancy/addressing config, not aggregates whose history is
+//! These are tenancy config, not aggregates whose history is
 //! load-bearing, so they are plain rows: `update` mutates in place and a delete
 //! sets an `archived` flag. The domain services own the business rules (slug
 //! validity, parent liveness, slug-conflict → typed rejection); the repo owns
@@ -18,24 +19,14 @@
 //! The authorization coordinate (`ScopeRef`) lives in `awaken-iam`, not here:
 //! an [`scope::Entity`] is translated to a `ScopeRef` only at the authz ACL
 //! boundary, so this domain never depends on the authz engine.
-//!
-//! ## Not yet: global project-slug uniqueness
-//! The vendored repo enforces **per-parent** slug uniqueness. Managed-agent URL
-//! addressing (`/projects/{slug}/…`) additionally requires Project slugs to be
-//! **globally** unique. That is a deliberate repo-implementation constraint (a
-//! global unique index on `(Project, slug)`) added in the addressing slice; the
-//! [`scope::ScopeRepo`] port shape stays unchanged so convergence remains
-//! mechanical.
 
 pub mod org;
-pub mod project;
 pub mod scope;
 pub mod workspace;
 
 #[cfg(test)]
 mod tests {
     use crate::org::{self, CreateOrg, UpdateOrg};
-    use crate::project::{self, CreateProject};
     use crate::scope::{InMemoryScopeRepo, Rejection, ScopeRepo, Status};
     use crate::workspace::{self, CreateWorkspace};
 
@@ -150,35 +141,6 @@ mod tests {
     }
 
     #[test]
-    fn project_nests_and_carries_description() {
-        let r = repo();
-        org(&r, "o1", "org");
-        workspace(&r, "w1", "o1", "eng");
-        let p = project::create_project(
-            &r,
-            CreateProject {
-                id: "p1".into(),
-                workspace: "w1".into(),
-                name: "Backend".into(),
-                slug: "backend".into(),
-                description: Some("the api".into()),
-            },
-        )
-        .unwrap();
-        assert_eq!(p.workspace, "w1");
-        assert_eq!(p.description.as_deref(), Some("the api"));
-        assert!(matches!(
-            project::create_project(&r, cmd_proj("p2", "w1", "backend")).unwrap_err(),
-            Rejection::SlugTaken { .. }
-        ));
-        assert_eq!(
-            project::create_project(&r, cmd_proj("p3", "ghost", "x")).unwrap_err(),
-            Rejection::ParentMissing
-        );
-        assert_eq!(project::list_projects(&r, "w1").unwrap().len(), 1);
-    }
-
-    #[test]
     fn update_and_archive_are_tier_safe() {
         let r = repo();
         org(&r, "o1", "org");
@@ -212,16 +174,6 @@ mod tests {
             id: id.into(),
             org: org.into(),
             name: format!("Workspace {id}"),
-            slug: slug.into(),
-            description: None,
-        }
-    }
-
-    fn cmd_proj(id: &str, workspace: &str, slug: &str) -> CreateProject {
-        CreateProject {
-            id: id.into(),
-            workspace: workspace.into(),
-            name: format!("Project {id}"),
             slug: slug.into(),
             description: None,
         }
