@@ -37,6 +37,41 @@ impl LlmExecutor for EchoModel {
     }
 }
 
+/// A deterministic model that fails a turn on demand, so an e2e can observe the
+/// `session.error` projection. A user message containing `BOOM` returns a
+/// permanent (non-retryable) provider failure — surfaced as an internal
+/// `RunError` and committed as `session.error`; any other message echoes, so the
+/// scenario can prove the session stays usable after a failed turn.
+pub struct ErrorModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for ErrorModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let last_user = request
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == ChatRole::User)
+            .map(|m| block_text(&m.content))
+            .unwrap_or_default();
+        if last_user.contains("BOOM") {
+            // Permanent so the engine does not retry (a fast, deterministic
+            // terminal failure); the native turn path maps it to internal.
+            return Err(awaken_runtime_contract::llm::Error::InvalidRequest(
+                "scenario: BOOM".into(),
+            ));
+        }
+        Ok(ChatResponse {
+            output: AssistantOutput::text(format!("Echo: {last_user}")),
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
 /// A deterministic model tagged with a label, so an e2e can observe which model
 /// (executor) a session/turn resolved to (R1/R2/R5). Replies `model=<label>`.
 pub struct LabelModel(pub &'static str);

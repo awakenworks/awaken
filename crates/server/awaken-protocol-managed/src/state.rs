@@ -14,13 +14,13 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
 use awaken_credential_vault::CredentialSourceId;
 
+use crate::project::{self, project_messages, project_turn};
+use crate::session_repo::{InMemorySessionRepository, ManagedSessionRepository, PersistedSession};
 use crate::types::{
     ConfirmResult, CreateSessionRequest, Event, EventReceipt, InboundEvent, ListEventsResponse,
     ModelConfig, OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent,
-    StopReason,
+    SessionError, StopReason,
 };
-use crate::project::{self, project_messages, project_turn};
-use crate::session_repo::{InMemorySessionRepository, ManagedSessionRepository, PersistedSession};
 use crate::vaults::{McpRefreshBinding, VaultState};
 
 /// A fixed projection timestamp (M1). Real per-event timestamps arrive with a
@@ -51,6 +51,18 @@ pub struct TurnOutcome {
     /// `true` when this turn folded its context — projected as an
     /// `agent.thread_context_compacted` event ahead of the turn's messages.
     pub compacted: bool,
+    /// Set when the run ended in a terminal fault (the neutral `EndCause::Error`) —
+    /// projected as a `session.error` event before the turn goes idle, so a client
+    /// observes the failure. `None` on a normal completion.
+    pub failure: Option<TurnFailure>,
+}
+
+/// A terminal run fault carried from the neutral `EndCause::Error` so the adapter
+/// can project `session.error`. Neutral (a stable `code` + human `message`), not
+/// managed-wire vocabulary.
+pub struct TurnFailure {
+    pub code: String,
+    pub message: String,
 }
 
 /// A human-in-the-loop tool decision, delivered by `user.tool_confirmation`.
@@ -1355,6 +1367,19 @@ impl ManagedState {
             record.events.push(Event {
                 id: self.next_event_id(),
                 kind: OutboundKind::ThreadContextCompacted {},
+                processed_at: Some(PROCESSED_AT.to_string()),
+            });
+        }
+        // A terminal run fault projects a `session.error` before the turn's idle,
+        // so a streaming/listing client observes the failure. The neutral fault
+        // `message` is carried through; the SDK's `unknown_error` fallback is the
+        // honest projection until the runtime classifies faults per-variant.
+        if let Some(failure) = &outcome.failure {
+            record.events.push(Event {
+                id: self.next_event_id(),
+                kind: OutboundKind::SessionError {
+                    error: SessionError::exhausted(failure.message.clone()),
+                },
                 processed_at: Some(PROCESSED_AT.to_string()),
             });
         }
