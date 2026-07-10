@@ -1,0 +1,29 @@
+[package]
+name = "awaken-data-subject"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The data-subject aggregate (ADR-0050): the party a run is attributed to, its
+# per-purpose consent grants, and the erasure/consent-ceiling resolver. A
+# control/compliance-plane store (peer of awaken-credential-vault); Org-scoped.
+
+[dependencies]
+awaken-agent-contract.workspace = true
+awaken-runtime-contract.workspace = true
+async-trait.workspace = true
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
+# `spawn_blocking` for the sqlite adapter's off-thread connection work.
+tokio = { workspace = true, features = ["rt"] }
+awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9" }
+awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+tempfile = "3"
+
+[lints]
+workspace = true
