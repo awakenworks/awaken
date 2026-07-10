@@ -70,6 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("schedule") => awaken_server::build_schedule_router(),
         Ok("skills") => awaken_server::build_skills_router(),
         Ok("skills-durable") => awaken_server::build_skills_durable_router(),
+        Ok("pool-failover") => awaken_server::build_pool_failover_router(),
         Ok("delegate-remote") => awaken_server::build_remote_delegation_router(),
         Ok("vision") => awaken_server::build_vision_router(),
         Ok("model-route") => awaken_server::build_model_route_router(),

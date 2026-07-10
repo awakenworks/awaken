@@ -150,6 +150,24 @@ pub fn advertised_tools(
     tools
 }
 
+/// Ordered pool fallbacks for the server's agent, from `AWAKEN_MODEL_FALLBACKS`
+/// (comma-separated model refs). Each is bound like the primary (`default`
+/// provider/backend), so a run fails over to the next when its model is down (#1).
+/// Empty when unset — a single-model server, unchanged behavior.
+fn model_fallbacks() -> Vec<ModelBinding> {
+    std::env::var("AWAKEN_MODEL_FALLBACKS")
+        .ok()
+        .into_iter()
+        .flat_map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|m| ModelBinding::new("default", m, "default"))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn server_config(
     model_ref: &str,
@@ -164,6 +182,7 @@ pub(crate) fn server_config(
     RunnableConfig::builder("assistant")
         .instructions(SYSTEM_PROMPT)
         .model(ModelBinding::new("default", model_ref, "default"))
+        .model_candidates(model_fallbacks())
         .tools(tools)
         .max_steps(20)
         .plugins(plugin_ids.iter().cloned())
