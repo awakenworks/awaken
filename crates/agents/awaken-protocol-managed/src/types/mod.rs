@@ -27,7 +27,9 @@
 //! - [`agent`] — the `agents` resource (versioned agent configurations).
 //! - [`deployment`] — the `deployments` + `deployment-runs` resources.
 //! - [`environment`] — the `environments` resource + its work queue.
-//! - [`user_profile`] — the `user-profiles` resource.
+//! - [`user_profile`] — the `user-profiles` resource. **NB: a separate beta**
+//!   (`anthropic-beta: user-profiles-2026-03-24`), not `managed-agents-2026-04-01`;
+//!   see the module doc.
 //! - [`vault`] — the `vaults` resource (vaults + credentials).
 //! - [`page`] — the SDK cursor-page envelope shared by every CRUD family.
 
