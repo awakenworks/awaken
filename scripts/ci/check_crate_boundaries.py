@@ -904,6 +904,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # modes; it names no runtime/ext/store crate directly. Nothing depends on it.
     "awaken-server-local": {
         "awaken-runtime-host",
+        # ADR-0050: the data-subject consent/erasure store backing the erasure endpoint.
+        "awaken-data-subject",
         # Remote-hand scenario mode (ADR-0044): route a run's tools to a hand task.
         "awaken-tool-relay",
         "awaken-connection-plan",

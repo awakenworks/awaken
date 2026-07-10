@@ -1430,6 +1430,13 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
     let user_profiles = awaken_protocol_managed::user_profiles_router(std::sync::Arc::new(
         awaken_protocol_managed::UserProfileState::new(),
     ));
+    // GDPR erasure (ADR-0050): `/v1/user_profiles/:id/erasure` over the neutral
+    // data-subject resolver. The open surface uses an in-memory subject store.
+    let ds_resolver: std::sync::Arc<dyn awaken_runtime_contract::DataSubjectResolver> =
+        std::sync::Arc::new(awaken_data_subject::RepoDataSubjectResolver::new(
+            awaken_data_subject::InMemoryDataSubjectRepo::new(),
+        ));
+    let erasure = awaken_runtime_host::erasure_router(ds_resolver);
     // The public agent registry (`/v1/agents`) over its own in-mem store.
     let agents = awaken_protocol_managed::agents_router(std::sync::Arc::new(
         awaken_protocol_managed::AgentRegistryState::new(),
@@ -1453,6 +1460,7 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
     let mut mgmt = admin
         .merge(vaults)
         .merge(user_profiles)
+        .merge(erasure)
         .merge(agents)
         .merge(deployments)
         .merge(environments);
