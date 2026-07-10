@@ -875,6 +875,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "reqwest",
         "serde_json",
         "sha2",
+        "regex",
         "thiserror",
         "tokio",
         "tracing",
