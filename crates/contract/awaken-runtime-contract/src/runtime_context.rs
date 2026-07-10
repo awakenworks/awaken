@@ -12,6 +12,7 @@ use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use tokio_util::sync::CancellationToken;
 
+use crate::capture::CaptureDecision;
 use crate::live_inbox::LiveInbox;
 use awaken_agent_contract::store::stream_checkpoint::StreamCheckpointStore;
 
@@ -42,6 +43,11 @@ pub struct RuntimeRunContext {
     /// present routes every already-gated call through this port — e.g. a remote
     /// hand. The kernel never learns placement; it calls the port either way.
     pub tool_executor: Option<Arc<dyn crate::tool::ToolExecutor>>,
+    /// The resolved content-capture decision for this attempt (ADR-0050 D5):
+    /// the level plus redactor gating what prompt/completion/tool content the
+    /// engine records onto telemetry. Default is `Structured` (no content); the
+    /// host resolves the real decision per run/turn and sets it here.
+    pub capture: CaptureDecision,
 }
 
 impl RuntimeRunContext {
@@ -94,6 +100,13 @@ impl RuntimeRunContext {
     #[must_use]
     pub fn with_tool_executor(mut self, executor: Arc<dyn crate::tool::ToolExecutor>) -> Self {
         self.tool_executor = Some(executor);
+        self
+    }
+
+    /// Set the resolved content-capture decision for this attempt (ADR-0050).
+    #[must_use]
+    pub fn with_capture(mut self, capture: CaptureDecision) -> Self {
+        self.capture = capture;
         self
     }
 
