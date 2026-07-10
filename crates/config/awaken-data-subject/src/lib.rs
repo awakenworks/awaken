@@ -196,12 +196,27 @@ impl DataSubjectRepo for InMemoryDataSubjectRepo {
 /// `Arc`-shared repo so a consent-write path and the resolver see one store.
 pub struct RepoDataSubjectResolver {
     repo: std::sync::Arc<dyn DataSubjectRepo>,
+    erasers: Vec<std::sync::Arc<dyn awaken_runtime_contract::ContentEraser>>,
 }
 
 impl RepoDataSubjectResolver {
     #[must_use]
     pub fn new(repo: std::sync::Arc<dyn DataSubjectRepo>) -> Self {
-        Self { repo }
+        Self {
+            repo,
+            erasers: Vec::new(),
+        }
+    }
+
+    /// Register a content store to fan an erasure out to (GDPR Art. 17). Each
+    /// registered eraser's removed-count sums into the [`ErasureReceipt`].
+    #[must_use]
+    pub fn with_eraser(
+        mut self,
+        eraser: std::sync::Arc<dyn awaken_runtime_contract::ContentEraser>,
+    ) -> Self {
+        self.erasers.push(eraser);
+        self
     }
 }
 
@@ -215,10 +230,14 @@ impl awaken_runtime_contract::DataSubjectResolver for RepoDataSubjectResolver {
     }
 
     async fn erase(&self, subject: &DataSubjectId) -> ErasureReceipt {
-        // Remove the subject's consent record; content-store fan-out is the
-        // erasure endpoint's job (Slice 10), which counts records removed.
+        // Fan the erasure out across every registered content store, summing the
+        // records removed, then delete the subject's consent record itself.
+        let mut records_removed = 0;
+        for eraser in &self.erasers {
+            records_removed += eraser.erase_subject(subject).await;
+        }
         let _ = self.repo.delete(subject).await;
-        ErasureReceipt::default()
+        ErasureReceipt { records_removed }
     }
 }
 
@@ -301,5 +320,29 @@ mod tests {
                 .await,
             ContentCapture::Structured
         );
+    }
+
+    #[tokio::test]
+    async fn erase_fans_out_and_sums_removed_counts() {
+        use awaken_runtime_contract::ContentEraser;
+
+        struct FakeEraser(usize);
+        #[async_trait]
+        impl ContentEraser for FakeEraser {
+            async fn erase_subject(&self, _s: &DataSubjectId) -> usize {
+                self.0
+            }
+        }
+
+        let repo = std::sync::Arc::new(InMemoryDataSubjectRepo::new());
+        repo.put(DataSubject::new(DataSubjectId("dsub_1".into()), "org_1", 0))
+            .await
+            .unwrap();
+        let resolver = RepoDataSubjectResolver::new(repo)
+            .with_eraser(std::sync::Arc::new(FakeEraser(2)))
+            .with_eraser(std::sync::Arc::new(FakeEraser(3)));
+
+        let receipt = resolver.erase(&DataSubjectId("dsub_1".into())).await;
+        assert_eq!(receipt.records_removed, 5, "sums across content stores");
     }
 }

@@ -58,6 +58,15 @@ pub trait DataSubjectResolver: Send + Sync {
     async fn erase(&self, subject: &DataSubjectId) -> ErasureReceipt;
 }
 
+/// A content store that can erase all records attributed to a data subject
+/// (GDPR Art. 17, ADR-0050 D7). A resolver fans an erasure out across every
+/// registered eraser; each returns the number of records it removed.
+#[async_trait]
+pub trait ContentEraser: Send + Sync {
+    /// Erase content attributed to `subject`; return the number of records removed.
+    async fn erase_subject(&self, subject: &DataSubjectId) -> usize;
+}
+
 /// The standalone/open null object: no consent subsystem, so it never clamps
 /// (the env default + config ceiling decide); erasure is a no-op receipt.
 #[derive(Debug, Clone, Copy, Default)]

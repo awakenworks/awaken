@@ -28,7 +28,9 @@ pub use agent_resolver::{AgentError, AgentRequest, AgentResolver, AgentStep};
 pub use capture::{CaptureDecision, ContentCapture, ContentKind, ContentRedactor, NoopRedactor};
 pub use catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 pub use control::LiveRunControl;
-pub use data_subject::{DataSubjectId, DataSubjectResolver, ErasureReceipt, NullResolver, Purpose};
+pub use data_subject::{
+    ContentEraser, DataSubjectId, DataSubjectResolver, ErasureReceipt, NullResolver, Purpose,
+};
 pub use execution::RunExecutor;
 pub use live_inbox::{LiveInbox, LiveInboxMessage, LiveInboxMessageId};
 pub use llm::{ChatRequest, ChatResponse, LlmExecutor};
