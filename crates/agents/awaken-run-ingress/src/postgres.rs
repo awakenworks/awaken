@@ -293,11 +293,7 @@ impl DispatchQueue for PostgresDispatchStore {
         Ok(result.rows_affected() > 0)
     }
 
-    async fn bind_sandbox(
-        &self,
-        run_id: &RunId,
-        sandbox_ref: &str,
-    ) -> Result<(), DispatchError> {
+    async fn bind_sandbox(&self, run_id: &RunId, sandbox_ref: &str) -> Result<(), DispatchError> {
         let p = NS;
         sqlx::query(&format!(
             "UPDATE {p}_dispatch SET sandbox = $1 WHERE run_id = $2"

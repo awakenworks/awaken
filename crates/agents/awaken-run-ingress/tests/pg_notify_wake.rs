@@ -32,7 +32,10 @@ async fn publish_wakes_a_waiter_on_another_connection() {
     publisher.publish().await.expect("publish");
 
     let woke = tokio::time::timeout(Duration::from_secs(5), wait_task).await;
-    assert!(woke.is_ok(), "PgNotifyWake.wait did not return after a cross-connection publish");
+    assert!(
+        woke.is_ok(),
+        "PgNotifyWake.wait did not return after a cross-connection publish"
+    );
 }
 
 #[tokio::test]

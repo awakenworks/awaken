@@ -232,11 +232,7 @@ pub trait DispatchQueue: Send + Sync {
     /// `SandboxHandle` into it). Stored durably so `claim` returns it on recovery
     /// and `reconcile_adoption` can re-adopt the same sandbox. Default is a no-op
     /// for backends that do not persist the binding (the neutral seam).
-    async fn bind_sandbox(
-        &self,
-        _run_id: &RunId,
-        _sandbox_ref: &str,
-    ) -> Result<(), DispatchError> {
+    async fn bind_sandbox(&self, _run_id: &RunId, _sandbox_ref: &str) -> Result<(), DispatchError> {
         Ok(())
     }
 

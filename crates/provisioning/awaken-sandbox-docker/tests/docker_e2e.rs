@@ -65,7 +65,10 @@ async fn create_exec_adopt_dispose_over_real_docker() {
     let handle = sandbox.handle();
     assert_eq!(handle.provider_kind, "docker");
     let readopted = provider.adopt(&handle).await.expect("adopt");
-    let after = readopted.spawn(cmd(&["true"])).await.expect("exec post-adopt");
+    let after = readopted
+        .spawn(cmd(&["true"]))
+        .await
+        .expect("exec post-adopt");
     assert_eq!(after.wait().await.unwrap().code, Some(0));
 
     // Dispose reaps the container; status flips to Terminated.
