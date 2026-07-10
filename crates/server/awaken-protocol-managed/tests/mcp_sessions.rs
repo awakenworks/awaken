@@ -480,13 +480,7 @@ async fn create_session_fires_the_lifecycle_sink_with_the_owner() {
     }
     #[async_trait::async_trait]
     impl SessionLifecycleSink for CapturingSink {
-        async fn emit(
-            &self,
-            session_id: &str,
-            workspace_id: Option<&str>,
-            _org: Option<&str>,
-            event_type: &str,
-        ) {
+        async fn emit(&self, session_id: &str, workspace_id: Option<&str>, event_type: &str) {
             self.seen.lock().unwrap().push((
                 session_id.to_string(),
                 workspace_id.map(str::to_string),
