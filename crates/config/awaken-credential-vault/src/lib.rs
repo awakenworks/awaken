@@ -58,6 +58,11 @@ pub enum CredentialKind {
     Vault,
     /// A host environment variable named by `env_key`; nothing is stored here.
     Env,
+    /// An OAuth-backed provider credential (#5): the secret is a short-lived
+    /// Bearer token minted on demand by running `oauth_command`, never stored. The
+    /// long-lived grant lives inside the helper (e.g. `gcloud`), so nothing secret
+    /// crosses the control plane.
+    Oauth,
 }
 
 /// Lifecycle of a source.
@@ -87,6 +92,11 @@ pub struct CredentialSource {
     /// Vault reference; `None` for `Env` (the secret never crosses the control plane).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub material_ref: Option<SecretRef>,
+    /// The refresh helper for a [`CredentialKind::Oauth`] source: `[program,
+    /// args…]`, whose trimmed stdout is a fresh access token. `None` for every
+    /// other kind. Only a *reference to a command* travels — never a token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_command: Option<Vec<String>>,
     pub status: CredentialStatus,
     pub version: i64,
 }
@@ -305,6 +315,8 @@ pub async fn create_source(
         provider_id: params.provider_id,
         env_key: params.env_key,
         material_ref,
+        // OAuth sources attach their refresh command via update, not create.
+        oauth_command: None,
         status: CredentialStatus::Active,
         version: 1,
     })
@@ -336,6 +348,29 @@ pub async fn materialize(
             std::env::var(key)
                 .map(RedactedString::new)
                 .map_err(|_| CredentialError::MissingEnv(source.id.0.clone()))
+        }
+        CredentialKind::Oauth => {
+            // The secret is minted on demand by the helper; the store is not
+            // consulted (nothing is sealed for an OAuth source). A per-source
+            // cache reuses one token across a hot loop (#5). Requires the
+            // `oauth-command` feature (the helper-spawning path).
+            #[cfg(feature = "oauth-command")]
+            {
+                let command = source.oauth_command.as_deref().ok_or_else(|| {
+                    CredentialError::OAuth(format!(
+                        "source {} is kind oauth but has no oauth_command",
+                        source.id.0
+                    ))
+                })?;
+                crate::oauth::oauth_access_token(&source.id, command).await
+            }
+            #[cfg(not(feature = "oauth-command"))]
+            {
+                Err(CredentialError::OAuth(format!(
+                    "source {} is kind oauth but the `oauth-command` feature is disabled",
+                    source.id.0
+                )))
+            }
         }
     }
 }
@@ -406,9 +441,32 @@ mod tests {
             provider_id: None,
             env_key: None,
             material_ref: None,
+            oauth_command: None,
             status: CredentialStatus::Active,
             version: 1,
         }
+    }
+
+    #[cfg(feature = "oauth-command")]
+    #[tokio::test]
+    async fn oauth_source_materializes_through_its_command() {
+        // An OAuth source mints its token by running the helper; nothing sealed.
+        let store = InMemorySecretStore::new();
+        let mut source = bare_source(CredentialKind::Oauth);
+        source.oauth_command = Some(vec!["printf".into(), "ya29.materialized".into()]);
+        let token = materialize(&source, &store).await.unwrap();
+        assert_eq!(token.expose_secret(), "ya29.materialized");
+    }
+
+    #[cfg(feature = "oauth-command")]
+    #[tokio::test]
+    async fn oauth_source_without_a_command_fails_closed() {
+        let store = InMemorySecretStore::new();
+        let source = bare_source(CredentialKind::Oauth);
+        assert!(matches!(
+            materialize(&source, &store).await,
+            Err(CredentialError::OAuth(_))
+        ));
     }
 
     #[tokio::test]

@@ -77,6 +77,7 @@ fn disabled_source(id: &str) -> CredentialSource {
         provider_id: None,
         env_key: None,
         material_ref: None,
+        oauth_command: None,
         status: CredentialStatus::Disabled,
         version: 1,
     }

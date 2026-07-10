@@ -13,9 +13,19 @@
 //! call Gemini on Vertex AI): the refresh token never enters this process; each
 //! call yields a fresh, expiring access token.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
 use awaken_agent_contract::RedactedString;
 
-use crate::CredentialError;
+use crate::{CredentialError, CredentialSourceId};
+
+/// Safety-window TTL for a minted OAuth token: it is reused for this long before a
+/// refresh, bounding helper spawns (real access tokens live ~1h) without risking a
+/// stale token. A conservative default keeps a hot inference loop from spawning
+/// the helper on every turn.
+const OAUTH_CACHE_TTL: Duration = Duration::from_secs(300);
 
 /// A source of fresh OAuth access tokens. Each call performs (or delegates) a
 /// refresh, so the returned token is current.
@@ -78,6 +88,75 @@ impl TokenSource for CommandTokenSource {
     }
 }
 
+/// Caches an inner [`TokenSource`]'s token for a safety-window TTL, so repeated
+/// materializations reuse one minted token instead of re-spawning the helper. A
+/// transparent decorator: on a miss (empty or expired) it refreshes through the
+/// inner source and re-stamps the cache.
+pub struct CachingTokenSource<T> {
+    inner: T,
+    ttl: Duration,
+    cached: Mutex<Option<(RedactedString, Instant)>>,
+}
+
+impl<T: TokenSource> CachingTokenSource<T> {
+    /// Wrap `inner`, serving a minted token for up to `ttl` before refreshing.
+    pub fn new(inner: T, ttl: Duration) -> Self {
+        Self {
+            inner,
+            ttl,
+            cached: Mutex::new(None),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl<T: TokenSource> TokenSource for CachingTokenSource<T> {
+    async fn access_token(&self) -> Result<RedactedString, CredentialError> {
+        if let Some((token, minted)) = self.cached.lock().unwrap().as_ref() {
+            if minted.elapsed() < self.ttl {
+                return Ok(token.clone());
+            }
+        }
+        let fresh = self.inner.access_token().await?;
+        *self.cached.lock().unwrap() = Some((fresh.clone(), Instant::now()));
+        Ok(fresh)
+    }
+}
+
+/// Process-wide cache of per-source [`CachingTokenSource`]s, so the stateless
+/// `materialize` free function still reuses one minted token across runs (keyed by
+/// credential-source id). Built lazily on first use.
+type OauthSources = HashMap<String, Arc<CachingTokenSource<CommandTokenSource>>>;
+static OAUTH_SOURCES: OnceLock<Mutex<OauthSources>> = OnceLock::new();
+
+/// Mint (or reuse a cached) OAuth access token for `source_id` by running
+/// `command` (`[program, args…]`). The per-source [`CachingTokenSource`] persists
+/// across calls, so a hot loop refreshes at most once per [`OAUTH_CACHE_TTL`].
+pub(crate) async fn oauth_access_token(
+    source_id: &CredentialSourceId,
+    command: &[String],
+) -> Result<RedactedString, CredentialError> {
+    let (program, args) = command.split_first().ok_or_else(|| {
+        CredentialError::OAuth(format!("empty oauth_command for {}", source_id.0))
+    })?;
+    let cached = {
+        let mut sources = OAUTH_SOURCES
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap();
+        sources
+            .entry(source_id.0.clone())
+            .or_insert_with(|| {
+                Arc::new(CachingTokenSource::new(
+                    CommandTokenSource::new(program.clone(), args.to_vec()),
+                    OAUTH_CACHE_TTL,
+                ))
+            })
+            .clone()
+    };
+    cached.access_token().await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,6 +195,70 @@ mod tests {
         assert!(matches!(
             source.access_token().await,
             Err(CredentialError::OAuth(msg)) if msg.starts_with("spawn `")
+        ));
+    }
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A `TokenSource` that counts refreshes, so a test can prove the cache
+    /// serves without re-invoking the inner helper.
+    struct CountingSource {
+        calls: AtomicUsize,
+        token: &'static str,
+    }
+    #[async_trait::async_trait]
+    impl TokenSource for CountingSource {
+        async fn access_token(&self) -> Result<RedactedString, CredentialError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(RedactedString::new(self.token))
+        }
+    }
+
+    #[tokio::test]
+    async fn caching_source_refreshes_once_within_ttl() {
+        let caching = CachingTokenSource::new(
+            CountingSource {
+                calls: AtomicUsize::new(0),
+                token: "tok",
+            },
+            Duration::from_secs(300),
+        );
+        assert_eq!(caching.access_token().await.unwrap().expose_secret(), "tok");
+        assert_eq!(caching.access_token().await.unwrap().expose_secret(), "tok");
+        // The second call served the cache — the helper ran exactly once.
+        assert_eq!(caching.inner.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn caching_source_refreshes_again_after_ttl_expiry() {
+        let caching = CachingTokenSource::new(
+            CountingSource {
+                calls: AtomicUsize::new(0),
+                token: "tok",
+            },
+            Duration::from_millis(0),
+        );
+        caching.access_token().await.unwrap();
+        caching.access_token().await.unwrap();
+        // A zero TTL expires immediately, so each call refreshes.
+        assert_eq!(caching.inner.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn oauth_access_token_runs_the_command_and_returns_its_stdout() {
+        let id = CredentialSourceId("cred:ws:oauth-test-1".into());
+        let token = oauth_access_token(&id, &["printf".to_string(), "ya29.abc".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(token.expose_secret(), "ya29.abc");
+    }
+
+    #[tokio::test]
+    async fn an_empty_oauth_command_is_an_error() {
+        let id = CredentialSourceId("cred:ws:oauth-empty".into());
+        assert!(matches!(
+            oauth_access_token(&id, &[]).await,
+            Err(CredentialError::OAuth(_))
         ));
     }
 }
