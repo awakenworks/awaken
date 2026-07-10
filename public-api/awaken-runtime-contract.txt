@@ -434,6 +434,8 @@ impl core::marker::Sync for awaken_runtime_contract::data_subject::NullResolver
 impl core::marker::Unpin for awaken_runtime_contract::data_subject::NullResolver
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::data_subject::NullResolver
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::data_subject::NullResolver
+pub trait awaken_runtime_contract::data_subject::ContentEraser: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::data_subject::ContentEraser::erase_subject<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = usize> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_runtime_contract::data_subject::DataSubjectResolver: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::data_subject::DataSubjectResolver::consent_ceiling<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::capture::ContentCapture> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::data_subject::DataSubjectResolver::erase<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::data_subject::ErasureReceipt> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -2765,6 +2767,8 @@ pub fn awaken_runtime_contract::AgentResolver::run<'life0, 'async_trait>(&'life0
 pub fn awaken_runtime_contract::AgentResolver::tool_id(&self) -> &str
 pub trait awaken_runtime_contract::AgentSnapshotResolver
 pub fn awaken_runtime_contract::AgentSnapshotResolver::get_snapshot(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
+pub trait awaken_runtime_contract::ContentEraser: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::ContentEraser::erase_subject<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = usize> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_runtime_contract::ContentRedactor: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::ContentRedactor::redact<'a>(&self, awaken_runtime_contract::capture::ContentKind, &'a str) -> alloc::borrow::Cow<'a, str>
 impl awaken_runtime_contract::capture::ContentRedactor for awaken_runtime_contract::capture::NoopRedactor
