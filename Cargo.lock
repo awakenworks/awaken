@@ -964,6 +964,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-sandbox-docker"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-provisioning-contract",
+ "tokio",
+]
+
+[[package]]
+name = "awaken-sandbox-k8s"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-provisioning-contract",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-sandbox-local"
 version = "1.0.0-dev"
 dependencies = [
