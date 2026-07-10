@@ -253,11 +253,24 @@ Costs (accepted):
   (ADR-0048 D3); remove the body-`workspace_id` + per-handler re-check; retire
   `awaken-scope` (D6).
 
-## Open decision
+## Resolved: the model catalog is org/deployment-shared, not workspace-scoped
 
-**Org-level shared resources** (e.g. an org-wide catalog visible to every workspace
-in the org): if required, the affected reads authorize against the request's
-`readable` set (scope + ancestors, resolved once at ingress in D4) instead of exact
-equality — still one opaque column, filtered by `scope_id IN (readable)`. If not
-required, exact equality suffices. This is the only choice that touches a store's
-query shape; settle it before S4.
+**Decision (settled):** the model catalog (providers / endpoints / offerings) is
+**org/deployment-level shared configuration**, NOT a per-workspace resource. Every
+workspace in a deployment reads one catalog; the per-resource ownership guards
+(agents registry, MCP defs, inference profiles) that fence by the edge scope
+deliberately do **not** cover the catalog routes. Isolation across orgs is by the
+**deployment boundary** — org is cloud-only (ADR-0048 D4), so a self-hosted
+deployment serves one org and its catalog is correctly shared within it; a distinct
+org is a distinct deployment with its own store. Implementing in-process org
+partitioning of the catalog would be implementing the deferred Org tier and is out
+of scope here. A `tenancy_isolation_matrix` test asserts the shared behavior (a
+provider authored via one workspace's path is readable via another's).
+
+## Future option: org-level shared reads within a shared tier
+
+If a single deployment ever serves multiple orgs (the deferred cloud Org tier),
+org-shared reads authorize against the request's `readable` set (scope + ancestors,
+resolved once at ingress in D4) instead of exact equality — still one opaque column,
+filtered by `scope_id IN (readable)`. Until the Org tier lands, exact equality (with
+the catalog explicitly shared per the decision above) suffices.
