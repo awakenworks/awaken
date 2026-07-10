@@ -34,6 +34,7 @@ mod memory_store_api;
 mod model_route;
 mod models;
 mod provisioning;
+mod redact;
 mod sandbox_source;
 mod session_store;
 mod skills;
@@ -66,6 +67,7 @@ pub use crate::host::{HostResume, SharedHost};
 // The sandboxed ACP channel source (bwrap-confined agent launch) and the shared
 // per-thread egress handle a composition root wires it with.
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
+pub use crate::redact::PiiRedactor;
 pub use crate::sandbox_source::{SandboxChannelSource, ThreadEgress};
 // The config data plane (ADR-0036/slice A): the service + its router + the
 // advertised-tools helper the composition root builds a config host from.
