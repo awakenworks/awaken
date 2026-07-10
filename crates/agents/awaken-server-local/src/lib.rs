@@ -12,9 +12,12 @@
 //! here we only wire routers, demo models, and the embedded management plane.
 
 mod authz;
+mod brain_admin;
 mod models;
 pub mod placement;
 pub mod webhooks;
+
+pub use crate::brain_admin::{DrainController, with_brain_admin};
 
 use std::collections::HashSet;
 use std::sync::Arc;

@@ -96,6 +96,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("full-chain") => awaken_server_local::build_full_chain_router(),
         _ => awaken_server_local::build_echo_router(),
     };
+    // Brain admin surface (ADR-0022 D7): the connection-count metric that KEDA
+    // autoscales on, plus /admin/drain + /readyz for graceful, stream-preserving
+    // scale-in. Wraps the served router so the in-flight counter sees every request.
+    let app = awaken_server_local::with_brain_admin(app, awaken_server_local::DrainController::new());
     // Root every request span in the ingress middleware (extracts the inbound
     // `traceparent`); the whole direct request→inference path nests under it.
     let app = app.layer(axum::middleware::from_fn(awaken_observability::trace_http));
