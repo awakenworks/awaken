@@ -194,16 +194,25 @@ impl DispatchQueue for SqliteDispatchStore {
                  WHERE status = 'running' AND lease_until IS NOT NULL AND lease_until < ?1 \
                  ORDER BY created_at LIMIT 1"
             );
+            // Single-writer-per-thread (ADR-0022): a wake or fresh pick skips any
+            // thread that already has a run in flight. Recovery (above) is exempt —
+            // it re-owns the SAME running row rather than adding a second.
+            let not_running = format!(
+                "NOT EXISTS (SELECT 1 FROM {p}_dispatch r \
+                 WHERE r.thread_id = d.thread_id AND r.status = 'running')"
+            );
             let wake = format!(
                 "SELECT run_id, request, sandbox FROM {p}_dispatch d \
                  WHERE d.status = 'parked' AND EXISTS ( \
                      SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id \
                      AND (pe.available_at IS NULL OR pe.available_at <= ?1)) \
-                 ORDER BY created_at LIMIT 1"
+                 AND {not_running} \
+                 ORDER BY d.created_at LIMIT 1"
             );
             let fresh = format!(
-                "SELECT run_id, request, sandbox FROM {p}_dispatch \
-                 WHERE status = 'pending' ORDER BY priority DESC, created_at LIMIT 1"
+                "SELECT run_id, request, sandbox FROM {p}_dispatch d \
+                 WHERE d.status = 'pending' AND {not_running} \
+                 ORDER BY d.priority DESC, d.created_at LIMIT 1"
             );
 
             let row = |sql: &str,

@@ -168,16 +168,26 @@ impl DispatchQueue for PostgresDispatchStore {
              WHERE status = 'running' AND lease_until IS NOT NULL AND lease_until < $1 \
              ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1"
         );
+        // Single-writer-per-thread (ADR-0022): a wake or fresh pick skips any thread
+        // that already has a run in flight. Recovery is exempt (it re-owns the SAME
+        // running row). The V0012 partial-unique index is the hard backstop under a
+        // concurrent-claimer race that this SELECT guard cannot see (read-committed).
+        let not_running = format!(
+            "NOT EXISTS (SELECT 1 FROM {p}_dispatch r \
+             WHERE r.thread_id = d.thread_id AND r.status = 'running')"
+        );
         let wake = format!(
             "SELECT d.run_id, d.request, d.sandbox FROM {p}_dispatch d \
              WHERE d.status = 'parked' AND EXISTS ( \
                  SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id \
                  AND (pe.available_at IS NULL OR pe.available_at <= $1)) \
+             AND {not_running} \
              ORDER BY d.created_at FOR UPDATE SKIP LOCKED LIMIT 1"
         );
         let fresh = format!(
-            "SELECT run_id, request, sandbox FROM {p}_dispatch \
-             WHERE status = 'pending' ORDER BY priority DESC, created_at \
+            "SELECT d.run_id, d.request, d.sandbox FROM {p}_dispatch d \
+             WHERE d.status = 'pending' AND {not_running} \
+             ORDER BY d.priority DESC, d.created_at \
              FOR UPDATE SKIP LOCKED LIMIT 1"
         );
 
@@ -216,7 +226,7 @@ impl DispatchQueue for PostgresDispatchStore {
         let sandbox: Option<String> = row.try_get("sandbox").map_err(reject)?;
 
         let expires = now_ms + lease_ms;
-        sqlx::query(&format!(
+        let claimed = sqlx::query(&format!(
             "UPDATE {p}_dispatch SET status = 'running', lease_owner = $1, lease_until = $2, \
              attempt_count = attempt_count + $3 WHERE run_id = $4"
         ))
@@ -225,8 +235,23 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(i64::from(recovery_pick))
         .bind(&run_id)
         .execute(&mut *tx)
-        .await
-        .map_err(reject)?;
+        .await;
+        // The V0012 one-running-per-thread unique index is the topology-independent
+        // backstop: if a concurrent claimer already made another run of this thread
+        // running, this UPDATE hits the unique violation. That claim simply lost the
+        // race — roll back and report "nothing claimed", the pool retries next tick.
+        if let Err(err) = claimed {
+            if err
+                .as_database_error()
+                .and_then(|e| e.code())
+                .as_deref()
+                == Some("23505")
+            {
+                let _ = tx.rollback().await;
+                return Ok(None);
+            }
+            return Err(reject(err));
+        }
 
         // Hand the run's current pending input to the worker. It is not removed
         // here: settle removes exactly what the worker reports it consumed, so a

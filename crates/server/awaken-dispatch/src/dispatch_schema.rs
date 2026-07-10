@@ -69,6 +69,10 @@ const FILES: &[(&str, &str)] = &[
         "V0011__dispatch_sandbox_binding.sql",
         include_str!("migrations/V0011__dispatch_sandbox_binding.sql"),
     ),
+    (
+        "V0012__dispatch_one_running_per_thread.sql",
+        include_str!("migrations/V0012__dispatch_one_running_per_thread.sql"),
+    ),
 ];
 
 /// Parse the version from a `Vnnnn__slug.sql` file name (`V0004__…` ⇒ 4). A name
@@ -122,10 +126,10 @@ mod tests {
     fn versions_parse_from_file_names() {
         let bundle = dispatch_bundle().expect("bundle builds");
         // The three tables plus one index migration each for the seven hot
-        // claim/lease/pending queries, then the sandbox-binding column (B-P3),
-        // numbered contiguously from the file names.
+        // claim/lease/pending queries, the sandbox-binding column (B-P3), then the
+        // one-running-per-thread constraint (ADR-0022), numbered contiguously.
         let versions: Vec<i64> = bundle.migrations().iter().map(|m| m.version()).collect();
-        assert_eq!(versions, (1..=11).collect::<Vec<_>>());
+        assert_eq!(versions, (1..=12).collect::<Vec<_>>());
     }
 
     #[test]

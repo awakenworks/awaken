@@ -138,41 +138,48 @@ fn is_due(input: &PendingInput, now_ms: u64) -> bool {
 /// expired lease (recovery), then wake a parked run with pending input, then a
 /// fresh pending run. This is the claim policy the Postgres store must match.
 fn select(state: &State, now_ms: u64) -> Option<RunId> {
-    let runnable = |want: Status, run: &RunId, row: &Row| -> bool {
-        match want {
-            Status::Running => {
-                row.status == Status::Running
-                    && row.lease.as_ref().is_some_and(|l| l.expires_ms <= now_ms)
-            }
-            Status::Parked => {
-                row.status == Status::Parked
-                    && state
-                        .pending
-                        .iter()
-                        .any(|p| &p.input.run_id == run && is_due(&p.input, now_ms))
-            }
-            Status::Pending => row.status == Status::Pending,
-            // Dead-lettered and superseded runs are never claimed.
-            Status::DeadLetter | Status::Superseded => false,
-        }
+    // Single-writer-per-thread (ADR-0022): a wake or fresh pick must not start a
+    // second concurrent run for a thread that already has one running. A recovery
+    // pick is exempt — it re-owns the SAME running row, it does not add a second.
+    let thread_running = |run: &RunId| -> bool {
+        let Some(thread) = state.rows.get(run).map(|r| r.request.thread_id()) else {
+            return false;
+        };
+        state
+            .rows
+            .values()
+            .any(|r| r.status == Status::Running && r.request.thread_id() == thread)
     };
-    // Recovery and wake are first-match in enqueue order.
-    for band in [Status::Running, Status::Parked] {
-        for run in &state.order {
-            if let Some(row) = state.rows.get(run)
-                && runnable(band, run, row)
-            {
-                return Some(run.clone());
-            }
+
+    // Recovery: re-own an expired-lease running row (first-match in enqueue order).
+    for run in &state.order {
+        if let Some(row) = state.rows.get(run)
+            && row.status == Status::Running
+            && row.lease.as_ref().is_some_and(|l| l.expires_ms <= now_ms)
+        {
+            return Some(run.clone());
         }
     }
-    // Fresh work is ordered by priority (highest first), then enqueue order. Keep
-    // the first run at the best priority (strictly-greater replaces), so equal
-    // priorities stay FIFO.
+    // Wake: a parked run with due input whose thread is not already running.
+    for run in &state.order {
+        if let Some(row) = state.rows.get(run)
+            && row.status == Status::Parked
+            && state
+                .pending
+                .iter()
+                .any(|p| &p.input.run_id == run && is_due(&p.input, now_ms))
+            && !thread_running(run)
+        {
+            return Some(run.clone());
+        }
+    }
+    // Fresh work is ordered by priority (highest first), then enqueue order, and
+    // only for threads that are not already running.
     let mut best: Option<(&RunId, i64)> = None;
     for run in &state.order {
         if let Some(row) = state.rows.get(run)
             && row.status == Status::Pending
+            && !thread_running(run)
             && best.is_none_or(|(_, p)| row.priority > p)
         {
             best = Some((run, row.priority));
