@@ -39,17 +39,19 @@ async function main() {
     assert.equal(rbody.telemetry_content_ceiling, 'full', 'read-back ceiling=full');
     pass('GET consent -> grant persisted, ceiling=full');
 
-    // A subject with no eval_recording consent still caps that purpose (proven by
-    // a fresh subject reading structured by default is covered by the unit tests;
-    // here we assert the granted purpose did not leak to erasure removing content).
+    // Erasure removes CONTENT but RETAINS the consent record as accountability
+    // proof (Art. 5(2)/7(1)): the grant is withdrawn, not deleted, and the
+    // ceiling drops back to structured.
     const erased = await fetch(`${baseUrl}/v1/user_profiles/${id}/erasure`, {
       method: 'POST',
     });
     assert.equal(erased.status, 200, `erasure status ${erased.status}`);
-    // After erasure the subject record is gone → consent reads 404 again.
-    const afterErase = await fetch(`${baseUrl}/v1/user_profiles/${id}/consent`);
-    assert.equal(afterErase.status, 404, 'erasure removed the subject record');
-    pass('erasure removes the subject → consent 404 (withdrawal path)');
+    const afterErase = await (
+      await fetch(`${baseUrl}/v1/user_profiles/${id}/consent`)
+    ).json();
+    assert.equal(afterErase.telemetry_content_ceiling, 'structured', 'consent withdrawn');
+    assert.equal(afterErase.grants[0].status, 'withdrawn', 'grant retained as audit (withdrawn)');
+    pass('erasure withdraws consent but RETAINS the audit record (Art. 5(2)/7(1))');
   });
 }
 

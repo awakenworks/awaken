@@ -72,19 +72,44 @@ impl SqliteCapturedContentStore {
         let conn = self.conn.lock().unwrap();
         let _ = conn.execute(
             &format!(
-                "INSERT INTO {NS}_captured (id, subject, purpose, recorded_at, content) \
-                 VALUES (?1, ?2, ?3, ?4, ?5)"
+                "INSERT INTO {NS}_captured (id, subject, purpose, recorded_at, content, restricted) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 0)"
             ),
             params![id, subject.0, purpose, now, content],
         );
         id
     }
 
+    /// Restrict a subject's records (GDPR Art. 18); returns the number restricted.
+    pub fn restrict(&self, subject: &DataSubjectId) -> usize {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            &format!(
+                "UPDATE {NS}_captured SET restricted = 1 WHERE subject = ?1 AND restricted = 0"
+            ),
+            params![subject.0],
+        )
+        .unwrap_or(0)
+    }
+
+    /// Lift the restriction on a subject's records (Art. 18(3)); returns released.
+    pub fn release(&self, subject: &DataSubjectId) -> usize {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            &format!(
+                "UPDATE {NS}_captured SET restricted = 0 WHERE subject = ?1 AND restricted = 1"
+            ),
+            params![subject.0],
+        )
+        .unwrap_or(0)
+    }
+
     /// Remove records older than `ttl_millis` as of `now`; returns count swept.
+    /// Restricted (Art. 18) records are exempt.
     pub fn sweep_expired(&self, ttl_millis: i64, now: i64) -> usize {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            &format!("DELETE FROM {NS}_captured WHERE ?1 - recorded_at >= ?2"),
+            &format!("DELETE FROM {NS}_captured WHERE restricted = 0 AND ?1 - recorded_at >= ?2"),
             params![now, ttl_millis],
         )
         .unwrap_or(0)
@@ -125,8 +150,9 @@ impl CaptureSink for SqliteCapturedContentStore {
 impl ContentEraser for SqliteCapturedContentStore {
     async fn erase_subject(&self, subject: &DataSubjectId) -> usize {
         let conn = self.conn.lock().unwrap();
+        // Restricted (Art. 18) rows survive erasure until released.
         conn.execute(
-            &format!("DELETE FROM {NS}_captured WHERE subject = ?1"),
+            &format!("DELETE FROM {NS}_captured WHERE subject = ?1 AND restricted = 0"),
             params![subject.0],
         )
         .unwrap_or(0)
@@ -176,6 +202,34 @@ mod tests {
 
         // TTL sweep removes b (age 150 >= ttl 100 at now=250).
         assert_eq!(s.sweep_expired(100, 250), 1);
+        assert!(s.is_empty());
+    }
+
+    #[tokio::test]
+    async fn restricted_rows_survive_erasure_and_ttl_over_sqlite() {
+        let s = SqliteCapturedContentStore::open_in_memory().unwrap();
+        s.insert(
+            &DataSubjectId("a".into()),
+            Purpose::TelemetryContent,
+            "x",
+            100,
+        );
+        s.insert(
+            &DataSubjectId("a".into()),
+            Purpose::TelemetryContent,
+            "y",
+            100,
+        );
+        assert_eq!(s.restrict(&DataSubjectId("a".into())), 2);
+
+        // Erasure + TTL both skip restricted rows.
+        assert_eq!(s.erase_subject(&DataSubjectId("a".into())).await, 0);
+        assert_eq!(s.sweep_expired(1, 10_000), 0);
+        assert_eq!(s.len(), 2);
+
+        // Release, then erase works.
+        assert_eq!(s.release(&DataSubjectId("a".into())), 2);
+        assert_eq!(s.erase_subject(&DataSubjectId("a".into())).await, 2);
         assert!(s.is_empty());
     }
 }
