@@ -32,10 +32,11 @@ const NS: &str = "managed";
 fn session_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(
         "awaken.managed_session",
-        vec![Migration::new(
-            1,
-            "managed session config: one row per session id (secret-free)",
-            "CREATE TABLE {prefix}_session (\
+        vec![
+            Migration::new(
+                1,
+                "managed session config: one row per session id (secret-free)",
+                "CREATE TABLE {prefix}_session (\
                  session_id     TEXT PRIMARY KEY, \
                  agent_id       TEXT NOT NULL, \
                  model          TEXT NOT NULL, \
@@ -43,7 +44,18 @@ fn session_bundle() -> Result<MigrationBundle, MigrationError> {
                  metadata_json  TEXT NOT NULL, \
                  environment_id TEXT NOT NULL, \
                  mcp_json       TEXT NOT NULL)",
-        )?],
+            )?,
+            // Tenancy edge aspect (ADR-0051): the opaque owner `scope_id`, so the
+            // edge ownership guard can fence a cross-tenant request across a
+            // restart. Additive with a seeded default; the config columns stay
+            // tenancy-agnostic — this is a separate ownership fact, not part of the
+            // aggregate.
+            Migration::new(
+                2,
+                "managed session owner scope_id (ADR-0051)",
+                "ALTER TABLE {prefix}_session ADD COLUMN scope_id TEXT NOT NULL DEFAULT 'default'",
+            )?,
+        ],
     )
 }
 
@@ -158,6 +170,26 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         .optional()
         .expect("read managed session")
     }
+
+    async fn set_owner(&self, session_id: &str, scope: &str) {
+        let conn = self.conn.lock().expect("session store mutex poisoned");
+        conn.execute(
+            "UPDATE managed_session SET scope_id = ?2 WHERE session_id = ?1",
+            params![session_id, scope],
+        )
+        .expect("stamp managed session owner");
+    }
+
+    async fn owner(&self, session_id: &str) -> Option<String> {
+        let conn = self.conn.lock().expect("session store mutex poisoned");
+        conn.query_row(
+            "SELECT scope_id FROM managed_session WHERE session_id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .expect("read managed session owner")
+    }
 }
 
 /// A Postgres-backed [`ManagedSessionRepository`] — the network-DB sibling over
@@ -234,6 +266,24 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
             &mcp_json,
         ))
     }
+
+    async fn set_owner(&self, session_id: &str, scope: &str) {
+        sqlx::query("UPDATE managed_session SET scope_id = $2 WHERE session_id = $1")
+            .bind(session_id)
+            .bind(scope)
+            .execute(&self.pool)
+            .await
+            .expect("stamp managed session owner");
+    }
+
+    async fn owner(&self, session_id: &str) -> Option<String> {
+        let row = sqlx::query("SELECT scope_id FROM managed_session WHERE session_id = $1")
+            .bind(session_id)
+            .fetch_optional(&self.pool)
+            .await
+            .expect("read managed session owner")?;
+        Some(row.get("scope_id"))
+    }
 }
 
 #[cfg(test)]
@@ -290,6 +340,28 @@ mod tests {
             Some(updated),
             "re-save overwrites"
         );
+    }
+
+    #[tokio::test]
+    async fn owner_scope_is_recorded_and_survives_a_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.db");
+        let path = path.to_string_lossy().to_string();
+        {
+            let repo = SqliteManagedSessionRepository::open(&path).unwrap();
+            repo.save(sample("sesn_1")).await;
+            repo.set_owner("sesn_1", "ws_a").await;
+            assert_eq!(repo.owner("sesn_1").await, Some("ws_a".to_string()));
+        }
+        // After a restart the owner is still readable — the cross-process fence input
+        // for the edge ownership guard (ADR-0051).
+        let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
+        assert_eq!(reopened.owner("sesn_1").await, Some("ws_a".to_string()));
+        // A row saved but never owner-stamped defaults to the seeded scope.
+        reopened.save(sample("sesn_2")).await;
+        assert_eq!(reopened.owner("sesn_2").await, Some("default".to_string()));
+        // An unknown session has no owner.
+        assert_eq!(reopened.owner("sesn_missing").await, None);
     }
 
     /// Live Postgres round-trip, isolated in its own schema. Skips when no Postgres

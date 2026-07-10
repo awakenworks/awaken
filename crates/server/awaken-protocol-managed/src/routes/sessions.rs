@@ -126,7 +126,7 @@ pub async fn session_scope_guard(
             .get::<WorkspaceScope>()
             .map(|w| w.0.clone())
             .unwrap_or_else(|| crate::state::DEFAULT_SCOPE.to_string());
-        if let Some(owner) = state.owner_scope(&id)
+        if let Some(owner) = state.resolve_owner(&id).await
             && owner != request_scope
         {
             return (
