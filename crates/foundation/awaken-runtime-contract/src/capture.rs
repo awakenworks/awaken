@@ -207,4 +207,26 @@ mod tests {
         assert_eq!(d.level, ContentCapture::Structured);
         assert!(d.content(ContentKind::OutputMessages, "secret").is_none());
     }
+
+    #[test]
+    fn with_redactor_carries_level_and_debug_hides_the_redactor() {
+        let d = CaptureDecision::with_redactor(ContentCapture::Full, Arc::new(NoopRedactor));
+        assert_eq!(d.level, ContentCapture::Full);
+        let dbg = format!("{d:?}");
+        assert!(dbg.contains("CaptureDecision") && dbg.contains("Full"));
+    }
+
+    #[test]
+    fn noop_redactor_passes_every_kind_through_borrowed() {
+        for kind in [
+            ContentKind::InputMessages,
+            ContentKind::OutputMessages,
+            ContentKind::ToolArguments,
+            ContentKind::ToolResult,
+        ] {
+            let out = NoopRedactor.redact(kind, "unchanged a@b.com");
+            assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
+            assert_eq!(out, "unchanged a@b.com");
+        }
+    }
 }

@@ -134,4 +134,12 @@ mod tests {
         assert_eq!(json, "\"dsub_abc\"");
         assert_eq!(serde_json::from_str::<DataSubjectId>(&json).unwrap(), id);
     }
+
+    #[test]
+    fn subject_id_as_str_and_receipt_default() {
+        assert_eq!(DataSubjectId("dsub_x".into()).as_str(), "dsub_x");
+        assert_eq!(ErasureReceipt::default().records_removed, 0);
+        // Purpose hashes/eq for map keys.
+        assert_eq!(Purpose::EvalRecording, Purpose::EvalRecording);
+    }
 }
