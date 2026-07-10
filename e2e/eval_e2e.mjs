@@ -41,6 +41,20 @@ const passing = {
         { kind: 'succeeded' },
       ],
     },
+    {
+      // A tool-scripted case: turn 1 calls `search`, turn 2 answers. The eval
+      // registers an echo tool for `search`, so the call runs on the real engine.
+      id: 'uses-a-tool',
+      input: 'find it',
+      script: [
+        { tool_calls: [{ tool_id: 'search', arguments: { q: 'answer' } }] },
+        { text: 'found: 42' },
+      ],
+      expectations: [
+        { kind: 'tool_called', tool_id: 'search' },
+        { kind: 'output_contains', substring: '42' },
+      ],
+    },
   ],
 };
 
@@ -62,12 +76,12 @@ const failing = {
   const { status, report } = runEval(passing);
   assert.equal(status, 0, 'a fully-passing dataset exits 0');
   assert.equal(report.dataset, 'e2e-pass');
-  assert.equal(report.scores.length, 1);
+  assert.equal(report.scores.length, 2);
   assert.ok(
-    report.scores[0].results.every((r) => r.passed),
-    'every expectation passed by replaying through the real runtime',
+    report.scores.every((s) => s.results.every((r) => r.passed)),
+    'every expectation (including a tool call) passed by replaying through the real runtime',
   );
-  console.log('  ok: passing dataset replays and scores 0');
+  console.log('  ok: passing dataset (text + tool-scripted) replays and scores 0');
 }
 
 // 2) A dataset with a failing expectation exits non-zero and marks it failed.

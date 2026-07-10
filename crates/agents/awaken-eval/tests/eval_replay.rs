@@ -2,7 +2,7 @@
 //! and datasets round-trip through the JSON store.
 
 use awaken_eval::store::{load_dataset, save_dataset};
-use awaken_eval::{Case, Dataset, Expectation, ScriptedTurn, replay};
+use awaken_eval::{Case, Dataset, Expectation, ScriptedToolCall, ScriptedTurn, replay};
 
 fn dataset() -> Dataset {
     Dataset {
@@ -15,6 +15,7 @@ fn dataset() -> Dataset {
                 input: "what is the answer?".to_string(),
                 script: vec![ScriptedTurn {
                     text: "the answer is 42".to_string(),
+                    tool_calls: Vec::new(),
                 }],
                 expectations: vec![
                     Expectation::OutputContains {
@@ -30,6 +31,7 @@ fn dataset() -> Dataset {
                 input: "hello".to_string(),
                 script: vec![ScriptedTurn {
                     text: "hi there".to_string(),
+                    tool_calls: Vec::new(),
                 }],
                 expectations: vec![Expectation::OutputContains {
                     substring: "999".to_string(),
@@ -71,6 +73,7 @@ async fn a_single_case_replays_the_committed_assistant_text() {
         input: "go".to_string(),
         script: vec![ScriptedTurn {
             text: "done — result ready".to_string(),
+            tool_calls: Vec::new(),
         }],
         expectations: vec![Expectation::OutputEquals {
             text: "done — result ready".to_string(),
@@ -80,6 +83,47 @@ async fn a_single_case_replays_the_committed_assistant_text() {
     assert!(
         score.passed(),
         "committed text should equal the scripted turn"
+    );
+}
+
+#[tokio::test]
+async fn a_tool_scripted_case_executes_the_tool_and_scores_tool_called() {
+    // Turn 1 calls `search`; turn 2 answers. The eval registers an echo tool for
+    // `search`, so the scripted call executes on the real engine.
+    let case = Case {
+        id: "uses-search".to_string(),
+        instructions: String::new(),
+        input: "find it".to_string(),
+        script: vec![
+            ScriptedTurn {
+                text: String::new(),
+                tool_calls: vec![ScriptedToolCall {
+                    tool_id: "search".to_string(),
+                    arguments: serde_json::json!({ "q": "answer" }),
+                }],
+            },
+            ScriptedTurn {
+                text: "found: 42".to_string(),
+                tool_calls: Vec::new(),
+            },
+        ],
+        expectations: vec![
+            Expectation::ToolCalled {
+                tool_id: "search".to_string(),
+            },
+            Expectation::OutputContains {
+                substring: "42".to_string(),
+            },
+            Expectation::OutputNotContains {
+                substring: "error".to_string(),
+            },
+        ],
+    };
+    let score = replay::run_case(&case).await;
+    assert!(
+        score.passed(),
+        "tool executed and output matched: {:?}",
+        score.results
     );
 }
 
