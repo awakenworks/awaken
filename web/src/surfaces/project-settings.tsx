@@ -59,15 +59,15 @@ export default function ProjectSettingsSurface() {
         <h2>Ingress</h2>
         <p className="hint">
           {app.t(
-            "The project id doubles as the ingress address segment. Addressing only — authority still flows from the API key (ADR-0042).",
-            "项目 id 同时是 ingress 地址段。仅寻址——授权仍来自 API key(ADR-0042)。",
+            "Tenancy addresses by workspace now (ADR-0048/0051): a workspace-scoped request uses /v1/workspaces/{ws}/…, rewritten to the flat /v1/… and scoped to the workspace. Flat /v1/… runs under the default scope. Addressing only — authority still flows from the API key.",
+            "现按 workspace 寻址(ADR-0048/0051):workspace 作用域请求用 /v1/workspaces/{ws}/…,改写为扁平 /v1/… 并绑定该 workspace;扁平 /v1/… 走默认作用域。仅寻址——授权仍来自 API key。",
           )}
         </p>
         <div className="row">
-          <code>{location.origin}/projects/{pid}</code>
+          <code>{location.origin}/v1/workspaces/{pid}</code>
           <button
             className="btn ghost"
-            onClick={() => navigator.clipboard.writeText(`${location.origin}/projects/${pid}`)}
+            onClick={() => navigator.clipboard.writeText(`${location.origin}/v1/workspaces/${pid}`)}
           >
             copy
           </button>

@@ -1,10 +1,10 @@
-// Project · Overview: the container's live pulse, fed by the project-scoped
-// session list (GET /projects/{pid}/v1/sessions). Observation only — the
-// console operates the platform; end users interact through the SDK.
+// Project · Overview: the container's live pulse, fed by the workspace-scoped
+// session list (GET /v1/sessions via ws()). Observation only — the console
+// operates the platform; end users interact through the SDK.
 
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router";
-import { api } from "../lib/api/client";
+import { api, ws } from "../lib/api/client";
 import type { ListSessionsResponse } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import { StatusPill } from "./sessions";
@@ -15,7 +15,7 @@ export default function ProjectOverviewSurface() {
   const { pid = "" } = useParams();
   const sessions = useQuery({
     queryKey: ["sessions", pid],
-    queryFn: () => api.get<ListSessionsResponse>(`/projects/${pid}/v1/sessions`),
+    queryFn: () => api.get<ListSessionsResponse>(ws("/v1/sessions")),
     refetchInterval: 15_000,
   });
   const rows = sessions.data?.data ?? [];

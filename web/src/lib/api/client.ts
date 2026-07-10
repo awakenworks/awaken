@@ -13,6 +13,29 @@ export function setToken(token: string): void {
   else localStorage.removeItem(TOKEN_KEY);
 }
 
+// ---- workspace scope seam (ADR-0048 path addressing / ADR-0051 tenancy) ----
+// Tenancy resolves to one opaque scope. With NO workspace set, scoped calls go to
+// the flat `/v1/…` surface (DEFAULT_SCOPE — single-tenant, Option A). Setting a
+// workspace routes them through `/v1/workspaces/{ws}/…`, which the host rewrites
+// back to flat `/v1/…` and stamps `{ws}` as the edge scope (multi-tenant, Option B).
+const WS_KEY = "awaken.console.workspace";
+export function getWorkspace(): string {
+  return localStorage.getItem(WS_KEY) ?? "";
+}
+export function setWorkspace(workspace: string): void {
+  if (workspace) localStorage.setItem(WS_KEY, workspace);
+  else localStorage.removeItem(WS_KEY);
+}
+/** Scope a flat `/v1/...` path to the active workspace. No workspace → unchanged
+ * (default scope); otherwise `/v1/foo` → `/v1/workspaces/{ws}/foo`. This is the
+ * one seam every tenant-scoped call routes through, so enabling multi-tenant
+ * addressing is a single setWorkspace() away. */
+export function ws(path: string): string {
+  const w = getWorkspace();
+  if (!w) return path;
+  return path.replace(/^\/v1\//, `/v1/workspaces/${w}/`);
+}
+
 export class ApiClientError extends Error {
   status: number;
   code: string;

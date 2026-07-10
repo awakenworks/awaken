@@ -4,7 +4,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { api } from "./api/client";
+import { api, isAbsent } from "./api/client";
 import type { Project } from "./api/types";
 
 export type SideScope = "project" | "workspace";
@@ -35,7 +35,18 @@ export function useApp(): AppState {
 export function useProjects() {
   return useQuery({
     queryKey: ["projects"],
-    queryFn: () => api.get<Project[]>("/v1/config/projects"),
+    // Project was removed from the tenancy model (ADR-0051 `remove Project`): the
+    // console operates one scope. When the endpoint is absent, fall back to a
+    // synthetic default workspace so navigation still works (Option A, single
+    // tenant). Option B replaces this with a real `/v1/workspaces` list.
+    queryFn: async () => {
+      try {
+        return await api.get<Project[]>("/v1/config/projects");
+      } catch (err) {
+        if (isAbsent(err)) return [{ id: "default", display_name: "Default workspace" }] as Project[];
+        throw err;
+      }
+    },
     refetchInterval: 30_000,
   });
 }

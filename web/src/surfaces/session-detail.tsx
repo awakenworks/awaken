@@ -6,7 +6,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
-import { api, streamUrl } from "../lib/api/client";
+import { api, streamUrl, ws } from "../lib/api/client";
 import type {
   ContentBlock,
   InboundEvent,
@@ -125,7 +125,8 @@ export default function SessionDetailSurface() {
   const app = useApp();
   const { pid = "", sid = "" } = useParams();
   const qc = useQueryClient();
-  const base = `/projects/${pid}/v1/sessions/${sid}`;
+  // Workspace-scoped via ws() (tenancy is an edge aspect); flat under default scope.
+  const base = ws(`/v1/sessions/${sid}`);
   const [pending, setPending] = useState<SessionEvent[]>([]);
   const [draft, setDraft] = useState("");
   const [model, setModel] = useState("");

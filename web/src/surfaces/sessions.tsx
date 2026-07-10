@@ -1,13 +1,13 @@
-// Project · Sessions: the project container's session list (GET
-// /projects/{pid}/v1/sessions), Anthropic-console style — mono ids, status
-// pills, one primary action. "Needs you" filters on the server's derived
-// status; archive marks a row without removing it.
+// Project · Sessions: the workspace-scoped session list (GET /v1/sessions,
+// tenant-scoped via ws()), Anthropic-console style — mono ids, status pills, one
+// primary action. Tenancy fences the list by the active workspace (ADR-0051);
+// archive marks a row without removing it.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import Drawer from "../components/ui/Drawer";
-import { api } from "../lib/api/client";
+import { api, getWorkspace, ws } from "../lib/api/client";
 import type {
   AgentConfigList,
   CreateSessionRequest,
@@ -56,7 +56,7 @@ function NewSessionModal({ pid, onClose }: { pid: string; onClose: () => void })
   });
   const create = useMutation({
     mutationFn: (body: CreateSessionRequest) =>
-      api.post<Session>(`/projects/${pid}/v1/sessions`, body),
+      api.post<Session>(ws("/v1/sessions"), body),
     onSuccess: (session) => {
       nav(`/p/${pid}/sessions/${session.id}`);
     },
@@ -195,11 +195,11 @@ export default function SessionsSurface() {
 
   const sessions = useQuery({
     queryKey: ["sessions", pid],
-    queryFn: () => api.get<ListSessionsResponse>(`/projects/${pid}/v1/sessions`),
+    queryFn: () => api.get<ListSessionsResponse>(ws("/v1/sessions")),
     refetchInterval: 15_000,
   });
   const archive = useMutation({
-    mutationFn: (sid: string) => api.post<Session>(`/projects/${pid}/v1/sessions/${sid}/archive`),
+    mutationFn: (sid: string) => api.post<Session>(ws(`/v1/sessions/${sid}/archive`)),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["sessions", pid] }),
   });
   const rows = (sessions.data?.data ?? []).filter((s) =>
@@ -228,11 +228,15 @@ export default function SessionsSurface() {
             </button>
           ))}
           <span className="mut">
-            baseURL <code>/projects/{pid}</code>
+            baseURL <code>{getWorkspace() ? `/v1/workspaces/${getWorkspace()}` : "/ (default scope)"}</code>
             <button
               className="btn ghost"
               style={{ height: 22, marginLeft: 6 }}
-              onClick={() => navigator.clipboard.writeText(`${location.origin}/projects/${pid}`)}
+              onClick={() =>
+                navigator.clipboard.writeText(
+                  getWorkspace() ? `${location.origin}/v1/workspaces/${getWorkspace()}` : location.origin,
+                )
+              }
             >
               copy
             </button>

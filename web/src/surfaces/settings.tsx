@@ -64,8 +64,8 @@ export default function SettingsSurface() {
           <h2>{app.t("Projects", "项目")}</h2>
           <p className="hint">
             {app.t(
-              "A project SELECTS from workspace supply and addresses the run plane at /projects/{id}.",
-              "项目从工作区供给中选择,并以 /projects/{id} 寻址运行面。",
+              "Tenancy is now Org ▸ Workspace: a workspace owns both its run resources and its config, addressed at /v1/workspaces/{ws}/…. Project is a grouping within a workspace.",
+              "租户现为 Org ▸ Workspace:一个 workspace 同时拥有运行资源与配置,以 /v1/workspaces/{ws}/… 寻址。Project 是 workspace 内的分组。",
             )}
           </p>
           {app.projects.map((p) => (

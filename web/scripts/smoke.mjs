@@ -77,22 +77,17 @@ await step("author mcp server", "PUT", "/v1/config/mcp-servers/docs-search", {
 await step("list mcp servers", "GET", "/v1/config/mcp-servers", undefined, (s, p) => s === 200 && p.length >= 1);
 
 // ---- Settings: project authoring (surfaces/settings.tsx) ----
-await step("author project", "PUT", "/v1/config/projects/demo", {
-  id: "demo",
-  workspace_id: "wrkspc_default",
-  display_name: "Demo project",
-  version: 1,
-});
-await step("list projects", "GET", "/v1/config/projects", undefined, (s, p) => s === 200 && p.some((x) => x.id === "demo"));
+// Project was removed from the tenancy model (ADR-0051 `remove Project` +
+// ADR-0048): there is no `/v1/config/projects` resource and no `/projects/{id}`
+// ingress; the tenant is the workspace (addressed by key or `/v1/workspaces/{ws}/…`).
 
-// ---- Project · agent MCP binding (surfaces/project-agents.tsx) ----
-await step("bind project agent mcp", "PUT", "/v1/config/projects/demo/agents/default/mcp", {
-  project_id: "demo",
+// ---- Agent MCP binding on the flat config plane (surfaces/agent-editor.tsx) ----
+await step("bind agent mcp", "PUT", "/v1/config/agents/default/mcp", {
   agent_id: "default",
   mcp_server_ids: ["docs-search"],
   version: 1,
 });
-await step("read project agent mcp", "GET", "/v1/config/projects/demo/agents/default/mcp", undefined, (s, p) => s === 200 && p.mcp_server_ids.includes("docs-search"));
+await step("read agent mcp", "GET", "/v1/config/agents/default/mcp", undefined, (s, p) => s === 200 && p.mcp_server_ids.includes("docs-search"));
 
 // ---- Project · Agents authoring via config plane (surfaces/agent-editor.tsx) ----
 // The console authors the rich AgentConfig against our own management API, then
@@ -128,20 +123,25 @@ await step("vault credential (static_bearer)", "POST", `/v1/vaults/${vault.id}/c
   token: "test-token", // awaken-allow: secret (synthetic smoke fixture)
 });
 
-// ---- Project · Sessions via ingress (surfaces/sessions.tsx) ----
-const session = await step("create session via /projects/demo", "POST", "/projects/demo/v1/sessions", {
+// ---- Sessions on the flat data plane (surfaces/sessions.tsx via ws()) ----
+// Tenancy is an edge aspect: the flat `/v1/sessions` surface runs under the
+// seeded DEFAULT_SCOPE (Option A, single-tenant). The `/projects/{id}` ingress is
+// retired (ADR-0048 supersedes ADR-0042); scope now comes from the key or the
+// `/v1/workspaces/{ws}/…` path form (probed below).
+const session = await step("create session (flat)", "POST", "/v1/sessions", {
   agent: "default",
   title: "smoke",
   vault_ids: [vault.id],
 }, (s, p) => s === 200 || s === 201 ? typeof p.id === "string" : false);
-await step("retrieve session via ingress", "GET", `/projects/demo/v1/sessions/${session.id}`, undefined, (s, p) => s === 200 && p.id === session.id);
-await step("list events via ingress", "GET", `/projects/demo/v1/sessions/${session.id}/events`, undefined, (s, p) => s === 200 && Array.isArray(p.data));
-await step("list sessions via ingress", "GET", "/projects/demo/v1/sessions", undefined, (s, p) => s === 200 && p.data.some((x) => x.id === session.id));
-await step("workspace-wide session list", "GET", "/v1/sessions", undefined, (s, p) => s === 200 && p.data.some((x) => x.id === session.id));
-const renamed = await step("rename session", "POST", `/projects/demo/v1/sessions/${session.id}`, { title: "smoke (renamed)" }, (s, p) => s === 200 && p.title === "smoke (renamed)");
-await step("archive session", "POST", `/projects/demo/v1/sessions/${renamed.id}/archive`, undefined, (s, p) => s === 200 && typeof p.archived_at === "string");
-await step("archived row stays listed", "GET", "/projects/demo/v1/sessions", undefined, (s, p) => s === 200 && p.data.some((x) => x.id === session.id && x.archived_at));
-await step("unknown project 404s (managed envelope)", "GET", "/projects/ghost/v1/sessions/x", undefined, (s, p) => s === 404 && p?.error?.type === "not_found_error");
+await step("retrieve session", "GET", `/v1/sessions/${session.id}`, undefined, (s, p) => s === 200 && p.id === session.id);
+await step("list events", "GET", `/v1/sessions/${session.id}/events`, undefined, (s, p) => s === 200 && Array.isArray(p.data));
+await step("list sessions", "GET", "/v1/sessions", undefined, (s, p) => s === 200 && p.data.some((x) => x.id === session.id));
+const renamed = await step("rename session", "POST", `/v1/sessions/${session.id}`, { title: "smoke (renamed)" }, (s, p) => s === 200 && p.title === "smoke (renamed)");
+await step("archive session", "POST", `/v1/sessions/${renamed.id}/archive`, undefined, (s, p) => s === 200 && typeof p.archived_at === "string");
+await step("archived row stays listed", "GET", "/v1/sessions", undefined, (s, p) => s === 200 && p.data.some((x) => x.id === session.id && x.archived_at));
+// Workspace path addressing (ADR-0048): `/v1/workspaces/{ws}/sessions` is rewritten
+// to flat `/v1/sessions` and scoped to {ws} — the ws() seam's target for Option B.
+await step("workspace-path session list", "GET", "/v1/workspaces/default/sessions", undefined, (s, p) => s === 200 && p.data.some((x) => x.id === session.id));
 
 console.log(failures === 0 ? "\nSMOKE OK" : `\nSMOKE FAILED (${failures})`);
 process.exit(failures === 0 ? 0 : 1);
