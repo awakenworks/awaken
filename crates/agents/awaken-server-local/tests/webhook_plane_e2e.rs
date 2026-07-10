@@ -91,13 +91,8 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
     // exactly as `create_session` does (owner resolved at ingress; the
     // create_session→sink link itself is covered in protocol-managed).
     use awaken_protocol_managed::SessionLifecycleSink;
-    sink.emit(
-        "sesn_live",
-        Some("wrkspc_local"),
-        None,
-        "session.status_idle",
-    )
-    .await;
+    sink.emit("sesn_live", Some("wrkspc_local"), "session.status_idle")
+        .await;
 
     // 5. The receiver got exactly one signed, correctly-scoped delivery.
     for _ in 0..100 {

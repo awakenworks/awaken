@@ -71,13 +71,7 @@ impl WebhookLifecycleSink {
 
 #[async_trait::async_trait]
 impl SessionLifecycleSink for WebhookLifecycleSink {
-    async fn emit(
-        &self,
-        session_id: &str,
-        workspace_id: Option<&str>,
-        _org_id: Option<&str>,
-        event_type: &str,
-    ) {
+    async fn emit(&self, session_id: &str, workspace_id: Option<&str>, event_type: &str) {
         // No owner → no workspace to fan out to (the bare pre-owner surface).
         let Some(workspace_id) = workspace_id else {
             return;
