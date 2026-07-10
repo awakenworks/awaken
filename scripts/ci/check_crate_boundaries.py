@@ -876,11 +876,14 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-run-executor-acp",
         "awaken-config-resolver",
         "awaken-credential-vault",
+        # ADR-0050: consent read/write router over the data-subject aggregate.
+        "awaken-data-subject",
         "awaken-protocol-managed",
         "awaken-protocol-transport",
         "awaken-protocol-a2a",
         "async-trait",
         "axum",
+        "serde",
         # Durable ManagedSessionRepository backends (sqlite + postgres) over the
         # `managed` scoped-migration bundle; the SQL drivers + the shared migrator.
         "rusqlite",

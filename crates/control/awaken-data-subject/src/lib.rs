@@ -192,22 +192,21 @@ impl DataSubjectRepo for InMemoryDataSubjectRepo {
 
 /// Bridges the neutral [`DataSubjectResolver`](awaken_runtime_contract::DataSubjectResolver)
 /// port to a [`DataSubjectRepo`] (ADR-0050 D10a). An unknown subject resolves to
-/// `Structured` (no content without a known, consenting subject).
-pub struct RepoDataSubjectResolver<R: DataSubjectRepo> {
-    repo: R,
+/// `Structured` (no content without a known, consenting subject). Holds an
+/// `Arc`-shared repo so a consent-write path and the resolver see one store.
+pub struct RepoDataSubjectResolver {
+    repo: std::sync::Arc<dyn DataSubjectRepo>,
 }
 
-impl<R: DataSubjectRepo> RepoDataSubjectResolver<R> {
+impl RepoDataSubjectResolver {
     #[must_use]
-    pub fn new(repo: R) -> Self {
+    pub fn new(repo: std::sync::Arc<dyn DataSubjectRepo>) -> Self {
         Self { repo }
     }
 }
 
 #[async_trait]
-impl<R: DataSubjectRepo> awaken_runtime_contract::DataSubjectResolver
-    for RepoDataSubjectResolver<R>
-{
+impl awaken_runtime_contract::DataSubjectResolver for RepoDataSubjectResolver {
     async fn consent_ceiling(&self, subject: &DataSubjectId, purpose: Purpose) -> ContentCapture {
         match self.repo.get(subject).await {
             Ok(s) => s.consent_ceiling(purpose),
@@ -274,7 +273,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolver_reads_grant_and_erases() {
-        let repo = InMemoryDataSubjectRepo::new();
+        let repo = std::sync::Arc::new(InMemoryDataSubjectRepo::new());
         let mut s = DataSubject::new(DataSubjectId("dsub_1".into()), "org_1", 0);
         s.upsert_consent(granted(Purpose::TelemetryContent));
         repo.put(s).await.unwrap();
