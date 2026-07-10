@@ -252,7 +252,11 @@ impl SessionCtx {
             .with_commit(self.commit.clone())
             .with_reader(self.commit.clone())
             .with_stream_checkpoint(self.stream_checkpoint.clone())
-            .with_cancellation(token);
+            .with_cancellation(token)
+            // ADR-0050 D5: resolve the content-capture decision for this turn.
+            // Open/single-machine reads the env default; managed overrides with
+            // the ceiling × request × consent meet.
+            .with_capture(crate::redact::env_capture_decision());
         // ADR-0044: route this run's tool calls to the host's remote hand, if one
         // is wired; otherwise the kernel's in-process LocalToolExecutor runs them.
         if let Some(hand) = &self.remote_hand {
