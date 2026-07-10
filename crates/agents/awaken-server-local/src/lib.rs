@@ -1464,22 +1464,9 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
     let user_profiles = awaken_protocol_managed::user_profiles_router(std::sync::Arc::new(
         awaken_protocol_managed::UserProfileState::new(),
     ));
-    // Consent + GDPR erasure (ADR-0050): the consent read/write routes and
-    // `/v1/user_profiles/:id/erasure` share ONE in-memory subject store on the
-    // open surface, so a granted consent is what a later erasure/resolve sees.
-    let ds_repo: std::sync::Arc<dyn awaken_data_subject::DataSubjectRepo> =
-        std::sync::Arc::new(awaken_data_subject::InMemoryDataSubjectRepo::new());
-    // The erasable, TTL'd captured-content store: the target an Art.17 erasure
-    // fans out to (and, once the engine sink is wired, where content lands).
-    let capture_store =
-        std::sync::Arc::new(awaken_data_subject::InMemoryCapturedContentStore::new());
-    let ds_resolver: std::sync::Arc<dyn awaken_runtime_contract::DataSubjectResolver> =
-        std::sync::Arc::new(
-            awaken_data_subject::RepoDataSubjectResolver::new(ds_repo.clone())
-                .with_eraser(capture_store.clone()),
-        );
-    let erasure = awaken_runtime_host::erasure_router(ds_resolver);
-    let consent = awaken_runtime_host::consent_router(ds_repo.clone());
+    // ADR-0050 consent/erasure/enrollment routes come from `mount_with_managed`
+    // (over the process-global captured-content store), so they are not mounted
+    // here — doing so would double-mount and conflict.
     // The public agent registry (`/v1/agents`) over its own in-mem store.
     let agents = awaken_protocol_managed::agents_router(std::sync::Arc::new(
         awaken_protocol_managed::AgentRegistryState::new(),
@@ -1503,8 +1490,6 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
     let mut mgmt = admin
         .merge(vaults)
         .merge(user_profiles)
-        .merge(erasure)
-        .merge(consent)
         .merge(agents)
         .merge(deployments)
         .merge(environments);
