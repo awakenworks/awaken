@@ -862,6 +862,17 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "async-trait",
         "tokio",
     },
+    # Fixture-driven eval harness (#4): replays recorded cases through the real
+    # runtime (RunExecutor) and scores them. Depends on the kernel to run cases.
+    "awaken-eval": {
+        "awaken-agent-contract",
+        "awaken-runtime-contract",
+        "awaken-runtime",
+        "async-trait",
+        "serde",
+        "serde_json",
+        "tokio",
+    },
     # Extracted managed-agents SERVICE layer: the protocol-neutral SharedHost +
     # the two port adapters (ManagedHost / ProtocolHost) + every host module.
     # server-local composes it; nothing below the agents bucket depends on it.
