@@ -22,6 +22,7 @@ mod config_home;
 mod config_plane;
 mod data_subject_api;
 mod delegate;
+mod commit_backend;
 mod dispatch_backend;
 mod durable_ops;
 mod files;
@@ -63,6 +64,7 @@ use awaken_runtime_contract::live_inbox::{EditError, LiveInboxMessageId, Offer};
 use crate::host::{HostError, HostErrorKind, PendingTool, TurnResult};
 
 // The neutral session substrate and its resume vocabulary.
+pub use crate::commit_backend::init_shared_postgres_commit;
 pub use crate::dispatch_backend::{init_shared_dispatch_store, init_shared_postgres_dispatch};
 pub use crate::host::{HostResume, SharedHost};
 // The sandboxed ACP channel source (bwrap-confined agent launch) and the shared

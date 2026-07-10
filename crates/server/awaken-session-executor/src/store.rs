@@ -19,12 +19,18 @@ use awaken_agent_contract::event::kind::Kind;
 use awaken_agent_contract::store::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::store::run_store::RunStore;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
+use std::sync::Arc;
+
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_store_fs::FsCommitCoordinator;
+use awaken_store_postgres::PostgresCommitCoordinator;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
-/// One thread's commit boundary. `Memory` is ephemeral; `Sqlite` and `Fs` are
-/// durable (a parked run and its history survive a process restart).
+/// One thread's commit boundary. `Memory` is ephemeral; `Sqlite`, `Fs`, and
+/// `Postgres` are durable (a parked run and its history survive a process restart).
+/// `Postgres` is the SHARED coordinator (keyed by thread internally) so any node
+/// serves any thread's history — the cloud multi-node backend (ADR-0022 D6); the
+/// others are per-thread/per-process.
 // Exactly one `HostCommit` exists per live session (not stored in bulk), so the
 // per-backend size spread is immaterial; boxing would only add an indirection.
 #[allow(clippy::large_enum_variant)]
@@ -32,6 +38,7 @@ pub(crate) enum HostCommit {
     Memory(MemoryCommitCoordinator),
     Sqlite(SqliteCommitCoordinator),
     Fs(FsCommitCoordinator),
+    Postgres(Arc<PostgresCommitCoordinator>),
 }
 
 /// Recover the parked position from a durable backend's fact-derived read model
@@ -58,6 +65,7 @@ impl HostCommit {
             }
             HostCommit::Sqlite(inner) => inner.open_wait_for_thread(thread),
             HostCommit::Fs(inner) => parked_from_reader(inner, thread),
+            HostCommit::Postgres(inner) => parked_from_reader(inner.as_ref(), thread),
         }
     }
 
@@ -80,6 +88,12 @@ impl HostCommit {
                 .filter(|event| event.kind == Kind::Continuation)
                 .map(|event| event.payload)
                 .collect(),
+            HostCommit::Postgres(inner) => inner
+                .list_events(&EventScope::Thread(thread.clone()), None, usize::MAX)
+                .into_iter()
+                .filter(|event| event.kind == Kind::Continuation)
+                .map(|event| event.payload)
+                .collect(),
         }
     }
 }
@@ -91,6 +105,7 @@ impl Coordinator for HostCommit {
             HostCommit::Memory(inner) => inner.commit(commit).await,
             HostCommit::Sqlite(inner) => inner.commit(commit).await,
             HostCommit::Fs(inner) => inner.commit(commit).await,
+            HostCommit::Postgres(inner) => inner.commit(commit).await,
         }
     }
 }
@@ -101,6 +116,7 @@ impl ThreadReader for HostCommit {
             HostCommit::Memory(inner) => inner.committed_messages(thread_id),
             HostCommit::Sqlite(inner) => inner.committed_messages(thread_id),
             HostCommit::Fs(inner) => inner.committed_messages(thread_id),
+            HostCommit::Postgres(inner) => inner.committed_messages(thread_id),
         }
     }
 
@@ -109,6 +125,7 @@ impl ThreadReader for HostCommit {
             HostCommit::Memory(inner) => inner.waiting_ticket(run_id),
             HostCommit::Sqlite(inner) => inner.waiting_ticket(run_id),
             HostCommit::Fs(inner) => inner.waiting_ticket(run_id),
+            HostCommit::Postgres(inner) => inner.waiting_ticket(run_id),
         }
     }
 
@@ -120,6 +137,7 @@ impl ThreadReader for HostCommit {
             HostCommit::Memory(inner) => inner.committed_state(thread_id),
             HostCommit::Sqlite(inner) => inner.committed_state(thread_id),
             HostCommit::Fs(inner) => inner.committed_state(thread_id),
+            HostCommit::Postgres(inner) => inner.committed_state(thread_id),
         }
     }
 }
@@ -130,6 +148,7 @@ impl RunStore for HostCommit {
             HostCommit::Memory(inner) => inner.get(id),
             HostCommit::Sqlite(inner) => inner.get(id),
             HostCommit::Fs(inner) => inner.get(id),
+            HostCommit::Postgres(inner) => inner.get(id),
         }
     }
 }
@@ -149,6 +168,13 @@ pub(crate) fn sanitize_thread(thread: &str) -> String {
 /// candidate id is never materialized as a side effect (a prematurely built
 /// session context would lack the session's agent config and MCP tools).
 pub(crate) fn durable_thread_exists(store_dir: Option<&std::path::Path>, thread: &str) -> bool {
+    // Shared Postgres backend: the coordinator is keyed by thread, so a committed
+    // run for the thread means it durably exists (no per-thread file to stat).
+    if std::env::var("AWAKEN_STORE").as_deref() == Ok("postgres") {
+        return crate::commit_backend::shared_postgres_commit()
+            .and_then(|c| c.latest_run(&ThreadId(thread.to_string())))
+            .is_some();
+    }
     let Some(dir) = store_dir else {
         return false;
     };
