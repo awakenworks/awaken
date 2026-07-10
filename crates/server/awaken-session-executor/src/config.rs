@@ -218,6 +218,9 @@ pub(crate) fn build_runtime(llm: Arc<dyn LlmExecutor>, env: &Environment) -> Run
     let mut runtime = Runtime::new()
         .with_llm(llm)
         .with_gate(server_gate())
+        // Structure-only metrics at the model/tool chokepoints (#2). Binds to the
+        // global meter installed by `observability::init()`; a no-op when none is.
+        .with_metrics(Arc::new(awaken_observability::OtelMetricsRecorder::new()))
         // The tool state machine is available on every runtime; an agent activates
         // it via `plugin_ids` and configures its machines via `plugin_config`.
         .with_plugin(Arc::new(StateMachinePlugin::empty()));

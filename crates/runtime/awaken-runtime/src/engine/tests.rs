@@ -364,6 +364,7 @@ async fn interrupted_text_stream_is_continued_from_the_partial() {
         None,
         &awaken_runtime_contract::CaptureDecision::default(),
         None,
+        &awaken_runtime_contract::metrics::NoopRecorder,
     )
     .await
     .expect("continues past the drop");
@@ -418,6 +419,7 @@ async fn completed_tool_calls_before_a_drop_are_executed_without_re_inferring() 
         None,
         &awaken_runtime_contract::CaptureDecision::default(),
         None,
+        &awaken_runtime_contract::metrics::NoopRecorder,
     )
     .await
     .expect("salvages the completed tool call");
@@ -456,6 +458,7 @@ async fn an_in_flight_tool_call_is_dropped_and_the_text_continues() {
         None,
         &awaken_runtime_contract::CaptureDecision::default(),
         None,
+        &awaken_runtime_contract::metrics::NoopRecorder,
     )
     .await
     .expect("continues the text past the in-flight tool");
@@ -503,6 +506,7 @@ async fn the_interruption_boundary_flushes_a_checkpoint_then_clears_it_on_return
         None,
         &awaken_runtime_contract::CaptureDecision::default(),
         None,
+        &awaken_runtime_contract::metrics::NoopRecorder,
     )
     .await;
     assert!(result.is_err(), "no retry budget: the drop stands");
@@ -549,6 +553,7 @@ async fn a_persisted_text_partial_resumes_in_a_fresh_call() {
         Some(resume),
         &awaken_runtime_contract::CaptureDecision::default(),
         None,
+        &awaken_runtime_contract::metrics::NoopRecorder,
     )
     .await
     .expect("resumes from the persisted partial");
@@ -592,6 +597,7 @@ async fn a_persisted_completed_tool_call_resumes_without_calling_the_model() {
         Some(resume),
         &awaken_runtime_contract::CaptureDecision::default(),
         None,
+        &awaken_runtime_contract::metrics::NoopRecorder,
     )
     .await
     .expect("resumes the completed tool call");

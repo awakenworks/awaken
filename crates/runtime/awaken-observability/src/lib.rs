@@ -20,11 +20,13 @@
 
 mod config;
 mod http;
+mod metrics;
 mod otel;
 mod propagation;
 
 pub use config::{OtelConfig, OtelConfigBuilder, OtelProtocol};
 pub use http::trace_http;
+pub use metrics::{OtelMetricsRecorder, init_otlp_meter};
 pub use otel::init_otlp_tracer;
 pub use propagation::{current_traceparent, dispatch_span};
 
@@ -59,6 +61,16 @@ pub fn init() {
     } else {
         subscriber.try_init().ok();
     }
+
+    // Install the OTLP metric pipeline alongside traces (#2) when an endpoint is
+    // configured, so a server with OTLP set exports metrics with no extra wiring.
+    // Best-effort: a metric-export failure must never stop the process.
+    let config = config::OtelConfig::from_env();
+    if config.is_configured() {
+        if let Err(error) = metrics::init_otlp_meter(&config) {
+            tracing::warn!(%error, "OTLP meter init failed; continuing without metric export");
+        }
+    }
 }
 
 /// Whether `AWAKEN_LOG_FORMAT` selects structured JSON lines (case-insensitive
@@ -73,6 +85,7 @@ fn log_format_is_json(value: Option<&str>) -> bool {
 /// are delivered before the process exits. A no-op when no exporter was configured.
 pub fn shutdown() {
     otel::shutdown();
+    metrics::shutdown_meter();
 }
 
 #[cfg(test)]
