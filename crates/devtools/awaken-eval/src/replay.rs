@@ -5,8 +5,8 @@
 //! no execution logic of its own. The committed assistant text and the terminal
 //! phase are what the expectations are scored against.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
@@ -19,7 +19,7 @@ use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, StopReason,
+    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, StopReason, ToolCall,
 };
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
@@ -28,14 +28,15 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
+use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 
-use crate::{Case, CaseScore, Dataset, Report, score_case};
+use crate::{Case, CaseScore, Dataset, Report, ScriptedTurn, score_case};
 
-/// Serves the recorded turns in order; past the end it repeats the last turn.
-/// Every turn ends the turn (`EndTurn`), so a text-only case terminates in one
-/// step — matching how the recorded run ended.
+/// Serves the recorded turns in order; past the end it repeats the last turn. A
+/// turn with `tool_calls` drives the engine's tool loop (stop reason left open so
+/// the loop continues); a text turn ends the turn (`EndTurn`).
 struct ScriptLlm {
-    turns: Vec<String>,
+    turns: Vec<ScriptedTurn>,
     n: AtomicUsize,
 }
 
@@ -46,27 +47,79 @@ impl LlmExecutor for ScriptLlm {
         _request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         let i = self.n.fetch_add(1, Ordering::SeqCst);
-        let text = self
-            .turns
-            .get(i)
-            .or_else(|| self.turns.last())
-            .cloned()
-            .unwrap_or_default();
+        let turn = self.turns.get(i).or_else(|| self.turns.last());
+        let (output, stop_reason) = match turn {
+            Some(t) if !t.tool_calls.is_empty() => {
+                let calls = t
+                    .tool_calls
+                    .iter()
+                    .enumerate()
+                    .map(|(j, tc)| ToolCall {
+                        call_id: format!("call-{i}-{j}"),
+                        tool_id: tc.tool_id.clone(),
+                        arguments: tc.arguments.clone(),
+                    })
+                    .collect();
+                (AssistantOutput::from_tool_calls(calls), None)
+            }
+            Some(t) => (
+                AssistantOutput::text(t.text.clone()),
+                Some(StopReason::EndTurn),
+            ),
+            None => (
+                AssistantOutput::text(String::new()),
+                Some(StopReason::EndTurn),
+            ),
+        };
         Ok(ChatResponse {
-            output: AssistantOutput::text(text),
+            output,
             usage: None,
-            stop_reason: Some(StopReason::EndTurn),
+            stop_reason,
         })
+    }
+}
+
+/// A fixed echo tool the eval registers for each tool id a case's script invokes,
+/// so a scripted tool call executes on the real engine. Records that it ran, so a
+/// [`ToolCalled`](crate::Expectation::ToolCalled) expectation can be scored.
+struct EvalEchoTool {
+    id: String,
+    invoked: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl RawTool for EvalEchoTool {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        self.invoked.lock().unwrap().push(call.tool_id.clone());
+        Ok(ToolOutput::ok(call.call_id, "eval-echo"))
     }
 }
 
 /// Replay one case through the real runtime and score it.
 pub async fn run_case(case: &Case) -> CaseScore {
     let fingerprint = CatalogFingerprint("eval".to_string());
-    let runtime = Runtime::new().with_llm(Arc::new(ScriptLlm {
-        turns: case.script.iter().map(|t| t.text.clone()).collect(),
+    let mut runtime = Runtime::new().with_llm(Arc::new(ScriptLlm {
+        turns: case.script.clone(),
         n: AtomicUsize::new(0),
     }));
+    // Register a fixed echo tool for each distinct tool id the script invokes, so
+    // a scripted tool call executes on the real engine and is recorded.
+    let invoked = Arc::new(Mutex::new(Vec::new()));
+    let mut registered: Vec<String> = Vec::new();
+    for turn in &case.script {
+        for tc in &turn.tool_calls {
+            if !registered.contains(&tc.tool_id) {
+                registered.push(tc.tool_id.clone());
+                runtime = runtime.with_tool(Arc::new(EvalEchoTool {
+                    id: tc.tool_id.clone(),
+                    invoked: invoked.clone(),
+                }));
+            }
+        }
+    }
     runtime
         .install_catalog(RuntimeCatalogInstall {
             publication_id: "eval".to_string(),
@@ -125,7 +178,8 @@ pub async fn run_case(case: &Case) -> CaseScore {
         .collect::<Vec<_>>()
         .join("\n");
 
-    score_case(case, &output, succeeded)
+    let tools_called = invoked.lock().unwrap().clone();
+    score_case(case, &output, succeeded, &tools_called)
 }
 
 /// Replay every case in a dataset and collect the report.
