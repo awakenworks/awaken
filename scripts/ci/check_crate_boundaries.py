@@ -131,6 +131,24 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # dev-only: reopen-from-file persistence tests.
         "tempfile",
     },
+    # Data-subject aggregate + consent grants + repo/resolver (ADR-0050): a
+    # control/compliance-plane store peer to the credential vault; reuses the
+    # neutral DataSubjectId/Purpose/DataSubjectResolver from runtime-contract.
+    "awaken-data-subject": {
+        "awaken-agent-contract",
+        "awaken-runtime-contract",
+        "async-trait",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "rusqlite",
+        # `spawn_blocking` for the sqlite adapter's off-thread connection work.
+        "tokio",
+        "awaken-scoped-migration",
+        "awaken-scoped-migration-sqlite",
+        # dev-only: reopen-from-file persistence test.
+        "tempfile",
+    },
     "awaken-credential-vault": {
         "awaken-agent-contract",
         "async-trait",

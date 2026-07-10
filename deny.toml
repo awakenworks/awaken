@@ -66,6 +66,7 @@ wrappers = [
     "awaken-protocol-mcp",
     "awaken-server-local",
     "awaken-credential-vault",
+    "awaken-data-subject",
     "awaken-config-resolver",
     "awaken-managed-bridge",
     "awaken-admin-config-api",
@@ -100,6 +101,7 @@ wrappers = [
     "awaken-server-local",
     "awaken-standalone",
     "awaken-config-resolver",
+    "awaken-data-subject",
     "awaken-run-executor-acp",
     "awaken-run-executor-a2a",
     # ADR-0044: the remote-hand relay. It depends on the contract for ToolCall/
