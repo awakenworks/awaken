@@ -536,6 +536,16 @@ pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
         None,
         "a running run is not durably cancelled"
     );
+    // run-2 finishes so the thread frees for the next run — single-writer-per-thread
+    // (ADR-0022) forbids run-3 claiming while run-2 is still in flight.
+    store
+        .settle(
+            &RunId("run-2".to_string()),
+            awaken_run_ingress::DispatchOutcome::Done,
+            &[],
+        )
+        .await
+        .unwrap();
 
     // A parked run on a thread is resolvable by thread (send_message addressing).
     let thread_id = ThreadId(THREAD.to_string());
@@ -562,7 +572,10 @@ pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
 /// Shared spec for priority, dedupe, and dead-letter GC. Every backend matches.
 pub async fn assert_priority_dedupe_gc<S: awaken_run_ingress::Dispatch>(store: &S) {
     use awaken_run_ingress::{DispatchOutcome, RunExecutionRequest, SubmitOptions};
-    let req = |id: &str| RunExecutionRequest::new(activation(id));
+    // Each run on its own thread: priority/dedupe/GC are thread-orthogonal, and
+    // single-writer-per-thread (ADR-0022) forbids claiming two runs of one thread at
+    // once, which these assertions do.
+    let req = |id: &str| RunExecutionRequest::new(activation_on(id, id));
 
     // Priority: the higher-priority fresh run is claimed first.
     store
@@ -678,10 +691,12 @@ pub async fn assert_list_dispatches<S: awaken_run_ingress::Dispatch>(store: &S) 
 pub async fn assert_renew_owned_leases<S: awaken_run_ingress::Dispatch>(store: &S) {
     use awaken_run_ingress::RunExecutionRequest;
 
-    // owner-a claims two runs at t=0 with a 100ms lease (expire at 100).
+    // owner-a claims two runs at t=0 with a 100ms lease (expire at 100). Distinct
+    // threads: single-writer-per-thread (ADR-0022) means one owner holds at most one
+    // in-flight run per thread, so "owner-a holds two leases" needs two threads.
     for run in ["r1", "r2"] {
         store
-            .enqueue(RunExecutionRequest::new(activation(run)))
+            .enqueue(RunExecutionRequest::new(activation_on(run, run)))
             .await
             .unwrap();
         assert!(store.claim("owner-a", 100, 0).await.unwrap().is_some());

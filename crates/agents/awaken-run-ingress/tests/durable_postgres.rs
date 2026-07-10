@@ -16,13 +16,60 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::store::run_store::RunStore;
 use awaken_run_ingress::{
     DispatchQueue, DurableRunIngress, Inbox, PendingInput, PostgresDispatchStore,
-    RunExecutionRequest,
+    RunExecutionRequest, SubmitOptions,
 };
 use awaken_runtime::RunIngress;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_postgres::PostgresCommitCoordinator;
 
-use harness::{THREAD, TICKET, activation, tool_runtime};
+use harness::{THREAD, TICKET, activation, activation_on, tool_runtime};
+
+/// Single-writer-per-thread (ADR-0022), topology-independent: two runs of the SAME
+/// thread are both pending; two claimers race concurrently. The V0012
+/// one-running-per-thread unique index is the backstop the read-committed SELECT
+/// guard cannot provide alone — exactly ONE wins, the other loses the unique race
+/// (SQLSTATE 23505) and claims nothing. This is the cross-process guarantee that
+/// "sole claimer" (single pool) could not give.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn postgres_one_running_per_thread_under_concurrent_claimers() {
+    let schema = "t_pg_claim_guard";
+    if harness::schema_pool(schema).await.is_none() {
+        return;
+    }
+    let store = Arc::new(
+        PostgresDispatchStore::connect(&harness::database_url_in_schema(schema))
+            .await
+            .expect("connect"),
+    );
+    // Two fresh pending runs on ONE thread (no supersession, so both coexist).
+    let fresh = SubmitOptions {
+        supersede: false,
+        ..Default::default()
+    };
+    for run in ["cg-1", "cg-2"] {
+        store
+            .enqueue_with(
+                RunExecutionRequest::new(activation_on(run, "cg-thread")),
+                fresh.clone(),
+            )
+            .await
+            .expect("enqueue");
+    }
+
+    // Race two claimers on separate tasks (separate pool connections).
+    let a = store.clone();
+    let b = store.clone();
+    let (ra, rb) = tokio::join!(
+        tokio::spawn(async move { a.claim("owner-a", 1_000, 0).await }),
+        tokio::spawn(async move { b.claim("owner-b", 1_000, 0).await }),
+    );
+    let won = ra.unwrap().expect("claim a ok").is_some() as u8
+        + rb.unwrap().expect("claim b ok").is_some() as u8;
+    assert_eq!(
+        won, 1,
+        "exactly one of two concurrent same-thread claims wins (single-writer)"
+    );
+}
 
 fn pending(message_id: &str, correlation: &str, allow: bool) -> PendingInput {
     harness::pending(
