@@ -70,6 +70,13 @@ pub struct Claimed {
     /// from committed truth (the waiting ticket), not from this field, and tells
     /// `settle` which inputs it consumed.
     pub pending: Vec<PendingInput>,
+    /// The sandbox this run is bound to for its lifetime (B-P3, ADR-0021 §6), as an
+    /// **opaque** reference — the dispatch aggregate stays neutral (it names no
+    /// provisioning type); the fleet serializes a `SandboxHandle` into it and
+    /// parses it back on adoption. `None` until the run is placed on a sandbox.
+    /// Durable so crash recovery (`reconcile_adoption`) can re-adopt the same
+    /// sandbox instead of leaking it.
+    pub sandbox: Option<String>,
 }
 
 /// How a claimed attempt resolved. Settled atomically with releasing the lease.
@@ -219,6 +226,19 @@ pub trait DispatchQueue: Send + Sync {
     /// (ADR-0015). The crash-retry count increments only on recovery re-claims, so
     /// a normal park/wake never spends the budget.
     async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError>;
+
+    /// Bind `run_id` to the sandbox it was placed on (B-P3, ADR-0021 §6). The
+    /// reference is opaque to the dispatch aggregate (the fleet serializes a
+    /// `SandboxHandle` into it). Stored durably so `claim` returns it on recovery
+    /// and `reconcile_adoption` can re-adopt the same sandbox. Default is a no-op
+    /// for backends that do not persist the binding (the neutral seam).
+    async fn bind_sandbox(
+        &self,
+        _run_id: &RunId,
+        _sandbox_ref: &str,
+    ) -> Result<(), DispatchError> {
+        Ok(())
+    }
 
     /// The run ids currently dead-lettered, for operations.
     async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError>;
