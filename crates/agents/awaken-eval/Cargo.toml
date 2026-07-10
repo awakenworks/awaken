@@ -10,6 +10,10 @@ license.workspace = true
 # small typed set of expectations. The harness owns no execution logic — replay is
 # the runtime itself, so a scored case exercises the true engine path.
 
+[[bin]]
+name = "awaken-eval"
+path = "src/main.rs"
+
 [dependencies]
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
@@ -17,6 +21,7 @@ awaken-runtime = { workspace = true }
 async-trait.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
