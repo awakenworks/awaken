@@ -89,9 +89,6 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tokio",
         "tower",
     },
-    # Tenancy scope tree (Org⊃Workspace⊃Project) vendored serde-only from
-    # awaken-flow's awaken-flow-work; a foundation leaf, names no iam/store/wire.
-    "awaken-scope": {"serde"},
     # Tenancy as an edge aspect (ADR-0051): the opaque `ScopeId` + the pure
     # ingress reconciliation (`resolve_scope`). A foundation leaf, serde-only;
     # names no iam/store/wire — the `ScopeId → ScopeRef` ACL lives in the PDP
@@ -186,7 +183,6 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-config-resolver": {
         "awaken-agent-contract",
         "awaken-runtime-contract",
-        "awaken-scope",
         "awaken-model-catalog",
         "awaken-credential-vault",
         "serde",
