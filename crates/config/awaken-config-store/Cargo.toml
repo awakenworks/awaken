@@ -6,6 +6,9 @@ license.workspace = true
 
 [dependencies]
 awaken-runtime-contract.workspace = true
+# Tenancy edge aspect (ADR-0051 D4): the opaque `ScopeId` the `ScopedConfig`
+# decorator binds so the authoring aggregate is tenant-isolable.
+awaken-tenancy.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true

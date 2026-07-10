@@ -463,6 +463,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-runtime-contract",
         "awaken-runtime",
         "awaken-agent-contract",
+        # Tenancy edge aspect (ADR-0051 D4): the opaque `ScopeId` the
+        # `ScopedConfig` decorator binds so the authoring aggregate is
+        # tenant-isolable (one `scope_id` column, `WHERE scope_id = ?`).
+        "awaken-tenancy",
         "awaken-store-sqlite",
         "awaken-scoped-migration",
         # ADR-0005: the sync rusqlite runner lives in the sibling crate.

@@ -305,6 +305,7 @@ dependencies = [
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "awaken-store-sqlite",
+ "awaken-tenancy",
  "rusqlite",
  "serde",
  "serde_json",
