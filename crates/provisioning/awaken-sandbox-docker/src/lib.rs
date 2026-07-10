@@ -5,9 +5,11 @@
 //! id (survives host restart), and `dispose` `docker rm -f`s it. The `provider_kind`
 //! is `"docker"`, so the fleet router and crash-adoption route to it by handle.
 //!
-//! Mount/artifact surface (`attach`/`artifacts`/`read_artifact`) is a documented
-//! follow-up; the load-bearing path — isolated process execution with a persistable
-//! handle — is real and covered by a live-docker e2e.
+//! Artifact surface (`artifacts`/`read_artifact`) collects a run's outputs from the
+//! environment's `outputs_path` (content-addressed, ADR-0021 §6); `attach` (mounts)
+//! remains a documented follow-up. The load-bearing paths — isolated process
+//! execution, a persistable handle, and artifact collection — are covered by a
+//! live-docker e2e.
 
 use async_trait::async_trait;
 use awaken_provisioning_contract::{
@@ -285,5 +287,21 @@ impl ProcessHandle for DockerProcess {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::docker_bytes;
+
+    #[tokio::test]
+    async fn docker_bytes_maps_a_failing_command_to_an_error() {
+        if std::env::var("AWAKEN_TEST_DOCKER").as_deref() != Ok("1") {
+            return;
+        }
+        // A nonexistent container makes `docker exec` exit non-zero → the error path
+        // (a raw-bytes read must still fail closed, not return empty output).
+        let err = docker_bytes(&["exec", "awaken-nonexistent-container-xyz", "cat", "/x"]).await;
+        assert!(err.is_err(), "a failing docker command maps to an error");
     }
 }

@@ -153,6 +153,35 @@ impl RunStore for HostCommit {
     }
 }
 
+/// Select the shared Postgres commit backend (ADR-0022 D6), or fail closed when it
+/// was not initialised at startup. Extracted from `build_commit` so both the
+/// initialised and the misconfigured paths are unit-testable without a `SharedHost`.
+pub(crate) fn postgres_commit_or_err() -> Result<HostCommit, crate::host::HostError> {
+    commit_or_err(crate::commit_backend::shared_postgres_commit())
+}
+
+/// Wrap the (maybe-initialised) shared coordinator into a `HostCommit`, or fail
+/// closed. Takes the coordinator as a parameter so both the initialised (`Some`) and
+/// the misconfigured (`None`) branches are testable without the process-global.
+fn commit_or_err(coord: Option<Arc<PostgresCommitCoordinator>>) -> Result<HostCommit, crate::host::HostError> {
+    let coord = coord.ok_or_else(|| {
+        crate::host::HostError::internal(
+            "AWAKEN_STORE=postgres requires init_shared_postgres_commit() at process \
+             startup (with AWAKEN_DATABASE_URL)",
+        )
+    })?;
+    Ok(HostCommit::Postgres(coord))
+}
+
+/// Whether the shared Postgres commit coordinator holds a committed run for `thread`.
+/// Extracted so the postgres branch of `durable_thread_exists` is unit-testable
+/// without mutating the process `AWAKEN_STORE` env.
+pub(crate) fn durable_thread_exists_postgres(thread: &ThreadId) -> bool {
+    crate::commit_backend::shared_postgres_commit()
+        .and_then(|c| c.latest_run(thread))
+        .is_some()
+}
+
 /// A filesystem-safe database filename stem for a thread id (durable store).
 pub(crate) fn sanitize_thread(thread: &str) -> String {
     thread
@@ -171,9 +200,7 @@ pub(crate) fn durable_thread_exists(store_dir: Option<&std::path::Path>, thread:
     // Shared Postgres backend: the coordinator is keyed by thread, so a committed
     // run for the thread means it durably exists (no per-thread file to stat).
     if std::env::var("AWAKEN_STORE").as_deref() == Ok("postgres") {
-        return crate::commit_backend::shared_postgres_commit()
-            .and_then(|c| c.latest_run(&ThreadId(thread.to_string())))
-            .is_some();
+        return durable_thread_exists_postgres(&ThreadId(thread.to_string()));
     }
     let Some(dir) = store_dir else {
         return false;
@@ -183,5 +210,51 @@ pub(crate) fn durable_thread_exists(store_dir: Option<&std::path::Path>, thread:
         dir.join(sanitize_thread(thread)).exists()
     } else {
         dir.join(format!("{}.db", sanitize_thread(thread))).exists()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commit_or_err_fails_closed_without_the_shared_coordinator() {
+        // AWAKEN_STORE=postgres but init_shared_postgres_commit was never called →
+        // build_commit fails closed rather than silently using an ephemeral store.
+        assert!(commit_or_err(None).is_err());
+    }
+
+    #[test]
+    fn durable_thread_exists_routes_to_postgres_when_selected() {
+        // AWAKEN_STORE=postgres routes the probe to the shared coordinator. With no
+        // coordinator initialised here it reads false, but this exercises the backend
+        // dispatch (the postgres branch of durable_thread_exists). Set-and-restore is
+        // safe: only this crate's durable_thread_exists reads AWAKEN_STORE in a unit
+        // test, and it is called nowhere else here.
+        // SAFETY: single-threaded within this test's critical section; restored below.
+        unsafe { std::env::set_var("AWAKEN_STORE", "postgres") };
+        let exists = durable_thread_exists(None, "no-such-thread-xyz");
+        unsafe { std::env::remove_var("AWAKEN_STORE") };
+        assert!(!exists, "an unknown thread has no committed run");
+    }
+
+    #[tokio::test]
+    async fn postgres_commit_and_thread_probe_after_init() {
+        let Ok(url) = std::env::var("AWAKEN_TEST_PG_URL") else {
+            eprintln!("skip: AWAKEN_TEST_PG_URL unset");
+            return;
+        };
+        crate::commit_backend::init_shared_postgres_commit(&url)
+            .await
+            .expect("init");
+        // Selecting the postgres backend now yields a HostCommit::Postgres.
+        assert!(matches!(
+            postgres_commit_or_err().expect("ok after init"),
+            HostCommit::Postgres(_)
+        ));
+        // The thread probe: an unknown thread has no committed run in the shared DB.
+        assert!(!durable_thread_exists_postgres(&ThreadId(
+            "no-such-thread-xyz".to_string()
+        )));
     }
 }

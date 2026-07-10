@@ -6,7 +6,7 @@
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_run_ingress::MemoryDispatchStore;
-use awaken_run_ingress_contract::dispatch::DispatchQueue;
+use awaken_run_ingress_contract::dispatch::{DispatchOutcome, DispatchQueue};
 use awaken_run_ingress_contract::request::RunExecutionRequest;
 use awaken_runtime_contract::activation::RunActivation;
 
@@ -54,6 +54,9 @@ fn req(run: &str, thread: &str) -> RunExecutionRequest {
 /// re-claim returns the SAME sandbox binding.
 async fn binding_survives_a_recovery_claim(store: &dyn DispatchQueue) {
     let run = RunId("run-1".into());
+    // Settle any leftover run-1 from a prior run on a shared schema (idempotent), so
+    // single-writer-per-thread (ADR-0022) does not see a stale in-flight run here.
+    let _ = store.settle(&run, DispatchOutcome::Done, &[]).await;
     store.enqueue(req("run-1", "thread-1")).await.unwrap();
 
     // First claim: no sandbox yet.
@@ -77,6 +80,8 @@ async fn binding_survives_a_recovery_claim(store: &dyn DispatchQueue) {
         Some("docker:abc123"),
         "the sandbox binding survives crash recovery"
     );
+    // Clean up so a re-run on a shared schema starts fresh.
+    let _ = store.settle(&run, DispatchOutcome::Done, &[]).await;
 }
 
 #[tokio::test]
