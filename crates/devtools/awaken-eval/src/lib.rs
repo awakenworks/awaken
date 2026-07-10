@@ -13,11 +13,24 @@ pub mod store;
 
 use serde::{Deserialize, Serialize};
 
-/// One recorded model turn: the assistant text the model returned. (Tool-call
-/// scripting is a follow-up; text turns cover the common judged case.)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// One recorded model turn: either assistant text, or one/more tool calls the
+/// model made. A turn with `tool_calls` drives the engine's tool loop (the eval
+/// registers a fixed echo executor for each referenced tool id); an empty
+/// `tool_calls` is a plain text turn that ends the turn.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ScriptedTurn {
+    #[serde(default)]
     pub text: String,
+    #[serde(default)]
+    pub tool_calls: Vec<ScriptedToolCall>,
+}
+
+/// One scripted tool call: the tool id the model invoked and its arguments.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScriptedToolCall {
+    pub tool_id: String,
+    #[serde(default)]
+    pub arguments: serde_json::Value,
 }
 
 /// A single evaluation case: agent config + input + recorded model responses to
@@ -50,8 +63,12 @@ pub struct Dataset {
 pub enum Expectation {
     /// The final assistant text contains `substring`.
     OutputContains { substring: String },
+    /// The final assistant text does NOT contain `substring`.
+    OutputNotContains { substring: String },
     /// The final assistant text equals `text` after trimming.
     OutputEquals { text: String },
+    /// The run executed a tool with this id at least once.
+    ToolCalled { tool_id: String },
     /// The run ended naturally (not an error or cancel).
     Succeeded,
 }
@@ -62,21 +79,37 @@ impl Expectation {
     pub fn kind(&self) -> &'static str {
         match self {
             Expectation::OutputContains { .. } => "output_contains",
+            Expectation::OutputNotContains { .. } => "output_not_contains",
             Expectation::OutputEquals { .. } => "output_equals",
+            Expectation::ToolCalled { .. } => "tool_called",
             Expectation::Succeeded => "succeeded",
         }
     }
 
-    /// Score this expectation against the replayed outcome.
-    fn evaluate(&self, output: &str, succeeded: bool) -> ExpectationResult {
+    /// Score this expectation against the replayed outcome (`output` text, whether
+    /// the run `succeeded`, and the ids of tools it actually called).
+    fn evaluate(
+        &self,
+        output: &str,
+        succeeded: bool,
+        tools_called: &[String],
+    ) -> ExpectationResult {
         let (passed, detail) = match self {
             Expectation::OutputContains { substring } => (
                 output.contains(substring),
                 format!("expected output to contain {substring:?}"),
             ),
+            Expectation::OutputNotContains { substring } => (
+                !output.contains(substring),
+                format!("expected output NOT to contain {substring:?}"),
+            ),
             Expectation::OutputEquals { text } => (
                 output.trim() == text.trim(),
                 format!("expected output to equal {text:?}"),
+            ),
+            Expectation::ToolCalled { tool_id } => (
+                tools_called.iter().any(|t| t == tool_id),
+                format!("expected tool {tool_id:?} to be called (called: {tools_called:?})"),
             ),
             Expectation::Succeeded => (succeeded, "expected the run to end naturally".to_string()),
         };
@@ -138,15 +171,21 @@ impl Report {
     }
 }
 
-/// Score a case's `expectations` against its replayed `output` and terminal state.
+/// Score a case's `expectations` against its replayed `output`, terminal state,
+/// and the ids of the tools it called.
 #[must_use]
-pub fn score_case(case: &Case, output: &str, succeeded: bool) -> CaseScore {
+pub fn score_case(
+    case: &Case,
+    output: &str,
+    succeeded: bool,
+    tools_called: &[String],
+) -> CaseScore {
     CaseScore {
         case_id: case.id.clone(),
         results: case
             .expectations
             .iter()
-            .map(|e| e.evaluate(output, succeeded))
+            .map(|e| e.evaluate(output, succeeded, tools_called))
             .collect(),
     }
 }
@@ -162,6 +201,7 @@ mod tests {
             input: "hi".into(),
             script: vec![ScriptedTurn {
                 text: "the answer is 42".into(),
+                ..Default::default()
             }],
             expectations: exps,
         }
@@ -175,7 +215,7 @@ mod tests {
             },
             Expectation::Succeeded,
         ]);
-        let score = score_case(&c, "the answer is 42", true);
+        let score = score_case(&c, "the answer is 42", true, &[]);
         assert!(score.passed());
     }
 
@@ -184,7 +224,7 @@ mod tests {
         let c = case(vec![Expectation::OutputContains {
             substring: "99".into(),
         }]);
-        let score = score_case(&c, "the answer is 42", true);
+        let score = score_case(&c, "the answer is 42", true, &[]);
         assert!(!score.passed());
         assert!(score.results[0].detail.contains("99"));
     }
@@ -192,8 +232,27 @@ mod tests {
     #[test]
     fn a_failed_run_fails_the_succeeded_expectation() {
         let c = case(vec![Expectation::Succeeded]);
-        let score = score_case(&c, "", false);
+        let score = score_case(&c, "", false, &[]);
         assert!(!score.passed());
+    }
+
+    #[test]
+    fn tool_called_and_not_contains_score_against_the_run_facts() {
+        let c = case(vec![
+            Expectation::ToolCalled {
+                tool_id: "search".into(),
+            },
+            Expectation::OutputNotContains {
+                substring: "error".into(),
+            },
+        ]);
+        // `search` was called and the output has no "error" → both pass.
+        let pass = score_case(&c, "the answer is 42", true, &["search".to_string()]);
+        assert!(pass.passed());
+        // `search` NOT called → the ToolCalled expectation fails with detail.
+        let fail = score_case(&c, "the answer is 42", true, &[]);
+        assert!(!fail.passed());
+        assert!(fail.results[0].detail.contains("search"));
     }
 
     #[test]
@@ -201,8 +260,8 @@ mod tests {
         let report = Report {
             dataset: "d".into(),
             scores: vec![
-                score_case(&case(vec![Expectation::Succeeded]), "x", true),
-                score_case(&case(vec![Expectation::Succeeded]), "x", false),
+                score_case(&case(vec![Expectation::Succeeded]), "x", true, &[]),
+                score_case(&case(vec![Expectation::Succeeded]), "x", false, &[]),
             ],
         };
         assert_eq!(report.total(), 2);
