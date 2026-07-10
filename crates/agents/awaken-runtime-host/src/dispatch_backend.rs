@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use awaken_run_ingress::AnyDispatchStore;
+use awaken_run_ingress::{AnyDispatchStore, WakeSignal};
 
 use crate::host::HostError;
 
@@ -36,6 +36,14 @@ pub(crate) const LEASE_RENEWAL: std::time::Duration = std::time::Duration::from_
 static SHARED_POSTGRES_DISPATCH: std::sync::OnceLock<Arc<AnyDispatchStore>> =
     std::sync::OnceLock::new();
 
+/// The process-wide cross-node wake for the Postgres backend, built once at startup
+/// beside the store when `AWAKEN_DISPATCH_WAKE=pg-notify`. It shares the store's
+/// database, so a `pg_notify` fired on enqueue nudges every peer's pool `LISTEN`ing
+/// on the channel — no busy-poll, no extra infrastructure (ADR-0019/0024). Absent
+/// (the pool falls back to its in-process `LocalWakeSignal` + poll) unless the env
+/// selects it, so SQLite and single-node Postgres are unaffected.
+static SHARED_PG_WAKE: std::sync::OnceLock<Arc<dyn WakeSignal>> = std::sync::OnceLock::new();
+
 /// The process-wide shared SQLite dispatch store: ONE queue file for the whole
 /// process (or one in-memory queue when no store dir), not one per thread. The
 /// process-level [`DispatchPool`](awaken_run_ingress::DispatchPool) is the sole
@@ -54,9 +62,33 @@ pub async fn init_shared_postgres_dispatch(url: &str) -> Result<(), String> {
     if SHARED_POSTGRES_DISPATCH.get().is_some() {
         return Ok(());
     }
-    let store = Arc::new(AnyDispatchStore::connect_postgres(url).await?);
+    // Opt into the cross-node `pg_notify` wake with `AWAKEN_DISPATCH_WAKE=pg-notify`
+    // (channel via `AWAKEN_DISPATCH_WAKE_CHANNEL`, default `awaken_dispatch_wake`).
+    // When on, build the wake beside the store sharing one pool; otherwise connect
+    // the store alone and leave the pool on its in-process `LocalWakeSignal` + poll.
+    let store = if pg_notify_wake_enabled() {
+        let channel = std::env::var("AWAKEN_DISPATCH_WAKE_CHANNEL")
+            .unwrap_or_else(|_| "awaken_dispatch_wake".to_string());
+        let (store, wake) = AnyDispatchStore::connect_postgres_with_wake(url, &channel).await?;
+        let _ = SHARED_PG_WAKE.set(wake);
+        Arc::new(store)
+    } else {
+        Arc::new(AnyDispatchStore::connect_postgres(url).await?)
+    };
     let _ = SHARED_POSTGRES_DISPATCH.set(store);
     Ok(())
+}
+
+/// Whether the cross-node `pg_notify` wake is selected for the served pool.
+fn pg_notify_wake_enabled() -> bool {
+    std::env::var("AWAKEN_DISPATCH_WAKE").as_deref() == Ok("pg-notify")
+}
+
+/// The cross-node wake to spawn the served pool with, if one was built at startup
+/// (`AWAKEN_DISPATCH_WAKE=pg-notify` on the Postgres backend). `None` keeps the pool
+/// on its default in-process `LocalWakeSignal`.
+pub(crate) fn shared_pg_wake() -> Option<Arc<dyn WakeSignal>> {
+    SHARED_PG_WAKE.get().cloned()
 }
 
 /// Open the ONE process-shared durable-dispatch store, selected by

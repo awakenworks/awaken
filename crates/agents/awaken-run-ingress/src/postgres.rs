@@ -66,6 +66,15 @@ impl PostgresDispatchStore {
         Ok(Self { pool })
     }
 
+    /// A clone of the connection pool for a [`PgNotifyWake`](crate::wake::PgNotifyWake):
+    /// the wake listener shares the dispatch store's database (a `pg_notify` fired
+    /// inside the enqueue transaction reaches a peer's `LISTEN` on the same pool), so
+    /// the served pool can wake cross-node with no extra infrastructure. Cloning a
+    /// `PgPool` clones the handle, not the connections.
+    pub fn wake_pool(&self) -> PgPool {
+        self.pool.clone()
+    }
+
     /// Run ids in a terminal-ish dispatch status (dead_letter, superseded), in
     /// enqueue order — backs the operational `dead_letters`/`superseded` queries.
     async fn run_ids_by_status(&self, status: &str) -> Result<Vec<RunId>, DispatchError> {

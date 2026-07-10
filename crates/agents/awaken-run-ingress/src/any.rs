@@ -59,6 +59,24 @@ impl AnyDispatchStore {
             .map_err(|e| e.to_string())
     }
 
+    /// Connect the Postgres backend and, sharing its pool, a [`PgNotifyWake`] over
+    /// `channel`: the served pool's wake fires `pg_notify` on the same database it
+    /// enqueues into, so a peer node's `LISTEN` is nudged with no extra
+    /// infrastructure (ADR-0019/0024). Returns the store plus the ready wake signal;
+    /// keeps sqlx out of the host crate. Only Postgres carries a cross-node wake —
+    /// SQLite is single-process, so it stays on the in-process `LocalWakeSignal`.
+    pub async fn connect_postgres_with_wake(
+        url: &str,
+        channel: &str,
+    ) -> Result<(Self, Arc<dyn crate::wake::WakeSignal>), String> {
+        let store = PostgresDispatchStore::connect(url)
+            .await
+            .map_err(|e| e.to_string())?;
+        let wake: Arc<dyn crate::wake::WakeSignal> =
+            Arc::new(crate::wake::PgNotifyWake::new(store.wake_pool(), channel));
+        Ok((Self::from_store(store), wake))
+    }
+
     fn from_store(store: impl Dispatch + 'static) -> Self {
         Self {
             inner: Arc::new(store),

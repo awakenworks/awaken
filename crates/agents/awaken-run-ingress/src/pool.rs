@@ -119,6 +119,36 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
         )
     }
 
+    /// Spawn the pool with BOTH a chosen [`WakeSignal`] and a [`CompletionSink`] —
+    /// the served durable path on Postgres wants both: a cross-node wake (so a peer's
+    /// enqueue nudges this pool without busy-poll) and event-driven completion (so a
+    /// foreground submitter waits by event). SQLite stays on `spawn_with_completion`
+    /// (a `LocalWakeSignal` suffices in one process).
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_with_wake_and_completion(
+        store: Arc<S>,
+        clock: Arc<dyn Clock>,
+        owner: impl Into<String>,
+        lease_ms: u64,
+        config: DispatchServiceConfig,
+        resolver: Arc<dyn WorkerResolver<S>>,
+        concurrency: usize,
+        wake: Arc<dyn WakeSignal>,
+        completion: Arc<dyn CompletionSink>,
+    ) -> Self {
+        Self::spawn_inner(
+            store,
+            clock,
+            owner,
+            lease_ms,
+            config,
+            resolver,
+            concurrency,
+            wake,
+            Some(completion),
+        )
+    }
+
     /// Spawn the pool with a [`CompletionSink`] notified the instant each run
     /// settles, so a foreground submitter waits for its run by event, not by poll.
     #[allow(clippy::too_many_arguments)]
