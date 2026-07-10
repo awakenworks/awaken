@@ -67,6 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("real") => awaken_server_local::build_real_router(),
         Ok("real-gemini") => awaken_server_local::build_real_gemini_router().await,
         Ok("real-resolved") => awaken_server_local::build_resolved_real_router().await,
+        Ok("oauth-resolved") => awaken_server_local::build_oauth_resolved_router().await,
         Ok("schedule") => awaken_server_local::build_schedule_router(),
         Ok("skills") => awaken_server_local::build_skills_router(),
         Ok("skills-durable") => awaken_server_local::build_skills_durable_router(),

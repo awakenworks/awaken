@@ -773,6 +773,96 @@ pub async fn build_resolved_real_router() -> Router {
     build_router(executor, inference.triple.model_id.clone())
 }
 
+/// The resolved path with an **OAuth** credential (#5): the credential source is
+/// `CredentialKind::Oauth`, so `resolve_inference` materializes it by running its
+/// `oauth_command` helper (`printf oauth-minted-key`) rather than reading a sealed
+/// secret. The minted token becomes the executor's API key, so a run succeeds only
+/// if the OAuth materialize path actually ran the helper. `AWAKEN_MODEL_MODE=
+/// oauth-resolved` with a fake upstream that authenticates exactly that token.
+pub async fn build_oauth_resolved_router() -> Router {
+    use std::collections::HashMap;
+
+    use awaken_config_resolver::resolve_inference;
+    use awaken_credential_vault::{
+        CredentialBinding, CredentialKind, CredentialSource, CredentialSourceId, CredentialStatus,
+        InMemorySecretStore,
+    };
+    use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
+    use awaken_model_catalog::{
+        ModelApiCompat, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
+    };
+
+    // The token the helper mints — the fake upstream authenticates exactly this.
+    const OAUTH_MINTED_KEY: &str = "oauth-minted-key"; // awaken-allow: secret
+    let base = std::env::var("ANTHROPIC_BASE_URL")
+        .expect("set ANTHROPIC_BASE_URL for AWAKEN_MODEL_MODE=oauth-resolved");
+    let model =
+        std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-3-5-haiku-latest".to_string());
+
+    let catalog_repo = InMemoryCatalogRepo::new();
+    catalog_repo
+        .put_provider(Provider {
+            id: ProviderId::new("anthropic"),
+            slug: "anthropic".into(),
+            display_name: "Anthropic".into(),
+            version: 1,
+        })
+        .await
+        .expect("put provider");
+    catalog_repo
+        .put_endpoint(ProtocolEndpoint {
+            id: ProtocolEndpointId::new("ep1"),
+            provider_id: ProviderId::new("anthropic"),
+            flavor: ModelApiCompat::AnthropicMessages,
+            base_url: Some(base),
+            timeout_secs: 300,
+            display_name: "prod".into(),
+            version: 1,
+        })
+        .await
+        .expect("put endpoint");
+    catalog_repo
+        .put_offering(Offering {
+            model_id: model.clone(),
+            provider_id: ProviderId::new("anthropic"),
+            protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
+            flavor: ModelApiCompat::AnthropicMessages,
+            upstream_model: None,
+        })
+        .await
+        .expect("put offering");
+
+    // An OAuth-kind source: nothing sealed; its token is minted by the helper.
+    let source = CredentialSource {
+        id: CredentialSourceId("cred:ws:oauth".into()),
+        workspace_id: "ws".into(),
+        kind: CredentialKind::Oauth,
+        provider_id: Some("anthropic".into()),
+        env_key: None,
+        material_ref: None,
+        oauth_command: Some(vec!["printf".into(), OAUTH_MINTED_KEY.into()]),
+        status: CredentialStatus::Active,
+        version: 1,
+    };
+    let secrets = InMemorySecretStore::new();
+    let catalog = catalog_repo.snapshot().await.expect("catalog snapshot");
+    let mut sources: HashMap<String, CredentialSource> = HashMap::new();
+    sources.insert(source.id.0.clone(), source.clone());
+    let inference = resolve_inference(
+        &catalog,
+        &model,
+        &CredentialBinding::Exact {
+            credential_source_id: source.id.clone(),
+        },
+        &sources,
+        &secrets,
+    )
+    .await
+    .expect("resolve inference (OAuth materialize)");
+    let executor = executor_from_resolved(&inference).expect("build executor from resolved");
+    build_router(executor, inference.triple.model_id.clone())
+}
+
 /// Build the server router offering `skills` on every thread (ADR-0036): the whole
 /// set is fronted by the single `Skill` tool, whose catalog lists them and whose
 /// invocation returns the activated skill's instructions.
