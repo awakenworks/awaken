@@ -11,6 +11,10 @@ license.workspace = true
 awaken-iam-contract.workspace = true
 awaken-iam-core.workspace = true
 awaken-iam-preset.workspace = true
+# Tenancy edge aspect (ADR-0051 D4): the opaque `ScopeId` + the pure ingress
+# reconciliation (`resolve_scope`) the guard runs to collapse token authority and
+# a path/domain selection into one authorized scope before the policy engine.
+awaken-tenancy.workspace = true
 # The guard is an axum middleware over the session/protocol router.
 axum = "0.7"
 serde_json = { workspace = true }

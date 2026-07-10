@@ -26,6 +26,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-iam-contract",
         "awaken-iam-core",
         "awaken-iam-preset",
+        # Tenancy edge aspect (ADR-0051 D4): opaque `ScopeId` + `resolve_scope`.
+        "awaken-tenancy",
         "axum",
         "serde_json",
         # dev-only: guard middleware tests drive a minimal axum router.
