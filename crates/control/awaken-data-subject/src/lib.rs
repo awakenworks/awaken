@@ -11,6 +11,7 @@
 mod capture_store;
 mod schema;
 mod sqlite;
+mod sqlite_capture;
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -22,6 +23,7 @@ pub use awaken_runtime_contract::{ContentCapture, DataSubjectId, ErasureReceipt,
 pub use capture_store::{CapturedRecord, InMemoryCapturedContentStore};
 pub use schema::{BUNDLE_ID, data_subject_bundle};
 pub use sqlite::{SqliteDataSubjectRepo, StoreError};
+pub use sqlite_capture::SqliteCapturedContentStore;
 
 /// Status of a consent grant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

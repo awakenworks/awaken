@@ -7,15 +7,27 @@ use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 /// Namespaced bundle id — the split/merge unit for the data-subject domain.
 pub const BUNDLE_ID: &str = "awaken.data_subject";
 
-const SPECS: [(i64, &str, &str); 1] = [(
-    1,
-    "data subjects: the attributed party, its consent grants, keyed by org",
-    "CREATE TABLE {prefix}_subject (\
-        id TEXT PRIMARY KEY, \
-        org TEXT NOT NULL, \
-        data {json} NOT NULL, \
-        created_at {timestamptz} NOT NULL DEFAULT {now})",
-)];
+const SPECS: [(i64, &str, &str); 2] = [
+    (
+        1,
+        "data subjects: the attributed party, its consent grants, keyed by org",
+        "CREATE TABLE {prefix}_subject (\
+            id TEXT PRIMARY KEY, \
+            org TEXT NOT NULL, \
+            data {json} NOT NULL, \
+            created_at {timestamptz} NOT NULL DEFAULT {now})",
+    ),
+    (
+        2,
+        "captured content: subject-tagged, erasable + TTL-swept telemetry content",
+        "CREATE TABLE {prefix}_captured (\
+            id TEXT PRIMARY KEY, \
+            subject TEXT NOT NULL, \
+            purpose TEXT NOT NULL, \
+            recorded_at BIGINT NOT NULL, \
+            content TEXT NOT NULL)",
+    ),
+];
 
 /// Build the data-subject migration bundle (prefix `data_subject`).
 pub fn data_subject_bundle() -> Result<MigrationBundle, MigrationError> {

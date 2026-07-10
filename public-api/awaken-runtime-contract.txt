@@ -434,6 +434,8 @@ impl core::marker::Sync for awaken_runtime_contract::data_subject::NullResolver
 impl core::marker::Unpin for awaken_runtime_contract::data_subject::NullResolver
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::data_subject::NullResolver
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::data_subject::NullResolver
+pub trait awaken_runtime_contract::data_subject::CaptureSink: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::data_subject::CaptureSink::record<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose, awaken_runtime_contract::capture::ContentKind, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub trait awaken_runtime_contract::data_subject::ContentEraser: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::data_subject::ContentEraser::erase_subject<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = usize> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_runtime_contract::data_subject::DataSubjectResolver: core::marker::Send + core::marker::Sync
@@ -1668,17 +1670,21 @@ pub mod awaken_runtime_contract::runtime_context
 pub struct awaken_runtime_contract::runtime_context::RuntimeRunContext
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::cancellation: core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::capture: awaken_runtime_contract::capture::CaptureDecision
+pub awaken_runtime_contract::runtime_context::RuntimeRunContext::capture_sink: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::commit: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::commit::coordinator::Coordinator>>
+pub awaken_runtime_contract::runtime_context::RuntimeRunContext::data_subject: core::option::Option<awaken_runtime_contract::data_subject::DataSubjectId>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::live_inbox: core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::store::thread_reader::ThreadReader>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::stream_checkpoint: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::store::stream_checkpoint::StreamCheckpointStore>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::stream_sink: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::tool_executor: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>
 impl awaken_runtime_contract::runtime_context::RuntimeRunContext
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::content_sink(&self) -> core::option::Option<(&alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>, &awaken_runtime_contract::data_subject::DataSubjectId)>
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::is_cancelled(&self) -> bool
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::new() -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_cancellation(self, tokio_util::sync::cancellation_token::CancellationToken) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_capture(self, awaken_runtime_contract::capture::CaptureDecision) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_capture_sink(self, awaken_runtime_contract::data_subject::DataSubjectId, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_commit(self, alloc::sync::Arc<dyn awaken_agent_contract::commit::coordinator::Coordinator>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_live_inbox(self, awaken_runtime_contract::live_inbox::LiveInbox) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(self, alloc::sync::Arc<dyn awaken_agent_contract::store::thread_reader::ThreadReader>) -> Self
@@ -2679,17 +2685,21 @@ impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::catalog::
 pub struct awaken_runtime_contract::RuntimeRunContext
 pub awaken_runtime_contract::RuntimeRunContext::cancellation: core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
 pub awaken_runtime_contract::RuntimeRunContext::capture: awaken_runtime_contract::capture::CaptureDecision
+pub awaken_runtime_contract::RuntimeRunContext::capture_sink: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>>
 pub awaken_runtime_contract::RuntimeRunContext::commit: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::commit::coordinator::Coordinator>>
+pub awaken_runtime_contract::RuntimeRunContext::data_subject: core::option::Option<awaken_runtime_contract::data_subject::DataSubjectId>
 pub awaken_runtime_contract::RuntimeRunContext::live_inbox: core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
 pub awaken_runtime_contract::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::store::thread_reader::ThreadReader>>
 pub awaken_runtime_contract::RuntimeRunContext::stream_checkpoint: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::store::stream_checkpoint::StreamCheckpointStore>>
 pub awaken_runtime_contract::RuntimeRunContext::stream_sink: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>
 pub awaken_runtime_contract::RuntimeRunContext::tool_executor: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>
 impl awaken_runtime_contract::runtime_context::RuntimeRunContext
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::content_sink(&self) -> core::option::Option<(&alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>, &awaken_runtime_contract::data_subject::DataSubjectId)>
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::is_cancelled(&self) -> bool
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::new() -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_cancellation(self, tokio_util::sync::cancellation_token::CancellationToken) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_capture(self, awaken_runtime_contract::capture::CaptureDecision) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_capture_sink(self, awaken_runtime_contract::data_subject::DataSubjectId, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_commit(self, alloc::sync::Arc<dyn awaken_agent_contract::commit::coordinator::Coordinator>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_live_inbox(self, awaken_runtime_contract::live_inbox::LiveInbox) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(self, alloc::sync::Arc<dyn awaken_agent_contract::store::thread_reader::ThreadReader>) -> Self
@@ -2767,6 +2777,8 @@ pub fn awaken_runtime_contract::AgentResolver::run<'life0, 'async_trait>(&'life0
 pub fn awaken_runtime_contract::AgentResolver::tool_id(&self) -> &str
 pub trait awaken_runtime_contract::AgentSnapshotResolver
 pub fn awaken_runtime_contract::AgentSnapshotResolver::get_snapshot(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
+pub trait awaken_runtime_contract::CaptureSink: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::CaptureSink::record<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose, awaken_runtime_contract::capture::ContentKind, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub trait awaken_runtime_contract::ContentEraser: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::ContentEraser::erase_subject<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = usize> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_runtime_contract::ContentRedactor: core::marker::Send + core::marker::Sync
