@@ -10,18 +10,21 @@
 //! `agent_…` id, monotonic `version` with optimistic-concurrency updates, and a
 //! full snapshot appended to history on every mutation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use serde_json::{Value, json};
 
 use crate::routes::ManagedJson;
+use crate::routes::WorkspaceScope;
+use crate::state::DEFAULT_SCOPE;
 use crate::types::agent::{Agent, AgentCreateParams, AgentUpdateParams};
 use crate::types::{ErrorResponse, ModelConfig, Page};
 
@@ -89,6 +92,11 @@ pub trait AgentConfigSource: Send + Sync {
 #[derive(Default)]
 pub struct AgentRegistryState {
     inner: Mutex<BTreeMap<String, Record>>,
+    /// The aspect-layer agent→owner index (ADR-0051): the scope that created each
+    /// registry agent, so the edge ownership guard fences a cross-tenant request
+    /// and `list` shows only the caller's agents. Registry-created agents only;
+    /// config-plane projections carry their own (scoped) config-store truth.
+    owners: Mutex<HashMap<String, String>>,
     seq: AtomicU64,
     /// When wired, `/v1/agents` reads projections from the config plane: an agent
     /// published there is retrievable here even if it was never created via this
@@ -107,6 +115,58 @@ impl AgentRegistryState {
     pub fn with_config_source(mut self, source: Arc<dyn AgentConfigSource>) -> Self {
         self.config_source = Some(source);
         self
+    }
+
+    /// The owner scope of registry agent `id`, if this registry created it — the
+    /// aspect-layer lookup the edge ownership guard consults (ADR-0051).
+    #[must_use]
+    pub fn owner_scope(&self, id: &str) -> Option<String> {
+        self.owners.lock().unwrap().get(id).cloned()
+    }
+}
+
+/// The request's resolved scope from the edge-stamped [`WorkspaceScope`], or the
+/// seeded default when the deployment resolved none (ADR-0051).
+fn request_scope(scope: &Option<Extension<WorkspaceScope>>) -> String {
+    scope
+        .as_ref()
+        .map_or_else(|| DEFAULT_SCOPE.to_string(), |w| w.0.0.clone())
+}
+
+/// The tenant ownership guard for `/v1/agents/{id}` (ADR-0051): a request whose
+/// resolved scope does not own the addressed registry agent is answered 404 (never
+/// 403 — no existence disclosure). The collection routes (`/v1/agents`) and ids
+/// unknown to the registry (config-plane projections) pass through.
+pub async fn agent_scope_guard(
+    State(state): State<Arc<AgentRegistryState>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if let Some(id) = agent_id_from_path(request.uri().path()) {
+        let request_scope = request
+            .extensions()
+            .get::<WorkspaceScope>()
+            .map(|w| w.0.clone())
+            .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
+        if let Some(owner) = state.owner_scope(&id)
+            && owner != request_scope
+        {
+            return not_found().into_response();
+        }
+    }
+    next.run(request).await
+}
+
+/// The `{id}` from a `/v1/agents/{id}[/...]` path, or `None` for the collection
+/// route and any non-agent path.
+fn agent_id_from_path(path: &str) -> Option<String> {
+    let mut segments = path.trim_start_matches('/').split('/');
+    if segments.next()? != "v1" || segments.next()? != "agents" {
+        return None;
+    }
+    match segments.next() {
+        Some(id) if !id.is_empty() => Some(id.to_string()),
+        _ => None,
     }
 }
 
@@ -141,12 +201,18 @@ fn project_config_view(id: &str, view: &AgentConfigView) -> Agent {
 
 /// Mount the agent-registry routes.
 pub fn agents_router(state: Arc<AgentRegistryState>) -> Router {
+    let guard_state = state.clone();
     Router::new()
         .route("/v1/agents", post(create_agent).get(list_agents))
         .route("/v1/agents/:id", get(retrieve_agent).post(update_agent))
         .route("/v1/agents/:id/archive", post(archive_agent))
         .route("/v1/agents/:id/versions", get(list_versions))
         .with_state(state)
+        // The tenant ownership guard (ADR-0051) fences `/v1/agents/{id}` by owner.
+        .layer(axum::middleware::from_fn_with_state(
+            guard_state,
+            agent_scope_guard,
+        ))
 }
 
 type WireError = (StatusCode, Json<ErrorResponse>);
@@ -160,8 +226,10 @@ fn not_found() -> WireError {
 
 async fn create_agent(
     State(state): State<Arc<AgentRegistryState>>,
+    scope: Option<Extension<WorkspaceScope>>,
     ManagedJson(params): ManagedJson<AgentCreateParams>,
 ) -> Result<Json<Agent>, WireError> {
+    let owner = request_scope(&scope);
     let n = state.seq.fetch_add(1, Ordering::SeqCst);
     let id = format!("agent_{n:016}");
     let mut record = Record {
@@ -180,6 +248,7 @@ async fn create_agent(
     };
     let projected = record.project(&id);
     record.history.push(projected.clone());
+    state.owners.lock().unwrap().insert(id.clone(), owner);
     state.inner.lock().unwrap().insert(id, record);
     Ok(Json(projected))
 }
@@ -203,10 +272,21 @@ async fn retrieve_agent(
     Err(not_found())
 }
 
-/// `GET /v1/agents` — one full page, ascending id order.
-async fn list_agents(State(state): State<Arc<AgentRegistryState>>) -> Json<Page<Agent>> {
+/// `GET /v1/agents` — one full page, ascending id order, restricted to the
+/// caller's own agents (ADR-0051): a workspace never sees another's registry
+/// agents in its listing.
+async fn list_agents(
+    State(state): State<Arc<AgentRegistryState>>,
+    scope: Option<Extension<WorkspaceScope>>,
+) -> Json<Page<Agent>> {
+    let scope = request_scope(&scope);
+    let owners = state.owners.lock().unwrap();
     let store = state.inner.lock().unwrap();
-    let data = store.iter().map(|(id, r)| r.project(id)).collect();
+    let data = store
+        .iter()
+        .filter(|(id, _)| owners.get(id.as_str()).map(String::as_str) == Some(scope.as_str()))
+        .map(|(id, r)| r.project(id))
+        .collect();
     Json(Page::single(data))
 }
 
@@ -342,5 +422,87 @@ mod tests {
         // An id in neither the registry nor the config plane is still 404.
         let (status, _) = get(&app, "/v1/agents/ghost").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    // --- Tenant isolation (ADR-0051) -----------------------------------------
+
+    async fn create_owned(app: &Router, scope: &str) -> String {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/v1/agents")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&json!({ "name": "a", "model": "kimi" })).unwrap(),
+            ))
+            .unwrap();
+        req.extensions_mut()
+            .insert(WorkspaceScope(scope.to_string()));
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        v["id"].as_str().unwrap().to_string()
+    }
+
+    async fn call_scoped(app: &Router, method: &str, uri: &str, scope: Option<&str>) -> StatusCode {
+        let mut req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        if let Some(scope) = scope {
+            req.extensions_mut()
+                .insert(WorkspaceScope(scope.to_string()));
+        }
+        app.clone().oneshot(req).await.unwrap().status()
+    }
+
+    async fn list_ids(app: &Router, scope: &str) -> Vec<String> {
+        let mut req = Request::builder()
+            .method("GET")
+            .uri("/v1/agents")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut()
+            .insert(WorkspaceScope(scope.to_string()));
+        let res = app.clone().oneshot(req).await.unwrap();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        v["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["id"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_registry_agent_is_fenced_to_its_owner() {
+        let app = agents_router(Arc::new(AgentRegistryState::new()));
+        let id = create_owned(&app, "ws_a").await;
+        let path = format!("/v1/agents/{id}");
+        assert_eq!(
+            call_scoped(&app, "GET", &path, Some("ws_a")).await,
+            StatusCode::OK
+        );
+        // Another workspace gets 404 (never 403 — no existence disclosure), for reads…
+        assert_eq!(
+            call_scoped(&app, "GET", &path, Some("ws_b")).await,
+            StatusCode::NOT_FOUND
+        );
+        // …and writes (archive).
+        assert_eq!(
+            call_scoped(&app, "POST", &format!("{path}/archive"), Some("ws_b")).await,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn list_shows_only_the_callers_agents() {
+        let app = agents_router(Arc::new(AgentRegistryState::new()));
+        let a = create_owned(&app, "ws_a").await;
+        let b = create_owned(&app, "ws_b").await;
+        assert_eq!(list_ids(&app, "ws_a").await, vec![a]);
+        assert_eq!(list_ids(&app, "ws_b").await, vec![b]);
     }
 }
