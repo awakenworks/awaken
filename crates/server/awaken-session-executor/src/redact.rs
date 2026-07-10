@@ -7,10 +7,38 @@
 //! patterns are deliberately broad; a `DlpRedactor` is a future addition.
 
 use std::borrow::Cow;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
-use awaken_runtime_contract::{ContentKind, ContentRedactor};
+use awaken_runtime_contract::{
+    CaptureDecision, ContentCapture, ContentKind, ContentRedactor, NoopRedactor,
+};
 use regex::Regex;
+
+/// Parse a content-capture decision from `level`/`redaction` strings (the
+/// single-machine env default, ADR-0050 D5/D9). `level` = off|structured|full
+/// (default `structured`); `redaction` = none|regex (default none = `Noop`).
+fn parse_capture(level: Option<&str>, redaction: Option<&str>) -> CaptureDecision {
+    let level = match level {
+        Some("off") => ContentCapture::Off,
+        Some("full") => ContentCapture::Full,
+        _ => ContentCapture::Structured,
+    };
+    let redactor: Arc<dyn ContentRedactor> = match redaction {
+        Some("regex") => Arc::new(PiiRedactor::new()),
+        _ => Arc::new(NoopRedactor),
+    };
+    CaptureDecision::with_redactor(level, redactor)
+}
+
+/// Resolve the content-capture decision from the environment: the open/
+/// single-machine default. Managed builds override this with the resolved
+/// ceiling × request × consent `meet`.
+pub(crate) fn env_capture_decision() -> CaptureDecision {
+    parse_capture(
+        std::env::var("AWAKEN_CONTENT_CAPTURE").ok().as_deref(),
+        std::env::var("AWAKEN_CONTENT_REDACTION").ok().as_deref(),
+    )
+}
 
 /// Regex-based PII redactor. Compiled patterns are process-shared.
 #[derive(Debug, Clone, Copy, Default)]
@@ -110,5 +138,33 @@ mod tests {
             redact("a@b.com and 123-45-6789"),
             "[redacted-email] and [redacted-ssn]"
         );
+    }
+
+    #[test]
+    fn parse_capture_defaults_to_structured_noop() {
+        use awaken_runtime_contract::{ContentCapture, ContentKind};
+        let d = super::parse_capture(None, None);
+        assert_eq!(d.level, ContentCapture::Structured);
+        // Structured records no content.
+        assert!(d.content(ContentKind::InputMessages, "a@b.com").is_none());
+    }
+
+    #[test]
+    fn parse_capture_full_with_regex_scrubs() {
+        use awaken_runtime_contract::{ContentCapture, ContentKind};
+        let d = super::parse_capture(Some("full"), Some("regex"));
+        assert_eq!(d.level, ContentCapture::Full);
+        assert_eq!(
+            d.content(ContentKind::InputMessages, "mail a@b.com")
+                .as_deref(),
+            Some("mail [redacted-email]")
+        );
+    }
+
+    #[test]
+    fn parse_capture_off_records_nothing_even_full_text() {
+        use awaken_runtime_contract::ContentKind;
+        let d = super::parse_capture(Some("off"), Some("regex"));
+        assert!(d.content(ContentKind::OutputMessages, "x").is_none());
     }
 }
