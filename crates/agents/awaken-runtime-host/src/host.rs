@@ -221,6 +221,9 @@ pub(crate) struct SessionCtx {
     /// `SharedHost::tool_executor_provider`. When set, `context_for` asks it per
     /// run which executor to use, overriding the session-wide `remote_hand`.
     pub(crate) tool_executor_provider: Option<Arc<dyn ToolExecutorProvider>>,
+    /// Subject-tagged captured-content sink for this session (ADR-0050), from
+    /// the host. `None` = content is recorded to spans only.
+    pub(crate) capture_sink: Option<Arc<dyn awaken_runtime_contract::CaptureSink>>,
     pub(crate) thread_id: ThreadId,
     /// The thread's sandbox environment, reused to build a goal-enabled runtime
     /// for `define_outcome` (same tools, same environment).
@@ -257,6 +260,18 @@ impl SessionCtx {
             // Open/single-machine reads the env default; managed overrides with
             // the ceiling × request × consent meet.
             .with_capture(crate::redact::env_capture_decision());
+        // ADR-0050: attribute captured content to a subject and write it to the
+        // sink, when both a sink is wired and a subject is set (open surface:
+        // AWAKEN_CONTENT_SUBJECT). Content only flows when the capture level permits.
+        if let (Some(sink), Ok(subject)) =
+            (&self.capture_sink, std::env::var("AWAKEN_CONTENT_SUBJECT"))
+            && !subject.is_empty()
+        {
+            ctx = ctx.with_capture_sink(
+                awaken_runtime_contract::DataSubjectId(subject),
+                sink.clone(),
+            );
+        }
         // ADR-0044: route this run's tool calls to the host's remote hand, if one
         // is wired; otherwise the kernel's in-process LocalToolExecutor runs them.
         if let Some(hand) = &self.remote_hand {
@@ -394,6 +409,10 @@ pub struct SharedHost {
     /// unchanged; when set, a run the provider places (returns `Some`) takes
     /// precedence over the session-wide `remote_hand`.
     pub(crate) tool_executor_provider: Option<Arc<dyn ToolExecutorProvider>>,
+    /// Subject-tagged captured-content sink (ADR-0050): when set, a run whose
+    /// capture level permits content writes it here (attributed to the
+    /// `AWAKEN_CONTENT_SUBJECT` on the open surface). `None` = spans only.
+    pub(crate) capture_sink: Option<Arc<dyn awaken_runtime_contract::CaptureSink>>,
 }
 
 impl SharedHost {
@@ -449,7 +468,20 @@ impl SharedHost {
             completion: Arc::new(CompletionRegistry::default()),
             remote_hand: None,
             tool_executor_provider: None,
+            capture_sink: None,
         }
+    }
+
+    /// Wire the subject-tagged captured-content sink (ADR-0050). A run whose
+    /// resolved capture level permits content writes it here, attributed to the
+    /// `AWAKEN_CONTENT_SUBJECT` on the open surface.
+    #[must_use]
+    pub fn with_capture_sink(
+        mut self,
+        sink: Arc<dyn awaken_runtime_contract::CaptureSink>,
+    ) -> Self {
+        self.capture_sink = Some(sink);
+        self
     }
 
     /// Enable context compaction. Once a turn's conversation exceeds `threshold`
@@ -1162,6 +1194,7 @@ impl SharedHost {
             stream_checkpoint,
             remote_hand: self.remote_hand.clone(),
             tool_executor_provider: self.tool_executor_provider.clone(),
+            capture_sink: self.capture_sink.clone(),
             thread_id,
             env,
             skill_registry,
