@@ -58,6 +58,22 @@ pub trait DataSubjectResolver: Send + Sync {
     async fn erase(&self, subject: &DataSubjectId) -> ErasureReceipt;
 }
 
+/// Where the runtime writes captured prompt/completion/tool content when the
+/// [`CaptureDecision`](crate::CaptureDecision) permits it (ADR-0050). The sink
+/// is subject-tagged so the same store can later erase by subject. Best-effort,
+/// off the committed path — it never blocks or fails a run.
+#[async_trait]
+pub trait CaptureSink: Send + Sync {
+    /// Record one captured-content item, attributed to `subject` for `purpose`.
+    async fn record(
+        &self,
+        subject: &DataSubjectId,
+        purpose: Purpose,
+        kind: crate::capture::ContentKind,
+        content: &str,
+    );
+}
+
 /// A content store that can erase all records attributed to a data subject
 /// (GDPR Art. 17, ADR-0050 D7). A resolver fans an erasure out across every
 /// registered eraser; each returns the number of records it removed.

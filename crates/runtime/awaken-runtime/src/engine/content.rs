@@ -5,7 +5,34 @@
 //! result on the [`CaptureDecision`](awaken_runtime_contract::CaptureDecision)
 //! (default `Structured` records nothing) and scrubs it through the redactor.
 
+use std::sync::Arc;
+
 use awaken_runtime_contract::llm::ChatMessage;
+use awaken_runtime_contract::{CaptureDecision, CaptureSink, ContentKind, DataSubjectId, Purpose};
+
+/// The subject + sink to persist captured content to, when both are present.
+pub(crate) type SinkTarget<'a> = Option<(&'a Arc<dyn CaptureSink>, &'a DataSubjectId)>;
+
+/// Gate one piece of content on the capture decision (ADR-0050): if the level
+/// permits it, record the redactor-scrubbed text onto the current span's
+/// `field`, and — when a subject-tagged sink is wired — write it to that sink
+/// (best-effort, off the committed path).
+pub(crate) async fn emit_content(
+    capture: &CaptureDecision,
+    sink: SinkTarget<'_>,
+    kind: ContentKind,
+    field: &'static str,
+    text: &str,
+) {
+    let Some(scrubbed) = capture.content(kind, text) else {
+        return;
+    };
+    tracing::Span::current().record(field, scrubbed.as_ref());
+    if let Some((sink, subject)) = sink {
+        sink.record(subject, Purpose::TelemetryContent, kind, scrubbed.as_ref())
+            .await;
+    }
+}
 
 /// Render chat messages to a compact text form for content telemetry. Only each
 /// block's text — the PII-bearing part — is included; non-text blocks (e.g.

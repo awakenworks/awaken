@@ -7,9 +7,10 @@
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use awaken_runtime_contract::{ContentEraser, DataSubjectId, Purpose};
+use awaken_runtime_contract::{CaptureSink, ContentEraser, ContentKind, DataSubjectId, Purpose};
 
 /// One captured-content record, tagged by subject + purpose + record time.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,8 +37,9 @@ impl InMemoryCapturedContentStore {
         Self::default()
     }
 
-    /// Record a captured-content item; returns its `cap_…` id.
-    pub fn record(
+    /// Insert a captured-content item at an explicit time; returns its `cap_…`
+    /// id. The [`CaptureSink`] impl calls this with the wall clock.
+    pub fn insert(
         &self,
         subject: DataSubjectId,
         purpose: Purpose,
@@ -78,6 +80,26 @@ impl InMemoryCapturedContentStore {
     }
 }
 
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+#[async_trait]
+impl CaptureSink for InMemoryCapturedContentStore {
+    async fn record(
+        &self,
+        subject: &DataSubjectId,
+        purpose: Purpose,
+        _kind: ContentKind,
+        content: &str,
+    ) {
+        self.insert(subject.clone(), purpose, content, now_millis());
+    }
+}
+
 #[async_trait]
 impl ContentEraser for InMemoryCapturedContentStore {
     async fn erase_subject(&self, subject: &DataSubjectId) -> usize {
@@ -94,20 +116,35 @@ mod tests {
 
     fn store() -> InMemoryCapturedContentStore {
         let s = InMemoryCapturedContentStore::new();
-        s.record(
+        s.insert(
             DataSubjectId("a".into()),
             Purpose::TelemetryContent,
             "x1",
             100,
         );
-        s.record(
+        s.insert(
             DataSubjectId("a".into()),
             Purpose::TelemetryContent,
             "x2",
             100,
         );
-        s.record(DataSubjectId("b".into()), Purpose::EvalRecording, "y1", 100);
+        s.insert(DataSubjectId("b".into()), Purpose::EvalRecording, "y1", 100);
         s
+    }
+
+    #[tokio::test]
+    async fn capture_sink_records_then_erases_by_subject() {
+        let s = InMemoryCapturedContentStore::new();
+        s.record(
+            &DataSubjectId("a".into()),
+            Purpose::TelemetryContent,
+            ContentKind::InputMessages,
+            "hello a@b.com",
+        )
+        .await;
+        assert_eq!(s.len(), 1, "sink wrote one record");
+        assert_eq!(s.erase_subject(&DataSubjectId("a".into())).await, 1);
+        assert!(s.is_empty());
     }
 
     #[tokio::test]
