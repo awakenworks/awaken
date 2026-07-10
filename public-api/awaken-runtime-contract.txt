@@ -347,6 +347,99 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::contro
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::control::LiveCommand
 pub trait awaken_runtime_contract::control::LiveRunControl
 pub fn awaken_runtime_contract::control::LiveRunControl::deliver(&self, awaken_runtime_contract::control::LiveCommand) -> core::result::Result<(), awaken_runtime_contract::control::Error>
+pub mod awaken_runtime_contract::data_subject
+pub enum awaken_runtime_contract::data_subject::Purpose
+pub awaken_runtime_contract::data_subject::Purpose::EvalRecording
+pub awaken_runtime_contract::data_subject::Purpose::TelemetryContent
+impl core::clone::Clone for awaken_runtime_contract::data_subject::Purpose
+pub fn awaken_runtime_contract::data_subject::Purpose::clone(&self) -> awaken_runtime_contract::data_subject::Purpose
+impl core::cmp::Eq for awaken_runtime_contract::data_subject::Purpose
+impl core::cmp::PartialEq for awaken_runtime_contract::data_subject::Purpose
+pub fn awaken_runtime_contract::data_subject::Purpose::eq(&self, &awaken_runtime_contract::data_subject::Purpose) -> bool
+impl core::fmt::Debug for awaken_runtime_contract::data_subject::Purpose
+pub fn awaken_runtime_contract::data_subject::Purpose::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for awaken_runtime_contract::data_subject::Purpose
+pub fn awaken_runtime_contract::data_subject::Purpose::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for awaken_runtime_contract::data_subject::Purpose
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::data_subject::Purpose
+impl serde_core::ser::Serialize for awaken_runtime_contract::data_subject::Purpose
+pub fn awaken_runtime_contract::data_subject::Purpose::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::data_subject::Purpose
+pub fn awaken_runtime_contract::data_subject::Purpose::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_runtime_contract::data_subject::Purpose
+impl core::marker::Send for awaken_runtime_contract::data_subject::Purpose
+impl core::marker::Sync for awaken_runtime_contract::data_subject::Purpose
+impl core::marker::Unpin for awaken_runtime_contract::data_subject::Purpose
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::data_subject::Purpose
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::data_subject::Purpose
+pub struct awaken_runtime_contract::data_subject::DataSubjectId(pub alloc::string::String)
+impl awaken_runtime_contract::data_subject::DataSubjectId
+pub fn awaken_runtime_contract::data_subject::DataSubjectId::as_str(&self) -> &str
+impl core::clone::Clone for awaken_runtime_contract::data_subject::DataSubjectId
+pub fn awaken_runtime_contract::data_subject::DataSubjectId::clone(&self) -> awaken_runtime_contract::data_subject::DataSubjectId
+impl core::cmp::Eq for awaken_runtime_contract::data_subject::DataSubjectId
+impl core::cmp::PartialEq for awaken_runtime_contract::data_subject::DataSubjectId
+pub fn awaken_runtime_contract::data_subject::DataSubjectId::eq(&self, &awaken_runtime_contract::data_subject::DataSubjectId) -> bool
+impl core::fmt::Debug for awaken_runtime_contract::data_subject::DataSubjectId
+pub fn awaken_runtime_contract::data_subject::DataSubjectId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for awaken_runtime_contract::data_subject::DataSubjectId
+pub fn awaken_runtime_contract::data_subject::DataSubjectId::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::data_subject::DataSubjectId
+impl serde_core::ser::Serialize for awaken_runtime_contract::data_subject::DataSubjectId
+pub fn awaken_runtime_contract::data_subject::DataSubjectId::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::data_subject::DataSubjectId
+pub fn awaken_runtime_contract::data_subject::DataSubjectId::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_runtime_contract::data_subject::DataSubjectId
+impl core::marker::Send for awaken_runtime_contract::data_subject::DataSubjectId
+impl core::marker::Sync for awaken_runtime_contract::data_subject::DataSubjectId
+impl core::marker::Unpin for awaken_runtime_contract::data_subject::DataSubjectId
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::data_subject::DataSubjectId
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::data_subject::DataSubjectId
+pub struct awaken_runtime_contract::data_subject::ErasureReceipt
+pub awaken_runtime_contract::data_subject::ErasureReceipt::records_removed: usize
+impl core::clone::Clone for awaken_runtime_contract::data_subject::ErasureReceipt
+pub fn awaken_runtime_contract::data_subject::ErasureReceipt::clone(&self) -> awaken_runtime_contract::data_subject::ErasureReceipt
+impl core::cmp::Eq for awaken_runtime_contract::data_subject::ErasureReceipt
+impl core::cmp::PartialEq for awaken_runtime_contract::data_subject::ErasureReceipt
+pub fn awaken_runtime_contract::data_subject::ErasureReceipt::eq(&self, &awaken_runtime_contract::data_subject::ErasureReceipt) -> bool
+impl core::default::Default for awaken_runtime_contract::data_subject::ErasureReceipt
+pub fn awaken_runtime_contract::data_subject::ErasureReceipt::default() -> awaken_runtime_contract::data_subject::ErasureReceipt
+impl core::fmt::Debug for awaken_runtime_contract::data_subject::ErasureReceipt
+pub fn awaken_runtime_contract::data_subject::ErasureReceipt::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::data_subject::ErasureReceipt
+impl serde_core::ser::Serialize for awaken_runtime_contract::data_subject::ErasureReceipt
+pub fn awaken_runtime_contract::data_subject::ErasureReceipt::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::data_subject::ErasureReceipt
+pub fn awaken_runtime_contract::data_subject::ErasureReceipt::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_runtime_contract::data_subject::ErasureReceipt
+impl core::marker::Send for awaken_runtime_contract::data_subject::ErasureReceipt
+impl core::marker::Sync for awaken_runtime_contract::data_subject::ErasureReceipt
+impl core::marker::Unpin for awaken_runtime_contract::data_subject::ErasureReceipt
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::data_subject::ErasureReceipt
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::data_subject::ErasureReceipt
+pub struct awaken_runtime_contract::data_subject::NullResolver
+impl awaken_runtime_contract::data_subject::DataSubjectResolver for awaken_runtime_contract::data_subject::NullResolver
+pub fn awaken_runtime_contract::data_subject::NullResolver::consent_ceiling<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::capture::ContentCapture> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::data_subject::NullResolver::erase<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::data_subject::ErasureReceipt> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl core::clone::Clone for awaken_runtime_contract::data_subject::NullResolver
+pub fn awaken_runtime_contract::data_subject::NullResolver::clone(&self) -> awaken_runtime_contract::data_subject::NullResolver
+impl core::default::Default for awaken_runtime_contract::data_subject::NullResolver
+pub fn awaken_runtime_contract::data_subject::NullResolver::default() -> awaken_runtime_contract::data_subject::NullResolver
+impl core::fmt::Debug for awaken_runtime_contract::data_subject::NullResolver
+pub fn awaken_runtime_contract::data_subject::NullResolver::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_runtime_contract::data_subject::NullResolver
+impl core::marker::Freeze for awaken_runtime_contract::data_subject::NullResolver
+impl core::marker::Send for awaken_runtime_contract::data_subject::NullResolver
+impl core::marker::Sync for awaken_runtime_contract::data_subject::NullResolver
+impl core::marker::Unpin for awaken_runtime_contract::data_subject::NullResolver
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::data_subject::NullResolver
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::data_subject::NullResolver
+pub trait awaken_runtime_contract::data_subject::DataSubjectResolver: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::data_subject::DataSubjectResolver::consent_ceiling<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::capture::ContentCapture> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::data_subject::DataSubjectResolver::erase<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::data_subject::ErasureReceipt> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_runtime_contract::data_subject::DataSubjectResolver for awaken_runtime_contract::data_subject::NullResolver
+pub fn awaken_runtime_contract::data_subject::NullResolver::consent_ceiling<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::capture::ContentCapture> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::data_subject::NullResolver::erase<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::data_subject::ErasureReceipt> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub mod awaken_runtime_contract::execution
 pub enum awaken_runtime_contract::execution::Error
 pub awaken_runtime_contract::execution::Error::Commit(alloc::string::String)
@@ -1930,6 +2023,30 @@ impl core::marker::Sync for awaken_runtime_contract::plugin::PhaseHookPoint
 impl core::marker::Unpin for awaken_runtime_contract::plugin::PhaseHookPoint
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::PhaseHookPoint
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::PhaseHookPoint
+pub enum awaken_runtime_contract::Purpose
+pub awaken_runtime_contract::Purpose::EvalRecording
+pub awaken_runtime_contract::Purpose::TelemetryContent
+impl core::clone::Clone for awaken_runtime_contract::data_subject::Purpose
+pub fn awaken_runtime_contract::data_subject::Purpose::clone(&self) -> awaken_runtime_contract::data_subject::Purpose
+impl core::cmp::Eq for awaken_runtime_contract::data_subject::Purpose
+impl core::cmp::PartialEq for awaken_runtime_contract::data_subject::Purpose
+pub fn awaken_runtime_contract::data_subject::Purpose::eq(&self, &awaken_runtime_contract::data_subject::Purpose) -> bool
+impl core::fmt::Debug for awaken_runtime_contract::data_subject::Purpose
+pub fn awaken_runtime_contract::data_subject::Purpose::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for awaken_runtime_contract::data_subject::Purpose
+pub fn awaken_runtime_contract::data_subject::Purpose::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for awaken_runtime_contract::data_subject::Purpose
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::data_subject::Purpose
+impl serde_core::ser::Serialize for awaken_runtime_contract::data_subject::Purpose
+pub fn awaken_runtime_contract::data_subject::Purpose::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::data_subject::Purpose
+pub fn awaken_runtime_contract::data_subject::Purpose::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_runtime_contract::data_subject::Purpose
+impl core::marker::Send for awaken_runtime_contract::data_subject::Purpose
+impl core::marker::Sync for awaken_runtime_contract::data_subject::Purpose
+impl core::marker::Unpin for awaken_runtime_contract::data_subject::Purpose
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::data_subject::Purpose
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::data_subject::Purpose
 pub enum awaken_runtime_contract::ResumeError
 pub awaken_runtime_contract::ResumeError::CorrelationMismatch
 pub awaken_runtime_contract::ResumeError::Expired
@@ -2145,6 +2262,51 @@ impl core::marker::Sync for awaken_runtime_contract::plugin::Contributions
 impl core::marker::Unpin for awaken_runtime_contract::plugin::Contributions
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::Contributions
 impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::Contributions
+pub struct awaken_runtime_contract::DataSubjectId(pub alloc::string::String)
+impl awaken_runtime_contract::data_subject::DataSubjectId
+pub fn awaken_runtime_contract::data_subject::DataSubjectId::as_str(&self) -> &str
+impl core::clone::Clone for awaken_runtime_contract::data_subject::DataSubjectId
+pub fn awaken_runtime_contract::data_subject::DataSubjectId::clone(&self) -> awaken_runtime_contract::data_subject::DataSubjectId
+impl core::cmp::Eq for awaken_runtime_contract::data_subject::DataSubjectId
+impl core::cmp::PartialEq for awaken_runtime_contract::data_subject::DataSubjectId
+pub fn awaken_runtime_contract::data_subject::DataSubjectId::eq(&self, &awaken_runtime_contract::data_subject::DataSubjectId) -> bool
+impl core::fmt::Debug for awaken_runtime_contract::data_subject::DataSubjectId
+pub fn awaken_runtime_contract::data_subject::DataSubjectId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for awaken_runtime_contract::data_subject::DataSubjectId
+pub fn awaken_runtime_contract::data_subject::DataSubjectId::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::data_subject::DataSubjectId
+impl serde_core::ser::Serialize for awaken_runtime_contract::data_subject::DataSubjectId
+pub fn awaken_runtime_contract::data_subject::DataSubjectId::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::data_subject::DataSubjectId
+pub fn awaken_runtime_contract::data_subject::DataSubjectId::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_runtime_contract::data_subject::DataSubjectId
+impl core::marker::Send for awaken_runtime_contract::data_subject::DataSubjectId
+impl core::marker::Sync for awaken_runtime_contract::data_subject::DataSubjectId
+impl core::marker::Unpin for awaken_runtime_contract::data_subject::DataSubjectId
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::data_subject::DataSubjectId
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::data_subject::DataSubjectId
+pub struct awaken_runtime_contract::ErasureReceipt
+pub awaken_runtime_contract::ErasureReceipt::records_removed: usize
+impl core::clone::Clone for awaken_runtime_contract::data_subject::ErasureReceipt
+pub fn awaken_runtime_contract::data_subject::ErasureReceipt::clone(&self) -> awaken_runtime_contract::data_subject::ErasureReceipt
+impl core::cmp::Eq for awaken_runtime_contract::data_subject::ErasureReceipt
+impl core::cmp::PartialEq for awaken_runtime_contract::data_subject::ErasureReceipt
+pub fn awaken_runtime_contract::data_subject::ErasureReceipt::eq(&self, &awaken_runtime_contract::data_subject::ErasureReceipt) -> bool
+impl core::default::Default for awaken_runtime_contract::data_subject::ErasureReceipt
+pub fn awaken_runtime_contract::data_subject::ErasureReceipt::default() -> awaken_runtime_contract::data_subject::ErasureReceipt
+impl core::fmt::Debug for awaken_runtime_contract::data_subject::ErasureReceipt
+pub fn awaken_runtime_contract::data_subject::ErasureReceipt::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::data_subject::ErasureReceipt
+impl serde_core::ser::Serialize for awaken_runtime_contract::data_subject::ErasureReceipt
+pub fn awaken_runtime_contract::data_subject::ErasureReceipt::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::data_subject::ErasureReceipt
+pub fn awaken_runtime_contract::data_subject::ErasureReceipt::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_runtime_contract::data_subject::ErasureReceipt
+impl core::marker::Send for awaken_runtime_contract::data_subject::ErasureReceipt
+impl core::marker::Sync for awaken_runtime_contract::data_subject::ErasureReceipt
+impl core::marker::Unpin for awaken_runtime_contract::data_subject::ErasureReceipt
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::data_subject::ErasureReceipt
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::data_subject::ErasureReceipt
 pub struct awaken_runtime_contract::ExecutableAgentSnapshot
 pub awaken_runtime_contract::ExecutableAgentSnapshot::fingerprint: awaken_runtime_contract::resolved::CatalogFingerprint
 pub awaken_runtime_contract::ExecutableAgentSnapshot::id: awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
@@ -2292,6 +2454,23 @@ impl core::marker::Sync for awaken_runtime_contract::capture::NoopRedactor
 impl core::marker::Unpin for awaken_runtime_contract::capture::NoopRedactor
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::capture::NoopRedactor
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::capture::NoopRedactor
+pub struct awaken_runtime_contract::NullResolver
+impl awaken_runtime_contract::data_subject::DataSubjectResolver for awaken_runtime_contract::data_subject::NullResolver
+pub fn awaken_runtime_contract::data_subject::NullResolver::consent_ceiling<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::capture::ContentCapture> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::data_subject::NullResolver::erase<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::data_subject::ErasureReceipt> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl core::clone::Clone for awaken_runtime_contract::data_subject::NullResolver
+pub fn awaken_runtime_contract::data_subject::NullResolver::clone(&self) -> awaken_runtime_contract::data_subject::NullResolver
+impl core::default::Default for awaken_runtime_contract::data_subject::NullResolver
+pub fn awaken_runtime_contract::data_subject::NullResolver::default() -> awaken_runtime_contract::data_subject::NullResolver
+impl core::fmt::Debug for awaken_runtime_contract::data_subject::NullResolver
+pub fn awaken_runtime_contract::data_subject::NullResolver::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_runtime_contract::data_subject::NullResolver
+impl core::marker::Freeze for awaken_runtime_contract::data_subject::NullResolver
+impl core::marker::Send for awaken_runtime_contract::data_subject::NullResolver
+impl core::marker::Sync for awaken_runtime_contract::data_subject::NullResolver
+impl core::marker::Unpin for awaken_runtime_contract::data_subject::NullResolver
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::data_subject::NullResolver
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::data_subject::NullResolver
 pub struct awaken_runtime_contract::PluginManifest
 pub awaken_runtime_contract::PluginManifest::bound: awaken_runtime_contract::plugin::CapabilityBound
 pub awaken_runtime_contract::PluginManifest::config_sections: alloc::vec::Vec<alloc::string::String>
@@ -2586,6 +2765,12 @@ pub trait awaken_runtime_contract::ContentRedactor: core::marker::Send + core::m
 pub fn awaken_runtime_contract::ContentRedactor::redact<'a>(&self, awaken_runtime_contract::capture::ContentKind, &'a str) -> alloc::borrow::Cow<'a, str>
 impl awaken_runtime_contract::capture::ContentRedactor for awaken_runtime_contract::capture::NoopRedactor
 pub fn awaken_runtime_contract::capture::NoopRedactor::redact<'a>(&self, awaken_runtime_contract::capture::ContentKind, &'a str) -> alloc::borrow::Cow<'a, str>
+pub trait awaken_runtime_contract::DataSubjectResolver: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::DataSubjectResolver::consent_ceiling<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::capture::ContentCapture> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::DataSubjectResolver::erase<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::data_subject::ErasureReceipt> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_runtime_contract::data_subject::DataSubjectResolver for awaken_runtime_contract::data_subject::NullResolver
+pub fn awaken_runtime_contract::data_subject::NullResolver::consent_ceiling<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::capture::ContentCapture> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::data_subject::NullResolver::erase<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::data_subject::ErasureReceipt> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_runtime_contract::LiveRunControl
 pub fn awaken_runtime_contract::LiveRunControl::deliver(&self, awaken_runtime_contract::control::LiveCommand) -> core::result::Result<(), awaken_runtime_contract::control::Error>
 pub trait awaken_runtime_contract::LlmExecutor: core::marker::Send + core::marker::Sync
