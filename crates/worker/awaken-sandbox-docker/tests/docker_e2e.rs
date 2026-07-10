@@ -75,3 +75,40 @@ async fn create_exec_adopt_dispose_over_real_docker() {
     readopted.dispose().await.expect("dispose");
     assert_eq!(sandbox.status().await.unwrap(), SandboxStatus::Terminated);
 }
+
+#[tokio::test]
+async fn collects_and_reads_artifacts_from_the_outputs_path() {
+    if !enabled() {
+        eprintln!("skip: AWAKEN_TEST_DOCKER != 1");
+        return;
+    }
+    let provider = DockerSandboxProvider::new("alpine:3");
+    let sandbox = provider.create(&spec("artifacts")).await.expect("create");
+
+    // A run produces a file under the environment's outputs root.
+    let write = sandbox
+        .spawn(cmd(&[
+            "sh",
+            "-c",
+            "mkdir -p /workspace/out && printf 'hello-artifact' > /workspace/out/result.txt",
+        ]))
+        .await
+        .expect("spawn write");
+    assert_eq!(write.wait().await.unwrap().code, Some(0));
+
+    // artifacts() content-addresses every file under outputs_path.
+    let arts = sandbox.artifacts().await.expect("artifacts");
+    assert_eq!(arts.len(), 1, "one produced artifact, got {arts:?}");
+    assert!(arts[0].path.ends_with("result.txt"), "path: {}", arts[0].path);
+    assert_eq!(arts[0].size_bytes, 14, "\"hello-artifact\" is 14 bytes");
+    assert_eq!(arts[0].id, arts[0].content_hash, "id is the content hash");
+
+    // read_artifact() returns the exact bytes, addressed by the content-hash id.
+    let bytes = sandbox.read_artifact(&arts[0].id).await.expect("read_artifact");
+    assert_eq!(bytes, b"hello-artifact");
+
+    // An unknown id fails closed.
+    assert!(sandbox.read_artifact("deadbeef").await.is_err());
+
+    sandbox.dispose().await.expect("dispose");
+}
