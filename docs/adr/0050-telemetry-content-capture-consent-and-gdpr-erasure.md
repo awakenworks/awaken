@@ -5,7 +5,9 @@
 - Builds on:
   [ADR-0048](0048-iam-host-adoption-org-workspace-path-alignment-and-a2a-carve-out.md)
   and [ADR-0042](0042-public-api-tenancy-authz-and-front-door-consistency.md)
-  (Org → Workspace tenancy; Org is the tenant/controller root — `awaken-scope/src/org.rs:1`),
+  (Org → Workspace tenancy; Org is the tenant/controller root — an Access-context
+  fact owned by `awaken-iam`, per [ADR-0051](0051-tenancy-edge-aspect-one-opaque-scope-id.md) D7,
+  which retired the orphan in-repo `awaken-scope` crate),
   [ADR-0043](0043-management-plane-config-credential-model-and-runtime-unaware-secret-seam.md)
   (the runtime-unaware secret seam — extended here to privacy),
   [ADR-0047](0047-compaction-as-agent-run-and-the-context-plane-boundary.md)
@@ -34,10 +36,12 @@ does not cover conversation content or unknown-position PII.
 
 Three domain facts frame the design:
 
-1. **`Org` is the tenant** — `awaken-scope/src/org.rs:1`: "Org — the tenant /
-   billing / partition root of the scope tree." Tenancy is strictly
-   `Org ⊃ Workspace` (no Project tier). The GDPR **data controller** boundary,
-   the isolation/residency partition, and billing all coincide with **Org**.
+1. **`Org` is the tenant** — the tenant / billing / partition root of the scope
+   tree, an Access-context fact owned by `awaken-iam` (ADR-0051 D7; the in-repo
+   `awaken-scope` crate that once modelled this was an orphan and is retired).
+   Tenancy is strictly `Org ⊃ Workspace` (no Project tier). The GDPR **data
+   controller** boundary, the isolation/residency partition, and billing all
+   coincide with **Org**.
    Workspace/Agent are operational subdivisions *inside* one controller.
 2. **The runtime must stay tenancy- and secret-unaware** (ADR-0043; enforced by
    `check_runtime_is_secret_resolution_free`). Privacy must not become a new leak
@@ -173,7 +177,7 @@ pub struct CaptureDecision {
 pub enum ContentCapture { Off, Structured, Full }
 ```
 
-The runtime and sinks **never import** `awaken-scope`, `user_profile`, or consent
+The runtime and sinks **never import** `awaken-tenancy`, `user_profile`, or consent
 types — they receive an enum and a function. This extends ADR-0043's
 runtime-unaware seam to privacy for free: the existing
 `check_runtime_is_secret_resolution_free` boundary already forbids the runtime
