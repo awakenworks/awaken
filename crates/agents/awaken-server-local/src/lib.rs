@@ -1430,13 +1430,17 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
     let user_profiles = awaken_protocol_managed::user_profiles_router(std::sync::Arc::new(
         awaken_protocol_managed::UserProfileState::new(),
     ));
-    // GDPR erasure (ADR-0050): `/v1/user_profiles/:id/erasure` over the neutral
-    // data-subject resolver. The open surface uses an in-memory subject store.
+    // Consent + GDPR erasure (ADR-0050): the consent read/write routes and
+    // `/v1/user_profiles/:id/erasure` share ONE in-memory subject store on the
+    // open surface, so a granted consent is what a later erasure/resolve sees.
+    let ds_repo: std::sync::Arc<dyn awaken_data_subject::DataSubjectRepo> =
+        std::sync::Arc::new(awaken_data_subject::InMemoryDataSubjectRepo::new());
     let ds_resolver: std::sync::Arc<dyn awaken_runtime_contract::DataSubjectResolver> =
         std::sync::Arc::new(awaken_data_subject::RepoDataSubjectResolver::new(
-            awaken_data_subject::InMemoryDataSubjectRepo::new(),
+            ds_repo.clone(),
         ));
     let erasure = awaken_runtime_host::erasure_router(ds_resolver);
+    let consent = awaken_runtime_host::consent_router(ds_repo.clone());
     // The public agent registry (`/v1/agents`) over its own in-mem store.
     let agents = awaken_protocol_managed::agents_router(std::sync::Arc::new(
         awaken_protocol_managed::AgentRegistryState::new(),
@@ -1461,6 +1465,7 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
         .merge(vaults)
         .merge(user_profiles)
         .merge(erasure)
+        .merge(consent)
         .merge(agents)
         .merge(deployments)
         .merge(environments);

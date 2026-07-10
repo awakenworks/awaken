@@ -35,10 +35,13 @@ awaken-run-ingress = { workspace = true }
 awaken-run-executor-acp = { workspace = true }
 awaken-config-resolver = { workspace = true }
 awaken-credential-vault = { workspace = true }
+# Data-subject consent/erasure store (ADR-0050): the consent read/write router.
+awaken-data-subject = { workspace = true }
 awaken-protocol-managed = { workspace = true }
 awaken-protocol-transport = { workspace = true }
 awaken-protocol-a2a = { workspace = true }
 async-trait.workspace = true
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 # Durable Managed-session repository (sessions.db) — the open home for
 # the sqlite + postgres ManagedSessionRepository backends, moved here so any bin
