@@ -55,6 +55,8 @@ awaken-model-catalog = { workspace = true, features = ["sqlite"] }
 # `sqlite` + `sealed-aead`: the durable management plane persists secret-free rows in
 # SQLite and secrets only as AEAD-sealed blobs under AWAKEN_MGMT_SEAL_KEY.
 awaken-credential-vault = { workspace = true, features = ["oauth-command", "sqlite", "sealed-aead"] }
+# Data-subject consent/erasure store (ADR-0050): backs the /v1/user_profiles/:id/erasure endpoint.
+awaken-data-subject = { workspace = true }
 # Embedded IAM (ADR-0042/0043 P1): AWAKEN_MGMT_IAM=embedded gates the management
 # plane behind bearer ApiTokens. contract = ids/scopes/requests, core = token
 # directory + minter + the default-deny PolicySet evaluator, preset = the seeded

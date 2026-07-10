@@ -1054,6 +1054,7 @@ dependencies = [
  "awaken-config-store",
  "awaken-connection-plan",
  "awaken-credential-vault",
+ "awaken-data-subject",
  "awaken-ext-builtin-tools",
  "awaken-ext-mcp",
  "awaken-iam-contract",
