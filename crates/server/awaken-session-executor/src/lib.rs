@@ -20,6 +20,7 @@ mod compact;
 mod config;
 mod config_home;
 mod config_plane;
+mod data_subject_api;
 mod delegate;
 mod dispatch_backend;
 mod durable_ops;
@@ -66,6 +67,7 @@ pub use crate::dispatch_backend::{init_shared_dispatch_store, init_shared_postgr
 pub use crate::host::{HostResume, SharedHost};
 // The sandboxed ACP channel source (bwrap-confined agent launch) and the shared
 // per-thread egress handle a composition root wires it with.
+pub use crate::data_subject_api::erasure_router;
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::redact::PiiRedactor;
 pub use crate::sandbox_source::{SandboxChannelSource, ThreadEgress};
