@@ -67,6 +67,7 @@ fn snapshot_for(model_id: &str) -> ExecutableAgentSnapshot {
         id: ExecutableAgentSnapshotId("snap".into()),
         root_agent_id: AgentId("agent".into()),
         resolved_spec: ResolvedSpec {
+            model_candidates: Vec::new(),
             catalog_fingerprint: CatalogFingerprint("fp".into()),
             instructions: String::new(),
             max_steps: 8,
