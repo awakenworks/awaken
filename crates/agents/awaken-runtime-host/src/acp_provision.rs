@@ -46,7 +46,10 @@ impl EnvLaunchResolver {
     /// must never hold a raw provider key — so we point it at the **gateway** with a
     /// short-lived **lease token** in the key slot (the gateway injects the real
     /// credential out of the sandbox), and we do NOT read `ANTHROPIC_API_KEY` at all.
-    /// This mirrors the `ModelAccessGrant::CloudManagedGateway` materialization.
+    /// This mirrors the `ModelAccessGrant::CloudManagedGateway` materialization; env
+    /// injection is the operator/placement path today. When the run manifest carries a
+    /// `ModelAccessGrant` directly (a resolved-spec field), materialize that here
+    /// instead — the launch projection is unchanged either way.
     ///
     /// Otherwise (self-credentialed, `LocalSelfCredentialed`): base URL and key come
     /// from the env under this CLI's delivery keys; the model is the run's
