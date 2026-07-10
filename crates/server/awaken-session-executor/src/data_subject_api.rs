@@ -31,9 +31,12 @@ pub(crate) fn process_capture_sink() -> Option<Arc<dyn CaptureSink>> {
 }
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::response::Html;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// Mount the erasure route over an injected resolver.
 pub fn erasure_router(resolver: Arc<dyn DataSubjectResolver>) -> Router {
@@ -98,7 +101,112 @@ pub fn consent_router(repo: Arc<dyn DataSubjectRepo>) -> Router {
             "/v1/user_profiles/:id/capture-decision",
             get(capture_decision),
         )
+        // Enrollment web flow (ADR-0050 D3/G3): mint a signed URL, the end user
+        // visits an HTML consent page and accepts, which records the grant.
+        .route("/v1/user_profiles/:id/enroll", post(mint_enrollment))
+        .route("/enroll/:token", get(enroll_page))
+        .route("/enroll/:token/grant", post(enroll_grant))
         .with_state(repo)
+}
+
+/// The HMAC-ish signing secret for enrollment tokens (process-fixed).
+fn enroll_secret() -> String {
+    std::env::var("AWAKEN_ENROLL_SECRET").unwrap_or_else(|_| "awaken-enroll-dev-secret".into())
+}
+
+/// Keyed digest over the base64 payload: an attacker cannot forge a token
+/// without the secret.
+fn sign(payload_b64: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(enroll_secret().as_bytes());
+    h.update(b".");
+    h.update(payload_b64.as_bytes());
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct EnrollPayload {
+    subject: String,
+    purpose: Purpose,
+    /// Epoch-millis expiry.
+    exp: i64,
+}
+
+fn b64_engine() -> base64::engine::general_purpose::GeneralPurpose {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+}
+
+/// Verify a `<payload>.<sig>` token and its expiry, returning the payload.
+fn verify_token(token: &str) -> Option<EnrollPayload> {
+    let (payload_b64, sig) = token.split_once('.')?;
+    if sign(payload_b64) != sig {
+        return None;
+    }
+    let bytes = b64_engine().decode(payload_b64).ok()?;
+    let payload: EnrollPayload = serde_json::from_slice(&bytes).ok()?;
+    (payload.exp >= now_millis()).then_some(payload)
+}
+
+/// `POST /v1/user_profiles/:id/enroll?purpose=…` — mint a signed, expiring URL to
+/// send to the end user.
+async fn mint_enrollment(
+    Path(id): Path<String>,
+    Query(q): Query<GrantBody>,
+) -> Json<serde_json::Value> {
+    let exp = now_millis() + 15 * 60 * 1000;
+    let payload = EnrollPayload {
+        subject: id,
+        purpose: q.purpose,
+        exp,
+    };
+    let payload_b64 = b64_engine().encode(serde_json::to_vec(&payload).unwrap_or_default());
+    let token = format!("{payload_b64}.{}", sign(&payload_b64));
+    Json(serde_json::json!({
+        "type": "enrollment_url",
+        "url": format!("/enroll/{token}"),
+        "expires_at": exp,
+    }))
+}
+
+/// `GET /enroll/:token` — the end-user consent page.
+async fn enroll_page(Path(token): Path<String>) -> Html<String> {
+    match verify_token(&token) {
+        Some(p) => Html(format!(
+            "<!doctype html><h1>Consent</h1><p>Grant <b>{:?}</b> for <b>{}</b>?</p>\
+             <form method=\"post\" action=\"/enroll/{token}/grant\">\
+             <button type=\"submit\">Accept</button></form>",
+            p.purpose, p.subject
+        )),
+        None => Html("<!doctype html><p>This enrollment link is invalid or expired.</p>".into()),
+    }
+}
+
+/// `POST /enroll/:token/grant` — the end user accepts; record the grant.
+async fn enroll_grant(
+    State(repo): State<Arc<dyn DataSubjectRepo>>,
+    Path(token): Path<String>,
+) -> Result<Html<String>, StatusCode> {
+    let payload = verify_token(&token).ok_or(StatusCode::BAD_REQUEST)?;
+    let sid = DataSubjectId(payload.subject.clone());
+    let now = now_millis();
+    let mut subject = repo
+        .get(&sid)
+        .await
+        .unwrap_or_else(|_| DataSubject::new(sid.clone(), "open", now));
+    subject.upsert_consent(ConsentGrant {
+        purpose: payload.purpose,
+        status: ConsentStatus::Granted,
+        basis: LawfulBasis::Consent,
+        granted_at: now,
+        version: "enrollment".to_string(),
+    });
+    subject.updated_at = now;
+    repo.put(subject)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Html(
+        "<!doctype html><p>Thank you — your consent has been recorded.</p>".to_string(),
+    ))
 }
 
 /// Query for the capture-decision projection: the level the caller requests.
@@ -235,6 +343,34 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(read.telemetry_content_ceiling, ContentCapture::Full);
+    }
+
+    #[test]
+    fn enrollment_token_roundtrips_and_rejects_tampering() {
+        let payload = EnrollPayload {
+            subject: "dsub_1".into(),
+            purpose: Purpose::TelemetryContent,
+            exp: now_millis() + 60_000,
+        };
+        let b64 = b64_engine().encode(serde_json::to_vec(&payload).unwrap());
+        let token = format!("{b64}.{}", sign(&b64));
+        let got = verify_token(&token).expect("valid token verifies");
+        assert_eq!(got.subject, "dsub_1");
+        assert_eq!(got.purpose, Purpose::TelemetryContent);
+
+        // A tampered signature is rejected.
+        assert!(verify_token(&format!("{b64}.deadbeef")).is_none());
+        // An expired token is rejected.
+        let expired = EnrollPayload {
+            exp: now_millis() - 1,
+            ..EnrollPayload {
+                subject: "s".into(),
+                purpose: Purpose::TelemetryContent,
+                exp: 0,
+            }
+        };
+        let eb = b64_engine().encode(serde_json::to_vec(&expired).unwrap());
+        assert!(verify_token(&format!("{eb}.{}", sign(&eb))).is_none());
     }
 
     #[tokio::test]
