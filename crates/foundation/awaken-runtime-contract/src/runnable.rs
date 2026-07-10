@@ -68,6 +68,7 @@ pub struct RunnableConfigBuilder {
     instructions: String,
     max_steps: usize,
     model_binding: ModelBinding,
+    model_candidates: Vec<ModelBinding>,
     tools: Vec<ToolDescriptor>,
     plugin_ids: Vec<String>,
     plugin_config: BTreeMap<String, serde_json::Value>,
@@ -83,6 +84,7 @@ impl RunnableConfigBuilder {
             instructions: String::new(),
             max_steps: DEFAULT_MAX_STEPS,
             model_binding: ModelBinding::default(),
+            model_candidates: Vec::new(),
             tools: Vec::new(),
             plugin_ids: Vec::new(),
             plugin_config: BTreeMap::new(),
@@ -103,6 +105,14 @@ impl RunnableConfigBuilder {
     #[must_use]
     pub fn model(mut self, model_binding: ModelBinding) -> Self {
         self.model_binding = model_binding;
+        self
+    }
+
+    /// Ordered pool fallbacks tried after the primary [`model`](Self::model) when
+    /// a candidate fails cleanly (#1). Empty (the default) is a single-model agent.
+    #[must_use]
+    pub fn model_candidates(mut self, candidates: impl IntoIterator<Item = ModelBinding>) -> Self {
+        self.model_candidates = candidates.into_iter().collect();
         self
     }
 
@@ -187,7 +197,7 @@ impl RunnableConfigBuilder {
                 instructions: self.instructions,
                 max_steps: self.max_steps,
                 model_binding: self.model_binding,
-                model_candidates: Vec::new(),
+                model_candidates: self.model_candidates,
                 tool_descriptors: self.tools,
                 plugin_ids: self.plugin_ids,
                 plugin_config: self.plugin_config,
@@ -231,6 +241,30 @@ mod tests {
         assert_eq!(install.capabilities.catalog_fingerprint.0, "assistant");
         assert_eq!(snap.resolved_spec.instructions, "be concise");
         assert_eq!(snap.resolved_spec.max_steps, 8);
+    }
+
+    #[test]
+    fn model_candidates_populate_the_resolved_pool_and_default_empty() {
+        // No candidates → single-model agent (unchanged).
+        let single = RunnableConfig::builder("a")
+            .model(ModelBinding::new("p", "primary", "genai"))
+            .build();
+        assert!(single.snapshot().resolved_spec.model_candidates.is_empty());
+
+        // Candidates land on the resolved spec as ordered pool fallbacks.
+        let pooled = RunnableConfig::builder("a")
+            .model(ModelBinding::new("p", "primary", "genai"))
+            .model_candidates([
+                ModelBinding::new("p", "fallback-1", "genai"),
+                ModelBinding::new("p", "fallback-2", "genai"),
+            ])
+            .build();
+        let spec = &pooled.snapshot().resolved_spec;
+        assert_eq!(spec.model_binding.model_ref, "primary");
+        assert_eq!(spec.model_candidates.len(), 2);
+        // The engine tries the primary first, then these in order.
+        assert_eq!(spec.candidate_bindings().len(), 3);
+        assert_eq!(spec.candidate_bindings()[1].model_ref, "fallback-1");
     }
 
     #[test]

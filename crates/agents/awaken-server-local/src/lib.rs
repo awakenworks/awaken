@@ -566,6 +566,16 @@ pub fn build_router(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> 
     mount(Arc::new(SharedHost::new(llm, model_ref)))
 }
 
+/// A plain host over the real wire for the model-pool failover e2e (#1). The
+/// primary model is `ANTHROPIC_MODEL`; when the upstream fails exactly that model,
+/// the run fails over to the ordered `AWAKEN_MODEL_FALLBACKS`. No memory/tools/skills,
+/// so a single message is one clean main turn. `AWAKEN_MODEL_MODE=pool-failover`
+/// with `AWAKEN_MODEL_SOURCE=http`.
+pub fn build_pool_failover_router() -> Router {
+    let (model, model_ref) = scenario_model(Arc::new(EchoModel), "pool-primary");
+    mount(Arc::new(SharedHost::new(model, model_ref)))
+}
+
 /// The model backing a scenario router, and its advertised ref. Normally the
 /// deterministic in-process model the scenario scripts; but when the e2e harness
 /// sets `AWAKEN_MODEL_SOURCE=http` (alongside a fake Anthropic upstream in
