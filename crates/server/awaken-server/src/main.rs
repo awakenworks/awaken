@@ -76,6 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("acp") => awaken_server::build_acp_router(),
         Ok("acp-jsonrpc") => awaken_server::build_acp_jsonrpc_router(),
         Ok("acp-sandboxed") => awaken_server::build_acp_sandboxed_router(),
+        Ok("acp-gateway") => awaken_server::build_acp_gateway_router(),
         Ok("memory") => awaken_server::build_memory_router(),
         Ok("memory-resource") => awaken_server::build_memory_resource_router(),
         Ok("git-repo") => awaken_server::build_git_repo_router(),
