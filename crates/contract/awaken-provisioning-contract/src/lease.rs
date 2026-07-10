@@ -170,7 +170,11 @@ mod tests {
         let mut with_extra = SandboxHandle::new("k8s", "a");
         with_extra.extra = Some(serde_json::json!({"node": "n1"}));
         let plan = reconcile_adoption(&[with_extra], &[h("a")]);
-        assert_eq!(plan.adopt.len(), 1, "same (kind,id) reconciles regardless of extra");
+        assert_eq!(
+            plan.adopt.len(),
+            1,
+            "same (kind,id) reconciles regardless of extra"
+        );
     }
 
     #[test]

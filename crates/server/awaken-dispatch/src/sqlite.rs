@@ -326,11 +326,7 @@ impl DispatchQueue for SqliteDispatchStore {
         .await
     }
 
-    async fn bind_sandbox(
-        &self,
-        run_id: &RunId,
-        sandbox_ref: &str,
-    ) -> Result<(), DispatchError> {
+    async fn bind_sandbox(&self, run_id: &RunId, sandbox_ref: &str) -> Result<(), DispatchError> {
         let run_id = run_id.0.clone();
         let sandbox_ref = sandbox_ref.to_string();
         self.with_conn(move |conn, p| {
