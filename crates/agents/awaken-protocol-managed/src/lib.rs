@@ -49,7 +49,10 @@ pub use routes::vaults::{
     McpProbe, McpProbeStatus, McpRefreshBinding, TokenEndpointAuthBinding, VaultState, vault_router,
 };
 pub use routes::{WorkspaceScope, router};
-pub use session_repo::{InMemorySessionRepository, ManagedSessionRepository, PersistedSession};
+pub use session_repo::{
+    InMemoryScopedSessionStore, InMemorySessionRepository, ManagedSessionRepository,
+    PersistedSession, ScopedSessionRepo, ScopedSessionStore,
+};
 pub use state::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, ManagedState, McpServerBinding, OutcomeIteration, OutcomeReport, Pending,
