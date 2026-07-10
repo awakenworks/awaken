@@ -39,4 +39,10 @@ pub struct AgentConfig {
     /// a non-empty set enters the content address like any other config field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_patterns: Vec<String>,
+    /// Ordered model-pool fallbacks (#1): tried after `model_binding` when a
+    /// candidate fails cleanly, so an agent survives a model outage. Appended last
+    /// with `skip_serializing_if` so a single-model config's fingerprint stays
+    /// byte-identical; a non-empty pool enters the content address like any field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_candidates: Vec<ModelBinding>,
 }

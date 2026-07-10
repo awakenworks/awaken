@@ -80,6 +80,7 @@ pub fn compile_with_resource_prompts(
     Ok(RunnableConfig::builder(&config.id)
         .instructions(compose_instructions(&config.instructions, resource_prompts))
         .model(config.model_binding.clone())
+        .model_candidates(config.model_candidates.clone())
         .max_steps(config.max_steps)
         .tools(descriptors)
         .plugins(config.plugin_ids.clone())
@@ -151,6 +152,7 @@ mod tests {
             max_steps: 8,
             model_binding: ModelBinding::new("p", "m", "b"),
             tool_ids: tools.iter().map(|s| s.to_string()).collect(),
+            model_candidates: Vec::new(),
             plugin_ids: Vec::new(),
             plugin_config: Default::default(),
             context_policy: awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
@@ -160,6 +162,30 @@ mod tests {
 
     fn tool(id: &str) -> ToolDescriptor {
         ToolDescriptor::pinned("test", id, "a tool", serde_json::json!({"type": "object"}))
+    }
+
+    #[test]
+    fn model_candidates_compile_into_the_resolved_pool_and_enter_the_fingerprint() {
+        let tools = vec![tool("echo")];
+
+        let mut pooled = config(&["echo"]);
+        pooled.model_candidates = vec![ModelBinding::new("p", "fallback", "b")];
+        let compiled = compile(&pooled, &tools).unwrap();
+        let spec = &compiled.snapshot().resolved_spec;
+        // The pool is carried onto the resolved spec: primary + one fallback.
+        assert_eq!(spec.model_candidates.len(), 1);
+        assert_eq!(spec.candidate_bindings().len(), 2);
+        assert_eq!(spec.candidate_bindings()[1].model_ref, "fallback");
+
+        // A pool enters the content address (a different pool is a different runnable);
+        // an empty pool (the default) leaves the fingerprint byte-identical.
+        let single = compile(&config(&["echo"]), &tools).unwrap();
+        assert_ne!(
+            compiled.snapshot().fingerprint.0,
+            single.snapshot().fingerprint.0,
+            "a pool must change the content address"
+        );
+        assert!(single.snapshot().resolved_spec.model_candidates.is_empty());
     }
 
     #[test]

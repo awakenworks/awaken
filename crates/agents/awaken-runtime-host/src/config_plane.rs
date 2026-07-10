@@ -203,6 +203,7 @@ mod resource_prompt_tests {
             max_steps: 8,
             model_binding: ModelBinding::new("p", "m", "b"),
             tool_ids: vec![],
+            model_candidates: Vec::new(),
             plugin_ids: vec![],
             plugin_config: Default::default(),
             context_policy: ContextPolicy::KeepAll,
