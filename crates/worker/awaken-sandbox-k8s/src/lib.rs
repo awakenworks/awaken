@@ -70,6 +70,23 @@ async fn kubectl(args: &[String]) -> Result<String, SandboxError> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Like [`kubectl`] but returns raw stdout bytes (for `cat`-ing a binary artifact).
+async fn kubectl_bytes(args: &[String]) -> Result<Vec<u8>, SandboxError> {
+    let out = OsCommand::new("kubectl")
+        .args(args)
+        .output()
+        .await
+        .map_err(|e| SandboxError::new(format!("kubectl spawn: {e}")))?;
+    if !out.status.success() {
+        return Err(SandboxError::new(format!(
+            "kubectl {}: {}",
+            args.first().cloned().unwrap_or_default(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(out.stdout)
+}
+
 fn pod_manifest(name: &str, namespace: &str, image: &str) -> String {
     // Minimal Pod: one container kept alive with `sleep infinity` so exec can
     // multiplex the run's processes (ADR-0058). Never-restart so a crashed process
@@ -168,6 +185,7 @@ impl SandboxProvider for K8sSandboxProvider {
             scope: spec.scope.clone(),
             pod: name,
             base: self.base(),
+            outputs_path: spec.outputs_path.clone(),
         }))
     }
 
@@ -190,6 +208,9 @@ impl SandboxProvider for K8sSandboxProvider {
             scope: handle.sandbox_id.clone(),
             pod: handle.sandbox_id.clone(),
             base: self.base(),
+            // The handle carries only the pod; a re-adopted sandbox uses the
+            // conventional outputs root (matches the SandboxSpec default).
+            outputs_path: "/workspace/out".to_string(),
         }))
     }
 }
@@ -198,6 +219,8 @@ struct K8sSandbox {
     scope: String,
     pod: String,
     base: Vec<String>,
+    /// The environment's outputs root (SandboxSpec.outputs_path, ADR-0021 §6).
+    outputs_path: String,
 }
 
 #[async_trait]
@@ -234,11 +257,46 @@ impl Sandbox for K8sSandbox {
     }
 
     async fn artifacts(&self) -> Result<Vec<Artifact>, SandboxError> {
-        Ok(Vec::new())
+        // Content-address every file under the outputs root: one exec emits
+        // "<sha256> <size> <relpath>" per file (missing root = no artifacts).
+        let script = format!(
+            "cd {out} 2>/dev/null || exit 0; find . -type f | while IFS= read -r f; do \
+             printf '%s %s %s\\n' \"$(sha256sum \"$f\" | cut -d' ' -f1)\" \
+             \"$(wc -c < \"$f\")\" \"$f\"; done",
+            out = self.outputs_path
+        );
+        let mut args = self.base.clone();
+        args.extend(["exec", &self.pod, "--", "sh", "-c", &script].map(String::from));
+        let listing = kubectl(&args).await?;
+        let root = self.outputs_path.trim_end_matches('/');
+        let mut artifacts = Vec::new();
+        for line in listing.lines() {
+            let mut parts = line.splitn(3, ' ');
+            let (Some(hash), Some(size), Some(rel)) = (parts.next(), parts.next(), parts.next())
+            else {
+                continue;
+            };
+            artifacts.push(Artifact {
+                id: hash.to_string(),
+                path: format!("{root}/{}", rel.trim_start_matches("./")),
+                size_bytes: size.parse().unwrap_or(0),
+                content_hash: hash.to_string(),
+            });
+        }
+        Ok(artifacts)
     }
 
-    async fn read_artifact(&self, _id: &str) -> Result<Vec<u8>, SandboxError> {
-        Err(SandboxError::new("read_artifact unsupported"))
+    async fn read_artifact(&self, id: &str) -> Result<Vec<u8>, SandboxError> {
+        // The id is the content hash; find its file under the outputs root and cat it.
+        let target = self
+            .artifacts()
+            .await?
+            .into_iter()
+            .find(|a| a.id == id)
+            .ok_or_else(|| SandboxError::new(format!("no artifact {id}")))?;
+        let mut args = self.base.clone();
+        args.extend(["exec", &self.pod, "--", "cat", &target.path].map(String::from));
+        kubectl_bytes(&args).await
     }
 
     fn realized(&self) -> &[RealizedMount] {
