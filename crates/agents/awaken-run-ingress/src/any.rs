@@ -82,6 +82,16 @@ impl AnyDispatchStore {
             inner: Arc::new(store),
         }
     }
+
+    /// Wrap an already-built [`Dispatch`] implementation behind this concrete type.
+    /// The neutral seam for a composition root that assembles its own backend — e.g.
+    /// a horizontal-scaling shard fan-out (`ShardedDispatchQueue`) that composes N
+    /// per-shard stores — and injects it via
+    /// [`init_shared_dispatch_store`](crate) so the host drives it like any other
+    /// queue. Open mechanism; the sharding/tenant policy stays in the closed caller.
+    pub fn from_dispatch(inner: Arc<dyn Dispatch>) -> Self {
+        Self { inner }
+    }
 }
 
 /// Delegate one `&self` async method to the active backend through the trait

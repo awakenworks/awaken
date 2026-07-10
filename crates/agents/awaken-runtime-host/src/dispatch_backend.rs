@@ -53,6 +53,15 @@ static SHARED_PG_WAKE: std::sync::OnceLock<Arc<dyn WakeSignal>> = std::sync::Onc
 static SHARED_SQLITE_DISPATCH: std::sync::OnceLock<Arc<AnyDispatchStore>> =
     std::sync::OnceLock::new();
 
+/// A dispatch store injected by a composition root that assembles its own backend
+/// (open Gap: horizontal scaling). When set it OUTRANKS the env-selected sqlite /
+/// postgres backends, so a closed hosting server can build a `ShardedDispatchQueue`
+/// (fan-out over N per-shard Postgres queues), wrap it in an `AnyDispatchStore`, and
+/// hand it here — the process pool then claims/drives through the shard fan-out with
+/// no change to the neutral run path. Absent on a single-node runtime.
+static SHARED_INJECTED_DISPATCH: std::sync::OnceLock<Arc<AnyDispatchStore>> =
+    std::sync::OnceLock::new();
+
 /// Connect the process-wide Postgres dispatch pool at `url` and publish it for
 /// `AWAKEN_DISPATCH_BACKEND=postgres`. Call this ONCE at startup (the server does
 /// so before it serves) — it must run here, not in the per-thread run path, so the
@@ -77,6 +86,15 @@ pub async fn init_shared_postgres_dispatch(url: &str) -> Result<(), String> {
     };
     let _ = SHARED_POSTGRES_DISPATCH.set(store);
     Ok(())
+}
+
+/// Inject a pre-assembled dispatch store as THE process backend, outranking the
+/// env-selected sqlite/postgres backends. Call ONCE at startup (before the pool is
+/// spawned) — the neutral seam for a horizontal-scaling composition root (a closed
+/// hosting server building a `ShardedDispatchQueue`). Idempotent: a second call keeps
+/// the first store.
+pub fn init_shared_dispatch_store(store: Arc<AnyDispatchStore>) {
+    let _ = SHARED_INJECTED_DISPATCH.set(store);
 }
 
 /// Whether the cross-node `pg_notify` wake is selected for the served pool.
@@ -107,6 +125,11 @@ pub(crate) fn shared_pg_wake() -> Option<Arc<dyn WakeSignal>> {
 pub(crate) fn shared_durable_store(
     store_dir: Option<&Path>,
 ) -> Result<Arc<AnyDispatchStore>, HostError> {
+    // An injected backend (a horizontal-scaling shard fan-out) outranks every
+    // env-selected one: a closed composition root already assembled the queue.
+    if let Some(store) = SHARED_INJECTED_DISPATCH.get() {
+        return Ok(store.clone());
+    }
     match std::env::var("AWAKEN_DISPATCH_BACKEND").as_deref() {
         Ok("postgres") => SHARED_POSTGRES_DISPATCH.get().cloned().ok_or_else(|| {
             HostError::internal(
