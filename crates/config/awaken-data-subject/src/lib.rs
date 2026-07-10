@@ -15,6 +15,7 @@ mod sqlite_capture;
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,13 @@ pub use capture_store::{CapturedRecord, InMemoryCapturedContentStore};
 pub use schema::{BUNDLE_ID, data_subject_bundle};
 pub use sqlite::{SqliteDataSubjectRepo, StoreError};
 pub use sqlite_capture::SqliteCapturedContentStore;
+
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
 
 /// Status of a consent grant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +87,11 @@ pub struct DataSubject {
     pub consents: Vec<ConsentGrant>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// Epoch-millis when this subject's content was erased (GDPR Art. 17). The
+    /// subject record itself is **retained** as accountability proof (Art. 5(2)/
+    /// 7(1)) — this stamps that erasure happened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub erased_at: Option<i64>,
 }
 
 impl DataSubject {
@@ -92,7 +105,19 @@ impl DataSubject {
             consents: Vec::new(),
             created_at: at,
             updated_at: at,
+            erased_at: None,
         }
+    }
+
+    /// Mark erasure (Art. 17): withdraw every consent grant (kept as audit proof,
+    /// not deleted) and stamp `erased_at`. The subject record is retained for
+    /// accountability; only the content it pointed to is deleted (by the erasers).
+    pub fn mark_erased(&mut self, at: i64) {
+        for grant in &mut self.consents {
+            grant.status = ConsentStatus::Withdrawn;
+        }
+        self.erased_at = Some(at);
+        self.updated_at = at;
     }
 
     /// The capture ceiling this subject's consent permits for `purpose`: `Full`
@@ -235,12 +260,17 @@ impl awaken_runtime_contract::DataSubjectResolver for RepoDataSubjectResolver {
 
     async fn erase(&self, subject: &DataSubjectId) -> ErasureReceipt {
         // Fan the erasure out across every registered content store, summing the
-        // records removed, then delete the subject's consent record itself.
+        // records removed.
         let mut records_removed = 0;
         for eraser in &self.erasers {
             records_removed += eraser.erase_subject(subject).await;
         }
-        let _ = self.repo.delete(subject).await;
+        // Retain the subject record as accountability proof (Art. 5(2)/7(1)):
+        // withdraw its consents + stamp `erased_at`, rather than deleting it.
+        if let Ok(mut s) = self.repo.get(subject).await {
+            s.mark_erased(now_millis());
+            let _ = self.repo.put(s).await;
+        }
         ErasureReceipt { records_removed }
     }
 }
@@ -275,6 +305,21 @@ mod tests {
         // A different purpose is unaffected.
         assert_eq!(
             s.consent_ceiling(Purpose::EvalRecording),
+            ContentCapture::Structured
+        );
+    }
+
+    #[test]
+    fn mark_erased_withdraws_grants_but_keeps_them_as_audit() {
+        let mut s = DataSubject::new(DataSubjectId("dsub_1".into()), "org_1", 0);
+        s.upsert_consent(granted(Purpose::TelemetryContent));
+        s.mark_erased(999);
+        // The grant is RETAINED (accountability proof), just withdrawn.
+        assert_eq!(s.consents.len(), 1);
+        assert_eq!(s.consents[0].status, ConsentStatus::Withdrawn);
+        assert_eq!(s.erased_at, Some(999));
+        assert_eq!(
+            s.consent_ceiling(Purpose::TelemetryContent),
             ContentCapture::Structured
         );
     }
