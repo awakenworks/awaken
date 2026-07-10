@@ -30,14 +30,27 @@ fn parse_capture(level: Option<&str>, redaction: Option<&str>) -> CaptureDecisio
     CaptureDecision::with_redactor(level, redactor)
 }
 
+/// Clamp the level for the active sink (ADR-0050 D7): the append-only trace file
+/// has no subject key and no TTL, so it cannot honor erasure — it must never hold
+/// `Full` content. When it is the sink, cap at `Structured`.
+fn clamp_for_trace_file(level: ContentCapture, trace_file_present: bool) -> ContentCapture {
+    if trace_file_present && level == ContentCapture::Full {
+        ContentCapture::Structured
+    } else {
+        level
+    }
+}
+
 /// Resolve the content-capture decision from the environment: the open/
 /// single-machine default. Managed builds override this with the resolved
 /// ceiling × request × consent `meet`.
 pub(crate) fn env_capture_decision() -> CaptureDecision {
-    parse_capture(
+    let d = parse_capture(
         std::env::var("AWAKEN_CONTENT_CAPTURE").ok().as_deref(),
         std::env::var("AWAKEN_CONTENT_REDACTION").ok().as_deref(),
-    )
+    );
+    let level = clamp_for_trace_file(d.level, std::env::var("AWAKEN_TRACE_FILE").is_ok());
+    CaptureDecision::with_redactor(level, d.redactor)
 }
 
 /// Regex-based PII redactor. Compiled patterns are process-shared.
@@ -166,5 +179,29 @@ mod tests {
         use awaken_runtime_contract::ContentKind;
         let d = super::parse_capture(Some("off"), Some("regex"));
         assert!(d.content(ContentKind::OutputMessages, "x").is_none());
+    }
+
+    #[test]
+    fn trace_file_downgrades_full_to_structured() {
+        use awaken_runtime_contract::ContentCapture;
+        // With the append-only trace file active, Full content is not allowed.
+        assert_eq!(
+            super::clamp_for_trace_file(ContentCapture::Full, true),
+            ContentCapture::Structured
+        );
+        // Without it, Full stands.
+        assert_eq!(
+            super::clamp_for_trace_file(ContentCapture::Full, false),
+            ContentCapture::Full
+        );
+        // Structured/Off are unaffected either way.
+        assert_eq!(
+            super::clamp_for_trace_file(ContentCapture::Structured, true),
+            ContentCapture::Structured
+        );
+        assert_eq!(
+            super::clamp_for_trace_file(ContentCapture::Off, true),
+            ContentCapture::Off
+        );
     }
 }
