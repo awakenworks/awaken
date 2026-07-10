@@ -126,7 +126,10 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         .await
     }
 
-    async fn list_configs_scoped(&self, scope: &ScopeId) -> Result<Vec<AgentConfig>, ConfigStoreError> {
+    async fn list_configs_scoped(
+        &self,
+        scope: &ScopeId,
+    ) -> Result<Vec<AgentConfig>, ConfigStoreError> {
         let scope = scope.0.clone();
         self.with_conn(move |conn, p| {
             let mut stmt = conn
@@ -214,7 +217,8 @@ impl ConfigRegistry for SqliteConfigStore {
     }
 
     async fn list_configs(&self) -> Result<Vec<AgentConfig>, ConfigStoreError> {
-        self.list_configs_scoped(&ScopeId::from(DEFAULT_SCOPE)).await
+        self.list_configs_scoped(&ScopeId::from(DEFAULT_SCOPE))
+            .await
     }
 
     async fn put_publication(
@@ -253,6 +257,7 @@ mod scope_tests {
             plugin_config: Default::default(),
             context_policy: awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
             tool_patterns: Vec::new(),
+            ..Default::default()
         }
     }
 
