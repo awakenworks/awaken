@@ -772,6 +772,19 @@ impl SharedHost {
     /// durable SQLite database (default) or the filesystem append-log backend when
     /// `AWAKEN_STORE=fs`, or an in-memory coordinator when no store dir is set.
     async fn build_commit(&self, thread: &str) -> Result<HostCommit, HostError> {
+        // Shared Postgres commit backend (ADR-0022 D6): one coordinator keyed by
+        // thread, so any node serves any thread's history. Connected once at startup
+        // (the non-Send sqlx connect stays out of the run loop), independent of a
+        // per-thread store dir.
+        if std::env::var("AWAKEN_STORE").as_deref() == Ok("postgres") {
+            let coord = crate::commit_backend::shared_postgres_commit().ok_or_else(|| {
+                HostError::internal(
+                    "AWAKEN_STORE=postgres requires init_shared_postgres_commit() at process \
+                     startup (with AWAKEN_DATABASE_URL)",
+                )
+            })?;
+            return Ok(HostCommit::Postgres(coord));
+        }
         let Some(dir) = &self.store_dir else {
             return Ok(HostCommit::Memory(MemoryCommitCoordinator::new()));
         };

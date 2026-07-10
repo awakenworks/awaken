@@ -963,6 +963,7 @@ dependencies = [
  "awaken-skill-store",
  "awaken-store-fs",
  "awaken-store-inmem",
+ "awaken-store-postgres",
  "awaken-store-sqlite",
  "axum 0.7.9",
  "base64 0.22.1",

@@ -50,6 +50,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|_| "AWAKEN_DISPATCH_BACKEND=postgres requires AWAKEN_DATABASE_URL")?;
         awaken_runtime_host::init_shared_postgres_dispatch(&url).await?;
     }
+    // Shared Postgres commit backend (ADR-0022 D6): thread history on one DB so any
+    // node warm-reloads any thread. Connected once here (non-Send sqlx out of the run
+    // loop), independent of the dispatch backend.
+    if std::env::var("AWAKEN_STORE").as_deref() == Ok("postgres") {
+        let url = std::env::var("AWAKEN_DATABASE_URL")
+            .map_err(|_| "AWAKEN_STORE=postgres requires AWAKEN_DATABASE_URL")?;
+        awaken_runtime_host::init_shared_postgres_commit(&url).await?;
+    }
     let app = match std::env::var("AWAKEN_MODEL_MODE").as_deref() {
         Ok("probe") => {
             awaken_server_local::build_router(Arc::new(awaken_server_local::ProbeModel), "probe")
