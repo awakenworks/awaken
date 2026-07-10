@@ -1665,6 +1665,7 @@ impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::runnable:
 pub mod awaken_runtime_contract::runtime_context
 pub struct awaken_runtime_contract::runtime_context::RuntimeRunContext
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::cancellation: core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
+pub awaken_runtime_contract::runtime_context::RuntimeRunContext::capture: awaken_runtime_contract::capture::CaptureDecision
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::commit: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::commit::coordinator::Coordinator>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::live_inbox: core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::store::thread_reader::ThreadReader>>
@@ -1675,6 +1676,7 @@ impl awaken_runtime_contract::runtime_context::RuntimeRunContext
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::is_cancelled(&self) -> bool
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::new() -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_cancellation(self, tokio_util::sync::cancellation_token::CancellationToken) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_capture(self, awaken_runtime_contract::capture::CaptureDecision) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_commit(self, alloc::sync::Arc<dyn awaken_agent_contract::commit::coordinator::Coordinator>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_live_inbox(self, awaken_runtime_contract::live_inbox::LiveInbox) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(self, alloc::sync::Arc<dyn awaken_agent_contract::store::thread_reader::ThreadReader>) -> Self
@@ -2674,6 +2676,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::catalo
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::catalog::RuntimeCatalogInstall
 pub struct awaken_runtime_contract::RuntimeRunContext
 pub awaken_runtime_contract::RuntimeRunContext::cancellation: core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
+pub awaken_runtime_contract::RuntimeRunContext::capture: awaken_runtime_contract::capture::CaptureDecision
 pub awaken_runtime_contract::RuntimeRunContext::commit: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::commit::coordinator::Coordinator>>
 pub awaken_runtime_contract::RuntimeRunContext::live_inbox: core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
 pub awaken_runtime_contract::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::store::thread_reader::ThreadReader>>
@@ -2684,6 +2687,7 @@ impl awaken_runtime_contract::runtime_context::RuntimeRunContext
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::is_cancelled(&self) -> bool
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::new() -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_cancellation(self, tokio_util::sync::cancellation_token::CancellationToken) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_capture(self, awaken_runtime_contract::capture::CaptureDecision) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_commit(self, alloc::sync::Arc<dyn awaken_agent_contract::commit::coordinator::Coordinator>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_live_inbox(self, awaken_runtime_contract::live_inbox::LiveInbox) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(self, alloc::sync::Arc<dyn awaken_agent_contract::store::thread_reader::ThreadReader>) -> Self

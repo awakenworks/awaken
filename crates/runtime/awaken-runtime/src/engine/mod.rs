@@ -44,6 +44,7 @@ use awaken_runtime_contract::tool::{ToolError, ToolExecutor, ToolOutput};
 
 use crate::runtime::Runtime;
 
+mod content;
 mod convert;
 pub(crate) use convert::*;
 
@@ -578,6 +579,7 @@ async fn drive(
                     &delta_sink,
                     checkpoint_ref,
                     pending_resume.take(),
+                    &context.capture,
                 )
                 .await
                 {
@@ -1226,6 +1228,8 @@ impl CheckpointCtx<'_> {
         gen_ai.response.finish_reasons = tracing::field::Empty,
         gen_ai.usage.input_tokens = tracing::field::Empty,
         gen_ai.usage.output_tokens = tracing::field::Empty,
+        gen_ai.input.messages = tracing::field::Empty,
+        gen_ai.output.messages = tracing::field::Empty,
         error.type = tracing::field::Empty,
         otel.status_code = tracing::field::Empty,
     )
@@ -1238,6 +1242,7 @@ async fn infer_with_retry(
     sink: &dyn DeltaSink,
     checkpoint: Option<&CheckpointCtx<'_>>,
     resume: Option<StreamCheckpoint>,
+    capture: &awaken_runtime_contract::CaptureDecision,
 ) -> std::result::Result<ChatResponse, awaken_runtime_contract::llm::Error> {
     let span = tracing::Span::current();
     // OTel GenAI span name is the templated `{operation} {model}` (SHOULD).
@@ -1245,6 +1250,15 @@ async fn infer_with_retry(
         "otel.name",
         format!("chat {}", request.model_binding.model_ref).as_str(),
     );
+    // Content telemetry (ADR-0050): the prompt is recorded only when the
+    // resolved capture decision permits it, redactor-scrubbed. Default
+    // `Structured` records nothing. Done before the request is consumed.
+    if let Some(text) = capture.content(
+        awaken_runtime_contract::ContentKind::InputMessages,
+        &content::render_chat_messages(&request.messages),
+    ) {
+        span.record("gen_ai.input.messages", text.as_ref());
+    }
     let result =
         infer_with_retry_inner(llm, request, policy, breaker, sink, checkpoint, resume).await;
     // Any return means recovery concluded in-process, so the checkpoint (if any)
@@ -1264,6 +1278,14 @@ async fn infer_with_retry(
                     "gen_ai.response.finish_reasons",
                     format!("{reason:?}").as_str(),
                 );
+            }
+            // Content telemetry (ADR-0050): the completion is recorded only when
+            // the capture decision permits it, redactor-scrubbed.
+            if let Some(text) = capture.content(
+                awaken_runtime_contract::ContentKind::OutputMessages,
+                &response.output.text_content(),
+            ) {
+                span.record("gen_ai.output.messages", text.as_ref());
             }
         }
         // OTel: on a failed inference, tag `error.type` (the neutral taxonomy code)
