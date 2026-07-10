@@ -6,6 +6,10 @@ license.workspace = true
 
 [dependencies]
 awaken-agent-contract.workspace = true
+# Tenancy as an edge aspect (ADR-0051): the opaque `ScopeId` the `ScopedRepo`
+# decorator binds so session persistence is tenant-isolable while the core stays
+# tenancy-agnostic (the engine never reads a scope).
+awaken-tenancy.workspace = true
 # Managed vault/credential front door (ADR-0043): the neutral credential domain
 # and the ACL that maps its rows ⇄ the Anthropic Managed wire tags.
 awaken-credential-vault.workspace = true

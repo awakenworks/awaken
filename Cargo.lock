@@ -747,6 +747,7 @@ dependencies = [
  "awaken-managed-bridge",
  "awaken-model-catalog",
  "awaken-provisioning-contract",
+ "awaken-tenancy",
  "axum 0.7.9",
  "http-body-util",
  "serde",
@@ -1202,6 +1203,13 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "awaken-tenancy"
+version = "1.0.0-dev"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

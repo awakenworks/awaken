@@ -90,6 +90,11 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # Tenancy scope tree (Org⊃Workspace⊃Project) vendored serde-only from
     # awaken-flow's awaken-flow-work; a foundation leaf, names no iam/store/wire.
     "awaken-scope": {"serde"},
+    # Tenancy as an edge aspect (ADR-0051): the opaque `ScopeId` + the pure
+    # ingress reconciliation (`resolve_scope`). A foundation leaf, serde-only;
+    # names no iam/store/wire — the `ScopeId → ScopeRef` ACL lives in the PDP
+    # adapter, never here.
+    "awaken-tenancy": {"serde"},
     # Cross-cutting telemetry infrastructure (NOT an `ext-*`): the process-global
     # tracing subscriber + OTLP / AWAKEN_TRACE_FILE span export + W3C traceparent
     # propagator + the axum ingress span middleware. A foundation leaf consumed by
@@ -562,6 +567,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # it constructs no runtime. It is a product adapter, not a neutral crate.
     "awaken-protocol-managed": {
         "awaken-agent-contract",
+        # Tenancy edge aspect (ADR-0051): the opaque `ScopeId` bound by the
+        # `ScopedRepo` decorator so session persistence is tenant-isolable.
+        "awaken-tenancy",
         # Managed vault/credential front door (ADR-0043): the credential domain +
         # the ACL that maps the Anthropic wire ⇄ the neutral credential model.
         "awaken-credential-vault",
