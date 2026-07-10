@@ -29,6 +29,7 @@ async fn main() {
         max_steps: 4,
         model_binding: ModelBinding::new("demo", "stub", "stub"),
         tool_ids: Vec::new(),
+        model_candidates: Vec::new(),
         plugin_ids: Vec::new(),
         plugin_config: Default::default(),
         context_policy: awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
