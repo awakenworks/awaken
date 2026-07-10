@@ -52,6 +52,9 @@ struct Row {
     dedupe_key: Option<String>,
     /// When the run was dead-lettered (epoch ms), for time-windowed GC.
     dead_lettered_at: Option<u64>,
+    /// Opaque sandbox binding (B-P3, ADR-0021 §6); set by `bind_sandbox`, returned
+    /// on `claim` so recovery re-adopts the same sandbox.
+    sandbox: Option<String>,
 }
 
 /// A pending input with its optimistic-concurrency revision.
@@ -233,6 +236,7 @@ impl DispatchQueue for MemoryDispatchStore {
                 epoch,
                 dedupe_key: options.dedupe_key,
                 dead_lettered_at: None,
+                sandbox: None,
             },
         );
         state.order.push(run_id);
@@ -262,14 +266,14 @@ impl DispatchQueue for MemoryDispatchStore {
             state.rows.get(&run_id).map(|r| r.status),
             Some(Status::Running)
         );
-        let request = {
+        let (request, sandbox) = {
             let row = state.rows.get_mut(&run_id).expect("picked row exists");
             row.status = Status::Running;
             row.lease = Some(lease.clone());
             if was_recovery {
                 row.attempt_count += 1;
             }
-            row.request.clone()
+            (row.request.clone(), row.sandbox.clone())
         };
 
         // Hand the run's current pending input to the worker. It is not removed
@@ -286,7 +290,20 @@ impl DispatchQueue for MemoryDispatchStore {
             request,
             lease,
             pending,
+            sandbox,
         }))
+    }
+
+    async fn bind_sandbox(
+        &self,
+        run_id: &RunId,
+        sandbox_ref: &str,
+    ) -> Result<(), DispatchError> {
+        let mut state = lock(&self.state)?;
+        if let Some(row) = state.rows.get_mut(run_id) {
+            row.sandbox = Some(sandbox_ref.to_string());
+        }
+        Ok(())
     }
 
     async fn renew_lease(

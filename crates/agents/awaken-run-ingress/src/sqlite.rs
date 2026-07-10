@@ -190,26 +190,26 @@ impl DispatchQueue for SqliteDispatchStore {
             // pending input, then a fresh pending run. SQLite has no SKIP LOCKED;
             // the IMMEDIATE transaction is the single-owner guard.
             let recovery = format!(
-                "SELECT run_id, request FROM {p}_dispatch \
+                "SELECT run_id, request, sandbox FROM {p}_dispatch \
                  WHERE status = 'running' AND lease_until IS NOT NULL AND lease_until < ?1 \
                  ORDER BY created_at LIMIT 1"
             );
             let wake = format!(
-                "SELECT run_id, request FROM {p}_dispatch d \
+                "SELECT run_id, request, sandbox FROM {p}_dispatch d \
                  WHERE d.status = 'parked' AND EXISTS ( \
                      SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id \
                      AND (pe.available_at IS NULL OR pe.available_at <= ?1)) \
                  ORDER BY created_at LIMIT 1"
             );
             let fresh = format!(
-                "SELECT run_id, request FROM {p}_dispatch \
+                "SELECT run_id, request, sandbox FROM {p}_dispatch \
                  WHERE status = 'pending' ORDER BY priority DESC, created_at LIMIT 1"
             );
 
             let row = |sql: &str,
                        bind_now: bool|
-             -> Result<Option<(String, String)>, DispatchError> {
-                let map = |r: &rusqlite::Row| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?));
+             -> Result<Option<(String, String, Option<String>)>, DispatchError> {
+                let map = |r: &rusqlite::Row| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?));
                 if bind_now {
                     tx.query_row(sql, params![now_ms as i64], map)
                 } else {
@@ -232,7 +232,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 }
             };
 
-            let Some((run_id, request_json)) = picked else {
+            let Some((run_id, request_json, sandbox)) = picked else {
                 return Ok(None);
             };
             let request: RunExecutionRequest =
@@ -296,6 +296,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     expires_ms: expires,
                 },
                 pending,
+                sandbox,
             }))
         })
         .await
@@ -321,6 +322,24 @@ impl DispatchQueue for SqliteDispatchStore {
                 )
                 .map_err(reject)?;
             Ok(n > 0)
+        })
+        .await
+    }
+
+    async fn bind_sandbox(
+        &self,
+        run_id: &RunId,
+        sandbox_ref: &str,
+    ) -> Result<(), DispatchError> {
+        let run_id = run_id.0.clone();
+        let sandbox_ref = sandbox_ref.to_string();
+        self.with_conn(move |conn, p| {
+            conn.execute(
+                &format!("UPDATE {p}_dispatch SET sandbox = ?1 WHERE run_id = ?2"),
+                params![sandbox_ref, run_id],
+            )
+            .map_err(reject)?;
+            Ok(())
         })
         .await
     }

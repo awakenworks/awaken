@@ -155,19 +155,19 @@ impl DispatchQueue for PostgresDispatchStore {
         // input, then a fresh pending run. Each locks its row, skipping rows a
         // concurrent worker already holds.
         let recovery = format!(
-            "SELECT run_id, request FROM {p}_dispatch \
+            "SELECT run_id, request, sandbox FROM {p}_dispatch \
              WHERE status = 'running' AND lease_until IS NOT NULL AND lease_until < $1 \
              ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1"
         );
         let wake = format!(
-            "SELECT d.run_id, d.request FROM {p}_dispatch d \
+            "SELECT d.run_id, d.request, d.sandbox FROM {p}_dispatch d \
              WHERE d.status = 'parked' AND EXISTS ( \
                  SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id \
                  AND (pe.available_at IS NULL OR pe.available_at <= $1)) \
              ORDER BY d.created_at FOR UPDATE SKIP LOCKED LIMIT 1"
         );
         let fresh = format!(
-            "SELECT run_id, request FROM {p}_dispatch \
+            "SELECT run_id, request, sandbox FROM {p}_dispatch \
              WHERE status = 'pending' ORDER BY priority DESC, created_at \
              FOR UPDATE SKIP LOCKED LIMIT 1"
         );
@@ -204,6 +204,7 @@ impl DispatchQueue for PostgresDispatchStore {
         };
         let run_id: String = row.try_get("run_id").map_err(reject)?;
         let Json(request): Json<RunExecutionRequest> = row.try_get("request").map_err(reject)?;
+        let sandbox: Option<String> = row.try_get("sandbox").map_err(reject)?;
 
         let expires = now_ms + lease_ms;
         sqlx::query(&format!(
@@ -252,6 +253,7 @@ impl DispatchQueue for PostgresDispatchStore {
 
         Ok(Some(Claimed {
             request,
+            sandbox,
             lease: Lease {
                 run_id: RunId(run_id),
                 owner: owner.to_string(),
@@ -280,6 +282,23 @@ impl DispatchQueue for PostgresDispatchStore {
         .await
         .map_err(reject)?;
         Ok(result.rows_affected() > 0)
+    }
+
+    async fn bind_sandbox(
+        &self,
+        run_id: &RunId,
+        sandbox_ref: &str,
+    ) -> Result<(), DispatchError> {
+        let p = NS;
+        sqlx::query(&format!(
+            "UPDATE {p}_dispatch SET sandbox = $1 WHERE run_id = $2"
+        ))
+        .bind(sandbox_ref)
+        .bind(&run_id.0)
+        .execute(&self.pool)
+        .await
+        .map_err(reject)?;
+        Ok(())
     }
 
     async fn renew_owned_leases(
