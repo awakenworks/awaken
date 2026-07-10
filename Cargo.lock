@@ -362,6 +362,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-data-subject"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-runtime-contract",
+ "awaken-scoped-migration",
+ "awaken-scoped-migration-sqlite",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-ext-builtin-tools"
 version = "1.0.0-dev"
 dependencies = [
