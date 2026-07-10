@@ -13,9 +13,9 @@ use awaken_data_subject::{ConsentGrant, ConsentStatus, DataSubject, DataSubjectR
 use awaken_runtime_contract::{
     ContentCapture, DataSubjectId, DataSubjectResolver, ErasureReceipt, Purpose,
 };
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
@@ -78,7 +78,60 @@ pub fn consent_router(repo: Arc<dyn DataSubjectRepo>) -> Router {
             "/v1/user_profiles/:id/consent",
             post(grant_consent).get(read_consent),
         )
+        .route(
+            "/v1/user_profiles/:id/capture-decision",
+            get(capture_decision),
+        )
         .with_state(repo)
+}
+
+/// Query for the capture-decision projection: the level the caller requests.
+#[derive(Debug, Deserialize)]
+struct DecisionQuery {
+    #[serde(default)]
+    requested: Option<ContentCapture>,
+}
+
+/// The read-only decision projection (ADR-0050 D8): the `meet` of the (env)
+/// ceiling × the requested level × the subject's consent, plus the reason the
+/// effective level landed where it did. GDPR auditability is a response field.
+#[derive(Debug, Serialize)]
+struct CaptureDecisionView {
+    requested: ContentCapture,
+    ceiling: ContentCapture,
+    consent: ContentCapture,
+    effective: ContentCapture,
+    reason: &'static str,
+}
+
+async fn capture_decision(
+    State(repo): State<Arc<dyn DataSubjectRepo>>,
+    Path(id): Path<String>,
+    Query(q): Query<DecisionQuery>,
+) -> Json<CaptureDecisionView> {
+    let requested = q.requested.unwrap_or(ContentCapture::Full);
+    // The open ceiling is the env default; managed will substitute the resolved
+    // Org→Workspace→Agent ceiling here.
+    let ceiling = crate::redact::env_capture_decision().level;
+    let consent = match repo.get(&DataSubjectId(id)).await {
+        Ok(s) => s.consent_ceiling(Purpose::TelemetryContent),
+        Err(_) => ContentCapture::Structured,
+    };
+    let effective = ceiling.meet(requested).meet(consent);
+    let reason = if effective == requested {
+        "ok"
+    } else if effective == consent && consent < ceiling {
+        "no_consent"
+    } else {
+        "clamped_by_ceiling"
+    };
+    Json(CaptureDecisionView {
+        requested,
+        ceiling,
+        consent,
+        effective,
+        reason,
+    })
 }
 
 async fn grant_consent(
@@ -166,6 +219,39 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(read.telemetry_content_ceiling, ContentCapture::Full);
-        // An unknown subject is 404.
+    }
+
+    #[tokio::test]
+    async fn capture_decision_no_consent_clamps_and_reasons() {
+        use awaken_data_subject::InMemoryDataSubjectRepo;
+        let repo: Arc<dyn DataSubjectRepo> = Arc::new(InMemoryDataSubjectRepo::new());
+        // Unknown subject: consent caps at Structured. With the env ceiling
+        // defaulting to Structured, a Full request lands Structured.
+        let Json(view) = capture_decision(
+            State(repo.clone()),
+            Path("nobody".to_string()),
+            Query(DecisionQuery {
+                requested: Some(ContentCapture::Full),
+            }),
+        )
+        .await;
+        assert_eq!(view.requested, ContentCapture::Full);
+        assert_eq!(view.consent, ContentCapture::Structured);
+        assert_eq!(view.effective, ContentCapture::Structured);
+        // With the default env ceiling also Structured, the ceiling is the binding
+        // clamp (consent is not strictly below it), so reason is clamped_by_ceiling.
+        assert_eq!(view.reason, "clamped_by_ceiling");
+
+        // A request at or below the effective level is "ok".
+        let Json(ok) = capture_decision(
+            State(repo),
+            Path("nobody".to_string()),
+            Query(DecisionQuery {
+                requested: Some(ContentCapture::Structured),
+            }),
+        )
+        .await;
+        assert_eq!(ok.effective, ContentCapture::Structured);
+        assert_eq!(ok.reason, "ok");
     }
 }
