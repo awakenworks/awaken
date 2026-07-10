@@ -645,16 +645,12 @@ pub struct ManagedState {
 #[async_trait]
 pub trait SessionLifecycleSink: Send + Sync {
     /// `event_type` is the `OutboundKind` wire name (e.g. `session.status_idle`);
-    /// `workspace_id`/`org_id` are the session's owner (both may be absent on the
-    /// bare/self-hosted surface). Must not block the caller for long — deliver
-    /// out-of-band.
-    async fn emit(
-        &self,
-        session_id: &str,
-        workspace_id: Option<&str>,
-        org_id: Option<&str>,
-        event_type: &str,
-    );
+    /// `workspace_id` is the session's owning workspace (absent on the bare
+    /// pre-owner surface). The **org** is a deployment-level attribution the sink
+    /// itself carries (from its assembly config / `AWAKEN_ORG_ID`), not a
+    /// per-session axis — org is cloud-only (ADR-0048 D4), so the core never
+    /// resolves it. Must not block the caller for long — deliver out-of-band.
+    async fn emit(&self, session_id: &str, workspace_id: Option<&str>, event_type: &str);
 }
 
 /// Why a session operation failed (mapped to an HTTP status by the router).
@@ -922,7 +918,7 @@ impl ManagedState {
         // owning workspace comes from the edge (the aspect), passed in — never read
         // back from the core record. The sink delivers out-of-band.
         if let Some(sink) = &self.lifecycle_sink {
-            sink.emit(&id, workspace_id.as_deref(), None, "session.status_idle")
+            sink.emit(&id, workspace_id.as_deref(), "session.status_idle")
                 .await;
         }
         // Record the session's owner (ADR-0051): in the aspect-layer in-memory
