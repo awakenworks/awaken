@@ -37,3 +37,26 @@ pub async fn init_shared_postgres_commit(url: &str) -> Result<(), String> {
 pub(crate) fn shared_postgres_commit() -> Option<Arc<PostgresCommitCoordinator>> {
     SHARED_POSTGRES_COMMIT.get().cloned()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_is_none_before_init() {
+        // A process that never selected postgres has no shared coordinator.
+        assert!(shared_postgres_commit().is_none());
+    }
+
+    #[tokio::test]
+    async fn init_is_idempotent() {
+        let Ok(url) = std::env::var("AWAKEN_TEST_PG_URL") else {
+            eprintln!("skip: AWAKEN_TEST_PG_URL unset");
+            return;
+        };
+        init_shared_postgres_commit(&url).await.expect("first init");
+        // A second init keeps the first coordinator (idempotent, no reconnect).
+        init_shared_postgres_commit(&url).await.expect("second init is a no-op");
+        assert!(shared_postgres_commit().is_some());
+    }
+}
