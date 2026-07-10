@@ -592,6 +592,7 @@ async fn drive(
                     pending_resume.take(),
                     &context.capture,
                     context.content_sink(),
+                    runtime.metrics(),
                 )
                 .await
                 {
@@ -1651,6 +1652,7 @@ async fn execute_tool(
             &local
         }
     };
+    let started = std::time::Instant::now();
     let output = match executor.invoke(call).await {
         Ok(output) => output,
         Err(err) => ToolOutput::error(&call.call_id, err.to_string()),
@@ -1661,6 +1663,13 @@ async fn execute_tool(
         span.record("error.type", "tool_error");
         span.record("otel.status_code", "ERROR");
     }
+    // Structure-only metric at the tool chokepoint (#2): tool id + outcome class +
+    // latency. The tool id is a declared identifier, never content.
+    runtime.metrics().record_tool(
+        &call.tool_id,
+        if output.is_error { "error" } else { "ok" },
+        started.elapsed(),
+    );
     output
 }
 

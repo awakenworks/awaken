@@ -645,6 +645,7 @@ dependencies = [
 name = "awaken-observability"
 version = "1.0.0-dev"
 dependencies = [
+ "awaken-runtime-contract",
  "axum 0.7.9",
  "futures",
  "opentelemetry",
@@ -934,6 +935,7 @@ dependencies = [
  "awaken-ext-skills",
  "awaken-ext-state-machine",
  "awaken-memory-store",
+ "awaken-observability",
  "awaken-protocol-a2a",
  "awaken-protocol-managed",
  "awaken-protocol-transport",
