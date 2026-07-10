@@ -141,10 +141,7 @@ fn select(state: &State, now_ms: u64) -> Option<RunId> {
     // Single-writer-per-thread (ADR-0022): a wake or fresh pick must not start a
     // second concurrent run for a thread that already has one running. A recovery
     // pick is exempt — it re-owns the SAME running row, it does not add a second.
-    let thread_running = |run: &RunId| -> bool {
-        let Some(thread) = state.rows.get(run).map(|r| r.request.thread_id()) else {
-            return false;
-        };
+    let thread_running = |thread: &ThreadId| -> bool {
         state
             .rows
             .values()
@@ -168,7 +165,7 @@ fn select(state: &State, now_ms: u64) -> Option<RunId> {
                 .pending
                 .iter()
                 .any(|p| &p.input.run_id == run && is_due(&p.input, now_ms))
-            && !thread_running(run)
+            && !thread_running(row.request.thread_id())
         {
             return Some(run.clone());
         }
@@ -179,7 +176,7 @@ fn select(state: &State, now_ms: u64) -> Option<RunId> {
     for run in &state.order {
         if let Some(row) = state.rows.get(run)
             && row.status == Status::Pending
-            && !thread_running(run)
+            && !thread_running(row.request.thread_id())
             && best.is_none_or(|(_, p)| row.priority > p)
         {
             best = Some((run, row.priority));
