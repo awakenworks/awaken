@@ -631,6 +631,19 @@ pub async fn management_guard(
         }
     };
 
+    // Workspace path fence (ADR-0048 D3 / ADR-0051): a `/v1/workspaces/{ws}/…`
+    // request is rewritten to its flat form by `workspace_path_scope`, which stamps
+    // the path `{ws}` as `RequestTenancy`. It is a *selection*; a narrow management
+    // token can only select its own workspace, so — like the query/body fence — it
+    // must equal the token's workspace (else a token could author resources owned
+    // by an arbitrary workspace via the path).
+    if let Some(tenancy) = req
+        .extensions()
+        .get::<awaken_authz_enforce::RequestTenancy>()
+        && tenancy.workspace_id != workspace.0
+    {
+        return forbidden("workspace path does not match the API token's workspace");
+    }
     // Workspace fence: wherever the request names a workspace_id (query string
     // or a top-level JSON body field), it must equal the token's workspace.
     if let Some(named) = query_workspace_id(req.uri().query())

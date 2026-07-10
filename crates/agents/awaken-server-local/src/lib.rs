@@ -16,6 +16,7 @@ mod brain_admin;
 mod models;
 pub mod placement;
 pub mod webhooks;
+pub mod workspace_path;
 
 pub use crate::brain_admin::{DrainController, with_brain_admin};
 
@@ -1635,7 +1636,14 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
             .with_environments(env_state)
             .with_session_repo(sessions),
     );
-    mount_with_managed(host, managed_state).merge(mgmt)
+    // Workspace path addressing (ADR-0048 D3 / ADR-0051): wrap the fully-merged flat
+    // surface so a `/v1/workspaces/{ws}/…` request is captured, rewritten to its flat
+    // `/v1/…` form, and its `{ws}` stamped as the edge scope (RequestTenancy +
+    // WorkspaceScope) before it re-enters routing; the guard then authenticates +
+    // fences it and the per-resource ownership guards read the scope. Flat requests
+    // fall through unchanged — the data plane (`/v1/sessions`) is never prefixed.
+    let flat = mount_with_managed(host, managed_state).merge(mgmt);
+    crate::workspace_path::with_workspace_path_addressing(flat)
 }
 
 /// A tool gate that defers every tool call as a committed `ScheduledAction`
