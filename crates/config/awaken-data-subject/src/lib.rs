@@ -8,6 +8,7 @@
 //! vocabulary is reused from `awaken-runtime-contract`; the Anthropic
 //! `UserProfile` wire shape is a *projection* over this aggregate (Slice 6).
 
+mod capture_store;
 mod schema;
 mod sqlite;
 
@@ -18,6 +19,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 pub use awaken_runtime_contract::{ContentCapture, DataSubjectId, ErasureReceipt, Purpose};
+pub use capture_store::{CapturedRecord, InMemoryCapturedContentStore};
 pub use schema::{BUNDLE_ID, data_subject_bundle};
 pub use sqlite::{SqliteDataSubjectRepo, StoreError};
 
