@@ -461,10 +461,16 @@ fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -
     let models = models_router(std::sync::Arc::new(default_models()));
     // ADR-0050: install the process-global captured-content sink and expose the
     // erasure + consent routes over the SAME store, so content a run captures is
-    // erasable within this one server (the run→capture→store→erase loop).
-    let cap_store = shared_capture_store();
-    awaken_runtime_host::install_capture_sink(cap_store.clone());
-    let (erasure, consent) = data_subject_routes(cap_store);
+    // erasable within this one server (the run→capture→store→erase loop). Durable
+    // (sqlite under AWAKEN_STORAGE_DIR) so captured content + consent survive a
+    // restart; in-memory otherwise.
+    let (sink, eraser, ds_repo) = data_subject_plane();
+    awaken_runtime_host::install_capture_sink(sink);
+    let resolver: Arc<dyn awaken_runtime_contract::DataSubjectResolver> = Arc::new(
+        awaken_data_subject::RepoDataSubjectResolver::new(ds_repo.clone()).with_eraser(eraser),
+    );
+    let erasure = awaken_runtime_host::erasure_router(resolver);
+    let consent = awaken_runtime_host::consent_router(ds_repo);
     managed
         .merge(ai_sdk)
         .merge(ag_ui)
@@ -478,30 +484,43 @@ fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -
         .merge(consent)
 }
 
-/// The process-global captured-content store: one instance shared by the sink a
-/// run writes to and the erasure endpoint that fans out to it (ADR-0050).
-fn shared_capture_store() -> Arc<awaken_data_subject::InMemoryCapturedContentStore> {
-    static STORE: std::sync::OnceLock<Arc<awaken_data_subject::InMemoryCapturedContentStore>> =
-        std::sync::OnceLock::new();
-    STORE
-        .get_or_init(|| Arc::new(awaken_data_subject::InMemoryCapturedContentStore::new()))
-        .clone()
-}
+/// The open data-subject plane (ADR-0050): the captured-content store (used as
+/// both the capture sink a run writes to and the eraser the endpoint fans out to)
+/// and the subject/consent repo. One captured-content instance backs both the sink
+/// and the eraser, so a run's content is erasable. Durable (sqlite under
+/// `AWAKEN_STORAGE_DIR`) or in-memory. Built once at composition (build_router).
+fn data_subject_plane() -> (
+    Arc<dyn awaken_runtime_contract::CaptureSink>,
+    Arc<dyn awaken_runtime_contract::ContentEraser>,
+    Arc<dyn awaken_data_subject::DataSubjectRepo>,
+) {
+    use awaken_data_subject::{
+        InMemoryCapturedContentStore, InMemoryDataSubjectRepo, SqliteCapturedContentStore,
+        SqliteDataSubjectRepo,
+    };
 
-/// Build the erasure + consent routers over `store` (as eraser) and a fresh
-/// in-memory subject repo (consent) — the open-surface data-subject plane.
-fn data_subject_routes(
-    store: Arc<awaken_data_subject::InMemoryCapturedContentStore>,
-) -> (Router, Router) {
-    let ds_repo: Arc<dyn awaken_data_subject::DataSubjectRepo> =
-        Arc::new(awaken_data_subject::InMemoryDataSubjectRepo::new());
-    let resolver: Arc<dyn awaken_runtime_contract::DataSubjectResolver> = Arc::new(
-        awaken_data_subject::RepoDataSubjectResolver::new(ds_repo.clone()).with_eraser(store),
-    );
-    (
-        awaken_runtime_host::erasure_router(resolver),
-        awaken_runtime_host::consent_router(ds_repo),
-    )
+    let dir = std::env::var("AWAKEN_STORAGE_DIR")
+        .ok()
+        .filter(|v| !v.is_empty());
+    match dir {
+        Some(dir) => {
+            std::fs::create_dir_all(&dir).expect("create AWAKEN_STORAGE_DIR");
+            let cap = Arc::new(
+                SqliteCapturedContentStore::open(&format!("{dir}/captured_content.db"))
+                    .expect("open captured-content db"),
+            );
+            let repo = Arc::new(
+                SqliteDataSubjectRepo::open(&format!("{dir}/data_subject.db"))
+                    .expect("open data-subject db"),
+            );
+            (cap.clone(), cap, repo)
+        }
+        None => {
+            let cap = Arc::new(InMemoryCapturedContentStore::new());
+            let repo = Arc::new(InMemoryDataSubjectRepo::new());
+            (cap.clone(), cap, repo)
+        }
+    }
 }
 
 /// The composition seam refuses to build an executor from an incomplete or
