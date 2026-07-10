@@ -33,6 +33,7 @@ use awaken_iam_core::{
     MintApiToken, OsEntropy, PolicySet, RoleId,
 };
 use awaken_iam_preset::named_role_catalog;
+use awaken_tenancy::{Authority, ScopeClaim, ScopeId, resolve_scope};
 
 /// The managed-agent / session surface's action namespace. The preset role
 /// catalog grants `workspace.*` / `apikey.* / file.* / skill.*` but NOT this, so
@@ -202,9 +203,21 @@ pub async fn guard(
     let Ok((principal, token_workspace)) = engine.authenticate(&presented) else {
         return reject(StatusCode::UNAUTHORIZED, "invalid credential");
     };
-    let workspace_id = match request.extensions().get::<RequestTenancy>().cloned() {
-        Some(t) => t.workspace_id,
-        None => token_workspace.0,
+    // Resolve one authorized scope from the ingress claims (ADR-0051 D4). The
+    // token is authority — enforce-engine tokens are narrow, bound to one
+    // workspace — and a `RequestTenancy` stamped upstream is a path/domain
+    // *selection*. `resolve_scope` applies the fence: a selection the token does
+    // not cover is rejected here, before the policy engine is consulted, and it
+    // can never widen the token's reach.
+    let token_scope = ScopeId::from(token_workspace.0.as_str());
+    let authority = Authority::bound(token_scope.clone());
+    let mut claims = vec![ScopeClaim::FromToken(token_scope)];
+    if let Some(tenancy) = request.extensions().get::<RequestTenancy>() {
+        claims.push(ScopeClaim::FromPath(tenancy.workspace_id.clone()));
+    }
+    let workspace_id = match resolve_scope(&authority, &claims) {
+        Ok(scope) => scope.0,
+        Err(_) => return reject(StatusCode::FORBIDDEN, "not authorized for this scope"),
     };
     let scope = request_scope(&workspace_id);
     let action = session_action(request.method().as_str());

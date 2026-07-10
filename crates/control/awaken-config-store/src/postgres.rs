@@ -4,9 +4,13 @@ use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 
+use awaken_tenancy::ScopeId;
+
 use crate::config::AgentConfig;
 use crate::schema::config_bundle;
-use crate::store::{ConfigRegistry, ConfigStoreError, StoredPublication};
+use crate::store::{
+    ConfigRegistry, ConfigStoreError, DEFAULT_SCOPE, ScopedConfigRegistry, StoredPublication,
+};
 
 /// The config component's table namespace (ADR-0029/ADR-0031). Built in, so the
 /// `config_*` tables coexist with the runtime's `runtime_*` in one database.
@@ -53,26 +57,41 @@ fn reject(err: impl std::fmt::Display) -> ConfigStoreError {
 }
 
 #[async_trait::async_trait]
-impl ConfigRegistry for PostgresConfigStore {
-    async fn put_config(&self, config: &AgentConfig) -> Result<(), ConfigStoreError> {
+impl ScopedConfigRegistry for PostgresConfigStore {
+    async fn put_config_scoped(
+        &self,
+        scope: &ScopeId,
+        config: &AgentConfig,
+    ) -> Result<(), ConfigStoreError> {
+        // The `ON CONFLICT … WHERE` guard makes a cross-scope write a no-op, so a
+        // workspace cannot clobber another's agent by id.
         sqlx::query(&format!(
-            "INSERT INTO {NS}_agent (id, data) VALUES ($1, $2) \
-             ON CONFLICT (id) DO UPDATE SET data = excluded.data"
+            "INSERT INTO {NS}_agent (id, data, scope_id) VALUES ($1, $2, $3) \
+             ON CONFLICT (id) DO UPDATE SET data = excluded.data \
+             WHERE {NS}_agent.scope_id = excluded.scope_id"
         ))
         .bind(&config.id)
         .bind(Json(config))
+        .bind(&scope.0)
         .execute(&self.pool)
         .await
         .map_err(reject)?;
         Ok(())
     }
 
-    async fn get_config(&self, id: &str) -> Result<Option<AgentConfig>, ConfigStoreError> {
-        let row = sqlx::query(&format!("SELECT data FROM {NS}_agent WHERE id = $1"))
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(reject)?;
+    async fn get_config_scoped(
+        &self,
+        scope: &ScopeId,
+        id: &str,
+    ) -> Result<Option<AgentConfig>, ConfigStoreError> {
+        let row = sqlx::query(&format!(
+            "SELECT data FROM {NS}_agent WHERE id = $1 AND scope_id = $2"
+        ))
+        .bind(id)
+        .bind(&scope.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(reject)?;
         match row {
             Some(row) => {
                 let Json(config): Json<AgentConfig> = row.try_get("data").map_err(reject)?;
@@ -82,32 +101,36 @@ impl ConfigRegistry for PostgresConfigStore {
         }
     }
 
-    async fn put_publication(
+    async fn put_publication_scoped(
         &self,
+        scope: &ScopeId,
         publication: &StoredPublication,
     ) -> Result<(), ConfigStoreError> {
         sqlx::query(&format!(
-            "INSERT INTO {NS}_publication (fingerprint, agent_id, state, record) \
-             VALUES ($1, $2, $3, $4) ON CONFLICT (fingerprint) DO NOTHING"
+            "INSERT INTO {NS}_publication (fingerprint, agent_id, state, record, scope_id) \
+             VALUES ($1, $2, $3, $4, $5) ON CONFLICT (fingerprint) DO NOTHING"
         ))
         .bind(&publication.fingerprint)
         .bind(&publication.agent_id)
         .bind(publication.state.as_str())
         .bind(Json(publication))
+        .bind(&scope.0)
         .execute(&self.pool)
         .await
         .map_err(reject)?;
         Ok(())
     }
 
-    async fn get_publication(
+    async fn get_publication_scoped(
         &self,
+        scope: &ScopeId,
         fingerprint: &str,
     ) -> Result<Option<StoredPublication>, ConfigStoreError> {
         let row = sqlx::query(&format!(
-            "SELECT record FROM {NS}_publication WHERE fingerprint = $1"
+            "SELECT record FROM {NS}_publication WHERE fingerprint = $1 AND scope_id = $2"
         ))
         .bind(fingerprint)
+        .bind(&scope.0)
         .fetch_optional(&self.pool)
         .await
         .map_err(reject)?;
@@ -119,5 +142,37 @@ impl ConfigRegistry for PostgresConfigStore {
             }
             None => Ok(None),
         }
+    }
+}
+
+/// The scope-free [`ConfigRegistry`] over Postgres operates in the seeded
+/// [`DEFAULT_SCOPE`] — byte-identical to the pre-tenancy behavior. Multi-tenant
+/// callers wrap with [`crate::ScopedConfig`] bound to the request's scope.
+#[async_trait::async_trait]
+impl ConfigRegistry for PostgresConfigStore {
+    async fn put_config(&self, config: &AgentConfig) -> Result<(), ConfigStoreError> {
+        self.put_config_scoped(&ScopeId::from(DEFAULT_SCOPE), config)
+            .await
+    }
+
+    async fn get_config(&self, id: &str) -> Result<Option<AgentConfig>, ConfigStoreError> {
+        self.get_config_scoped(&ScopeId::from(DEFAULT_SCOPE), id)
+            .await
+    }
+
+    async fn put_publication(
+        &self,
+        publication: &StoredPublication,
+    ) -> Result<(), ConfigStoreError> {
+        self.put_publication_scoped(&ScopeId::from(DEFAULT_SCOPE), publication)
+            .await
+    }
+
+    async fn get_publication(
+        &self,
+        fingerprint: &str,
+    ) -> Result<Option<StoredPublication>, ConfigStoreError> {
+        self.get_publication_scoped(&ScopeId::from(DEFAULT_SCOPE), fingerprint)
+            .await
     }
 }
