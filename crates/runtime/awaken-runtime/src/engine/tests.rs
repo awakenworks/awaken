@@ -321,6 +321,25 @@ fn recording() -> RecordingSink {
     }
 }
 
+#[test]
+fn content_gate_is_closed_by_default_and_open_at_full() {
+    use awaken_runtime_contract::{CaptureDecision, ContentCapture, ContentKind};
+    // Default decision (Structured) records nothing...
+    let rendered = super::content::render_chat_messages(&one_turn_request().messages);
+    assert!(
+        CaptureDecision::default()
+            .content(ContentKind::InputMessages, &rendered)
+            .is_none()
+    );
+    // ...Full records the rendered (redactor-scrubbed) content.
+    assert_eq!(
+        CaptureDecision::new(ContentCapture::Full)
+            .content(ContentKind::InputMessages, &rendered)
+            .as_deref(),
+        Some(rendered.as_str())
+    );
+}
+
 #[tokio::test]
 async fn interrupted_text_stream_is_continued_from_the_partial() {
     let flaky = Arc::new(FlakyStreamLlm {
@@ -341,6 +360,7 @@ async fn interrupted_text_stream_is_continued_from_the_partial() {
         &sink,
         None,
         None,
+        &awaken_runtime_contract::CaptureDecision::default(),
     )
     .await
     .expect("continues past the drop");
@@ -393,6 +413,7 @@ async fn completed_tool_calls_before_a_drop_are_executed_without_re_inferring() 
         &sink,
         None,
         None,
+        &awaken_runtime_contract::CaptureDecision::default(),
     )
     .await
     .expect("salvages the completed tool call");
@@ -429,6 +450,7 @@ async fn an_in_flight_tool_call_is_dropped_and_the_text_continues() {
         &sink,
         None,
         None,
+        &awaken_runtime_contract::CaptureDecision::default(),
     )
     .await
     .expect("continues the text past the in-flight tool");
@@ -474,6 +496,7 @@ async fn the_interruption_boundary_flushes_a_checkpoint_then_clears_it_on_return
         &sink,
         Some(&ctx),
         None,
+        &awaken_runtime_contract::CaptureDecision::default(),
     )
     .await;
     assert!(result.is_err(), "no retry budget: the drop stands");
@@ -518,6 +541,7 @@ async fn a_persisted_text_partial_resumes_in_a_fresh_call() {
         &sink,
         None,
         Some(resume),
+        &awaken_runtime_contract::CaptureDecision::default(),
     )
     .await
     .expect("resumes from the persisted partial");
@@ -559,6 +583,7 @@ async fn a_persisted_completed_tool_call_resumes_without_calling_the_model() {
         &sink,
         None,
         Some(resume),
+        &awaken_runtime_contract::CaptureDecision::default(),
     )
     .await
     .expect("resumes the completed tool call");
