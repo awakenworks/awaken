@@ -459,6 +459,12 @@ fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -
     let skills = skills_router(host.clone());
     // The Models API (`/v1/models`) over the deployment's model directory.
     let models = models_router(std::sync::Arc::new(default_models()));
+    // ADR-0050: install the process-global captured-content sink and expose the
+    // erasure + consent routes over the SAME store, so content a run captures is
+    // erasable within this one server (the run→capture→store→erase loop).
+    let cap_store = shared_capture_store();
+    awaken_runtime_host::install_capture_sink(cap_store.clone());
+    let (erasure, consent) = data_subject_routes(cap_store);
     managed
         .merge(ai_sdk)
         .merge(ag_ui)
@@ -468,6 +474,34 @@ fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -
         .merge(memory_stores)
         .merge(skills)
         .merge(models)
+        .merge(erasure)
+        .merge(consent)
+}
+
+/// The process-global captured-content store: one instance shared by the sink a
+/// run writes to and the erasure endpoint that fans out to it (ADR-0050).
+fn shared_capture_store() -> Arc<awaken_data_subject::InMemoryCapturedContentStore> {
+    static STORE: std::sync::OnceLock<Arc<awaken_data_subject::InMemoryCapturedContentStore>> =
+        std::sync::OnceLock::new();
+    STORE
+        .get_or_init(|| Arc::new(awaken_data_subject::InMemoryCapturedContentStore::new()))
+        .clone()
+}
+
+/// Build the erasure + consent routers over `store` (as eraser) and a fresh
+/// in-memory subject repo (consent) — the open-surface data-subject plane.
+fn data_subject_routes(
+    store: Arc<awaken_data_subject::InMemoryCapturedContentStore>,
+) -> (Router, Router) {
+    let ds_repo: Arc<dyn awaken_data_subject::DataSubjectRepo> =
+        Arc::new(awaken_data_subject::InMemoryDataSubjectRepo::new());
+    let resolver: Arc<dyn awaken_runtime_contract::DataSubjectResolver> = Arc::new(
+        awaken_data_subject::RepoDataSubjectResolver::new(ds_repo.clone()).with_eraser(store),
+    );
+    (
+        awaken_runtime_host::erasure_router(resolver),
+        awaken_runtime_host::consent_router(ds_repo),
+    )
 }
 
 /// The composition seam refuses to build an executor from an incomplete or

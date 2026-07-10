@@ -261,16 +261,17 @@ impl SessionCtx {
             // the ceiling × request × consent meet.
             .with_capture(crate::redact::env_capture_decision());
         // ADR-0050: attribute captured content to a subject and write it to the
-        // sink, when both a sink is wired and a subject is set (open surface:
-        // AWAKEN_CONTENT_SUBJECT). Content only flows when the capture level permits.
-        if let (Some(sink), Ok(subject)) =
-            (&self.capture_sink, std::env::var("AWAKEN_CONTENT_SUBJECT"))
+        // sink, when a sink (session-wired or the process-global) and a subject
+        // (open surface: AWAKEN_CONTENT_SUBJECT) are set. Content only flows when
+        // the capture level permits.
+        let sink = self
+            .capture_sink
+            .clone()
+            .or_else(crate::data_subject_api::process_capture_sink);
+        if let (Some(sink), Ok(subject)) = (sink, std::env::var("AWAKEN_CONTENT_SUBJECT"))
             && !subject.is_empty()
         {
-            ctx = ctx.with_capture_sink(
-                awaken_runtime_contract::DataSubjectId(subject),
-                sink.clone(),
-            );
+            ctx = ctx.with_capture_sink(awaken_runtime_contract::DataSubjectId(subject), sink);
         }
         // ADR-0044: route this run's tool calls to the host's remote hand, if one
         // is wired; otherwise the kernel's in-process LocalToolExecutor runs them.
