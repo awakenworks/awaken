@@ -361,6 +361,7 @@ async fn interrupted_text_stream_is_continued_from_the_partial() {
         None,
         None,
         &awaken_runtime_contract::CaptureDecision::default(),
+        None,
     )
     .await
     .expect("continues past the drop");
@@ -414,6 +415,7 @@ async fn completed_tool_calls_before_a_drop_are_executed_without_re_inferring() 
         None,
         None,
         &awaken_runtime_contract::CaptureDecision::default(),
+        None,
     )
     .await
     .expect("salvages the completed tool call");
@@ -451,6 +453,7 @@ async fn an_in_flight_tool_call_is_dropped_and_the_text_continues() {
         None,
         None,
         &awaken_runtime_contract::CaptureDecision::default(),
+        None,
     )
     .await
     .expect("continues the text past the in-flight tool");
@@ -497,6 +500,7 @@ async fn the_interruption_boundary_flushes_a_checkpoint_then_clears_it_on_return
         Some(&ctx),
         None,
         &awaken_runtime_contract::CaptureDecision::default(),
+        None,
     )
     .await;
     assert!(result.is_err(), "no retry budget: the drop stands");
@@ -542,6 +546,7 @@ async fn a_persisted_text_partial_resumes_in_a_fresh_call() {
         None,
         Some(resume),
         &awaken_runtime_contract::CaptureDecision::default(),
+        None,
     )
     .await
     .expect("resumes from the persisted partial");
@@ -584,6 +589,7 @@ async fn a_persisted_completed_tool_call_resumes_without_calling_the_model() {
         None,
         Some(resume),
         &awaken_runtime_contract::CaptureDecision::default(),
+        None,
     )
     .await
     .expect("resumes the completed tool call");

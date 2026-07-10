@@ -6,13 +6,29 @@
 //! store/backend is injected by the assembly (server-local) — this router names
 //! no store. Mounted separately from the SDK-compatible user-profiles router.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use awaken_data_subject::{ConsentGrant, ConsentStatus, DataSubject, DataSubjectRepo, LawfulBasis};
 use awaken_runtime_contract::{
-    ContentCapture, DataSubjectId, DataSubjectResolver, ErasureReceipt, Purpose,
+    CaptureSink, ContentCapture, DataSubjectId, DataSubjectResolver, ErasureReceipt, Purpose,
 };
+
+/// Process-global captured-content sink (ADR-0050): the single-machine composition
+/// root installs one, and every session's `context()` reads it so a run's captured
+/// content lands in the same store the erasure endpoint fans out to — without
+/// threading the sink through every `SharedHost` construction.
+static PROCESS_SINK: OnceLock<Arc<dyn CaptureSink>> = OnceLock::new();
+
+/// Install the process-global captured-content sink (idempotent; first wins).
+pub fn install_capture_sink(sink: Arc<dyn CaptureSink>) {
+    let _ = PROCESS_SINK.set(sink);
+}
+
+/// The process-global captured-content sink, if one was installed.
+pub(crate) fn process_capture_sink() -> Option<Arc<dyn CaptureSink>> {
+    PROCESS_SINK.get().cloned()
+}
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};

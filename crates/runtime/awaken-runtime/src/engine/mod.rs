@@ -580,6 +580,7 @@ async fn drive(
                     checkpoint_ref,
                     pending_resume.take(),
                     &context.capture,
+                    context.content_sink(),
                 )
                 .await
                 {
@@ -1243,6 +1244,7 @@ async fn infer_with_retry(
     checkpoint: Option<&CheckpointCtx<'_>>,
     resume: Option<StreamCheckpoint>,
     capture: &awaken_runtime_contract::CaptureDecision,
+    content_sink: content::SinkTarget<'_>,
 ) -> std::result::Result<ChatResponse, awaken_runtime_contract::llm::Error> {
     let span = tracing::Span::current();
     // OTel GenAI span name is the templated `{operation} {model}` (SHOULD).
@@ -1250,15 +1252,15 @@ async fn infer_with_retry(
         "otel.name",
         format!("chat {}", request.model_binding.model_ref).as_str(),
     );
-    // Content telemetry (ADR-0050): the prompt is recorded only when the
-    // resolved capture decision permits it, redactor-scrubbed. Default
-    // `Structured` records nothing. Done before the request is consumed.
-    if let Some(text) = capture.content(
+    // Content telemetry (ADR-0050): gated + scrubbed; before the request moves.
+    content::emit_content(
+        capture,
+        content_sink,
         awaken_runtime_contract::ContentKind::InputMessages,
+        "gen_ai.input.messages",
         &content::render_chat_messages(&request.messages),
-    ) {
-        span.record("gen_ai.input.messages", text.as_ref());
-    }
+    )
+    .await;
     let result =
         infer_with_retry_inner(llm, request, policy, breaker, sink, checkpoint, resume).await;
     // Any return means recovery concluded in-process, so the checkpoint (if any)
@@ -1279,14 +1281,15 @@ async fn infer_with_retry(
                     format!("{reason:?}").as_str(),
                 );
             }
-            // Content telemetry (ADR-0050): the completion is recorded only when
-            // the capture decision permits it, redactor-scrubbed.
-            if let Some(text) = capture.content(
+            // Content telemetry (ADR-0050): completion, gated + redactor-scrubbed.
+            content::emit_content(
+                capture,
+                content_sink,
                 awaken_runtime_contract::ContentKind::OutputMessages,
+                "gen_ai.output.messages",
                 &response.output.text_content(),
-            ) {
-                span.record("gen_ai.output.messages", text.as_ref());
-            }
+            )
+            .await;
         }
         // OTel: on a failed inference, tag `error.type` (the neutral taxonomy code)
         // and mark the span status ERROR so the trace surfaces the failure.
