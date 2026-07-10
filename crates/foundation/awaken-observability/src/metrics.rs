@@ -111,7 +111,8 @@ pub fn init_otlp_meter(
 ) -> Result<SdkMeterProvider, Box<dyn std::error::Error + Send + Sync>> {
     use opentelemetry_otlp::{MetricExporter, WithExportConfig};
     use opentelemetry_sdk::Resource;
-    use opentelemetry_sdk::metrics::PeriodicReader;
+    use opentelemetry_sdk::metrics::periodic_reader_with_async_runtime::PeriodicReader;
+    use opentelemetry_sdk::runtime;
 
     // Idempotent: `init()` may run more than once (e.g. under tests); install one
     // provider only, and hand back the existing one on a repeat call.
@@ -140,7 +141,19 @@ pub fn init_otlp_meter(
         resource_attrs.push(KeyValue::new("service.version", version.clone()));
     }
 
-    let reader = PeriodicReader::builder(exporter).build();
+    // Export interval: default 60s, overridable via the standard
+    // `OTEL_METRIC_EXPORT_INTERVAL` (milliseconds) so a test/dev can flush quickly
+    // without depending on the shutdown flush.
+    let interval_ms = std::env::var("OTEL_METRIC_EXPORT_INTERVAL")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(60_000);
+    // The async-runtime reader drives the reqwest-based OTLP exporter on the Tokio
+    // runtime (like the tracer's batch processor); the plain std-thread reader
+    // cannot run the async export, so metrics would silently never leave.
+    let reader = PeriodicReader::builder(exporter, runtime::Tokio)
+        .with_interval(std::time::Duration::from_millis(interval_ms))
+        .build();
     let provider = SdkMeterProvider::builder()
         .with_reader(reader)
         .with_resource(Resource::builder().with_attributes(resource_attrs).build())
@@ -152,10 +165,20 @@ pub fn init_otlp_meter(
 }
 
 /// Flush and shut down the meter provider, if one was installed, so buffered
-/// metrics are delivered before the process exits.
+/// metrics are delivered before the process exits. The flush + shutdown run on a
+/// detached OS thread with a bounded wait: a stalled OTLP export (or a periodic
+/// reader whose export task contends with the shutting-down runtime) must never
+/// hang process exit. The thread frees the runtime's workers to drive the async
+/// export, so a reachable collector still receives the final batch.
 pub(crate) fn shutdown_meter() {
-    if let Some(provider) = METER_PROVIDER.get() {
+    let Some(provider) = METER_PROVIDER.get().cloned() else {
+        return;
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let _ = provider.force_flush();
         let _ = provider.shutdown();
-    }
+        let _ = tx.send(());
+    });
+    let _ = rx.recv_timeout(std::time::Duration::from_secs(3));
 }
