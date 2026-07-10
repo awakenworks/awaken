@@ -127,6 +127,7 @@ mod tests {
                 provider_id: Some("anthropic".into()),
                 env_key: Some("ANTHROPIC_API_KEY".into()),
                 secret: Some(RedactedString::new("sk-xyz")),
+                oauth_command: None,
             },
             &store,
             &repo,

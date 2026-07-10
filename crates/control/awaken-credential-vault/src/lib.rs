@@ -174,6 +174,9 @@ pub struct CredentialCreateParams {
     pub env_key: Option<String>,
     /// The secret; consumed into the [`SecretStore`], never onto the row.
     pub secret: Option<RedactedString>,
+    /// The refresh helper `[program, args…]` for a [`CredentialKind::Oauth`]
+    /// source (#5). `None` for every other kind.
+    pub oauth_command: Option<Vec<String>>,
 }
 
 /// Persistence of raw secret bytes, keyed by [`SecretRef`]. Encryption-at-rest is
@@ -315,8 +318,7 @@ pub async fn create_source(
         provider_id: params.provider_id,
         env_key: params.env_key,
         material_ref,
-        // OAuth sources attach their refresh command via update, not create.
-        oauth_command: None,
+        oauth_command: params.oauth_command,
         status: CredentialStatus::Active,
         version: 1,
     })
@@ -395,6 +397,7 @@ mod tests {
                 provider_id: Some("anthropic".into()),
                 env_key: Some("ANTHROPIC_API_KEY".into()),
                 secret: Some(RedactedString::new("sk-super-secret-value")),
+                oauth_command: None,
             },
             &store,
         )
@@ -421,6 +424,7 @@ mod tests {
                 provider_id: None,
                 env_key: None,
                 secret: Some(RedactedString::new("x")),
+                oauth_command: None,
             },
             &store,
         )
@@ -467,6 +471,34 @@ mod tests {
             materialize(&source, &store).await,
             Err(CredentialError::OAuth(_))
         ));
+    }
+
+    #[cfg(feature = "oauth-command")]
+    #[tokio::test]
+    async fn create_source_builds_a_materializable_oauth_source() {
+        // The standard create seam accepts an OAuth source with its helper command,
+        // so it round-trips and materializes without direct construction (#5v2).
+        let store = InMemorySecretStore::new();
+        let source = create_source(
+            CredentialCreateParams {
+                workspace_id: "ws".into(),
+                kind: CredentialKind::Oauth,
+                provider_id: Some("anthropic".into()),
+                env_key: None,
+                secret: None,
+                oauth_command: Some(vec!["printf".into(), "ya29.created".into()]),
+            },
+            &store,
+        )
+        .await
+        .unwrap();
+        assert_eq!(source.kind, CredentialKind::Oauth);
+        assert_eq!(
+            source.oauth_command.as_deref(),
+            Some(&["printf".to_string(), "ya29.created".to_string()][..])
+        );
+        let token = materialize(&source, &store).await.unwrap();
+        assert_eq!(token.expose_secret(), "ya29.created");
     }
 
     #[tokio::test]

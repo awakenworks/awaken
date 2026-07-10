@@ -571,6 +571,7 @@ mod tests {
                 provider_id: Some("anthropic".into()),
                 env_key: Some("ANTHROPIC_API_KEY".into()),
                 secret: Some(RedactedString::new("sk-abc123")),
+                oauth_command: None,
             },
             &store,
         )
@@ -635,6 +636,7 @@ mod tests {
                 provider_id: Some("anthropic".into()),
                 env_key: None,
                 secret: Some(RedactedString::new("sk-topsecret")),
+                oauth_command: None,
             },
             &store,
         )
