@@ -182,6 +182,7 @@ fn activation(plugin_ids: Vec<String>, max_steps: usize) -> RunActivation {
             id: ExecutableAgentSnapshotId("snapshot-1".to_string()),
             root_agent_id: AgentId("agent-1".to_string()),
             resolved_spec: ResolvedSpec {
+                model_candidates: Vec::new(),
                 catalog_fingerprint: fingerprint.clone(),
                 instructions: String::new(),
                 max_steps,

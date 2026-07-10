@@ -647,6 +647,7 @@ mod tests {
             id: ExecutableAgentSnapshotId("snap1".into()),
             root_agent_id: AgentId("agent1".into()),
             resolved_spec: ResolvedSpec {
+                model_candidates: Vec::new(),
                 catalog_fingerprint: CatalogFingerprint("fp".into()),
                 instructions: String::new(),
                 max_steps: 8,
