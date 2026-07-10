@@ -294,11 +294,7 @@ impl DispatchQueue for MemoryDispatchStore {
         }))
     }
 
-    async fn bind_sandbox(
-        &self,
-        run_id: &RunId,
-        sandbox_ref: &str,
-    ) -> Result<(), DispatchError> {
+    async fn bind_sandbox(&self, run_id: &RunId, sandbox_ref: &str) -> Result<(), DispatchError> {
         let mut state = lock(&self.state)?;
         if let Some(row) = state.rows.get_mut(run_id) {
             row.sandbox = Some(sandbox_ref.to_string());

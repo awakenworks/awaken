@@ -111,7 +111,17 @@ impl SandboxProvider for K8sSandboxProvider {
         let name = pod_name(&spec.scope);
         // Idempotent: clear any stale pod of this scope first.
         let mut del = self.base();
-        del.extend(["delete", "pod", &name, "--ignore-not-found", "--force", "--grace-period=0"].map(String::from));
+        del.extend(
+            [
+                "delete",
+                "pod",
+                &name,
+                "--ignore-not-found",
+                "--force",
+                "--grace-period=0",
+            ]
+            .map(String::from),
+        );
         let _ = kubectl(&del).await;
 
         // Declarative create: apply a manifest via stdin (ADR-0021 §5).
@@ -241,9 +251,7 @@ impl Sandbox for K8sSandbox {
 
     async fn status(&self) -> Result<SandboxStatus, SandboxError> {
         let mut args = self.base.clone();
-        args.extend(
-            ["get", "pod", &self.pod, "-o", "jsonpath={.status.phase}"].map(String::from),
-        );
+        args.extend(["get", "pod", &self.pod, "-o", "jsonpath={.status.phase}"].map(String::from));
         match kubectl(&args).await {
             Ok(p) if p.trim() == "Running" => Ok(SandboxStatus::Ready),
             Ok(p) if p.trim() == "Pending" => Ok(SandboxStatus::Provisioning),

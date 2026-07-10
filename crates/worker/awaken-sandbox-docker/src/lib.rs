@@ -73,7 +73,13 @@ impl SandboxProvider for DockerSandboxProvider {
         // Remove any stale container of the same scope first (idempotent create).
         let _ = docker(&["rm", "-f", &name]).await;
         let id = docker(&[
-            "run", "-d", "--name", &name, &self.image, "sleep", "infinity",
+            "run",
+            "-d",
+            "--name",
+            &name,
+            &self.image,
+            "sleep",
+            "infinity",
         ])
         .await?;
         Ok(Box::new(DockerSandbox {
@@ -84,10 +90,7 @@ impl SandboxProvider for DockerSandboxProvider {
 
     async fn adopt(&self, handle: &SandboxHandle) -> Result<Box<dyn Sandbox>, SandboxError> {
         // Reconnect by container id; fail closed if it is no longer running.
-        let running = docker(&[
-            "inspect", "-f", "{{.State.Running}}", &handle.sandbox_id,
-        ])
-        .await?;
+        let running = docker(&["inspect", "-f", "{{.State.Running}}", &handle.sandbox_id]).await?;
         if running.trim() != "true" {
             return Err(SandboxError::new("container not running"));
         }

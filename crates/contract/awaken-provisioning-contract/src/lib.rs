@@ -30,16 +30,14 @@
 //! provider's own type behind [`Sandbox`].
 
 mod admission;
-mod prepare;
 mod lease;
+mod prepare;
 mod sandbox;
 mod spec;
 mod vocab;
 
 pub use admission::{AdmissionError, EnvironmentDecl, check_environment_soundness};
-pub use lease::{
-    AdoptionPlan, LeaseGrant, LeaseLiveness, ReapCause, reconcile_adoption,
-};
+pub use lease::{AdoptionPlan, LeaseGrant, LeaseLiveness, ReapCause, reconcile_adoption};
 pub use prepare::{EnvironmentPlan, PrepareError, prepare_environment};
 pub use sandbox::{
     ExitStatus, IsolationClass, ProcessHandle, Sandbox, SandboxCapabilities, SandboxError,
