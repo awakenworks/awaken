@@ -2,6 +2,14 @@
 //! profile is the entity behind an agent run (an end user, a resold company, or
 //! the platform itself). Pure serde shapes — the store, routes, and record→wire
 //! projection live in `routes::user_profiles`.
+//!
+//! **This is a SEPARATE beta** from the rest of this crate: the official SDK
+//! gates `beta.userProfiles.*` behind `anthropic-beta: user-profiles-2026-03-24`
+//! (verified against `@anthropic-ai/sdk` v0.105.0 `resources/beta/user-profiles`),
+//! NOT the `managed-agents-2026-04-01` header the module doc names for everything
+//! else. `trust_grants` is the end-user's OAuth-style authorization grants — a
+//! closed `{ status }` shape — and is deliberately NOT reused for GDPR consent
+//! (ADR-0050 keeps consent on the neutral `DataSubject` aggregate).
 
 use std::collections::BTreeMap;
 
