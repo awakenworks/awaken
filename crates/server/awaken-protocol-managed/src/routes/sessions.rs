@@ -10,6 +10,7 @@ use std::sync::Arc;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Path, Request, State};
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -54,6 +55,7 @@ where
 /// Build the Managed Agents router. Mount it at the server root; the paths are the
 /// public `/v1/sessions...` surface the SDK expects.
 pub fn router(state: Arc<ManagedState>) -> Router {
+    let guard_state = state.clone();
     Router::new()
         .route("/v1/sessions", post(create_session).get(list_sessions))
         .route(
@@ -96,6 +98,62 @@ pub fn router(state: Arc<ManagedState>) -> Router {
         // The live-inbox is a separate Awaken protocol, not part of the
         // managed-compatible surface; it merely rides the same host + state port.
         .merge(crate::ext::live_inbox::live_inbox_router(state))
+        // The tenant ownership guard (ADR-0051): a request whose resolved scope
+        // does not own the addressed `/v1/sessions/{id}` is answered 404, before
+        // any handler reads the session. Applied last so it wraps every id-scoped
+        // route including the live-inbox surface.
+        .layer(axum::middleware::from_fn_with_state(
+            guard_state,
+            session_scope_guard,
+        ))
+}
+
+/// The tenant ownership guard for the `/v1/sessions/{id}` surface (ADR-0051): if
+/// the session is owned by a scope other than the one this request resolved to,
+/// answer **404** (not 403 — never disclose that the id exists in another tenant).
+/// The collection routes (`POST`/`GET /v1/sessions`, no id) pass through, as do
+/// ids unknown to this process (rehydration path); the request scope comes from
+/// the edge-stamped [`WorkspaceScope`], defaulting to the seeded scope when the
+/// deployment resolved none, so a single-tenant surface never 404s itself.
+pub async fn session_scope_guard(
+    State(state): State<Arc<ManagedState>>,
+    request: Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if let Some(id) = session_id_from_path(request.uri().path()) {
+        let request_scope = request
+            .extensions()
+            .get::<WorkspaceScope>()
+            .map(|w| w.0.clone())
+            .unwrap_or_else(|| crate::state::DEFAULT_SCOPE.to_string());
+        if let Some(owner) = state.owner_scope(&id)
+            && owner != request_scope
+        {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new(
+                    "not_found_error",
+                    format!("session `{id}` not found"),
+                )),
+            )
+                .into_response();
+        }
+    }
+    next.run(request).await
+}
+
+/// The `{id}` from a `/v1/sessions/{id}[/...]` path, or `None` for the collection
+/// route (`/v1/sessions`) and any non-session path. The id is the segment after
+/// `sessions`; a trailing or missing segment yields `None`.
+fn session_id_from_path(path: &str) -> Option<String> {
+    let mut segments = path.trim_start_matches('/').split('/');
+    if segments.next()? != "v1" || segments.next()? != "sessions" {
+        return None;
+    }
+    match segments.next() {
+        Some(id) if !id.is_empty() => Some(id.to_string()),
+        _ => None,
+    }
 }
 
 /// Map a domain error to `(status, Anthropic error envelope)`. The `error.type`

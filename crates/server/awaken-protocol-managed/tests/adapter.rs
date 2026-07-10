@@ -993,3 +993,121 @@ async fn caller_fault_is_400_with_invalid_request_envelope() {
             .is_some_and(|m| !m.is_empty())
     );
 }
+
+// --- Tenant session isolation (ADR-0051): the ownership guard ----------------
+
+use awaken_protocol_managed::WorkspaceScope;
+
+/// Create a session with an edge-resolved owner scope stamped as `WorkspaceScope`
+/// (what the ingress guard does), returning its id.
+async fn create_owned(app: &Router, scope: Option<&str>) -> String {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/v1/sessions")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&serde_json::json!({ "agent": "coder" })).unwrap(),
+        ))
+        .unwrap();
+    if let Some(scope) = scope {
+        req.extensions_mut()
+            .insert(WorkspaceScope(scope.to_string()));
+    }
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    v["id"].as_str().unwrap().to_string()
+}
+
+/// A request to `uri` carrying (optionally) an edge-resolved `WorkspaceScope`.
+async fn call_owned(app: &Router, method: &str, uri: &str, scope: Option<&str>) -> StatusCode {
+    let mut req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .body(Body::empty())
+        .unwrap();
+    if let Some(scope) = scope {
+        req.extensions_mut()
+            .insert(WorkspaceScope(scope.to_string()));
+    }
+    app.clone().oneshot(req).await.unwrap().status()
+}
+
+#[tokio::test]
+async fn a_scoped_session_is_invisible_to_another_workspace() {
+    let app = router(Arc::new(ManagedState::new(EchoFake)));
+    let id = create_owned(&app, Some("ws_a")).await;
+    let path = format!("/v1/sessions/{id}");
+    // The owner reads it.
+    assert_eq!(
+        call_owned(&app, "GET", &path, Some("ws_a")).await,
+        StatusCode::OK
+    );
+    // Another workspace gets 404 — never 403, so the id's existence is not disclosed.
+    assert_eq!(
+        call_owned(&app, "GET", &path, Some("ws_b")).await,
+        StatusCode::NOT_FOUND
+    );
+    // A bare (unscoped) request cannot see a scoped session either.
+    assert_eq!(
+        call_owned(&app, "GET", &path, None).await,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn a_cross_tenant_write_is_also_fenced() {
+    let app = router(Arc::new(ManagedState::new(EchoFake)));
+    let id = create_owned(&app, Some("ws_a")).await;
+    // A write (archive) from another workspace is 404'd before the handler runs.
+    assert_eq!(
+        call_owned(
+            &app,
+            "POST",
+            &format!("/v1/sessions/{id}/archive"),
+            Some("ws_b")
+        )
+        .await,
+        StatusCode::NOT_FOUND
+    );
+    // The owner's write is admitted (200).
+    assert_eq!(
+        call_owned(
+            &app,
+            "POST",
+            &format!("/v1/sessions/{id}/archive"),
+            Some("ws_a")
+        )
+        .await,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn a_bare_session_stays_visible_to_bare_requests() {
+    // A single-tenant deployment resolves no workspace; the session owns under the
+    // seeded default scope and a bare request (also default) never 404s itself.
+    let app = router(Arc::new(ManagedState::new(EchoFake)));
+    let id = create_owned(&app, None).await;
+    assert_eq!(
+        call_owned(&app, "GET", &format!("/v1/sessions/{id}"), None).await,
+        StatusCode::OK
+    );
+    // But a scoped request cannot claim a default-owned session.
+    assert_eq!(
+        call_owned(&app, "GET", &format!("/v1/sessions/{id}"), Some("ws_a")).await,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn the_collection_route_is_never_fenced() {
+    // POST/GET /v1/sessions has no id → the guard passes it through regardless of scope.
+    let app = router(Arc::new(ManagedState::new(EchoFake)));
+    let _ = create_owned(&app, Some("ws_a")).await;
+    assert_eq!(
+        call_owned(&app, "GET", "/v1/sessions", Some("ws_b")).await,
+        StatusCode::OK
+    );
+}
