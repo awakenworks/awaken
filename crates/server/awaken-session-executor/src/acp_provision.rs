@@ -38,21 +38,41 @@ impl EnvLaunchResolver {
         }
     }
 
-    /// Resolve the model coordinates for `model_ref` (from the run's spec): base URL
-    /// and key come from the env under this CLI's delivery keys; the model is the
-    /// run's `model_ref`, falling back to the env model key when the run left it
-    /// unset. A missing base URL or key is a fail-closed launch error.
+    /// Resolve the model coordinates for `model_ref` (from the run's spec).
+    ///
+    /// Cloud-managed egress (D-R2, ADR-0021 §9/R2) takes precedence: when the
+    /// operator/placement has injected `AWAKEN_ACP_GATEWAY_URL` **and**
+    /// `AWAKEN_ACP_LEASE_TOKEN`, the ACP CLI runs inside an untrusted sandbox and
+    /// must never hold a raw provider key — so we point it at the **gateway** with a
+    /// short-lived **lease token** in the key slot (the gateway injects the real
+    /// credential out of the sandbox), and we do NOT read `ANTHROPIC_API_KEY` at all.
+    /// This mirrors the `ModelAccessGrant::CloudManagedGateway` materialization.
+    ///
+    /// Otherwise (self-credentialed, `LocalSelfCredentialed`): base URL and key come
+    /// from the env under this CLI's delivery keys; the model is the run's
+    /// `model_ref`, falling back to the env model key when the run left it unset. A
+    /// missing base URL or key is a fail-closed launch error.
     fn resolve_model(&self, model_ref: &str) -> Result<ResolvedModel, OpenError> {
         let d = &self.cli.model_delivery;
-        let base_url = (self.env)(d.base_url)
-            .ok_or_else(|| OpenError(format!("{} not set in the environment", d.base_url)))?;
-        let api_key = (self.env)(d.key)
-            .ok_or_else(|| OpenError(format!("{} not set in the environment", d.key)))?;
         let model = if model_ref.is_empty() {
             (self.env)(d.model).unwrap_or_default()
         } else {
             model_ref.to_string()
         };
+
+        // Cloud-managed gateway path: a lease token, never a raw key.
+        if let (Some(gateway), Some(lease)) = (
+            (self.env)("AWAKEN_ACP_GATEWAY_URL"),
+            (self.env)("AWAKEN_ACP_LEASE_TOKEN"),
+        ) {
+            return Ok(ResolvedModel::cloud_managed_gateway(gateway, model, lease));
+        }
+
+        // Self-credentialed path: the operator's exported base URL + raw key.
+        let base_url = (self.env)(d.base_url)
+            .ok_or_else(|| OpenError(format!("{} not set in the environment", d.base_url)))?;
+        let api_key = (self.env)(d.key)
+            .ok_or_else(|| OpenError(format!("{} not set in the environment", d.key)))?;
         Ok(ResolvedModel {
             base_url,
             model,
@@ -123,6 +143,42 @@ mod tests {
     fn missing_key_or_base_url_fails_closed() {
         let r = resolver_with(&[("ANTHROPIC_BASE_URL", "u")], None);
         assert!(r.resolve_model("m").is_err()); // no ANTHROPIC_API_KEY
+    }
+
+    #[test]
+    fn cloud_managed_gateway_env_yields_a_lease_token_not_a_raw_key() {
+        // D-R2: with the gateway env injected, the launched CLI points at the gateway
+        // and its "key" is the short-lived lease token — the raw provider key is never
+        // read, even when present in the env.
+        let r = resolver_with(
+            &[
+                ("AWAKEN_ACP_GATEWAY_URL", "https://gw.internal/anthropic"),
+                ("AWAKEN_ACP_LEASE_TOKEN", "lease-abc"), // awaken-allow: secret
+                ("ANTHROPIC_API_KEY", "raw-provider-key"), // awaken-allow: secret
+            ],
+            None,
+        );
+        let model = r.resolve_model("claude-opus").unwrap();
+        assert_eq!(model.base_url, "https://gw.internal/anthropic");
+        assert_eq!(model.model, "claude-opus");
+        assert_eq!(model.api_key, "lease-abc"); // the lease, not the raw key
+        assert_ne!(model.api_key, "raw-provider-key");
+    }
+
+    #[test]
+    fn cloud_managed_gateway_needs_no_raw_key_in_the_env() {
+        // The gateway path is self-sufficient: no ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL
+        // required, since the sandbox is credential-free by design.
+        let r = resolver_with(
+            &[
+                ("AWAKEN_ACP_GATEWAY_URL", "https://gw.internal"),
+                ("AWAKEN_ACP_LEASE_TOKEN", "lease-xyz"), // awaken-allow: secret
+            ],
+            None,
+        );
+        let model = r.resolve_model("m").unwrap();
+        assert_eq!(model.base_url, "https://gw.internal");
+        assert_eq!(model.api_key, "lease-xyz");
     }
 
     #[test]
