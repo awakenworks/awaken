@@ -777,13 +777,7 @@ impl SharedHost {
         // (the non-Send sqlx connect stays out of the run loop), independent of a
         // per-thread store dir.
         if std::env::var("AWAKEN_STORE").as_deref() == Ok("postgres") {
-            let coord = crate::commit_backend::shared_postgres_commit().ok_or_else(|| {
-                HostError::internal(
-                    "AWAKEN_STORE=postgres requires init_shared_postgres_commit() at process \
-                     startup (with AWAKEN_DATABASE_URL)",
-                )
-            })?;
-            return Ok(HostCommit::Postgres(coord));
+            return crate::store::postgres_commit_or_err();
         }
         let Some(dir) = &self.store_dir else {
             return Ok(HostCommit::Memory(MemoryCommitCoordinator::new()));
