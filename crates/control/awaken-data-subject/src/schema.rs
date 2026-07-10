@@ -7,7 +7,7 @@ use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 /// Namespaced bundle id — the split/merge unit for the data-subject domain.
 pub const BUNDLE_ID: &str = "awaken.data_subject";
 
-const SPECS: [(i64, &str, &str); 2] = [
+const SPECS: [(i64, &str, &str); 3] = [
     (
         1,
         "data subjects: the attributed party, its consent grants, keyed by org",
@@ -26,6 +26,11 @@ const SPECS: [(i64, &str, &str); 2] = [
             purpose TEXT NOT NULL, \
             recorded_at BIGINT NOT NULL, \
             content TEXT NOT NULL)",
+    ),
+    (
+        3,
+        "Art. 18 restriction: a restricted row is exempt from erasure + TTL sweep",
+        "ALTER TABLE {prefix}_captured ADD COLUMN restricted INTEGER NOT NULL DEFAULT 0",
     ),
 ];
 

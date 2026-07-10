@@ -21,6 +21,10 @@ pub struct CapturedRecord {
     /// Epoch milliseconds the content was recorded (for TTL).
     pub recorded_at: i64,
     pub content: String,
+    /// Art. 18 restriction: a restricted record is frozen — kept in storage but
+    /// excluded from erasure, TTL sweep, and every read path.
+    #[doc(hidden)]
+    pub restricted: bool,
 }
 
 /// In-memory captured-content store. A real backend would persist rows; the
@@ -54,16 +58,45 @@ impl InMemoryCapturedContentStore {
             purpose,
             recorded_at: now,
             content: content.into(),
+            restricted: false,
         });
         id
     }
 
+    /// Restrict a subject's records (GDPR Art. 18): freeze them so they survive
+    /// erasure + TTL and are hidden from reads. Returns the number restricted.
+    pub fn restrict(&self, subject: &DataSubjectId) -> usize {
+        let mut v = self.inner.lock().unwrap();
+        let mut n = 0;
+        for r in v.iter_mut() {
+            if &r.subject == subject && !r.restricted {
+                r.restricted = true;
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// Lift the restriction on a subject's records (Art. 18(3): inform the
+    /// subject before doing so). Returns the number released.
+    pub fn release(&self, subject: &DataSubjectId) -> usize {
+        let mut v = self.inner.lock().unwrap();
+        let mut n = 0;
+        for r in v.iter_mut() {
+            if &r.subject == subject && r.restricted {
+                r.restricted = false;
+                n += 1;
+            }
+        }
+        n
+    }
+
     /// Remove records older than `ttl_millis` as of `now` (Art. 5(e) storage
-    /// limitation); returns the number swept.
+    /// limitation); returns the number swept. Restricted records are exempt.
     pub fn sweep_expired(&self, ttl_millis: i64, now: i64) -> usize {
         let mut v = self.inner.lock().unwrap();
         let before = v.len();
-        v.retain(|r| now - r.recorded_at < ttl_millis);
+        v.retain(|r| r.restricted || now - r.recorded_at < ttl_millis);
         before - v.len()
     }
 
@@ -105,7 +138,9 @@ impl ContentEraser for InMemoryCapturedContentStore {
     async fn erase_subject(&self, subject: &DataSubjectId) -> usize {
         let mut v = self.inner.lock().unwrap();
         let before = v.len();
-        v.retain(|r| &r.subject != subject);
+        // Restricted (Art. 18) records survive erasure — kept for the legal
+        // purpose until released.
+        v.retain(|r| &r.subject != subject || r.restricted);
         before - v.len()
     }
 }
@@ -156,6 +191,34 @@ mod tests {
         assert_eq!(s.len(), 1, "subject b's record remains");
         // Erasing an unknown subject removes nothing.
         assert_eq!(s.erase_subject(&DataSubjectId("ghost".into())).await, 0);
+    }
+
+    #[tokio::test]
+    async fn restricted_records_survive_erasure_and_ttl() {
+        let s = InMemoryCapturedContentStore::new();
+        s.insert(
+            DataSubjectId("a".into()),
+            Purpose::TelemetryContent,
+            "x",
+            100,
+        );
+        s.insert(
+            DataSubjectId("a".into()),
+            Purpose::TelemetryContent,
+            "y",
+            100,
+        );
+        assert_eq!(s.restrict(&DataSubjectId("a".into())), 2);
+
+        // Erasure and TTL both skip restricted records.
+        assert_eq!(s.erase_subject(&DataSubjectId("a".into())).await, 0);
+        assert_eq!(s.sweep_expired(1, 10_000), 0);
+        assert_eq!(s.len(), 2, "restricted records survive both");
+
+        // Once released, erasure removes them.
+        assert_eq!(s.release(&DataSubjectId("a".into())), 2);
+        assert_eq!(s.erase_subject(&DataSubjectId("a".into())).await, 2);
+        assert!(s.is_empty());
     }
 
     #[test]
