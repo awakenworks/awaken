@@ -5,6 +5,7 @@
 
 use awaken_provisioning_contract::{
     Command, IsolationClass, NetworkPolicy, SandboxProvider, SandboxSpec, SandboxStatus, Stdio,
+    reconcile_adoption,
 };
 use awaken_sandbox_docker::DockerSandboxProvider;
 
@@ -111,4 +112,39 @@ async fn collects_and_reads_artifacts_from_the_outputs_path() {
     assert!(sandbox.read_artifact("deadbeef").await.is_err());
 
     sandbox.dispose().await.expect("dispose");
+}
+
+#[tokio::test]
+async fn reconcile_reaps_the_orphan_sandbox_over_real_docker() {
+    if !enabled() {
+        eprintln!("skip: AWAKEN_TEST_DOCKER != 1");
+        return;
+    }
+    let provider = DockerSandboxProvider::new("alpine:3");
+    let keep = provider.create(&spec("recon-keep")).await.expect("create keep");
+    let orphan = provider.create(&spec("recon-orphan")).await.expect("create orphan");
+    let (h_keep, h_orphan) = (keep.handle(), orphan.handle());
+
+    // Both live; only `keep` is still referenced by a run → reconcile reaps `orphan`.
+    let plan = reconcile_adoption(&[h_keep.clone(), h_orphan.clone()], &[h_keep.clone()]);
+    assert_eq!(plan.adopt, vec![h_keep.clone()], "the referenced sandbox is adopted");
+    assert_eq!(plan.reap, vec![h_orphan.clone()], "the unreferenced sandbox is reaped");
+    assert!(plan.orphan.is_empty());
+
+    // Act on the plan: reap every unreferenced sandbox.
+    for h in &plan.reap {
+        provider
+            .adopt(h)
+            .await
+            .expect("adopt to reap")
+            .dispose()
+            .await
+            .expect("dispose reaped");
+    }
+
+    // The referenced sandbox survives; the reaped one is gone (adopt fails closed).
+    assert!(provider.adopt(&h_keep).await.is_ok(), "referenced sandbox survives");
+    assert!(provider.adopt(&h_orphan).await.is_err(), "orphan sandbox was reaped");
+
+    provider.adopt(&h_keep).await.unwrap().dispose().await.ok();
 }
