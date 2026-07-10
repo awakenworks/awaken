@@ -72,6 +72,7 @@ wrappers = [
     "awaken-admin-config-api",
     "awaken-run-executor-acp",
     "awaken-run-executor-a2a",
+    "awaken-eval",
 ]
 reason = "base contract; nothing may pull it upward (no downward dep of its own)"
 
@@ -112,6 +113,8 @@ wrappers = [
     # awaken-store-*, and awaken-provider-genai wrapper lists is the G33 enforcer:
     # adding a kernel/store/model dep to the hand crate fails `cargo deny check bans`.
     "awaken-tool-relay",
+    # #4: the eval harness replays cases through the RunExecutor port.
+    "awaken-eval",
 ]
 reason = "contract layer; agent-contract must not depend on it (no upward edge)"
 
@@ -127,6 +130,8 @@ wrappers = [
     "awaken-ext-mcp",
     "awaken-ext-state-machine",
     "awaken-server-local",
+    # #4: the eval harness runs recorded cases on the real kernel.
+    "awaken-eval",
 ]
 reason = "runtime core; contracts must not depend on the kernel (G2, G18)"
 

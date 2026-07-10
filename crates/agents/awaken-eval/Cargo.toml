@@ -1,0 +1,25 @@
+[package]
+name = "awaken-eval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Fixture-driven evaluation harness (#4): replays recorded cases through the REAL
+# runtime (a scripted `LlmExecutor` feeds the recorded model responses back into
+# the engine via the `RunExecutor` port) and scores the committed output against a
+# small typed set of expectations. The harness owns no execution logic — replay is
+# the runtime itself, so a scored case exercises the true engine path.
+
+[dependencies]
+awaken-agent-contract.workspace = true
+awaken-runtime-contract.workspace = true
+awaken-runtime = { workspace = true }
+async-trait.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

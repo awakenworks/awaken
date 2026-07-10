@@ -379,6 +379,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-eval"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-runtime",
+ "awaken-runtime-contract",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-ext-builtin-tools"
 version = "1.0.0-dev"
 dependencies = [
