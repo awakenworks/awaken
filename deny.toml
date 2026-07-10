@@ -104,6 +104,9 @@ wrappers = [
     "awaken-data-subject",
     "awaken-run-executor-acp",
     "awaken-run-executor-a2a",
+    # #2: implements the neutral MetricsRecorder port defined in the contract, so
+    # it depends on the contract for that trait only (structure-only metric vocab).
+    "awaken-observability",
     # ADR-0044: the remote-hand relay. It depends on the contract for ToolCall/
     # ToolOutput/ToolExecutor/RawTool ONLY. Its absence from the awaken-runtime,
     # awaken-store-*, and awaken-provider-genai wrapper lists is the G33 enforcer:

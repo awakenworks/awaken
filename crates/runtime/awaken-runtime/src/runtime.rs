@@ -55,7 +55,15 @@ pub struct Runtime {
     max_consecutive_inference_failures: usize,
     /// Per-model circuit breaker shared by every run on this runtime.
     circuit_breaker: crate::circuit_breaker::CircuitBreaker,
+    /// Structure-only metrics sink for the model/tool chokepoints (#2). Absent
+    /// means the no-op recorder; a host injects an OpenTelemetry-backed one.
+    metrics: Option<Arc<dyn awaken_runtime_contract::metrics::MetricsRecorder>>,
 }
+
+/// The process-wide no-op recorder handed out when none is injected, so the
+/// accessor can return a `&dyn` without allocating or storing one per runtime.
+static NOOP_METRICS: awaken_runtime_contract::metrics::NoopRecorder =
+    awaken_runtime_contract::metrics::NoopRecorder;
 
 impl Runtime {
     pub fn new() -> Self {
@@ -124,6 +132,24 @@ impl Runtime {
 
     pub(crate) fn circuit_breaker(&self) -> &crate::circuit_breaker::CircuitBreaker {
         &self.circuit_breaker
+    }
+
+    /// Inject the structure-only metrics recorder consulted at the model/tool
+    /// chokepoints (composition-root wiring). The default is a no-op.
+    #[must_use]
+    pub fn with_metrics(
+        mut self,
+        metrics: Arc<dyn awaken_runtime_contract::metrics::MetricsRecorder>,
+    ) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
+
+    pub(crate) fn metrics(&self) -> &dyn awaken_runtime_contract::metrics::MetricsRecorder {
+        match &self.metrics {
+            Some(m) => m.as_ref(),
+            None => &NOOP_METRICS,
+        }
     }
 
     /// Inject the model provider used by execution (composition root wiring).

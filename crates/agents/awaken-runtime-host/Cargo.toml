@@ -10,6 +10,7 @@ license.workspace = true
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-runtime = { workspace = true }
+awaken-observability = { workspace = true }
 awaken-ext-builtin-tools = { workspace = true }
 awaken-ext-memory = { workspace = true }
 awaken-ext-compact = { workspace = true }

@@ -104,6 +104,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "opentelemetry",
         "opentelemetry_sdk",
         "opentelemetry-otlp",
+        # The neutral MetricsRecorder port (#2): the OTel-backed recorder impl
+        # lives here beside the Meter it feeds. A foundation contract leaf — no
+        # domain capability travels, only the structure-only metric vocabulary.
+        "awaken-runtime-contract",
     },
     # Host-side credential vocabulary (Credential / AuthChallenge /
     # CredentialRefresher) shared by the outbound wire clients (awaken-ext-mcp,
@@ -865,6 +869,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-agent-contract",
         "awaken-runtime-contract",
         "awaken-runtime",
+        # The OTel-backed metrics recorder injected into each per-thread runtime
+        # (#2), so a server with OTLP configured exports model/tool metrics.
+        "awaken-observability",
         "awaken-ext-builtin-tools",
         "awaken-ext-memory",
         "awaken-ext-compact",

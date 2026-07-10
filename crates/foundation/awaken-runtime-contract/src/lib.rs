@@ -10,6 +10,7 @@ pub mod data_subject;
 pub mod execution;
 pub mod live_inbox;
 pub mod llm;
+pub mod metrics;
 pub mod model_access;
 pub mod permission;
 pub mod plugin;

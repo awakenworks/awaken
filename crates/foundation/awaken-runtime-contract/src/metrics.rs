@@ -1,0 +1,71 @@
+//! Cross-cutting metrics port for the runtime's GenAI chokepoints (#2).
+//!
+//! A neutral sink so the execution core stays free of any metrics library: the
+//! engine records at the `chat` and tool-exec seams through this trait, the real
+//! OpenTelemetry `Meter` implementation lives in `awaken-observability`, and the
+//! default is a no-op. Only **structure** is recorded — model id, tool id,
+//! outcome code, latency, token counts — never prompt/completion content
+//! (metrics are the structure data class under GDPR, ADR-0050). Labels must
+//! never carry PII: no prompt-derived values, no raw subject id.
+
+use std::time::Duration;
+
+/// The structure-only facts of one completed inference (`chat`) call. `outcome`
+/// is `"ok"` or the error's stable snake_case classification code; token counts
+/// are present only when the provider reported usage.
+#[derive(Debug, Clone, Copy)]
+pub struct InferenceMetric<'a> {
+    /// The bound model id — the routing identity, never content.
+    pub model: &'a str,
+    /// `"ok"` on success, else the `llm::Error::code()` classification.
+    pub outcome: &'a str,
+    /// Wall-clock time the whole call (including retries) took.
+    pub duration: Duration,
+    /// Prompt tokens, when the provider reported usage.
+    pub input_tokens: Option<u64>,
+    /// Completion tokens, when the provider reported usage.
+    pub output_tokens: Option<u64>,
+}
+
+/// Records structure-only metrics for the runtime's model/tool chokepoints. The
+/// **one** injection seam: swap the impl to change where metrics go. Held by the
+/// `Runtime`; consulted right where the `chat` span is emitted so metrics and
+/// traces share one instrumentation point (no double-instrumentation).
+pub trait MetricsRecorder: Send + Sync {
+    /// One completed model-inference (`chat`) call.
+    fn record_inference(&self, metric: InferenceMetric<'_>);
+
+    /// One completed tool execution: `tool` id, `outcome` (`"ok"` or an error
+    /// class), and the wall-clock `duration`.
+    fn record_tool(&self, tool: &str, outcome: &str, duration: Duration);
+}
+
+/// Null-object recorder: records nothing. The default for the single-machine /
+/// open build and every test that does not assert on metrics; real emission
+/// (`OtelMetricsRecorder`) lives in `awaken-observability`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoopRecorder;
+
+impl MetricsRecorder for NoopRecorder {
+    fn record_inference(&self, _metric: InferenceMetric<'_>) {}
+    fn record_tool(&self, _tool: &str, _outcome: &str, _duration: Duration) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn noop_records_nothing_and_is_a_zst() {
+        assert_eq!(std::mem::size_of::<NoopRecorder>(), 0);
+        // Exercising both methods must not panic and returns unit.
+        NoopRecorder.record_inference(InferenceMetric {
+            model: "m",
+            outcome: "ok",
+            duration: Duration::from_millis(1),
+            input_tokens: Some(3),
+            output_tokens: Some(4),
+        });
+        NoopRecorder.record_tool("t", "ok", Duration::from_millis(1));
+    }
+}

@@ -97,8 +97,13 @@ pub(super) async fn infer_with_retry(
     resume: Option<StreamCheckpoint>,
     capture: &awaken_runtime_contract::CaptureDecision,
     content_sink: content::SinkTarget<'_>,
+    metrics: &dyn awaken_runtime_contract::metrics::MetricsRecorder,
 ) -> std::result::Result<ChatResponse, awaken_runtime_contract::llm::Error> {
     let span = tracing::Span::current();
+    // The routing model id, captured before `request` moves into the retry loop —
+    // it labels both the span and the metric (structure only, never content).
+    let model_id = request.model_binding.model_ref.clone();
+    let started = std::time::Instant::now();
     // OTel GenAI span name is the templated `{operation} {model}` (SHOULD).
     span.record(
         "otel.name",
@@ -150,6 +155,23 @@ pub(super) async fn infer_with_retry(
             span.record("otel.status_code", "ERROR");
         }
     }
+    // Structure-only metric at the same chokepoint as the span (#2): model id,
+    // outcome class, latency, and token counts — no content, no PII labels.
+    let (outcome, input_tokens, output_tokens) = match &result {
+        Ok(response) => (
+            "ok",
+            response.usage.as_ref().map(|u| u.prompt_tokens),
+            response.usage.as_ref().map(|u| u.completion_tokens),
+        ),
+        Err(err) => (err.code(), None, None),
+    };
+    metrics.record_inference(awaken_runtime_contract::metrics::InferenceMetric {
+        model: &model_id,
+        outcome,
+        duration: started.elapsed(),
+        input_tokens,
+        output_tokens,
+    });
     result
 }
 
