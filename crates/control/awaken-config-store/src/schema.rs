@@ -10,7 +10,7 @@ use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 /// or dispatch schemas in a shared database.
 pub const BUNDLE_ID: &str = "awaken.config";
 
-const SPECS: [(i64, &str, &str); 2] = [
+const SPECS: [(i64, &str, &str); 4] = [
     (
         1,
         "agent configs: the authoring aggregate, one row per agent id",
@@ -28,6 +28,20 @@ const SPECS: [(i64, &str, &str); 2] = [
             state TEXT NOT NULL, \
             record {json} NOT NULL, \
             created_at {timestamptz} NOT NULL DEFAULT {now})",
+    ),
+    (
+        // Tenancy edge aspect (ADR-0051 D2/D4): one opaque owner `scope_id` on the
+        // authoring aggregate. Additive with a seeded default so existing rows stay
+        // valid; reads filter `WHERE scope_id = ?` and writes are scope-guarded, so
+        // a workspace cannot read or clobber another's agent by id.
+        3,
+        "agent configs: opaque owner scope_id (ADR-0051)",
+        "ALTER TABLE {prefix}_agent ADD COLUMN scope_id TEXT NOT NULL DEFAULT 'default'",
+    ),
+    (
+        4,
+        "publications: opaque owner scope_id (ADR-0051)",
+        "ALTER TABLE {prefix}_publication ADD COLUMN scope_id TEXT NOT NULL DEFAULT 'default'",
     ),
 ];
 

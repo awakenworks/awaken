@@ -5,9 +5,13 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension, params};
 
+use awaken_tenancy::ScopeId;
+
 use crate::config::AgentConfig;
 use crate::schema::config_bundle;
-use crate::store::{ConfigRegistry, ConfigStoreError, StoredPublication};
+use crate::store::{
+    ConfigRegistry, ConfigStoreError, DEFAULT_SCOPE, ScopedConfigRegistry, StoredPublication,
+};
 
 /// The config component's table namespace (ADR-0029/ADR-0031). Built in.
 const NS: &str = "config";
@@ -72,17 +76,27 @@ fn reject(err: impl std::fmt::Display) -> ConfigStoreError {
 }
 
 #[async_trait]
-impl ConfigRegistry for SqliteConfigStore {
-    async fn put_config(&self, config: &AgentConfig) -> Result<(), ConfigStoreError> {
+impl ScopedConfigRegistry for SqliteConfigStore {
+    async fn put_config_scoped(
+        &self,
+        scope: &ScopeId,
+        config: &AgentConfig,
+    ) -> Result<(), ConfigStoreError> {
         let id = config.id.clone();
         let data = serde_json::to_string(config).map_err(reject)?;
+        let scope = scope.0.clone();
         self.with_conn(move |conn, p| {
+            // The `ON CONFLICT … WHERE` guard makes a cross-scope write a no-op:
+            // if the existing row belongs to another scope, the update is skipped
+            // (a workspace cannot clobber another's agent by id), and a same-scope
+            // write updates the data.
             conn.execute(
                 &format!(
-                    "INSERT INTO {p}_agent (id, data) VALUES (?1, ?2) \
-                     ON CONFLICT(id) DO UPDATE SET data = excluded.data"
+                    "INSERT INTO {p}_agent (id, data, scope_id) VALUES (?1, ?2, ?3) \
+                     ON CONFLICT(id) DO UPDATE SET data = excluded.data \
+                     WHERE {p}_agent.scope_id = excluded.scope_id"
                 ),
-                params![id, data],
+                params![id, data, scope],
             )
             .map_err(reject)?;
             Ok(())
@@ -90,13 +104,18 @@ impl ConfigRegistry for SqliteConfigStore {
         .await
     }
 
-    async fn get_config(&self, id: &str) -> Result<Option<AgentConfig>, ConfigStoreError> {
+    async fn get_config_scoped(
+        &self,
+        scope: &ScopeId,
+        id: &str,
+    ) -> Result<Option<AgentConfig>, ConfigStoreError> {
         let id = id.to_string();
+        let scope = scope.0.clone();
         self.with_conn(move |conn, p| {
             let data: Option<String> = conn
                 .query_row(
-                    &format!("SELECT data FROM {p}_agent WHERE id = ?1"),
-                    params![id],
+                    &format!("SELECT data FROM {p}_agent WHERE id = ?1 AND scope_id = ?2"),
+                    params![id, scope],
                     |r| r.get(0),
                 )
                 .optional()
@@ -107,21 +126,23 @@ impl ConfigRegistry for SqliteConfigStore {
         .await
     }
 
-    async fn put_publication(
+    async fn put_publication_scoped(
         &self,
+        scope: &ScopeId,
         publication: &StoredPublication,
     ) -> Result<(), ConfigStoreError> {
         let fingerprint = publication.fingerprint.clone();
         let agent_id = publication.agent_id.clone();
         let state = publication.state.as_str().to_string();
         let record = serde_json::to_string(publication).map_err(reject)?;
+        let scope = scope.0.clone();
         self.with_conn(move |conn, p| {
             conn.execute(
                 &format!(
-                    "INSERT INTO {p}_publication (fingerprint, agent_id, state, record) \
-                     VALUES (?1, ?2, ?3, ?4) ON CONFLICT(fingerprint) DO NOTHING"
+                    "INSERT INTO {p}_publication (fingerprint, agent_id, state, record, scope_id) \
+                     VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(fingerprint) DO NOTHING"
                 ),
-                params![fingerprint, agent_id, state, record],
+                params![fingerprint, agent_id, state, record, scope],
             )
             .map_err(reject)?;
             Ok(())
@@ -129,16 +150,20 @@ impl ConfigRegistry for SqliteConfigStore {
         .await
     }
 
-    async fn get_publication(
+    async fn get_publication_scoped(
         &self,
+        scope: &ScopeId,
         fingerprint: &str,
     ) -> Result<Option<StoredPublication>, ConfigStoreError> {
         let fingerprint = fingerprint.to_string();
+        let scope = scope.0.clone();
         self.with_conn(move |conn, p| {
             let record: Option<String> = conn
                 .query_row(
-                    &format!("SELECT record FROM {p}_publication WHERE fingerprint = ?1"),
-                    params![fingerprint],
+                    &format!(
+                        "SELECT record FROM {p}_publication WHERE fingerprint = ?1 AND scope_id = ?2"
+                    ),
+                    params![fingerprint, scope],
                     |r| r.get(0),
                 )
                 .optional()
@@ -148,5 +173,148 @@ impl ConfigRegistry for SqliteConfigStore {
                 .transpose()
         })
         .await
+    }
+}
+
+/// The scope-free [`ConfigRegistry`] over SQLite operates in the seeded
+/// [`DEFAULT_SCOPE`] — byte-identical to the pre-tenancy behavior (one owner), so
+/// existing single-machine callers are unchanged. Multi-tenant callers wrap with
+/// [`crate::ScopedConfig`] bound to the request's scope.
+#[async_trait]
+impl ConfigRegistry for SqliteConfigStore {
+    async fn put_config(&self, config: &AgentConfig) -> Result<(), ConfigStoreError> {
+        self.put_config_scoped(&ScopeId::from(DEFAULT_SCOPE), config)
+            .await
+    }
+
+    async fn get_config(&self, id: &str) -> Result<Option<AgentConfig>, ConfigStoreError> {
+        self.get_config_scoped(&ScopeId::from(DEFAULT_SCOPE), id)
+            .await
+    }
+
+    async fn put_publication(
+        &self,
+        publication: &StoredPublication,
+    ) -> Result<(), ConfigStoreError> {
+        self.put_publication_scoped(&ScopeId::from(DEFAULT_SCOPE), publication)
+            .await
+    }
+
+    async fn get_publication(
+        &self,
+        fingerprint: &str,
+    ) -> Result<Option<StoredPublication>, ConfigStoreError> {
+        self.get_publication_scoped(&ScopeId::from(DEFAULT_SCOPE), fingerprint)
+            .await
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+    use crate::store::ScopedConfigRegistry;
+    use awaken_runtime_contract::resolved::ModelBinding;
+    use awaken_tenancy::ScopeId;
+
+    fn agent(id: &str) -> AgentConfig {
+        // A valid authoring aggregate; only the id matters for isolation.
+        AgentConfig {
+            id: id.to_string(),
+            instructions: "be helpful".to_string(),
+            max_steps: 8,
+            model_binding: ModelBinding::new("p", "m", "b"),
+            tool_ids: Vec::new(),
+            model_candidates: Vec::new(),
+            plugin_ids: Vec::new(),
+            plugin_config: Default::default(),
+            context_policy: awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+            tool_patterns: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_scope_reads_back_its_own_agent() {
+        let store = SqliteConfigStore::open_in_memory().expect("open");
+        let a = ScopeId::from("ws_a");
+        store.put_config_scoped(&a, &agent("x")).await.expect("put");
+        assert_eq!(
+            store
+                .get_config_scoped(&a, "x")
+                .await
+                .expect("get")
+                .map(|c| c.id),
+            Some("x".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn another_scope_cannot_read_the_agent() {
+        let store = SqliteConfigStore::open_in_memory().expect("open");
+        store
+            .put_config_scoped(&ScopeId::from("ws_a"), &agent("x"))
+            .await
+            .expect("put");
+        // Same id, different scope → invisible (the isolation fence).
+        assert!(
+            store
+                .get_config_scoped(&ScopeId::from("ws_b"), "x")
+                .await
+                .expect("get")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_write_cannot_clobber_another_scopes_agent() {
+        let store = SqliteConfigStore::open_in_memory().expect("open");
+        let a = ScopeId::from("ws_a");
+        let b = ScopeId::from("ws_b");
+        store
+            .put_config_scoped(&a, &agent("x"))
+            .await
+            .expect("put a");
+        // ws_b attempts to overwrite id "x" — the conflict guard makes it a no-op.
+        store
+            .put_config_scoped(&b, &agent("x"))
+            .await
+            .expect("put b");
+        // ws_a still owns "x"; ws_b still cannot see it.
+        assert!(
+            store
+                .get_config_scoped(&a, "x")
+                .await
+                .expect("get a")
+                .is_some()
+        );
+        assert!(
+            store
+                .get_config_scoped(&b, "x")
+                .await
+                .expect("get b")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_scope_free_port_uses_the_default_scope() {
+        let store = SqliteConfigStore::open_in_memory().expect("open");
+        // A scope-free write lands under DEFAULT_SCOPE and is readable scope-free…
+        store.put_config(&agent("d")).await.expect("put");
+        assert!(store.get_config("d").await.expect("get").is_some());
+        // …and via the explicit default scope, but not another scope.
+        assert!(
+            store
+                .get_config_scoped(&ScopeId::from(DEFAULT_SCOPE), "d")
+                .await
+                .expect("get")
+                .is_some()
+        );
+        assert!(
+            store
+                .get_config_scoped(&ScopeId::from("ws_other"), "d")
+                .await
+                .expect("get")
+                .is_none()
+        );
     }
 }
