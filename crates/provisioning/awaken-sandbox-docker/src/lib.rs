@@ -52,6 +52,23 @@ async fn docker(args: &[&str]) -> Result<String, SandboxError> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Like [`docker`] but returns raw stdout bytes (for `cat`-ing a binary artifact).
+async fn docker_bytes(args: &[&str]) -> Result<Vec<u8>, SandboxError> {
+    let out = OsCommand::new("docker")
+        .args(args)
+        .output()
+        .await
+        .map_err(|e| SandboxError::new(format!("docker spawn: {e}")))?;
+    if !out.status.success() {
+        return Err(SandboxError::new(format!(
+            "docker {}: {}",
+            args.first().copied().unwrap_or(""),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(out.stdout)
+}
+
 #[async_trait]
 impl SandboxProvider for DockerSandboxProvider {
     fn capabilities(&self) -> SandboxCapabilities {
@@ -85,6 +102,7 @@ impl SandboxProvider for DockerSandboxProvider {
         Ok(Box::new(DockerSandbox {
             scope: spec.scope.clone(),
             container: id,
+            outputs_path: spec.outputs_path.clone(),
         }))
     }
 
@@ -97,6 +115,9 @@ impl SandboxProvider for DockerSandboxProvider {
         Ok(Box::new(DockerSandbox {
             scope: handle.sandbox_id.clone(),
             container: handle.sandbox_id.clone(),
+            // The handle carries only the container id; a re-adopted sandbox uses the
+            // conventional outputs root (matches the SandboxSpec default).
+            outputs_path: "/workspace/out".to_string(),
         }))
     }
 }
@@ -104,6 +125,9 @@ impl SandboxProvider for DockerSandboxProvider {
 struct DockerSandbox {
     scope: String,
     container: String,
+    /// The environment's outputs root (ADR-0021 §; SandboxSpec.outputs_path): where
+    /// a run's produced artifacts are collected from.
+    outputs_path: String,
 }
 
 #[async_trait]
@@ -145,11 +169,43 @@ impl Sandbox for DockerSandbox {
     }
 
     async fn artifacts(&self) -> Result<Vec<Artifact>, SandboxError> {
-        Ok(Vec::new())
+        // Content-address every file under the outputs root: one exec emits
+        // "<sha256> <size> <relpath>" per file (missing root = no artifacts).
+        let script = format!(
+            "cd {out} 2>/dev/null || exit 0; find . -type f | while IFS= read -r f; do \
+             printf '%s %s %s\\n' \"$(sha256sum \"$f\" | cut -d' ' -f1)\" \
+             \"$(wc -c < \"$f\")\" \"$f\"; done",
+            out = self.outputs_path
+        );
+        let listing = docker(&["exec", &self.container, "sh", "-c", &script]).await?;
+        let root = self.outputs_path.trim_end_matches('/');
+        let mut artifacts = Vec::new();
+        for line in listing.lines() {
+            let mut parts = line.splitn(3, ' ');
+            let (Some(hash), Some(size), Some(rel)) =
+                (parts.next(), parts.next(), parts.next())
+            else {
+                continue;
+            };
+            artifacts.push(Artifact {
+                id: hash.to_string(),
+                path: format!("{root}/{}", rel.trim_start_matches("./")),
+                size_bytes: size.parse().unwrap_or(0),
+                content_hash: hash.to_string(),
+            });
+        }
+        Ok(artifacts)
     }
 
-    async fn read_artifact(&self, _id: &str) -> Result<Vec<u8>, SandboxError> {
-        Err(SandboxError::new("read_artifact unsupported"))
+    async fn read_artifact(&self, id: &str) -> Result<Vec<u8>, SandboxError> {
+        // The id is the content hash; find its file under the outputs root and cat it.
+        let target = self
+            .artifacts()
+            .await?
+            .into_iter()
+            .find(|a| a.id == id)
+            .ok_or_else(|| SandboxError::new(format!("no artifact {id}")))?;
+        docker_bytes(&["exec", &self.container, "cat", &target.path]).await
     }
 
     fn realized(&self) -> &[RealizedMount] {
