@@ -15,6 +15,7 @@ mod authz;
 mod brain_admin;
 mod models;
 pub mod placement;
+pub mod resource_owner;
 pub mod webhooks;
 pub mod workspace_path;
 
@@ -1576,6 +1577,14 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
         // place the model SDK is named; the admin CRUD crate stays SDK-free.
         probe: Some(Arc::new(GenaiProbe)),
     });
+    // Tenant ownership for the id-addressed config resources (ADR-0051): MCP server
+    // defs and inference profiles are fenced by the authoring scope. The shared
+    // catalog is intentionally uncovered (org/deployment-level config). Wraps the
+    // admin router only; these are matched routes, so a route `layer` runs correctly.
+    let admin = admin.layer(axum::middleware::from_fn_with_state(
+        crate::resource_owner::ResourceOwners::new(),
+        crate::resource_owner::resource_ownership_guard,
+    ));
     let vault_state = Arc::new(
         awaken_protocol_managed::VaultState::new(secrets.clone(), credentials.clone())
             // The live MCP probe is backed by ext-mcp here — the only place the

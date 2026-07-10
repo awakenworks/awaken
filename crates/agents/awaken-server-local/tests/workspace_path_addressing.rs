@@ -102,3 +102,52 @@ async fn a_flat_management_request_is_untouched_by_the_path_middleware() {
     let (status, _) = call(&app, "GET", &format!("/v1/agents/{id}"), None).await;
     assert_eq!(status, StatusCode::OK);
 }
+
+#[tokio::test]
+async fn workspace_path_isolates_inference_profiles() {
+    let app = build_management_router();
+    let body = json!({
+        "model_id": "kimi",
+        "credential_binding": { "type": "none" }
+    });
+
+    // Author profile `prof1` under ws_a via the path form.
+    let (status, _) = call(
+        &app,
+        "PUT",
+        "/v1/workspaces/ws_a/config/inference-profiles/prof1",
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // ws_a reads its own profile.
+    let (status, _) = call(
+        &app,
+        "GET",
+        "/v1/workspaces/ws_a/config/inference-profiles/prof1",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // ws_b is fenced (404) on read of ws_a's profile…
+    let (status, _) = call(
+        &app,
+        "GET",
+        "/v1/workspaces/ws_b/config/inference-profiles/prof1",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // …and cannot overwrite it (cross-tenant author is fenced before the handler).
+    let (status, _) = call(
+        &app,
+        "PUT",
+        "/v1/workspaces/ws_b/config/inference-profiles/prof1",
+        Some(body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
