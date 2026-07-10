@@ -925,15 +925,19 @@ impl ManagedState {
             sink.emit(&id, workspace_id.as_deref(), None, "session.status_idle")
                 .await;
         }
-        // Record the session's owner in the aspect-layer index (ADR-0051) so the
-        // edge ownership guard can 404 a cross-tenant request. A bare/self-hosted
-        // create (no resolved workspace) owns under the seeded default scope.
-        self.owners.lock().unwrap().insert(
-            id.clone(),
-            workspace_id
-                .clone()
-                .unwrap_or_else(|| DEFAULT_SCOPE.to_string()),
-        );
+        // Record the session's owner (ADR-0051): in the aspect-layer in-memory
+        // index (same-process) and — for a durable backend — beside the persisted
+        // config, so the edge ownership guard fences a cross-tenant request even
+        // across a restart that lost the index. A bare/self-hosted create (no
+        // resolved workspace) owns under the seeded default scope.
+        let owner_scope = workspace_id
+            .clone()
+            .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
+        self.owners
+            .lock()
+            .unwrap()
+            .insert(id.clone(), owner_scope.clone());
+        self.sessions_repo.set_owner(&id, &owner_scope).await;
         self.sessions.lock().unwrap().insert(
             id,
             SessionRecord {
@@ -954,6 +958,18 @@ impl ManagedState {
     #[must_use]
     pub fn owner_scope(&self, session_id: &str) -> Option<String> {
         self.owners.lock().unwrap().get(session_id).cloned()
+    }
+
+    /// Resolve the owner scope of `session_id` for the edge ownership guard,
+    /// consulting the in-memory index first (same-process, no I/O) and then the
+    /// durable store (cross-process, after a restart lost the index). `None` when
+    /// no backend knows the session — a genuinely unknown id, where the guard
+    /// falls through and the handler's own `NotFound` answers.
+    pub async fn resolve_owner(&self, session_id: &str) -> Option<String> {
+        if let Some(scope) = self.owner_scope(session_id) {
+            return Some(scope);
+        }
+        self.sessions_repo.owner(session_id).await
     }
 
     /// A session object reconstructed for a rehydrated (post-restart) session.

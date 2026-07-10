@@ -49,6 +49,19 @@ pub trait ManagedSessionRepository: Send + Sync {
 
     /// The stored configuration for `session_id`, if any.
     async fn get(&self, session_id: &str) -> Option<PersistedSession>;
+
+    /// Record the owner scope of `session_id` (ADR-0051): the opaque `scope_id`
+    /// that created it, so the edge ownership guard can fence a cross-tenant
+    /// request even after a restart lost the in-memory index. Durable backends
+    /// persist it beside the (tenancy-agnostic) config row; the in-memory default
+    /// no-ops, since same-process ownership lives in `ManagedState`'s index.
+    async fn set_owner(&self, _session_id: &str, _scope: &str) {}
+
+    /// The persisted owner scope of `session_id`, if this backend records one
+    /// (durable backends only; the in-memory default returns `None`).
+    async fn owner(&self, _session_id: &str) -> Option<String> {
+        None
+    }
 }
 
 /// In-memory session repository (the default): keeps rows for the process's
