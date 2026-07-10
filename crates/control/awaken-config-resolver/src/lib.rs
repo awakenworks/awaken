@@ -22,10 +22,13 @@ use awaken_model_catalog::{ModelApiCompat, ProviderCatalog};
 /// the runtime host reads config without depending on the authoring HTTP crate
 /// (which writes through the same ports).
 pub mod stores;
+/// Telemetry ceiling composition (ADR-0050 D3): Org baseline tightened by lower layers.
+pub mod telemetry;
 pub use stores::{
     InMemoryMcpStore, InMemoryProfileStore, InMemoryResourceStore, InferenceProfileStore, McpStore,
     ResourceStore,
 };
+pub use telemetry::{RedactionMode, TelemetryCeiling};
 
 /// The resolved execution unit: *(model × credential-identity × provider ×
 /// flavor)*. Mirrors awaken-management-contract's `InferenceTriple`.
