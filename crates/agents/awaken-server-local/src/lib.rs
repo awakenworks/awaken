@@ -748,6 +748,7 @@ pub async fn build_resolved_real_router() -> Router {
             provider_id: Some("anthropic".into()),
             env_key: Some("ANTHROPIC_API_KEY".into()),
             secret: Some(RedactedString::new(key)),
+            oauth_command: None,
         },
         &secrets,
         &cred_repo,

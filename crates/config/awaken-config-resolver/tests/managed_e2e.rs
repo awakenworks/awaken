@@ -103,6 +103,7 @@ async fn run_full_chain(
             provider_id: Some("anthropic".into()),
             env_key: Some("ANTHROPIC_API_KEY".into()),
             secret: Some(RedactedString::new(secret)),
+            oauth_command: None,
         },
         &store,
         &cred_repo,

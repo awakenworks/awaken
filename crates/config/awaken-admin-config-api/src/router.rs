@@ -798,6 +798,7 @@ async fn post_credential(
         provider_id: body.provider_id,
         env_key: body.env_key,
         secret: Some(RedactedString::new(body.secret)),
+        oauth_command: None,
     };
     let source = enter_credential(params, &*state.secrets, &*state.credentials)
         .await

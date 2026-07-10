@@ -88,6 +88,7 @@ pub fn env_var_to_create_params(
         provider_id,
         env_key: Some(wire.secret_name),
         secret: Some(RedactedString::new(wire.secret_value)),
+        oauth_command: None,
     }
 }
 
@@ -116,6 +117,7 @@ pub fn static_bearer_to_create_params(
         // (kept on the wire record), not injected into a process environment.
         env_key: None,
         secret: Some(RedactedString::new(wire.token)),
+        oauth_command: None,
     }
 }
 
@@ -157,6 +159,7 @@ pub fn mcp_oauth_to_create_params(
             // As with `static_bearer`: URL-bound, not env-injected.
             env_key: None,
             secret: Some(RedactedString::new(wire.access_token)),
+            oauth_command: None,
         },
         refresh_secret: wire.refresh_token.map(RedactedString::new),
     }
