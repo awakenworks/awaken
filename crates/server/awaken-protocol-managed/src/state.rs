@@ -24,6 +24,12 @@ use crate::types::{
     SessionCreateParams, SessionError, SessionStats, StopReason, Usage,
 };
 
+/// The seeded owner scope a bare/self-hosted session is created under when the
+/// edge resolved no workspace (ADR-0051 / ADR-0048 D2 "seeded, not absent"). It
+/// matches the request scope the ownership guard derives for an unscoped request,
+/// so a single-tenant deployment never 404s itself.
+pub(crate) const DEFAULT_SCOPE: &str = "default";
+
 /// A fixed projection timestamp (M1). Real per-event timestamps arrive with a
 /// clock port; the wire only needs a valid RFC 3339 value here.
 const PROCESSED_AT: &str = "2026-01-01T00:00:00Z";
@@ -609,6 +615,13 @@ pub struct ManagedState {
     /// creation. `None` → every session gets host network (unrestricted).
     environments: Option<Arc<crate::routes::environments::EnvironmentState>>,
     sessions: Mutex<HashMap<String, SessionRecord>>,
+    /// The aspect-layer session→owner index (ADR-0051): the [`ScopeId`] that
+    /// created each session, keyed by the tenancy-agnostic session id. It is NOT
+    /// on the core session aggregate (which stays tenancy-agnostic) — it lives
+    /// here so the edge ownership guard can 404 a cross-tenant request without the
+    /// core ever reading a scope. Populated at `create_session` from the
+    /// edge-resolved owner; read by [`ManagedState::owner_scope`].
+    owners: Mutex<HashMap<String, String>>,
     /// Durable-config source of truth for the session aggregate: `create` writes
     /// it, rehydration reads it so a restored session reports its real
     /// agent/model/title/metadata/MCP instead of placeholder defaults. The
@@ -672,6 +685,7 @@ impl ManagedState {
             vaults: None,
             environments: None,
             sessions: Mutex::new(HashMap::new()),
+            owners: Mutex::new(HashMap::new()),
             sessions_repo: Arc::new(InMemorySessionRepository::default()),
             lifecycle_sink: None,
             session_seq: AtomicU64::new(0),
@@ -911,6 +925,15 @@ impl ManagedState {
             sink.emit(&id, workspace_id.as_deref(), None, "session.status_idle")
                 .await;
         }
+        // Record the session's owner in the aspect-layer index (ADR-0051) so the
+        // edge ownership guard can 404 a cross-tenant request. A bare/self-hosted
+        // create (no resolved workspace) owns under the seeded default scope.
+        self.owners.lock().unwrap().insert(
+            id.clone(),
+            workspace_id
+                .clone()
+                .unwrap_or_else(|| DEFAULT_SCOPE.to_string()),
+        );
         self.sessions.lock().unwrap().insert(
             id,
             SessionRecord {
@@ -921,6 +944,16 @@ impl ManagedState {
             },
         );
         Ok(session)
+    }
+
+    /// The owner scope of `session_id`, if this process created (or has cached) it —
+    /// the aspect-layer session→owner lookup the edge ownership guard consults
+    /// (ADR-0051). `None` when the id is unknown to this process (e.g. a cross-
+    /// process session before rehydration), where the guard falls through and the
+    /// persistence layer remains the fence.
+    #[must_use]
+    pub fn owner_scope(&self, session_id: &str) -> Option<String> {
+        self.owners.lock().unwrap().get(session_id).cloned()
     }
 
     /// A session object reconstructed for a rehydrated (post-restart) session.
