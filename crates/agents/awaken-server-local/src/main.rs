@@ -40,6 +40,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return awaken_server_local::run_hand_server(&hand_addr, false).await;
     }
     let addr = std::env::var("AWAKEN_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:38080".to_string());
+    // Durability guard: refuse to boot a `AWAKEN_INGRESS=durable` ingress that would
+    // resolve to a volatile in-memory queue (durable + default sqlite backend + no
+    // AWAKEN_STORAGE_DIR) — such a queue silently drops every queued/crashed/scheduled
+    // run on restart, defeating the whole point of durable ingress (no-data-loss).
+    awaken_runtime_host::ensure_durable_backend()?;
     // Connect the shared Postgres dispatch pool once, before serving, when durable
     // ingress is backed by Postgres (a multi-node fleet sharing one queue). Doing it
     // here keeps the non-`Send` sqlx connect future out of the per-thread run loop.

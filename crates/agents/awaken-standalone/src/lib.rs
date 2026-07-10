@@ -153,6 +153,11 @@ pub async fn run(
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     on_bound: impl FnOnce(&Standalone, std::net::SocketAddr),
 ) -> std::io::Result<()> {
+    // Same durability guard as the server-local boot: a durable ingress must sit on a
+    // persistent queue (AWAKEN_STORAGE_DIR / postgres), never a volatile in-memory one
+    // that a restart would silently drop.
+    awaken_runtime_host::ensure_durable_backend()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
     let standalone = boot();
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let local = listener.local_addr()?;
