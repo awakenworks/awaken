@@ -65,7 +65,9 @@ use crate::host::{HostError, HostErrorKind, PendingTool, TurnResult};
 
 // The neutral session substrate and its resume vocabulary.
 pub use crate::commit_backend::init_shared_postgres_commit;
-pub use crate::dispatch_backend::{init_shared_dispatch_store, init_shared_postgres_dispatch};
+pub use crate::dispatch_backend::{
+    ensure_durable_backend, init_shared_dispatch_store, init_shared_postgres_dispatch,
+};
 pub use crate::host::{HostResume, SharedHost};
 // The sandboxed ACP channel source (bwrap-confined agent launch) and the shared
 // per-thread egress handle a composition root wires it with.
