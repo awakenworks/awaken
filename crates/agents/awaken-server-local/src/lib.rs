@@ -289,6 +289,63 @@ pub fn build_acp_router() -> Router {
     mount(Arc::new(SharedHost::new(model, model_ref).with_acp(acp)))
 }
 
+/// A JSON-RPC fake agent (the codec [`ProjectingChannelSource`] speaks) that echoes
+/// the model env it was LAUNCHED with into its reply: `base=<ANTHROPIC_BASE_URL>` and
+/// `keypfx=<first 6 chars of ANTHROPIC_API_KEY>` — a prefix, never the full secret. So
+/// an e2e can assert the host resolved+projected the gateway URL + a `lease-` token
+/// (D-R2), not a raw provider key. Its own [`FAKE_ACP_JSONRPC_SCRIPT`] twin (untouched)
+/// keeps the plain "acp-jsonrpc reply" for the codec e2e.
+const FAKE_ACP_GATEWAY_JSONRPC_SCRIPT: &str = "while IFS= read -r line; do \
+      case \"$line\" in \
+        *'\"id\":1'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}';; \
+        *'\"id\":2'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\"}}';; \
+        *'\"id\":3'*) \
+          printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"acp-env base=%s keypfx=%s\"}}}}\\n' \"$ANTHROPIC_BASE_URL\" \"$(printf %s \"$ANTHROPIC_API_KEY\" | cut -c1-6)\"; \
+          printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; \
+          exit 0;; \
+      esac; \
+    done";
+
+/// The [`FAKE_ACP_GATEWAY_JSONRPC_SCRIPT`] wired as a real [`AcpCli`] row, so the
+/// projecting launch path resolves + projects the model env onto it exactly as a
+/// production CLI (its delivery keys are the `ANTHROPIC_*` ones the script echoes).
+/// Used only by [`build_acp_gateway_router`] to exercise host model resolution
+/// (self-credentialed vs cloud-managed gateway, D-R2) end to end.
+const FAKE_ACP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_acp::AcpCli {
+    id: "fake",
+    command: "/bin/sh",
+    args: &["-c", FAKE_ACP_GATEWAY_JSONRPC_SCRIPT],
+    model_delivery: awaken_run_executor_acp::ModelDelivery {
+        base_url: "ANTHROPIC_BASE_URL",
+        model: "ANTHROPIC_MODEL",
+        key: "ANTHROPIC_API_KEY",
+        aliases: &[],
+    },
+    mcp_interface: awaken_run_executor_acp::McpInterface::AcpSession,
+    config_home_env: "CLAUDE_CONFIG_DIR",
+    memory_entrypoint: "CLAUDE.md",
+    retained_paths: &[],
+    context_window_env: None,
+    env: &[],
+};
+
+/// [`build_acp_router`]'s twin that drives the fake CLI through the REAL projecting
+/// launch path ([`SharedHost::with_projected_acp`] → `EnvLaunchResolver` →
+/// `ProjectingChannelSource`), so the host's model resolution is exercised end to
+/// end. With `AWAKEN_ACP_GATEWAY_URL` + `AWAKEN_ACP_LEASE_TOKEN` in the environment,
+/// the resolver takes the cloud-managed gateway path (D-R2): the CLI is pointed at
+/// the gateway with a lease token, never a raw provider key. `AWAKEN_MODEL_MODE=acp-gateway`.
+pub fn build_acp_gateway_router() -> Router {
+    let store_dir = std::env::var("AWAKEN_STORAGE_DIR")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from);
+    let (model, model_ref) = scenario_model(Arc::new(EchoModel), "awaken");
+    mount(Arc::new(
+        SharedHost::new(model, model_ref).with_projected_acp(FAKE_ACP_CLI, store_dir),
+    ))
+}
+
 /// [`FAKE_ACP_SCRIPT`]'s sandboxed twin (bash, for `/dev/tcp`), with an OS-egress
 /// probe: when `AWAKEN_ACP_PROBE_PORT` names a host-loopback listener (the e2e's),
 /// the reply reports whether the sandbox could reach it (`net=UP` / `net=DOWN`).
