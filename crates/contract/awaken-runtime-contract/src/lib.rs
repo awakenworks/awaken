@@ -3,6 +3,7 @@
 pub mod activation;
 pub mod agent_resolver;
 pub mod capability;
+pub mod capture;
 pub mod catalog;
 pub mod control;
 pub mod execution;
@@ -23,6 +24,7 @@ pub mod tool;
 
 pub use activation::RunActivation;
 pub use agent_resolver::{AgentError, AgentRequest, AgentResolver, AgentStep};
+pub use capture::{CaptureDecision, ContentCapture, ContentKind, ContentRedactor, NoopRedactor};
 pub use catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 pub use control::LiveRunControl;
 pub use execution::RunExecutor;
