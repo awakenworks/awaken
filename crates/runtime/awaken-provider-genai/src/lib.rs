@@ -308,14 +308,49 @@ pub fn classify_error(message: &str) -> Error {
     const OVERLOADED: &[&str] = &["overloaded", "529", "503", "unavailable"];
     const TIMEOUT: &[&str] = &["timeout", "timed out", "408", "504"];
     const INVALID_REQUEST: &[&str] = &["400", "422", "invalid request", "invalid_request_error"];
+    // A HARD usage/quota/billing exhaustion — recognised distinctly from a transient
+    // 429 rate limit so it is surfaced (not retried) rather than mislabelled.
+    const USAGE_LIMIT: &[&str] = &[
+        "usage limit",
+        "quota",
+        "insufficient_quota",
+        "billing",
+        "credit balance",
+        "out of credit",
+        "spending limit",
+        "weekly limit",
+        "monthly limit",
+        "exceeded your current",
+    ];
+    // The credential needs re-authentication (expired grant / login) — recognised
+    // distinctly from a generic authorization failure.
+    const LOGIN_REQUIRED: &[&str] = &[
+        "login required",
+        "please log in",
+        "session expired",
+        "token expired",
+        "token has expired",
+        "invalid_grant",
+        "reauthenticate",
+        "re-authenticate",
+    ];
 
     let message = message.to_string();
     if hits(&lower, CONTENT_FILTER) {
         Error::ContentFiltered(message)
     } else if hits(&lower, OVERFLOW) {
         Error::ContextOverflow(message)
+    } else if hits(&lower, LOGIN_REQUIRED) {
+        Error::LoginRequired(message)
     } else if hits(&lower, UNAUTHORIZED) {
         Error::Unauthorized(message)
+    } else if hits(&lower, USAGE_LIMIT) {
+        // Recognised only; `reset_after` stays `None` here (a free-text message
+        // carries no reliable structured window) and nothing is scheduled from it.
+        Error::UsageLimit {
+            message,
+            reset_after: None,
+        }
     } else if hits(&lower, MODEL_NOT_FOUND) {
         Error::ModelNotFound(message)
     } else if hits(&lower, RATE_LIMITED) {
@@ -554,5 +589,46 @@ pub fn map_usage(usage: &Usage) -> TokenUsage {
         completion_tokens: usage.completion_tokens.unwrap_or(0).max(0) as u64,
         cache_read_tokens,
         cache_creation_tokens,
+    }
+}
+
+#[cfg(test)]
+mod classify_tests {
+    use super::classify_error;
+
+    #[test]
+    fn a_hard_usage_limit_is_recognised_and_not_retryable() {
+        for msg in [
+            "You have exceeded your current quota",
+            "429 insufficient_quota",
+            "Your credit balance is too low",
+            "weekly limit reached",
+            "monthly spending limit exceeded",
+        ] {
+            let e = classify_error(msg);
+            assert_eq!(e.code(), "usage_limit", "for {msg:?}");
+            // Recognised, surfaced — never auto-retried (a hard limit cannot clear).
+            assert!(!e.is_retryable(), "hard limit must not be retried: {msg:?}");
+        }
+    }
+
+    #[test]
+    fn a_transient_rate_limit_stays_rate_limited_not_usage_limit() {
+        let e = classify_error("429 Too Many Requests: rate limit exceeded");
+        assert_eq!(e.code(), "rate_limited");
+        assert!(e.is_retryable());
+    }
+
+    #[test]
+    fn a_reauth_signal_is_login_required_before_generic_unauthorized() {
+        for msg in [
+            "Session expired, please log in",
+            "invalid_grant",
+            "token has expired",
+        ] {
+            assert_eq!(classify_error(msg).code(), "login_required", "for {msg:?}");
+        }
+        // A plain 401 with no re-auth phrasing stays a generic unauthorized.
+        assert_eq!(classify_error("401 Unauthorized").code(), "unauthorized");
     }
 }

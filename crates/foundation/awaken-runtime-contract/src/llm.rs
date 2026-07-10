@@ -248,6 +248,23 @@ pub enum Error {
     /// Authentication or authorization failed (401/403). Permanent.
     #[error("unauthorized: {0}")]
     Unauthorized(String),
+    /// A HARD usage/quota exhaustion (a weekly/monthly/credit limit), distinct
+    /// from a transient 429 [`RateLimited`](Self::RateLimited). Recognised and
+    /// surfaced with a stable code so an operator/dashboard sees it — but NOT
+    /// auto-retried (an immediate retry cannot clear a hard limit) and NOT
+    /// auto-acted on (no credential cooldown / re-dispatch here; that is a
+    /// control-plane decision). `reset_after` is the provider's reset window when
+    /// sent — purely informational, nothing is scheduled from it.
+    #[error("usage limit exhausted: {message}")]
+    UsageLimit {
+        message: String,
+        reset_after: Option<std::time::Duration>,
+    },
+    /// The credential needs (re-)authentication — an expired grant / login
+    /// required — distinct from a generic [`Unauthorized`](Self::Unauthorized).
+    /// Recognised and surfaced; not auto-retried and not auto-refreshed here.
+    #[error("login required: {0}")]
+    LoginRequired(String),
     /// The requested model does not exist (404). Permanent.
     #[error("model not found: {0}")]
     ModelNotFound(String),
@@ -278,6 +295,16 @@ impl Error {
         }
     }
 
+    /// The provider's reset window for a [`UsageLimit`](Self::UsageLimit), when one
+    /// was sent. Purely informational — recognised and surfaced, never scheduled
+    /// on. `None` for every other classification.
+    pub fn reset_hint(&self) -> Option<std::time::Duration> {
+        match self {
+            Error::UsageLimit { reset_after, .. } => *reset_after,
+            _ => None,
+        }
+    }
+
     /// The stable snake_case code classifying this error. A run that cannot
     /// recover automatically records this code in its terminal failure, so
     /// hosts can categorize faults without parsing messages.
@@ -291,6 +318,8 @@ impl Error {
             Error::ContextOverflow(_) => "context_overflow",
             Error::InvalidRequest(_) => "invalid_request",
             Error::Unauthorized(_) => "unauthorized",
+            Error::UsageLimit { .. } => "usage_limit",
+            Error::LoginRequired(_) => "login_required",
             Error::ModelNotFound(_) => "model_not_found",
             Error::ContentFiltered(_) => "content_filtered",
         }
@@ -401,5 +430,39 @@ mod usage_tests {
     #[test]
     fn total_of_empty_is_zero() {
         assert_eq!(ThreadUsage::default().total(), TokenUsage::default());
+    }
+}
+
+#[cfg(test)]
+mod error_classification_tests {
+    use super::Error;
+    use std::time::Duration;
+
+    #[test]
+    fn usage_limit_is_surfaced_with_a_reset_hint_but_not_retryable() {
+        let e = Error::UsageLimit {
+            message: "quota exhausted".to_string(),
+            reset_after: Some(Duration::from_secs(3600)),
+        };
+        assert_eq!(e.code(), "usage_limit");
+        // Recognised and surfaced — never auto-retried and never auto-acted on.
+        assert!(!e.is_retryable());
+        // The reset window is informational only; it is not a retry backoff.
+        assert_eq!(e.reset_hint(), Some(Duration::from_secs(3600)));
+        assert_eq!(e.retry_after(), None);
+    }
+
+    #[test]
+    fn login_required_is_permanent_and_distinct_from_unauthorized() {
+        let lr = Error::LoginRequired("grant expired".to_string());
+        assert_eq!(lr.code(), "login_required");
+        assert!(!lr.is_retryable());
+        assert_eq!(lr.reset_hint(), None);
+
+        // A generic authorization failure keeps its own distinct code.
+        assert_eq!(
+            Error::Unauthorized("bad key".to_string()).code(),
+            "unauthorized"
+        );
     }
 }
