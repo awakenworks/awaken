@@ -69,6 +69,11 @@ pub enum Expectation {
     OutputEquals { text: String },
     /// The run executed a tool with this id at least once.
     ToolCalled { tool_id: String },
+    /// An LLM judge scores the output against `rubric` (0–100); passes when the
+    /// score is at least `min_score`. Scored by [`replay::Evaluator`] with an
+    /// injected judge model — the pure [`score_case`] cannot run it, so without a
+    /// judge it fails with a "no judge configured" detail.
+    JudgeScore { rubric: String, min_score: u8 },
     /// The run ended naturally (not an error or cancel).
     Succeeded,
 }
@@ -82,7 +87,18 @@ impl Expectation {
             Expectation::OutputNotContains { .. } => "output_not_contains",
             Expectation::OutputEquals { .. } => "output_equals",
             Expectation::ToolCalled { .. } => "tool_called",
+            Expectation::JudgeScore { .. } => "judge_score",
             Expectation::Succeeded => "succeeded",
+        }
+    }
+
+    /// The `(rubric, min_score)` when this is a [`JudgeScore`](Self::JudgeScore),
+    /// so the async evaluator can run the judge for it. `None` otherwise.
+    #[must_use]
+    pub fn judge_spec(&self) -> Option<(&str, u8)> {
+        match self {
+            Expectation::JudgeScore { rubric, min_score } => Some((rubric, *min_score)),
+            _ => None,
         }
     }
 
@@ -110,6 +126,12 @@ impl Expectation {
             Expectation::ToolCalled { tool_id } => (
                 tools_called.iter().any(|t| t == tool_id),
                 format!("expected tool {tool_id:?} to be called (called: {tools_called:?})"),
+            ),
+            // The pure path cannot run an LLM judge; `Evaluator` overrides this
+            // result when a judge is configured, else it stands as a failure.
+            Expectation::JudgeScore { min_score, .. } => (
+                false,
+                format!("judge not run (no judge configured; needed >= {min_score})"),
             ),
             Expectation::Succeeded => (succeeded, "expected the run to end naturally".to_string()),
         };
