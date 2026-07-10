@@ -63,6 +63,7 @@ async fn enter(store: &InMemorySecretStore, repo: &InMemoryCredentialRepo, secre
             provider_id: None,
             env_key: None,
             secret: Some(RedactedString::new(secret)),
+            oauth_command: None,
         },
         store,
         repo,

@@ -21,11 +21,25 @@ use awaken_agent_contract::RedactedString;
 
 use crate::{CredentialError, CredentialSourceId};
 
-/// Safety-window TTL for a minted OAuth token: it is reused for this long before a
-/// refresh, bounding helper spawns (real access tokens live ~1h) without risking a
-/// stale token. A conservative default keeps a hot inference loop from spawning
-/// the helper on every turn.
-const OAUTH_CACHE_TTL: Duration = Duration::from_secs(300);
+/// Default safety-window TTL for a minted OAuth token: it is reused for this long
+/// before a refresh, bounding helper spawns (real access tokens live ~1h) without
+/// risking a stale token. Overridable via `AWAKEN_OAUTH_TOKEN_TTL_SECS` so a
+/// short-lived-token provider can tighten it.
+const DEFAULT_OAUTH_CACHE_TTL_SECS: u64 = 300;
+
+/// The effective cache TTL, from `AWAKEN_OAUTH_TOKEN_TTL_SECS` (seconds) or the
+/// default. A non-numeric or empty value falls back to the default.
+fn oauth_cache_ttl() -> Duration {
+    parse_ttl(std::env::var("AWAKEN_OAUTH_TOKEN_TTL_SECS").ok().as_deref())
+}
+
+/// Pure TTL parse: `Some("<secs>")` → that many seconds; anything else → default.
+fn parse_ttl(raw: Option<&str>) -> Duration {
+    let secs = raw
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_OAUTH_CACHE_TTL_SECS);
+    Duration::from_secs(secs)
+}
 
 /// A source of fresh OAuth access tokens. Each call performs (or delegates) a
 /// refresh, so the returned token is current.
@@ -149,7 +163,7 @@ pub(crate) async fn oauth_access_token(
             .or_insert_with(|| {
                 Arc::new(CachingTokenSource::new(
                     CommandTokenSource::new(program.clone(), args.to_vec()),
-                    OAUTH_CACHE_TTL,
+                    oauth_cache_ttl(),
                 ))
             })
             .clone()
@@ -260,5 +274,20 @@ mod tests {
             oauth_access_token(&id, &[]).await,
             Err(CredentialError::OAuth(_))
         ));
+    }
+
+    #[test]
+    fn ttl_parses_seconds_and_falls_back_to_the_default() {
+        assert_eq!(parse_ttl(Some("30")), Duration::from_secs(30));
+        assert_eq!(parse_ttl(Some("  90 ")), Duration::from_secs(90));
+        // Non-numeric / empty / unset → the conservative default.
+        assert_eq!(
+            parse_ttl(Some("nope")),
+            Duration::from_secs(DEFAULT_OAUTH_CACHE_TTL_SECS)
+        );
+        assert_eq!(
+            parse_ttl(None),
+            Duration::from_secs(DEFAULT_OAUTH_CACHE_TTL_SECS)
+        );
     }
 }

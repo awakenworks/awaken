@@ -91,6 +91,7 @@ async fn enter(store: &InMemorySecretStore, repo: &InMemoryCredentialRepo, secre
             provider_id: Some("anthropic".into()),
             env_key: Some("ANTHROPIC_API_KEY".into()),
             secret: Some(RedactedString::new(secret)),
+            oauth_command: None,
         },
         store,
         repo,
