@@ -8,6 +8,7 @@
 //! JSON through [`store`]. `Purpose::EvalRecording` is the consent purpose a
 //! record-from-real-run path attributes captures to (see `awaken-data-subject`).
 
+pub mod record;
 pub mod replay;
 pub mod store;
 
