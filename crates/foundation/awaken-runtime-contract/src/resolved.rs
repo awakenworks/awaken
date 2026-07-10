@@ -25,6 +25,15 @@ pub struct ResolvedSpec {
     /// sensible value, the runtime only honors it.
     pub max_steps: usize,
     pub model_binding: ModelBinding,
+    /// Ordered pool fallbacks tried *after* [`model_binding`](Self::model_binding)
+    /// when a candidate fails cleanly (retryable-exhausted or its circuit is open)
+    /// and no partial has been committed for the step. Empty for a single-model
+    /// agent — unchanged behavior. `#[serde(default)]` keeps older snapshots and
+    /// the 40+ existing constructions loadable without carrying the field.
+    /// Part of the resolved decision surface (data-only, G3): a pool change is a
+    /// config change, so it flows through resolution and the catalog fingerprint.
+    #[serde(default)]
+    pub model_candidates: Vec<ModelBinding>,
     pub tool_descriptors: Vec<ToolDescriptor>,
     pub plugin_ids: Vec<String>,
     /// Per-plugin configuration, keyed by plugin id. Raw JSON so the runtime
@@ -55,6 +64,18 @@ impl ResolvedSpec {
         } else {
             "awaken"
         }
+    }
+
+    /// The ordered model bindings this run may use: the primary
+    /// [`model_binding`](Self::model_binding) first, then any pool fallbacks in
+    /// [`model_candidates`](Self::model_candidates). A single-model agent yields
+    /// exactly one. The engine tries them in order, failing over to the next only
+    /// on a clean pre-commit failure of the current one (never mid-stream).
+    #[must_use]
+    pub fn candidate_bindings(&self) -> Vec<&ModelBinding> {
+        std::iter::once(&self.model_binding)
+            .chain(self.model_candidates.iter())
+            .collect()
     }
 }
 

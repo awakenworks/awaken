@@ -44,6 +44,7 @@ fn activation(thread: &str) -> RunActivation {
             id: ExecutableAgentSnapshotId("snap".into()),
             root_agent_id: AgentId("agent".into()),
             resolved_spec: ResolvedSpec {
+                model_candidates: Vec::new(),
                 catalog_fingerprint: CatalogFingerprint("fp".into()),
                 instructions: "be helpful".into(),
                 max_steps: 8,

@@ -25,6 +25,7 @@ fn activation(run: &str, thread: &str) -> RunActivation {
             id: ExecutableAgentSnapshotId("snap".into()),
             root_agent_id: AgentId("agent".into()),
             resolved_spec: ResolvedSpec {
+                model_candidates: Vec::new(),
                 catalog_fingerprint: fp.clone(),
                 instructions: String::new(),
                 max_steps: 8,
@@ -65,7 +66,11 @@ async fn binding_survives_a_recovery_claim(store: &dyn DispatchQueue) {
 
     // The lease expires (worker-a crashed); a recovery claim re-adopts the SAME
     // sandbox — the binding is durable, so no sandbox is leaked.
-    let recovered = store.claim("worker-b", 1_000, 5_000).await.unwrap().unwrap();
+    let recovered = store
+        .claim("worker-b", 1_000, 5_000)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(recovered.lease.run_id, run);
     assert_eq!(
         recovered.sandbox.as_deref(),

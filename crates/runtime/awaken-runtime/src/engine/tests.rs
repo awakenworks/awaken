@@ -5,6 +5,7 @@ use awaken_runtime_contract::resolved::{
 
 fn spec(instructions: &str) -> ResolvedSpec {
     ResolvedSpec {
+        model_candidates: Vec::new(),
         catalog_fingerprint: CatalogFingerprint("c".to_string()),
         instructions: instructions.to_string(),
         max_steps: 16,
@@ -49,6 +50,7 @@ fn numbered(n: usize) -> Message {
 
 fn spec_with(policy: ContextPolicy) -> ResolvedSpec {
     ResolvedSpec {
+        model_candidates: Vec::new(),
         context_policy: policy,
         ..spec("sys")
     }

@@ -187,6 +187,7 @@ impl RunnableConfigBuilder {
                 instructions: self.instructions,
                 max_steps: self.max_steps,
                 model_binding: self.model_binding,
+                model_candidates: Vec::new(),
                 tool_descriptors: self.tools,
                 plugin_ids: self.plugin_ids,
                 plugin_config: self.plugin_config,

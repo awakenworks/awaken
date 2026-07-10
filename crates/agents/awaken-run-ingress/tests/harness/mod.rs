@@ -133,6 +133,7 @@ pub fn snapshot() -> ExecutableAgentSnapshot {
                 model_ref: "m".to_string(),
                 backend_ref: "b".to_string(),
             },
+            model_candidates: Vec::new(),
             tool_descriptors: vec![ToolDescriptor::pinned(
                 "test",
                 "echo",
