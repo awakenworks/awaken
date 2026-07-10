@@ -934,6 +934,7 @@ dependencies = [
  "axum 0.7.9",
  "base64 0.22.1",
  "form_urlencoded",
+ "regex",
  "reqwest 0.11.27",
  "rusqlite",
  "serde_json",
