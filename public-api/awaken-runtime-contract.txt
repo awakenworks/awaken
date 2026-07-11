@@ -483,6 +483,30 @@ impl core::marker::Sync for awaken_runtime_contract::live_inbox::EditError
 impl core::marker::Unpin for awaken_runtime_contract::live_inbox::EditError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::live_inbox::EditError
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::live_inbox::EditError
+pub enum awaken_runtime_contract::live_inbox::MessageOrigin
+pub awaken_runtime_contract::live_inbox::MessageOrigin::External
+pub awaken_runtime_contract::live_inbox::MessageOrigin::Run
+impl core::clone::Clone for awaken_runtime_contract::live_inbox::MessageOrigin
+pub fn awaken_runtime_contract::live_inbox::MessageOrigin::clone(&self) -> awaken_runtime_contract::live_inbox::MessageOrigin
+impl core::cmp::Eq for awaken_runtime_contract::live_inbox::MessageOrigin
+impl core::cmp::PartialEq for awaken_runtime_contract::live_inbox::MessageOrigin
+pub fn awaken_runtime_contract::live_inbox::MessageOrigin::eq(&self, &awaken_runtime_contract::live_inbox::MessageOrigin) -> bool
+impl core::default::Default for awaken_runtime_contract::live_inbox::MessageOrigin
+pub fn awaken_runtime_contract::live_inbox::MessageOrigin::default() -> awaken_runtime_contract::live_inbox::MessageOrigin
+impl core::fmt::Debug for awaken_runtime_contract::live_inbox::MessageOrigin
+pub fn awaken_runtime_contract::live_inbox::MessageOrigin::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_runtime_contract::live_inbox::MessageOrigin
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::live_inbox::MessageOrigin
+impl serde_core::ser::Serialize for awaken_runtime_contract::live_inbox::MessageOrigin
+pub fn awaken_runtime_contract::live_inbox::MessageOrigin::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::live_inbox::MessageOrigin
+pub fn awaken_runtime_contract::live_inbox::MessageOrigin::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_runtime_contract::live_inbox::MessageOrigin
+impl core::marker::Send for awaken_runtime_contract::live_inbox::MessageOrigin
+impl core::marker::Sync for awaken_runtime_contract::live_inbox::MessageOrigin
+impl core::marker::Unpin for awaken_runtime_contract::live_inbox::MessageOrigin
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::live_inbox::MessageOrigin
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::live_inbox::MessageOrigin
 pub enum awaken_runtime_contract::live_inbox::Offer
 pub awaken_runtime_contract::live_inbox::Offer::Accepted(awaken_runtime_contract::live_inbox::LiveInboxMessageId)
 pub awaken_runtime_contract::live_inbox::Offer::Closed
@@ -527,6 +551,7 @@ pub fn awaken_runtime_contract::live_inbox::LiveInbox::is_closed(&self) -> bool
 pub fn awaken_runtime_contract::live_inbox::LiveInbox::list(&self) -> alloc::vec::Vec<awaken_runtime_contract::live_inbox::LiveInboxMessage>
 pub fn awaken_runtime_contract::live_inbox::LiveInbox::new() -> Self
 pub fn awaken_runtime_contract::live_inbox::LiveInbox::offer(&self, awaken_agent_contract::agent::message::Message) -> awaken_runtime_contract::live_inbox::Offer
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::offer_as(&self, awaken_runtime_contract::live_inbox::MessageOrigin, awaken_agent_contract::agent::message::Message) -> awaken_runtime_contract::live_inbox::Offer
 pub fn awaken_runtime_contract::live_inbox::LiveInbox::remove(&self, awaken_runtime_contract::live_inbox::LiveInboxMessageId) -> core::result::Result<awaken_agent_contract::agent::message::Message, awaken_runtime_contract::live_inbox::EditError>
 pub fn awaken_runtime_contract::live_inbox::LiveInbox::reorder(&self, &[awaken_runtime_contract::live_inbox::LiveInboxMessageId]) -> core::result::Result<(), awaken_runtime_contract::live_inbox::EditError>
 pub fn awaken_runtime_contract::live_inbox::LiveInbox::replace(&self, awaken_runtime_contract::live_inbox::LiveInboxMessageId, awaken_agent_contract::agent::message::Message) -> core::result::Result<(), awaken_runtime_contract::live_inbox::EditError>
@@ -546,6 +571,7 @@ impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::live_inbo
 pub struct awaken_runtime_contract::live_inbox::LiveInboxMessage
 pub awaken_runtime_contract::live_inbox::LiveInboxMessage::id: awaken_runtime_contract::live_inbox::LiveInboxMessageId
 pub awaken_runtime_contract::live_inbox::LiveInboxMessage::message: awaken_agent_contract::agent::message::Message
+pub awaken_runtime_contract::live_inbox::LiveInboxMessage::origin: awaken_runtime_contract::live_inbox::MessageOrigin
 impl core::clone::Clone for awaken_runtime_contract::live_inbox::LiveInboxMessage
 pub fn awaken_runtime_contract::live_inbox::LiveInboxMessage::clone(&self) -> awaken_runtime_contract::live_inbox::LiveInboxMessage
 impl core::cmp::PartialEq for awaken_runtime_contract::live_inbox::LiveInboxMessage
@@ -2397,6 +2423,7 @@ pub fn awaken_runtime_contract::live_inbox::LiveInbox::is_closed(&self) -> bool
 pub fn awaken_runtime_contract::live_inbox::LiveInbox::list(&self) -> alloc::vec::Vec<awaken_runtime_contract::live_inbox::LiveInboxMessage>
 pub fn awaken_runtime_contract::live_inbox::LiveInbox::new() -> Self
 pub fn awaken_runtime_contract::live_inbox::LiveInbox::offer(&self, awaken_agent_contract::agent::message::Message) -> awaken_runtime_contract::live_inbox::Offer
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::offer_as(&self, awaken_runtime_contract::live_inbox::MessageOrigin, awaken_agent_contract::agent::message::Message) -> awaken_runtime_contract::live_inbox::Offer
 pub fn awaken_runtime_contract::live_inbox::LiveInbox::remove(&self, awaken_runtime_contract::live_inbox::LiveInboxMessageId) -> core::result::Result<awaken_agent_contract::agent::message::Message, awaken_runtime_contract::live_inbox::EditError>
 pub fn awaken_runtime_contract::live_inbox::LiveInbox::reorder(&self, &[awaken_runtime_contract::live_inbox::LiveInboxMessageId]) -> core::result::Result<(), awaken_runtime_contract::live_inbox::EditError>
 pub fn awaken_runtime_contract::live_inbox::LiveInbox::replace(&self, awaken_runtime_contract::live_inbox::LiveInboxMessageId, awaken_agent_contract::agent::message::Message) -> core::result::Result<(), awaken_runtime_contract::live_inbox::EditError>
@@ -2416,6 +2443,7 @@ impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::live_inbo
 pub struct awaken_runtime_contract::LiveInboxMessage
 pub awaken_runtime_contract::LiveInboxMessage::id: awaken_runtime_contract::live_inbox::LiveInboxMessageId
 pub awaken_runtime_contract::LiveInboxMessage::message: awaken_agent_contract::agent::message::Message
+pub awaken_runtime_contract::LiveInboxMessage::origin: awaken_runtime_contract::live_inbox::MessageOrigin
 impl core::clone::Clone for awaken_runtime_contract::live_inbox::LiveInboxMessage
 pub fn awaken_runtime_contract::live_inbox::LiveInboxMessage::clone(&self) -> awaken_runtime_contract::live_inbox::LiveInboxMessage
 impl core::cmp::PartialEq for awaken_runtime_contract::live_inbox::LiveInboxMessage
