@@ -58,3 +58,76 @@ export function pendingConfirmIds(log: SessionEvent[]): Set<string> {
 export function isRunning(log: SessionEvent[]): boolean {
   return log[log.length - 1]?.type === "session.status_running";
 }
+
+// ---- trace projection (the same log read as spans) ----
+
+export type SpanKind = "inference" | "tool" | "tool_result" | "status" | "outcome" | "other";
+
+export interface TraceSpan {
+  id: string;
+  kind: SpanKind;
+  /** A short one-line label (tool name, stop reason, "agent message"). */
+  label: string;
+  /** ms since the previous committed event, when both carry `processed_at`. */
+  durationMs?: number;
+  /** The event's payload (input / result / content), for a JSON drill-down. */
+  detail?: unknown;
+  /** Whether this span is an error (a failed tool result). */
+  error?: boolean;
+}
+
+function spanKind(type: string): SpanKind {
+  switch (type) {
+    case "agent.message":
+      return "inference";
+    case "agent.tool_use":
+    case "agent.custom_tool_use":
+      return "tool";
+    case "agent.tool_result":
+      return "tool_result";
+    case "session.status_running":
+    case "session.status_idle":
+      return "status";
+    case "span.outcome_evaluation_start":
+    case "span.outcome_evaluation_end":
+      return "outcome";
+    default:
+      return "other";
+  }
+}
+
+/** ms between two ISO timestamps, or undefined if either is missing/unparseable. */
+export function spanDurationMs(prev?: string | null, cur?: string | null): number | undefined {
+  if (!prev || !cur) return undefined;
+  const a = Date.parse(prev);
+  const b = Date.parse(cur);
+  if (Number.isNaN(a) || Number.isNaN(b)) return undefined;
+  const d = b - a;
+  return d >= 0 ? d : undefined;
+}
+
+/** Project the event log into ordered trace spans with inter-event durations. */
+export function traceSpans(log: SessionEvent[]): TraceSpan[] {
+  return log.map((ev, i) => {
+    const kind = spanKind(ev.type);
+    let label = ev.type;
+    if ((kind === "tool" || kind === "tool_result") && "name" in ev && typeof ev.name === "string") {
+      label = ev.name;
+    } else if (kind === "inference") {
+      label = "agent message";
+    } else if (kind === "status" && "stop_reason" in ev) {
+      const sr = ev.stop_reason as { type?: string };
+      label = sr?.type ?? ev.type;
+    }
+    const detail =
+      "input" in ev ? ev.input : "content" in ev ? ev.content : "stop_reason" in ev ? ev.stop_reason : undefined;
+    return {
+      id: ev.id,
+      kind,
+      label,
+      durationMs: spanDurationMs(log[i - 1]?.processed_at, ev.processed_at),
+      detail,
+      error: kind === "tool_result" && "is_error" in ev && ev.is_error === true,
+    };
+  });
+}

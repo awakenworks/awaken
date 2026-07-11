@@ -122,7 +122,8 @@ export interface SessionAgent {
   id: string;
   type: "agent";
   version?: number;
-  model?: string;
+  /** A bare id or a `{ id }` object, depending on how the agent was authored. */
+  model?: string | { id: string };
   name?: string;
   tools?: unknown[];
   mcp_servers?: unknown[];

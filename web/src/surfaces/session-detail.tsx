@@ -4,12 +4,21 @@
 // events cache key so the transcript refreshes.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import { Link, useParams } from "react-router";
 import Transcript from "../components/session/Transcript";
-import { Button, Card, Pill } from "../components/ui";
+import TraceView from "../components/session/TraceView";
+import { Button, Card, Pill, Segmented } from "../components/ui";
 import { api, ws } from "../lib/api/client";
 import type { InboundEvent, Session } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
+
+/** The agent's model can arrive as a bare id or a `{ id }` object — coerce to text. */
+function modelText(m: unknown): string {
+  if (typeof m === "string") return m;
+  if (m && typeof m === "object" && "id" in m) return String((m as { id: unknown }).id);
+  return "";
+}
 
 export default function SessionDetailSurface() {
   const app = useApp();
@@ -18,6 +27,7 @@ export default function SessionDetailSurface() {
   // Workspace-scoped via ws() (tenancy is an edge aspect); flat under default scope.
   const base = ws(`/v1/sessions/${sid}`);
   const eventsKey = ["session-events", wsId, sid];
+  const [view, setView] = useState<"chat" | "trace">("chat");
 
   const session = useQuery({
     queryKey: ["session", wsId, sid],
@@ -90,7 +100,20 @@ export default function SessionDetailSurface() {
       <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
         <div style={{ flex: 1.8, minWidth: 0 }}>
           {session.error instanceof Error && <div className="err">{session.error.message}</div>}
-          <Transcript base={base} queryKey={eventsKey} modelOverride />
+          <Segmented
+            className="segmented"
+            options={[
+              { value: "chat", label: app.t("Chat", "对话") },
+              { value: "trace", label: app.t("Trace", "追踪") },
+            ]}
+            value={view}
+            onChange={setView}
+          />
+          {view === "chat" ? (
+            <Transcript base={base} queryKey={eventsKey} modelOverride />
+          ) : (
+            <TraceView base={base} queryKey={eventsKey} />
+          )}
         </div>
 
         <aside style={{ width: 300, flex: "none", display: "flex", flexDirection: "column", gap: 12 }}>
@@ -102,7 +125,7 @@ export default function SessionDetailSurface() {
               <>
                 <div className="row">
                   <Pill tone="agent">{session.data.agent.id}</Pill>
-                  {session.data.agent.model && <code>{session.data.agent.model}</code>}
+                  {modelText(session.data.agent.model) && <code>{modelText(session.data.agent.model)}</code>}
                 </div>
                 <div className="mut" style={{ marginTop: 8, fontSize: 12 }}>
                   tools {session.data.agent.tools?.length ?? 0} · skills {session.data.agent.skills?.length ?? 0} · mcp{" "}

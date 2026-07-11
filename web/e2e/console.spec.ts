@@ -56,6 +56,17 @@ test("gated Observe page is truth-driven: probes the endpoint and shows the gate
   await expect(page.getByText(/backend face is not mounted yet|后端面尚未就绪/)).toBeVisible();
 });
 
+test("session detail toggles Chat ⇄ Trace (the log read as spans)", async ({ page, request }) => {
+  // A fresh session (via the vite proxy) has no events → the Trace view shows its
+  // empty-spans hint, proving the toggle switched away from the chat composer.
+  const res = await request.post("/v1/sessions", { data: { agent: "default", title: "trace-e2e" } });
+  const sid = (await res.json()).id as string;
+  await page.goto(`/w/default/sessions/${sid}`);
+  await expect(page.getByRole("button", { name: "Chat", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Trace", exact: true }).click();
+  await expect(page.getByText(/No spans yet|暂无 span/)).toBeVisible();
+});
+
 test("Models Test opens a live model dialog (scratch session + composer)", async ({ page }) => {
   // The smoke seeds an offering; if the catalog is empty, author one via the UI first.
   await page.goto("/w/default/models");
