@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::CancellationToken;
+use crate::llm::ThreadUsage;
 
 /// A request to run a delegate. `arguments` is the raw tool-call payload (the
 /// resolver, which owns the delegation tool's schema, reads the target agent and
@@ -23,8 +24,11 @@ pub struct AgentRequest {
 
 /// One step of a delegated agent.
 pub enum AgentStep {
-    /// The delegate finished with this reply text.
-    Done { text: String },
+    /// The delegate finished with this reply text. `usage` is the delegate's own
+    /// token spend (per model), which the kernel folds into the parent thread's
+    /// running total so a session's usage counts delegated work — empty for a
+    /// remote delegate or a deterministic model that reported none.
+    Done { text: String, usage: ThreadUsage },
     /// The delegate parked needing more input; `handle` is opaque, durable state
     /// used to resume it (e.g. a remote task id). The parent parks until the
     /// delegation is resumed with new input.

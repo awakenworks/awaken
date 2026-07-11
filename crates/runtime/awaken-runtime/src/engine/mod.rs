@@ -806,7 +806,13 @@ async fn drive(
             }
             let output = match outcome {
                 GateOutcome::Allow => match run_delegation(runtime, context, &call).await {
-                    Some(Ok(AgentStep::Done { text })) => ToolOutput::ok(&call.call_id, text),
+                    Some(Ok(AgentStep::Done { text, usage })) => {
+                        // Fold the delegate's token spend into this thread's running
+                        // tally, so a session's usage counts delegated work (the
+                        // sub-run's own isolated store is already gone).
+                        merge_thread_usage(&mut store, &mut staged_state, &usage);
+                        ToolOutput::ok(&call.call_id, text)
+                    }
                     // The delegate parked needing input: park the parent on a
                     // Delegation ticket carrying the opaque handle (durable), resumed
                     // through the resolver.
@@ -1401,7 +1407,11 @@ async fn resume_delegation(
         .await;
 
     let synthetic = match step {
-        Ok(AgentStep::Done { text }) => ResumeResult::ToolResult(ToolOutput::ok(&call_id, text)),
+        // Only remote (A2A) delegates park and resume, and their token spend is not
+        // observable over the wire — so there is no usage to fold in here.
+        Ok(AgentStep::Done { text, .. }) => {
+            ResumeResult::ToolResult(ToolOutput::ok(&call_id, text))
+        }
         Ok(AgentStep::Parked { handle }) => {
             // Re-park on a fresh Delegation ticket carrying the new handle.
             let mut reparked = ticket.clone();
@@ -1608,6 +1618,34 @@ async fn run_delegation(
         cancellation: context.cancellation.clone(),
     };
     Some(resolver.run(request).await)
+}
+
+/// Fold a delegate's accumulated [`ThreadUsage`] into the parent thread's committed
+/// tally under [`THREAD_USAGE_STATE_KEY`]. Load-merge-store on the live `store` plus
+/// the staged batch, exactly like the per-step inference recording — so the parent
+/// thread's usage (and thus a session's) counts sub-agent tokens. A no-op when the
+/// delegate reported none (a remote delegate or a deterministic model).
+fn merge_thread_usage(
+    store: &mut Store,
+    staged_state: &mut Vec<StateCommand>,
+    delta: &ThreadUsage,
+) {
+    if delta.is_empty() {
+        return;
+    }
+    let mut usage: ThreadUsage = store
+        .get(Scope::Thread, &StateKey(THREAD_USAGE_STATE_KEY.to_string()))
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    usage.merge(delta);
+    let usage_cmd = StateCommand::set(
+        Scope::Thread,
+        MergePolicy::Commutative,
+        THREAD_USAGE_STATE_KEY,
+        serde_json::to_value(usage).expect("thread usage serializes"),
+    );
+    store.apply(&usage_cmd);
+    staged_state.push(usage_cmd);
 }
 
 /// Invoke an authorized tool, turning a missing tool or a tool error into a
