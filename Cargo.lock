@@ -1155,6 +1155,7 @@ dependencies = [
  "async-trait",
  "awaken-authz-enforce",
  "awaken-config-resolver",
+ "awaken-credential-vault",
  "awaken-observability",
  "awaken-protocol-a2a",
  "awaken-protocol-ag-ui",
@@ -1278,20 +1279,16 @@ name = "awaken-webhook"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
- "awaken-scoped-migration",
- "awaken-scoped-migration-sqlite",
  "axum 0.7.9",
  "base64 0.22.1",
  "getrandom 0.2.17",
  "hmac 0.12.1",
  "hyper 1.10.1",
  "reqwest 0.11.27",
- "rusqlite",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "subtle",
- "tempfile",
  "tokio",
 ]
 
@@ -1300,7 +1297,10 @@ name = "awaken-webhook-managed"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "awaken-agent-contract",
  "awaken-authz-enforce",
+ "awaken-config-resolver",
+ "awaken-credential-vault",
  "awaken-protocol-managed",
  "awaken-webhook",
  "axum 0.7.9",

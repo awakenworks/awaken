@@ -24,7 +24,7 @@ use tokio::runtime::{Builder, Handle, Runtime};
 
 use awaken_config_resolver::{
     AgentMcpConfig, AgentResourceConfig, InferenceProfile, InferenceProfileStore, McpServerDef,
-    McpStore, ResourceStore,
+    McpStore, ResourceStore, WebhookEndpointDef, WebhookStore,
 };
 
 use crate::schema::admin_bundle;
@@ -206,6 +206,37 @@ impl ResourceStore for PostgresAdminStore {
     }
     fn get_agent_resource(&self, agent_id: &str) -> Option<AgentResourceConfig> {
         PostgresAdminStore::get_agent_resource(self, agent_id)
+    }
+}
+
+impl WebhookStore for PostgresAdminStore {
+    fn put(&self, def: WebhookEndpointDef) {
+        self.put_json("webhook", "id", &def.id.clone(), &def);
+    }
+    fn get(&self, id: &str) -> Option<WebhookEndpointDef> {
+        self.get_json("webhook", "id", id)
+    }
+    fn list(&self, workspace_id: &str) -> Vec<WebhookEndpointDef> {
+        // Reuse the sorted list bridge, then fence by owner in Rust (webhook rows are
+        // low-cardinality; workspace lives inside the JSON, not a column).
+        self.list_json::<WebhookEndpointDef>("webhook", "id")
+            .into_iter()
+            .filter(|d| d.workspace_id == workspace_id)
+            .collect()
+    }
+    fn delete(&self, id: &str) -> bool {
+        let sql = format!("DELETE FROM {NS}_webhook WHERE id = $1");
+        let pool = self.pool.clone();
+        let id = id.to_string();
+        block(&self.handle, move || async move {
+            sqlx::query(&sql)
+                .bind(id)
+                .execute(&pool)
+                .await
+                .expect("delete admin row")
+                .rows_affected()
+                > 0
+        })
     }
 }
 

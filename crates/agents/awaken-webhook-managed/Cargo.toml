@@ -12,6 +12,13 @@ license.workspace = true
 awaken-protocol-managed = { workspace = true }
 awaken-authz-enforce = { workspace = true }
 awaken-webhook = { workspace = true }
+# Subscriptions are a config resource: the read-side WebhookStore port + the
+# secret-free WebhookEndpointDef, and the vault SecretStore/SecretRef the whsec_
+# key is sealed behind (RedactedString at the seam). All open, port-only — the
+# durable admin backend is injected by the assembly, never named here.
+awaken-config-resolver = { workspace = true }
+awaken-credential-vault = { workspace = true }
+awaken-agent-contract = { workspace = true }
 async-trait.workspace = true
 axum = { version = "0.7", features = [] }
 serde_json.workspace = true

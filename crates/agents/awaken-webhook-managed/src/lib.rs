@@ -1,35 +1,41 @@
 //! The managed webhook bridge: connects the managed session lifecycle
 //! (protocol-managed's `SessionLifecycleSink` port) to `awaken-webhook`'s neutral
-//! delivery machinery, and exposes the workspace-scoped subscription CRUD +
-//! the guard→`WorkspaceScope` mapping. This is the ONLY place that knows both
-//! the managed port and the delivery crate — the wire crate stays
-//! webhook-agnostic, the webhook crate stays protocol-neutral. All open crates,
-//! so both `awaken-server-local` and the BuSL-free `awaken-standalone` use it.
+//! delivery machinery, backed by the **config plane**. Subscriptions are an
+//! id-addressed config resource (`awaken-config-resolver`'s [`WebhookStore`],
+//! durably the admin store) and their `whsec_` signing secret is sealed in the
+//! [`SecretStore`] — this crate holds no store of its own. It exposes the
+//! subscription front door (`/v1/config/webhook-subscriptions/…`, which mints +
+//! seals the secret) and the guard→`WorkspaceScope` mapping.
 //!
-//! Env-gated: [`webhook_plane`] returns `Some` only when `AWAKEN_WEBHOOK_DIR` is
-//! set (durable subscriptions under `webhooks.db`); unset = no webhook plane.
+//! All open crates (config-resolver / credential-vault / agent-contract are the
+//! read-side + vault ports, never the durable admin backend — that is injected by
+//! the assembly), so both `awaken-server-local` and the BuSL-free
+//! `awaken-standalone` use it.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use awaken_protocol_managed::SessionLifecycleSink;
+use awaken_agent_contract::RedactedString;
+use awaken_config_resolver::{InMemoryWebhookStore, WebhookEndpointDef, WebhookStore};
+use awaken_credential_vault::{InMemorySecretStore, SecretRef, SecretStore};
+use awaken_protocol_managed::{SessionLifecycleSink, WorkspaceScope};
 use awaken_webhook::{
-    InMemoryWebhookRepository, ReqwestSender, SqliteWebhookRepository, WebhookDispatcher,
-    WebhookEvent, WebhookRepository, WebhookSubscription, generate_secret,
+    ReqwestSender, ResolvedSubscription, SubscriptionSource, WebhookDispatcher, WebhookEvent,
+    generate_secret,
 };
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::routing::post;
-use axum::{Json, Router};
+use axum::routing::{get, put};
+use axum::{Extension, Json, Router};
 use serde_json::{Value, json};
 
 /// Assembly-layer glue (aspect → core seam): map the guard's edge-resolved
-/// [`awaken_authz_enforce::RequestTenancy`] to the wire crate's
-/// [`awaken_protocol_managed::WorkspaceScope`], so `create_session` receives the
-/// owning workspace without either crate depending on the other. Apply this as a
-/// layer INSIDE the guard (guard resolves tenancy → this maps it → handler reads
-/// it). A request with no resolved tenancy passes through unstamped.
+/// [`awaken_authz_enforce::RequestTenancy`] to the wire crate's [`WorkspaceScope`],
+/// so `create_session` — and the webhook front door — receive the owning workspace
+/// without either crate depending on the other. Apply this as a layer INSIDE the
+/// guard (guard resolves tenancy → this maps it → handler reads it). A request with
+/// no resolved tenancy passes through unstamped.
 pub async fn stamp_workspace_scope(
     mut request: axum::extract::Request,
     next: axum::middleware::Next,
@@ -41,9 +47,7 @@ pub async fn stamp_workspace_scope(
     {
         request
             .extensions_mut()
-            .insert(awaken_protocol_managed::WorkspaceScope(
-                tenancy.workspace_id,
-            ));
+            .insert(WorkspaceScope(tenancy.workspace_id));
     }
     next.run(request).await
 }
@@ -116,37 +120,112 @@ fn rfc3339(secs: i64) -> String {
     format!("{year:04}-{month:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
 }
 
-/// The workspace-scoped subscription CRUD surface (ADR-0048 D3 path shape):
-/// `/v1/workspaces/{ws}/webhooks`. POST mints a `whsec_` secret (returned once),
-/// GET lists, DELETE removes.
-pub fn webhook_router(repo: Arc<dyn WebhookRepository>) -> Router {
+/// The dispatcher's read/lifecycle port over the config plane: enumerate a
+/// workspace's [`WebhookEndpointDef`]s, drop disabled / type-mismatched ones, and
+/// resolve each `secret_ref` through the [`SecretStore`] into a signable
+/// [`ResolvedSubscription`]. Auto-disable is a config-plane write (flip `disabled`
+/// and put the row back). The secret is materialized only here, at delivery — the
+/// row and the CRUD responses stay secret-free.
+pub struct ConfigPlaneSubscriptionSource {
+    store: Arc<dyn WebhookStore>,
+    secrets: Arc<dyn SecretStore>,
+}
+
+impl ConfigPlaneSubscriptionSource {
+    pub fn new(store: Arc<dyn WebhookStore>, secrets: Arc<dyn SecretStore>) -> Self {
+        Self { store, secrets }
+    }
+}
+
+#[async_trait::async_trait]
+impl SubscriptionSource for ConfigPlaneSubscriptionSource {
+    async fn matching(&self, workspace_id: &str, event_type: &str) -> Vec<ResolvedSubscription> {
+        let mut out = Vec::new();
+        for def in self.store.list(workspace_id) {
+            if def.disabled || !def.wants(event_type) {
+                continue;
+            }
+            // An unresolvable secret can never sign — skip the endpoint this dispatch.
+            let Ok(secret) = self.secrets.get(&def.secret_ref).await else {
+                continue;
+            };
+            out.push(ResolvedSubscription {
+                id: def.id,
+                url: def.url,
+                secret: secret.expose_secret().to_string(),
+            });
+        }
+        out
+    }
+
+    async fn disable(&self, id: &str) {
+        if let Some(mut def) = self.store.get(id) {
+            def.disabled = true;
+            self.store.put(def);
+        }
+    }
+}
+
+/// The workspace-scoped subscription front door, a config resource beside
+/// mcp-servers / inference-profiles (ADR-0048 + ADR-0043 path shape):
+/// `/v1/config/webhook-subscriptions[/{id}]`. PUT creates/updates (minting +
+/// sealing a `whsec_` secret on first create, returned once); GET/LIST are
+/// secret-free; DELETE unsubscribes. The owning workspace is the edge-stamped
+/// [`WorkspaceScope`]; the assembly layers the tenant-ownership fence over it.
+pub fn webhook_config_router(store: Arc<dyn WebhookStore>, secrets: Arc<dyn SecretStore>) -> Router {
     Router::new()
         .route(
-            "/v1/workspaces/:ws/webhooks",
-            post(create_subscription).get(list_subscriptions),
+            "/v1/config/webhook-subscriptions",
+            get(list_subscriptions),
         )
         .route(
-            "/v1/workspaces/:ws/webhooks/:id",
-            axum::routing::delete(delete_subscription),
+            "/v1/config/webhook-subscriptions/:id",
+            put(put_subscription)
+                .get(get_subscription)
+                .delete(delete_subscription),
         )
-        .with_state(WebhookCrudState {
-            repo,
-            seq: Arc::new(AtomicU64::new(0)),
-        })
+        .with_state(WebhookCrudState { store, secrets })
 }
 
 #[derive(Clone)]
 struct WebhookCrudState {
-    repo: Arc<dyn WebhookRepository>,
-    seq: Arc<AtomicU64>,
+    store: Arc<dyn WebhookStore>,
+    secrets: Arc<dyn SecretStore>,
 }
 
-async fn create_subscription(
+/// The seeded scope an unscoped (single-tenant / flat) request resolves to, kept in
+/// step with the managed session + resource-owner default so a bare deployment is
+/// self-consistent.
+const DEFAULT_SCOPE: &str = "default";
+
+fn scope_of(ext: Option<Extension<WorkspaceScope>>) -> String {
+    ext.map(|Extension(WorkspaceScope(ws))| ws)
+        .unwrap_or_else(|| DEFAULT_SCOPE.to_string())
+}
+
+/// The standard not-found envelope — used for a genuine miss and for a cross-tenant
+/// access alike, so ownership is never disclosed (404, never 403).
+fn not_found() -> Value {
+    json!({ "error": { "type": "not_found_error", "message": "webhook subscription not found" } })
+}
+
+/// A secret-free projection of the row (never echoes the signing secret).
+fn view(def: &WebhookEndpointDef) -> Value {
+    json!({
+        "id": def.id,
+        "workspace_id": def.workspace_id,
+        "url": def.url,
+        "event_types": def.event_types,
+        "disabled": def.disabled,
+    })
+}
+
+async fn put_subscription(
     State(state): State<WebhookCrudState>,
-    Path(ws): Path<String>,
+    Path(id): Path<String>,
+    scope: Option<Extension<WorkspaceScope>>,
     Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
-    // `url` is required; `event_types` optional (empty = all types).
     let Some(url) = body.get("url").and_then(Value::as_str).map(str::to_string) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -165,92 +244,130 @@ async fn create_subscription(
         })
         .unwrap_or_default();
 
-    let id = format!("wh_{}", state.seq.fetch_add(1, Ordering::SeqCst));
-    let secret = generate_secret();
-    state
-        .repo
-        .upsert(WebhookSubscription {
+    let workspace_id = scope_of(scope);
+
+    // Update in place: keep the sealed secret + owner. Self-fence on the row's owner
+    // so a caller cannot hijack another tenant's id (belt-and-suspenders with the
+    // management-plane resource-ownership guard; the sole fence under standalone,
+    // which has no such middleware). 404, never 403 — no existence disclosure.
+    if let Some(existing) = state.store.get(&id) {
+        if existing.workspace_id != workspace_id {
+            return (StatusCode::NOT_FOUND, Json(not_found()));
+        }
+        let updated = WebhookEndpointDef {
             id: id.clone(),
-            workspace_id: ws.clone(),
-            url: url.clone(),
-            secret: secret.clone(),
-            event_types: event_types.clone(),
-            disabled: false,
-        })
-        .await;
-    // The secret is returned exactly once, on create (never re-fetchable).
+            workspace_id: existing.workspace_id,
+            url,
+            event_types,
+            disabled: existing.disabled,
+            secret_ref: existing.secret_ref,
+        };
+        state.store.put(updated.clone());
+        return (StatusCode::OK, Json(view(&updated)));
+    }
+
+    // Create: mint the `whsec_` secret, seal it in the vault, store the secret-free
+    // row referencing it. The plaintext is returned exactly once, here.
+    let secret = generate_secret();
+    let secret_ref = SecretRef(format!("whsec:{id}"));
+    if state
+        .secrets
+        .put(&secret_ref, RedactedString::new(secret.clone()))
+        .await
+        .is_err()
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(
+                json!({ "error": { "type": "api_error", "message": "could not seal the signing secret" } }),
+            ),
+        );
+    }
+    let def = WebhookEndpointDef {
+        id: id.clone(),
+        workspace_id: workspace_id.clone(),
+        url: url.clone(),
+        event_types: event_types.clone(),
+        disabled: false,
+        secret_ref,
+    };
+    state.store.put(def);
     (
         StatusCode::CREATED,
         Json(json!({
             "id": id,
-            "workspace_id": ws,
+            "workspace_id": workspace_id,
             "url": url,
-            "secret": secret,
             "event_types": event_types,
+            "disabled": false,
+            "secret": secret,
         })),
     )
 }
 
+async fn get_subscription(
+    State(state): State<WebhookCrudState>,
+    Path(id): Path<String>,
+    scope: Option<Extension<WorkspaceScope>>,
+) -> Result<Json<Value>, StatusCode> {
+    let workspace_id = scope_of(scope);
+    match state.store.get(&id) {
+        // Self-fence: another tenant's id is a 404, not a disclosure.
+        Some(def) if def.workspace_id == workspace_id => Ok(Json(view(&def))),
+        _ => Err(StatusCode::NOT_FOUND),
+    }
+}
+
 async fn list_subscriptions(
     State(state): State<WebhookCrudState>,
-    Path(ws): Path<String>,
+    scope: Option<Extension<WorkspaceScope>>,
 ) -> Json<Value> {
     let data: Vec<Value> = state
-        .repo
-        .list(&ws)
-        .await
-        .into_iter()
-        // The secret is never echoed back after create.
-        .map(|s| {
-            json!({
-                "id": s.id,
-                "workspace_id": s.workspace_id,
-                "url": s.url,
-                "event_types": s.event_types,
-                "disabled": s.disabled,
-            })
-        })
+        .store
+        .list(&scope_of(scope))
+        .iter()
+        .map(view)
         .collect();
     Json(json!({ "data": data, "has_more": false }))
 }
 
 async fn delete_subscription(
     State(state): State<WebhookCrudState>,
-    Path((_ws, id)): Path<(String, String)>,
+    Path(id): Path<String>,
+    scope: Option<Extension<WorkspaceScope>>,
 ) -> StatusCode {
-    state.repo.delete(&id).await;
+    // Only unsubscribe an endpoint this tenant owns; a cross-tenant or absent id is a
+    // silent no-op (idempotent, and no ownership disclosure).
+    if let Some(def) = state.store.get(&id) {
+        if def.workspace_id == scope_of(scope) {
+            state.store.delete(&id);
+        }
+    }
     StatusCode::NO_CONTENT
 }
 
-/// Assemble the webhook plane from the environment (ADR-0048 / S10). `Some` when
-/// `AWAKEN_WEBHOOK_DIR` is set (durable `webhooks.db`); the returned sink is wired
-/// into the managed state and the router merged into the surface. `None` = no
-/// webhook plane (default). `AWAKEN_ORG_ID`, if set, stamps a cloud org on events.
-pub fn webhook_plane() -> Option<(Arc<WebhookLifecycleSink>, Router)> {
-    let dir = std::env::var("AWAKEN_WEBHOOK_DIR").ok()?;
-    let repo: Arc<dyn WebhookRepository> = Arc::new(
-        SqliteWebhookRepository::open(&format!("{dir}/webhooks.db"))
-            .expect("open webhooks.db under AWAKEN_WEBHOOK_DIR"),
-    );
-    Some(assemble(repo, std::env::var("AWAKEN_ORG_ID").ok()))
-}
-
-/// Build the sink + CRUD router over `repo` (shared so the CRUD writes and the
-/// dispatcher reads the same subscriptions). Factored out so tests assemble it
-/// over an in-memory repo without touching the environment.
+/// Build the lifecycle sink + subscription front door over the config-plane
+/// `store` (durably the admin store) and the `secrets` vault (shared with the rest
+/// of the config plane). The dispatcher reads matching subscriptions and resolves
+/// their secrets through the same `store`/`secrets`, so the CRUD writes and the
+/// dispatcher reads see one row set.
 pub fn assemble(
-    repo: Arc<dyn WebhookRepository>,
+    store: Arc<dyn WebhookStore>,
+    secrets: Arc<dyn SecretStore>,
     org_id: Option<String>,
 ) -> (Arc<WebhookLifecycleSink>, Router) {
-    let dispatcher = Arc::new(WebhookDispatcher::new(
-        repo.clone(),
-        Arc::new(ReqwestSender::default()),
-    ));
+    let source = Arc::new(ConfigPlaneSubscriptionSource::new(store.clone(), secrets.clone()));
+    let dispatcher = Arc::new(WebhookDispatcher::new(source, Arc::new(ReqwestSender::default())));
     let sink = Arc::new(WebhookLifecycleSink::new(dispatcher, org_id));
-    (sink, webhook_router(repo))
+    (sink, webhook_config_router(store, secrets))
 }
 
-/// An in-memory webhook plane (tests): CRUD + sink over one shared repo.
+/// An in-memory webhook plane (tests): CRUD + sink over an in-memory store + an
+/// in-memory (sealed) secret store.
 pub fn assemble_in_memory(org_id: Option<String>) -> (Arc<WebhookLifecycleSink>, Router) {
-    assemble(Arc::new(InMemoryWebhookRepository::default()), org_id)
+    assemble(
+        Arc::new(InMemoryWebhookStore::new()),
+        Arc::new(InMemorySecretStore::new()),
+        org_id,
+    )
 }

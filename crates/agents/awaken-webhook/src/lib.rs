@@ -6,18 +6,20 @@
 //!
 //! The crate is protocol-neutral: it takes the event type / object id / tenancy as
 //! data, so it does not depend on the Managed wire crate and can project any
-//! committed fact. Persistence is a versioned `awaken-scoped-migration` bundle.
+//! committed fact. It is also **storage-neutral**: subscriptions live in the
+//! config plane (ADR-0048), reached through the [`SubscriptionSource`] port with
+//! secrets already resolved — this crate holds only signing, the event shape, and
+//! delivery, no persistence.
 
 mod dispatch;
 mod event;
 mod signing;
-mod store;
 
-pub use dispatch::{DispatchReport, ReqwestSender, WebhookDispatcher, WebhookSender};
+pub use dispatch::{
+    DispatchReport, ReqwestSender, ResolvedSubscription, SubscriptionSource, WebhookDispatcher,
+    WebhookSender,
+};
 pub use event::{WebhookEvent, WebhookEventData};
 pub use signing::{
     SECRET_PREFIX, SignError, generate_secret, sign_bytes, signature_header, verify,
-};
-pub use store::{
-    InMemoryWebhookRepository, SqliteWebhookRepository, WebhookRepository, WebhookSubscription,
 };

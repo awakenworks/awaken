@@ -1,6 +1,7 @@
 //! Tenant ownership for the id-addressed management config resources (ADR-0051):
-//! MCP server defs (`/v1/config/mcp-servers/{id}`) and inference profiles
-//! (`/v1/config/inference-profiles/{id}`).
+//! MCP server defs (`/v1/config/mcp-servers/{id}`), inference profiles
+//! (`/v1/config/inference-profiles/{id}`), and webhook subscriptions
+//! (`/v1/config/webhook-subscriptions/{id}`, ADR-0048).
 //!
 //! These live behind the cross-crate `awaken-config-resolver` stores (keyed by id
 //! only), and the config-layer admin crate cannot see the agents-layer edge scope.
@@ -98,6 +99,7 @@ fn owned_resource_key(path: &str) -> Option<String> {
     let kind = match segments.next()? {
         "mcp-servers" => "mcp",
         "inference-profiles" => "profile",
+        "webhook-subscriptions" => "webhook",
         _ => return None,
     };
     let id = segments.next().filter(|s| !s.is_empty())?;

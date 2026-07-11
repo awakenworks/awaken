@@ -1,19 +1,31 @@
-//! End-to-end webhook delivery: a REAL HTTP receiver on an ephemeral port, a
-//! SQLite-backed (versioned scoped-migration) subscription, and the production
-//! `ReqwestSender` — proving a committed lifecycle fact is projected into a signed
-//! `webhook-*`-headed POST, stamped with the owning `workspace_id`, that the
-//! receiver's Standard-Webhooks verification accepts. No mocks in the transport.
+//! End-to-end webhook delivery: a REAL HTTP receiver on an ephemeral port, an
+//! in-memory resolved [`SubscriptionSource`] (persistence lives in the config
+//! plane, out of this crate), and the production `ReqwestSender` — proving a
+//! committed lifecycle fact is projected into a signed `webhook-*`-headed POST,
+//! stamped with the owning `workspace_id`, that the receiver's Standard-Webhooks
+//! verification accepts. No mocks in the transport.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use awaken_webhook::{
-    ReqwestSender, SqliteWebhookRepository, WebhookDispatcher, WebhookEvent, WebhookRepository,
-    WebhookSubscription, verify,
+    ReqwestSender, ResolvedSubscription, SubscriptionSource, WebhookDispatcher, WebhookEvent,
+    verify,
 };
 use axum::{Router, extract::State, http::HeaderMap, routing::post};
 
-const SECRET: &str = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw";
+const SECRET: &str = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"; // awaken-allow: secret (test sample key)
+
+/// A one-subscription in-memory source (the real config-plane source is exercised
+/// in awaken-webhook-managed / server-local e2e; here we isolate the transport).
+struct OneSub(ResolvedSubscription);
+#[async_trait::async_trait]
+impl SubscriptionSource for OneSub {
+    async fn matching(&self, _ws: &str, _event: &str) -> Vec<ResolvedSubscription> {
+        vec![self.0.clone()]
+    }
+    async fn disable(&self, _id: &str) {}
+}
 
 /// What the receiver captured from a delivery.
 #[derive(Clone, Default)]
@@ -56,17 +68,13 @@ async fn a_committed_fact_is_delivered_signed_and_scoped_to_a_real_receiver() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    // 2. A durable, workspace-scoped subscription pointing at the receiver.
-    let repo = Arc::new(SqliteWebhookRepository::open_in_memory().unwrap());
-    repo.upsert(WebhookSubscription {
+    // 2. A workspace-scoped subscription pointing at the receiver, already resolved
+    // (its secret materialized) — exactly what the config-plane source hands over.
+    let source = Arc::new(OneSub(ResolvedSubscription {
         id: "wh_e2e".to_string(),
-        workspace_id: "wrkspc_acme".to_string(),
         url: format!("http://{addr}/hook"),
         secret: SECRET.to_string(),
-        event_types: vec!["session.status_idled".to_string()],
-        disabled: false,
-    })
-    .await;
+    }));
 
     // 3. Project a committed fact — a session went idle, owned by wrkspc_acme.
     let event = WebhookEvent::new(
@@ -78,7 +86,7 @@ async fn a_committed_fact_is_delivered_signed_and_scoped_to_a_real_receiver() {
         None,
     );
     let ts = 1_752_000_000_i64;
-    let dispatcher = WebhookDispatcher::new(repo, Arc::new(ReqwestSender::default()));
+    let dispatcher = WebhookDispatcher::new(source, Arc::new(ReqwestSender::default()));
     let report = dispatcher.dispatch(&event, ts).await;
     assert_eq!(
         report.delivered,

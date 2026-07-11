@@ -11,7 +11,7 @@ use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 /// Namespaced bundle id — the split/merge unit for the admin-config domain.
 pub const BUNDLE_ID: &str = "awaken.admin";
 
-const SPECS: [(i64, &str, &str); 4] = [
+const SPECS: [(i64, &str, &str); 5] = [
     (
         1,
         "inference profiles: authored admin-plane aggregates, one JSON row per id",
@@ -41,6 +41,14 @@ const SPECS: [(i64, &str, &str); 4] = [
         "agent resource bindings: which resources an agent is bound to (ADR-0038), one JSON row per agent",
         "CREATE TABLE {prefix}_agent_resource (\
             agent_id TEXT PRIMARY KEY, \
+            data {json} NOT NULL, \
+            created_at {timestamptz} NOT NULL DEFAULT {now})",
+    ),
+    (
+        5,
+        "webhook endpoints: authored WebhookEndpointDef rows (secret-free; the whsec_ signing key is sealed in the SecretStore, the row carries only its secret_ref)",
+        "CREATE TABLE {prefix}_webhook (\
+            id TEXT PRIMARY KEY, \
             data {json} NOT NULL, \
             created_at {timestamptz} NOT NULL DEFAULT {now})",
     ),

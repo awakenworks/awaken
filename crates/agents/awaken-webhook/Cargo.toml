@@ -20,14 +20,8 @@ getrandom = "0.2"
 async-trait.workspace = true
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
-# Durable subscription store over a versioned scoped-migration bundle (ADR-0043),
-# same pattern as the managed session store.
-rusqlite = { version = "0.32", features = ["bundled"] }
-awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9" }
-awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9" }
 
 [dev-dependencies]
 # e2e: a real axum receiver on an ephemeral port verifies the delivered signature.
 axum = { version = "0.7", features = [] }
-tempfile = "3"
 hyper = "1"

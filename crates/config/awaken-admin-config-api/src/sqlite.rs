@@ -17,7 +17,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use awaken_config_resolver::{
     AgentMcpConfig, AgentResourceConfig, InferenceProfile, InferenceProfileStore, McpServerDef,
-    McpStore, ResourceStore,
+    McpStore, ResourceStore, WebhookEndpointDef, WebhookStore,
 };
 
 use crate::schema::admin_bundle;
@@ -169,6 +169,44 @@ impl McpStore for SqliteAdminStore {
     }
 }
 
+impl WebhookStore for SqliteAdminStore {
+    fn put(&self, def: WebhookEndpointDef) {
+        self.put_row("webhook", "id", &def.id.clone(), &def);
+    }
+    fn get(&self, id: &str) -> Option<WebhookEndpointDef> {
+        self.get_row("webhook", "id", id)
+    }
+    fn list(&self, workspace_id: &str) -> Vec<WebhookEndpointDef> {
+        // Scan the (low-cardinality) webhook rows and filter by owner in Rust —
+        // the generic row helpers key by id; workspace lives inside the JSON.
+        let conn = self.conn.lock().expect("admin store");
+        let mut stmt = conn
+            .prepare(&format!("SELECT data FROM {NS}_webhook ORDER BY id"))
+            .expect("prepare webhook list");
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("list webhook rows");
+        rows.map(|data| {
+            serde_json::from_str::<WebhookEndpointDef>(&data.expect("read admin row"))
+                .expect("decode admin row")
+        })
+        .filter(|d| d.workspace_id == workspace_id)
+        .collect()
+    }
+    fn delete(&self, id: &str) -> bool {
+        let n = self
+            .conn
+            .lock()
+            .expect("admin store")
+            .execute(
+                &format!("DELETE FROM {NS}_webhook WHERE id = ?1"),
+                params![id],
+            )
+            .expect("delete webhook row");
+        n > 0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,12 +236,12 @@ mod tests {
     fn profile_round_trip_and_overwrite() {
         let store = SqliteAdminStore::open_in_memory().unwrap();
         assert!(InferenceProfileStore::get(&store, "p1").is_none());
-        store.put("p1".into(), profile("m1"));
+        InferenceProfileStore::put(&store, "p1".into(), profile("m1"));
         assert_eq!(
             InferenceProfileStore::get(&store, "p1").unwrap().model_id,
             "m1"
         );
-        store.put("p1".into(), profile("m2"));
+        InferenceProfileStore::put(&store, "p1".into(), profile("m2"));
         assert_eq!(
             InferenceProfileStore::get(&store, "p1").unwrap().model_id,
             "m2"
@@ -279,7 +317,7 @@ mod tests {
         let path = path.to_str().unwrap();
         {
             let store = SqliteAdminStore::open(path).unwrap();
-            store.put("p1".into(), profile("m1"));
+            InferenceProfileStore::put(&store, "p1".into(), profile("m1"));
             store.put_server(server("calc"));
             store.put_agent_config(AgentMcpConfig {
                 agent_id: "agent-1".into(),

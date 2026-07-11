@@ -28,6 +28,9 @@ awaken-authz-enforce.workspace = true
 # session surface fans a signed webhook out to the workspace on session lifecycle.
 awaken-webhook-managed.workspace = true
 awaken-config-resolver.workspace = true
+# Open ports for the (in-memory) webhook plane: the WebhookStore lives in
+# config-resolver, the SecretStore the whsec_ key is sealed behind in the vault.
+awaken-credential-vault.workspace = true
 awaken-runtime-contract.workspace = true
 axum = "0.7"
 async-trait.workspace = true

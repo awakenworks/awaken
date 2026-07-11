@@ -10,7 +10,9 @@
 
 use std::collections::HashMap;
 
-use crate::{AgentMcpConfig, AgentResourceConfig, InferenceProfile, McpServerDef};
+use crate::{
+    AgentMcpConfig, AgentResourceConfig, InferenceProfile, McpServerDef, WebhookEndpointDef,
+};
 
 /// A store for authored [`InferenceProfile`]s (an admin-plane aggregate). Sync +
 /// in-memory by default; a durable backend can implement the same port.
@@ -97,6 +99,55 @@ impl McpStore for InMemoryMcpStore {
             .expect("agent mcp configs")
             .get(agent_id)
             .cloned()
+    }
+}
+
+/// A store for authored [`WebhookEndpointDef`]s (an admin-plane aggregate,
+/// ADR-0048). Sync + in-memory by default; the durable admin backend implements
+/// the same port. Unlike [`McpStore`]/[`InferenceProfileStore`] it enumerates by
+/// workspace (dispatch fan-out) and supports delete (unsubscribe).
+pub trait WebhookStore: Send + Sync {
+    fn put(&self, def: WebhookEndpointDef);
+    fn get(&self, id: &str) -> Option<WebhookEndpointDef>;
+    /// Every endpoint owned by `workspace_id` (including disabled), for CRUD list
+    /// and dispatch matching.
+    fn list(&self, workspace_id: &str) -> Vec<WebhookEndpointDef>;
+    /// Remove by id; `true` if a row was removed (idempotent unsubscribe).
+    fn delete(&self, id: &str) -> bool;
+}
+
+/// The default in-memory [`WebhookStore`], keyed by endpoint id.
+#[derive(Default)]
+pub struct InMemoryWebhookStore(std::sync::Mutex<HashMap<String, WebhookEndpointDef>>);
+
+impl InMemoryWebhookStore {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl WebhookStore for InMemoryWebhookStore {
+    fn put(&self, def: WebhookEndpointDef) {
+        self.0.lock().expect("webhooks").insert(def.id.clone(), def);
+    }
+    fn get(&self, id: &str) -> Option<WebhookEndpointDef> {
+        self.0.lock().expect("webhooks").get(id).cloned()
+    }
+    fn list(&self, workspace_id: &str) -> Vec<WebhookEndpointDef> {
+        let mut rows: Vec<WebhookEndpointDef> = self
+            .0
+            .lock()
+            .expect("webhooks")
+            .values()
+            .filter(|d| d.workspace_id == workspace_id)
+            .cloned()
+            .collect();
+        rows.sort_by(|a, b| a.id.cmp(&b.id));
+        rows
+    }
+    fn delete(&self, id: &str) -> bool {
+        self.0.lock().expect("webhooks").remove(id).is_some()
     }
 }
 

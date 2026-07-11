@@ -12,10 +12,11 @@ use awaken_authz_enforce::{EnforceEngine, TokenSpec, guard};
 use awaken_protocol_managed::ManagedState;
 use awaken_runtime_contract::llm::{ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_host::{ManagedHost, SharedHost};
+use awaken_agent_contract::RedactedString;
+use awaken_config_resolver::{InMemoryWebhookStore, WebhookEndpointDef, WebhookStore};
+use awaken_credential_vault::{InMemorySecretStore, SecretRef, SecretStore};
 use awaken_server_local::webhooks;
-use awaken_webhook::{
-    InMemoryWebhookRepository, WebhookRepository, WebhookSubscription, generate_secret, verify,
-};
+use awaken_webhook::{generate_secret, verify};
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderMap, Request, StatusCode};
@@ -54,22 +55,31 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
     let addr: SocketAddr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, recv).await.unwrap() });
 
-    // 2. Webhook plane + a subscription for the token's workspace.
-    let repo = Arc::new(InMemoryWebhookRepository::default());
-    let (sink, _crud) = webhooks::assemble(repo.clone(), None);
+    // 2. Webhook plane over the config-plane stores + a subscription for the token's
+    // workspace: a secret-free endpoint row plus its `whsec_` secret sealed in the
+    // vault, exactly the shape the CRUD front door writes.
+    let store = Arc::new(InMemoryWebhookStore::new());
+    let secrets = Arc::new(InMemorySecretStore::new());
     let secret = generate_secret();
-    repo.upsert(WebhookSubscription {
+    secrets
+        .put(
+            &SecretRef("whsec:wh_live".into()),
+            RedactedString::new(secret.clone()),
+        )
+        .await
+        .expect("seal the signing secret");
+    store.put(WebhookEndpointDef {
         id: "wh_live".to_string(),
         workspace_id: "wrkspc_test".to_string(),
         url: format!("http://{addr}/hook"),
-        secret: secret.clone(),
         event_types: vec![
             "session.status_idled".to_string(),
             "session.status_terminated".to_string(),
         ],
         disabled: false,
-    })
-    .await;
+        secret_ref: SecretRef("whsec:wh_live".into()),
+    });
+    let (sink, _crud) = webhooks::assemble(store, secrets, None);
 
     // 3. A managed surface with the sink, wrapped: guard (resolves + publishes the
     // owning workspace) → stamp_workspace_scope (maps it to WorkspaceScope).
