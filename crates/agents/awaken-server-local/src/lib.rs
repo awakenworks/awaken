@@ -1820,10 +1820,17 @@ async fn management_router_over(
     // The host runs the server model (Gemini or MCP-driving), resolves a session's
     // agent to its installed config, and carries the management tool executables so
     // the reserved-scope assistant can call them.
+    // A durable skill catalog so `POST /v1/skills` persists a SKILL.md (without one the
+    // route 409s); a skill created here appears in `/v1/skills` and is deliverable to
+    // sessions. Under the management storage dir when set, else a per-process temp dir.
+    let skill_dir = std::env::var("AWAKEN_MGMT_DIR")
+        .map(|d| std::path::PathBuf::from(d).join("skills"))
+        .unwrap_or_else(|_| std::env::temp_dir().join(format!("awaken-skills-{}", std::process::id())));
     let host = Arc::new(
         SharedHost::new(model, model_ref)
             .with_config_service(config_service.clone())
             .with_admin_tools(admin_execs)
+            .with_skill_store(skill_dir)
             // Resolve a session's model to a real executor from the config plane (M2):
             // an unconfigured/unresolvable model falls back to the scenario model above.
             .with_executor_provider(Arc::new(config_executor::ConfigExecutorProvider::new(

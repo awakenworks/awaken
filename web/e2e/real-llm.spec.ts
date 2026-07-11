@@ -117,7 +117,7 @@ test("Agent reads/writes its bound memory store across sessions (real model)", a
   await page.goto(`/w/default/agents/${agent}`);
   await page.getByRole("button", { name: "Resources", exact: true }).click();
   await page.getByRole("button", { name: /bind a store/ }).click();
-  await page.locator("select").first().selectOption({ label: store.name });
+  await page.locator("select").nth(1).selectOption({ label: store.name }); // 0=kind, 1=store
   await page.getByRole("button", { name: /Save resources/ }).click();
   await expect(page.locator(".toast").filter({ hasText: /Resources saved|资源已保存/ })).toBeVisible();
   await request.post(`/v1/config/agents/${agent}/publish`);
@@ -136,4 +136,44 @@ test("Agent reads/writes its bound memory store across sessions (real model)", a
   const s2 = await (await request.post("/v1/sessions", { data: { agent, title: "read" } })).json();
   const recalled = await runTurn(request, s2.id, "Read your memory file and tell me the secret code. Answer with only the code.");
   expect(recalled).toContain(secret);
+});
+
+// A bound read-only FILE is mounted and read by a real model — the file kind of the same
+// loop, and a cleaner single-session proof: the blob is seeded at upload (no write-back
+// dance), so one turn reads it back. Proves file bindings realize as sandbox mounts the
+// agent's tools can read, described in the compiled system prompt at their `.mnt/` path.
+test("Agent reads a bound read-only file (real model)", async ({ request }) => {
+  test.setTimeout(90_000);
+  const secret = `MANGO-${Date.now()}`;
+  const agent = `file-agent-${Date.now()}`;
+  await configureGemini(request);
+
+  // Upload a file carrying the secret, author a read-capable agent, bind + publish.
+  const file = await (
+    await request.post("/v1/files", {
+      multipart: { file: { name: "config.txt", mimeType: "text/plain", buffer: Buffer.from(`the launch code is ${secret}`) }, purpose: "agent" },
+    })
+  ).json();
+  await request.put(`/v1/config/agents/${agent}`, {
+    data: {
+      id: agent,
+      name: agent,
+      model: { id: "gemini-2.5-flash" },
+      system: "You can read files with your tools. When asked about a file, READ it and answer from its contents.",
+      tools: ["bash", "read", "glob", "grep"],
+      plugins: [],
+      plugin_config: { permission: { default_behavior: "allow", mode: "bypassPermissions", rules: [] } },
+      context_policy: { kind: "keep_all" },
+      max_steps: 8,
+    },
+  });
+  await request.put(`/v1/config/agents/${agent}/resources`, {
+    data: { agent_id: agent, version: 1, resources: [{ kind: "file", resource_id: file.id, mount_path: "/data/config.txt", access: "read_only" }] },
+  });
+  await request.post(`/v1/config/agents/${agent}/publish`);
+
+  // One session: the agent reads the mounted file and reports the secret.
+  const s = await (await request.post("/v1/sessions", { data: { agent, title: "read-file" } })).json();
+  const answer = await runTurn(request, s.id, "Read the config file that is mounted for you and tell me the launch code. Answer with only the code.");
+  expect(answer).toContain(secret);
 });

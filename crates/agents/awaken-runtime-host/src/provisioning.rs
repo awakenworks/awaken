@@ -89,6 +89,18 @@ impl SharedHost {
         }
     }
 
+    /// The github_repository stages queued for `thread` (test-only observability: a
+    /// repo is cloned host-side, not a byte mount, so it is absent from `sandbox_spec`).
+    #[cfg(test)]
+    pub(crate) fn thread_repos(&self, thread: &str) -> Vec<RepoStage> {
+        self.thread_resources
+            .lock()
+            .unwrap()
+            .get(thread)
+            .map(|s| s.repos.clone())
+            .unwrap_or_default()
+    }
+
     /// The prompt fragments staged for `thread`'s bound resources (ADR-0038 A3a).
     pub(crate) fn thread_resource_prompts(&self, thread: &str) -> Vec<String> {
         self.thread_resources
