@@ -1318,7 +1318,15 @@ pub fn build_config_router() -> Router {
     let registry = Arc::new(
         awaken_config_store::SqliteConfigStore::open_in_memory().expect("open config store"),
     );
-    let tools = advertised_tools(&HashSet::new(), &HashSet::new(), &[]);
+    // Scope-keyed tool visibility (ADR-0052 D3): every scope sees the advertised
+    // (global) tools; only the reserved admin scope additionally sees the four
+    // management descriptors, so a config naming an `admin_*` tool compiles only there.
+    let global = advertised_tools(&HashSet::new(), &HashSet::new(), &[]);
+    let tools = Arc::new(awaken_runtime_host::ScopedToolCatalog::new(
+        global,
+        awaken_runtime_host::RESERVED_ADMIN_SCOPE,
+        awaken_admin_assistant::admin_tool_descriptors(),
+    ));
     let service = Arc::new(ConfigService::new(registry, tools));
     let (model, model_ref) = scenario_model(Arc::new(InstructionEchoModel), "config");
     let host = SharedHost::new(model, model_ref).with_config_service(service.clone());

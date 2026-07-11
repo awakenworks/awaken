@@ -43,6 +43,7 @@ mod skills;
 mod skills_api;
 mod store;
 mod subagent;
+mod tool_catalog;
 mod turn_exec;
 
 use std::sync::Arc;
@@ -82,6 +83,9 @@ pub use crate::acp_serve::{AcpServeHost, AcpStop, AcpTurn};
 pub use crate::config::{advertised_tools, block_text};
 pub use crate::config_home::{ConfigHome, RetentionPolicy, SessionReuse};
 pub use crate::config_plane::{ConfigService, ConfigServiceAgentSource, config_router};
+pub use crate::tool_catalog::{
+    RESERVED_ADMIN_SCOPE, ScopedToolCatalog, StaticToolCatalog, ToolCatalogSource,
+};
 // The per-plane resource routers the composition root merges over one host.
 pub use crate::durable_ops::durable_ops_router;
 pub use crate::files::files_router;

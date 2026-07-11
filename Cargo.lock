@@ -982,6 +982,7 @@ dependencies = [
  "awaken-store-inmem",
  "awaken-store-postgres",
  "awaken-store-sqlite",
+ "awaken-tenancy",
  "axum 0.7.9",
  "base64 0.22.1",
  "form_urlencoded",
@@ -1075,6 +1076,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-nats",
  "async-trait",
+ "awaken-admin-assistant",
  "awaken-admin-config-api",
  "awaken-agent-contract",
  "awaken-authz-enforce",

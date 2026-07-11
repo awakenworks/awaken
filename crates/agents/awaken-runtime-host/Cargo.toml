@@ -33,6 +33,7 @@ awaken-store-sqlite = { workspace = true }
 awaken-store-fs = { workspace = true }
 awaken-store-postgres = { workspace = true }
 awaken-config-store = { workspace = true }
+awaken-tenancy = { workspace = true }
 awaken-run-ingress = { workspace = true }
 awaken-run-executor-acp = { workspace = true }
 awaken-config-resolver = { workspace = true }

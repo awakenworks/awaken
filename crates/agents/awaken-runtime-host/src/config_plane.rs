@@ -14,24 +14,35 @@ use std::sync::{Arc, Mutex};
 
 use awaken_config_resolver::ResourceStore;
 use awaken_config_store::{
-    AgentConfig, ConfigRegistry, RunnableConfig, StoredPublication, compile_with_resource_prompts,
+    AgentConfig, DEFAULT_SCOPE, RunnableConfig, ScopedConfigRegistry, StoredPublication,
+    compile_with_resource_prompts,
 };
-use awaken_runtime_contract::resolved::ToolDescriptor;
+use awaken_tenancy::ScopeId;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{post, put};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use serde_json::{Value, json};
+
+use crate::tool_catalog::ToolCatalogSource;
 
 /// The config domain service: validate, store, publish, and expose the installed
 /// (published) runnable config per agent.
 pub struct ConfigService {
-    registry: Arc<dyn ConfigRegistry>,
-    /// The tool descriptors an agent config may name; `compile` binds `tool_ids`
-    /// to these. The host's advertised hand tools.
-    tools: Vec<ToolDescriptor>,
+    /// The durable, **scope-owned** config store (ADR-0051): reads filter by the
+    /// request scope and writes stamp it, so a tenant can neither read nor clobber
+    /// another scope's agent by id — and the reserved-scope assistant is invisible to
+    /// tenants (ADR-0052 D2).
+    registry: Arc<dyn ScopedConfigRegistry>,
+    /// The scope-keyed tool catalog (ADR-0052 D3): `compile` binds `tool_ids` against
+    /// `catalog.catalog_for(scope)`, so the admin tools are nameable only in the
+    /// reserved scope and a tenant naming one fails closed with `UnknownTool`.
+    tools: Arc<dyn ToolCatalogSource>,
     /// The installed catalog: agent id → compiled runnable config, hot-swapped on
     /// publish. A run resolves its agent here (awaken-next `set_registry_snapshot`).
+    /// This hot cache is keyed by agent id alone (the durable store above is the
+    /// tenant-isolated truth); built-in and reserved ids are globally unique, so no
+    /// cross-scope collision arises in practice.
     installed: Mutex<HashMap<String, RunnableConfig>>,
     /// Per-agent resource bindings (ADR-0038). When wired, the agent's bound-resource
     /// prompt fragments are appended to its effective system prompt at compile (A3a).
@@ -40,7 +51,10 @@ pub struct ConfigService {
 }
 
 impl ConfigService {
-    pub fn new(registry: Arc<dyn ConfigRegistry>, tools: Vec<ToolDescriptor>) -> Self {
+    /// Assemble the config plane over a scope-owned store and a scope-keyed tool
+    /// catalog. Callers that never fence by scope pass a
+    /// [`StaticToolCatalog`](crate::tool_catalog::StaticToolCatalog).
+    pub fn new(registry: Arc<dyn ScopedConfigRegistry>, tools: Arc<dyn ToolCatalogSource>) -> Self {
         Self {
             registry,
             tools,
@@ -68,36 +82,46 @@ impl ConfigService {
             .unwrap_or_default()
     }
 
-    /// Validate a config by compiling it (a dry run of publish); no store write.
-    pub fn validate(&self, config: &AgentConfig) -> Result<(), String> {
-        compile_with_resource_prompts(config, &self.tools, &self.resource_prompts(&config.id))
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+    /// Validate a config by compiling it against `scope`'s tool catalog (a dry run of
+    /// publish); no store write. A config naming a tool absent from its scope's
+    /// catalog fails closed with `UnknownTool` (ADR-0052 D3).
+    pub fn validate(&self, scope: &ScopeId, config: &AgentConfig) -> Result<(), String> {
+        compile_with_resource_prompts(
+            config,
+            &self.tools.catalog_for(scope),
+            &self.resource_prompts(&config.id),
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
     }
 
-    /// Store a config draft (upsert by id).
-    pub async fn put(&self, config: &AgentConfig) -> Result<(), String> {
+    /// Store a config draft (upsert by id) owned by `scope`.
+    pub async fn put(&self, scope: &ScopeId, config: &AgentConfig) -> Result<(), String> {
         self.registry
-            .put_config(config)
+            .put_config_scoped(scope, config)
             .await
             .map_err(|e| e.to_string())
     }
 
-    /// Publish: compile the stored config, persist the publication (idempotent by
-    /// fingerprint), and install it into the live catalog so new runs use it.
-    pub async fn publish(&self, id: &str) -> Result<StoredPublication, String> {
+    /// Publish within `scope`: compile the stored config against the scope's tool
+    /// catalog, persist the publication (idempotent by fingerprint), and install it
+    /// into the live catalog so new runs use it.
+    pub async fn publish(&self, scope: &ScopeId, id: &str) -> Result<StoredPublication, String> {
         let config = self
             .registry
-            .get_config(id)
+            .get_config_scoped(scope, id)
             .await
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("no config stored for agent `{id}`"))?;
-        let runnable =
-            compile_with_resource_prompts(&config, &self.tools, &self.resource_prompts(id))
-                .map_err(|e| e.to_string())?;
+        let runnable = compile_with_resource_prompts(
+            &config,
+            &self.tools.catalog_for(scope),
+            &self.resource_prompts(id),
+        )
+        .map_err(|e| e.to_string())?;
         let publication = StoredPublication::published(runnable.clone(), id);
         self.registry
-            .put_publication(&publication)
+            .put_publication_scoped(scope, &publication)
             .await
             .map_err(|e| e.to_string())?;
         self.installed
@@ -142,13 +166,21 @@ pub fn config_router(service: Arc<ConfigService>) -> Router {
         .with_state(service)
 }
 
+/// The request's owner scope, stamped by the workspace-path rewrite
+/// (`WorkspaceScope`) or the seeded [`DEFAULT_SCOPE`] for a flat/single-tenant call.
+fn request_scope(ext: Option<Extension<awaken_protocol_managed::WorkspaceScope>>) -> ScopeId {
+    ext.map(|Extension(w)| ScopeId::from(w.0))
+        .unwrap_or_else(|| ScopeId::from(DEFAULT_SCOPE))
+}
+
 async fn validate(
     State(svc): State<Arc<ConfigService>>,
+    scope: Option<Extension<awaken_protocol_managed::WorkspaceScope>>,
     Path(id): Path<String>,
     Json(mut config): Json<AgentConfig>,
 ) -> (StatusCode, Json<Value>) {
     config.id = id;
-    match svc.validate(&config) {
+    match svc.validate(&request_scope(scope), &config) {
         Ok(()) => (StatusCode::OK, Json(json!({ "valid": true }))),
         Err(error) => (
             StatusCode::BAD_REQUEST,
@@ -159,11 +191,12 @@ async fn validate(
 
 async fn put_config(
     State(svc): State<Arc<ConfigService>>,
+    scope: Option<Extension<awaken_protocol_managed::WorkspaceScope>>,
     Path(id): Path<String>,
     Json(mut config): Json<AgentConfig>,
 ) -> (StatusCode, Json<Value>) {
     config.id = id.clone();
-    match svc.put(&config).await {
+    match svc.put(&request_scope(scope), &config).await {
         Ok(()) => (StatusCode::OK, Json(json!({ "id": id }))),
         Err(error) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
     }
@@ -171,9 +204,10 @@ async fn put_config(
 
 async fn publish(
     State(svc): State<Arc<ConfigService>>,
+    scope: Option<Extension<awaken_protocol_managed::WorkspaceScope>>,
     Path(id): Path<String>,
 ) -> (StatusCode, Json<Value>) {
-    match svc.publish(&id).await {
+    match svc.publish(&request_scope(scope), &id).await {
         Ok(publication) => (
             StatusCode::OK,
             Json(json!({
@@ -228,10 +262,15 @@ mod resource_prompt_tests {
         });
 
         let registry = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
-        let service = ConfigService::new(registry, vec![]).with_resources(resources);
+        let scope = ScopeId::from(DEFAULT_SCOPE);
+        let service = ConfigService::new(
+            registry,
+            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+        )
+        .with_resources(resources);
 
-        service.put(&agent_config("agent-1")).await.unwrap();
-        service.publish("agent-1").await.unwrap();
+        service.put(&scope, &agent_config("agent-1")).await.unwrap();
+        service.publish(&scope, "agent-1").await.unwrap();
 
         // The compiled (installed) config's system prompt carries the base plus the
         // bound memory store's fragment + its per-binding instructions.
@@ -243,12 +282,55 @@ mod resource_prompt_tests {
     }
 
     #[tokio::test]
+    async fn admin_tools_compile_only_in_the_reserved_scope() {
+        use crate::tool_catalog::{RESERVED_ADMIN_SCOPE, ScopedToolCatalog};
+        use awaken_runtime_contract::resolved::ToolDescriptor;
+
+        // A catalog where `admin_x` is reserved-scope only (ADR-0052 D3).
+        let admin = ToolDescriptor::pinned(
+            "admin",
+            "admin_x",
+            "a management tool",
+            serde_json::json!({"type": "object"}),
+        );
+        let catalog = ScopedToolCatalog::new(Vec::new(), RESERVED_ADMIN_SCOPE, vec![admin]);
+        let registry = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let service = ConfigService::new(registry, Arc::new(catalog));
+
+        // A config that names the admin tool.
+        let mut cfg = agent_config("mgmt");
+        cfg.tool_ids = vec!["admin_x".to_string()];
+
+        // In the reserved scope it compiles: the descriptor is visible there.
+        assert!(
+            service
+                .validate(&ScopeId::from(RESERVED_ADMIN_SCOPE), &cfg)
+                .is_ok(),
+            "admin tool must resolve in the reserved scope"
+        );
+
+        // In any tenant scope it fails closed — the admin tool is not even disclosed,
+        // so the same config hits UnknownTool at compile.
+        let err = service
+            .validate(&ScopeId::from("wrkspc_acme"), &cfg)
+            .unwrap_err();
+        assert!(
+            err.contains("unknown tool") && err.contains("admin_x"),
+            "tenant scope must reject the admin tool: {err}"
+        );
+    }
+
+    #[tokio::test]
     async fn no_resource_store_compiles_byte_identically() {
         // Without a wired resource store, instructions are the base verbatim.
         let registry = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
-        let service = ConfigService::new(registry, vec![]);
-        service.put(&agent_config("agent-2")).await.unwrap();
-        service.publish("agent-2").await.unwrap();
+        let scope = ScopeId::from(DEFAULT_SCOPE);
+        let service = ConfigService::new(
+            registry,
+            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+        );
+        service.put(&scope, &agent_config("agent-2")).await.unwrap();
+        service.publish(&scope, "agent-2").await.unwrap();
         let installed = service.installed("agent-2").unwrap();
         assert_eq!(
             installed.snapshot().resolved_spec.instructions,

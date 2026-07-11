@@ -929,6 +929,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-store-sqlite",
         "awaken-store-fs",
         "awaken-config-store",
+        # Tenancy edge aspect (ADR-0051/0052): the opaque `ScopeId` the scope-keyed
+        # tool catalog and the scoped config plane are keyed by.
+        "awaken-tenancy",
         "awaken-run-ingress",
         "awaken-run-executor-acp",
         "awaken-config-resolver",
@@ -964,6 +967,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # modes; it names no runtime/ext/store crate directly. Nothing depends on it.
     "awaken-server-local": {
         "awaken-runtime-host",
+        # ADR-0052: the management assistant's descriptors seed the scope-keyed tool
+        # catalog, and its executables/ports are wired at assembly.
+        "awaken-admin-assistant",
         # ADR-0050: the data-subject consent/erasure store backing the erasure endpoint.
         "awaken-data-subject",
         # Remote-hand scenario mode (ADR-0044): route a run's tools to a hand task.
