@@ -160,4 +160,27 @@ pub struct AgentConfig {
     pub skills: Vec<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multiagent: Option<serde_json::Value>,
+    /// How this agent's tools are presented to the model (ADR-0053): per-tool alias /
+    /// description override / defer. Appended last with `skip_serializing_if`-empty so a
+    /// config with no overrides serializes to nothing and keeps its prior fingerprint
+    /// byte-identical; a non-empty set enters the content address like any other field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_overrides: Vec<ToolOverride>,
+}
+
+/// A per-tool presentation override (ADR-0053): rename and/or re-describe a selected
+/// tool for the model, and/or `defer` sending its schema until the model opens it.
+/// `target` is the tool's **canonical** id — a catalog id or an MCP `mcp__<server>__<tool>`
+/// id — so overrides apply to static and MCP tools uniformly. Authoring-only: `compile`
+/// validates each target against the agent's selected tools and projects the set into
+/// the runtime [`ToolPresentation`](awaken_runtime_contract::resolved::ToolPresentation).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ToolOverride {
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub defer: bool,
 }

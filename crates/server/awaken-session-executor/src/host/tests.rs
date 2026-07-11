@@ -626,9 +626,14 @@ async fn prepare_session_mounts_the_agents_bound_memory_store() {
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
 
     // Seed a memory store with a known secret, and bind it to agent `a` at /mnt/memory.
-    let store_id = host.create_memory_store();
+    let store_id = host.create_memory_store().await;
     host.memory_stores
-        .put(&store_id, b"the secret code is BANANA-42")
+        .put(
+            crate::provisioning::HOST_MEMORY_WORKSPACE,
+            &store_id,
+            b"the secret code is BANANA-42",
+        )
+        .await
         .expect("seed memory bytes");
     let bindings: Arc<dyn ResourceStore> = Arc::new(InMemoryResourceStore::new());
     bindings.put_agent_resource(AgentResourceConfig {

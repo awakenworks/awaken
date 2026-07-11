@@ -23,7 +23,8 @@ use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, DynamicTool, Plugin, PluginManifest,
 };
 use awaken_runtime_contract::resolved::{
-    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
+    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor, ToolFacet,
+    ToolPresentation,
 };
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
@@ -164,6 +165,7 @@ fn activation() -> RunActivation {
                 plugin_ids: vec!["mcp:srv".to_string()],
                 plugin_config: Default::default(),
                 context_policy: ContextPolicy::KeepAll,
+                            tool_presentation: Default::default(),
             },
             fingerprint,
         },
@@ -174,6 +176,196 @@ fn activation() -> RunActivation {
         }],
         trace: Default::default(),
     }
+}
+
+/// A scripted model that records the visible tool ids each step, calls a tool by its
+/// ALIAS on step 0, and ends on step 1.
+struct AliasProbe {
+    seen: Arc<Mutex<Vec<Vec<String>>>>,
+    calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for AliasProbe {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        self.seen
+            .lock()
+            .unwrap()
+            .push(request.tools.iter().map(|t| t.id.clone()).collect());
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        let output = if n == 0 {
+            AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "c1".to_string(),
+                tool_id: "create_issue".to_string(), // the ALIAS, not mcp__srv__a
+                arguments: serde_json::json!({}),
+            }])
+        } else {
+            AssistantOutput::text("done".to_string())
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+/// ADR-0053: an agent's `ToolPresentation` renames an MCP tool for the model, and a
+/// call by that alias reverse-maps to the canonical `mcp__…` id at the single ingress —
+/// so the aliased MCP tool actually executes. Proves alias + description override + the
+/// reverse-map invariant work for a *dynamic (MCP)* tool, not just static catalog tools.
+#[tokio::test]
+async fn presentation_aliases_an_mcp_tool_and_dispatches_the_alias_to_canonical() {
+    let version = Arc::new(AtomicU64::new(1));
+    let tools = Arc::new(Mutex::new(vec!["mcp__srv__a".to_string()]));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(AliasProbe {
+            seen: seen.clone(),
+            calls: AtomicUsize::new(0),
+        }))
+        .with_plugin(Arc::new(DynPlugin {
+            version: version.clone(),
+            tools: tools.clone(),
+        }));
+    install(&runtime);
+
+    // Alias the MCP tool + override its description.
+    let mut act = activation();
+    act.snapshot.resolved_spec.tool_presentation = ToolPresentation::from_facets([(
+        "mcp__srv__a".to_string(),
+        ToolFacet {
+            alias: Some("create_issue".to_string()),
+            description: Some("Create a GitHub issue.".to_string()),
+            defer: false,
+        },
+    )]);
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
+    let outcome = runtime.execute(act, context).await.expect("runs");
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+
+    // The model saw the ALIAS on the face — never the canonical MCP id.
+    let seen = seen.lock().unwrap();
+    assert_eq!(
+        seen[0],
+        vec!["create_issue".to_string()],
+        "the model sees the alias, not the canonical mcp__ id"
+    );
+
+    // A call by the alias reverse-mapped to the canonical MCP tool, which executed.
+    let committed = commit.committed();
+    assert!(
+        committed
+            .messages
+            .iter()
+            .any(|m| m.role == Role::Tool && m.text_content().contains("ran mcp__srv__a")),
+        "the aliased call dispatched to the canonical MCP tool"
+    );
+}
+
+/// A scripted model for the defer flow: step 0 records the face and calls `tool_open`
+/// to load the deferred tool; step 1 records the face and calls the now-loaded tool;
+/// step 2 ends.
+struct DeferProbe {
+    seen: Arc<Mutex<Vec<Vec<String>>>>,
+    calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for DeferProbe {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        self.seen
+            .lock()
+            .unwrap()
+            .push(request.tools.iter().map(|t| t.id.clone()).collect());
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        let output = match n {
+            0 => AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "open".to_string(),
+                tool_id: awaken_runtime_contract::resolved::TOOL_OPEN_ID.to_string(),
+                arguments: serde_json::json!({ "name": "create_issue" }),
+            }]),
+            1 => AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "c1".to_string(),
+                tool_id: "create_issue".to_string(),
+                arguments: serde_json::json!({}),
+            }]),
+            _ => AssistantOutput::text("done".to_string()),
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+/// ADR-0053 defer: a deferred MCP tool is withheld from the model face (only the reserved
+/// `tool_open` meta-tool is shown); after the model opens it, its full schema appears and
+/// it executes. Proves lazy tool loading over the same dynamic-tool seam, for MCP.
+#[tokio::test]
+async fn a_deferred_tool_is_hidden_until_tool_open_then_callable() {
+    let version = Arc::new(AtomicU64::new(1));
+    let tools = Arc::new(Mutex::new(vec!["mcp__srv__a".to_string()]));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(DeferProbe {
+            seen: seen.clone(),
+            calls: AtomicUsize::new(0),
+        }))
+        .with_plugin(Arc::new(DynPlugin {
+            version: version.clone(),
+            tools: tools.clone(),
+        }));
+    install(&runtime);
+
+    let mut act = activation();
+    act.snapshot.resolved_spec.tool_presentation = ToolPresentation::from_facets([(
+        "mcp__srv__a".to_string(),
+        ToolFacet {
+            alias: Some("create_issue".to_string()),
+            description: Some("Create a GitHub issue.".to_string()),
+            defer: true,
+        },
+    )]);
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
+    let outcome = runtime.execute(act, context).await.expect("runs");
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+
+    let seen = seen.lock().unwrap();
+    let open_id = awaken_runtime_contract::resolved::TOOL_OPEN_ID.to_string();
+    // Step 0: only `tool_open` is shown — the deferred tool's schema is withheld.
+    assert!(seen[0].contains(&open_id), "tool_open is offered");
+    assert!(
+        !seen[0].contains(&"create_issue".to_string()),
+        "the deferred tool is withheld until opened"
+    );
+    // Step 1: after opening, the tool's full schema is on the face.
+    assert!(
+        seen[1].contains(&"create_issue".to_string()),
+        "the opened tool appears on the next step"
+    );
+    // And it executed (reverse-mapped to the canonical MCP id).
+    let committed = commit.committed();
+    assert!(
+        committed
+            .messages
+            .iter()
+            .any(|m| m.role == Role::Tool && m.text_content().contains("ran mcp__srv__a")),
+        "the opened tool executed"
+    );
 }
 
 #[tokio::test]
