@@ -18,12 +18,24 @@ thiserror = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
 # `spawn_blocking` for the sqlite adapter's off-thread connection work.
 tokio = { workspace = true, features = ["rt"] }
-awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9" }
+# Feature `postgres`: network-DB DataSubjectRepo + CapturedContentStore backends
+# over the same `data_subject` migration scope (ADR-0050), for multi-node SaaS.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"], optional = true }
+awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9", features = ["postgres"] }
 awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
 tempfile = "3"
+# The live Postgres conformance test (feature `postgres`) isolates each suite in
+# its own schema via `SET search_path`.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+
+[features]
+default = []
+# Postgres-backed DataSubjectRepo + CapturedContentStore (`postgres::*`) over the
+# same portable `data_subject` bundle as sqlite (ADR-0050 D7, Org-partitioned).
+postgres = ["dep:sqlx"]
 
 [lints]
 workspace = true

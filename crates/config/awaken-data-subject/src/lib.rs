@@ -9,6 +9,10 @@
 //! `UserProfile` wire shape is a *projection* over this aggregate (Slice 6).
 
 mod capture_store;
+#[cfg(feature = "postgres")]
+mod postgres;
+#[cfg(feature = "postgres")]
+mod postgres_capture;
 mod schema;
 mod sqlite;
 mod sqlite_capture;
@@ -22,6 +26,10 @@ use serde::{Deserialize, Serialize};
 
 pub use awaken_runtime_contract::{ContentCapture, DataSubjectId, ErasureReceipt, Purpose};
 pub use capture_store::{CapturedRecord, InMemoryCapturedContentStore};
+#[cfg(feature = "postgres")]
+pub use postgres::{PgDataSubjectRepo, PgStoreError};
+#[cfg(feature = "postgres")]
+pub use postgres_capture::PgCapturedContentStore;
 pub use schema::{BUNDLE_ID, data_subject_bundle};
 pub use sqlite::{SqliteDataSubjectRepo, StoreError};
 pub use sqlite_capture::SqliteCapturedContentStore;
