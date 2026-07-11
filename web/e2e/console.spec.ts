@@ -50,6 +50,29 @@ test("Plugins tab renders the Permission policy editor (data-driven from capabil
   await expect(page.getByPlaceholder("Bash(*rm*)")).toBeVisible();
 });
 
+test("PermissionEditor authors a rule and persists it through save + reload", async ({ page }) => {
+  const id = `perm-e2e-${Date.now()}`;
+  await page.goto("/w/default/agents/new");
+  await page.getByPlaceholder("coding-agent").fill(id);
+  await page.locator("textarea").first().fill("You gate your tools.");
+  await page.getByRole("button", { name: "Plugins & policy" }).click();
+
+  const editor = page.locator(".permission-editor");
+  // Default decision → Deny (only the default-decision Segmented exists yet).
+  await editor.getByRole("button", { name: "Deny" }).first().click();
+  await page.getByRole("button", { name: /add rule/ }).click();
+  await editor.getByPlaceholder("Bash(*rm*)").fill("Bash(*rm*)");
+
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.locator(".toast").filter({ hasText: /Saved|已保存/ })).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`/agents/${id}$`));
+
+  // Reload → the authored policy rehydrates from the stored config (round-trips).
+  await page.reload();
+  await page.getByRole("button", { name: "Plugins & policy" }).click();
+  await expect(editor.getByPlaceholder("Bash(*rm*)")).toHaveValue("Bash(*rm*)");
+});
+
 test("enabling a plugin renders a schema-driven form (not raw JSON)", async ({ page }) => {
   await page.goto("/w/default/agents/new");
   await page.getByRole("button", { name: "Plugins & policy" }).click();
