@@ -46,13 +46,14 @@ export function TextAreaField({ label, mono, className, ...props }: TextAreaFiel
 export interface SelectFieldProps extends SelectHTMLAttributes<HTMLSelectElement> {
   label?: ReactNode;
   action?: ReactNode;
+  mono?: boolean;
   children: ReactNode;
 }
-export function SelectField({ label, action, className, children, ...props }: SelectFieldProps) {
+export function SelectField({ label, action, mono, className, children, ...props }: SelectFieldProps) {
   return (
     <div className="field">
       <Label label={label} action={action} />
-      <select className={cx("input mono", className)} {...props}>
+      <select className={cx("input", mono && "mono", className)} {...props}>
         {children}
       </select>
     </div>
