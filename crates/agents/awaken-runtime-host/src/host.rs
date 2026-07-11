@@ -391,7 +391,7 @@ pub struct SharedHost {
     /// the durable [`awaken_memory_store::MemoryBlobStore`] — under the storage dir it
     /// survives a restart, so memory written in one process is visible to the next; an
     /// ephemeral per-process dir when the host has no storage dir (unit tests).
-    pub(crate) memory_stores: awaken_memory_store::MemoryBlobStore,
+    pub(crate) memory_stores: Arc<dyn awaken_memory_store::MemoryBlobStore>,
     /// An optional tool gate that replaces the default authorization gate on every
     /// thread's runtime. Used to exercise scheduled actions (ADR-0020, slice E): a
     /// gate that defers tool calls as `ScheduledAction`s so the durable dispatch
@@ -447,8 +447,10 @@ impl SharedHost {
             Some(dir) => dir.join("memory_stores"),
             None => std::env::temp_dir().join(format!("awaken-memstore-{}", std::process::id())),
         };
-        let memory_stores = awaken_memory_store::MemoryBlobStore::open(&memory_store_root)
-            .expect("open durable memory-store root");
+        let memory_stores: Arc<dyn awaken_memory_store::MemoryBlobStore> = Arc::new(
+            awaken_memory_store::FsMemoryBlobStore::open(&memory_store_root)
+                .expect("open durable memory-store root"),
+        );
         Self {
             llm,
             model_ref: model_ref.into(),

@@ -17,6 +17,10 @@ use crate::host::SharedHost;
 /// per-session workspace (ADR-0051) is a later tenancy step over the same store.
 pub(crate) const HOST_SKILL_WORKSPACE: &str = "default";
 
+/// The single workspace the host addresses its durable memory-store family under —
+/// see [`HOST_SKILL_WORKSPACE`] for the tenancy rationale.
+pub(crate) const HOST_MEMORY_WORKSPACE: &str = "default";
+
 /// A thread's staged resources (ADR-0038): the legacy [`Mount`]s realized into its
 /// sandbox plus the prompt fragments appended to its system prompt. Built by a
 /// session's `prepare_session` from the wire `resources[]`.
@@ -127,15 +131,19 @@ impl SharedHost {
     /// harvests the write back under the same id. Backed by the durable
     /// [`awaken_memory_store::MemoryBlobStore`], so the store (and its id) survive a
     /// process restart when the host runs under a storage dir.
-    pub fn create_memory_store(&self) -> String {
+    pub async fn create_memory_store(&self) -> String {
         self.memory_stores
-            .create()
+            .create(HOST_MEMORY_WORKSPACE)
+            .await
             .expect("create durable memory store")
     }
 
     /// The current bytes of a memory store; `None` if the id is unknown.
-    pub fn memory_get(&self, id: &str) -> Option<Vec<u8>> {
-        self.memory_stores.get(id)
+    pub async fn memory_get(&self, id: &str) -> Option<Vec<u8>> {
+        self.memory_stores
+            .get(HOST_MEMORY_WORKSPACE, id)
+            .await
+            .unwrap_or(None)
     }
 
     /// Store (or overwrite) a delivered skill's `SKILL.md` `content` under `id` in the
@@ -222,7 +230,8 @@ impl SharedHost {
         for (store_id, logical) in mounts {
             if let Some((_, bytes)) = realized.iter().find(|(path, _)| *path == logical) {
                 self.memory_stores
-                    .put(&store_id, bytes)
+                    .put(HOST_MEMORY_WORKSPACE, &store_id, bytes)
+                    .await
                     .expect("persist harvested memory write-back");
             }
         }
@@ -363,16 +372,16 @@ mod memory_store_tests {
         }
     }
 
-    #[test]
-    fn create_mints_unique_ids_readable_via_get() {
+    #[tokio::test]
+    async fn create_mints_unique_ids_readable_via_get() {
         let host = SharedHost::new(Arc::new(NoLlm), "test");
-        let a = host.create_memory_store();
-        let b = host.create_memory_store();
+        let a = host.create_memory_store().await;
+        let b = host.create_memory_store().await;
         assert_ne!(a, b, "each memory store gets a distinct id");
         // A freshly created store exists and is empty; an unknown id is absent — the
         // distinction `prepare_session` relies on to reject a dangling memory binding.
-        assert_eq!(host.memory_get(&a), Some(Vec::new()));
-        assert_eq!(host.memory_get(&b), Some(Vec::new()));
-        assert_eq!(host.memory_get("memstore_does_not_exist"), None);
+        assert_eq!(host.memory_get(&a).await, Some(Vec::new()));
+        assert_eq!(host.memory_get(&b).await, Some(Vec::new()));
+        assert_eq!(host.memory_get("memstore_does_not_exist").await, None);
     }
 }

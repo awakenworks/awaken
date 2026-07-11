@@ -4,9 +4,34 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# Durable memory persistence for the resources plane. Deliberately std-only: a
-# leaf like awaken-file-store, it names no runtime/host/provider type so the host
-# can back the ADR-0038 MemoryStore family with it while the runtime stays unaware.
+# Durable memory persistence for the resources plane: the `MemoryBlobStore` port
+# (mirroring awaken-file-store's `FileStore`) with pluggable backends — in-memory /
+# filesystem / sqlite / postgres over one portable bundle — so a memory write
+# survives a restart and, on postgres, is shared across nodes. It names no
+# runtime/host/provider type so the host can back the ADR-0038 MemoryStore family
+# with it while the runtime stays unaware.
+
+[dependencies]
+async-trait.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "fs"] }
+# Feature `sqlite`: embedded durable MemoryBlobStore over the crate's own
+# `memory_store` migration scope.
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+# Feature `postgres`: network-DB MemoryBlobStore over the same scope (multi-node).
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"], optional = true }
+awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9", features = ["postgres"], optional = true }
+awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9", optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+tempfile = "3"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+
+[features]
+default = []
+sqlite = ["dep:rusqlite", "dep:awaken-scoped-migration", "dep:awaken-scoped-migration-sqlite"]
+postgres = ["dep:sqlx", "dep:awaken-scoped-migration"]
 
 [lints]
 workspace = true
