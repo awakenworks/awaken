@@ -5,18 +5,27 @@
 //! protocol logic lives here beyond routing and framing.
 
 use std::collections::HashSet;
+use std::convert::Infallible;
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::message::Message;
+use awaken_agent_contract::stream::event::Kind;
+use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use axum::Router;
+use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Json, Path, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use tokio::sync::mpsc;
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use awaken_protocol_transport::{DriverError, Pending, ProtocolRuntime, Resume, StepOutcome};
 
-use crate::encoder::{encode_history, encode_step};
+use crate::encoder::{encode_close, encode_history, encode_step};
+use crate::live::{ChannelStreamSink, LiveTranscoder};
 use crate::request::{DecisionKind, process_request, result_text};
 use crate::types::{AiSdkChatRequest, HistoryResponse, UIStreamEvent};
 
@@ -107,23 +116,64 @@ async fn run(rt: Runtime, payload: AiSdkChatRequest) -> Response {
     let processed = process_request(payload, &known_ids);
     let thread = processed.thread_id.clone();
 
-    let outcome = if processed.messages.is_empty() {
-        // Resume: answer the pending tool with the matching client decision.
+    if processed.messages.is_empty() {
+        // Resume answers a parked tool decision — a single committed step, framed
+        // whole (no in-flight model output to stream).
         match resume_step(&rt, &thread, &processed.decisions).await {
-            Ok(outcome) => outcome,
-            Err(response) => return response,
+            Ok(outcome) => sse_response(encode_step(&outcome)),
+            Err(response) => response,
         }
     } else {
-        match rt
-            .run_turn(&thread, processed.agent_id.clone(), processed.messages)
-            .await
-        {
-            Ok(outcome) => outcome,
-            Err(err) => return sse_error(err),
-        }
-    };
+        // A fresh turn: stream the engine's live progress as it runs, then append
+        // the committed authoritative tail.
+        stream_turn(rt, thread, processed.agent_id, processed.messages)
+    }
+}
 
-    sse_response(encode_step(&outcome))
+/// Drive a turn while streaming the engine's best-effort live progress
+/// (`start`/`text-*`/`tool-input-*`) to a chunked SSE body as it happens, then
+/// append the committed authoritative tail (`tool-input-available` + `finish`).
+/// The committed step stays the source of truth: a runtime that streams nothing
+/// (durable/ACP/non-streaming) falls back to the full committed projection.
+fn stream_turn(
+    rt: Runtime,
+    thread: String,
+    agent: Option<String>,
+    messages: Vec<Message>,
+) -> Response {
+    let (out_tx, out_rx) = mpsc::unbounded_channel::<String>();
+    tokio::spawn(async move {
+        let (live_tx, mut live_rx) = mpsc::unbounded_channel::<Kind>();
+        let sink: Arc<dyn StreamSink> = Arc::new(ChannelStreamSink::new(live_tx));
+        let mut transcoder = LiveTranscoder::new();
+        // Drive the turn on its own task so live events drain concurrently. The
+        // sink lives inside that future; when the turn ends it drops, closing
+        // `live_rx` and ending the drain loop.
+        let turn =
+            tokio::spawn(
+                async move { rt.run_turn_streaming(&thread, agent, messages, sink).await },
+            );
+        while let Some(kind) = live_rx.recv().await {
+            for event in transcoder.transcode(&kind) {
+                if out_tx.send(sse_line(&event)).is_err() {
+                    return; // the client hung up
+                }
+            }
+        }
+        let close = match turn.await {
+            Ok(Ok(outcome)) if transcoder.has_streamed() => encode_close(&outcome),
+            Ok(Ok(outcome)) => encode_step(&outcome),
+            Ok(Err(err)) => error_events(err),
+            Err(_) => error_events(DriverError::Internal("turn task cancelled".into())),
+        };
+        for event in close {
+            if out_tx.send(sse_line(&event)).is_err() {
+                return;
+            }
+        }
+        let _ = out_tx.send("data: [DONE]\n\n".to_string());
+    });
+    stream_response(out_rx)
 }
 
 /// Translate the request's decisions into a resume against the parked tool and
@@ -201,42 +251,56 @@ async fn thread_messages(
     Json(HistoryResponse { messages })
 }
 
-/// Frame UI stream events as a Server-Sent Events body (`data: <json>\n\n`),
-/// terminated by `[DONE]`, with the AI SDK transport header.
+/// The AI SDK UI Message Stream response headers (SSE + the transport marker).
+fn sse_headers() -> [(header::HeaderName, HeaderValue); 2] {
+    [
+        (
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/event-stream"),
+        ),
+        (
+            header::HeaderName::from_static(AI_SDK_STREAM_HEADER),
+            HeaderValue::from_static("v1"),
+        ),
+    ]
+}
+
+/// Frame one UI stream event as an SSE data line (`data: <json>\n\n`).
+fn sse_line(event: &UIStreamEvent) -> String {
+    let json = serde_json::to_string(event).expect("ui stream event serializes");
+    format!("data: {json}\n\n")
+}
+
+/// A chunked SSE body fed from `out_rx`: each frame is flushed as the producer
+/// sends it, so `useChat` paints in-flight instead of waiting for the whole turn.
+fn stream_response(out_rx: mpsc::UnboundedReceiver<String>) -> Response {
+    let stream = UnboundedReceiverStream::new(out_rx).map(Ok::<String, Infallible>);
+    (StatusCode::OK, sse_headers(), Body::from_stream(stream)).into_response()
+}
+
+/// Frame a whole event list as one buffered SSE body (used for the non-streaming
+/// resume and error paths), terminated by `[DONE]`.
 fn sse_response(events: Vec<UIStreamEvent>) -> Response {
     let mut body = String::new();
     for event in &events {
-        let json = serde_json::to_string(event).expect("ui stream event serializes");
-        body.push_str("data: ");
-        body.push_str(&json);
-        body.push_str("\n\n");
+        body.push_str(&sse_line(event));
     }
     body.push_str("data: [DONE]\n\n");
-
-    (
-        StatusCode::OK,
-        [
-            (
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("text/event-stream"),
-            ),
-            (
-                header::HeaderName::from_static(AI_SDK_STREAM_HEADER),
-                HeaderValue::from_static("v1"),
-            ),
-        ],
-        body,
-    )
-        .into_response()
+    (StatusCode::OK, sse_headers(), body).into_response()
 }
 
-/// A single-frame SSE error stream (AI SDK errors use `errorText`).
-fn sse_error(err: DriverError) -> Response {
+/// The AI SDK error tail (`error` + `finish("error")`).
+fn error_events(err: DriverError) -> Vec<UIStreamEvent> {
     let message = match err {
         DriverError::BadRequest(m) | DriverError::Internal(m) => m,
     };
-    sse_response(vec![
+    vec![
         UIStreamEvent::error(message),
         UIStreamEvent::finish("error"),
-    ])
+    ]
+}
+
+/// A single buffered SSE error stream (AI SDK errors use `errorText`).
+fn sse_error(err: DriverError) -> Response {
+    sse_response(error_events(err))
 }
