@@ -6,8 +6,11 @@
 //! adapter (AG-UI, AI SDK, A2A) on the same thread, and a turn started through one
 //! protocol is resumable and observable through another.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
+use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use serde_json::Value;
 
 /// A tool a run parked on.
@@ -64,6 +67,23 @@ pub trait ProtocolRuntime: Send + Sync {
         messages: Vec<Message>,
     ) -> Result<StepOutcome, DriverError>;
 
+    /// Run one turn, forwarding the engine's best-effort live progress to `sink`
+    /// as it happens, and still returning the committed [`StepOutcome`]. The
+    /// default ignores `sink` and delegates to [`ProtocolRuntime::run_turn`] — a
+    /// runtime with no live channel degrades to the committed projection only,
+    /// which is correct because the live stream is never the source of truth
+    /// (G10/G13). Adapters that want a chunked stream call this and drain `sink`.
+    async fn run_turn_streaming(
+        &self,
+        thread: &str,
+        agent: Option<String>,
+        messages: Vec<Message>,
+        sink: Arc<dyn StreamSink>,
+    ) -> Result<StepOutcome, DriverError> {
+        let _ = sink;
+        self.run_turn(thread, agent, messages).await
+    }
+
     /// Resume the run parked on `thread`, answering `tool_use_id` with `resume`.
     /// Fails closed unless `tool_use_id` names the pending tool and the resume
     /// variant matches its binding.
@@ -88,5 +108,80 @@ pub trait ProtocolRuntime: Send + Sync {
     /// part). Default `(0, 0)` — a runtime whose provider reports no usage.
     async fn usage(&self, _thread: &str) -> (u64, u64) {
         (0, 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A runtime that only counts `run_turn` calls, to prove the default
+    /// `run_turn_streaming` degrades to `run_turn` (best-effort: no live channel).
+    #[derive(Default)]
+    struct CountingRuntime {
+        run_turns: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ProtocolRuntime for CountingRuntime {
+        async fn run_turn(
+            &self,
+            _thread: &str,
+            _agent: Option<String>,
+            _messages: Vec<Message>,
+        ) -> Result<StepOutcome, DriverError> {
+            self.run_turns.fetch_add(1, Ordering::SeqCst);
+            Ok(StepOutcome {
+                new_messages: Vec::new(),
+                waiting: false,
+                exhausted: false,
+                pending: None,
+            })
+        }
+
+        async fn resume(
+            &self,
+            _thread: &str,
+            _tool_use_id: &str,
+            _resume: Resume,
+        ) -> Result<StepOutcome, DriverError> {
+            unreachable!()
+        }
+
+        async fn pending(&self, _thread: &str) -> Option<Pending> {
+            None
+        }
+
+        async fn history(&self, _thread: &str) -> Vec<Message> {
+            Vec::new()
+        }
+
+        fn model(&self) -> String {
+            "test".into()
+        }
+    }
+
+    struct NoopSink;
+
+    #[async_trait]
+    impl StreamSink for NoopSink {
+        async fn send(
+            &self,
+            _event: awaken_agent_contract::stream::event::Event,
+        ) -> Result<(), awaken_agent_contract::stream::sink::Error> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn default_streaming_delegates_to_run_turn() {
+        let rt = CountingRuntime::default();
+        let outcome = rt
+            .run_turn_streaming("t1", None, Vec::new(), Arc::new(NoopSink))
+            .await
+            .unwrap();
+        assert!(!outcome.waiting);
+        assert_eq!(rt.run_turns.load(Ordering::SeqCst), 1);
     }
 }

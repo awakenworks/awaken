@@ -21,6 +21,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::{WaitingReason, WaitingTicket};
 use awaken_agent_contract::store::stream_checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
+use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_ext_goal::{DelegateGrader, GoalPlugin, GoalSpec, Grader, KeywordGrader};
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
 use awaken_protocol_a2a::Transport;
@@ -1316,7 +1317,21 @@ impl SharedHost {
         thread: &str,
         input: Vec<Message>,
     ) -> Result<TurnResult, HostError> {
-        self.deliver_turn(agent, thread, input, false).await
+        self.deliver_turn(agent, thread, input, false, None).await
+    }
+
+    /// Like [`SharedHost::run_turn`] but forwards the engine's best-effort live
+    /// progress to `sink` as the turn runs (the streaming protocol path). The
+    /// committed result is identical; the sink only mirrors in-flight events.
+    pub async fn run_turn_streaming(
+        &self,
+        agent: Option<&str>,
+        thread: &str,
+        input: Vec<Message>,
+        sink: Arc<dyn StreamSink>,
+    ) -> Result<TurnResult, HostError> {
+        self.deliver_turn(agent, thread, input, false, Some(sink))
+            .await
     }
 
     /// Submit a turn that *supersedes* the thread's prior pending/parked work
@@ -1330,7 +1345,7 @@ impl SharedHost {
         thread: &str,
         input: Vec<Message>,
     ) -> Result<TurnResult, HostError> {
-        self.deliver_turn(agent, thread, input, true).await
+        self.deliver_turn(agent, thread, input, true, None).await
     }
 
     async fn deliver_turn(
@@ -1339,6 +1354,7 @@ impl SharedHost {
         thread: &str,
         input: Vec<Message>,
         supersede: bool,
+        sink: Option<Arc<dyn StreamSink>>,
     ) -> Result<TurnResult, HostError> {
         let ctx = self.ctx_for(thread, agent).await?;
         let mut st = ctx.state.lock().await;
@@ -1408,7 +1424,7 @@ impl SharedHost {
         // R3/R4: route to the ACP executor for acp:* threads, else the native
         // ingress (direct / durable / superseding). See `crate::turn_exec`.
         let phase = self
-            .execute_activation(&ctx, thread, activation, supersede)
+            .execute_activation(&ctx, thread, activation, supersede, sink)
             .await?;
         let result = self.finish_step(&ctx, &mut st, run_id, phase, before, thread);
         drop(st);

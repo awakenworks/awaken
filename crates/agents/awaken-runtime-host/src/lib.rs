@@ -846,6 +846,21 @@ impl ProtocolRuntime for ProtocolHost {
         Ok(to_step_outcome(result))
     }
 
+    async fn run_turn_streaming(
+        &self,
+        thread: &str,
+        _agent: Option<String>,
+        messages: Vec<Message>,
+        sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
+    ) -> Result<StepOutcome, DriverError> {
+        let result = self
+            .host
+            .run_turn_streaming(None, thread, messages, sink)
+            .await
+            .map_err(to_driver_error)?;
+        Ok(to_step_outcome(result))
+    }
+
     async fn resume(
         &self,
         thread: &str,
