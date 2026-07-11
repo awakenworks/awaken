@@ -176,30 +176,62 @@ editable. The model catalog is org/deployment-shared and visible from the reserv
 scope (ADR-0051; `resource_owner.rs:14-15`), so binding is possible; only the
 auto-selection is missing.
 
-- **Sentinel binding.** A `model_binding` left unset (a sentinel) means "auto"; an
-  operator-set binding is a **pin** and is never overwritten. The two states give
-  "auto by default, editable to override" in one field — no parallel config.
-- **Resolver.** For a sentinel, a `ModelResolver` selects the **first provider-backed
-  (non-scripted) offering** from the `ProviderCatalog`, reusing config-resolver's
-  existing "first offering" semantics (`awaken-config-resolver/src/lib.rs:96,120`). The
-  remaining provider-backed offerings fill `model_candidates`
-  (`config.rs:46`), giving the engine's existing pool-failover
-  (`awaken-runtime/src/engine/mod.rs:567,625`) something to fall back to at run time.
-  If no provider-backed model exists, resolution fails **loud at publish** with a 409
-  ("configure and publish a model first").
-- **Placement: publish-time, with re-resolution on catalog change.** Resolution runs
-  in `ConfigService::publish` *before* `compile` (which requires a filled binding,
-  `compile.rs:82`), so the stored `RunnableConfig` is self-contained,
-  content-addressed, reproducible, and fails at configuration time rather than at first
-  use. To recover the freshness that a purely run-time resolution would give, a change
-  to the model catalog **re-resolves and re-publishes** the assistant. This keeps the
-  resolver entirely in the config plane and off the run/activation path.
+- **Explicit binding mode, not a sentinel.** `model_binding` is not "empty means
+  magic"; it is a two-variant value object that *names* the two intents:
 
-  Rejected alternative — run-time resolution (resolve the sentinel at each
-  activation): it is "live/self-healing" but pushes resolution into the run path
-  (which today assumes an already-concrete binding), fails at run time instead of
-  publish, and yields non-reproducible artifacts. Only warranted under strict
-  real-time model churn, which is not our posture.
+  ```rust
+  enum ModelBinding {
+      Auto,               // resolve to a first-offering at publish (default)
+      Pinned(ModelRef),   // operator's explicit choice — never overwritten
+  }
+  ```
+
+  `Auto` is the default; an operator edit that picks a model produces `Pinned`. The
+  variants give "auto by default, editable to override" in one field — no parallel
+  config — while revealing the intent at the type level (no reader has to know that an
+  absent value carries behavior). `compile` still requires a *concrete* model (it reads
+  the resolved `RunnableConfig`, not this source field), so `Auto` must be resolved to a
+  `Pinned`-equivalent before compile — which is exactly what the resolver does below.
+- **Resolver.** For `ModelBinding::Auto`, a `ModelResolver` selects the **first
+  provider-backed (non-scripted) offering** from the `ProviderCatalog`, reusing
+  config-resolver's existing "first offering" semantics
+  (`awaken-config-resolver/src/lib.rs:96,120`). The remaining provider-backed offerings
+  fill `model_candidates` (`config.rs:46`), giving the engine's existing pool-failover
+  (`awaken-runtime/src/engine/mod.rs:567,625`) something to fall back to at run time.
+  `Pinned(m)` resolves to `m` untouched. If no provider-backed model exists, resolution
+  fails **loud at publish** with a 409 ("configure and publish a model first").
+- **Placement: publish-time.** Resolution runs in `ConfigService::publish` *before*
+  `compile` (which requires a concrete binding, `compile.rs:82`), so the stored
+  `RunnableConfig` is self-contained, content-addressed, reproducible, and fails at
+  configuration time rather than at first use. This keeps the resolver entirely in the
+  config plane and off the run/activation path.
+- **Freshness: one explicit reconciler port, not a scattered hook.** The one place this
+  design bends simple design is that an `Auto` binding resolved at publish can go stale
+  when the model catalog changes. We converge that concern into a single named seam
+  rather than an ad-hoc callback:
+
+  ```rust
+  // Consumer: the model-catalog write path, which calls this after a catalog mutation.
+  // It re-resolves every Auto-bound assistant and re-publishes through the ordinary
+  // ConfigService path; Pinned bindings are skipped (an operator pin is authoritative).
+  trait AssistantBindingReconciler: Send + Sync {
+      async fn reconcile(&self, scope: &ScopeId) -> Result<Reconciled, ReconcileError>;
+  }
+  ```
+
+  This gives the staleness recovery **one testable home** with an explicit contract for
+  *who triggers it* (the catalog write path), *what it touches* (only `Auto` configs in
+  the scope), and *how failure surfaces* (a `ReconcileError` the caller logs/retries —
+  a failed reconcile leaves the last good published binding in place, never a broken
+  one). It is idempotent (re-resolving an already-current `Auto` is a no-op by content
+  address) so a retry loop is safe. The bounded staleness window is the interval between
+  the catalog write and a successful `reconcile`.
+
+  Rejected alternative — run-time resolution (resolve `Auto` at each activation): it is
+  "live/self-healing" but pushes resolution into the run path (which today assumes an
+  already-concrete binding), fails at run time instead of publish, and yields
+  non-reproducible artifacts. Only warranted under strict real-time model churn, which
+  is not our posture.
 
 ### D6: Access control by `Authority::covers`; no reserved-id guard; audit every call
 
@@ -227,16 +259,22 @@ Positive:
 - No sandbox surface to build or reason about; safety is localized in four read-only
   tool executors behind the existing gate.
 - Model binding is zero-touch for the operator yet fully editable, reproducible, and
-  fails loud at configuration time.
+  fails loud at configuration time. Its two intents are named at the type level
+  (`ModelBinding::{Auto, Pinned}`), not encoded as a magic absent value.
+- The one place the design bends (freshness of an `Auto` binding after a catalog
+  change) is isolated behind a single named port (`AssistantBindingReconciler`) with an
+  explicit trigger/scope/failure contract, rather than a diffuse hook — so the bend has
+  one testable, reason-about-able home.
 
 Costs (accepted):
 
 - `ConfigService` gains a scope parameter on `validate`/`publish` and swaps its fixed
   `tools` vec for a `ToolCatalogSource`. This is the price of making tool visibility a
   function of scope; it is small and localized.
-- A model-catalog change must trigger re-resolution/re-publish of the assistant to
-  avoid a stale binding — a bounded staleness window between the two events (accepted
-  per D5; the run-time alternative was rejected).
+- The model-catalog write path must call `AssistantBindingReconciler::reconcile` to
+  avoid a stale `Auto` binding — a bounded staleness window between the catalog write
+  and a successful reconcile (accepted per D5; idempotent + `Pinned`-skipping, so a
+  retry is safe; the run-time alternative was rejected).
 - One more reserved-scope constant to seed and document.
 
 ## Alternatives considered
@@ -274,13 +312,17 @@ Costs (accepted):
   reserved_scope, admin_descriptors() }` at assembly (`server-local/src/lib.rs:1321`).
   Test: reserved scope compiles a config naming the admin tools; a non-reserved scope
   with the same config gets `UnknownTool`.
-- **S3** — Seed the assistant as an ordinary `AgentConfig` (locked-free, instructions
-  + `tool_ids` = the four tools + sentinel `model_binding`) in the reserved scope;
-  publish it through the ordinary path so it lands in `AgentCatalog` as a compiled
-  `RunnableConfig`; `Backend::Native`, no sandbox. Retire this agent's builder bypass.
-- **S4** — `ModelResolver` (first-offering + sentinel + `model_candidates` fill) run in
-  `publish` before `compile`; a model-catalog-change hook re-resolves and re-publishes.
-  409 when no provider-backed model exists.
+- **S3** — Introduce `ModelBinding::{Auto, Pinned}`; seed the assistant as an ordinary
+  `AgentConfig` (locked-free, instructions + `tool_ids` = the four tools +
+  `ModelBinding::Auto`) in the reserved scope; publish it through the ordinary path so it
+  lands in `AgentCatalog` as a compiled `RunnableConfig`; `Backend::Native`, no sandbox.
+  Retire this agent's builder bypass. Test: `Pinned` survives publish untouched.
+- **S4** — `ModelResolver` (first-offering for `Auto`, pass-through for `Pinned`,
+  `model_candidates` fill) run in `publish` before `compile`; 409 when no provider-backed
+  model exists. Then `AssistantBindingReconciler` called from the model-catalog write
+  path: re-resolves `Auto` assistants, skips `Pinned`, idempotent by content address.
+  Test: a catalog change re-publishes an `Auto` assistant to the new first-offering and
+  leaves a `Pinned` one unchanged.
 - **S5** — Reserved-scope access via `Authority::covers` (no bespoke guard);
   `awaken::admin_audit` on every tool call; management `ToolExecutor` authority check
   as defense-in-depth.
