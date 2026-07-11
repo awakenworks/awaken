@@ -193,7 +193,7 @@ async fn create_skill(
         };
         let version = build_version(&state, &content);
         // Deliver under the skill's name so the runtime offers it on threads.
-        let _ = state.host.skill_store_put(&version.name, &content);
+        let _ = state.host.skill_store_put(&version.name, &content).await;
         let n = state.skill_seq.fetch_add(1, Ordering::SeqCst);
         let id = format!("skill_{n:016}");
         let record = SkillRecord {
@@ -221,7 +221,7 @@ async fn create_skill(
             "skill needs a string `id` and `content`",
         );
     };
-    match state.host.skill_store_put(id, content) {
+    match state.host.skill_store_put(id, content).await {
         Some(stored_id) => {
             let version = build_version(&state, content);
             state.registry.lock().unwrap().insert(
@@ -249,10 +249,17 @@ async fn create_skill(
 /// when the registry is empty but the durable catalog persists), so a skill
 /// uploaded before a restart still lists.
 async fn list_skills(State(state): State<Arc<SkillsApi>>) -> impl IntoResponse {
-    let registry = state.registry.lock().unwrap();
-    let mut data: Vec<Value> = registry.iter().map(|(id, r)| r.project(id)).collect();
-    for id in state.host.skill_store_list() {
-        if !registry.contains_key(&id) {
+    // Snapshot the registry (and its ids) then drop the lock before awaiting the
+    // durable list — a MutexGuard must not be held across an await.
+    let (mut data, present): (Vec<Value>, std::collections::HashSet<String>) = {
+        let registry = state.registry.lock().unwrap();
+        (
+            registry.iter().map(|(id, r)| r.project(id)).collect(),
+            registry.iter().map(|(id, _)| id.clone()).collect(),
+        )
+    };
+    for id in state.host.skill_store_list().await {
+        if !present.contains(&id) {
             data.push(json!({
                 "id": id,
                 "type": "skill",
@@ -319,7 +326,7 @@ async fn create_version(
     };
     let version = build_version(&state, &content);
     // Deliver the new version's content under the skill's name.
-    let _ = state.host.skill_store_put(&version.name, &content);
+    let _ = state.host.skill_store_put(&version.name, &content).await;
     let projected = version.project(&id);
     let mut registry = state.registry.lock().unwrap();
     registry.get_mut(&id).unwrap().versions.push(version);

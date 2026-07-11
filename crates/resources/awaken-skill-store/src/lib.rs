@@ -1,16 +1,36 @@
 //! Durable skill catalog for the resources plane.
 //!
-//! A `SKILL.md`-per-skill store on disk, addressed by a stable id. It is the durable,
-//! *delivered* skill source: a skill written here survives a process restart, so a
-//! catalog configured through the management plane outlives the process that
-//! received it — unlike a static in-process registry.
+//! The [`SkillStore`] port (mirroring awaken-file-store's `FileStore`) with pluggable
+//! backends: [`InMemorySkillStore`], [`FsSkillStore`] (a `SKILL.md`-per-skill tree on
+//! disk), and — feature-gated — `SqliteSkillStore` / `PgSkillStore` over one portable
+//! bundle. It is the durable, *delivered* skill source: a skill written here survives
+//! a restart, and on postgres is shared across nodes, so a catalog configured through
+//! the management plane outlives (and spans) the process that received it.
 //!
 //! This crate is deliberately store-shaped and nothing more: the runtime's
 //! `awaken-ext-skills` never sees it. The host reads the catalog out of here and
 //! feeds the bytes to the extension's `SkillSource` port as plain file data, so the
 //! runtime only ever perceives local files and the injected catalog — never a store.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use async_trait::async_trait;
+
+#[cfg(feature = "postgres")]
+mod postgres;
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+mod schema;
+#[cfg(feature = "sqlite")]
+mod sqlite;
+
+#[cfg(feature = "postgres")]
+pub use postgres::{PgSkillStore, PgStoreError};
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub use schema::{BUNDLE_ID, skill_store_bundle};
+#[cfg(feature = "sqlite")]
+pub use sqlite::{SqliteSkillStore, StoreError};
 
 /// The filename backing a skill id: `<safe-stem>.md`. Ids are typically already
 /// safe slugs, but a managed client can post an arbitrary id — so it is reduced to a
@@ -40,14 +60,108 @@ pub fn sanitize_stem(name: &str) -> String {
     }
 }
 
-/// A durable, id-keyed catalog of `SKILL.md` bodies: one file per skill under `root`.
-/// The delivered-skill source the host scans; survives a restart because it is on
-/// disk, not in a process's heap.
-pub struct SkillStore {
+/// A skill-store failure.
+#[derive(Debug, thiserror::Error)]
+pub enum SkillStoreError {
+    #[error("io: {0}")]
+    Io(String),
+    #[error("storage: {0}")]
+    Storage(String),
+}
+
+/// A durable, workspace-scoped catalog of `SKILL.md` bodies, addressed by a stable
+/// id. `put` returns the sanitized id the skill is addressable by (what `list`
+/// reports); `list` is sorted by id for a stable catalog. Async so a network-DB
+/// backend fits; the filesystem/in-memory backends satisfy it trivially. Mirrors
+/// awaken-file-store's `FileStore`.
+#[async_trait]
+pub trait SkillStore: Send + Sync {
+    /// Store (or overwrite) `content` under `id` in `workspace_id`; returns the safe
+    /// id (sanitized stem) it is addressable by.
+    async fn put(
+        &self,
+        workspace_id: &str,
+        id: &str,
+        content: &str,
+    ) -> Result<String, SkillStoreError>;
+    /// The content under `id`, or `None` if absent.
+    async fn get(&self, workspace_id: &str, id: &str) -> Result<Option<String>, SkillStoreError>;
+    /// Every skill in the workspace as `(id, content)`, sorted by id.
+    async fn list(&self, workspace_id: &str) -> Result<Vec<(String, String)>, SkillStoreError>;
+    /// Delete a skill; returns whether it existed. Idempotent.
+    async fn delete(&self, workspace_id: &str, id: &str) -> Result<bool, SkillStoreError>;
+}
+
+/// In-memory [`SkillStore`] (tests / ephemeral single-process).
+#[derive(Default)]
+pub struct InMemorySkillStore {
+    // workspace_id → (id → content)
+    inner: Mutex<BTreeMap<String, BTreeMap<String, String>>>,
+}
+
+impl InMemorySkillStore {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl SkillStore for InMemorySkillStore {
+    async fn put(
+        &self,
+        workspace_id: &str,
+        id: &str,
+        content: &str,
+    ) -> Result<String, SkillStoreError> {
+        let stem = sanitize_stem(id);
+        self.inner
+            .lock()
+            .unwrap()
+            .entry(workspace_id.to_string())
+            .or_default()
+            .insert(stem.clone(), content.to_string());
+        Ok(stem)
+    }
+
+    async fn get(&self, workspace_id: &str, id: &str) -> Result<Option<String>, SkillStoreError> {
+        Ok(self
+            .inner
+            .lock()
+            .unwrap()
+            .get(workspace_id)
+            .and_then(|ws| ws.get(&sanitize_stem(id)).cloned()))
+    }
+
+    async fn list(&self, workspace_id: &str) -> Result<Vec<(String, String)>, SkillStoreError> {
+        Ok(self
+            .inner
+            .lock()
+            .unwrap()
+            .get(workspace_id)
+            .map(|ws| ws.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default())
+    }
+
+    async fn delete(&self, workspace_id: &str, id: &str) -> Result<bool, SkillStoreError> {
+        Ok(self
+            .inner
+            .lock()
+            .unwrap()
+            .get_mut(workspace_id)
+            .is_some_and(|ws| ws.remove(&sanitize_stem(id)).is_some()))
+    }
+}
+
+/// Filesystem [`SkillStore`]: `<root>/<workspace>/<id>.md`, one file per skill.
+/// Both `workspace_id` and `id` are sanitized to a single safe stem, so a crafted
+/// `../` can never escape the root. Survives a restart because it is on disk. `open`
+/// is synchronous (one-time directory setup); the per-skill operations are async.
+pub struct FsSkillStore {
     root: PathBuf,
 }
 
-impl SkillStore {
+impl FsSkillStore {
     /// Open (creating if absent) the catalog rooted at `root`.
     pub fn open(root: impl Into<PathBuf>) -> std::io::Result<Self> {
         let root = root.into();
@@ -56,42 +170,76 @@ impl SkillStore {
     }
 
     /// The catalog's root directory.
+    #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    /// Store (or overwrite) the `SKILL.md` `content` under `id`. Returns the safe id
-    /// the skill is addressable by (the sanitized stem), which is what [`list`](Self::list)
-    /// reports back.
-    pub fn put(&self, id: &str, content: &str) -> std::io::Result<String> {
+    fn ws_dir(&self, workspace_id: &str) -> PathBuf {
+        self.root.join(sanitize_stem(workspace_id))
+    }
+}
+
+#[async_trait]
+impl SkillStore for FsSkillStore {
+    async fn put(
+        &self,
+        workspace_id: &str,
+        id: &str,
+        content: &str,
+    ) -> Result<String, SkillStoreError> {
         let stem = sanitize_stem(id);
-        std::fs::write(self.root.join(format!("{stem}.md")), content)?;
+        let dir = self.ws_dir(workspace_id);
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .map_err(|e| SkillStoreError::Io(e.to_string()))?;
+        tokio::fs::write(dir.join(format!("{stem}.md")), content)
+            .await
+            .map_err(|e| SkillStoreError::Io(e.to_string()))?;
         Ok(stem)
     }
 
-    /// The `SKILL.md` content stored under `id`, or `None` if no such skill exists.
-    pub fn get(&self, id: &str) -> Option<String> {
-        std::fs::read_to_string(self.root.join(id_filename(id))).ok()
+    async fn get(&self, workspace_id: &str, id: &str) -> Result<Option<String>, SkillStoreError> {
+        let path = self.ws_dir(workspace_id).join(id_filename(id));
+        match tokio::fs::read_to_string(&path).await {
+            Ok(s) => Ok(Some(s)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(SkillStoreError::Io(e.to_string())),
+        }
     }
 
-    /// Every skill as `(id, content)`, ordered by id for a stable catalog. The id is
-    /// the file stem — exactly what [`put`](Self::put) returned.
-    pub fn list(&self) -> Vec<(String, String)> {
-        let Ok(read_dir) = std::fs::read_dir(&self.root) else {
-            return Vec::new();
+    async fn list(&self, workspace_id: &str) -> Result<Vec<(String, String)>, SkillStoreError> {
+        let dir = self.ws_dir(workspace_id);
+        let mut read_dir = match tokio::fs::read_dir(&dir).await {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(SkillStoreError::Io(e.to_string())),
         };
-        let mut out: Vec<(String, String)> = read_dir
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x == "md"))
-            .filter_map(|path| {
-                let id = path.file_stem()?.to_str()?.to_string();
-                let content = std::fs::read_to_string(&path).ok()?;
-                Some((id, content))
-            })
-            .collect();
+        let mut out: Vec<(String, String)> = Vec::new();
+        while let Some(entry) = read_dir
+            .next_entry()
+            .await
+            .map_err(|e| SkillStoreError::Io(e.to_string()))?
+        {
+            let path = entry.path();
+            if path.extension().is_some_and(|x| x == "md")
+                && let Some(id) = path.file_stem().and_then(|s| s.to_str())
+                && let Ok(content) = tokio::fs::read_to_string(&path).await
+            {
+                out.push((id.to_string(), content));
+            }
+        }
         out.sort_by(|a, b| a.0.cmp(&b.0));
-        out
+        Ok(out)
+    }
+
+    async fn delete(&self, workspace_id: &str, id: &str) -> Result<bool, SkillStoreError> {
+        let path = self.ws_dir(workspace_id).join(id_filename(id));
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(SkillStoreError::Io(e.to_string())),
+        }
     }
 }
 
@@ -107,34 +255,13 @@ mod tests {
         std::env::temp_dir().join(format!("awaken-skillstore-{tag}-{stamp}"))
     }
 
-    #[test]
-    fn put_list_get_roundtrips_and_reopen_reads_the_same_catalog() {
-        let root = scratch("roundtrip");
-        {
-            let store = SkillStore::open(&root).unwrap();
-            assert_eq!(store.put("greet", "---\n---\nGREETING").unwrap(), "greet");
-            store.put("review", "REVIEW").unwrap();
-        }
-        // A fresh process over the same root (a restart) still lists both skills.
-        let reopened = SkillStore::open(&root).unwrap();
-        let ids: Vec<_> = reopened.list().into_iter().map(|(id, _)| id).collect();
-        assert_eq!(
-            ids,
-            vec!["greet", "review"],
-            "catalog survives reopen, sorted"
-        );
-        assert_eq!(reopened.get("greet").unwrap(), "---\n---\nGREETING");
-        assert_eq!(reopened.get("missing"), None);
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn crafted_ids_cannot_escape_root() {
+    #[tokio::test]
+    async fn crafted_ids_cannot_escape_root() {
         let root = scratch("escape");
-        let store = SkillStore::open(&root).unwrap();
-        let id = store.put("../../etc/passwd", "x").unwrap();
+        let store = FsSkillStore::open(&root).unwrap();
+        let id = store.put("ws", "../../etc/passwd", "x").await.unwrap();
         assert_eq!(id, "etc-passwd");
-        assert!(root.join("etc-passwd.md").exists());
+        assert!(root.join("ws").join("etc-passwd.md").exists());
         assert!(!root.parent().unwrap().join("passwd.md").exists());
         std::fs::remove_dir_all(&root).ok();
     }

@@ -11,6 +11,12 @@ use awaken_sandbox_local::{FileStore, Mount, SandboxSpec};
 
 use crate::host::SharedHost;
 
+/// The single workspace the host addresses its durable skill catalog under. The
+/// `SkillStore` port is workspace-scoped (multi-node/multi-tenant-ready); this host
+/// is currently single-catalog, so it uses one fixed workspace. Threading a
+/// per-session workspace (ADR-0051) is a later tenancy step over the same store.
+pub(crate) const HOST_SKILL_WORKSPACE: &str = "default";
+
 /// A thread's staged resources (ADR-0038): the legacy [`Mount`]s realized into its
 /// sandbox plus the prompt fragments appended to its system prompt. Built by a
 /// session's `prepare_session` from the wire `resources[]`.
@@ -135,18 +141,50 @@ impl SharedHost {
     /// Store (or overwrite) a delivered skill's `SKILL.md` `content` under `id` in the
     /// durable catalog, returning the safe id it is addressable by. `None` when this
     /// host has no durable skill store wired (nothing to persist into).
-    pub fn skill_store_put(&self, id: &str, content: &str) -> Option<String> {
-        self.skill_store
-            .as_ref()
-            .map(|store| store.put(id, content).expect("persist durable skill"))
+    pub async fn skill_store_put(&self, id: &str, content: &str) -> Option<String> {
+        let store = self.skill_store.as_ref()?;
+        let out = store
+            .put(HOST_SKILL_WORKSPACE, id, content)
+            .await
+            .expect("persist durable skill");
+        // Keep the sync-read cache current for advertisement + scan.
+        self.reload_skill_cache().await;
+        Some(out)
     }
 
-    /// The ids in the durable skill catalog (empty when no store is wired).
-    pub fn skill_store_list(&self) -> Vec<String> {
-        self.skill_store
-            .as_ref()
-            .map(|store| store.list().into_iter().map(|(id, _)| id).collect())
-            .unwrap_or_default()
+    /// The ids currently in the durable skill catalog (read straight from the store,
+    /// so the CRUD `list` reflects any peer node's writes). Empty when no store is
+    /// wired.
+    pub async fn skill_store_list(&self) -> Vec<String> {
+        match self.skill_store.as_ref() {
+            Some(store) => store
+                .list(HOST_SKILL_WORKSPACE)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Refresh the in-memory delivered-catalog snapshot from the async store. Called
+    /// on a write and at each session's setup so the sync read paths (advertisement,
+    /// run-loop scan) see the current catalog.
+    pub async fn reload_skill_cache(&self) {
+        if let Some(store) = self.skill_store.as_ref() {
+            let snapshot = store.list(HOST_SKILL_WORKSPACE).await.unwrap_or_default();
+            *self.skill_cache.lock().expect("skill cache poisoned") = snapshot;
+        }
+    }
+
+    /// A clone of the cached delivered catalog `(id, content)` — the synchronous read
+    /// the host's `SkillSource` bridge scans (the run-loop scan cannot await).
+    pub fn skill_cache_snapshot(&self) -> Vec<(String, String)> {
+        self.skill_cache
+            .lock()
+            .expect("skill cache poisoned")
+            .clone()
     }
 
     /// Whether this host has a durable skill catalog wired.
@@ -292,11 +330,11 @@ impl SharedHost {
     /// resolves.
     pub fn skill_ids(&self) -> Vec<String> {
         let mut ids: Vec<String> = self.skills.iter().map(|s| s.id.clone()).collect();
-        if let Some(store) = &self.skill_store {
-            for (id, _) in store.list() {
-                if !ids.contains(&id) {
-                    ids.push(id);
-                }
+        // The durable catalog is read from the sync cache (refreshed on write and at
+        // session setup); a network-DB store cannot be awaited from this sync path.
+        for (id, _) in self.skill_cache_snapshot() {
+            if !ids.contains(&id) {
+                ids.push(id);
             }
         }
         ids

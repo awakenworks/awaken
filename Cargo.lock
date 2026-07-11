@@ -1127,6 +1127,16 @@ dependencies = [
 [[package]]
 name = "awaken-skill-store"
 version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-scoped-migration",
+ "awaken-scoped-migration-sqlite",
+ "rusqlite",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
 
 [[package]]
 name = "awaken-standalone"
