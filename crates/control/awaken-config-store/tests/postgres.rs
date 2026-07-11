@@ -4,7 +4,7 @@
 use awaken_config_store::{
     AgentConfig, ConfigRegistry, PostgresConfigStore, StoredPublication, compile,
 };
-use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
+use awaken_runtime_contract::resolved::ToolDescriptor;
 use sqlx::Executor;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
@@ -48,11 +48,7 @@ fn agent_config() -> AgentConfig {
         id: "agent-1".to_string(),
         instructions: "be helpful".to_string(),
         max_steps: 8,
-        model_binding: ModelBinding {
-            provider_identity_ref: "p".to_string(),
-            model_ref: "m".to_string(),
-            backend_ref: "b".to_string(),
-        },
+        model_binding: awaken_config_store::ModelSelection::pinned("p", "m", "b"),
         tool_ids: vec!["echo".to_string()],
         model_candidates: Vec::new(),
         plugin_ids: Vec::new(),
