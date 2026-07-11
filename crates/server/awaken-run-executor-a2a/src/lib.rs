@@ -160,7 +160,7 @@ async fn finish(
     phase: Phase,
 ) -> Result<Phase> {
     if let Some(coordinator) = &context.commit {
-        awaken_agent_contract::commit::commit_run_turn(
+        awaken_agent_contract::commit::commit_run(
             coordinator.as_ref(),
             &activation.thread_id,
             &activation.run_id,

@@ -58,22 +58,22 @@ pub enum DriverError {
 /// The neutral runtime seam. Implemented by the server over the shared host.
 #[async_trait]
 pub trait ProtocolRuntime: Send + Sync {
-    /// Run one turn on `thread` with the (already converted) new `messages`,
+    /// Run `thread` once with the (already converted) new `messages`,
     /// optionally naming the agent. Runs to the first park or the natural end.
-    async fn run_turn(
+    async fn run(
         &self,
         thread: &str,
         agent: Option<String>,
         messages: Vec<Message>,
     ) -> Result<StepOutcome, DriverError>;
 
-    /// Run one turn, forwarding the engine's best-effort live progress to `sink`
+    /// Run `thread` once, forwarding the engine's best-effort live progress to `sink`
     /// as it happens, and still returning the committed [`StepOutcome`]. The
-    /// default ignores `sink` and delegates to [`ProtocolRuntime::run_turn`] — a
+    /// default ignores `sink` and delegates to [`ProtocolRuntime::run`] — a
     /// runtime with no live channel degrades to the committed projection only,
     /// which is correct because the live stream is never the source of truth
     /// (G10/G13). Adapters that want a chunked stream call this and drain `sink`.
-    async fn run_turn_streaming(
+    async fn run_streaming(
         &self,
         thread: &str,
         agent: Option<String>,
@@ -81,7 +81,7 @@ pub trait ProtocolRuntime: Send + Sync {
         sink: Arc<dyn StreamSink>,
     ) -> Result<StepOutcome, DriverError> {
         let _ = sink;
-        self.run_turn(thread, agent, messages).await
+        self.run(thread, agent, messages).await
     }
 
     /// Resume the run parked on `thread`, answering `tool_use_id` with `resume`.
@@ -116,22 +116,22 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// A runtime that only counts `run_turn` calls, to prove the default
-    /// `run_turn_streaming` degrades to `run_turn` (best-effort: no live channel).
+    /// A runtime that only counts `run` calls, to prove the default
+    /// `run_streaming` degrades to `run` (best-effort: no live channel).
     #[derive(Default)]
     struct CountingRuntime {
-        run_turns: AtomicUsize,
+        runs: AtomicUsize,
     }
 
     #[async_trait]
     impl ProtocolRuntime for CountingRuntime {
-        async fn run_turn(
+        async fn run(
             &self,
             _thread: &str,
             _agent: Option<String>,
             _messages: Vec<Message>,
         ) -> Result<StepOutcome, DriverError> {
-            self.run_turns.fetch_add(1, Ordering::SeqCst);
+            self.runs.fetch_add(1, Ordering::SeqCst);
             Ok(StepOutcome {
                 new_messages: Vec::new(),
                 waiting: false,
@@ -175,13 +175,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_streaming_delegates_to_run_turn() {
+    async fn default_streaming_delegates_to_run() {
         let rt = CountingRuntime::default();
         let outcome = rt
-            .run_turn_streaming("t1", None, Vec::new(), Arc::new(NoopSink))
+            .run_streaming("t1", None, Vec::new(), Arc::new(NoopSink))
             .await
             .unwrap();
         assert!(!outcome.waiting);
-        assert_eq!(rt.run_turns.load(Ordering::SeqCst), 1);
+        assert_eq!(rt.runs.load(Ordering::SeqCst), 1);
     }
 }

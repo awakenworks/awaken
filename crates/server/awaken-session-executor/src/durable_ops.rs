@@ -238,7 +238,7 @@ async fn supersede(
                 Role::User,
                 text,
             );
-            let turn = host.supersede_turn(agent, &thread, vec![message]).await?;
+            let turn = host.supersede_run(agent, &thread, vec![message]).await?;
             let superseded = host.superseded(&thread).await?;
             Ok(json!({
                 "phase": format!("{:?}", turn.phase),

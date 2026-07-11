@@ -51,7 +51,7 @@ async fn live_memory_extraction_writes_a_memory_file() {
 
     // A turn stating a clear, durable preference the extractor should save.
     let phase = host
-        .run_turn(None, "mem-e2e",
+        .run(None, "mem-e2e",
             user("Please remember this for the future: my name is Ada, and I strongly prefer Rust over Python for all backend work. Reply with a brief acknowledgement."),
         )
         .await
@@ -99,7 +99,7 @@ async fn live_memory_is_generated_then_recalled_and_used_in_a_new_conversation()
     let host = host.with_memory(&mem_dir);
 
     // Conversation 1: the user states a durable preference; extraction saves it.
-    host.run_turn(None, "conv-1",
+    host.run(None, "conv-1",
         user("Remember for the future: my favorite programming language is Rust. Acknowledge briefly."),
     )
     .await
@@ -120,7 +120,7 @@ async fn live_memory_is_generated_then_recalled_and_used_in_a_new_conversation()
     // Conversation 2 (a fresh thread, no shared transcript): the saved memory is
     // recalled into context and the live model uses it to answer.
     let phase = host
-        .run_turn(None, "conv-2",
+        .run(None, "conv-2",
             user("Based on what you remember about me, what is my favorite programming language? Answer with just the language name."),
         )
         .await
@@ -173,7 +173,7 @@ async fn live_relevance_selection_picks_the_right_memory_via_the_selector_agent(
     // A pointed question: the selector sub-agent must pick the dog memory out of 13,
     // and the main model must answer from it.
     let phase = host
-        .run_turn(None, "select-e2e",
+        .run(None, "select-e2e",
             user("Based on what you remember about me, what is my dog's name? Answer with just the name."),
         )
         .await
@@ -234,7 +234,7 @@ async fn live_compaction_summarizes_and_the_conversation_continues() {
     // Several short turns to build history past the threshold.
     for i in 0..3 {
         let phase = host
-            .run_turn(
+            .run(
                 None,
                 "compact-e2e",
                 user(&format!(
@@ -249,7 +249,7 @@ async fn live_compaction_summarizes_and_the_conversation_continues() {
     // A follow-up turn still completes: the compact plugin summarized the older slice
     // inline (BeforeInference) and the windowed context is coherent for the live model.
     let phase = host
-        .run_turn(
+        .run(
             None,
             "compact-e2e",
             user("Briefly, how many facts have I told you so far?"),

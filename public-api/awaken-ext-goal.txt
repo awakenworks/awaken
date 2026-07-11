@@ -74,20 +74,9 @@ impl core::marker::Sync for awaken_ext_goal::GraderRef
 impl core::marker::Unpin for awaken_ext_goal::GraderRef
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_goal::GraderRef
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_goal::GraderRef
-pub struct awaken_ext_goal::DelegateError(pub alloc::string::String)
-impl core::clone::Clone for awaken_ext_goal::DelegateError
-pub fn awaken_ext_goal::DelegateError::clone(&self) -> awaken_ext_goal::DelegateError
-impl core::fmt::Debug for awaken_ext_goal::DelegateError
-pub fn awaken_ext_goal::DelegateError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_ext_goal::DelegateError
-impl core::marker::Send for awaken_ext_goal::DelegateError
-impl core::marker::Sync for awaken_ext_goal::DelegateError
-impl core::marker::Unpin for awaken_ext_goal::DelegateError
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_goal::DelegateError
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_goal::DelegateError
 pub struct awaken_ext_goal::DelegateGrader
 impl awaken_ext_goal::DelegateGrader
-pub fn awaken_ext_goal::DelegateGrader::new(alloc::sync::Arc<dyn awaken_ext_goal::DelegateRunner>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_ext_goal::DelegateGrader::new(alloc::sync::Arc<dyn awaken_runtime_contract::subagent_runner::SubagentRunner>, impl core::convert::Into<alloc::string::String>) -> Self
 impl awaken_ext_goal::Grader for awaken_ext_goal::DelegateGrader
 pub fn awaken_ext_goal::DelegateGrader::grade<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_ext_goal::GoalSpec, &'life2 str, core::option::Option<&'life3 tokio_util::sync::cancellation_token::CancellationToken>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_goal::Verdict, awaken_ext_goal::GraderError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 impl core::marker::Freeze for awaken_ext_goal::DelegateGrader
@@ -96,24 +85,6 @@ impl core::marker::Sync for awaken_ext_goal::DelegateGrader
 impl core::marker::Unpin for awaken_ext_goal::DelegateGrader
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_goal::DelegateGrader
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_goal::DelegateGrader
-pub struct awaken_ext_goal::DelegateReply
-pub awaken_ext_goal::DelegateReply::text: core::option::Option<alloc::string::String>
-impl core::marker::Freeze for awaken_ext_goal::DelegateReply
-impl core::marker::Send for awaken_ext_goal::DelegateReply
-impl core::marker::Sync for awaken_ext_goal::DelegateReply
-impl core::marker::Unpin for awaken_ext_goal::DelegateReply
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_goal::DelegateReply
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_goal::DelegateReply
-pub struct awaken_ext_goal::DelegateRequest
-pub awaken_ext_goal::DelegateRequest::agent_id: alloc::string::String
-pub awaken_ext_goal::DelegateRequest::cancellation: core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
-pub awaken_ext_goal::DelegateRequest::prompt: alloc::string::String
-impl core::marker::Freeze for awaken_ext_goal::DelegateRequest
-impl core::marker::Send for awaken_ext_goal::DelegateRequest
-impl core::marker::Sync for awaken_ext_goal::DelegateRequest
-impl core::marker::Unpin for awaken_ext_goal::DelegateRequest
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_goal::DelegateRequest
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_goal::DelegateRequest
 pub struct awaken_ext_goal::GoalGuard
 impl awaken_ext_goal::GoalGuard
 pub fn awaken_ext_goal::GoalGuard::new(awaken_ext_goal::GoalSpec, alloc::sync::Arc<dyn awaken_ext_goal::Grader>) -> Self
@@ -193,8 +164,6 @@ impl core::marker::Sync for awaken_ext_goal::Verdict
 impl core::marker::Unpin for awaken_ext_goal::Verdict
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_goal::Verdict
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_goal::Verdict
-pub trait awaken_ext_goal::DelegateRunner: core::marker::Send + core::marker::Sync
-pub fn awaken_ext_goal::DelegateRunner::run<'life0, 'async_trait>(&'life0 self, awaken_ext_goal::DelegateRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_goal::DelegateReply, awaken_ext_goal::DelegateError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_ext_goal::Grader: core::marker::Send + core::marker::Sync
 pub fn awaken_ext_goal::Grader::grade<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_ext_goal::GoalSpec, &'life2 str, core::option::Option<&'life3 tokio_util::sync::cancellation_token::CancellationToken>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_goal::Verdict, awaken_ext_goal::GraderError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 impl awaken_ext_goal::Grader for awaken_ext_goal::DelegateGrader

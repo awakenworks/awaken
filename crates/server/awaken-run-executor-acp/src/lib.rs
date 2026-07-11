@@ -317,7 +317,7 @@ async fn commit(
     phase: &Phase,
 ) -> Result<()> {
     if let Some(coordinator) = &context.commit {
-        awaken_agent_contract::commit::commit_run_turn(
+        awaken_agent_contract::commit::commit_run(
             coordinator.as_ref(),
             thread_id,
             &run_id,

@@ -14,10 +14,10 @@ use crate::commit::coordinator::{Coordinator, Error};
 use crate::commit::staged::{CommitRecord, ThreadCommit};
 use crate::fact::run::Fact as RunFact;
 
-/// Commit a run turn's terminal facts — its produced messages and final phase —
+/// Commit a run's terminal facts — its produced messages and final phase —
 /// through the single commit boundary (G1/G13). The one place a `Vec<Message>` +
 /// `Phase` becomes committed truth, shared by the native, ACP, and A2A executors.
-pub async fn commit_run_turn(
+pub async fn commit_run(
     coordinator: &dyn Coordinator,
     thread_id: &ThreadId,
     run_id: &RunId,
