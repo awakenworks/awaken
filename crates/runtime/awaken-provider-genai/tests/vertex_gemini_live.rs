@@ -24,7 +24,7 @@ async fn gemini_on_vertex_with_oauth_bearer() {
     let executor = GenaiExecutor::vertex_gemini(project, location, token);
     let request = ChatRequest {
         model_binding: ModelBinding {
-            provider_instance_ref: "vertex".into(),
+            provider_identity_ref: "vertex".into(),
             model_ref: model,
             backend_ref: "genai".into(),
         },

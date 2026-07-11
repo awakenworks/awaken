@@ -12,7 +12,7 @@ use awaken_runtime_contract::resolved::ModelBinding;
 fn sample_request() -> ChatRequest {
     ChatRequest {
         model_binding: ModelBinding {
-            provider_instance_ref: "provider-1".to_string(),
+            provider_identity_ref: "provider-1".to_string(),
             model_ref: "gpt-4o-mini".to_string(),
             backend_ref: "backend-1".to_string(),
         },

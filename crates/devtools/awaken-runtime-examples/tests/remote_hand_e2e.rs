@@ -131,7 +131,7 @@ fn activation() -> RunActivation {
                 instructions: String::new(),
                 max_steps: 16,
                 model_binding: ModelBinding {
-                    provider_instance_ref: "provider-1".to_string(),
+                    provider_identity_ref: "provider-1".to_string(),
                     model_ref: "model-1".to_string(),
                     backend_ref: "backend-1".to_string(),
                 },

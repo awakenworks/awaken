@@ -147,7 +147,7 @@ fn activation(tool_ids: &[&str]) -> RunActivation {
                 instructions: String::new(),
                 max_steps: 16,
                 model_binding: ModelBinding {
-                    provider_instance_ref: "p".to_string(),
+                    provider_identity_ref: "p".to_string(),
                     model_ref: "m".to_string(),
                     backend_ref: "b".to_string(),
                 },

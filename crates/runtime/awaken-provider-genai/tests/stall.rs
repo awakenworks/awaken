@@ -63,7 +63,7 @@ async fn stalled_stream_times_out_as_a_retryable_timeout() {
 
     let request = ChatRequest {
         model_binding: ModelBinding {
-            provider_instance_ref: "p".to_string(),
+            provider_identity_ref: "p".to_string(),
             model_ref: "claude-test".to_string(),
             backend_ref: "b".to_string(),
         },
