@@ -27,6 +27,28 @@ async function step(name, method, path, body, check) {
   return payload;
 }
 
+// Multipart upload (Files + Skills APIs take bytes, not JSON) — Node's global
+// FormData/Blob/fetch. Returns the parsed JSON payload.
+async function uploadStep(name, path, filename, mime, text, fields, check) {
+  const form = new FormData();
+  form.append("file", new Blob([text], { type: mime }), filename);
+  for (const [k, v] of Object.entries(fields ?? {})) form.append(k, v);
+  const res = await fetch(BASE + path, { method: "POST", body: form });
+  let payload = null;
+  try {
+    payload = await res.json();
+  } catch {
+    /* empty body */
+  }
+  const ok = check ? check(res.status, payload) : res.ok;
+  console.log(`${ok ? "✓" : "✗"} ${name} → ${res.status}`);
+  if (!ok) {
+    failures += 1;
+    console.log("  ", JSON.stringify(payload)?.slice(0, 300));
+  }
+  return payload;
+}
+
 // ---- Workspace · Models (surfaces/models.tsx) ----
 await step("author provider", "PUT", "/v1/config/providers/anthropic", {
   id: "anthropic",
@@ -155,20 +177,29 @@ await step("gated Observe face 404s (audit-log)", "GET", "/v1/audit-log", undefi
 // these; the create→list round-trip proves the console↔endpoint wiring.
 const mem = await step("create memory store", "POST", "/v1/memory_stores", { name: "smoke-mem" }, (s, p) => (s === 200 || s === 201) && typeof p.id === "string");
 await step("list memory stores", "GET", "/v1/memory_stores", undefined, (s, p) => s === 200 && p.data.some((x) => x.id === mem.id));
-// Bind the memory store to the published agent (ADR-0038 agent resources) — the loop
-// that makes a store usable: authored here → read into resource prompts + mounts at
-// compile (the config service shares this same resource store).
-await step("bind memory store to agent", "PUT", "/v1/config/agents/smoke-agent/resources", {
+// A file blob (Files API) and a skill (durable skill store, now wired in management
+// mode) — the other resource kinds an agent can bind (ADR-0038).
+const file = await uploadStep("upload file", "/v1/files", "notes.txt", "text/plain", "the port is 8080", { purpose: "agent" }, (s, p) => s === 200 && typeof p.id === "string");
+const skill = await uploadStep("create skill", "/v1/skills", "SKILL.md", "text/markdown", "# Greeter\nSay hello.", { name: "smoke-skill" }, (s, p) => s === 200 && typeof p.id === "string");
+await step("list skills (durable store)", "GET", "/v1/skills", undefined, (s, p) => s === 200 && p.data.some((x) => x.id === skill.id));
+// Bind ALL FOUR kinds to the published agent (ADR-0038 agent resources) — the loop
+// that makes each resource usable: authored here → read into resource prompts + mounts
+// at compile, and staged into the sandbox at session-create (the config service and the
+// runtime host share this same resource store).
+await step("bind resources to agent (memory/file/repo/skill)", "PUT", "/v1/config/agents/smoke-agent/resources", {
   agent_id: "smoke-agent",
-  resources: [{ kind: "memory_store", resource_id: mem.id, mount_path: "/mnt/memory", access: "read_write" }],
+  resources: [
+    { kind: "memory_store", resource_id: mem.id, mount_path: "/mnt/memory", access: "read_write" },
+    { kind: "file", resource_id: file.id, mount_path: "/mnt/files/notes.txt", access: "read_only" },
+    { kind: "github_repository", resource_id: "https://github.com/awaken/example.git", mount_path: "/mnt/repo", access: "read_only" },
+    { kind: "skill", resource_id: skill.id, mount_path: "/mnt/skills/greeter", access: "read_only" },
+  ],
   version: 1,
-}, (s, p) => s === 200 && p.resources[0]?.resource_id === mem.id);
-await step("agent resources round-trip", "GET", "/v1/config/agents/smoke-agent/resources", undefined, (s, p) =>
-  s === 200 && p.resources.some((r) => r.kind === "memory_store" && r.resource_id === mem.id));
-// Skills are delivered from a durable skill store (SKILL.md files), not authored via
-// the console — the surface is list + delete only. Without a store wired, the list is
-// an empty (but live) page; the round-trip we lock is the surface's read.
-await step("list skills (surface read)", "GET", "/v1/skills", undefined, (s, p) => s === 200 && Array.isArray(p.data));
+}, (s, p) => s === 200 && p.resources.length === 4);
+await step("agent resources round-trip (all kinds)", "GET", "/v1/config/agents/smoke-agent/resources", undefined, (s, p) =>
+  s === 200 &&
+  ["memory_store", "file", "github_repository", "skill"].every((k) => p.resources.some((r) => r.kind === k)) &&
+  p.resources.find((r) => r.kind === "file")?.resource_id === file.id);
 const env = await step("create environment", "POST", "/v1/environments", { name: "smoke-env", config: { type: "cloud", networking: { type: "unrestricted" } } }, (s, p) => (s === 200 || s === 201) && typeof p.id === "string");
 await step("list environments", "GET", "/v1/environments", undefined, (s, p) => s === 200 && p.data.some((x) => x.id === env.id));
 // A deployment binds a published agent (smoke-agent, above) to an environment + schedule.
