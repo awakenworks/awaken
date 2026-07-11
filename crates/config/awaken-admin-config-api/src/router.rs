@@ -327,6 +327,7 @@ fn resolve_problem(error: &ResolveError, rid: &str) -> Problem {
         ResolveError::ModelUnresolved(_) => (404, "model_unresolved"),
         ResolveError::EndpointMissing(_) => (422, "endpoint_missing"),
         ResolveError::SourceMissing(_) | ResolveError::PoolMissing(_) => (404, "not_found"),
+        ResolveError::IncompatibleCredential { .. } => (422, "incompatible_credential"),
         // External error code string stays `pool_exhausted` for wire stability even
         // though the internal variant is now the clearer NoEligibleCredential.
         ResolveError::NoEligibleCredential { .. } => (409, "pool_exhausted"),

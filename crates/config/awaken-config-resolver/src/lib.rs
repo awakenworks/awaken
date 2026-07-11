@@ -67,6 +67,14 @@ pub enum ResolveError {
     #[error("credential pool `{0}` not provided")]
     PoolMissing(String),
     #[error(
+        "credential `{source_id}` cannot authenticate provider `{provider_id}` \
+         (fail closed): a key scoped to one provider may not run another's model"
+    )]
+    IncompatibleCredential {
+        source_id: String,
+        provider_id: String,
+    },
+    #[error(
         "credential pool `{pool_id}` has no eligible member (fail closed): \
          {total} total, {cooled} cooled, {over_capacity} over capacity"
     )]
@@ -153,8 +161,16 @@ async fn resolve_inference_toggled(
         flavor: offering.flavor,
     };
 
-    // Credential materialization (secret only exists from here to the seam).
-    let credential = resolve_credential(binding, sources, secret_store).await?;
+    // Credential materialization (secret only exists from here to the seam). The
+    // offering's provider gates the credential via can_consume — an incompatible
+    // key never authenticates a model it cannot serve.
+    let credential = resolve_credential(
+        binding,
+        sources,
+        secret_store,
+        Some(offering.provider_id.0.as_str()),
+    )
+    .await?;
 
     Ok(ResolvedInference {
         triple,
@@ -320,10 +336,32 @@ pub async fn resolve_profile_candidates(
 /// order and returns the first member that materializes — a disabled or unusable
 /// member fails over to the next. Fail-closed: an empty/all-bad pool is an error,
 /// never a silent unauthenticated run.
+/// The validity join (ADR-0118 `can_consume`): may this credential authenticate
+/// this provider? A source scoped to a provider (`provider_id = Some("anthropic")`)
+/// may only consume that provider's offerings; an unscoped source
+/// (`provider_id = None`, host-native / env) may consume any. This is what stops an
+/// otherwise-materializable key being paired with a model it cannot authenticate —
+/// the invalid `(model × credential)` combination the ADR calls out.
+#[must_use]
+pub fn can_consume(offering_provider_id: &str, source: &CredentialSource) -> bool {
+    source
+        .provider_id
+        .as_deref()
+        .is_none_or(|scoped| scoped == offering_provider_id)
+}
+
+/// Materialize the credential a binding selects, gated by [`can_consume`] when an
+/// `offering_provider` is given (the inference path); `None` skips the join (e.g.
+/// an MCP-server credential, which is not a model provider). `None` binding yields
+/// no secret; `Exact` materializes one named source; `OneOfCredentialPool` walks
+/// the pool and returns the first member that is *both* compatible and
+/// materializable — an incompatible, disabled, or unusable member fails over to the
+/// next. Fail-closed: an empty/all-bad pool is an error, never a silent run.
 async fn resolve_credential(
     binding: &CredentialBinding,
     sources: &dyn SourceLookup,
     secret_store: &dyn SecretStore,
+    offering_provider: Option<&str>,
 ) -> Result<Option<RedactedString>, ResolveError> {
     match binding {
         CredentialBinding::None => Ok(None),
@@ -333,6 +371,14 @@ async fn resolve_credential(
             let source = sources
                 .get(credential_source_id.0.as_str())
                 .ok_or_else(|| ResolveError::SourceMissing(credential_source_id.0.clone()))?;
+            if let Some(provider) = offering_provider {
+                if !can_consume(provider, source) {
+                    return Err(ResolveError::IncompatibleCredential {
+                        source_id: credential_source_id.0.clone(),
+                        provider_id: provider.to_string(),
+                    });
+                }
+            }
             Ok(Some(
                 awaken_credential_vault::materialize(source, secret_store).await?,
             ))
@@ -341,14 +387,18 @@ async fn resolve_credential(
             let pool = sources
                 .get_pool(credential_pool_id.0.as_str())
                 .ok_or_else(|| ResolveError::PoolMissing(credential_pool_id.0.clone()))?;
-            // Try members in selection order; skip a member whose source is absent
-            // or fails to materialize, so one bad key does not fail the run.
+            // Try members in selection order; skip a member whose source is absent,
+            // incompatible with the provider, or fails to materialize, so one bad key
+            // does not fail the run.
             let order = pool.selection_order();
             let total = order.len();
             for member in order {
                 let Some(source) = sources.get(member.credential_source_id.0.as_str()) else {
                     continue;
                 };
+                if offering_provider.is_some_and(|provider| !can_consume(provider, source)) {
+                    continue;
+                }
                 if let Ok(secret) = awaken_credential_vault::materialize(source, secret_store).await
                 {
                     return Ok(Some(secret));
@@ -527,7 +577,9 @@ pub async fn resolve_mcp_servers(
 ) -> Result<Vec<ResolvedMcpServer>, ResolveError> {
     let mut resolved = Vec::with_capacity(defs.len());
     for def in defs {
-        let credential = resolve_credential(&def.credential_binding, sources, secret_store).await?;
+        // MCP-server credential: not a model provider, so no can_consume join.
+        let credential =
+            resolve_credential(&def.credential_binding, sources, secret_store, None).await?;
         resolved.push(ResolvedMcpServer {
             name: def.display_name.clone(),
             url: def.url.clone(),
@@ -879,5 +931,77 @@ mod tests {
         let profile: InferenceProfile = serde_json::from_str(legacy).unwrap();
         assert!(profile.model_fallbacks.is_empty());
         assert_eq!(profile.model_axis(), AxisBinding::Pin("m".into()));
+    }
+
+    #[tokio::test]
+    async fn can_consume_gates_a_scoped_key_to_its_provider() {
+        let store = InMemorySecretStore::new();
+        let scoped = create_source(
+            CredentialCreateParams {
+                workspace_id: "ws".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("openai".into()),
+                env_key: None,
+                secret: Some(RedactedString::new("sk-openai")),
+                oauth_command: None,
+            },
+            &store,
+        )
+        .await
+        .unwrap();
+        assert!(can_consume("openai", &scoped));
+        assert!(!can_consume("anthropic", &scoped));
+
+        let unscoped = create_source(
+            CredentialCreateParams {
+                workspace_id: "ws".into(),
+                kind: CredentialKind::Env,
+                provider_id: None,
+                env_key: Some("KEY".into()),
+                secret: Some(RedactedString::new("sk-any")),
+                oauth_command: None,
+            },
+            &store,
+        )
+        .await
+        .unwrap();
+        // Host-native / unscoped consumes any provider.
+        assert!(can_consume("anthropic", &unscoped));
+        assert!(can_consume("openai", &unscoped));
+    }
+
+    #[tokio::test]
+    async fn exact_binding_with_an_incompatible_key_fails_closed() {
+        let store = InMemorySecretStore::new();
+        let openai = create_source(
+            CredentialCreateParams {
+                workspace_id: "ws".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("openai".into()),
+                env_key: None,
+                secret: Some(RedactedString::new("sk-openai")),
+                oauth_command: None,
+            },
+            &store,
+        )
+        .await
+        .unwrap();
+        let mut sources = HashMap::new();
+        sources.insert(openai.id.0.clone(), openai.clone());
+
+        // catalog()'s offering is provider `anthropic`; an openai-scoped key must
+        // not authenticate it.
+        let err = resolve_inference(
+            &catalog(),
+            "claude-opus-4-8",
+            &CredentialBinding::Exact {
+                credential_source_id: CredentialSourceId(openai.id.0.clone()),
+            },
+            &sources,
+            &store,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ResolveError::IncompatibleCredential { .. }));
     }
 }
