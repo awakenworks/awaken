@@ -18,6 +18,7 @@ mod postgres;
 mod sqlite;
 
 pub use awaken_runtime_contract::runnable::{RunnableConfig, RunnableConfigBuilder};
+pub use awaken_tenancy::ScopeId;
 pub use compile::{CompileError, compile, compile_with_resource_prompts, compose_instructions};
 pub use config::{AgentConfig, ModelSelection};
 pub use postgres::{PostgresConfigStore, StoreError as PostgresStoreError};

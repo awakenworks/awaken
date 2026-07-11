@@ -1437,7 +1437,8 @@ struct ManagementStores {
     /// The config authoring plane (`config.db`): the rich `AgentConfig` drafts the
     /// management console authors directly, and their publications. Distinct from
     /// the SDK-facing `/v1/agents` registry — this is the console's agent source.
-    config: Arc<dyn awaken_config_store::ConfigRegistry>,
+    /// Scoped so a workspace's config is fenced from another's (ADR-0051).
+    config: Arc<dyn awaken_config_store::ScopedConfigRegistry>,
 }
 
 /// Ephemeral management stores: everything in process memory (dev / e2e default).
@@ -1730,7 +1731,8 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
     // conversation through ext-mcp (`add a b` → mcp__calc__add → `result: …`);
     // non-`add` turns still echo, preserving the prior expectations.
     let (model, model_ref) = scenario_model(Arc::new(McpToolModel), "management");
-    let host = Arc::new(SharedHost::new(model, model_ref).with_config_service(config_service.clone()));
+    let host =
+        Arc::new(SharedHost::new(model, model_ref).with_config_service(config_service.clone()));
     let managed_state = Arc::new(
         ManagedState::new(ManagedHost::new(host.clone()).with_mcp(credentials, secrets, mcp_store))
             .with_vaults(vault_state)

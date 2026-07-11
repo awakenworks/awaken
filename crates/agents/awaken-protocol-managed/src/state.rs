@@ -1086,6 +1086,28 @@ impl ManagedState {
         out
     }
 
+    /// Sessions owned by `scope` — the tenancy-fenced list (ADR-0051), so a
+    /// workspace's `GET /v1/sessions` never sees another's. A session with no
+    /// recorded owner belongs to the seeded default scope. Mirrors the per-id
+    /// ownership guard, which the collection route does not pass through.
+    pub fn list_sessions_scoped(&self, scope: &str) -> Vec<Session> {
+        // Snapshot owners first (lock, clone, drop) so we never hold two locks at
+        // once — create_session takes `owners` on its own path.
+        let owners = self.owners.lock().unwrap().clone();
+        let sessions = self.sessions.lock().unwrap();
+        let mut out: Vec<Session> = sessions
+            .values()
+            .filter(|r| {
+                owners
+                    .get(&r.session.id)
+                    .map_or(scope == DEFAULT_SCOPE, |owner| owner == scope)
+            })
+            .map(|r| r.session.clone())
+            .collect();
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        out
+    }
+
     /// `POST /v1/sessions/{id}` — update `title` and/or PATCH `metadata`
     /// (string upserts, null deletes, omitted preserves).
     /// `POST /v1/sessions/{id}` — update only `title` / `metadata`. `environment_id`

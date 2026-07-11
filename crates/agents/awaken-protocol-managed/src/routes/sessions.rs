@@ -238,10 +238,17 @@ fn page(data: Vec<serde_json::Value>) -> Json<serde_json::Value> {
     Json(serde_json::json!({ "data": data, "has_more": false, "next_page": null }))
 }
 
-/// `GET /v1/sessions` — one full page of sessions.
-async fn list_sessions(State(state): State<Arc<ManagedState>>) -> Json<serde_json::Value> {
+/// `GET /v1/sessions` — one full page of the request scope's sessions (ADR-0051:
+/// tenancy-fenced, so a workspace never lists another's).
+async fn list_sessions(
+    State(state): State<Arc<ManagedState>>,
+    workspace: Option<axum::Extension<WorkspaceScope>>,
+) -> Json<serde_json::Value> {
+    let scope = workspace
+        .map(|w| w.0.0)
+        .unwrap_or_else(|| crate::state::DEFAULT_SCOPE.to_string());
     let data = state
-        .list_sessions()
+        .list_sessions_scoped(&scope)
         .into_iter()
         .map(|s| serde_json::to_value(s).expect("session serializes"))
         .collect();

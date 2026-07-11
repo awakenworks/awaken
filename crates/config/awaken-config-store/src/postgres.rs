@@ -101,7 +101,10 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         }
     }
 
-    async fn list_configs_scoped(&self, scope: &ScopeId) -> Result<Vec<AgentConfig>, ConfigStoreError> {
+    async fn list_configs_scoped(
+        &self,
+        scope: &ScopeId,
+    ) -> Result<Vec<AgentConfig>, ConfigStoreError> {
         let rows = sqlx::query(&format!(
             "SELECT data FROM {NS}_agent WHERE scope_id = $1 ORDER BY id ASC"
         ))
@@ -177,7 +180,8 @@ impl ConfigRegistry for PostgresConfigStore {
     }
 
     async fn list_configs(&self) -> Result<Vec<AgentConfig>, ConfigStoreError> {
-        self.list_configs_scoped(&ScopeId::from(DEFAULT_SCOPE)).await
+        self.list_configs_scoped(&ScopeId::from(DEFAULT_SCOPE))
+            .await
     }
 
     async fn put_publication(
