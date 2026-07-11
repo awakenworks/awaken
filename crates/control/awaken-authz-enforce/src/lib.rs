@@ -9,7 +9,7 @@
 //! [`PolicySet`] engine every Awaken product shares. It is in-memory and seeded,
 //! so the single-machine standalone needs no durable IAM store — that (minting
 //! HTTP surface, `awaken-iam-server` persistence, multi-tenant provisioning) is
-//! the BuSL authoring half and lives elsewhere.
+//! the authoring half and lives elsewhere.
 //!
 //! Scope fencing is free: a token whose `RoleBinding` sits at
 //! `Workspace{ws_local}` cannot reach `Workspace{ws_other}`, because the scope
