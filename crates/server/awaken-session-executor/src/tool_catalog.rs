@@ -113,4 +113,17 @@ mod tests {
         assert_eq!(catalog.catalog_for(&ScopeId::from("a")).len(), 1);
         assert_eq!(catalog.catalog_for(&ScopeId::from("b")).len(), 1);
     }
+
+    #[test]
+    fn a_tenant_authority_does_not_cover_the_reserved_admin_scope() {
+        use awaken_tenancy::Authority;
+        // Access to the reserved scope is gated by the existing ingress reconciliation
+        // (ADR-0052 D6, no bespoke guard): a narrow tenant token's authority does not
+        // cover the reserved scope, so it cannot select it via path or domain.
+        let tenant = Authority::bound(ScopeId::from("wrkspc_acme"));
+        assert!(!tenant.covers(&ScopeId::from(RESERVED_ADMIN_SCOPE)));
+        // The admin console principal, bound to the reserved scope, does cover it.
+        let admin = Authority::bound(ScopeId::from(RESERVED_ADMIN_SCOPE));
+        assert!(admin.covers(&ScopeId::from(RESERVED_ADMIN_SCOPE)));
+    }
 }

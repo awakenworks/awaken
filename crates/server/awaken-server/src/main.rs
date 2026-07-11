@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("delegate") => awaken_server::build_delegation_router(),
         Ok("statemachine") => awaken_server::build_statemachine_router(),
         Ok("statemachine-rich") => awaken_server::build_statemachine_rich_router(),
-        Ok("config") => awaken_server::build_config_router(),
+        Ok("config") => awaken_server::build_config_router().await,
         Ok("management") => awaken_server::build_management_router(),
         Ok("real") => awaken_server::build_real_router(),
         Ok("real-gemini") => awaken_server::build_real_gemini_router().await,

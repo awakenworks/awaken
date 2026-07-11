@@ -729,6 +729,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde",
         "serde_json",
         "async-trait",
+        "tracing",
         "awaken-runtime-contract",
         "awaken-config-store",
         "tokio",
@@ -970,6 +971,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # ADR-0052: the management assistant's descriptors seed the scope-keyed tool
         # catalog, and its executables/ports are wired at assembly.
         "awaken-admin-assistant",
+        # ADR-0051/0052: the opaque scope id the reserved-scope seeding is keyed by.
+        "awaken-tenancy",
         # ADR-0050: the data-subject consent/erasure store backing the erasure endpoint.
         "awaken-data-subject",
         # Remote-hand scenario mode (ADR-0044): route a run's tools to a hand task.

@@ -217,6 +217,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1105,6 +1106,7 @@ dependencies = [
  "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-session-executor",
+ "awaken-tenancy",
  "awaken-tool-relay",
  "awaken-webhook",
  "awaken-webhook-managed",

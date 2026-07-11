@@ -36,6 +36,42 @@ pub const CREATE_DRAFT_TOOL: &str = "admin_create_agent_draft";
 pub const SET_PLUGIN_TOOL: &str = "admin_set_plugin_config";
 pub const VALIDATE_TOOL: &str = "admin_validate_agent";
 
+/// The reserved agent id the management assistant is published under. It is a
+/// deliberately un-tenant-like id, seeded once into the reserved scope (ADR-0052 D2).
+pub const ADMIN_ASSISTANT_AGENT_ID: &str = "__admin_assistant";
+
+/// All four management tool ids, in advertised order.
+#[must_use]
+pub fn admin_tool_ids() -> Vec<String> {
+    vec![
+        CAPABILITIES_TOOL.to_string(),
+        CREATE_DRAFT_TOOL.to_string(),
+        SET_PLUGIN_TOOL.to_string(),
+        VALIDATE_TOOL.to_string(),
+    ]
+}
+
+/// The seed [`AgentConfig`] for the management assistant (ADR-0052 D1/D3/D4): an
+/// **ordinary** config — instructions + the four admin tool ids + an `Auto` model
+/// binding — with the native backend (no sandbox). The host publishes it into the
+/// reserved scope through the ordinary publish path, so it becomes a compiled,
+/// content-addressed `RunnableConfig` like any agent (no builder bypass).
+#[must_use]
+pub fn admin_assistant_config() -> AgentConfig {
+    AgentConfig {
+        id: ADMIN_ASSISTANT_AGENT_ID.to_string(),
+        instructions: ADMIN_ASSISTANT_INSTRUCTIONS.to_string(),
+        max_steps: 12,
+        model_binding: ModelSelection::Auto,
+        tool_ids: admin_tool_ids(),
+        plugin_ids: Vec::new(),
+        plugin_config: Default::default(),
+        context_policy: Default::default(),
+        tool_patterns: Vec::new(),
+        model_candidates: Vec::new(),
+    }
+}
+
 /// The seeded system prompt for the management assistant. It is authored into the
 /// assistant's ordinary `AgentConfig` like any agent's instructions (D4) — no locked
 /// prompt, no policy overlay: given read-only tools, the prompt needs no protection.
@@ -70,6 +106,40 @@ pub trait CapabilityReader: Send + Sync {
 pub trait DraftValidator: Send + Sync {
     /// `Ok(())` if the draft compiles; `Err(message)` with the compile error.
     fn validate(&self, draft: &AgentConfig) -> Result<(), String>;
+}
+
+/// A structured record of one management tool invocation (ADR-0052 D6). Emitted on
+/// **every** call, including the read-only draft/validate tools. Carries only a short,
+/// non-secret summary — never the full arguments.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AdminAuditEvent {
+    pub tool: String,
+    pub call_id: String,
+    pub summary: String,
+}
+
+/// Where management tool-call audit records go (ADR-0052 D6). The default
+/// [`TracingAuditSink`] logs to the `awaken::admin_audit` target; a deployment can
+/// inject its own (e.g. a durable audit store) — this is also the defense-in-depth
+/// seam, since every privileged call passes through it.
+pub trait AuditSink: Send + Sync {
+    fn record(&self, event: AdminAuditEvent);
+}
+
+/// The default audit sink: emit a structured `tracing` event on the
+/// `awaken::admin_audit` target (ADR-0052 D6).
+pub struct TracingAuditSink;
+
+impl AuditSink for TracingAuditSink {
+    fn record(&self, event: AdminAuditEvent) {
+        tracing::info!(
+            target: "awaken::admin_audit",
+            tool = %event.tool,
+            call_id = %event.call_id,
+            summary = %event.summary,
+            "management tool call",
+        );
+    }
 }
 
 /// The redacted capability snapshot returned by [`CapabilityReader`]. Every field is
@@ -169,21 +239,38 @@ pub fn admin_tool_descriptors() -> Vec<ToolDescriptor> {
 pub fn admin_tools(
     reader: Arc<dyn CapabilityReader>,
     validator: Arc<dyn DraftValidator>,
+    audit: Arc<dyn AuditSink>,
 ) -> Vec<Arc<dyn RawTool>> {
     vec![
-        Arc::new(GetPlatformCapabilities { reader }),
-        Arc::new(CreateAgentDraft),
+        Arc::new(GetPlatformCapabilities {
+            reader,
+            audit: audit.clone(),
+        }),
+        Arc::new(CreateAgentDraft {
+            audit: audit.clone(),
+        }),
         Arc::new(SetPluginConfig {
             validator: validator.clone(),
+            audit: audit.clone(),
         }),
-        Arc::new(ValidateAgent { validator }),
+        Arc::new(ValidateAgent { validator, audit }),
     ]
+}
+
+/// Emit the audit record for one management tool call (ADR-0052 D6).
+fn audit(sink: &Arc<dyn AuditSink>, tool: &str, call_id: &str, summary: impl Into<String>) {
+    sink.record(AdminAuditEvent {
+        tool: tool.to_string(),
+        call_id: call_id.to_string(),
+        summary: summary.into(),
+    });
 }
 
 // ---- Tool 1: admin_get_platform_capabilities ------------------------------------
 
 struct GetPlatformCapabilities {
     reader: Arc<dyn CapabilityReader>,
+    audit: Arc<dyn AuditSink>,
 }
 
 #[async_trait]
@@ -193,6 +280,12 @@ impl RawTool for GetPlatformCapabilities {
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        audit(
+            &self.audit,
+            CAPABILITIES_TOOL,
+            &call.call_id,
+            "list platform capabilities",
+        );
         let caps = self.reader.capabilities();
         let content = serde_json::to_string(&caps)
             .map_err(|e| ToolError::Execution(format!("serialize capabilities: {e}")))?;
@@ -213,7 +306,9 @@ struct CreateDraftArgs {
     max_steps: Option<usize>,
 }
 
-struct CreateAgentDraft;
+struct CreateAgentDraft {
+    audit: Arc<dyn AuditSink>,
+}
 
 #[async_trait]
 impl RawTool for CreateAgentDraft {
@@ -231,6 +326,12 @@ impl RawTool for CreateAgentDraft {
                 ));
             }
         };
+        audit(
+            &self.audit,
+            CREATE_DRAFT_TOOL,
+            &call.call_id,
+            format!("draft agent `{}`", args.id),
+        );
         // A draft: model auto-bound (ADR-0052 D5), never published. This tool only
         // returns data; the operator publishes from the console.
         let draft = AgentConfig {
@@ -260,6 +361,7 @@ struct SetPluginArgs {
 
 struct SetPluginConfig {
     validator: Arc<dyn DraftValidator>,
+    audit: Arc<dyn AuditSink>,
 }
 
 #[async_trait]
@@ -278,6 +380,12 @@ impl RawTool for SetPluginConfig {
                 ));
             }
         };
+        audit(
+            &self.audit,
+            SET_PLUGIN_TOOL,
+            &call.call_id,
+            format!("set plugin `{}`", args.plugin_id),
+        );
         // Size-bound the section (D4): never let a draft absorb an unbounded blob.
         let section_len = serde_json::to_string(&args.config)
             .map(|s| s.len())
@@ -316,6 +424,7 @@ struct ValidateArgs {
 
 struct ValidateAgent {
     validator: Arc<dyn DraftValidator>,
+    audit: Arc<dyn AuditSink>,
 }
 
 #[async_trait]
@@ -334,6 +443,12 @@ impl RawTool for ValidateAgent {
                 ));
             }
         };
+        audit(
+            &self.audit,
+            VALIDATE_TOOL,
+            &call.call_id,
+            format!("validate draft `{}`", args.draft.id),
+        );
         let result = match self.validator.validate(&args.draft) {
             Ok(()) => serde_json::json!({ "valid": true }),
             Err(error) => serde_json::json!({ "valid": false, "error": error }),
