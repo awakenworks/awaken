@@ -463,8 +463,9 @@ fn managed_tool_id(v: &Value) -> Option<String> {
 }
 
 /// Parse the managed-shaped agent object into the runtime compile-input. The
-/// `model` object carries only `{id}` (managed); a concrete id becomes a `Pinned`
-/// selection (provider/backend resolve downstream), an absent one stays `Auto`.
+/// `model` object carries only `{id}` (managed); it becomes a `Pinned` selection
+/// (provider/backend resolve downstream from the model id), so the console can
+/// author + publish without a model resolver wired into this server.
 fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig, String> {
     let string = |k: &str| body.get(k).and_then(Value::as_str).map(str::to_string);
     let model_ref = match body.get("model") {
@@ -499,11 +500,7 @@ fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig, St
         id,
         instructions: string("system").unwrap_or_default(),
         max_steps: body.get("max_steps").and_then(Value::as_u64).unwrap_or(8) as usize,
-        model_binding: if model_ref.is_empty() {
-            ModelSelection::Auto
-        } else {
-            ModelSelection::pinned("", model_ref, "")
-        },
+        model_binding: ModelSelection::pinned("", model_ref, ""),
         tool_ids: array("tools").iter().filter_map(managed_tool_id).collect(),
         plugin_ids: array("plugins")
             .iter()
