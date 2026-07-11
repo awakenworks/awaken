@@ -58,13 +58,13 @@ id_newtype!(
 );
 
 /// The wire/model-API dialect a surface speaks. Replaces oversight's `WireFormat`;
-/// the credential/model bindings are resolved against this flavor (ADR-0043).
+/// the credential/model bindings are resolved against this dialect (ADR-0043).
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
-pub enum ModelApiCompat {
+pub enum ApiDialect {
     /// The `claude` adapter's wire.
     AnthropicMessages,
     /// The `codex`/OpenAI chat wire.
@@ -73,8 +73,8 @@ pub enum ModelApiCompat {
     Gemini,
 }
 
-impl ModelApiCompat {
-    /// The adapter kind that speaks this flavor.
+impl ApiDialect {
+    /// The adapter kind that speaks this dialect.
     #[must_use]
     pub fn adapter_kind(self) -> &'static str {
         match self {
@@ -104,7 +104,7 @@ pub struct Provider {
 pub struct ProtocolEndpoint {
     pub id: ProtocolEndpointId,
     pub provider_id: ProviderId,
-    pub flavor: ModelApiCompat,
+    pub dialect: ApiDialect,
     /// `http(s)` base URL override (proxy / self-hosted / compat endpoint).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
@@ -123,7 +123,7 @@ pub struct Offering {
     pub model_id: String,
     pub provider_id: ProviderId,
     pub protocol_endpoint_id: ProtocolEndpointId,
-    pub flavor: ModelApiCompat,
+    pub dialect: ApiDialect,
     /// Provider-canonical model name sent upstream when it differs from `model_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_model: Option<String>,
@@ -146,11 +146,11 @@ pub enum CatalogError {
     EndpointProviderUnknown(String, String),
     #[error("offering `{model}` references unknown endpoint `{endpoint}`")]
     OfferingEndpointUnknown { model: String, endpoint: String },
-    #[error("offering `{model}` flavor {offering:?} disagrees with endpoint flavor {endpoint:?}")]
-    OfferingFlavorMismatch {
+    #[error("offering `{model}` dialect {offering:?} disagrees with endpoint dialect {endpoint:?}")]
+    OfferingDialectMismatch {
         model: String,
-        offering: ModelApiCompat,
-        endpoint: ModelApiCompat,
+        offering: ApiDialect,
+        endpoint: ApiDialect,
     },
     /// Not an invariant: a durable-backend failure (I/O, serde, poisoned lock)
     /// surfaced by a persistent [`repo::CatalogRepo`] such as the sqlite one. It
@@ -165,7 +165,7 @@ pub enum CatalogError {
 impl ProviderCatalog {
     /// Fail-closed reference-integrity check run before a catalog is published:
     /// every endpoint's provider and every offering's endpoint must resolve, and
-    /// an offering's flavor must match its endpoint (so `Offering(model) ∩ flavor`
+    /// an offering's dialect must match its endpoint (so `Offering(model) ∩ dialect`
     /// resolution — ADR-0043 — is well-defined).
     pub fn validate(&self) -> Result<(), CatalogError> {
         for ep in self.endpoints.values() {
@@ -184,24 +184,24 @@ impl ProviderCatalog {
                     model: off.model_id.clone(),
                     endpoint: off.protocol_endpoint_id.0.clone(),
                 })?;
-            if ep.flavor != off.flavor {
-                return Err(CatalogError::OfferingFlavorMismatch {
+            if ep.dialect != off.dialect {
+                return Err(CatalogError::OfferingDialectMismatch {
                     model: off.model_id.clone(),
-                    offering: off.flavor,
-                    endpoint: ep.flavor,
+                    offering: off.dialect,
+                    endpoint: ep.dialect,
                 });
             }
         }
         Ok(())
     }
 
-    /// Resolve a `model_id` to the offering on the endpoint speaking `flavor`
-    /// (`Offering(model) ∩ flavor` — the `Derive` endpoint axis of ADR-0043).
+    /// Resolve a `model_id` to the offering on the endpoint speaking `dialect`
+    /// (`Offering(model) ∩ dialect` — the `Derive` endpoint axis of ADR-0043).
     #[must_use]
-    pub fn resolve_offering(&self, model_id: &str, flavor: ModelApiCompat) -> Option<&Offering> {
+    pub fn resolve_offering(&self, model_id: &str, dialect: ApiDialect) -> Option<&Offering> {
         self.offerings
             .iter()
-            .find(|o| o.model_id == model_id && o.flavor == flavor)
+            .find(|o| o.model_id == model_id && o.dialect == dialect)
     }
 }
 
@@ -217,11 +217,11 @@ mod tests {
             version: 1,
         }
     }
-    fn endpoint(id: &str, provider: &str, flavor: ModelApiCompat) -> ProtocolEndpoint {
+    fn endpoint(id: &str, provider: &str, dialect: ApiDialect) -> ProtocolEndpoint {
         ProtocolEndpoint {
             id: ProtocolEndpointId::new(id),
             provider_id: ProviderId::new(provider),
-            flavor,
+            dialect,
             base_url: None,
             timeout_secs: 300,
             display_name: id.into(),
@@ -235,13 +235,13 @@ mod tests {
             .insert("anthropic".into(), provider("anthropic"));
         c.endpoints.insert(
             "ep1".into(),
-            endpoint("ep1", "anthropic", ModelApiCompat::AnthropicMessages),
+            endpoint("ep1", "anthropic", ApiDialect::AnthropicMessages),
         );
         c.offerings.push(Offering {
             model_id: "claude-opus-4-8".into(),
             provider_id: ProviderId::new("anthropic"),
             protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
-            flavor: ModelApiCompat::AnthropicMessages,
+            dialect: ApiDialect::AnthropicMessages,
             upstream_model: None,
         });
         c
@@ -256,12 +256,12 @@ mod tests {
     fn resolve_offering_intersects_model_and_flavor() {
         let c = catalog();
         assert!(
-            c.resolve_offering("claude-opus-4-8", ModelApiCompat::AnthropicMessages)
+            c.resolve_offering("claude-opus-4-8", ApiDialect::AnthropicMessages)
                 .is_some()
         );
-        // Same model, wrong flavor → no offering (the intersection is empty).
+        // Same model, wrong dialect → no offering (the intersection is empty).
         assert!(
-            c.resolve_offering("claude-opus-4-8", ModelApiCompat::OpenAiChat)
+            c.resolve_offering("claude-opus-4-8", ApiDialect::OpenAiChat)
                 .is_none()
         );
     }
@@ -271,7 +271,7 @@ mod tests {
         let mut c = catalog();
         c.endpoints.insert(
             "bad".into(),
-            endpoint("bad", "ghost", ModelApiCompat::OpenAiChat),
+            endpoint("bad", "ghost", ApiDialect::OpenAiChat),
         );
         assert!(matches!(
             c.validate(),
@@ -282,10 +282,10 @@ mod tests {
     #[test]
     fn offering_flavor_must_match_endpoint() {
         let mut c = catalog();
-        c.offerings[0].flavor = ModelApiCompat::OpenAiChat;
+        c.offerings[0].dialect = ApiDialect::OpenAiChat;
         assert!(matches!(
             c.validate(),
-            Err(CatalogError::OfferingFlavorMismatch { .. })
+            Err(CatalogError::OfferingDialectMismatch { .. })
         ));
     }
 }

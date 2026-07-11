@@ -13,7 +13,7 @@ use awaken_credential_vault::{
     CredentialSourceId, InMemorySecretStore, create_source,
 };
 use awaken_model_catalog::{
-    ModelApiCompat, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderCatalog,
+    ApiDialect, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderCatalog,
     ProviderId,
 };
 
@@ -33,7 +33,7 @@ fn catalog(model_id: &str, base_url: &str) -> ProviderCatalog {
         ProtocolEndpoint {
             id: ProtocolEndpointId::new("ep1"),
             provider_id: ProviderId::new("anthropic"),
-            flavor: ModelApiCompat::AnthropicMessages,
+            dialect: ApiDialect::AnthropicMessages,
             base_url: Some(base_url.into()),
             timeout_secs: 300,
             display_name: "prod".into(),
@@ -44,7 +44,7 @@ fn catalog(model_id: &str, base_url: &str) -> ProviderCatalog {
         model_id: model_id.into(),
         provider_id: ProviderId::new("anthropic"),
         protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
-        flavor: ModelApiCompat::AnthropicMessages,
+        dialect: ApiDialect::AnthropicMessages,
         upstream_model: None,
     });
     c

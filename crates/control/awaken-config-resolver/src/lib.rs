@@ -17,7 +17,7 @@ use awaken_agent_contract::RedactedString;
 use awaken_credential_vault::{
     AvailabilityLedger, CredentialBinding, CredentialError, CredentialSource, SecretStore,
 };
-use awaken_model_catalog::{ModelApiCompat, ProviderCatalog};
+use awaken_model_catalog::{ApiDialect, ProviderCatalog};
 
 /// Read ports for the authored aggregates (`McpStore`, `InferenceProfileStore`,
 /// `ResourceStore`) + in-memory reference impls. They live on the read side so
@@ -33,13 +33,13 @@ pub use stores::{
 pub use telemetry::{RedactionMode, TelemetryCeiling};
 
 /// The resolved execution unit: *(model × credential-identity × provider ×
-/// flavor)*. Mirrors awaken-management-contract's `InferenceTriple`.
+/// dialect)*. Mirrors awaken-management-contract's `InferenceTriple`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InferenceTriple {
     pub model_id: String,
     pub provider_id: String,
     pub protocol_endpoint_id: String,
-    pub flavor: ModelApiCompat,
+    pub dialect: ApiDialect,
 }
 
 /// What the resolver hands the run loop: the concrete target + wire + an
@@ -48,7 +48,7 @@ pub struct InferenceTriple {
 #[derive(Debug)]
 pub struct ResolvedInference {
     pub triple: InferenceTriple,
-    /// The adapter kind that speaks this flavor (`anthropic`/`openai`/…).
+    /// The adapter kind that speaks this dialect (`anthropic`/`openai`/…).
     pub adapter_kind: &'static str,
     /// Endpoint base URL override, if any.
     pub base_url: Option<String>,
@@ -117,7 +117,7 @@ impl SourceLookup for std::collections::HashMap<String, CredentialSource> {
 /// [`ResolvedInference`]. This is `reconcile_model_ref` + `resolve_inference` +
 /// credential `materialize`, composed (ADR-0043).
 ///
-/// Picks the first offering for `model_id` (`Offering(model) ∩ flavor`), the given
+/// Picks the first offering for `model_id` (`Offering(model) ∩ dialect`), the given
 /// binding, and materializes its credential. Endpoint selection honors no toggles;
 /// use [`resolve_profile`] to skip endpoints an operator disabled.
 pub async fn resolve_inference(
@@ -160,7 +160,7 @@ async fn resolve_inference_toggled(
             .unwrap_or_else(|| offering.model_id.clone()),
         provider_id: offering.provider_id.0.clone(),
         protocol_endpoint_id: offering.protocol_endpoint_id.0.clone(),
-        flavor: offering.flavor,
+        dialect: offering.dialect,
     };
 
     // Credential materialization (secret only exists from here to the seam). The
@@ -179,7 +179,7 @@ async fn resolve_inference_toggled(
 
     Ok(ResolvedInference {
         triple,
-        adapter_kind: endpoint.flavor.adapter_kind(),
+        adapter_kind: endpoint.dialect.adapter_kind(),
         base_url: endpoint.base_url.clone(),
         credential,
     })
@@ -776,7 +776,7 @@ mod tests {
             ProtocolEndpoint {
                 id: ProtocolEndpointId::new("ep1"),
                 provider_id: ProviderId::new("anthropic"),
-                flavor: ModelApiCompat::AnthropicMessages,
+                dialect: ApiDialect::AnthropicMessages,
                 base_url: Some("https://api.anthropic.com".into()),
                 timeout_secs: 300,
                 display_name: "prod".into(),
@@ -787,7 +787,7 @@ mod tests {
             model_id: "claude-opus-4-8".into(),
             provider_id: ProviderId::new("anthropic"),
             protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
-            flavor: ModelApiCompat::AnthropicMessages,
+            dialect: ApiDialect::AnthropicMessages,
             upstream_model: None,
         });
         c
@@ -826,7 +826,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(resolved.triple.provider_id, "anthropic");
-        assert_eq!(resolved.triple.flavor, ModelApiCompat::AnthropicMessages);
+        assert_eq!(resolved.triple.dialect, ApiDialect::AnthropicMessages);
         assert_eq!(resolved.adapter_kind, "anthropic");
         assert_eq!(
             resolved.base_url.as_deref(),
