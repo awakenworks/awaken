@@ -93,6 +93,7 @@ awaken-runtime-examples = { path = "crates/devtools/awaken-runtime-examples" }
 awaken-dispatch-contract = { path = "crates/contract/awaken-dispatch-contract" }
 awaken-dispatch = { path = "crates/server/awaken-dispatch" }
 awaken-session-executor = { path = "crates/server/awaken-session-executor" }
+awaken-admin-assistant = { path = "crates/control/awaken-admin-assistant" }
 awaken-server = { path = "crates/server/awaken-server" }
 awaken-authz-enforce = { path = "crates/control/awaken-authz-enforce" }
 awaken-webhook = { path = "crates/server/awaken-webhook" }
