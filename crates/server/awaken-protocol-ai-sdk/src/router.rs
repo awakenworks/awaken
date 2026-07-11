@@ -22,10 +22,12 @@ use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use awaken_protocol_transport::{DriverError, Pending, ProtocolRuntime, Resume, StepOutcome};
+use awaken_protocol_transport::{
+    ChannelStreamSink, DriverError, Pending, ProtocolRuntime, Resume, StepOutcome,
+};
 
 use crate::encoder::{encode_close, encode_history, encode_step};
-use crate::live::{ChannelStreamSink, LiveTranscoder};
+use crate::live::LiveTranscoder;
 use crate::request::{DecisionKind, process_request, result_text};
 use crate::types::{AiSdkChatRequest, HistoryResponse, UIStreamEvent};
 
