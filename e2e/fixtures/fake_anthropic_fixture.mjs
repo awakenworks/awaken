@@ -356,6 +356,19 @@ function emitJson(res, { id, model, reply }) {
   );
 }
 
+// Split `s` into up to `n` non-empty contiguous chunks, so a streamed tool call's
+// arguments arrive as several `input_json_delta` events — exactly as Anthropic
+// chunks `partial_json`. The server accumulates and parses at content_block_stop,
+// so the assembled tool call is identical; only the live channel now carries true
+// incremental argument deltas that a streaming tool-input protocol can paint.
+function chunkString(s, n) {
+  if (s.length <= 1) return [s];
+  const size = Math.max(1, Math.ceil(s.length / n));
+  const out = [];
+  for (let i = 0; i < s.length; i += size) out.push(s.slice(i, i + size));
+  return out;
+}
+
 // The Anthropic streaming wire: the fixed event ladder around one text or tool_use
 // block, so GenaiExecutor's streaming path assembles the same response as `infer`.
 function emitStream(res, { id, model, reply }) {
@@ -376,7 +389,13 @@ function emitStream(res, { id, model, reply }) {
   });
   if (reply.tool) {
     ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: reply.tool.id, name: reply.tool.name, input: {} } });
-    ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(reply.tool.input) } });
+    // Chunk the arguments across several `input_json_delta` events exactly as
+    // Anthropic streams `partial_json`, so the live channel carries true
+    // incremental tool-input deltas (not one whole-args frame). The server still
+    // accumulates + parses at content_block_stop, so the assembled call is identical.
+    for (const partial of chunkString(JSON.stringify(reply.tool.input), 4)) {
+      ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: partial } });
+    }
     ev('content_block_stop', { type: 'content_block_stop', index: 0 });
     ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: FAKE_USAGE.output_tokens } });
   } else {
