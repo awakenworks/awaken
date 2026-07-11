@@ -729,6 +729,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde",
         "serde_json",
         "async-trait",
+        "tracing",
         "awaken-runtime-contract",
         "awaken-config-store",
         "tokio",

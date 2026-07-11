@@ -1366,7 +1366,11 @@ pub async fn build_config_router() -> Router {
         service.clone(),
         awaken_config_store::DEFAULT_SCOPE,
     ));
-    let admin_execs = awaken_admin_assistant::admin_tools(reader, validator);
+    let admin_execs = awaken_admin_assistant::admin_tools(
+        reader,
+        validator,
+        Arc::new(awaken_admin_assistant::TracingAuditSink),
+    );
     let host = SharedHost::new(model, model_ref)
         .with_config_service(service.clone())
         .with_admin_tools(admin_execs);

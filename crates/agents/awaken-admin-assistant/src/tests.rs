@@ -44,8 +44,21 @@ impl DraftValidator for FakeValidator {
     }
 }
 
+/// Captures audit records so a test can assert every privileged call is recorded.
+#[derive(Default)]
+struct CapturingAudit(std::sync::Mutex<Vec<AdminAuditEvent>>);
+impl AuditSink for CapturingAudit {
+    fn record(&self, event: AdminAuditEvent) {
+        self.0.lock().unwrap().push(event);
+    }
+}
+
 fn tools() -> Vec<Arc<dyn RawTool>> {
-    admin_tools(Arc::new(FakeCaps), Arc::new(FakeValidator))
+    admin_tools(
+        Arc::new(FakeCaps),
+        Arc::new(FakeValidator),
+        Arc::new(CapturingAudit::default()),
+    )
 }
 
 fn tool(id: &str) -> Arc<dyn RawTool> {
@@ -220,6 +233,32 @@ async fn validate_agent_reports_valid_and_invalid() {
     let parsed: serde_json::Value = serde_json::from_str(&bad.content).unwrap();
     assert_eq!(parsed["valid"], false);
     assert!(parsed["error"].as_str().unwrap().contains("unknown tool"));
+}
+
+#[tokio::test]
+async fn every_tool_call_emits_an_audit_record() {
+    let audit = Arc::new(CapturingAudit::default());
+    let toolset = admin_tools(Arc::new(FakeCaps), Arc::new(FakeValidator), audit.clone());
+    let get = |id: &str| toolset.iter().find(|t| t.id() == id).unwrap().clone();
+
+    get(CAPABILITIES_TOOL)
+        .invoke(call(CAPABILITIES_TOOL, serde_json::json!({})))
+        .await
+        .unwrap();
+    get(CREATE_DRAFT_TOOL)
+        .invoke(call(
+            CREATE_DRAFT_TOOL,
+            serde_json::json!({ "id": "x", "instructions": "hi" }),
+        ))
+        .await
+        .unwrap();
+
+    let events = audit.0.lock().unwrap();
+    // Every privileged call is recorded (ADR-0052 D6), tagged with its tool id.
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].tool, CAPABILITIES_TOOL);
+    assert_eq!(events[1].tool, CREATE_DRAFT_TOOL);
+    assert!(events[1].summary.contains("draft agent `x`"));
 }
 
 #[test]
