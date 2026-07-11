@@ -18,7 +18,7 @@ function modelId(m: AgentConfig["model"]): string {
 export default function ProjectAgentsSurface() {
   const app = useApp();
   const nav = useNavigate();
-  const { pid = "" } = useParams();
+  const { ws: wsId = "default" } = useParams();
   const list = useListState("id");
   const agents = useQuery({
     queryKey: ["config-agents"],
@@ -59,7 +59,7 @@ export default function ProjectAgentsSurface() {
         )}
       </p>
       <div className="row" style={{ justifyContent: "flex-end" }}>
-        <button className="btn primary" onClick={() => nav(`/p/${pid}/agents/new`)}>
+        <button className="btn primary" onClick={() => nav(`/w/${wsId}/agents/new`)}>
           + {app.t("New agent", "新建 Agent")}
         </button>
       </div>
@@ -71,7 +71,7 @@ export default function ProjectAgentsSurface() {
         state={list}
         loading={agents.isLoading}
         filter={(a, q) => (a.name || a.id).toLowerCase().includes(q.toLowerCase()) || modelId(a.model).toLowerCase().includes(q.toLowerCase())}
-        onRowClick={(a) => nav(`/p/${pid}/agents/${a.id}`)}
+        onRowClick={(a) => nav(`/w/${wsId}/agents/${a.id}`)}
         searchPlaceholder={app.t("Filter agents…", "过滤 agent…")}
         emptyTitle={app.t("No agents yet.", "还没有 Agent。")}
         emptyHint={app.t("Create one to author its model, tools, plugins and policy.", "新建一个来配置模型、工具、插件与策略。")}
