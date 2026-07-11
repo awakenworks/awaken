@@ -51,6 +51,7 @@ async fn schema_url(schema: &str) -> Option<String> {
 fn profile(model: &str) -> InferenceProfile {
     InferenceProfile {
         model_id: model.to_string(),
+        model_fallbacks: Vec::new(),
         credential_binding: CredentialBinding::None,
         disabled_endpoint_ids: vec![],
     }

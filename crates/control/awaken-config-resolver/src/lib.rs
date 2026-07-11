@@ -14,7 +14,9 @@
 #![forbid(unsafe_code)]
 
 use awaken_agent_contract::RedactedString;
-use awaken_credential_vault::{CredentialBinding, CredentialError, CredentialSource, SecretStore};
+use awaken_credential_vault::{
+    AvailabilityLedger, CredentialBinding, CredentialError, CredentialSource, SecretStore,
+};
 use awaken_model_catalog::{ModelApiCompat, ProviderCatalog};
 
 /// Read ports for the authored aggregates (`McpStore`, `InferenceProfileStore`,
@@ -66,6 +68,14 @@ pub enum ResolveError {
     SourceMissing(String),
     #[error("credential pool `{0}` not provided")]
     PoolMissing(String),
+    #[error(
+        "credential `{source_id}` cannot authenticate provider `{provider_id}` \
+         (fail closed): a key scoped to one provider may not run another's model"
+    )]
+    IncompatibleCredential {
+        source_id: String,
+        provider_id: String,
+    },
     #[error(
         "credential pool `{pool_id}` has no eligible member (fail closed): \
          {total} total, {cooled} cooled, {over_capacity} over capacity"
@@ -153,8 +163,19 @@ async fn resolve_inference_toggled(
         flavor: offering.flavor,
     };
 
-    // Credential materialization (secret only exists from here to the seam).
-    let credential = resolve_credential(binding, sources, secret_store).await?;
+    // Credential materialization (secret only exists from here to the seam). The
+    // offering's provider gates the credential via can_consume — an incompatible
+    // key never authenticates a model it cannot serve.
+    // Availability-aware pool selection is wired by the host when it tracks a live
+    // ledger; the base resolution path does not cool credentials itself.
+    let credential = resolve_credential(
+        binding,
+        sources,
+        secret_store,
+        Some(offering.provider_id.0.as_str()),
+        None,
+    )
+    .await?;
 
     Ok(ResolvedInference {
         triple,
@@ -171,15 +192,89 @@ async fn resolve_inference_toggled(
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct InferenceProfile {
+    /// The pinned / primary model — tried first. Kept as a bare field for wire and
+    /// storage compatibility; the ordered model axis is [`model_axis`] (this plus
+    /// [`model_fallbacks`]).
+    ///
+    /// [`model_axis`]: InferenceProfile::model_axis
+    /// [`model_fallbacks`]: InferenceProfile::model_fallbacks
     pub model_id: String,
+    /// Additional models the resolver falls over to, in order, after `model_id`.
+    /// Empty (the default) means a single-model profile — unchanged behavior, and
+    /// older stored rows load without the field. Together with `model_id` these
+    /// form the [`AxisBinding`] the profile exposes as [`model_axis`].
+    ///
+    /// [`model_axis`]: InferenceProfile::model_axis
+    #[serde(default)]
+    pub model_fallbacks: Vec<String>,
+    /// The credential-identity axis. `CredentialBinding` is *already* an
+    /// [`AxisBinding`] over provider identities — `Exact` is a pin, and
+    /// `OneOfCredentialPool` is a pool with failover — so the identity axis needs
+    /// no new type here; each resolved model reuses this binding.
     pub credential_binding: CredentialBinding,
     #[serde(default)]
     pub disabled_endpoint_ids: Vec<String>,
 }
 
+impl InferenceProfile {
+    /// The model axis as an ordered [`AxisBinding`]: a lone `model_id` is a
+    /// [`Pin`](AxisBinding::Pin); `model_id` plus fallbacks is a
+    /// [`Pool`](AxisBinding::Pool) in try-order.
+    #[must_use]
+    pub fn model_axis(&self) -> AxisBinding<String> {
+        if self.model_fallbacks.is_empty() {
+            AxisBinding::Pin(self.model_id.clone())
+        } else {
+            let mut models = Vec::with_capacity(self.model_fallbacks.len() + 1);
+            models.push(self.model_id.clone());
+            models.extend(self.model_fallbacks.iter().cloned());
+            AxisBinding::Pool(models)
+        }
+    }
+}
+
+/// A per-axis binding: the agent either pins one value or pools an ordered set the
+/// resolver fails over across. The unifying shape behind "select a model" (`Pin`)
+/// and "spread across a model pool" (`Pool`) — and, via
+/// [`CredentialBinding`](awaken_credential_vault::CredentialBinding), behind the
+/// credential-identity axis too. Names align with awaken-next's `AxisBinding`
+/// (`Pin | Pool`); the `Any` variant is deferred until a slice needs it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case", tag = "kind", content = "value")]
+pub enum AxisBinding<T> {
+    /// Exactly this value.
+    Pin(T),
+    /// This ordered set, tried in order (the first is the preference).
+    Pool(Vec<T>),
+}
+
+impl<T: Clone> AxisBinding<T> {
+    /// The candidates in try-order: one for a [`Pin`](Self::Pin), the whole set for
+    /// a [`Pool`](Self::Pool).
+    #[must_use]
+    pub fn candidates(&self) -> Vec<T> {
+        match self {
+            AxisBinding::Pin(v) => vec![v.clone()],
+            AxisBinding::Pool(vs) => vs.clone(),
+        }
+    }
+
+    /// The preferred candidate: the pinned value, or the first pool member.
+    /// `None` only for an empty pool.
+    #[must_use]
+    pub fn primary(&self) -> Option<&T> {
+        match self {
+            AxisBinding::Pin(v) => Some(v),
+            AxisBinding::Pool(vs) => vs.first(),
+        }
+    }
+}
+
 /// Resolve an [`InferenceProfile`] into a [`ResolvedInference`]: the same core
 /// resolution, but selecting only endpoints the profile has not disabled and using
-/// the profile's credential binding (which may be a pool with failover).
+/// the profile's credential binding (which may be a pool with failover). Resolves
+/// the *primary* model only; use [`resolve_profile_candidates`] for the whole axis.
 pub async fn resolve_profile(
     catalog: &ProviderCatalog,
     profile: &InferenceProfile,
@@ -197,15 +292,82 @@ pub async fn resolve_profile(
     .await
 }
 
+/// Resolve an [`InferenceProfile`] into the **ordered candidate list** the engine
+/// fails over across: one [`ResolvedInference`] per model in the profile's
+/// [`model_axis`](InferenceProfile::model_axis), each carrying its own materialized
+/// credential (the credential axis fails over *within* each resolution). This is
+/// the unification of the model axis and the credential axis into one ordered set
+/// of `(model × identity)` candidates.
+///
+/// Fail-closed per candidate is *not* terminal: a model that does not resolve (no
+/// offering, or its whole credential pool is exhausted) is skipped, so one bad
+/// model does not sink the profile. The result preserves axis order; it is empty
+/// only when *no* candidate resolved, which the caller treats as fail-closed.
+pub async fn resolve_profile_candidates(
+    catalog: &ProviderCatalog,
+    profile: &InferenceProfile,
+    sources: &dyn SourceLookup,
+    secret_store: &dyn SecretStore,
+) -> Result<Vec<ResolvedInference>, ResolveError> {
+    let mut resolved = Vec::new();
+    let mut last_err = None;
+    for model_id in profile.model_axis().candidates() {
+        match resolve_inference_toggled(
+            catalog,
+            &model_id,
+            &profile.disabled_endpoint_ids,
+            &profile.credential_binding,
+            sources,
+            secret_store,
+        )
+        .await
+        {
+            Ok(r) => resolved.push(r),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    if resolved.is_empty() {
+        // Every candidate failed: surface the last reason (fail-closed) rather than
+        // an empty success.
+        return Err(
+            last_err.unwrap_or_else(|| ResolveError::ModelUnresolved(profile.model_id.clone()))
+        );
+    }
+    Ok(resolved)
+}
+
 /// Materialize the credential a binding selects. `None` yields no secret; `Exact`
 /// materializes one named source; `OneOfCredentialPool` walks the pool's selection
 /// order and returns the first member that materializes — a disabled or unusable
 /// member fails over to the next. Fail-closed: an empty/all-bad pool is an error,
 /// never a silent unauthenticated run.
+/// The validity join (ADR-0118 `can_consume`): may this credential authenticate
+/// this provider? A source scoped to a provider (`provider_id = Some("anthropic")`)
+/// may only consume that provider's offerings; an unscoped source
+/// (`provider_id = None`, host-native / env) may consume any. This is what stops an
+/// otherwise-materializable key being paired with a model it cannot authenticate —
+/// the invalid `(model × credential)` combination the ADR calls out.
+#[must_use]
+pub fn can_consume(offering_provider_id: &str, source: &CredentialSource) -> bool {
+    source
+        .provider_id
+        .as_deref()
+        .is_none_or(|scoped| scoped == offering_provider_id)
+}
+
+/// Materialize the credential a binding selects, gated by [`can_consume`] when an
+/// `offering_provider` is given (the inference path); `None` skips the join (e.g.
+/// an MCP-server credential, which is not a model provider). `None` binding yields
+/// no secret; `Exact` materializes one named source; `OneOfCredentialPool` walks
+/// the pool and returns the first member that is *both* compatible and
+/// materializable — an incompatible, disabled, or unusable member fails over to the
+/// next. Fail-closed: an empty/all-bad pool is an error, never a silent run.
 async fn resolve_credential(
     binding: &CredentialBinding,
     sources: &dyn SourceLookup,
     secret_store: &dyn SecretStore,
+    offering_provider: Option<&str>,
+    availability: Option<(&AvailabilityLedger, u64)>,
 ) -> Result<Option<RedactedString>, ResolveError> {
     match binding {
         CredentialBinding::None => Ok(None),
@@ -215,6 +377,14 @@ async fn resolve_credential(
             let source = sources
                 .get(credential_source_id.0.as_str())
                 .ok_or_else(|| ResolveError::SourceMissing(credential_source_id.0.clone()))?;
+            if let Some(provider) = offering_provider {
+                if !can_consume(provider, source) {
+                    return Err(ResolveError::IncompatibleCredential {
+                        source_id: credential_source_id.0.clone(),
+                        provider_id: provider.to_string(),
+                    });
+                }
+            }
             Ok(Some(
                 awaken_credential_vault::materialize(source, secret_store).await?,
             ))
@@ -223,14 +393,26 @@ async fn resolve_credential(
             let pool = sources
                 .get_pool(credential_pool_id.0.as_str())
                 .ok_or_else(|| ResolveError::PoolMissing(credential_pool_id.0.clone()))?;
-            // Try members in selection order; skip a member whose source is absent
-            // or fails to materialize, so one bad key does not fail the run.
-            let order = pool.selection_order();
-            let total = order.len();
+            // The eligible order drops cooled members (mid-run rotation) when a ledger
+            // is supplied; `cooled` is how many the cooldown excluded, for the
+            // fail-closed diagnostic.
+            let full = pool.selection_order();
+            let total = full.len();
+            let order = match availability {
+                Some((ledger, now_ms)) => pool.eligible_order(ledger, now_ms),
+                None => full,
+            };
+            let cooled = total - order.len();
+            // Try members in eligible order; skip a member whose source is absent,
+            // incompatible with the provider, or fails to materialize, so one bad key
+            // does not fail the run.
             for member in order {
                 let Some(source) = sources.get(member.credential_source_id.0.as_str()) else {
                     continue;
                 };
+                if offering_provider.is_some_and(|provider| !can_consume(provider, source)) {
+                    continue;
+                }
                 if let Ok(secret) = awaken_credential_vault::materialize(source, secret_store).await
                 {
                     return Ok(Some(secret));
@@ -239,12 +421,37 @@ async fn resolve_credential(
             Err(ResolveError::NoEligibleCredential {
                 pool_id: credential_pool_id.0.clone(),
                 total,
-                // No cooldown / capacity signals yet (E3-4); every exclusion here is
-                // an absent-or-unmaterializable source.
-                cooled: 0,
+                cooled,
+                // Quota buckets are not modeled yet; capacity exclusion stays 0.
                 over_capacity: 0,
             })
         }
+    }
+}
+
+/// The cooldown deadline a failure disposition implies, in wall-clock ms, or `None`
+/// if the failure is not a quota/rate signal. The bridge from
+/// [`Disposition`](awaken_runtime_contract::resilience::Disposition) to the vault's
+/// [`AvailabilityLedger`](awaken_credential_vault::AvailabilityLedger): a
+/// `Quota{retry_after}` cools the identity that hit it until `now + retry_after`
+/// (or a default window when the provider sent no hint), which the caller records
+/// so the next selection rotates past it.
+#[must_use]
+pub fn cooldown_deadline(
+    disposition: awaken_runtime_contract::resilience::Disposition,
+    now_ms: u64,
+) -> Option<u64> {
+    use awaken_runtime_contract::resilience::Disposition;
+    /// Fallback cooldown when a 429/quota carries no `Retry-After` (60s).
+    const DEFAULT_COOLDOWN_MS: u64 = 60_000;
+    match disposition {
+        Disposition::Quota { retry_after } => {
+            let window = retry_after
+                .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+                .unwrap_or(DEFAULT_COOLDOWN_MS);
+            Some(now_ms.saturating_add(window))
+        }
+        Disposition::Transient | Disposition::Permanent => None,
     }
 }
 
@@ -409,7 +616,10 @@ pub async fn resolve_mcp_servers(
 ) -> Result<Vec<ResolvedMcpServer>, ResolveError> {
     let mut resolved = Vec::with_capacity(defs.len());
     for def in defs {
-        let credential = resolve_credential(&def.credential_binding, sources, secret_store).await?;
+        // MCP-server credential: not a model provider, so no can_consume join and no
+        // availability ledger.
+        let credential =
+            resolve_credential(&def.credential_binding, sources, secret_store, None, None).await?;
         resolved.push(ResolvedMcpServer {
             name: def.display_name.clone(),
             url: def.url.clone(),
@@ -710,5 +920,153 @@ mod tests {
             "sk-topsecret"
         );
         assert_eq!(run.inference.triple.model_id, "claude-opus-4-8");
+    }
+
+    #[test]
+    fn axis_binding_pin_yields_one_candidate() {
+        let axis = AxisBinding::Pin("m1".to_string());
+        assert_eq!(axis.candidates(), vec!["m1".to_string()]);
+        assert_eq!(axis.primary(), Some(&"m1".to_string()));
+    }
+
+    #[test]
+    fn axis_binding_pool_preserves_order_and_primary_is_first() {
+        let axis = AxisBinding::Pool(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        assert_eq!(axis.candidates(), vec!["a", "b", "c"]);
+        assert_eq!(axis.primary(), Some(&"a".to_string()));
+    }
+
+    #[test]
+    fn model_axis_is_a_pin_without_fallbacks_and_a_pool_with_them() {
+        let single = InferenceProfile {
+            model_id: "primary".into(),
+            model_fallbacks: Vec::new(),
+            credential_binding: CredentialBinding::None,
+            disabled_endpoint_ids: Vec::new(),
+        };
+        assert_eq!(single.model_axis(), AxisBinding::Pin("primary".into()));
+
+        let pooled = InferenceProfile {
+            model_id: "primary".into(),
+            model_fallbacks: vec!["backup1".into(), "backup2".into()],
+            credential_binding: CredentialBinding::None,
+            disabled_endpoint_ids: Vec::new(),
+        };
+        // The pinned model leads the pool, then fallbacks in order.
+        assert_eq!(
+            pooled.model_axis().candidates(),
+            vec!["primary", "backup1", "backup2"]
+        );
+    }
+
+    #[test]
+    fn axis_binding_serde_is_tagged_snake_case() {
+        let pin: AxisBinding<String> = AxisBinding::Pin("m".into());
+        assert_eq!(
+            serde_json::to_string(&pin).unwrap(),
+            r#"{"kind":"pin","value":"m"}"#
+        );
+        // A profile row written before `model_fallbacks` existed still loads.
+        let legacy = r#"{"model_id":"m","credential_binding":{"type":"none"}}"#;
+        let profile: InferenceProfile = serde_json::from_str(legacy).unwrap();
+        assert!(profile.model_fallbacks.is_empty());
+        assert_eq!(profile.model_axis(), AxisBinding::Pin("m".into()));
+    }
+
+    #[tokio::test]
+    async fn can_consume_gates_a_scoped_key_to_its_provider() {
+        let store = InMemorySecretStore::new();
+        let scoped = create_source(
+            CredentialCreateParams {
+                workspace_id: "ws".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("openai".into()),
+                env_key: None,
+                secret: Some(RedactedString::new("sk-openai")),
+                oauth_command: None,
+            },
+            &store,
+        )
+        .await
+        .unwrap();
+        assert!(can_consume("openai", &scoped));
+        assert!(!can_consume("anthropic", &scoped));
+
+        let unscoped = create_source(
+            CredentialCreateParams {
+                workspace_id: "ws".into(),
+                kind: CredentialKind::Env,
+                provider_id: None,
+                env_key: Some("KEY".into()),
+                secret: Some(RedactedString::new("sk-any")),
+                oauth_command: None,
+            },
+            &store,
+        )
+        .await
+        .unwrap();
+        // Host-native / unscoped consumes any provider.
+        assert!(can_consume("anthropic", &unscoped));
+        assert!(can_consume("openai", &unscoped));
+    }
+
+    #[tokio::test]
+    async fn exact_binding_with_an_incompatible_key_fails_closed() {
+        let store = InMemorySecretStore::new();
+        let openai = create_source(
+            CredentialCreateParams {
+                workspace_id: "ws".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("openai".into()),
+                env_key: None,
+                secret: Some(RedactedString::new("sk-openai")),
+                oauth_command: None,
+            },
+            &store,
+        )
+        .await
+        .unwrap();
+        let mut sources = HashMap::new();
+        sources.insert(openai.id.0.clone(), openai.clone());
+
+        // catalog()'s offering is provider `anthropic`; an openai-scoped key must
+        // not authenticate it.
+        let err = resolve_inference(
+            &catalog(),
+            "claude-opus-4-8",
+            &CredentialBinding::Exact {
+                credential_source_id: CredentialSourceId(openai.id.0.clone()),
+            },
+            &sources,
+            &store,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ResolveError::IncompatibleCredential { .. }));
+    }
+
+    #[test]
+    fn cooldown_deadline_only_fires_for_quota_and_honors_the_retry_hint() {
+        use awaken_runtime_contract::resilience::Disposition;
+        use std::time::Duration;
+
+        // A 429 with a Retry-After cools until now + that hint.
+        assert_eq!(
+            cooldown_deadline(
+                Disposition::Quota {
+                    retry_after: Some(Duration::from_secs(30))
+                },
+                1_000
+            ),
+            Some(31_000)
+        );
+        // A quota signal without a hint uses the default 60s window.
+        assert_eq!(
+            cooldown_deadline(Disposition::Quota { retry_after: None }, 1_000),
+            Some(61_000)
+        );
+        // Transient / permanent failures never cool the identity.
+        assert_eq!(cooldown_deadline(Disposition::Transient, 1_000), None);
+        assert_eq!(cooldown_deadline(Disposition::Permanent, 1_000), None);
     }
 }

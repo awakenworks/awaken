@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use awaken_agent_contract::RedactedString;
 use awaken_config_resolver::{
     InferenceProfile, ResolveError, SourceLookup, resolve_inference, resolve_profile,
+    resolve_profile_candidates,
 };
 use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo, enter_credential};
 use awaken_credential_vault::{
@@ -264,6 +265,7 @@ async fn profile_skips_a_disabled_endpoint_and_selects_the_next() {
 
     let profile = InferenceProfile {
         model_id: "claude-opus-4-8".into(),
+        model_fallbacks: Vec::new(),
         credential_binding: CredentialBinding::Exact {
             credential_source_id: CredentialSourceId(good.clone()),
         },
@@ -275,6 +277,58 @@ async fn profile_skips_a_disabled_endpoint_and_selects_the_next() {
     // ep1 is toggled off, so the backup ep2 is selected.
     assert_eq!(resolved.triple.protocol_endpoint_id, "ep2");
     assert_eq!(resolved.base_url.as_deref(), Some("https://backup/v1/"));
+}
+
+#[tokio::test]
+async fn profile_candidates_resolve_the_model_axis_in_order_and_skip_unresolvable() {
+    let store = InMemorySecretStore::new();
+    let repo = InMemoryCredentialRepo::new();
+    let good = enter(&store, &repo, "sk-good").await;
+    let mut sources: HashMap<String, CredentialSource> = HashMap::new();
+    sources.insert(
+        good.clone(),
+        repo.get(&CredentialSourceId(good.clone())).await.unwrap(),
+    );
+    let ctx = PoolCtx {
+        sources,
+        pool: CredentialPool {
+            id: CredentialPoolId("unused".into()),
+            workspace_id: "ws".into(),
+            members: vec![],
+            policy: SelectionPolicy::FirstHealthy,
+        },
+    };
+    let cat = catalog().await;
+
+    // A single unresolvable primary but a resolvable fallback: the primary is
+    // skipped, the fallback still yields a candidate (one bad model ≠ dead profile).
+    let profile = InferenceProfile {
+        model_id: "no-such-model".into(),
+        model_fallbacks: vec!["claude-opus-4-8".into()],
+        credential_binding: CredentialBinding::Exact {
+            credential_source_id: CredentialSourceId(good.clone()),
+        },
+        disabled_endpoint_ids: Vec::new(),
+    };
+    let candidates = resolve_profile_candidates(&cat, &profile, &ctx, &store)
+        .await
+        .expect("the fallback model resolves");
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].triple.model_id, "claude-opus-4-8");
+
+    // Every model unresolvable → fail-closed, not an empty Ok.
+    let dead = InferenceProfile {
+        model_id: "no-such-model".into(),
+        model_fallbacks: vec!["also-missing".into()],
+        credential_binding: CredentialBinding::Exact {
+            credential_source_id: CredentialSourceId(good.clone()),
+        },
+        disabled_endpoint_ids: Vec::new(),
+    };
+    let err = resolve_profile_candidates(&cat, &dead, &ctx, &store)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ResolveError::ModelUnresolved(_)));
 }
 
 #[tokio::test]
