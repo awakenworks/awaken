@@ -14,6 +14,7 @@
 mod admin_assistant;
 mod authz;
 mod brain_admin;
+mod config_executor;
 mod model_resolver;
 mod models;
 pub mod placement;
@@ -574,6 +575,16 @@ pub fn executor_from_resolved(
                 base_url,
                 credential.expose_secret(),
             )))
+        }
+        // Gemini via Google AI Studio: the key comes from the resolved credential; the
+        // AI-Studio endpoint is genai's default, so no base URL is needed (unlike the
+        // Anthropic-gateway case). Vertex/OAuth is a separate binding, not this path.
+        "gemini" => {
+            let credential = inference
+                .credential
+                .as_ref()
+                .ok_or(ResolvedExecutorError::MissingCredential)?;
+            Ok(Arc::new(GenaiExecutor::gemini(credential.expose_secret())))
         }
         other => Err(ResolvedExecutorError::UnsupportedAdapter(other.to_string())),
     }
@@ -1644,6 +1655,12 @@ async fn management_router_over(
         sessions,
         config,
     } = stores;
+    // Clones for the config-plane executor provider (M2): it resolves a session's
+    // model to a real executor from the live catalog + the workspace's credential,
+    // so the console configures models via the API (no `AWAKEN_MODEL_SOURCE` env).
+    let exec_catalog = catalog.clone();
+    let exec_credentials = credentials.clone();
+    let exec_secrets = secrets.clone();
     // ONE MCP store across the admin router and the ManagedHost, and ONE
     // credential repo + secret store across admin, vaults, and sessions: a
     // credential or MCP config entered through any surface is the same row a
@@ -1797,7 +1814,15 @@ async fn management_router_over(
     let host = Arc::new(
         SharedHost::new(model, model_ref)
             .with_config_service(config_service.clone())
-            .with_admin_tools(admin_execs),
+            .with_admin_tools(admin_execs)
+            // Resolve a session's model to a real executor from the config plane (M2):
+            // an unconfigured/unresolvable model falls back to the scenario model above.
+            .with_executor_provider(Arc::new(config_executor::ConfigExecutorProvider::new(
+                exec_catalog,
+                exec_credentials,
+                exec_secrets,
+                crate::authz::BOOTSTRAP_WORKSPACE,
+            ))),
     );
     let managed_state = Arc::new(
         ManagedState::new(ManagedHost::new(host.clone()).with_mcp(credentials, secrets, mcp_store))
