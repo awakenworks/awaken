@@ -1302,22 +1302,37 @@ def check_tests_are_not_arch_owners() -> list[str]:
     return errors
 
 
-# Product-bucket dependency order (lower→upper). The three lower planes are
-# runtime-independent; the runtime never depends on config or agents (ADR-0043
-# I4/D6/D9). A bucket may depend only on the buckets in its set.
-#   foundation                → shared neutral contracts (agent/runtime contract)
-#   provisioning              → execution substrate (sandbox contract, channel, container)
-#   config                    → control/authoring plane (catalog, vault, resolver, config-store)
-#   resources                 → agent resource stores (file store)
-#   runtime                   → the engine incl. the ACP driver
-#   agents                    → Run-plane orchestration / composition roots
+# Plane-aligned bucket dependency rules. Edges point inward toward contract/kernel;
+# a bucket may depend only on the buckets in its set. The two load-bearing
+# invariants: the kernel is store-unaware (`runtime` ⊥ stores/resources, D1), and
+# the isolated execution tier links no durable store (`worker` ⊥ stores/resources,
+# A-G17 — it commits back through the coordinator port).
+#   contract   → shared vocabulary + ports; depends on nothing
+#   runtime    → the kernel (agent loop + ext plugins); contract only
+#   stores     → commit/event backends (impl contract ports; runtime-contract types)
+#   resources  → mountable agent-resource backends
+#   worker     → isolated execution; kernel + contract only, NEVER a store/resource
+#   control    → self-hosted config/vault/iam authoring plane
+#   server     → resident daemon; consumes every substrate + worker(-contract) + control
+#   bin        → composed deployables / harnesses
 BUCKET_ALLOWED_DEPS = {
-    "foundation": {"foundation"},
-    "provisioning": {"foundation", "provisioning", "resources"},
-    "config": {"foundation", "config", "resources"},
-    "resources": {"foundation", "resources"},
-    "runtime": {"foundation", "provisioning", "resources", "runtime"},
-    "agents": {"foundation", "provisioning", "config", "resources", "runtime", "agents"},
+    "contract": {"contract"},
+    "runtime": {"contract", "runtime"},
+    "stores": {"contract", "runtime", "stores"},
+    "resources": {"contract", "runtime", "resources"},
+    "worker": {"contract", "runtime", "worker"},
+    "control": {"contract", "runtime", "stores", "resources", "control"},
+    "server": {"contract", "runtime", "stores", "resources", "worker", "control", "server"},
+    "bin": {
+        "contract",
+        "runtime",
+        "stores",
+        "resources",
+        "server",
+        "worker",
+        "control",
+        "bin",
+    },
 }
 
 

@@ -1,19 +1,25 @@
 [workspace]
 resolver = "2"
-# Product buckets by directory (single workspace), lower→upper:
-#   crates/provisioning/* → execution substrate (sandbox, channel); no runtime dep.
-#   crates/config/*       → control/authoring plane (catalog, vault, resolver); no runtime dep.
-#   crates/resources/*    → agent resource stores (file store); no runtime dep.
-#   crates/runtime/*      → Awaken runtime (Build) incl. ACP driver; may depend on the three above.
-#   crates/agents/*       → Awaken Agents (Run); may depend on all of the above, never the reverse
-#                           (enforced by scripts/ci/check_crate_boundaries.py).
+# Plane-aligned buckets by directory (single workspace). Shared foundation +
+# three deployment planes; dependencies point inward toward contract/kernel:
+#   crates/contract/*   → shared vocabulary + ports (agent-contract, tenancy); depends on nothing.
+#   crates/runtime/*    → the kernel: agent loop + ext plugins + telemetry + the in-memory default backend; contract only.
+#   crates/stores/*     → DURABLE commit/event backends (fs/sqlite/postgres) behind the CommitCoordinator port.
+#   crates/resources/*  → mountable agent-resource backends (memory/skill/file).
+#   crates/server/*     → resident daemon: Managed + protocol front doors, ingress/dispatch, host, local sandbox, notify.
+#   crates/worker/*     → on-demand isolated execution: container/k8s sandbox + channel/relay (links no stores).
+#   crates/control/*    → self-hosted config/vault/iam authoring plane (ADR-0043).
+#   crates/bin/*        → composed deployables (server-local, standalone) + harnesses.
+#                         Boundaries enforced by scripts/ci/check_crate_boundaries.py.
 members = [
-    "crates/foundation/*",
-    "crates/provisioning/*",
-    "crates/config/*",
-    "crates/resources/*",
+    "crates/contract/*",
     "crates/runtime/*",
-    "crates/agents/*",
+    "crates/stores/*",
+    "crates/resources/*",
+    "crates/server/*",
+    "crates/worker/*",
+    "crates/control/*",
+    "crates/bin/*",
 ]
 
 [workspace.package]

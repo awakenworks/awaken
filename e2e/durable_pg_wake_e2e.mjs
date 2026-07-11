@@ -8,7 +8,7 @@
 // and the history survives a process restart against the same database. The
 // migrations (incl. V0011 `sandbox`) apply on connect. The cross-node wake LATENCY
 // guarantee (a peer's enqueue nudges a blocked pool) is proven deterministically by
-// the Rust component test crates/server/awaken-dispatch/tests/pg_notify_wake.rs;
+// the Rust component test crates/agents/awaken-dispatch/tests/pg_notify_wake.rs;
 // this e2e proves the served pool constructs and drives through PgNotifyWake over a
 // real Postgres queue via the HTTP surface.
 //
