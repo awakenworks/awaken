@@ -68,7 +68,7 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
         "POST",
         "/v1/workspaces/wrkspc_local/webhooks",
         Some(
-            json!({ "url": format!("http://{addr}/hook"), "event_types": ["session.status_idle"] }),
+            json!({ "url": format!("http://{addr}/hook"), "event_types": ["session.status_idled"] }),
         ),
     )
     .await;
@@ -91,7 +91,7 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
     // exactly as `create_session` does (owner resolved at ingress; the
     // create_session→sink link itself is covered in protocol-managed).
     use awaken_protocol_managed::SessionLifecycleSink;
-    sink.emit("sesn_live", Some("wrkspc_local"), "session.status_idle")
+    sink.emit("sesn_live", Some("wrkspc_local"), "session.status_idled")
         .await;
 
     // 5. The receiver got exactly one signed, correctly-scoped delivery.
@@ -125,7 +125,7 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
         "the delivered signature verifies against the received body"
     );
     let v: Value = serde_json::from_str(body).unwrap();
-    assert_eq!(v["data"]["type"], "session.status_idle");
+    assert_eq!(v["data"]["type"], "session.status_idled");
     assert_eq!(v["data"]["id"], "sesn_live");
     assert_eq!(v["data"]["workspace_id"], "wrkspc_local");
     assert!(

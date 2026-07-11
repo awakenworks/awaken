@@ -653,6 +653,30 @@ pub trait SessionLifecycleSink: Send + Sync {
     async fn emit(&self, session_id: &str, workspace_id: Option<&str>, event_type: &str);
 }
 
+/// The webhook lifecycle-fact catalog projected through [`SessionLifecycleSink`],
+/// named to match Anthropic's official Managed Agents webhook event set. These are
+/// a distinct vocabulary from the in-session SSE `OutboundKind` stream names: a
+/// webhook consumer's `data.type` carries these past-tense *fact* names (the SSE
+/// stream carries the present-tense transition names). Keeping them here — one
+/// place, owned by the projecting crate — is why the wire crate needs no dependency
+/// on the webhook delivery machinery: it emits fact names, the sink maps them.
+///
+/// Wired to the sink today: [`SESSION_IDLED`] (on create) and [`SESSION_TERMINATED`]
+/// (on archive) — the two session-level transitions a webhook consumer acts on.
+///
+/// The rest of Anthropic's catalog is projected onto the SSE stream but not yet
+/// fanned to webhooks, and maps to existing `OutboundKind` events: `session.status_
+/// run_started` (`SessionStatusRunning`), `session.thread_created` (`SessionThread
+/// Created`, whose webhook payload would carry `session_thread_id`), and `session.
+/// outcome_evaluation_ended` (`SpanOutcomeEvaluationEnd`). Wiring one is additive —
+/// add its const here and one `sink.emit` at the projection point — not a rename.
+pub mod lifecycle_event {
+    /// Session created, or a turn settled — now idle. Anthropic `session.status_idled`.
+    pub const SESSION_IDLED: &str = "session.status_idled";
+    /// Session terminated (archived). Anthropic `session.status_terminated`.
+    pub const SESSION_TERMINATED: &str = "session.status_terminated";
+}
+
 /// Why a session operation failed (mapped to an HTTP status by the router).
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
@@ -914,11 +938,12 @@ impl ManagedState {
             })
             .await;
         // Project the committed create as a lifecycle fact: a fresh session is idle,
-        // so fan out `session.status_idle` to any workspace-scoped subscribers. The
-        // owning workspace comes from the edge (the aspect), passed in — never read
-        // back from the core record. The sink delivers out-of-band.
+        // so fan out `session.status_idled` (the webhook catalog name — past-tense
+        // fact, distinct from the SSE `session.status_idle` transition) to any
+        // workspace-scoped subscribers. The owning workspace comes from the edge (the
+        // aspect), passed in — never read back from the core record. Out-of-band.
         if let Some(sink) = &self.lifecycle_sink {
-            sink.emit(&id, workspace_id.as_deref(), "session.status_idle")
+            sink.emit(&id, workspace_id.as_deref(), lifecycle_event::SESSION_IDLED)
                 .await;
         }
         // Record the session's owner (ADR-0051): in the aspect-layer in-memory
@@ -1168,20 +1193,38 @@ impl ManagedState {
     /// `session.status_terminated` event so a streaming/listing client observes the
     /// terminal transition (not just the mutated status field). Idempotent: a
     /// re-archive returns the same terminal record without a second event.
-    pub fn archive_session(&self, id: &str) -> Result<Session, StateError> {
-        let terminated_id = self.next_event_id();
-        let mut sessions = self.sessions.lock().unwrap();
-        let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
-        if record.session.archived_at.is_none() {
-            record.session.archived_at = Some(PROCESSED_AT.to_string());
-            record.session.status = "terminated";
-            record.events.push(Event {
-                id: terminated_id,
-                kind: OutboundKind::SessionStatusTerminated {},
-                processed_at: Some(PROCESSED_AT.to_string()),
-            });
+    pub async fn archive_session(&self, id: &str) -> Result<Session, StateError> {
+        // Mutate under the lock, then release it before any await (the sink is async,
+        // and a std `MutexGuard` must not be held across `.await`). `newly_terminated`
+        // gates the projection so a re-archive (idempotent) fans out no second event.
+        let (session, newly_terminated) = {
+            let terminated_id = self.next_event_id();
+            let mut sessions = self.sessions.lock().unwrap();
+            let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
+            let newly = record.session.archived_at.is_none();
+            if newly {
+                record.session.archived_at = Some(PROCESSED_AT.to_string());
+                record.session.status = "terminated";
+                record.events.push(Event {
+                    id: terminated_id,
+                    kind: OutboundKind::SessionStatusTerminated {},
+                    processed_at: Some(PROCESSED_AT.to_string()),
+                });
+            }
+            (record.session.clone(), newly)
+        };
+        // Project the terminal transition as a lifecycle fact, mirroring create's
+        // `session.status_idled`. The owning workspace is resolved from the session's
+        // persisted owner (the archive edge carries only the id) so a subscription in
+        // that workspace is matched even after a restart lost the in-memory index.
+        if newly_terminated {
+            if let Some(sink) = &self.lifecycle_sink {
+                let owner = self.resolve_owner(id).await;
+                sink.emit(id, owner.as_deref(), lifecycle_event::SESSION_TERMINATED)
+                    .await;
+            }
         }
-        Ok(record.session.clone())
+        Ok(session)
     }
 
     /// The session's primary thread projection (`BetaManagedAgentsSessionThread`).
