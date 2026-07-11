@@ -23,6 +23,7 @@ import type {
   ContextPolicy,
   PermissionConfig,
   PublishResult,
+  ToolOverride,
 } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import { useCapabilities } from "../lib/useCapabilities";
@@ -94,6 +95,50 @@ function ListEditor({
         </Button>
       </div>
     </div>
+  );
+}
+
+/// Per-tool presentation overrides (ADR-0053): a row per override — the target tool id,
+/// an alias (rename for the model), a description override, and a defer toggle. `target`
+/// is picked from the agent's selected tools (add an MCP id under Tools to override it).
+function ToolOverridesEditor({
+  tools,
+  value,
+  onChange,
+}: {
+  tools: string[];
+  value: ToolOverride[];
+  onChange: (next: ToolOverride[]) => void;
+}) {
+  const set = (i: number, patch: Partial<ToolOverride>) =>
+    onChange(value.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  const add = () =>
+    onChange([...value, { target: tools[0] ?? "", alias: "", description: "", defer: false }]);
+  return (
+    <>
+      {value.map((r, i) => (
+        <div className="row" key={i} style={{ alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <select className="input mono" style={{ minWidth: 160 }} value={r.target} onChange={(e) => set(i, { target: e.target.value })}>
+            {!tools.includes(r.target) && <option value={r.target}>{r.target || "—"}</option>}
+            {tools.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+          <input className="input mono" style={{ width: 120 }} placeholder="alias" value={r.alias ?? ""} onChange={(e) => set(i, { alias: e.target.value })} />
+          <input className="input" style={{ flex: 1, minWidth: 160 }} placeholder="description override" value={r.description ?? ""} onChange={(e) => set(i, { description: e.target.value })} />
+          <label className="mut" style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <input type="checkbox" checked={!!r.defer} onChange={(e) => set(i, { defer: e.target.checked })} />
+            defer
+          </label>
+          <Button variant="ghost" style={{ height: 24 }} onClick={() => onChange(value.filter((_, j) => j !== i))}>
+            ✕
+          </Button>
+        </div>
+      ))}
+      <Button onClick={add}>+ override a tool</Button>
+    </>
   );
 }
 
@@ -397,6 +442,20 @@ export default function AgentEditorSurface() {
               onChange={(v) => patch({ tools: v })}
               placeholder={app.t("add custom tool id (e.g. mcp__calc__add)", "添加自定义工具 id")}
             />
+            <div className="field" style={{ marginTop: 14 }}>
+              <label>{app.t("Tool presentation", "工具呈现")}</label>
+              <span className="mut">
+                {app.t(
+                  "Rename a tool for the model (alias), override its description, or defer it (its schema is sent only after the model loads it) — works for MCP tools too. Target is the tool's id.",
+                  "给模型改工具名(别名)、覆盖描述,或延迟加载(模型加载后才发 schema)——对 MCP 工具同样适用。目标是工具 id。",
+                )}
+              </span>
+              <ToolOverridesEditor
+                tools={cfg.tools}
+                value={cfg.tool_overrides ?? []}
+                onChange={(v) => patch({ tool_overrides: v })}
+              />
+            </div>
           </div>
         )}
 
