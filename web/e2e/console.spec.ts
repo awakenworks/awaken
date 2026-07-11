@@ -128,6 +128,23 @@ test("Sandbox tab gates an unpublished draft (nothing live to talk to yet)", asy
   await expect(page.getByText(/Publish to test in the Sandbox|发布后即可在 Sandbox 试运行/)).toBeVisible();
 });
 
+test("model picker offers only credentialed models", async ({ page, request }) => {
+  const model = `acme-${Date.now()}`;
+  // A provider + offering with NO credential yet.
+  await request.put("/v1/config/providers/acme", { data: { id: "acme", slug: "acme", display_name: "Acme", version: 1 } });
+  await request.put("/v1/config/endpoints/acme-ep", { data: { id: "acme-ep", provider_id: "acme", flavor: "open_ai_chat", base_url: "https://acme.example/v1/", timeout_secs: 60, display_name: "Acme", version: 1 } });
+  await request.post("/v1/config/offerings", { data: { model_id: model, provider_id: "acme", protocol_endpoint_id: "acme-ep", flavor: "open_ai_chat", upstream_model: null } });
+
+  await page.goto("/w/default/agents/new");
+  // Uncredentialed → not selectable (hidden from the picker).
+  await expect(page.locator("option", { hasText: model })).toHaveCount(0);
+
+  // Add a credential for its provider → the model becomes selectable.
+  await request.post("/v1/config/credentials", { data: { workspace_id: "wrkspc_default", kind: "vault", provider_id: "acme", secret: "sk-acme-test" } }); // awaken-allow: secret (synthetic e2e fixture)
+  await page.reload();
+  await expect(page.locator("option", { hasText: model })).toHaveCount(1);
+});
+
 test("author → publish a config agent, and see it in the list", async ({ page }) => {
   const id = `e2e-agent-${Date.now()}`;
   await page.goto("/w/default/agents/new");
