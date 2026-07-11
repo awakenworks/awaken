@@ -149,6 +149,28 @@ async function main() {
     assert.ok(JSON.stringify(dead.body).includes('pool_exhausted'), 'the problem body names pool_exhausted (NoEligibleCredential)');
     pass('resolve(pool with no usable member) -> 409 pool_exhausted (NoEligibleCredential)');
 
+    // ── A pool mixing an incompatible member with a compatible one ──────────
+    // can_consume skips the openai-scoped member for an anthropic model; the
+    // anthropic member still materializes (one incompatible key ≠ dead pool).
+    const oa = await cfg('POST', '/v1/config/credentials', { workspace_id: WS, kind: 'vault', provider_id: 'openai', env_key: 'KO', secret: 'sk-o' });
+    ok(oa, 201, 'openai cred');
+    ok(await cfg('PUT', '/v1/config/credential-pools/mixed', {
+      id: 'mixed',
+      workspace_id: WS,
+      members: [
+        { credential_source_id: oa.body.id, ordinal: 0, enabled: true, selection_weight: 0 },
+        { credential_source_id: id1, ordinal: 1, enabled: true, selection_weight: 0 },
+      ],
+    }), 200, 'mixed pool');
+    const mixed = await cfg('POST', '/v1/config/inference/resolve', {
+      workspace_id: WS,
+      model_id: 'model-a',
+      binding: { type: 'one_of_credential_pool', credential_pool_id: 'mixed' },
+    });
+    ok(mixed, 200, 'mixed-pool resolve skips the incompatible member and uses the compatible one');
+    assert.equal(mixed.body.credential_present, true, 'the anthropic member materialized');
+    pass('resolve(pool: [openai, anthropic]) for an anthropic model -> skips openai (can_consume), uses anthropic');
+
     console.log('E2E PASS: provider-resilience config plane — axis candidates + credential availability cooldown/rotation.');
   });
   process.exitCode = 0;

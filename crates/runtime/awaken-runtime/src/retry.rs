@@ -9,6 +9,7 @@
 use std::time::Duration;
 
 use awaken_runtime_contract::llm::Error;
+use awaken_runtime_contract::resilience::Classify;
 
 /// Backoff never exceeds this, regardless of attempt count.
 const MAX_BACKOFF_MS: u64 = 8_000;
@@ -53,7 +54,11 @@ impl LlmRetryPolicy {
             .saturating_mul(1u64 << retry.min(32) as u32)
             .min(MAX_BACKOFF_MS);
         let backoff = jitter_backoff(exp);
-        match err.retry_after() {
+        // The retry-after hint via the unified failure Disposition (E3-1): for a
+        // retryable error this is exactly `err.retry_after()` — a Quota signal
+        // carries the hint, a Transient one carries none — so backoff is unchanged,
+        // but the classifier is the single source of the "how long" decision.
+        match err.disposition().retry_after() {
             Some(hint) if hint > backoff => hint.min(MAX_RETRY_AFTER),
             _ => backoff,
         }
