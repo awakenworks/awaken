@@ -4,10 +4,34 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# Durable skill catalog for the resources plane. Deliberately std-only: a leaf like
-# awaken-memory-store / awaken-file-store, it names no runtime/host/ext type, so the
-# host can serve delivered skills from it while awaken-ext-skills stays store-unaware
-# (it only ever sees SkillFile data through its SkillSource port).
+# Durable skill catalog for the resources plane: the `SkillStore` port (mirroring
+# awaken-file-store's `FileStore`) with pluggable backends — in-memory / filesystem /
+# sqlite / postgres over one portable bundle — so a delivered skill survives a
+# restart and, on postgres, is shared across nodes. It names no runtime/host/ext
+# type; the host serves delivered skills from it while awaken-ext-skills stays
+# store-unaware (it only sees SkillFile data via its SkillSource port).
+
+[dependencies]
+async-trait.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "fs"] }
+# Feature `sqlite`: embedded durable SkillStore over the crate's own `skill_store`
+# migration scope.
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+# Feature `postgres`: network-DB SkillStore over the same scope, for multi-node SaaS.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"], optional = true }
+awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9", features = ["postgres"], optional = true }
+awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9", optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+tempfile = "3"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+
+[features]
+default = []
+sqlite = ["dep:rusqlite", "dep:awaken-scoped-migration", "dep:awaken-scoped-migration-sqlite"]
+postgres = ["dep:sqlx", "dep:awaken-scoped-migration"]
 
 [lints]
 workspace = true

@@ -331,7 +331,13 @@ pub struct SharedHost {
     /// a catalog configured through `/v1/skills` outlives the process. The host reads
     /// the bytes and feeds them to the extension's `SkillSource`, so the runtime stays
     /// store-unaware.
-    pub(crate) skill_store: Option<Arc<awaken_skill_store::SkillStore>>,
+    pub(crate) skill_store: Option<Arc<dyn awaken_skill_store::SkillStore>>,
+    /// In-memory snapshot of the delivered catalog `(id, content)`, read
+    /// *synchronously* by the capability advertisement (`skill_ids`) and the
+    /// run-loop `SkillSource` scan — refreshed from the async `skill_store` on a
+    /// write and at each session's setup (`reload_skill_cache`). This is how a
+    /// network-DB (async) catalog serves the host's sync read paths.
+    pub(crate) skill_cache: std::sync::Mutex<Vec<(String, String)>>,
     pub(crate) delegates: HashSet<String>,
     /// Runtime plugins this host activates on every thread, and their config
     /// sections (e.g. the tool state machine). Empty by default.
@@ -385,7 +391,7 @@ pub struct SharedHost {
     /// the durable [`awaken_memory_store::MemoryBlobStore`] — under the storage dir it
     /// survives a restart, so memory written in one process is visible to the next; an
     /// ephemeral per-process dir when the host has no storage dir (unit tests).
-    pub(crate) memory_stores: awaken_memory_store::MemoryBlobStore,
+    pub(crate) memory_stores: Arc<dyn awaken_memory_store::MemoryBlobStore>,
     /// An optional tool gate that replaces the default authorization gate on every
     /// thread's runtime. Used to exercise scheduled actions (ADR-0020, slice E): a
     /// gate that defers tool calls as `ScheduledAction`s so the durable dispatch
@@ -441,8 +447,10 @@ impl SharedHost {
             Some(dir) => dir.join("memory_stores"),
             None => std::env::temp_dir().join(format!("awaken-memstore-{}", std::process::id())),
         };
-        let memory_stores = awaken_memory_store::MemoryBlobStore::open(&memory_store_root)
-            .expect("open durable memory-store root");
+        let memory_stores: Arc<dyn awaken_memory_store::MemoryBlobStore> = Arc::new(
+            awaken_memory_store::FsMemoryBlobStore::open(&memory_store_root)
+                .expect("open durable memory-store root"),
+        );
         Self {
             llm,
             model_ref: model_ref.into(),
@@ -453,6 +461,7 @@ impl SharedHost {
             client_tools: HashSet::new(),
             skills: Vec::new(),
             skill_store: None,
+            skill_cache: std::sync::Mutex::new(Vec::new()),
             delegates: HashSet::new(),
             plugin_ids: Vec::new(),
             plugin_config: std::collections::BTreeMap::new(),
@@ -646,9 +655,20 @@ impl SharedHost {
     /// dir. The extension never learns of the store — the host scans it into the
     /// `SkillSource` port as plain file data.
     pub fn with_skill_store(mut self, dir: impl Into<PathBuf>) -> Self {
-        let store = awaken_skill_store::SkillStore::open(dir.into())
+        let store = awaken_skill_store::FsSkillStore::open(dir.into())
             .expect("open durable skill store root");
         self.skill_store = Some(Arc::new(store));
+        self
+    }
+
+    /// Back the delivered skill catalog with an arbitrary [`SkillStore`] backend
+    /// (e.g. `PgSkillStore` for a multi-node deployment). Sibling of
+    /// [`with_skill_store`](Self::with_skill_store), which wires the filesystem one.
+    pub fn with_skill_store_backend(
+        mut self,
+        store: Arc<dyn awaken_skill_store::SkillStore>,
+    ) -> Self {
+        self.skill_store = Some(store);
         self
     }
 
@@ -1161,9 +1181,13 @@ impl SharedHost {
         // `skills::wire_skills`.
         let mut skill_descriptors = Vec::new();
         let mut skill_registry: Option<Arc<dyn SkillRegistry>> = None;
+        // Refresh the delivered-catalog snapshot from the (async) store for this
+        // session; `Some` (possibly empty) exactly when a durable store is wired.
+        self.reload_skill_cache().await;
+        let delivered = self.has_skill_store().then(|| self.skill_cache_snapshot());
         if let Some(wiring) = crate::skills::wire_skills(
             &self.skills,
-            self.skill_store.clone(),
+            delivered,
             env.clone(),
             self.llm.clone(),
             &self.model_ref,
