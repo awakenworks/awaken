@@ -188,6 +188,24 @@ impl ThreadUsage {
         *entry = entry.saturating_add(usage);
     }
 
+    /// Fold another tally into this one, per model — the seam that rolls a
+    /// sub-agent's usage (recorded on its own isolated thread) into the parent
+    /// thread's running total, so a delegated turn's tokens are not lost. Each
+    /// model's counts accumulate independently (a sub-agent may run a different
+    /// model than its parent).
+    pub fn merge(&mut self, other: &ThreadUsage) {
+        for (model, usage) in &other.by_model {
+            self.record(model, *usage);
+        }
+    }
+
+    /// True when no usage has been recorded (every sub-run over a deterministic
+    /// model reports none — nothing to roll up).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.by_model.is_empty()
+    }
+
     /// The session-level total across every model (what a session-usage field reports).
     #[must_use]
     pub fn total(&self) -> TokenUsage {

@@ -63,7 +63,9 @@ impl RecallSelector for AgentSelector {
     async fn select(&self, query: &str, manifest: &[(usize, String)], max: usize) -> Vec<usize> {
         let n = self.seq.fetch_add(1, Ordering::SeqCst);
         let input = select_input(query, manifest, max);
-        let reply = run_configured_subrun(
+        // Recall selection is auxiliary (BeforeInference housekeeping), not turn
+        // work — its usage is not folded into the session tally.
+        let (reply, _usage) = run_configured_subrun(
             &self.catalog,
             &self.provider,
             self.llm.clone(),

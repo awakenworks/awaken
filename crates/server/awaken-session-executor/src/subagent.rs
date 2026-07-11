@@ -14,12 +14,13 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::state::{Action, Scope};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_runtime::RunInput;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::CancellationToken;
-use awaken_runtime_contract::llm::LlmExecutor;
+use awaken_runtime_contract::llm::{LlmExecutor, THREAD_USAGE_STATE_KEY, ThreadUsage};
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::tool::RawTool;
@@ -30,10 +31,16 @@ use crate::config::{build_runtime, latest_assistant_text, server_config};
 
 /// Run the agent identified by `agent_id` — its config resolved from `catalog` —
 /// on an isolated `thread`, seeded with `seed`, to completion, returning its last
-/// assistant line. The sub-run gets a fresh sandbox, a runtime over `llm` with no
-/// delegation resolver (no recursion), and an isolated commit store (its history
-/// never joins the parent transcript). `cancellation`, when set, is forwarded so
-/// cancelling the parent cancels the sub-run too.
+/// assistant line **and its accumulated token usage**. The sub-run gets a fresh
+/// sandbox, a runtime over `llm` with no delegation resolver (no recursion), and an
+/// isolated commit store (its history never joins the parent transcript).
+/// `cancellation`, when set, is forwarded so cancelling the parent cancels the
+/// sub-run too.
+///
+/// The returned [`ThreadUsage`] is read from the sub-run's own committed thread
+/// state before its isolated store is dropped, so the caller can fold it into a
+/// parent thread's total — otherwise the delegate's tokens would vanish with the
+/// store. Empty when the sub-run's model reported no usage (deterministic models).
 ///
 /// Errors (unknown agent, sandbox/runtime failure) are returned as strings for
 /// the caller to wrap.
@@ -47,7 +54,7 @@ pub(crate) async fn run_configured_subrun(
     seed: impl Into<RunInput>,
     extra_tools: Vec<Arc<dyn RawTool>>,
     cancellation: Option<CancellationToken>,
-) -> Result<String, String> {
+) -> Result<(String, ThreadUsage), String> {
     let config = catalog
         .resolve(agent_id)
         .ok_or_else(|| format!("unknown agent {agent_id:?}"))?
@@ -69,13 +76,32 @@ pub(crate) async fn run_configured_subrun(
     if let Some(token) = cancellation {
         ctx = ctx.with_cancellation(token);
     }
+    let thread_id = ThreadId(thread.to_string());
     runtime
         .run_to_completion(&config, thread, seed, ctx, |_| ResumeResult::allow())
         .await
         .map_err(|e| e.to_string())?;
-    Ok(latest_assistant_text(
-        &commit.committed_messages(&ThreadId(thread.to_string())),
-    ))
+    let text = latest_assistant_text(&commit.committed_messages(&thread_id));
+    let usage = usage_from_committed(&commit, &thread_id);
+    Ok((text, usage))
+}
+
+/// Read a finished sub-run's accumulated [`ThreadUsage`] out of its committed
+/// thread state. The run loop writes the running cumulative under
+/// [`THREAD_USAGE_STATE_KEY`] each step, so the last `Set` is the whole tally
+/// (mirrors `SharedHost::thread_usage`, but over the sub-run's isolated commit).
+fn usage_from_committed(commit: &MemoryCommitCoordinator, thread_id: &ThreadId) -> ThreadUsage {
+    let mut usage = ThreadUsage::default();
+    for cmd in commit.committed_state(thread_id) {
+        if cmd.scope == Scope::Thread && cmd.key.0 == THREAD_USAGE_STATE_KEY {
+            if let Action::Set(value) = &cmd.action {
+                if let Ok(parsed) = serde_json::from_value::<ThreadUsage>(value.clone()) {
+                    usage = parsed;
+                }
+            }
+        }
+    }
+    usage
 }
 
 /// Run a default `assistant` sub-agent named `name` with `input` to completion and
@@ -90,7 +116,7 @@ pub(crate) async fn run_subagent(
     name: &str,
     input: &str,
     cancellation: Option<CancellationToken>,
-) -> Result<String, String> {
+) -> Result<(String, ThreadUsage), String> {
     // A judge/native sub-agent does not offer skills (ADR-0036).
     let config = server_config(
         model_ref,
@@ -186,7 +212,7 @@ mod tests {
             .with_agent(agent("judge", "JUDGE INSTRUCTIONS"));
         let llm = Arc::new(InstructionEchoModel);
 
-        let mem = run_configured_subrun(
+        let (mem, _) = run_configured_subrun(
             &catalog,
             &provider,
             llm.clone(),
@@ -200,7 +226,7 @@ mod tests {
         .unwrap();
         assert_eq!(mem, "MEMORY INSTRUCTIONS");
 
-        let judge = run_configured_subrun(
+        let (judge, _) = run_configured_subrun(
             &catalog,
             &provider,
             llm.clone(),
@@ -213,6 +239,68 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(judge, "JUDGE INSTRUCTIONS");
+    }
+
+    /// A model that reports fixed token usage per inference, so a test can prove the
+    /// sub-run's usage is read back out of its isolated commit store (rather than
+    /// discarded with it).
+    struct UsageModel;
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for UsageModel {
+        async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
+            Ok(ChatResponse {
+                output: AssistantOutput::text("ok"),
+                usage: Some(awaken_runtime_contract::llm::TokenUsage {
+                    prompt_tokens: 13,
+                    completion_tokens: 5,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                }),
+                stop_reason: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn subrun_returns_its_accumulated_usage() {
+        let base = std::env::temp_dir().join(format!(
+            "awaken-subrun-usage-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let provider = LocalSandboxProvider::new(&base);
+        let catalog = AgentCatalog::new().with_agent(agent("worker", "WORK"));
+
+        let (_text, usage) = run_configured_subrun(
+            &catalog,
+            &provider,
+            Arc::new(UsageModel),
+            "worker",
+            "t-usage",
+            vec![user("go")],
+            Vec::new(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        // The sub-run's model reported 13/5 on its one step; that must survive the
+        // isolated store's drop as the returned tally.
+        let total = usage.total();
+        assert_eq!(total.prompt_tokens, 13);
+        assert_eq!(total.completion_tokens, 5);
+        assert_eq!(
+            usage
+                .by_model
+                .get("stub")
+                .copied()
+                .unwrap_or_default()
+                .prompt_tokens,
+            13
+        );
     }
 
     #[tokio::test]
