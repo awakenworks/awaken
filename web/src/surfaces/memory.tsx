@@ -7,6 +7,7 @@ import { useState } from "react";
 import { api } from "../lib/api/client";
 import type { MemoryStore, Page } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
+import { Button, Card, Pill, TextField } from "../components/ui";
 
 function CreateModal({ onClose }: { onClose: () => void }) {
   const app = useApp();
@@ -28,27 +29,21 @@ function CreateModal({ onClose }: { onClose: () => void }) {
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3>{app.t("New memory store", "新建记忆库")}</h3>
-        <div className="field">
-          <label>{app.t("Name", "名称")}</label>
-          <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="project-memory" />
-        </div>
-        <div className="field">
-          <label>{app.t("Description", "描述")}</label>
-          <input
-            className="input"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder={app.t("What this store remembers", "这个记忆库保存什么")}
-          />
-        </div>
+        <TextField label={app.t("Name", "名称")} value={name} onChange={(e) => setName(e.target.value)} placeholder="project-memory" />
+        <TextField
+          label={app.t("Description", "描述")}
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder={app.t("What this store remembers", "这个记忆库保存什么")}
+        />
         {create.error instanceof Error && <div className="err">{create.error.message}</div>}
         <div className="row" style={{ justifyContent: "flex-end" }}>
-          <button className="btn" onClick={onClose}>
+          <Button onClick={onClose}>
             {app.t("Cancel", "取消")}
-          </button>
-          <button className="btn primary" disabled={create.isPending} onClick={() => create.mutate()}>
+          </Button>
+          <Button variant="primary" disabled={create.isPending} onClick={() => create.mutate()}>
             {app.t("Create", "创建")}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -83,12 +78,12 @@ export default function MemorySurface() {
             "工作区级别的持久化记忆,跨会话保留。会话通过 resources[] 条目挂载其一。",
           )}
         </span>
-        <button className="btn primary" onClick={() => setCreating(true)}>
+        <Button variant="primary" onClick={() => setCreating(true)}>
           + {app.t("New memory store", "新建记忆库")}
-        </button>
+        </Button>
       </div>
       {stores.error instanceof Error && <div className="err">{stores.error.message}</div>}
-      <div className="card" style={{ padding: 0 }}>
+      <Card style={{ padding: 0 }}>
         <table className="table">
           <thead>
             <tr>
@@ -107,25 +102,25 @@ export default function MemorySurface() {
                 <td style={{ textAlign: "right" }}>
                   <div className="row" style={{ justifyContent: "flex-end" }}>
                     {s.archived_at ? (
-                      <span className="pill neutral">{app.t("archived", "已归档")}</span>
+                      <Pill tone="neutral">{app.t("archived", "已归档")}</Pill>
                     ) : (
-                      <button
-                        className="btn ghost"
+                      <Button
+                        variant="ghost"
                         style={{ height: 22 }}
                         disabled={archive.isPending}
                         onClick={() => archive.mutate(s.id)}
                       >
                         {app.t("Archive", "归档")}
-                      </button>
+                      </Button>
                     )}
-                    <button
-                      className="btn danger"
+                    <Button
+                      variant="danger"
                       style={{ height: 22 }}
                       disabled={remove.isPending}
                       onClick={() => remove.mutate(s.id)}
                     >
                       {app.t("Delete", "删除")}
-                    </button>
+                    </Button>
                   </div>
                 </td>
               </tr>
@@ -139,7 +134,7 @@ export default function MemorySurface() {
             )}
           </tbody>
         </table>
-      </div>
+      </Card>
       {creating && <CreateModal onClose={() => setCreating(false)} />}
     </>
   );

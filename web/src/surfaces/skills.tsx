@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api/client";
 import type { Page, Skill } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
+import { Button, Card } from "../components/ui";
 
 export default function SkillsSurface() {
   const app = useApp();
@@ -37,7 +38,7 @@ export default function SkillsSurface() {
         )}
       </div>
       {skills.error instanceof Error && <div className="err">{skills.error.message}</div>}
-      <div className="card" style={{ padding: 0 }}>
+      <Card style={{ padding: 0 }}>
         <table className="table">
           <thead>
             <tr>
@@ -56,14 +57,14 @@ export default function SkillsSurface() {
                 <td className="mut">{s.description ?? "—"}</td>
                 <td className="mut">{s.latest_version ?? "—"}</td>
                 <td style={{ textAlign: "right" }}>
-                  <button
-                    className="btn danger"
+                  <Button
+                    variant="danger"
                     style={{ height: 22 }}
                     disabled={remove.isPending}
                     onClick={() => remove.mutate(s.id)}
                   >
                     {app.t("Delete", "删除")}
-                  </button>
+                  </Button>
                 </td>
               </tr>
             ))}
@@ -76,7 +77,7 @@ export default function SkillsSurface() {
             )}
           </tbody>
         </table>
-      </div>
+      </Card>
     </>
   );
 }
