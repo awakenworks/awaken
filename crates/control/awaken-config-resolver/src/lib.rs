@@ -578,17 +578,40 @@ pub fn resource_binding_prompt(binding: &ResourceBinding) -> String {
     }
 }
 
+/// The path a bound resource is *realized* at in the sandbox — the string the agent is
+/// told to read, matching how the local sandbox actually mounts it: file / memory /
+/// skill land under the read-only `.mnt/` root (`.mnt/<logical>`), while a repo working
+/// tree and the outputs mount keep their own path. Used so the compiled prompt names the
+/// same path the bytes are at — a binding authored as `/mnt/memory` is described (and
+/// read) at `.mnt/mnt/memory`, never the bare `/mnt/memory` the file isn't at.
+#[must_use]
+pub fn realized_mount_path(kind: ResourceKind, mount_path: &str) -> String {
+    let logical = mount_path.trim_start_matches('/');
+    match kind {
+        ResourceKind::File | ResourceKind::MemoryStore | ResourceKind::Skill => {
+            format!(".mnt/{logical}")
+        }
+        ResourceKind::GithubRepository => logical.to_string(),
+        ResourceKind::Outputs => mount_path.to_string(),
+    }
+}
+
 /// The ordered prompt fragments for an agent's bound resources — the bridge from the
 /// [`AgentResourceConfig`] aggregate to the config-store's `compile_with_resource_prompts`
 /// (which appends them to the agent's effective system prompt, ADR-0038 A3a). One
 /// fragment per binding, in binding order; empty when the agent binds no resources
-/// (so compilation stays byte-identical to an unbound agent).
+/// (so compilation stays byte-identical to an unbound agent). Each fragment names the
+/// [`realized_mount_path`], so what the agent is told matches where the sandbox mounts it.
 #[must_use]
 pub fn resource_prompts_for(config: &AgentResourceConfig) -> Vec<String> {
     config
         .resources
         .iter()
-        .map(resource_binding_prompt)
+        .map(|b| {
+            let mut b = b.clone();
+            b.mount_path = realized_mount_path(b.kind, &b.mount_path);
+            resource_binding_prompt(&b)
+        })
         .collect()
 }
 
