@@ -140,6 +140,33 @@ impl GenaiExecutor {
             .build();
         Self::with_client(client)
     }
+
+    /// An executor for **Gemini via Google AI Studio**, authenticated by an API key
+    /// passed explicitly (a `GEMINI_API_KEY`-style key). Unlike [`vertex_gemini`],
+    /// this speaks the AI-Studio `generateContent` wire — genai's default Gemini
+    /// endpoint — so only the adapter + key are forced, keeping the default base URL.
+    /// The model name still comes from the request's `ModelBinding` (G22). The key is
+    /// handed in by the caller (a config-plane credential), never read from the env.
+    pub fn gemini(api_key: impl Into<String>) -> Self {
+        use genai::adapter::AdapterKind;
+        use genai::resolver::{AuthData, ServiceTargetResolver};
+        use genai::{ModelIden, ServiceTarget};
+
+        let api_key = api_key.into();
+        let resolver = ServiceTargetResolver::from_resolver_fn(
+            move |mut target: ServiceTarget| -> std::result::Result<ServiceTarget, genai::resolver::Error> {
+                // Force the Gemini adapter + explicit key, keeping genai's default
+                // AI-Studio endpoint and the caller-selected model name.
+                target.auth = AuthData::from_single(api_key.clone());
+                target.model = ModelIden::new(AdapterKind::Gemini, target.model.model_name.clone());
+                Ok(target)
+            },
+        );
+        let client = Client::builder()
+            .with_service_target_resolver(resolver)
+            .build();
+        Self::with_client(client)
+    }
 }
 
 #[async_trait]

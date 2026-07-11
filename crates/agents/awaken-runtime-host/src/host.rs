@@ -1117,10 +1117,18 @@ impl SharedHost {
         );
         let apply_base_gate = !pre_authorized.is_empty() || authored_permission.is_some();
         let base_gate = server_gate_with(authored_permission, &pre_authorized);
-        // R1/R2: per-session executor resolved from the thread's bound model.
+        // R1/R2: per-session executor resolved from the thread's bound model. A
+        // published agent's own model (its installed config's `model_ref`) is the
+        // default when the session bound no explicit model, so the config plane's
+        // ExecutorProvider resolves *that* model's executor (else the host default).
+        let default_model_ref = installed
+            .as_ref()
+            .map(|c| c.snapshot().resolved_spec.model_binding.model_ref.clone())
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| self.model_ref.clone());
         let exec = self
             .model_route
-            .resolve_executor(thread, &self.model_ref, &self.llm);
+            .resolve_executor(thread, &default_model_ref, &self.llm);
         let mut runtime = build_runtime(exec, &env);
         if apply_base_gate {
             runtime = runtime.with_gate(base_gate.clone());
