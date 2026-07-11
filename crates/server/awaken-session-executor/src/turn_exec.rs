@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::Phase;
+use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 
@@ -16,12 +17,17 @@ use crate::host::{HostError, SessionCtx, SharedHost};
 impl SharedHost {
     /// Execute `activation` for `thread`: the ACP executor when the session chose
     /// an ACP runtime, else the native ingress (direct / durable / superseding).
+    ///
+    /// `sink`, when set, receives the engine's best-effort live progress — only
+    /// the in-process direct path wires it (the durable/ACP paths run elsewhere
+    /// and simply omit live events, degrading to the committed projection).
     pub(crate) async fn execute_activation(
         &self,
         ctx: &Arc<SessionCtx>,
         thread: &str,
         activation: RunActivation,
         supersede: bool,
+        sink: Option<Arc<dyn StreamSink>>,
     ) -> Result<Phase, HostError> {
         // R3/R4: an ACP-selected thread runs on the external CLI (relaunched per
         // turn — R7), committing through the same coordinator as the native path.
@@ -49,10 +55,13 @@ impl SharedHost {
             // inbox in-process, so it is the only path that opens one. The
             // inbox closes when the attempt returns — success or error — and
             // unconsumed messages carry over to the thread's next attempt.
-            let context = ctx
+            let mut context = ctx
                 .context_for(&activation)
                 .await
                 .with_live_inbox(ctx.open_live_inbox());
+            if let Some(sink) = sink {
+                context = context.with_stream_sink(sink);
+            }
             let result = ctx
                 .ingress
                 .submit(activation, context)
