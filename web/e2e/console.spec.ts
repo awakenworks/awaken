@@ -56,6 +56,12 @@ test("gated Observe page is truth-driven: probes the endpoint and shows the gate
   await expect(page.getByText(/backend face is not mounted yet|后端面尚未就绪/)).toBeVisible();
 });
 
+test("Sandbox tab gates an unpublished draft (nothing live to talk to yet)", async ({ page }) => {
+  await page.goto("/w/default/agents/new");
+  await page.getByRole("button", { name: "Sandbox", exact: true }).click();
+  await expect(page.getByText(/Publish to test in the Sandbox|发布后即可在 Sandbox 试运行/)).toBeVisible();
+});
+
 test("author → publish a config agent, and see it in the list", async ({ page }) => {
   const id = `e2e-agent-${Date.now()}`;
   await page.goto("/w/default/agents/new");
@@ -75,4 +81,12 @@ test("author → publish a config agent, and see it in the list", async ({ page 
   // The agents list shows the published agent.
   await page.goto("/w/default/agents");
   await expect(page.getByText(id)).toBeVisible();
+
+  // Sandbox: a published agent is installed, so a live scratch session opens here
+  // (the same transcript engine the session detail uses). No provider key in CI, so
+  // we assert the session + composer come up, not a model reply.
+  await page.goto(`/w/default/agents/${id}`);
+  await page.getByRole("button", { name: "Sandbox", exact: true }).click();
+  await page.getByRole("button", { name: /Start session/ }).click();
+  await expect(page.getByPlaceholder("Ask the agent…")).toBeVisible();
 });

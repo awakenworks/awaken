@@ -3,7 +3,7 @@
 // owns the live log via useSessionLog — so the same engine backs the session
 // detail, the editor Sandbox, the Admin Assistant, and the model Test modal.
 
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Card, Pill } from "../ui";
 import type { ContentBlock, InboundEvent, SessionEvent } from "../../lib/api/types";
 import { useApp } from "../../lib/app-state";
@@ -115,6 +115,8 @@ export interface TranscriptProps {
   header?: ReactNode;
   /** Poll + subscribe to SSE (default true). */
   live?: boolean;
+  /** Round-trip latency (send → next agent message), measured client-side. */
+  onLatency?: (ms: number) => void;
 }
 
 export default function Transcript({
@@ -125,6 +127,7 @@ export default function Transcript({
   placeholder,
   header,
   live = true,
+  onLatency,
 }: TranscriptProps) {
   const app = useApp();
   const { log, results, pendingIds, running, freshCount, applyPending, send, sendError, loadError } =
@@ -132,6 +135,17 @@ export default function Transcript({
   const [draft, setDraft] = useState("");
   const [model, setModel] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
+  // Latency: stamp on send, resolve when the next agent.message lands in the log.
+  const sentAt = useRef<number | null>(null);
+  const agentMsgCount = log.filter((e) => e.type === "agent.message").length;
+  const prevMsgCount = useRef(agentMsgCount);
+  useEffect(() => {
+    if (sentAt.current != null && agentMsgCount > prevMsgCount.current) {
+      onLatency?.(Date.now() - sentAt.current);
+      sentAt.current = null;
+    }
+    prevMsgCount.current = agentMsgCount;
+  }, [agentMsgCount, onLatency]);
 
   const confirm = (ev: SessionEvent, allow: boolean, note: string) => {
     const inbound: InboundEvent =
@@ -153,6 +167,7 @@ export default function Transcript({
 
   const submit = () => {
     if (!draft.trim()) return;
+    sentAt.current = Date.now();
     send([
       {
         type: "user.message",

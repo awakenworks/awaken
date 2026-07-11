@@ -13,14 +13,21 @@ import Drawer from "../components/ui/Drawer";
 import { useToast } from "../components/ui/Toast";
 import { Button, Card, CheckPicker, Pill, SchemaForm, TextAreaField, TextField } from "../components/ui";
 import type { JsonSchema } from "../components/ui";
+import SandboxPane from "../components/session/SandboxPane";
 import { api, isAbsent } from "../lib/api/client";
-import type { AgentConfig, ContextPolicy, ProviderCatalog, PublishResult } from "../lib/api/types";
+import type {
+  AgentConfig,
+  AgentConfigItem,
+  ContextPolicy,
+  ProviderCatalog,
+  PublishResult,
+} from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import { useCapabilities } from "../lib/useCapabilities";
 import { useUnsavedGuard } from "../lib/useUnsavedGuard";
 import ModelsSurface from "./models";
 
-type Tab = "basics" | "context" | "tools" | "plugins";
+type Tab = "basics" | "context" | "tools" | "plugins" | "sandbox";
 
 const BLANK: AgentConfig = {
   id: "",
@@ -104,12 +111,13 @@ export default function AgentEditorSurface() {
   const existing = useQuery({
     queryKey: ["config-agent", id],
     enabled: !isNew,
-    queryFn: () => api.get<AgentConfig>(`/v1/config/agents/${id}`),
+    queryFn: () => api.get<AgentConfigItem>(`/v1/config/agents/${id}`),
     retry: (n, err) => !isAbsent(err) && n < 2,
   });
   useEffect(() => {
     if (existing.data) {
-      setCfg({ ...BLANK, ...existing.data });
+      const { published: _published, ...rest } = existing.data;
+      setCfg({ ...BLANK, ...rest });
       setDirty(false);
     }
   }, [existing.data]);
@@ -175,6 +183,7 @@ export default function AgentEditorSurface() {
     { key: "context", label: "Context", zh: "上下文" },
     { key: "tools", label: "Tools", zh: "工具" },
     { key: "plugins", label: "Plugins & policy", zh: "插件与策略" },
+    { key: "sandbox", label: "Sandbox", zh: "试运行" },
   ];
 
   return (
@@ -217,6 +226,11 @@ export default function AgentEditorSurface() {
         ))}
       </div>
 
+      {tab === "sandbox" && (
+        <SandboxPane agentId={id} ready={!isNew && !!existing.data?.published} dirty={dirty} />
+      )}
+
+      {tab !== "sandbox" && (
       <Card>
         {tab === "basics" && (
           <>
@@ -384,6 +398,7 @@ export default function AgentEditorSurface() {
           </>
         )}
       </Card>
+      )}
 
       {manageModels && (
         <Drawer title={app.t("Models", "模型")} onClose={() => setManageModels(false)}>

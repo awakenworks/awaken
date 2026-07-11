@@ -143,7 +143,10 @@ const session = await step("create session (flat)", "POST", "/v1/sessions", {
   title: "smoke",
   vault_ids: [vault.id],
 }, (s, p) => s === 200 || s === 201 ? typeof p.id === "string" : false);
-await step("retrieve session", "GET", `/v1/sessions/${session.id}`, undefined, (s, p) => s === 200 && p.id === session.id);
+// The session carries an accumulated `usage` object (input/output/cache tokens) —
+// the Sandbox/Test UsageBadges read it. Zero until the first turn commits.
+await step("retrieve session (usage shape)", "GET", `/v1/sessions/${session.id}`, undefined, (s, p) =>
+  s === 200 && p.id === session.id && p.usage && typeof p.usage.input_tokens === "number");
 await step("list events", "GET", `/v1/sessions/${session.id}/events`, undefined, (s, p) => s === 200 && Array.isArray(p.data));
 await step("list sessions", "GET", "/v1/sessions", undefined, (s, p) => s === 200 && p.data.some((x) => x.id === session.id));
 const renamed = await step("rename session", "POST", `/v1/sessions/${session.id}`, { title: "smoke (renamed)" }, (s, p) => s === 200 && p.title === "smoke (renamed)");
