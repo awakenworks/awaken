@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use crate::capability::{PluginCapability, RuntimeCapabilityCatalog};
 use crate::catalog::RuntimeCatalogInstall;
 use crate::resolved::{
-    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
+    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor, ToolPresentation,
 };
 use crate::snapshot::{AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId};
 
@@ -74,6 +74,7 @@ pub struct RunnableConfigBuilder {
     plugin_config: BTreeMap<String, serde_json::Value>,
     plugin_capabilities: Vec<PluginCapability>,
     context_policy: ContextPolicy,
+    tool_presentation: ToolPresentation,
     fingerprint: Option<String>,
 }
 
@@ -90,6 +91,7 @@ impl RunnableConfigBuilder {
             plugin_config: BTreeMap::new(),
             plugin_capabilities: Vec::new(),
             context_policy: ContextPolicy::default(),
+            tool_presentation: ToolPresentation::default(),
             fingerprint: None,
         }
     }
@@ -175,6 +177,14 @@ impl RunnableConfigBuilder {
         self
     }
 
+    /// Set the model-facing tool presentation (ADR-0053): per-tool alias / description
+    /// override / defer. Default is empty (byte-identical tool face).
+    #[must_use]
+    pub fn tool_presentation(mut self, presentation: ToolPresentation) -> Self {
+        self.tool_presentation = presentation;
+        self
+    }
+
     /// Set the fingerprint explicitly — a content hash from a compiler. When unset,
     /// the agent id is used as the consistency token, which is enough for direct,
     /// in-process use where content-addressing is not needed.
@@ -202,6 +212,7 @@ impl RunnableConfigBuilder {
                 plugin_ids: self.plugin_ids,
                 plugin_config: self.plugin_config,
                 context_policy: self.context_policy,
+                tool_presentation: self.tool_presentation,
             },
             fingerprint: fp.clone(),
         };

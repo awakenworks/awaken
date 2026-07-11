@@ -1,6 +1,6 @@
 //! Compilation: a pure config → runnable-config function.
 
-use awaken_runtime_contract::resolved::ToolDescriptor;
+use awaken_runtime_contract::resolved::{ToolDescriptor, ToolFacet, ToolPresentation};
 use awaken_runtime_contract::runnable::RunnableConfig;
 use sha2::{Digest, Sha256};
 
@@ -19,6 +19,12 @@ pub enum CompileError {
     /// resolved to a concrete one *before* compile (publish does this). Fail-closed.
     #[error("agent {agent} has an unresolved (auto) model binding; resolve it before compiling")]
     UnresolvedModel { agent: String },
+    /// A tool override (ADR-0053) is inconsistent: its `target` names no selected tool
+    /// (and is not an MCP id), or its `alias` collides with another tool's model-facing
+    /// id. Fail-closed — a presentation that would show the model a phantom or duplicate
+    /// tool is rejected at compile, not silently dropped.
+    #[error("agent {agent} has an invalid tool override: {reason}")]
+    InvalidToolOverride { agent: String, reason: String },
 }
 
 /// Compile an agent config against an available tool catalog into a
@@ -82,6 +88,47 @@ pub fn compile_with_resource_prompts(
         }
     }
 
+    // Tool presentation (ADR-0053): validate each override and project it into the
+    // runtime `ToolPresentation`. A non-MCP `target` must name a selected tool; MCP
+    // targets (`mcp__…`) are resolved at runtime, so they pass here (an override for an
+    // MCP tool that never appears is inert). Empty overrides ⇒ empty presentation ⇒
+    // byte-identical tool face.
+    let alias_of: std::collections::BTreeMap<&str, &str> = config
+        .tool_overrides
+        .iter()
+        .filter_map(|o| o.alias.as_deref().map(|a| (o.target.as_str(), a)))
+        .collect();
+    for ov in &config.tool_overrides {
+        if !ov.target.starts_with("mcp__") && !descriptors.iter().any(|d| d.id == ov.target) {
+            return Err(CompileError::InvalidToolOverride {
+                agent: config.id.clone(),
+                reason: format!("target {:?} is not a selected tool", ov.target),
+            });
+        }
+    }
+    // No two selected tools may share a model-facing id (a tool's alias if overridden,
+    // else its id) — that would show the model two tools under one name.
+    let mut facing: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for d in &descriptors {
+        let facing_id = alias_of.get(d.id.as_str()).copied().unwrap_or(d.id.as_str());
+        if !facing.insert(facing_id) {
+            return Err(CompileError::InvalidToolOverride {
+                agent: config.id.clone(),
+                reason: format!("model-facing tool id {facing_id:?} is not unique"),
+            });
+        }
+    }
+    let presentation = ToolPresentation::from_facets(config.tool_overrides.iter().map(|ov| {
+        (
+            ov.target.clone(),
+            ToolFacet {
+                alias: ov.alias.clone(),
+                description: ov.description.clone(),
+                defer: ov.defer,
+            },
+        )
+    }));
+
     // The model must be concrete by now: `Auto` is resolved to a first-offering in
     // `ConfigService::publish` before compile (ADR-0052 D5). A bare compile of an
     // `Auto` config is fail-closed (`UnresolvedModel`), never a silent empty binding.
@@ -102,6 +149,7 @@ pub fn compile_with_resource_prompts(
         .plugins(config.plugin_ids.clone())
         .plugin_config(config.plugin_config.clone())
         .context_policy(config.context_policy.clone())
+        .tool_presentation(presentation)
         .fingerprint(fingerprint_of(config, resource_prompts)?)
         .build())
 }
@@ -205,6 +253,50 @@ mod tests {
             "a pool must change the content address"
         );
         assert!(single.snapshot().resolved_spec.model_candidates.is_empty());
+    }
+
+    #[test]
+    fn tool_overrides_compile_into_the_presentation_and_enter_the_fingerprint() {
+        use crate::config::ToolOverride;
+        let tools = vec![tool("echo"), tool("mcp__gh__create_issue")];
+
+        let mut cfg = config(&["echo", "mcp__gh__create_issue"]);
+        cfg.tool_overrides = vec![
+            ToolOverride { target: "echo".into(), alias: Some("say".into()), description: Some("Speak.".into()), defer: false },
+            ToolOverride { target: "mcp__gh__create_issue".into(), alias: None, description: None, defer: true },
+        ];
+        let compiled = compile(&cfg, &tools).unwrap();
+        let pres = &compiled.snapshot().resolved_spec.tool_presentation;
+        assert!(!pres.is_empty());
+        // The alias reverse-maps back to the canonical id; the model face renames + defers.
+        assert_eq!(pres.resolve("say"), "echo");
+        let presented = pres.present(&tools);
+        assert!(presented.face.iter().any(|d| d.id == "say" && d.description == "Speak."));
+        assert!(presented.deferred.iter().any(|d| d.id == "mcp__gh__create_issue"));
+
+        // Overrides enter the content address; no overrides ⇒ byte-identical fingerprint.
+        let bare = compile(&config(&["echo", "mcp__gh__create_issue"]), &tools).unwrap();
+        assert_ne!(compiled.snapshot().fingerprint.0, bare.snapshot().fingerprint.0);
+        assert!(bare.snapshot().resolved_spec.tool_presentation.is_empty());
+    }
+
+    #[test]
+    fn an_override_targeting_an_unselected_non_mcp_tool_is_rejected() {
+        use crate::config::ToolOverride;
+        let tools = vec![tool("echo")];
+        let mut cfg = config(&["echo"]);
+        cfg.tool_overrides = vec![ToolOverride { target: "ghost".into(), alias: Some("g".into()), ..Default::default() }];
+        assert!(matches!(compile(&cfg, &tools), Err(CompileError::InvalidToolOverride { .. })));
+
+        // An MCP target that isn't in the compile catalog is allowed (resolved at runtime).
+        let mut mcp = config(&["echo"]);
+        mcp.tool_overrides = vec![ToolOverride { target: "mcp__x__y".into(), alias: Some("y".into()), ..Default::default() }];
+        assert!(compile(&mcp, &tools).is_ok());
+
+        // An alias colliding with another selected tool's id is rejected.
+        let mut clash = config(&["echo", "read"]);
+        clash.tool_overrides = vec![ToolOverride { target: "echo".into(), alias: Some("read".into()), ..Default::default() }];
+        assert!(matches!(compile(&clash, &[tool("echo"), tool("read")]), Err(CompileError::InvalidToolOverride { .. })));
     }
 
     #[test]

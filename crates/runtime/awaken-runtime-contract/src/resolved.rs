@@ -48,6 +48,12 @@ pub struct ResolvedSpec {
     /// (unchanged behavior); `#[serde(default)]` keeps older snapshots loadable.
     #[serde(default)]
     pub context_policy: ContextPolicy,
+    /// How this agent's tools are presented to the model (ADR-0053): per-tool alias /
+    /// description override / defer, keyed by canonical id (catalog or MCP). Empty for
+    /// an agent with no overrides — the tool face is then byte-identical to before, so
+    /// `#[serde(default)]` keeps the 40+ existing snapshot constructions loadable.
+    #[serde(default)]
+    pub tool_presentation: ToolPresentation,
 }
 
 impl ResolvedSpec {
@@ -218,6 +224,113 @@ impl ToolDescriptor {
     }
 }
 
+/// The model-facing presentation of an agent's tools (ADR-0053): a per-tool `alias`,
+/// `description` override, and `defer` flag, keyed by the tool's **canonical** id — a
+/// catalog id or an MCP `mcp__<server>__<tool>` id — so it applies uniformly to static
+/// and MCP tools alike.
+///
+/// This value object owns the single invariant of tool aliasing: *an alias exists only
+/// in the model-facing layer; every internal consumer (permission gate, state machine,
+/// dispatch, metrics) sees the canonical id.* It exposes exactly the two directions that
+/// invariant needs — [`present`](Self::present) (canonical descriptors → the model face)
+/// and [`resolve`](Self::resolve) (a model-supplied id → its canonical id) — so no caller
+/// re-implements the mapping. An empty presentation is inert: [`present`](Self::present)
+/// returns its input unchanged and [`resolve`](Self::resolve) is the identity, so a
+/// config with no overrides compiles to a byte-identical tool face.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ToolPresentation {
+    /// canonical tool id → its facet. `BTreeMap` keeps serialization deterministic.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    facets: BTreeMap<String, ToolFacet>,
+}
+
+/// One tool's presentation facet: how it appears to the model, keyed in
+/// [`ToolPresentation`] by canonical id. All fields optional/false so an entry that
+/// only defers (no rename) is as valid as one that only renames.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ToolFacet {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub defer: bool,
+}
+
+/// The result of [`ToolPresentation::present`]: the descriptors the model sees this
+/// step (`face`) and the ones withheld until opened (`deferred`), both already renamed
+/// and re-described. `deferred` is empty unless some facet sets `defer`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PresentedTools {
+    pub face: Vec<ToolDescriptor>,
+    pub deferred: Vec<ToolDescriptor>,
+}
+
+impl ToolPresentation {
+    /// Build from `(canonical_id, facet)` pairs; entries whose facet is entirely
+    /// default (no alias, no description, not deferred) are dropped so an all-default
+    /// presentation is [`is_empty`](Self::is_empty) and stays byte-identical.
+    pub fn from_facets(facets: impl IntoIterator<Item = (String, ToolFacet)>) -> Self {
+        let facets = facets
+            .into_iter()
+            .filter(|(_, f)| {
+                f.alias.is_some() || f.description.is_some() || f.defer
+            })
+            .collect();
+        Self { facets }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.facets.is_empty()
+    }
+
+    /// The canonical ids this presentation overrides (used at compile to validate each
+    /// targets a selected tool).
+    pub fn targets(&self) -> impl Iterator<Item = &str> {
+        self.facets.keys().map(String::as_str)
+    }
+
+    /// Reverse a model-supplied tool id back to its canonical id (the identity when the
+    /// id is not an alias). The single choke every internal consumer routes a tool call
+    /// through, so the alias never leaks past the model-facing boundary.
+    #[must_use]
+    pub fn resolve<'a>(&'a self, model_id: &'a str) -> &'a str {
+        self.facets
+            .iter()
+            .find(|(_, f)| f.alias.as_deref() == Some(model_id))
+            .map_or(model_id, |(canonical, _)| canonical.as_str())
+    }
+
+    /// Split canonical descriptors into the model face (alias + description applied) and
+    /// the deferred set (withheld until opened). A descriptor with no facet passes
+    /// through to the face unchanged.
+    #[must_use]
+    pub fn present(&self, descriptors: &[ToolDescriptor]) -> PresentedTools {
+        let mut out = PresentedTools::default();
+        for d in descriptors {
+            match self.facets.get(&d.id) {
+                None => out.face.push(d.clone()),
+                Some(f) => {
+                    let mut shown = d.clone();
+                    if let Some(alias) = &f.alias {
+                        shown.id = alias.clone();
+                    }
+                    if let Some(desc) = &f.description {
+                        shown.description = desc.clone();
+                    }
+                    if f.defer {
+                        out.deferred.push(shown);
+                    } else {
+                        out.face.push(shown);
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
 /// Stable content hash over the model-visible descriptor surface. Uses a
 /// canonical JSON encoding so equal schemas hash equally regardless of the
 /// in-memory `Value` shape.
@@ -244,7 +357,51 @@ pub struct ResolvedRun {
 
 #[cfg(test)]
 mod tests {
-    use super::{Backend, ModelBinding, ToolDescriptor};
+    use super::{Backend, ModelBinding, ToolDescriptor, ToolFacet, ToolPresentation};
+
+    fn td(id: &str) -> ToolDescriptor {
+        ToolDescriptor::pinned("t", id, format!("desc of {id}"), serde_json::json!({}))
+    }
+
+    #[test]
+    fn empty_presentation_is_the_identity() {
+        let p = ToolPresentation::default();
+        assert!(p.is_empty());
+        let tools = vec![td("a"), td("mcp__x__y")];
+        let out = p.present(&tools);
+        assert_eq!(out.face, tools, "no overrides ⇒ face unchanged");
+        assert!(out.deferred.is_empty());
+        assert_eq!(p.resolve("a"), "a", "no alias ⇒ resolve is identity");
+    }
+
+    #[test]
+    fn present_renames_redescribes_and_defers_by_canonical_id() {
+        // Works identically for a static id and an MCP id.
+        let p = ToolPresentation::from_facets([
+            ("a".to_string(), ToolFacet { alias: Some("say".into()), description: Some("Speak.".into()), defer: false }),
+            ("mcp__x__y".to_string(), ToolFacet { alias: Some("y".into()), description: None, defer: true }),
+            ("noop".to_string(), ToolFacet::default()), // all-default ⇒ dropped
+        ]);
+        assert!(!p.is_empty());
+        let out = p.present(&[td("a"), td("mcp__x__y"), td("keep")]);
+        // `a` renamed + redescribed and stays in the face; `keep` passes through.
+        assert!(out.face.iter().any(|d| d.id == "say" && d.description == "Speak."));
+        assert!(out.face.iter().any(|d| d.id == "keep"));
+        // The MCP tool is deferred (renamed) — withheld from the face.
+        assert!(out.face.iter().all(|d| d.id != "y"));
+        assert!(out.deferred.iter().any(|d| d.id == "y"));
+    }
+
+    #[test]
+    fn resolve_reverses_an_alias_to_its_canonical_id() {
+        let p = ToolPresentation::from_facets([
+            ("mcp__x__y".to_string(), ToolFacet { alias: Some("y".into()), ..Default::default() }),
+        ]);
+        // The single choke: a model call by alias reverses to the canonical id; a
+        // non-alias (e.g. an un-renamed tool) passes through untouched.
+        assert_eq!(p.resolve("y"), "mcp__x__y");
+        assert_eq!(p.resolve("other"), "other");
+    }
 
     #[test]
     fn backend_typed_view_distinguishes_native_and_acp() {
