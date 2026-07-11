@@ -7,6 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import Drawer from "../components/ui/Drawer";
+import { Segmented } from "../components/ui";
 import { api, getWorkspace, ws } from "../lib/api/client";
 import type {
   AgentConfigList,
@@ -214,19 +215,15 @@ export default function SessionsSurface() {
     <>
       <div className="row" style={{ justifyContent: "space-between" }}>
         <span className="row">
-          {(["all", "running", "archived"] as const).map((f) => (
-            <button
-              key={f}
-              className={`btn ${filter === f ? "primary" : ""}`}
-              style={{ height: 26 }}
-              onClick={() => setFilter(f)}
-            >
-              {app.t(
-                f === "all" ? "All" : f === "running" ? "Running" : "Archived",
-                f === "all" ? "全部" : f === "running" ? "运行中" : "已归档",
-              )}
-            </button>
-          ))}
+          <Segmented
+            value={filter}
+            onChange={setFilter}
+            options={[
+              { value: "all", label: app.t("All", "全部") },
+              { value: "running", label: app.t("Running", "运行中") },
+              { value: "archived", label: app.t("Archived", "已归档") },
+            ]}
+          />
           <span className="mut">
             baseURL <code>{getWorkspace() ? `/v1/workspaces/${getWorkspace()}` : "/ (default scope)"}</code>
             <button
