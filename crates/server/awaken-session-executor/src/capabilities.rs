@@ -41,7 +41,24 @@ async fn get_capabilities(State(tools): State<Arc<Vec<ToolDescriptor>>>) -> Json
         "runtime_version": env!("CARGO_PKG_VERSION"),
         "tools": tool_caps,
         "plugins": plugin_catalog(),
+        "policies": policy_catalog(),
     }))
+}
+
+/// The always-on policies whose `plugin_config` section shapes a run without being
+/// an installable plugin. The permission gate is the one: an agent's `permission`
+/// section (default behavior + ordered rules) drives the thread's authorization
+/// gate (see runtime-host `config::config_permission_ruleset`). Kept separate from
+/// `plugins` so the console renders a dedicated policy editor, not an enable toggle.
+fn policy_catalog() -> Vec<Value> {
+    vec![policy_cap(
+        "permission",
+        awaken_ext_permission::permission_config_schema(),
+    )]
+}
+
+fn policy_cap(id: &str, config_schema: Value) -> Value {
+    json!({ "id": id, "config_section": id, "config_schema": config_schema })
 }
 
 /// The installable plugins whose per-plugin `plugin_config` section the editor can
@@ -87,5 +104,16 @@ mod tests {
                 .all(|p| p["config_schema"].is_object() && p["config_sections"].is_array()),
             "every plugin needs an object config_schema: {plugins:?}"
         );
+    }
+
+    #[test]
+    fn policy_catalog_exposes_the_permission_schema() {
+        let policies = policy_catalog();
+        let perm = policies
+            .iter()
+            .find(|p| p["id"] == "permission")
+            .expect("permission policy is advertised");
+        assert!(perm["config_schema"].is_object(), "carries an object schema");
+        assert_eq!(perm["config_section"], "permission");
     }
 }

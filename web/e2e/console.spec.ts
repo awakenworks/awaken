@@ -40,6 +40,39 @@ test("agent editor Tools/Plugins are data-driven from /v1/capabilities", async (
   }
 });
 
+test("Plugins tab renders the Permission policy editor (data-driven from capabilities.policies)", async ({ page }) => {
+  await page.goto("/w/default/agents/new");
+  await page.getByRole("button", { name: "Plugins & policy" }).click();
+  await expect(page.getByText("Permission policy", { exact: true })).toBeVisible();
+  await expect(page.getByText("Default decision", { exact: true })).toBeVisible();
+  // Add a rule → an editable glob-pattern row appears.
+  await page.getByRole("button", { name: /add rule/ }).click();
+  await expect(page.getByPlaceholder("Bash(*rm*)")).toBeVisible();
+});
+
+test("PermissionEditor authors a rule and persists it through save + reload", async ({ page }) => {
+  const id = `perm-e2e-${Date.now()}`;
+  await page.goto("/w/default/agents/new");
+  await page.getByPlaceholder("coding-agent").fill(id);
+  await page.locator("textarea").first().fill("You gate your tools.");
+  await page.getByRole("button", { name: "Plugins & policy" }).click();
+
+  const editor = page.locator(".permission-editor");
+  // Default decision → Deny (only the default-decision Segmented exists yet).
+  await editor.getByRole("button", { name: "Deny" }).first().click();
+  await page.getByRole("button", { name: /add rule/ }).click();
+  await editor.getByPlaceholder("Bash(*rm*)").fill("Bash(*rm*)");
+
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.locator(".toast").filter({ hasText: /Saved|已保存/ })).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`/agents/${id}$`));
+
+  // Reload → the authored policy rehydrates from the stored config (round-trips).
+  await page.reload();
+  await page.getByRole("button", { name: "Plugins & policy" }).click();
+  await expect(editor.getByPlaceholder("Bash(*rm*)")).toHaveValue("Bash(*rm*)");
+});
+
 test("enabling a plugin renders a schema-driven form (not raw JSON)", async ({ page }) => {
   await page.goto("/w/default/agents/new");
   await page.getByRole("button", { name: "Plugins & policy" }).click();
