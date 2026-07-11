@@ -1105,6 +1105,7 @@ dependencies = [
  "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-runtime-host",
+ "awaken-tenancy",
  "awaken-tool-relay",
  "awaken-webhook",
  "awaken-webhook-managed",

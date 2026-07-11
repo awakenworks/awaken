@@ -11,8 +11,10 @@
 //! adapters, and the per-plane resource routers) lives in `awaken-runtime-host`;
 //! here we only wire routers, demo models, and the embedded management plane.
 
+mod admin_assistant;
 mod authz;
 mod brain_admin;
+mod model_resolver;
 mod models;
 pub mod placement;
 pub mod resource_owner;
@@ -1314,7 +1316,7 @@ pub fn build_statemachine_rich_router() -> Router {
 /// SQLite config store, plus the protocol adapters. A session for a *published*
 /// agent runs with that agent's installed config (slice A); the model echoes the
 /// agent's instructions so an e2e can assert the published config took effect.
-pub fn build_config_router() -> Router {
+pub async fn build_config_router() -> Router {
     let registry = Arc::new(
         awaken_config_store::SqliteConfigStore::open_in_memory().expect("open config store"),
     );
@@ -1323,13 +1325,51 @@ pub fn build_config_router() -> Router {
     // management descriptors, so a config naming an `admin_*` tool compiles only there.
     let global = advertised_tools(&HashSet::new(), &HashSet::new(), &[]);
     let tools = Arc::new(awaken_runtime_host::ScopedToolCatalog::new(
-        global,
+        global.clone(),
         awaken_runtime_host::RESERVED_ADMIN_SCOPE,
         awaken_admin_assistant::admin_tool_descriptors(),
     ));
-    let service = Arc::new(ConfigService::new(registry, tools));
     let (model, model_ref) = scenario_model(Arc::new(InstructionEchoModel), "config");
-    let host = SharedHost::new(model, model_ref).with_config_service(service.clone());
+    // A minimal provider catalog with an offering for the scenario model, so an
+    // `Auto` config (the management assistant) resolves to a concrete binding at
+    // publish (ADR-0052 D5).
+    let catalog = awaken_model_catalog::ProviderCatalog {
+        offerings: vec![awaken_model_catalog::Offering {
+            model_id: model_ref.clone(),
+            provider_id: awaken_model_catalog::ProviderId::new("default"),
+            protocol_endpoint_id: awaken_model_catalog::ProtocolEndpointId::new("ep"),
+            flavor: awaken_model_catalog::ModelApiCompat::AnthropicMessages,
+            upstream_model: None,
+        }],
+        ..Default::default()
+    };
+    let service = Arc::new(
+        ConfigService::new(registry, tools).with_model_resolver(Arc::new(
+            crate::model_resolver::CatalogModelResolver::new(catalog.clone()),
+        )),
+    );
+    // Seed the management assistant as an ordinary published agent in the reserved
+    // scope (ADR-0052 D1/D2): it becomes a compiled RunnableConfig via the same path
+    // as any agent, projectable on `/v1/agents`.
+    crate::admin_assistant::seed_admin_assistant(&service)
+        .await
+        .expect("seed admin assistant");
+    // The management tool executables, backed by real ports (D3/D4): the capability
+    // reader reads the shared catalog + advertised tools; the validator runs the same
+    // compile check as `/v1/config/agents/validate` on drafts (in the tenant scope).
+    let reader = Arc::new(crate::admin_assistant::CatalogCapabilityReader::new(
+        &catalog,
+        &global,
+        &[],
+    ));
+    let validator = Arc::new(crate::admin_assistant::ConfigServiceDraftValidator::new(
+        service.clone(),
+        awaken_config_store::DEFAULT_SCOPE,
+    ));
+    let admin_execs = awaken_admin_assistant::admin_tools(reader, validator);
+    let host = SharedHost::new(model, model_ref)
+        .with_config_service(service.clone())
+        .with_admin_tools(admin_execs);
     // `/v1/agents` over this server projects the config plane it hosts: an agent
     // published via `/v1/config/agents` is retrievable as a managed-wire projection
     // of that single truth (no second store).

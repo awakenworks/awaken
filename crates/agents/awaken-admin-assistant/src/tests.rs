@@ -223,6 +223,25 @@ async fn validate_agent_reports_valid_and_invalid() {
 }
 
 #[test]
+fn seed_config_is_an_ordinary_auto_bound_config_naming_the_four_tools() {
+    let cfg = admin_assistant_config();
+    assert_eq!(cfg.id, ADMIN_ASSISTANT_AGENT_ID);
+    // Auto-bound (D5), names exactly the four admin tools (D3), no plugins, no
+    // sandbox concept — an ordinary AgentConfig (D1/D4).
+    assert!(cfg.model_binding.is_auto());
+    assert_eq!(
+        cfg.tool_ids,
+        vec![
+            CAPABILITIES_TOOL,
+            CREATE_DRAFT_TOOL,
+            SET_PLUGIN_TOOL,
+            VALIDATE_TOOL
+        ]
+    );
+    assert!(cfg.instructions.contains("management assistant"));
+}
+
+#[test]
 fn seeded_instructions_are_authorable_and_mention_no_publish() {
     assert!(ADMIN_ASSISTANT_INSTRUCTIONS.contains("management assistant"));
     assert!(ADMIN_ASSISTANT_INSTRUCTIONS.contains("never publish"));

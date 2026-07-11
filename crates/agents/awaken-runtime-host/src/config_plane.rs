@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use awaken_config_resolver::ResourceStore;
+use awaken_config_store::ModelSelection;
 use awaken_config_store::{
     AgentConfig, DEFAULT_SCOPE, RunnableConfig, ScopedConfigRegistry, StoredPublication,
     compile_with_resource_prompts,
@@ -24,7 +25,24 @@ use axum::routing::{post, put};
 use axum::{Extension, Json, Router};
 use serde_json::{Value, json};
 
+use crate::binding_resolver::ModelResolver;
 use crate::tool_catalog::ToolCatalogSource;
+
+/// A publish failure, split so the edge can map it to an HTTP status (ADR-0052 D5:
+/// an unresolvable auto binding is a 409, not a generic 400).
+#[derive(Debug, thiserror::Error)]
+pub enum PublishError {
+    #[error("no config stored for agent `{0}`")]
+    NotStored(String),
+    /// The config's `Auto` model could not be resolved — no provider-backed model in
+    /// the catalog. Surfaced as 409 ("configure and publish a model first").
+    #[error("cannot resolve an auto model binding: {0}")]
+    Unresolvable(String),
+    #[error("{0}")]
+    Compile(String),
+    #[error("{0}")]
+    Store(String),
+}
 
 /// The config domain service: validate, store, publish, and expose the installed
 /// (published) runnable config per agent.
@@ -48,6 +66,10 @@ pub struct ConfigService {
     /// prompt fragments are appended to its effective system prompt at compile (A3a).
     /// `None` → compilation is byte-identical to an unbound agent.
     resources: Option<Arc<dyn ResourceStore>>,
+    /// Resolves an `Auto` model selection to a concrete binding at publish (ADR-0052
+    /// D5). `None` → an `Auto` config cannot publish (fail-closed); a `Pinned` config
+    /// is unaffected.
+    model_resolver: Option<Arc<dyn ModelResolver>>,
 }
 
 impl ConfigService {
@@ -60,7 +82,16 @@ impl ConfigService {
             tools,
             installed: Mutex::new(HashMap::new()),
             resources: None,
+            model_resolver: None,
         }
+    }
+
+    /// Wire the model resolver so an `Auto`-bound config resolves to a first-offering
+    /// at publish (ADR-0052 D5).
+    #[must_use]
+    pub fn with_model_resolver(mut self, resolver: Arc<dyn ModelResolver>) -> Self {
+        self.model_resolver = Some(resolver);
+        self
     }
 
     /// Wire the per-agent resource-binding store so compiled configs carry their
@@ -103,32 +134,83 @@ impl ConfigService {
             .map_err(|e| e.to_string())
     }
 
-    /// Publish within `scope`: compile the stored config against the scope's tool
-    /// catalog, persist the publication (idempotent by fingerprint), and install it
-    /// into the live catalog so new runs use it.
-    pub async fn publish(&self, scope: &ScopeId, id: &str) -> Result<StoredPublication, String> {
+    /// Publish within `scope`: resolve an `Auto` model to a concrete binding (D5),
+    /// compile the config against the scope's tool catalog, persist the publication
+    /// (idempotent by fingerprint), and install it into the live catalog so new runs
+    /// use it. The stored source config is left untouched — its `Auto` selection
+    /// persists so the reconciler can re-resolve it on a catalog change.
+    pub async fn publish(
+        &self,
+        scope: &ScopeId,
+        id: &str,
+    ) -> Result<StoredPublication, PublishError> {
         let config = self
             .registry
             .get_config_scoped(scope, id)
             .await
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("no config stored for agent `{id}`"))?;
+            .map_err(|e| PublishError::Store(e.to_string()))?
+            .ok_or_else(|| PublishError::NotStored(id.to_string()))?;
+
+        // Resolve the model *before* compile (compile requires a concrete binding).
+        // `Auto` → first-offering via the resolver; `Pinned` → the authored binding
+        // and its authored candidates.
+        let compile_input = self.resolve_for_compile(config)?;
+
         let runnable = compile_with_resource_prompts(
-            &config,
+            &compile_input,
             &self.tools.catalog_for(scope),
             &self.resource_prompts(id),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| PublishError::Compile(e.to_string()))?;
         let publication = StoredPublication::published(runnable.clone(), id);
         self.registry
             .put_publication_scoped(scope, &publication)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| PublishError::Store(e.to_string()))?;
         self.installed
             .lock()
             .unwrap()
             .insert(id.to_string(), runnable);
         Ok(publication)
+    }
+
+    /// Produce the concrete config `compile` consumes: an `Auto` selection is
+    /// resolved to a first-offering (D5), a `Pinned` selection is used as authored.
+    /// Only the *returned* config is concrete; the stored source keeps its `Auto`.
+    fn resolve_for_compile(&self, mut config: AgentConfig) -> Result<AgentConfig, PublishError> {
+        if crate::binding_resolver::needs_resolution(&config.model_binding) {
+            let resolver = self
+                .model_resolver
+                .as_ref()
+                .ok_or_else(|| PublishError::Unresolvable("no model resolver wired".into()))?;
+            let resolved = resolver
+                .resolve_auto()
+                .map_err(PublishError::Unresolvable)?;
+            config.model_binding = ModelSelection::Pinned(resolved.primary);
+            config.model_candidates = resolved.candidates;
+        }
+        Ok(config)
+    }
+
+    /// Re-resolve and re-publish an `Auto`-bound agent within `scope` (ADR-0052 D5).
+    /// Returns `true` if it re-published (a `Pinned` agent is skipped; a missing one
+    /// is skipped). Idempotent by content address, so a retry after a catalog change
+    /// is safe. This is what [`ConfigServiceReconciler`](crate::binding_resolver::ConfigServiceReconciler)
+    /// drives from the catalog write path.
+    pub async fn reconcile(&self, scope: &ScopeId, id: &str) -> Result<bool, String> {
+        let stored = self
+            .registry
+            .get_config_scoped(scope, id)
+            .await
+            .map_err(|e| e.to_string())?;
+        match stored {
+            // Only auto bindings are re-resolved; an operator pin is authoritative.
+            Some(config) if config.model_binding.is_auto() => {
+                self.publish(scope, id).await.map_err(|e| e.to_string())?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     }
 
     /// The installed (published) runnable config for `agent`, if any.
@@ -217,7 +299,16 @@ async fn publish(
                 "installed": true,
             })),
         ),
-        Err(error) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
+        // An unresolvable auto model is a 409 ("configure a model first"), ADR-0052 D5;
+        // every other publish failure stays a 400.
+        Err(err @ PublishError::Unresolvable(_)) => (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": err.to_string() })),
+        ),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": error.to_string() })),
+        ),
     }
 }
 
@@ -279,6 +370,132 @@ mod resource_prompt_tests {
         assert!(instructions.starts_with("be helpful"));
         assert!(instructions.contains("/mnt/memory/prefs"));
         assert!(instructions.contains("user preferences"));
+    }
+
+    use crate::binding_resolver::{ModelResolver, ResolvedModel};
+    use awaken_runtime_contract::resolved::ModelBinding;
+
+    struct FakeResolver;
+    impl ModelResolver for FakeResolver {
+        fn resolve_auto(&self) -> Result<ResolvedModel, String> {
+            Ok(ResolvedModel {
+                primary: ModelBinding::new("openai", "m-first", "genai"),
+                candidates: vec![ModelBinding::new("openai", "m-second", "genai")],
+            })
+        }
+    }
+
+    fn auto_config(id: &str) -> AgentConfig {
+        let mut cfg = agent_config(id);
+        cfg.model_binding = ModelSelection::Auto;
+        cfg
+    }
+
+    fn service_with_resolver() -> ConfigService {
+        let registry = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        ConfigService::new(
+            registry,
+            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+        )
+        .with_model_resolver(Arc::new(FakeResolver))
+    }
+
+    #[tokio::test]
+    async fn publish_resolves_auto_to_the_first_offering_and_keeps_the_source_auto() {
+        let service = service_with_resolver();
+        let scope = ScopeId::from(DEFAULT_SCOPE);
+        service.put(&scope, &auto_config("mgmt")).await.unwrap();
+        service.publish(&scope, "mgmt").await.unwrap();
+
+        // The compiled (installed) config carries the resolved concrete binding +
+        // the remaining offerings as pool candidates (ADR-0052 D5).
+        let installed = service.installed("mgmt").unwrap();
+        let spec = &installed.snapshot().resolved_spec;
+        assert_eq!(spec.model_binding.model_ref, "m-first");
+        assert_eq!(spec.model_candidates.len(), 1);
+        assert_eq!(spec.model_candidates[0].model_ref, "m-second");
+
+        // The stored *source* config is still Auto — so a later catalog change can
+        // re-resolve it (reconcile returns true only for an Auto source).
+        assert!(service.reconcile(&scope, "mgmt").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn auto_without_a_resolver_is_a_conflict() {
+        let registry = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let service = ConfigService::new(
+            registry,
+            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+        );
+        let scope = ScopeId::from(DEFAULT_SCOPE);
+        service.put(&scope, &auto_config("mgmt")).await.unwrap();
+        let err = service.publish(&scope, "mgmt").await.unwrap_err();
+        assert!(matches!(err, PublishError::Unresolvable(_)));
+    }
+
+    #[tokio::test]
+    async fn reconcile_re_publishes_auto_but_skips_pinned() {
+        let service = service_with_resolver();
+        let scope = ScopeId::from(DEFAULT_SCOPE);
+
+        // A pinned agent: reconcile is a no-op (operator pin is authoritative).
+        service.put(&scope, &agent_config("pinned")).await.unwrap();
+        service.publish(&scope, "pinned").await.unwrap();
+        assert!(!service.reconcile(&scope, "pinned").await.unwrap());
+
+        // An auto agent: reconcile re-publishes (idempotent by content address).
+        service.put(&scope, &auto_config("auto")).await.unwrap();
+        service.publish(&scope, "auto").await.unwrap();
+        assert!(service.reconcile(&scope, "auto").await.unwrap());
+
+        // A missing agent: skipped, not an error.
+        assert!(!service.reconcile(&scope, "ghost").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn reconciler_adapter_republishes_the_named_auto_agents() {
+        use crate::binding_resolver::{AssistantBindingReconciler, ConfigServiceReconciler};
+
+        let service = Arc::new(service_with_resolver());
+        let scope = ScopeId::from(DEFAULT_SCOPE);
+        service
+            .put(&scope, &auto_config("assistant"))
+            .await
+            .unwrap();
+        service.publish(&scope, "assistant").await.unwrap();
+        service.put(&scope, &agent_config("pinned")).await.unwrap();
+        service.publish(&scope, "pinned").await.unwrap();
+
+        // The catalog-write path drives one seam over a fixed id set; only the auto
+        // one is re-published.
+        let reconciler = ConfigServiceReconciler::new(
+            service.clone(),
+            DEFAULT_SCOPE,
+            vec!["assistant".to_string(), "pinned".to_string()],
+        );
+        assert_eq!(reconciler.reconcile().await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn pinned_publishes_without_a_resolver() {
+        let registry = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let service = ConfigService::new(
+            registry,
+            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+        );
+        let scope = ScopeId::from(DEFAULT_SCOPE);
+        service.put(&scope, &agent_config("pinned")).await.unwrap();
+        service.publish(&scope, "pinned").await.unwrap();
+        assert_eq!(
+            service
+                .installed("pinned")
+                .unwrap()
+                .snapshot()
+                .resolved_spec
+                .model_binding
+                .model_ref,
+            "m"
+        );
     }
 
     #[tokio::test]

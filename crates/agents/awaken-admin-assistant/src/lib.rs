@@ -36,6 +36,42 @@ pub const CREATE_DRAFT_TOOL: &str = "admin_create_agent_draft";
 pub const SET_PLUGIN_TOOL: &str = "admin_set_plugin_config";
 pub const VALIDATE_TOOL: &str = "admin_validate_agent";
 
+/// The reserved agent id the management assistant is published under. It is a
+/// deliberately un-tenant-like id, seeded once into the reserved scope (ADR-0052 D2).
+pub const ADMIN_ASSISTANT_AGENT_ID: &str = "__admin_assistant";
+
+/// All four management tool ids, in advertised order.
+#[must_use]
+pub fn admin_tool_ids() -> Vec<String> {
+    vec![
+        CAPABILITIES_TOOL.to_string(),
+        CREATE_DRAFT_TOOL.to_string(),
+        SET_PLUGIN_TOOL.to_string(),
+        VALIDATE_TOOL.to_string(),
+    ]
+}
+
+/// The seed [`AgentConfig`] for the management assistant (ADR-0052 D1/D3/D4): an
+/// **ordinary** config — instructions + the four admin tool ids + an `Auto` model
+/// binding — with the native backend (no sandbox). The host publishes it into the
+/// reserved scope through the ordinary publish path, so it becomes a compiled,
+/// content-addressed `RunnableConfig` like any agent (no builder bypass).
+#[must_use]
+pub fn admin_assistant_config() -> AgentConfig {
+    AgentConfig {
+        id: ADMIN_ASSISTANT_AGENT_ID.to_string(),
+        instructions: ADMIN_ASSISTANT_INSTRUCTIONS.to_string(),
+        max_steps: 12,
+        model_binding: ModelSelection::Auto,
+        tool_ids: admin_tool_ids(),
+        plugin_ids: Vec::new(),
+        plugin_config: Default::default(),
+        context_policy: Default::default(),
+        tool_patterns: Vec::new(),
+        model_candidates: Vec::new(),
+    }
+}
+
 /// The seeded system prompt for the management assistant. It is authored into the
 /// assistant's ordinary `AgentConfig` like any agent's instructions (D4) — no locked
 /// prompt, no policy overlay: given read-only tools, the prompt needs no protection.

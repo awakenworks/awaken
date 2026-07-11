@@ -16,6 +16,7 @@ mod acp_provision;
 mod acp_serve;
 mod agent_catalog;
 mod background;
+mod binding_resolver;
 mod commit_backend;
 mod compact;
 mod config;
@@ -80,9 +81,14 @@ pub use crate::sandbox_source::{SandboxChannelSource, ThreadEgress};
 // advertised-tools helper the composition root builds a config host from.
 pub use crate::acp_provision::EnvLaunchResolver;
 pub use crate::acp_serve::{AcpServeHost, AcpStop, AcpTurn};
+pub use crate::binding_resolver::{
+    AssistantBindingReconciler, ConfigServiceReconciler, ModelResolver, ResolvedModel,
+};
 pub use crate::config::{advertised_tools, block_text};
 pub use crate::config_home::{ConfigHome, RetentionPolicy, SessionReuse};
-pub use crate::config_plane::{ConfigService, ConfigServiceAgentSource, config_router};
+pub use crate::config_plane::{
+    ConfigService, ConfigServiceAgentSource, PublishError, config_router,
+};
 pub use crate::tool_catalog::{
     RESERVED_ADMIN_SCOPE, ScopedToolCatalog, StaticToolCatalog, ToolCatalogSource,
 };

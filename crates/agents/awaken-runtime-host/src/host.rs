@@ -415,6 +415,12 @@ pub struct SharedHost {
     /// capture level permits content writes it here (attributed to the
     /// `AWAKEN_CONTENT_SUBJECT` on the open surface). `None` = spans only.
     pub(crate) capture_sink: Option<Arc<dyn awaken_runtime_contract::CaptureSink>>,
+    /// Globally-registered management tool executables (ADR-0052 D3/D4). Registered
+    /// on every thread's runtime (the executor registry stays global); only the
+    /// reserved-scope assistant's compiled config *names* them, so no other run can
+    /// invoke them. Their ids are also pre-authorized on the gate (read-only tools).
+    /// Empty by default.
+    pub(crate) admin_tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
 }
 
 impl SharedHost {
@@ -471,7 +477,21 @@ impl SharedHost {
             remote_hand: None,
             tool_executor_provider: None,
             capture_sink: None,
+            admin_tools: Vec::new(),
         }
+    }
+
+    /// Register the management assistant's tool executables globally (ADR-0052). They
+    /// run on every thread's runtime, but only the reserved-scope assistant's config
+    /// names them, so only its runs can invoke them; their ids are auto-allowed on the
+    /// gate (the tools are read-only).
+    #[must_use]
+    pub fn with_admin_tools(
+        mut self,
+        tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+    ) -> Self {
+        self.admin_tools = tools;
+        self
     }
 
     /// Wire the subject-tagged captured-content sink (ADR-0050). A run whose
@@ -1063,19 +1083,37 @@ impl SharedHost {
         // authorization decision — the ask-gate keeps covering the built-in
         // mutation tools. `server_gate_allowing(&[])` is the plain server gate,
         // so threads without MCP keep the exact default policy.
-        let base_gate = crate::config::server_gate_allowing(&mcp.tool_ids);
+        // The management tools (ADR-0052) are pre-authorized like the MCP tools: they
+        // are read-only, and only the reserved-scope assistant's config names them.
+        let admin_ids: Vec<String> = self
+            .admin_tools
+            .iter()
+            .map(|t| t.id().to_string())
+            .collect();
+        let pre_authorized: Vec<String> = mcp
+            .tool_ids
+            .iter()
+            .cloned()
+            .chain(admin_ids.iter().cloned())
+            .collect();
+        let base_gate = crate::config::server_gate_allowing(&pre_authorized);
         // R1/R2: per-session executor resolved from the thread's bound model.
         let exec = self
             .model_route
             .resolve_executor(thread, &self.model_ref, &self.llm);
         let mut runtime = build_runtime(exec, &env);
-        if !mcp.tool_ids.is_empty() {
+        if !pre_authorized.is_empty() {
             runtime = runtime.with_gate(base_gate.clone());
         }
         // Register the discovered MCP tools; their descriptors join the advertised
         // config below so the model sees them.
         for tool in mcp.tools {
             runtime = runtime.with_tool(tool);
+        }
+        // Register the management tool executables globally (ADR-0052 D3): the
+        // registry stays global, the compile-time scope fence is what restricts them.
+        for tool in &self.admin_tools {
+            runtime = runtime.with_tool(tool.clone());
         }
         let mcp_descriptors = mcp.descriptors;
         // A gate override (slice E) replaces the default authorization gate — e.g.
