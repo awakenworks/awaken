@@ -80,6 +80,7 @@ fn snapshot_for(model_id: &str) -> ExecutableAgentSnapshot {
             plugin_ids: Vec::new(),
             plugin_config: Default::default(),
             context_policy: Default::default(),
+                    tool_presentation: Default::default(),
         },
         fingerprint: CatalogFingerprint("fp".into()),
     }

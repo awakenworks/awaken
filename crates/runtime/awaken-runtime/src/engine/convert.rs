@@ -21,6 +21,7 @@ pub(crate) fn build_chat_request(
     prelude: &[Message],
     transcript: &[Message],
     dynamic: &[ToolDescriptor],
+    opened: &std::collections::BTreeSet<String>,
 ) -> ChatRequest {
     // The agent's instructions lead the request as a system message, ahead of the
     // transcript. Empty instructions contribute no system message.
@@ -36,10 +37,24 @@ pub(crate) fn build_chat_request(
     messages.extend(prelude.iter().map(to_chat_message));
     messages.extend(transcript.iter().map(to_chat_message));
     let messages = apply_context_policy(&spec.context_policy, messages);
-    let tools = spec
+    // The model-facing tool face (ADR-0053): the static descriptors and the dynamic
+    // (plugin/MCP) descriptors converge here — the ONE place both meet — so the agent's
+    // `ToolPresentation` (alias + description override) is applied over the combined set,
+    // covering static and MCP tools uniformly. An empty presentation returns the set
+    // unchanged, so the tool face stays byte-identical for an agent with no overrides.
+    let combined: Vec<ToolDescriptor> = spec
         .tool_descriptors
         .iter()
         .chain(dynamic.iter())
+        .cloned()
+        .collect();
+    // `model_tools` applies the alias/description overrides, withholds deferred tools the
+    // model has not yet opened this run, and appends the `tool_open` meta-tool listing
+    // whatever stays deferred (absent when nothing is deferred).
+    let tools = spec
+        .tool_presentation
+        .model_tools(&combined, opened)
+        .iter()
         .map(to_tool_schema)
         .collect();
     ChatRequest {

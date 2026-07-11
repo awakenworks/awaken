@@ -235,6 +235,7 @@ mod tests {
                     plugin_ids: Vec::new(),
                     plugin_config: Default::default(),
                     context_policy: Default::default(),
+                                    tool_presentation: Default::default(),
                 },
                 fingerprint: CatalogFingerprint("fp".into()),
             },

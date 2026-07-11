@@ -115,6 +115,7 @@ fn snapshot() -> ExecutableAgentSnapshot {
             plugin_ids: Vec::new(),
             plugin_config: Default::default(),
             context_policy: ContextPolicy::KeepAll,
+                    tool_presentation: Default::default(),
         },
         fingerprint,
     }
