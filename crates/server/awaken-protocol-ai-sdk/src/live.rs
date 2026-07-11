@@ -1,17 +1,11 @@
-//! The live-channel machinery: stream the engine's best-effort progress
-//! (`stream::Kind`) to AI SDK UI Message Stream parts as a turn runs.
-//!
-//! Two pieces, both boundary glue:
-//!
-//! - [`ChannelStreamSink`] is a [`StreamSink`] adapter that forwards the engine's
-//!   live events onto an mpsc channel the router drains — a second adapter of the
-//!   same port `MemoryStreamSink` implements, so the engine is untouched.
-//! - [`LiveTranscoder`] transcodes the live `stream::Kind` sequence into the
-//!   in-flight *prefix* of a UI Message Stream: `start`/`start-step`, streamed
-//!   `text-*`, and `tool-input-start`/`tool-input-delta`. It deliberately does
-//!   **not** emit the authoritative tail (`tool-input-available`, tool output,
-//!   `finish`) — that comes from the committed [`StepOutcome`] so the live channel
-//!   never becomes the source of truth (G10/G13).
+//! The AI SDK live-channel transcoder: turn the engine's best-effort progress
+//! (`stream::Kind`) into the in-flight *prefix* of a UI Message Stream —
+//! `start`/`start-step`, streamed `text-*`, and
+//! `tool-input-start`/`tool-input-delta` — as a turn runs. It deliberately does
+//! **not** emit the authoritative tail (`tool-input-available`, tool output,
+//! `finish`); that comes from the committed [`StepOutcome`], so the live channel
+//! never becomes the source of truth (G10/G13). The channel adapter itself is the
+//! shared [`awaken_protocol_transport::ChannelStreamSink`].
 //!
 //! The tool-argument fragments arrive as *cumulative* snapshots (genai hands a
 //! `Value::String` of the JSON accumulated so far), so the transcoder tracks a
@@ -20,32 +14,9 @@
 
 use std::collections::HashMap;
 
-use async_trait::async_trait;
-use awaken_agent_contract::stream::event::{Event, Kind};
-use awaken_agent_contract::stream::sink::{Error as SinkError, Sink as StreamSink};
-use tokio::sync::mpsc::UnboundedSender;
+use awaken_agent_contract::stream::event::Kind;
 
 use crate::types::UIStreamEvent;
-
-/// A [`StreamSink`] that forwards each live event's `kind` onto an mpsc channel.
-/// Best-effort by contract: once the receiver is dropped, `send` reports `Closed`
-/// and the engine swallows it (the committed turn is still authoritative).
-pub struct ChannelStreamSink {
-    tx: UnboundedSender<Kind>,
-}
-
-impl ChannelStreamSink {
-    pub fn new(tx: UnboundedSender<Kind>) -> Self {
-        Self { tx }
-    }
-}
-
-#[async_trait]
-impl StreamSink for ChannelStreamSink {
-    async fn send(&self, event: Event) -> Result<(), SinkError> {
-        self.tx.send(event.kind).map_err(|_| SinkError::Closed)
-    }
-}
 
 /// Per-call progress: how many bytes of the cumulative argument string we have
 /// already emitted as deltas.
@@ -163,9 +134,7 @@ impl LiveTranscoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_agent_contract::agent::run::Id as RunId;
     use serde_json::json;
-    use tokio::sync::mpsc;
 
     fn run(seq: &[Kind]) -> Vec<UIStreamEvent> {
         let mut tc = LiveTranscoder::new();
@@ -255,35 +224,5 @@ mod tests {
             tool_call_id: "c1".into(),
             tool_name: "read".into(),
         }));
-    }
-
-    #[tokio::test]
-    async fn channel_sink_forwards_event_kind() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let sink = ChannelStreamSink::new(tx);
-        sink.send(Event {
-            run_id: RunId("r1".into()),
-            kind: Kind::OutputText { text: "hi".into() },
-        })
-        .await
-        .unwrap();
-        assert_eq!(
-            rx.recv().await,
-            Some(Kind::OutputText { text: "hi".into() })
-        );
-    }
-
-    #[tokio::test]
-    async fn channel_sink_closed_after_receiver_dropped() {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let sink = ChannelStreamSink::new(tx);
-        drop(rx);
-        let err = sink
-            .send(Event {
-                run_id: RunId("r1".into()),
-                kind: Kind::RunFinished,
-            })
-            .await;
-        assert!(matches!(err, Err(SinkError::Closed)));
     }
 }
