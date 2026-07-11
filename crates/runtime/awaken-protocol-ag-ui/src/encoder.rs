@@ -114,6 +114,47 @@ pub fn encode_step(outcome: &StepOutcome, thread_id: &str, run_id: &str) -> Vec<
     AgUiEncoder::new(thread_id, run_id).transcode_all(&events)
 }
 
+/// Project the *authoritative tail* of a committed step, for a turn whose
+/// in-flight prefix (`RUN_STARTED`, streamed `TEXT_MESSAGE_*`, and
+/// `TOOL_CALL_START`/`TOOL_CALL_ARGS`) was already emitted live (see
+/// [`crate::live::AgUiLiveTranscoder`]). Drops `RUN_STARTED` and assistant text
+/// (already streamed) and the tool `START`/`ARGS` (already streamed); keeps the
+/// closing `TOOL_CALL_END`, any `TOOL_CALL_RESULT`, and the terminal
+/// `RUN_FINISHED`. The live prefix plus this tail form one well-formed run.
+pub fn encode_close(outcome: &StepOutcome, thread_id: &str, run_id: &str) -> Vec<AgUiEvent> {
+    let pending = outcome
+        .pending
+        .as_ref()
+        .map(|p| (p.tool_use_id.as_str(), p.client_executed));
+    let events = project_messages(&outcome.new_messages, pending);
+    let mut out = Vec::new();
+    let mut tool_result_seq = 0u64;
+    for event in &events {
+        match event {
+            // Text was streamed live as TEXT_MESSAGE_* deltas.
+            AgentEvent::AssistantMessage { .. } => {}
+            // START + ARGS were streamed live; close the streamed tool call.
+            AgentEvent::ToolCall { id, .. } => out.push(AgUiEvent::ToolCallEnd {
+                tool_call_id: id.clone(),
+            }),
+            AgentEvent::ToolResult { id, content, .. } => {
+                out.push(AgUiEvent::ToolCallResult {
+                    message_id: format!("{run_id}-tr-{tool_result_seq}"),
+                    tool_call_id: id.clone(),
+                    content: blocks_text(content),
+                });
+                tool_result_seq += 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(AgUiEvent::RunFinished {
+        thread_id: thread_id.to_string(),
+        run_id: run_id.to_string(),
+    });
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,6 +190,52 @@ mod tests {
             events.iter().any(
                 |e| matches!(e, AgUiEvent::TextMessageContent { delta, .. } if delta == "hello")
             )
+        );
+    }
+
+    #[test]
+    fn close_emits_end_and_finish_without_start_or_args() {
+        let outcome = StepOutcome {
+            new_messages: vec![
+                Message::text(Id("a1".into()), Role::Assistant, "reading"),
+                Message {
+                    id: Id("a2".into()),
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::ToolUse {
+                        id: "c1".into(),
+                        name: "read".into(),
+                        input: json!({"path": "x"}),
+                    }],
+                },
+            ],
+            waiting: true,
+            exhausted: false,
+            pending: Some(Pending {
+                tool_use_id: "c1".into(),
+                name: "read".into(),
+                input: json!({"path": "x"}),
+                client_executed: true,
+            }),
+        };
+        let events = encode_close(&outcome, "t1", "r1");
+        // No start/text/args — those were streamed live.
+        assert!(events.iter().all(|e| !matches!(
+            e,
+            AgUiEvent::RunStarted { .. }
+                | AgUiEvent::TextMessageStart { .. }
+                | AgUiEvent::TextMessageContent { .. }
+                | AgUiEvent::ToolCallStart { .. }
+                | AgUiEvent::ToolCallArgs { .. }
+        )));
+        assert!(events.contains(&AgUiEvent::ToolCallEnd {
+            tool_call_id: "c1".into(),
+        }));
+        assert_eq!(
+            events.last(),
+            Some(&AgUiEvent::RunFinished {
+                thread_id: "t1".into(),
+                run_id: "r1".into(),
+            })
         );
     }
 

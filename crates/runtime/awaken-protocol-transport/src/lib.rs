@@ -9,6 +9,8 @@
 
 mod convert;
 mod port;
+mod stream;
 
 pub use convert::blocks_text;
 pub use port::{DriverError, Pending, ProtocolRuntime, Resume, StepOutcome};
+pub use stream::ChannelStreamSink;
