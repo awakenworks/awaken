@@ -194,14 +194,14 @@ mod resource_prompt_tests {
         AgentResourceConfig, ResourceAccess, ResourceBinding, ResourceKind,
     };
     use awaken_config_store::SqliteConfigStore;
-    use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding};
+    use awaken_runtime_contract::resolved::ContextPolicy;
 
     fn agent_config(id: &str) -> AgentConfig {
         AgentConfig {
             id: id.to_string(),
             instructions: "be helpful".to_string(),
             max_steps: 8,
-            model_binding: ModelBinding::new("p", "m", "b"),
+            model_binding: awaken_config_store::ModelSelection::pinned("p", "m", "b"),
             tool_ids: vec![],
             model_candidates: Vec::new(),
             plugin_ids: vec![],

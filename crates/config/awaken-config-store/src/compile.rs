@@ -14,6 +14,11 @@ pub enum CompileError {
     UnknownTool { agent: String, tool: String },
     #[error("serialize config: {0}")]
     Serialize(String),
+    /// The config's model is still `ModelSelection::Auto` (ADR-0052 D5): compile is
+    /// pure and cannot reach the provider catalog, so an `Auto` binding must be
+    /// resolved to a concrete one *before* compile (publish does this). Fail-closed.
+    #[error("agent {agent} has an unresolved (auto) model binding; resolve it before compiling")]
+    UnresolvedModel { agent: String },
 }
 
 /// Compile an agent config against an available tool catalog into a
@@ -77,9 +82,20 @@ pub fn compile_with_resource_prompts(
         }
     }
 
+    // The model must be concrete by now: `Auto` is resolved to a first-offering in
+    // `ConfigService::publish` before compile (ADR-0052 D5). A bare compile of an
+    // `Auto` config is fail-closed (`UnresolvedModel`), never a silent empty binding.
+    let model = config
+        .model_binding
+        .resolved()
+        .ok_or_else(|| CompileError::UnresolvedModel {
+            agent: config.id.clone(),
+        })?
+        .clone();
+
     Ok(RunnableConfig::builder(&config.id)
         .instructions(compose_instructions(&config.instructions, resource_prompts))
-        .model(config.model_binding.clone())
+        .model(model)
         .model_candidates(config.model_candidates.clone())
         .max_steps(config.max_steps)
         .tools(descriptors)
@@ -145,12 +161,14 @@ mod tests {
     use super::*;
     use awaken_runtime_contract::resolved::ModelBinding;
 
+    use crate::config::ModelSelection;
+
     fn config(tools: &[&str]) -> AgentConfig {
         AgentConfig {
             id: "agent-1".to_string(),
             instructions: "be helpful".to_string(),
             max_steps: 8,
-            model_binding: ModelBinding::new("p", "m", "b"),
+            model_binding: ModelSelection::pinned("p", "m", "b"),
             tool_ids: tools.iter().map(|s| s.to_string()).collect(),
             model_candidates: Vec::new(),
             plugin_ids: Vec::new(),
@@ -264,6 +282,45 @@ mod tests {
             .clone();
         // A non-empty pattern set enters the content address.
         assert_ne!(spec.snapshot().fingerprint.0, plain_fp);
+    }
+
+    #[test]
+    fn auto_binding_fails_closed_at_compile() {
+        // ADR-0052 D5: compile is pure and cannot resolve `Auto` — it must be
+        // resolved to a concrete binding by publish first, so a bare compile of an
+        // Auto config is rejected (never a silent empty binding).
+        let mut cfg = config(&[]);
+        cfg.model_binding = ModelSelection::Auto;
+        assert_eq!(
+            compile(&cfg, &[]).unwrap_err(),
+            CompileError::UnresolvedModel {
+                agent: "agent-1".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn pinned_selection_is_wire_identical_to_the_flat_triple() {
+        // A pinned selection serializes as the bare triple it always was, so a
+        // config's fingerprint is unchanged by the ModelSelection type (ADR-0052 D5).
+        let selection = ModelSelection::pinned("p", "m", "b");
+        let json = serde_json::to_value(&selection).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"provider_instance_ref": "p", "model_ref": "m", "backend_ref": "b"})
+        );
+        // Round-trips, and the historic flat triple still decodes as Pinned.
+        assert_eq!(
+            serde_json::from_value::<ModelSelection>(json).unwrap(),
+            selection
+        );
+        // Auto is the only new wire shape.
+        let auto = serde_json::to_value(ModelSelection::Auto).unwrap();
+        assert_eq!(auto, serde_json::json!({"mode": "auto"}));
+        assert_eq!(
+            serde_json::from_value::<ModelSelection>(auto).unwrap(),
+            ModelSelection::Auto
+        );
     }
 
     #[test]

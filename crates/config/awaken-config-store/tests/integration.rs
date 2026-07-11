@@ -20,7 +20,7 @@ use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
-use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
+use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
 struct TextLlm;
@@ -40,11 +40,7 @@ fn agent_config() -> AgentConfig {
         id: "support-agent".to_string(),
         instructions: "be helpful".to_string(),
         max_steps: 8,
-        model_binding: ModelBinding {
-            provider_identity_ref: "p".to_string(),
-            model_ref: "m".to_string(),
-            backend_ref: "b".to_string(),
-        },
+        model_binding: awaken_config_store::ModelSelection::pinned("p", "m", "b"),
         tool_ids: vec!["echo".to_string()],
         model_candidates: Vec::new(),
         plugin_ids: Vec::new(),
