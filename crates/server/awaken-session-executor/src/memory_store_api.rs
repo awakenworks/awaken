@@ -160,25 +160,25 @@ pub fn memory_stores_router(host: Arc<SharedHost>) -> Router {
     Router::new()
         .route("/v1/memory_stores", post(create_store).get(list_stores))
         .route(
-            "/v1/memory_stores/:id",
+            "/v1/memory_stores/{id}",
             get(get_store).post(update_store).delete(delete_store),
         )
-        .route("/v1/memory_stores/:id/archive", post(archive_store))
+        .route("/v1/memory_stores/{id}/archive", post(archive_store))
         .route(
-            "/v1/memory_stores/:id/memories",
+            "/v1/memory_stores/{id}/memories",
             post(create_memory).get(list_memories),
         )
         .route(
-            "/v1/memory_stores/:id/memories/:mid",
+            "/v1/memory_stores/{id}/memories/{mid}",
             get(get_memory).post(update_memory).delete(delete_memory),
         )
-        .route("/v1/memory_stores/:id/memory_versions", get(list_versions))
+        .route("/v1/memory_stores/{id}/memory_versions", get(list_versions))
         .route(
-            "/v1/memory_stores/:id/memory_versions/:vid",
+            "/v1/memory_stores/{id}/memory_versions/{vid}",
             get(get_version),
         )
         .route(
-            "/v1/memory_stores/:id/memory_versions/:vid/redact",
+            "/v1/memory_stores/{id}/memory_versions/{vid}/redact",
             post(redact_version),
         )
         .with_state(state)

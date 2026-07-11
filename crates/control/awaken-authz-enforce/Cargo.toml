@@ -16,7 +16,7 @@ awaken-iam-preset.workspace = true
 # a path/domain selection into one authorized scope before the policy engine.
 awaken-tenancy.workspace = true
 # The guard is an axum middleware over the session/protocol router.
-axum = "0.7"
+axum = "0.8"
 serde_json = { workspace = true }
 
 [dev-dependencies]

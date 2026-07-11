@@ -87,11 +87,11 @@ pub trait CredentialProbe: Send + Sync {
 pub fn admin_router(state: AdminState) -> Router {
     Router::new()
         .route(
-            "/v1/config/providers/:id",
+            "/v1/config/providers/{id}",
             put(put_provider).get(get_provider),
         )
         .route(
-            "/v1/config/endpoints/:id",
+            "/v1/config/endpoints/{id}",
             put(put_endpoint).get(get_endpoint),
         )
         .route("/v1/config/offerings", post(post_offering))
@@ -100,59 +100,59 @@ pub fn admin_router(state: AdminState) -> Router {
             "/v1/config/credentials",
             post(post_credential).get(list_credentials),
         )
-        .route("/v1/config/credentials/:id", get(get_credential))
+        .route("/v1/config/credentials/{id}", get(get_credential))
         .route(
-            "/v1/config/credential-pools/:id",
+            "/v1/config/credential-pools/{id}",
             put(put_pool).get(get_pool),
         )
         .route(
-            "/v1/config/credentials/:id/archive",
+            "/v1/config/credentials/{id}/archive",
             post(archive_credential),
         )
         .route(
-            "/v1/config/credentials/:id/validate",
+            "/v1/config/credentials/{id}/validate",
             post(validate_credential),
         )
         .route(
-            "/v1/config/inference-profiles/:id",
+            "/v1/config/inference-profiles/{id}",
             put(put_profile).get(get_profile),
         )
         .route(
-            "/v1/config/inference-profiles/:id/resolve",
+            "/v1/config/inference-profiles/{id}/resolve",
             post(resolve_profile_route),
         )
         .route(
-            "/v1/config/inference-profiles/:id/resolve-candidates",
+            "/v1/config/inference-profiles/{id}/resolve-candidates",
             post(resolve_profile_candidates_route),
         )
         .route("/v1/config/inference/resolve", post(resolve_route))
         .route(
-            "/v1/config/credentials/:id/cooldown",
+            "/v1/config/credentials/{id}/cooldown",
             post(cooldown_credential),
         )
         .route(
-            "/v1/config/credentials/:id/availability",
+            "/v1/config/credentials/{id}/availability",
             get(get_availability),
         )
         .route(
-            "/v1/config/credential-pools/:id/eligible",
+            "/v1/config/credential-pools/{id}/eligible",
             get(get_pool_eligible),
         )
         .route("/v1/config/mcp-servers", get(list_mcp_servers))
         .route(
-            "/v1/config/mcp-servers/:id",
+            "/v1/config/mcp-servers/{id}",
             put(put_mcp_server).get(get_mcp_server),
         )
         .route(
-            "/v1/config/agents/:agent_id/mcp",
+            "/v1/config/agents/{agent_id}/mcp",
             put(put_agent_mcp).get(get_agent_mcp),
         )
         .route(
-            "/v1/config/agents/:agent_id/resources",
+            "/v1/config/agents/{agent_id}/resources",
             put(put_agent_resource).get(get_agent_resource),
         )
         .route(
-            "/v1/config/agents/:agent_id/mcp/resolve",
+            "/v1/config/agents/{agent_id}/mcp/resolve",
             post(resolve_agent_mcp),
         )
         .with_state(state)

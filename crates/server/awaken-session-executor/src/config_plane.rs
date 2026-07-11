@@ -338,9 +338,9 @@ impl awaken_protocol_managed::AgentConfigSource for ConfigServiceAgentSource {
 pub fn config_router(plane: ConfigPlane) -> Router {
     Router::new()
         .route("/v1/config/agents", get(list_configs))
-        .route("/v1/config/agents/:id/validate", post(validate))
-        .route("/v1/config/agents/:id/publish", post(publish))
-        .route("/v1/config/agents/:id", get(get_config).put(put_config))
+        .route("/v1/config/agents/{id}/validate", post(validate))
+        .route("/v1/config/agents/{id}/publish", post(publish))
+        .route("/v1/config/agents/{id}", get(get_config).put(put_config))
         .with_state(plane)
 }
 

@@ -378,26 +378,26 @@ pub fn vault_router(state: Arc<VaultState>) -> Router {
     Router::new()
         .route("/v1/vaults", post(create_vault).get(list_vaults))
         .route(
-            "/v1/vaults/:id",
+            "/v1/vaults/{id}",
             get(retrieve_vault).post(update_vault).delete(delete_vault),
         )
-        .route("/v1/vaults/:id/archive", post(archive_vault))
+        .route("/v1/vaults/{id}/archive", post(archive_vault))
         .route(
-            "/v1/vaults/:vault_id/credentials",
+            "/v1/vaults/{vault_id}/credentials",
             post(create_credential).get(list_credentials),
         )
         .route(
-            "/v1/vaults/:vault_id/credentials/:id",
+            "/v1/vaults/{vault_id}/credentials/{id}",
             get(retrieve_credential)
                 .post(update_credential)
                 .delete(delete_credential),
         )
         .route(
-            "/v1/vaults/:vault_id/credentials/:id/archive",
+            "/v1/vaults/{vault_id}/credentials/{id}/archive",
             post(archive_credential),
         )
         .route(
-            "/v1/vaults/:vault_id/credentials/:id/mcp_oauth_validate",
+            "/v1/vaults/{vault_id}/credentials/{id}/mcp_oauth_validate",
             post(validate_credential),
         )
         .with_state(state)
