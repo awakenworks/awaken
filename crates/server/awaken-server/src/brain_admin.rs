@@ -56,7 +56,11 @@ impl DrainController {
 /// decrements almost immediately; a long-lived stream holds the count for its whole
 /// lifetime, so `active_streams` tracks concurrent connection load. RAII-style: the
 /// decrement runs even if the inner handler panics, via the guard's `Drop`.
-async fn count_active(State(ctrl): State<Arc<DrainController>>, req: Request, next: Next) -> Response {
+async fn count_active(
+    State(ctrl): State<Arc<DrainController>>,
+    req: Request,
+    next: Next,
+) -> Response {
     struct Guard(Arc<DrainController>);
     impl Drop for Guard {
         fn drop(&mut self) {
@@ -130,7 +134,9 @@ mod tests {
             .await
             .unwrap();
         let status = resp.status();
-        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 16).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 16)
+            .await
+            .unwrap();
         (status, String::from_utf8(bytes.to_vec()).unwrap())
     }
 
@@ -142,11 +148,18 @@ mod tests {
         // Drain, then readiness reports unavailable so the Service stops routing.
         let drained = app
             .clone()
-            .oneshot(HttpRequest::post("/admin/drain").body(Body::empty()).unwrap())
+            .oneshot(
+                HttpRequest::post("/admin/drain")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(drained.status(), StatusCode::OK);
-        assert_eq!(get(&app, "/readyz").await.0, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            get(&app, "/readyz").await.0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
     }
 
     #[tokio::test]
