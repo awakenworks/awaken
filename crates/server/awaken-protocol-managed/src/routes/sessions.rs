@@ -30,7 +30,6 @@ use crate::types::{
 /// the vault routes so the whole managed surface answers bad bodies identically.
 pub(crate) struct ManagedJson<T>(pub(crate) T);
 
-#[async_trait::async_trait]
 impl<S, T> FromRequest<S> for ManagedJson<T>
 where
     Json<T>: FromRequest<S, Rejection = JsonRejection>,
@@ -59,37 +58,37 @@ pub fn router(state: Arc<ManagedState>) -> Router {
     Router::new()
         .route("/v1/sessions", post(create_session).get(list_sessions))
         .route(
-            "/v1/sessions/:id",
+            "/v1/sessions/{id}",
             get(retrieve_session)
                 .post(update_session)
                 .delete(delete_session),
         )
-        .route("/v1/sessions/:id/archive", post(archive_session))
+        .route("/v1/sessions/{id}/archive", post(archive_session))
         .route(
-            "/v1/sessions/:id/events",
+            "/v1/sessions/{id}/events",
             post(send_events).get(list_events),
         )
-        .route("/v1/sessions/:id/events/stream", get(stream_events))
-        .route("/v1/sessions/:id/threads", get(list_threads))
-        .route("/v1/sessions/:id/threads/:tid", get(get_thread))
+        .route("/v1/sessions/{id}/events/stream", get(stream_events))
+        .route("/v1/sessions/{id}/threads", get(list_threads))
+        .route("/v1/sessions/{id}/threads/{tid}", get(get_thread))
         .route(
-            "/v1/sessions/:id/threads/:tid/archive",
+            "/v1/sessions/{id}/threads/{tid}/archive",
             post(archive_thread),
         )
         .route(
-            "/v1/sessions/:id/threads/:tid/events",
+            "/v1/sessions/{id}/threads/{tid}/events",
             get(list_thread_events),
         )
         .route(
-            "/v1/sessions/:id/threads/:tid/stream",
+            "/v1/sessions/{id}/threads/{tid}/stream",
             get(stream_thread_events),
         )
         .route(
-            "/v1/sessions/:id/resources",
+            "/v1/sessions/{id}/resources",
             post(create_resource).get(list_resources),
         )
         .route(
-            "/v1/sessions/:id/resources/:rid",
+            "/v1/sessions/{id}/resources/{rid}",
             get(get_resource)
                 .post(update_resource)
                 .delete(delete_resource),

@@ -38,7 +38,6 @@ type Runtime = Arc<dyn ProtocolRuntime>;
 /// `RUN_STARTED`.
 struct AgUiJson<T>(T);
 
-#[async_trait::async_trait]
 impl<S, T> FromRequest<S> for AgUiJson<T>
 where
     Json<T>: FromRequest<S, Rejection = JsonRejection>,
@@ -59,7 +58,7 @@ where
 pub fn router(runtime: Runtime) -> Router {
     Router::new()
         .route("/v1/ag-ui", post(run_agent))
-        .route("/v1/ag-ui/agents/:agent_id", post(run_agent_scoped))
+        .route("/v1/ag-ui/agents/{agent_id}", post(run_agent_scoped))
         .with_state(runtime)
 }
 

@@ -204,9 +204,9 @@ pub fn agents_router(state: Arc<AgentRegistryState>) -> Router {
     let guard_state = state.clone();
     Router::new()
         .route("/v1/agents", post(create_agent).get(list_agents))
-        .route("/v1/agents/:id", get(retrieve_agent).post(update_agent))
-        .route("/v1/agents/:id/archive", post(archive_agent))
-        .route("/v1/agents/:id/versions", get(list_versions))
+        .route("/v1/agents/{id}", get(retrieve_agent).post(update_agent))
+        .route("/v1/agents/{id}/archive", post(archive_agent))
+        .route("/v1/agents/{id}/versions", get(list_versions))
         .with_state(state)
         // The tenant ownership guard (ADR-0051) fences `/v1/agents/{id}` by owner.
         .layer(axum::middleware::from_fn_with_state(

@@ -19,8 +19,8 @@ use crate::host::SharedHost;
 pub fn files_router(host: Arc<SharedHost>) -> Router {
     Router::new()
         .route("/v1/files", post(upload_file).get(list_files))
-        .route("/v1/files/:id", get(get_file).delete(delete_file))
-        .route("/v1/files/:id/content", get(download_file))
+        .route("/v1/files/{id}", get(get_file).delete(delete_file))
+        .route("/v1/files/{id}/content", get(download_file))
         .with_state(host)
 }
 

@@ -172,14 +172,14 @@ impl SubscriptionSource for ConfigPlaneSubscriptionSource {
 /// sealing a `whsec_` secret on first create, returned once); GET/LIST are
 /// secret-free; DELETE unsubscribes. The owning workspace is the edge-stamped
 /// [`WorkspaceScope`]; the assembly layers the tenant-ownership fence over it.
-pub fn webhook_config_router(store: Arc<dyn WebhookStore>, secrets: Arc<dyn SecretStore>) -> Router {
+pub fn webhook_config_router(
+    store: Arc<dyn WebhookStore>,
+    secrets: Arc<dyn SecretStore>,
+) -> Router {
     Router::new()
+        .route("/v1/config/webhook-subscriptions", get(list_subscriptions))
         .route(
-            "/v1/config/webhook-subscriptions",
-            get(list_subscriptions),
-        )
-        .route(
-            "/v1/config/webhook-subscriptions/:id",
+            "/v1/config/webhook-subscriptions/{id}",
             put(put_subscription)
                 .get(get_subscription)
                 .delete(delete_subscription),
@@ -356,8 +356,14 @@ pub fn assemble(
     secrets: Arc<dyn SecretStore>,
     org_id: Option<String>,
 ) -> (Arc<WebhookLifecycleSink>, Router) {
-    let source = Arc::new(ConfigPlaneSubscriptionSource::new(store.clone(), secrets.clone()));
-    let dispatcher = Arc::new(WebhookDispatcher::new(source, Arc::new(ReqwestSender::default())));
+    let source = Arc::new(ConfigPlaneSubscriptionSource::new(
+        store.clone(),
+        secrets.clone(),
+    ));
+    let dispatcher = Arc::new(WebhookDispatcher::new(
+        source,
+        Arc::new(ReqwestSender::default()),
+    ));
     let sink = Arc::new(WebhookLifecycleSink::new(dispatcher, org_id));
     (sink, webhook_config_router(store, secrets))
 }

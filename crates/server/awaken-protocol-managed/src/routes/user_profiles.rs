@@ -72,10 +72,13 @@ pub fn user_profiles_router(state: Arc<UserProfileState>) -> Router {
     Router::new()
         .route("/v1/user_profiles", post(create_profile).get(list_profiles))
         .route(
-            "/v1/user_profiles/:id",
+            "/v1/user_profiles/{id}",
             get(retrieve_profile).post(update_profile),
         )
-        .route("/v1/user_profiles/:id/enrollment_url", post(enrollment_url))
+        .route(
+            "/v1/user_profiles/{id}/enrollment_url",
+            post(enrollment_url),
+        )
         .with_state(state)
 }
 

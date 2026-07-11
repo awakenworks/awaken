@@ -29,12 +29,15 @@ use crate::types::ErrorResponse;
 pub fn live_inbox_router(state: Arc<ManagedState>) -> Router {
     Router::new()
         .route(
-            "/v1/sessions/:id/live-inbox",
+            "/v1/sessions/{id}/live-inbox",
             get(live_inbox_snapshot).post(live_inbox_queue),
         )
-        .route("/v1/sessions/:id/live-inbox/order", put(live_inbox_reorder))
         .route(
-            "/v1/sessions/:id/live-inbox/:msg",
+            "/v1/sessions/{id}/live-inbox/order",
+            put(live_inbox_reorder),
+        )
+        .route(
+            "/v1/sessions/{id}/live-inbox/{msg}",
             put(live_inbox_replace).delete(live_inbox_remove),
         )
         .with_state(state)

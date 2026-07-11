@@ -911,7 +911,7 @@ pub(crate) fn token_router(iam: Arc<ManagementAuthz>) -> Router {
             "/v1/config/iam/tokens",
             axum::routing::post(mint_token_route).get(list_tokens_route),
         )
-        .route("/v1/config/iam/tokens/:id", delete(revoke_token_route))
+        .route("/v1/config/iam/tokens/{id}", delete(revoke_token_route))
         .with_state(iam)
 }
 

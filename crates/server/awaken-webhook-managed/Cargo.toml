@@ -20,6 +20,6 @@ awaken-config-resolver = { workspace = true }
 awaken-credential-vault = { workspace = true }
 awaken-agent-contract = { workspace = true }
 async-trait.workspace = true
-axum = { version = "0.7", features = [] }
+axum = { version = "0.8", features = [] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }

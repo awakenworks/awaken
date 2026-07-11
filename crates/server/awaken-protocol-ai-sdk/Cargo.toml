@@ -12,7 +12,7 @@ serde_json.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-axum = "0.7"
+axum = "0.8"
 tokio-stream = "0.1"
 
 [dev-dependencies]

@@ -32,7 +32,6 @@ type Runtime = Arc<dyn ProtocolRuntime>;
 /// plain-text rejection — so an A2A client parses the failure like any other.
 struct A2aJson<T>(T);
 
-#[async_trait::async_trait]
 impl<S, T> FromRequest<S> for A2aJson<T>
 where
     Json<T>: FromRequest<S, Rejection = JsonRejection>,
@@ -61,7 +60,7 @@ pub fn router(runtime: Runtime) -> Router {
         // The HTTP+JSON binding (a message posted straight to a method path).
         .route(crate::client::MESSAGE_SEND_PATH, post(message_send))
         .route(
-            "/v1/a2a/agents/:agent_id/message:send",
+            "/v1/a2a/agents/{agent_id}/message:send",
             post(message_send_scoped),
         )
         .route(crate::client::AGENT_CARD_PATH, get(card))

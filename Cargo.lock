@@ -233,7 +233,7 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
- "axum 0.7.9",
+ "axum",
  "http-body-util",
  "rusqlite",
  "schemars 1.2.1",
@@ -285,7 +285,7 @@ dependencies = [
  "awaken-iam-core",
  "awaken-iam-preset",
  "awaken-tenancy",
- "axum 0.7.9",
+ "axum",
  "serde_json",
  "tokio",
  "tower",
@@ -584,7 +584,7 @@ dependencies = [
  "awaken-iam-core",
  "awaken-iam-preset",
  "awaken-iam-server",
- "axum 0.8.9",
+ "axum",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -613,7 +613,7 @@ dependencies = [
  "awaken-iam-core",
  "awaken-iam-preset",
  "awaken-scoped-migration",
- "axum 0.8.9",
+ "axum",
  "base64 0.22.1",
  "ed25519-dalek",
  "postgres",
@@ -686,7 +686,7 @@ name = "awaken-observability"
 version = "1.0.0-dev"
 dependencies = [
  "awaken-runtime-contract",
- "axum 0.7.9",
+ "axum",
  "futures",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -705,7 +705,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-credential",
  "awaken-protocol-transport",
- "axum 0.7.9",
+ "axum",
  "http-body-util",
  "serde",
  "serde_json",
@@ -736,7 +736,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-protocol-transport",
- "axum 0.7.9",
+ "axum",
  "http-body-util",
  "serde",
  "serde_json",
@@ -753,7 +753,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-protocol-transport",
- "axum 0.7.9",
+ "axum",
  "http-body-util",
  "serde",
  "serde_json",
@@ -775,7 +775,7 @@ dependencies = [
  "awaken-model-catalog",
  "awaken-provisioning-contract",
  "awaken-tenancy",
- "axum 0.7.9",
+ "axum",
  "http-body-util",
  "serde",
  "serde_json",
@@ -795,7 +795,7 @@ dependencies = [
  "awaken-ext-mcp",
  "awaken-mcp-wire",
  "awaken-runtime-contract",
- "axum 0.7.9",
+ "axum",
  "model-context-protocol",
  "serde",
  "serde_json",
@@ -848,7 +848,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-protocol-a2a",
  "awaken-runtime-contract",
- "axum 0.7.9",
+ "axum",
  "tokio",
 ]
 
@@ -995,7 +995,7 @@ dependencies = [
  "awaken-store-postgres",
  "awaken-store-sqlite",
  "awaken-tenancy",
- "axum 0.7.9",
+ "axum",
  "base64 0.22.1",
  "form_urlencoded",
  "regex",
@@ -1121,7 +1121,7 @@ dependencies = [
  "awaken-tool-relay",
  "awaken-webhook",
  "awaken-webhook-managed",
- "axum 0.7.9",
+ "axum",
  "base64 0.22.1",
  "bytes",
  "futures",
@@ -1165,7 +1165,7 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-runtime-host",
  "awaken-webhook-managed",
- "axum 0.7.9",
+ "axum",
  "tokio",
  "tower",
 ]
@@ -1279,7 +1279,7 @@ name = "awaken-webhook"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
- "axum 0.7.9",
+ "axum",
  "base64 0.22.1",
  "getrandom 0.2.17",
  "hmac 0.12.1",
@@ -1302,7 +1302,7 @@ dependencies = [
  "awaken-credential-vault",
  "awaken-protocol-managed",
  "awaken-webhook",
- "axum 0.7.9",
+ "axum",
  "serde_json",
  "tokio",
 ]
@@ -1331,46 +1331,11 @@ dependencies = [
 
 [[package]]
 name = "axum"
-version = "0.7.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edca88bc138befd0323b20752846e6587272d3b03b0343c8ea28a6f819e6e71f"
-dependencies = [
- "async-trait",
- "axum-core 0.4.5",
- "bytes",
- "futures-util",
- "http 1.4.2",
- "http-body 1.0.1",
- "http-body-util",
- "hyper 1.10.1",
- "hyper-util",
- "itoa",
- "matchit 0.7.3",
- "memchr",
- "mime",
- "multer",
- "percent-encoding",
- "pin-project-lite",
- "rustversion",
- "serde",
- "serde_json",
- "serde_path_to_error",
- "serde_urlencoded",
- "sync_wrapper 1.0.2",
- "tokio",
- "tower",
- "tower-layer",
- "tower-service",
- "tracing",
-]
-
-[[package]]
-name = "axum"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90"
 dependencies = [
- "axum-core 0.5.6",
+ "axum-core",
  "bytes",
  "form_urlencoded",
  "futures-util",
@@ -1380,9 +1345,10 @@ dependencies = [
  "hyper 1.10.1",
  "hyper-util",
  "itoa",
- "matchit 0.8.4",
+ "matchit",
  "memchr",
  "mime",
+ "multer",
  "percent-encoding",
  "pin-project-lite",
  "serde_core",
@@ -1392,27 +1358,6 @@ dependencies = [
  "sync_wrapper 1.0.2",
  "tokio",
  "tower",
- "tower-layer",
- "tower-service",
- "tracing",
-]
-
-[[package]]
-name = "axum-core"
-version = "0.4.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09f2bd6146b97ae3359fa0cc6d6b376d9539582c7b4220f041a33ec24c226199"
-dependencies = [
- "async-trait",
- "bytes",
- "futures-util",
- "http 1.4.2",
- "http-body 1.0.1",
- "http-body-util",
- "mime",
- "pin-project-lite",
- "rustversion",
- "sync_wrapper 1.0.2",
  "tower-layer",
  "tower-service",
  "tracing",
@@ -3393,12 +3338,6 @@ checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
 dependencies = [
  "regex-automata",
 ]
-
-[[package]]
-name = "matchit"
-version = "0.7.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
 
 [[package]]
 name = "matchit"

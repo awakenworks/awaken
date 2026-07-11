@@ -195,23 +195,23 @@ pub fn environments_router(state: Arc<EnvironmentState>) -> Router {
     Router::new()
         .route("/v1/environments", post(create_env).get(list_envs))
         .route(
-            "/v1/environments/:id",
+            "/v1/environments/{id}",
             get(retrieve_env).post(update_env).delete(delete_env),
         )
-        .route("/v1/environments/:id/archive", post(archive_env))
-        .route("/v1/environments/:id/work", get(list_work))
-        .route("/v1/environments/:id/work/poll", get(poll_work))
-        .route("/v1/environments/:id/work/stats", get(work_stats))
+        .route("/v1/environments/{id}/archive", post(archive_env))
+        .route("/v1/environments/{id}/work", get(list_work))
+        .route("/v1/environments/{id}/work/poll", get(poll_work))
+        .route("/v1/environments/{id}/work/stats", get(work_stats))
         .route(
-            "/v1/environments/:id/work/:wid",
+            "/v1/environments/{id}/work/{wid}",
             get(retrieve_work).post(update_work),
         )
-        .route("/v1/environments/:id/work/:wid/ack", post(ack_work))
+        .route("/v1/environments/{id}/work/{wid}/ack", post(ack_work))
         .route(
-            "/v1/environments/:id/work/:wid/heartbeat",
+            "/v1/environments/{id}/work/{wid}/heartbeat",
             post(heartbeat_work),
         )
-        .route("/v1/environments/:id/work/:wid/stop", post(stop_work))
+        .route("/v1/environments/{id}/work/{wid}/stop", post(stop_work))
         .with_state(state)
 }
 

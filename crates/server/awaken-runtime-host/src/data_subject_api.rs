@@ -41,7 +41,7 @@ use sha2::{Digest, Sha256};
 /// Mount the erasure route over an injected resolver.
 pub fn erasure_router(resolver: Arc<dyn DataSubjectResolver>) -> Router {
     Router::new()
-        .route("/v1/user_profiles/:id/erasure", post(erase))
+        .route("/v1/user_profiles/{id}/erasure", post(erase))
         .with_state(resolver)
 }
 
@@ -94,18 +94,18 @@ fn now_millis() -> i64 {
 pub fn consent_router(repo: Arc<dyn DataSubjectRepo>) -> Router {
     Router::new()
         .route(
-            "/v1/user_profiles/:id/consent",
+            "/v1/user_profiles/{id}/consent",
             post(grant_consent).get(read_consent),
         )
         .route(
-            "/v1/user_profiles/:id/capture-decision",
+            "/v1/user_profiles/{id}/capture-decision",
             get(capture_decision),
         )
         // Enrollment web flow (ADR-0050 D3/G3): mint a signed URL, the end user
         // visits an HTML consent page and accepts, which records the grant.
-        .route("/v1/user_profiles/:id/enroll", post(mint_enrollment))
-        .route("/enroll/:token", get(enroll_page))
-        .route("/enroll/:token/grant", post(enroll_grant))
+        .route("/v1/user_profiles/{id}/enroll", post(mint_enrollment))
+        .route("/enroll/{token}", get(enroll_page))
+        .route("/enroll/{token}/grant", post(enroll_grant))
         .with_state(repo)
 }
 

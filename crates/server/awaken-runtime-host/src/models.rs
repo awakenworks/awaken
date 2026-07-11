@@ -74,7 +74,7 @@ pub fn default_models() -> Vec<ModelEntry> {
 pub fn models_router(models: Arc<Vec<ModelEntry>>) -> Router {
     Router::new()
         .route("/v1/models", get(list_models))
-        .route("/v1/models/:id", get(get_model))
+        .route("/v1/models/{id}", get(get_model))
         .with_state(models)
 }
 

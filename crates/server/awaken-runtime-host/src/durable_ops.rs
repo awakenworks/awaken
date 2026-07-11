@@ -93,25 +93,25 @@ impl SharedHost {
 pub fn durable_ops_router(host: Arc<SharedHost>) -> Router {
     Router::new()
         .route(
-            "/v1/durable/threads/:thread/submit_background",
+            "/v1/durable/threads/{thread}/submit_background",
             post(submit_background),
         )
-        .route("/v1/durable/threads/:thread/cancel", post(cancel))
-        .route("/v1/durable/threads/:thread/wake", post(wake))
-        .route("/v1/durable/threads/:thread/deliver", post(deliver))
-        .route("/v1/durable/threads/:thread/supersede", post(supersede))
-        .route("/v1/durable/threads/:thread/superseded", get(superseded))
-        .route("/v1/durable/threads/:thread/dispatches", get(dispatches))
-        .route("/v1/durable/threads/:thread/messages", get(messages))
-        .route("/v1/delegates/:agent_id/card", get(delegate_card))
-        .route("/v1/durable/threads/:thread/reconcile", post(reconcile))
-        .route("/v1/durable/threads/:thread/reap", post(reap))
+        .route("/v1/durable/threads/{thread}/cancel", post(cancel))
+        .route("/v1/durable/threads/{thread}/wake", post(wake))
+        .route("/v1/durable/threads/{thread}/deliver", post(deliver))
+        .route("/v1/durable/threads/{thread}/supersede", post(supersede))
+        .route("/v1/durable/threads/{thread}/superseded", get(superseded))
+        .route("/v1/durable/threads/{thread}/dispatches", get(dispatches))
+        .route("/v1/durable/threads/{thread}/messages", get(messages))
+        .route("/v1/delegates/{agent_id}/card", get(delegate_card))
+        .route("/v1/durable/threads/{thread}/reconcile", post(reconcile))
+        .route("/v1/durable/threads/{thread}/reap", post(reap))
         .route(
-            "/v1/durable/threads/:thread/dead-letters",
+            "/v1/durable/threads/{thread}/dead-letters",
             get(dead_letters),
         )
         .route(
-            "/v1/durable/threads/:thread/dead-letters/purge",
+            "/v1/durable/threads/{thread}/dead-letters/purge",
             post(purge),
         )
         .with_state(host)

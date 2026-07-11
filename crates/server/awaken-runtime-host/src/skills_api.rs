@@ -90,17 +90,17 @@ pub fn skills_router(host: Arc<SharedHost>) -> Router {
     });
     Router::new()
         .route("/v1/skills", post(create_skill).get(list_skills))
-        .route("/v1/skills/:id", get(retrieve_skill).delete(delete_skill))
+        .route("/v1/skills/{id}", get(retrieve_skill).delete(delete_skill))
         .route(
-            "/v1/skills/:id/versions",
+            "/v1/skills/{id}/versions",
             post(create_version).get(list_versions),
         )
         .route(
-            "/v1/skills/:id/versions/:version",
+            "/v1/skills/{id}/versions/{version}",
             get(retrieve_version).delete(delete_version),
         )
         .route(
-            "/v1/skills/:id/versions/:version/content",
+            "/v1/skills/{id}/versions/{version}/content",
             get(version_content),
         )
         .with_state(state)

@@ -13,7 +13,7 @@ serde_json.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-axum = "0.7"
+axum = "0.8"
 # Outbound client transport (the inbound router uses axum; the outbound client
 # calls a remote A2A agent over HTTP).
 ureq = { version = "2", features = ["json"] }
