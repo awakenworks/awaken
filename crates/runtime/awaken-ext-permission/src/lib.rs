@@ -220,6 +220,94 @@ impl PermissionPolicy for RulePermissionPolicy {
     }
 }
 
+/// The JSON wire shape a config author writes for an agent's `permission`
+/// section: a default behavior plus an ordered rule list of `{ pattern, behavior }`.
+/// Deliberately flat and stringly-patterned so a console form maps to it 1:1.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RulesConfig {
+    /// Behavior for a call no rule matches (defaults to `ask`).
+    #[serde(default = "default_ask")]
+    pub default_behavior: ToolPermissionBehavior,
+    /// The Claude Code permission mode (defaults to `default`).
+    #[serde(default)]
+    pub mode: Mode,
+    /// Ordered rules; `deny` is absolute, otherwise the most specific match wins.
+    #[serde(default)]
+    pub rules: Vec<RuleConfig>,
+}
+
+/// One authored rule: a glob pattern string and the behavior it grants.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuleConfig {
+    pub pattern: String,
+    pub behavior: ToolPermissionBehavior,
+}
+
+fn default_ask() -> ToolPermissionBehavior {
+    ToolPermissionBehavior::Ask
+}
+
+/// Parse an agent's `permission` config section into a [`PermissionRuleset`].
+///
+/// Every pattern is validated through [`ToolCallPattern::parse`], so a fail-open
+/// regex operator is rejected here rather than silently accepted. Returns an error
+/// (whose message names the offending pattern/field) so a malformed policy is
+/// surfaced, never silently reinterpreted.
+pub fn parse_ruleset(value: &Value) -> Result<PermissionRuleset, String> {
+    let config: RulesConfig = serde_json::from_value(value.clone())
+        .map_err(|e| format!("invalid permission config: {e}"))?;
+    let mut rules = Vec::with_capacity(config.rules.len());
+    for r in config.rules {
+        let pattern = ToolCallPattern::parse(&r.pattern)
+            .map_err(|e| format!("rule pattern '{}': {e}", r.pattern))?;
+        rules.push(PermissionRule::new(pattern, r.behavior));
+    }
+    Ok(PermissionRuleset {
+        default_behavior: config.default_behavior,
+        mode: config.mode,
+        rules,
+    })
+}
+
+/// The JSON Schema for the `permission` config section, advertised on
+/// `/v1/capabilities` so the console can discover and author the policy. Hand-authored
+/// (not schemars) to keep this crate dependency-light; it mirrors [`RulesConfig`].
+pub fn permission_config_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "title": "Permission policy",
+        "properties": {
+            "default_behavior": {
+                "type": "string",
+                "enum": ["allow", "ask", "deny"],
+                "default": "ask",
+                "description": "Behavior for a tool call no rule matches."
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["default", "acceptEdits", "plan", "bypassPermissions"],
+                "default": "default",
+                "description": "Permission mode; 'plan' denies unmatched side-effecting calls."
+            },
+            "rules": {
+                "type": "array",
+                "description": "Ordered rules; deny is absolute, else the most specific match wins.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "A glob tool-call pattern, e.g. Bash(*rm*) or mcp__github__*."
+                        },
+                        "behavior": { "type": "string", "enum": ["allow", "ask", "deny"] }
+                    },
+                    "required": ["pattern", "behavior"]
+                }
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,6 +315,47 @@ mod tests {
 
     fn rule(spec: &str, behavior: ToolPermissionBehavior) -> PermissionRule {
         PermissionRule::new(ToolCallPattern::parse(spec).unwrap(), behavior)
+    }
+
+    #[test]
+    fn parse_ruleset_builds_rules_and_default() {
+        let rs = parse_ruleset(&json!({
+            "default_behavior": "deny",
+            "rules": [
+                { "pattern": "read", "behavior": "allow" },
+                { "pattern": "Bash(*rm*)", "behavior": "deny" }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(rs.default_behavior, ToolPermissionBehavior::Deny);
+        assert_eq!(rs.rules.len(), 2);
+        // The parsed ruleset enforces as authored.
+        assert_eq!(rs.decide("read", &json!({})), ToolPermissionBehavior::Allow);
+        assert_eq!(
+            rs.decide("Bash", &json!({ "command": "rm -rf" })),
+            ToolPermissionBehavior::Deny
+        );
+        assert_eq!(rs.decide("write", &json!({})), ToolPermissionBehavior::Deny); // unmatched → default
+    }
+
+    #[test]
+    fn parse_ruleset_defaults_to_ask_when_unspecified() {
+        let rs = parse_ruleset(&json!({})).unwrap();
+        assert_eq!(rs.default_behavior, ToolPermissionBehavior::Ask);
+        assert!(rs.rules.is_empty());
+    }
+
+    #[test]
+    fn parse_ruleset_rejects_fail_open_regex_pattern() {
+        // A regex operator would be a fail-open footgun; parse must reject it, naming the pattern.
+        let err = parse_ruleset(&json!({
+            "rules": [ { "pattern": "Bash(command =~ \"rm\")", "behavior": "deny" } ]
+        }))
+        .unwrap_err();
+        assert!(
+            err.contains("Bash(command"),
+            "error names the offending pattern: {err}"
+        );
     }
 
     #[test]

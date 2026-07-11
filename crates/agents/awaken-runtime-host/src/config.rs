@@ -53,12 +53,12 @@ pub(crate) fn latest_assistant_text(messages: &[Message]) -> String {
 /// policy, so the gate and the advertisement cannot drift.
 const AUTO_ALLOWED_HAND_TOOLS: [&str; 3] = ["read", "glob", "grep"];
 
-/// read/glob/grep allowed, mutations asked (ADR-0030). With `approval_mode:
-/// human_approval` an asked tool parks for a confirmation. `extra_allowed` adds
-/// per-thread pre-authorized tool ids (the connected MCP tools, ADR-0043 Phase 3:
-/// configuring the server — with its credential — was the authorization
-/// decision); empty means exactly the base policy.
-fn server_policy(extra_allowed: &[String]) -> RulePermissionPolicy {
+/// The built-in baseline allow rules (ADR-0030): read/glob/grep perception,
+/// delegation and skill discovery, plus a thread's pre-authorized MCP tool ids
+/// (ADR-0043 Phase 3 — configuring the server, with its credential, was the
+/// authorization decision). Factored out so both the default policy and an
+/// authored policy share the exact same baseline.
+fn base_allow_rules(extra_allowed: &[String]) -> Vec<PermissionRule> {
     let allow = |name: &str| {
         PermissionRule::new(
             ToolCallPattern::parse(name).expect("static pattern"),
@@ -75,11 +75,62 @@ fn server_policy(extra_allowed: &[String]) -> RulePermissionPolicy {
     rules.push(allow("list_skills"));
     rules.push(allow("Skill"));
     rules.extend(extra_allowed.iter().map(|id| allow(id)));
+    rules
+}
+
+fn server_policy(extra_allowed: &[String]) -> RulePermissionPolicy {
     RulePermissionPolicy::new(PermissionRuleset {
         default_behavior: ToolPermissionBehavior::Ask,
         mode: Mode::Default,
-        rules,
+        rules: base_allow_rules(extra_allowed),
     })
+}
+
+/// The `plugin_config` key an agent's authored permission policy lives under.
+pub(crate) const PERMISSION_CONFIG_KEY: &str = "permission";
+
+/// Parse an agent's authored permission policy from its `plugin_config`, if present.
+/// A missing or malformed section returns `None`, so the caller keeps the strict
+/// built-in default — a bad policy is never silently reinterpreted into fail-open.
+pub(crate) fn config_permission_ruleset(
+    plugin_config: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> Option<PermissionRuleset> {
+    let raw = plugin_config.get(PERMISSION_CONFIG_KEY)?;
+    awaken_ext_permission::parse_ruleset(raw).ok()
+}
+
+/// The ruleset a thread actually enforces: the built-in baseline (auto-allowed
+/// perception tools + pre-authorized MCP ids) with an authored policy's rules
+/// layered on top and its `default_behavior`/`mode` governing unmatched calls
+/// (`deny` in any rule still wins, absolutely). With no authored policy this is the
+/// strict built-in default (perception allowed, mutations asked).
+pub(crate) fn effective_ruleset(
+    authored: Option<PermissionRuleset>,
+    extra_allowed: &[String],
+) -> PermissionRuleset {
+    let mut rules = base_allow_rules(extra_allowed);
+    let (default_behavior, mode) = authored
+        .as_ref()
+        .map(|rs| (rs.default_behavior, rs.mode))
+        .unwrap_or((ToolPermissionBehavior::Ask, Mode::Default));
+    if let Some(rs) = authored {
+        rules.extend(rs.rules);
+    }
+    PermissionRuleset {
+        default_behavior,
+        mode,
+        rules,
+    }
+}
+
+/// The thread's authorization gate, built from [`effective_ruleset`].
+pub(crate) fn server_gate_with(
+    authored: Option<PermissionRuleset>,
+    extra_allowed: &[String],
+) -> Arc<dyn awaken_runtime_contract::permission::ToolGateHook> {
+    Arc::new(PermissionGate::new(Arc::new(RulePermissionPolicy::new(
+        effective_ruleset(authored, extra_allowed),
+    ))))
 }
 
 fn hand_tool_descriptors() -> Vec<ToolDescriptor> {
@@ -312,6 +363,66 @@ mod tests {
         assert!(
             caps.iter()
                 .any(|c| c.id == STATE_MACHINE_PLUGIN_ID && c.config_schema.is_some())
+        );
+    }
+
+    #[test]
+    fn config_permission_ruleset_reads_the_section_else_none() {
+        // Absent → None (keeps the strict built-in default).
+        assert!(config_permission_ruleset(&Default::default()).is_none());
+        // Present + valid → Some.
+        let mut cfg = std::collections::BTreeMap::new();
+        cfg.insert(
+            PERMISSION_CONFIG_KEY.to_string(),
+            serde_json::json!({ "default_behavior": "deny", "rules": [] }),
+        );
+        assert_eq!(
+            config_permission_ruleset(&cfg).unwrap().default_behavior,
+            ToolPermissionBehavior::Deny
+        );
+        // Malformed (fail-open regex operator) → None, never a silent fail-open.
+        let mut bad = std::collections::BTreeMap::new();
+        bad.insert(
+            PERMISSION_CONFIG_KEY.to_string(),
+            serde_json::json!({ "rules": [{ "pattern": "Bash(command =~ \"x\")", "behavior": "deny" }] }),
+        );
+        assert!(config_permission_ruleset(&bad).is_none());
+    }
+
+    #[test]
+    fn effective_ruleset_layers_author_over_baseline() {
+        // No authored policy → baseline: perception allowed, mutations asked.
+        let base = effective_ruleset(None, &[]);
+        assert_eq!(
+            base.decide("read", &serde_json::json!({})),
+            ToolPermissionBehavior::Allow
+        );
+        assert_eq!(
+            base.decide("write", &serde_json::json!({})),
+            ToolPermissionBehavior::Ask
+        );
+
+        // Authored: allow bash but deny rm; default stays ask. Baseline read still allowed.
+        let authored = awaken_ext_permission::parse_ruleset(&serde_json::json!({
+            "default_behavior": "ask",
+            "rules": [
+                { "pattern": "Bash", "behavior": "allow" },
+                { "pattern": "Bash(*rm*)", "behavior": "deny" }
+            ]
+        }))
+        .unwrap();
+        let merged = effective_ruleset(Some(authored), &[]);
+        assert_eq!(
+            merged.decide("read", &serde_json::json!({})),
+            ToolPermissionBehavior::Allow
+        );
+        assert_eq!(
+            merged.decide("Bash", &serde_json::json!({ "command": "ls" })),
+            ToolPermissionBehavior::Allow
+        );
+        assert_eq!(
+            merged.decide("Bash", &serde_json::json!({ "command": "rm -rf" })),
+            ToolPermissionBehavior::Deny // deny is absolute, even over the author's allow
         );
     }
 
