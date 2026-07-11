@@ -8,7 +8,8 @@ import { NAV, navPath, titleForPath } from "../../lib/navigation/paths";
 import type { NavGroup } from "../../lib/navigation/paths";
 
 const GROUP_CAPTIONS: Partial<Record<NavGroup, [string, string]>> = {
-  supply: ["Workspace · Supply", "工作区 · 供给"],
+  run: ["Run", "运行"],
+  supply: ["Supply", "供给"],
   observe: ["Observe", "观测"],
   govern: ["Govern", "治理"],
 };
@@ -17,23 +18,21 @@ function Sidebar() {
   const app = useApp();
   const nav = useNavigate();
   const location = useLocation();
-  const [projMenu, setProjMenu] = useState(false);
+  const [wsMenu, setWsMenu] = useState(false);
+  const [newWs, setNewWs] = useState("");
 
-  const groups: NavGroup[] =
-    app.scope === "project" ? ["project"] : ["supply", "observe", "govern"];
+  const groups: NavGroup[] = ["run", "supply", "observe", "govern"];
 
   const isActive = (path: string) => {
-    const concrete = path.replace(":pid", app.projectId || "-");
+    const concrete = path.replace(":ws", app.workspaceId || "default");
     return concrete === "/" ? location.pathname === "/" : location.pathname.startsWith(concrete);
   };
+  const activeWs = app.workspaces.find((w) => w.id === app.workspaceId);
 
   return (
     <aside className="sidebar">
-      <button
-        className="ws-row"
-        data-active={app.scope === "workspace"}
-        onClick={() => app.setScope("workspace")}
-      >
+      {/* Org level — single implicit org (no backend Org resource yet). */}
+      <div className="ws-row" style={{ cursor: "default" }}>
         <span
           style={{
             width: 26,
@@ -53,29 +52,26 @@ function Sidebar() {
         <span style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0 }}>
           <strong style={{ fontSize: 13 }}>Awaken</strong>
           <span className="mut" style={{ fontSize: 10.5 }}>
-            Workspace
+            {app.t("Organization", "组织")}
           </span>
         </span>
-      </button>
+      </div>
 
+      {/* Workspace switcher — the tenancy scope. Client-held roster (no server list). */}
       <div style={{ position: "relative" }}>
-        <button
-          className="proj-row"
-          data-active={app.scope === "project"}
-          onClick={() => setProjMenu((v) => !v)}
-        >
-          <span>📁</span>
+        <button className="proj-row" data-active onClick={() => setWsMenu((v) => !v)}>
+          <span>🗂️</span>
           <span style={{ flex: 1, minWidth: 0, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis" }}>
-            {app.projectId || app.t("no project", "无项目")}
+            {activeWs?.display_name || app.workspaceId}
           </span>
           <span className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".04em" }}>
-            Project
+            Workspace
           </span>
           <span className="mut">▾</span>
         </button>
-        {projMenu && (
+        {wsMenu && (
           <>
-            <div style={{ position: "fixed", inset: 0, zIndex: 39 }} onClick={() => setProjMenu(false)} />
+            <div style={{ position: "fixed", inset: 0, zIndex: 39 }} onClick={() => setWsMenu(false)} />
             <div
               style={{
                 position: "absolute",
@@ -89,48 +85,51 @@ function Sidebar() {
                 padding: 5,
               }}
             >
-              <div className="nav-caption">{app.t("Switch project", "切换项目")}</div>
-              {app.projects.map((p) => (
+              <div className="nav-caption">{app.t("Switch workspace", "切换工作区")}</div>
+              {app.workspaces.map((w) => (
                 <button
-                  key={p.id}
+                  key={w.id}
                   className="nav-item"
-                  data-active={p.id === app.projectId}
+                  data-active={w.id === app.workspaceId}
                   onClick={() => {
-                    app.setProjectId(p.id);
-                    app.setScope("project");
-                    setProjMenu(false);
-                    nav(`/p/${p.id}/overview`);
+                    app.setWorkspaceId(w.id);
+                    setWsMenu(false);
+                    nav(`/w/${w.id}/overview`);
                   }}
                 >
-                  {p.display_name || p.id}
+                  {w.display_name || w.id}
                   <span className="mono mut" style={{ marginLeft: "auto" }}>
-                    {p.id}
+                    {w.id}
                   </span>
                 </button>
               ))}
-              {app.projects.length === 0 && (
-                <div className="mut" style={{ padding: "6px 10px" }}>
-                  {app.t("No projects authored yet — create one in Settings.", "尚无项目——到项目设置里创建。")}
-                </div>
-              )}
-              <button
-                className="nav-item"
-                onClick={() => {
-                  app.setScope("workspace");
-                  setProjMenu(false);
-                  nav("/settings");
-                }}
-              >
-                {app.t("All projects · Workspace", "全部项目 · 工作区")}
-              </button>
+              <div className="nav-caption">{app.t("Add workspace (scope id)", "添加工作区(作用域 id)")}</div>
+              <div className="row" style={{ padding: "2px 6px 6px" }}>
+                <input
+                  className="input mono"
+                  style={{ flex: 1, height: 26 }}
+                  placeholder="ws_acme"
+                  value={newWs}
+                  onChange={(e) => setNewWs(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && newWs.trim()) {
+                      const id = newWs.trim();
+                      app.addWorkspace(id);
+                      setNewWs("");
+                      setWsMenu(false);
+                      nav(`/w/${id}/overview`);
+                    }
+                  }}
+                />
+              </div>
             </div>
           </>
         )}
       </div>
 
-      <div className="nav-caption">{app.t("Global · all projects", "全局 · 所有项目")}</div>
+      <div className="nav-caption">{app.t("Global", "全局")}</div>
       {NAV.filter((n) => n.group === "global").map((n) => (
-        <button key={n.key} className="nav-item" data-active={isActive(n.path)} onClick={() => nav(navPath(n, app.projectId))}>
+        <button key={n.key} className="nav-item" data-active={isActive(n.path)} onClick={() => nav(navPath(n, app.workspaceId))}>
           {app.t(n.label, n.labelZh)}
         </button>
       ))}
@@ -138,17 +137,13 @@ function Sidebar() {
 
       {groups.map((g) => (
         <div key={g}>
-          <div className="nav-caption">
-            {g === "project"
-              ? `Project · ${app.projectId || "—"}`
-              : app.t(GROUP_CAPTIONS[g]?.[0] ?? g, GROUP_CAPTIONS[g]?.[1] ?? g)}
-          </div>
+          <div className="nav-caption">{app.t(GROUP_CAPTIONS[g]?.[0] ?? g, GROUP_CAPTIONS[g]?.[1] ?? g)}</div>
           {NAV.filter((n) => n.group === g).map((n) => (
             <button
               key={n.key}
               className="nav-item"
               data-active={isActive(n.path)}
-              onClick={() => nav(navPath(n, app.projectId))}
+              onClick={() => nav(navPath(n, app.workspaceId))}
               title={n.gated ? app.t("Backend face not mounted yet", "后端面尚未就绪") : undefined}
             >
               {app.t(n.label, n.labelZh)}
@@ -262,7 +257,7 @@ function CommandPalette() {
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && hits[0]) {
-              nav(navPath(hits[0], app.projectId));
+              nav(navPath(hits[0], app.workspaceId));
               setOpen(false);
             }
           }}
@@ -272,7 +267,7 @@ function CommandPalette() {
             key={n.key}
             className="nav-item"
             onClick={() => {
-              nav(navPath(n, app.projectId));
+              nav(navPath(n, app.workspaceId));
               setOpen(false);
             }}
           >

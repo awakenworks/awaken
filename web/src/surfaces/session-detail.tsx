@@ -6,7 +6,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
-import { api, streamUrl } from "../lib/api/client";
+import { api, streamUrl, ws } from "../lib/api/client";
 import type {
   ContentBlock,
   InboundEvent,
@@ -123,21 +123,22 @@ function ToolCard({
 
 export default function SessionDetailSurface() {
   const app = useApp();
-  const { pid = "", sid = "" } = useParams();
+  const { ws: wsId = "default", sid = "" } = useParams();
   const qc = useQueryClient();
-  const base = `/projects/${pid}/v1/sessions/${sid}`;
+  // Workspace-scoped via ws() (tenancy is an edge aspect); flat under default scope.
+  const base = ws(`/v1/sessions/${sid}`);
   const [pending, setPending] = useState<SessionEvent[]>([]);
   const [draft, setDraft] = useState("");
   const [model, setModel] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const session = useQuery({
-    queryKey: ["session", pid, sid],
+    queryKey: ["session", wsId, sid],
     queryFn: () => api.get<Session>(base),
     refetchInterval: 15_000,
   });
   const events = useQuery({
-    queryKey: ["session-events", pid, sid],
+    queryKey: ["session-events", wsId, sid],
     queryFn: async () => (await api.get<ListEventsResponse>(`${base}/events`)).data,
     refetchInterval: 5_000,
   });
@@ -175,7 +176,7 @@ export default function SessionDetailSurface() {
 
   const freshCount = pending.filter((p) => !log.some((e) => e.id === p.id)).length;
   const applyPending = () => {
-    qc.setQueryData<SessionEvent[]>(["session-events", pid, sid], (old) =>
+    qc.setQueryData<SessionEvent[]>(["session-events", wsId, sid], (old) =>
       mergeEvents(old ?? [], pending),
     );
     setPending([]);
@@ -192,15 +193,15 @@ export default function SessionDetailSurface() {
   const rename = useMutation({
     mutationFn: (title: string) => api.post<Session>(base, { title }),
     onSuccess: (s) => {
-      qc.setQueryData(["session", pid, sid], s);
-      void qc.invalidateQueries({ queryKey: ["sessions", pid] });
+      qc.setQueryData(["session", wsId, sid], s);
+      void qc.invalidateQueries({ queryKey: ["sessions", wsId] });
     },
   });
   const archive = useMutation({
     mutationFn: () => api.post<Session>(`${base}/archive`),
     onSuccess: (s) => {
-      qc.setQueryData(["session", pid, sid], s);
-      void qc.invalidateQueries({ queryKey: ["sessions", pid] });
+      qc.setQueryData(["session", wsId, sid], s);
+      void qc.invalidateQueries({ queryKey: ["sessions", wsId] });
     },
   });
 
@@ -225,7 +226,7 @@ export default function SessionDetailSurface() {
     <>
       <div className="row" style={{ justifyContent: "space-between" }}>
         <span>
-          <Link to={`/p/${pid}/sessions`}>‹ Sessions</Link>{" "}
+          <Link to={`/w/${wsId}/sessions`}>‹ Sessions</Link>{" "}
           <code style={{ marginLeft: 8 }}>{sid}</code>{" "}
           {session.data?.title && <strong style={{ marginLeft: 6 }}>{session.data.title}</strong>}
           {session.data?.archived_at && (
