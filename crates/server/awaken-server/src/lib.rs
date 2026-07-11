@@ -1834,8 +1834,15 @@ async fn management_router_over(
             ))),
     );
     let managed_state = Arc::new(
-        ManagedState::new(ManagedHost::new(host.clone()).with_mcp(credentials, secrets, mcp_store))
-            .with_vaults(vault_state)
+        ManagedState::new(
+            ManagedHost::new(host.clone())
+                .with_mcp(credentials, secrets, mcp_store)
+                // Share the SAME binding store the config service uses, so a published
+                // agent's bound memory store is actually mounted at session-create — the
+                // prompt (config) and the mount (here) come from one source of truth.
+                .with_resources(resource_store.clone()),
+        )
+        .with_vaults(vault_state)
             .with_environments(env_state)
             .with_session_repo(sessions),
     );

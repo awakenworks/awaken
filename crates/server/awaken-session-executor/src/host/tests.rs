@@ -610,3 +610,69 @@ async fn prepare_session_stages_egress_into_the_sandbox_spec() {
         "an unrestricted session keeps the host network"
     );
 }
+
+/// A published agent's bound memory store (ADR-0038) is mounted in EVERY session it
+/// runs — not only sessions that pass it as a wire `resource`. With the binding store
+/// shared (`with_resources`), a BARE `prepare_session` for the agent stages the store's
+/// mount, carrying its bytes, at the binding's path. This is the seam that makes the
+/// build→bind→use loop real: the config plane injects the prompt, this injects the mount.
+#[tokio::test]
+async fn prepare_session_mounts_the_agents_bound_memory_store() {
+    use awaken_config_resolver::{
+        AgentResourceConfig, InMemoryResourceStore, ResourceAccess, ResourceBinding, ResourceKind,
+        ResourceStore,
+    };
+    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+
+    // Seed a memory store with a known secret, and bind it to agent `a` at /mnt/memory.
+    let store_id = host.create_memory_store();
+    host.memory_stores
+        .put(&store_id, b"the secret code is BANANA-42")
+        .expect("seed memory bytes");
+    let bindings: Arc<dyn ResourceStore> = Arc::new(InMemoryResourceStore::new());
+    bindings.put_agent_resource(AgentResourceConfig {
+        agent_id: "a".into(),
+        resources: vec![ResourceBinding {
+            kind: ResourceKind::MemoryStore,
+            resource_id: store_id.clone(),
+            mount_path: "/mnt/memory".into(),
+            access: ResourceAccess::ReadWrite,
+            instructions: None,
+        }],
+        version: 1,
+    });
+    let managed = crate::ManagedHost::new(host.clone()).with_resources(bindings);
+
+    let bare = |agent: &str| SessionInit {
+        agent_id: agent.into(),
+        mcp_servers: Vec::new(),
+        resources: Vec::new(),
+        model: None,
+        runtime: None,
+        deny_egress: false,
+    };
+
+    // A BARE session for the bound agent — no wire resources at all — still mounts it.
+    managed.prepare_session("t-bound", bare("a")).await.unwrap();
+    let dump = serde_json::to_string(&host.sandbox_spec("t-bound").mounts).unwrap();
+    assert!(
+        dump.contains("mnt/memory"),
+        "the bound memory store is mounted at its path: {dump}"
+    );
+    assert!(
+        dump.contains("BANANA-42"),
+        "the mount carries the store's bytes: {dump}"
+    );
+
+    // An agent with NO binding gets nothing extra — the loop is opt-in per binding.
+    managed
+        .prepare_session("t-unbound", bare("no-bindings"))
+        .await
+        .unwrap();
+    let empty = serde_json::to_string(&host.sandbox_spec("t-unbound").mounts).unwrap();
+    assert!(
+        !empty.contains("BANANA-42"),
+        "an unbound agent mounts nothing extra: {empty}"
+    );
+}
