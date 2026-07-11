@@ -12,6 +12,8 @@ awaken-api-contract.workspace = true
 # The read/resolution face: the admin `inference/resolve` route dry-runs a binding
 # against the authored catalog through the resolver (secret-free result).
 awaken-config-resolver.workspace = true
+# Failure disposition (Disposition) for the credential-cooldown ops route.
+awaken-runtime-contract.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

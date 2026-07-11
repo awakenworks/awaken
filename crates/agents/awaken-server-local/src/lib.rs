@@ -1576,6 +1576,9 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
         // The live credential probe is backed by provider-genai here — the only
         // place the model SDK is named; the admin CRUD crate stays SDK-free.
         probe: Some(Arc::new(GenaiProbe)),
+        // Shared credential-availability cooldowns (E3-4): the ops cooldown routes
+        // record here and pool resolution reads it.
+        availability: Default::default(),
     });
     // Tenant ownership for the id-addressed config resources (ADR-0051): MCP server
     // defs and inference profiles are fenced by the authoring scope. The shared
