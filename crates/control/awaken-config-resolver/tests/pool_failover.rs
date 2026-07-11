@@ -13,7 +13,7 @@ use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo, ente
 use awaken_credential_vault::{
     CredentialBinding, CredentialCreateParams, CredentialKind, CredentialPool, CredentialPoolId,
     CredentialPoolMember, CredentialSource, CredentialSourceId, CredentialStatus,
-    InMemorySecretStore,
+    InMemorySecretStore, SelectionPolicy,
 };
 use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
 use awaken_model_catalog::{
@@ -148,6 +148,7 @@ async fn pool_skips_disabled_absent_and_unhealthy_then_uses_the_first_good_membe
                 selection_weight: 0,
             },
         ],
+        policy: SelectionPolicy::FirstHealthy,
     };
     let ctx = PoolCtx { sources, pool };
 
@@ -183,6 +184,7 @@ async fn pool_with_no_usable_member_fails_closed() {
             enabled: true,
             selection_weight: 0,
         }],
+        policy: SelectionPolicy::FirstHealthy,
     };
     let ctx = PoolCtx { sources, pool };
 
@@ -197,7 +199,7 @@ async fn pool_with_no_usable_member_fails_closed() {
     )
     .await
     .expect_err("no usable member");
-    assert!(matches!(err, ResolveError::PoolExhausted(_)));
+    assert!(matches!(err, ResolveError::NoEligibleCredential { .. }));
 }
 
 /// A catalog with two endpoints (primary `ep1`, backup `ep2`) both offering the
@@ -256,6 +258,7 @@ async fn profile_skips_a_disabled_endpoint_and_selects_the_next() {
             id: CredentialPoolId("unused".into()),
             workspace_id: "ws".into(),
             members: vec![],
+            policy: SelectionPolicy::FirstHealthy,
         },
     };
 
@@ -283,6 +286,7 @@ async fn missing_pool_fails_closed() {
             id: CredentialPoolId("other".into()),
             workspace_id: "ws".into(),
             members: vec![],
+            policy: SelectionPolicy::FirstHealthy,
         },
     };
     let err = resolve_inference(
