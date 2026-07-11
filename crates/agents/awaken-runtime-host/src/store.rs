@@ -163,7 +163,9 @@ pub(crate) fn postgres_commit_or_err() -> Result<HostCommit, crate::host::HostEr
 /// Wrap the (maybe-initialised) shared coordinator into a `HostCommit`, or fail
 /// closed. Takes the coordinator as a parameter so both the initialised (`Some`) and
 /// the misconfigured (`None`) branches are testable without the process-global.
-fn commit_or_err(coord: Option<Arc<PostgresCommitCoordinator>>) -> Result<HostCommit, crate::host::HostError> {
+fn commit_or_err(
+    coord: Option<Arc<PostgresCommitCoordinator>>,
+) -> Result<HostCommit, crate::host::HostError> {
     let coord = coord.ok_or_else(|| {
         crate::host::HostError::internal(
             "AWAKEN_STORE=postgres requires init_shared_postgres_commit() at process \
