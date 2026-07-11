@@ -470,8 +470,9 @@ async fn minting_skips_session_ids_that_own_committed_truth() {
 }
 
 /// ADR-0048 / S10: creating a session fires the lifecycle projection sink with the
-/// session's owner and the `session.status_idle` fact — the seam a webhook
-/// dispatcher hangs off, projected out-of-band.
+/// session's owner and the `session.status_idled` fact (the webhook catalog name,
+/// matching Anthropic's official set) — the seam a webhook dispatcher hangs off,
+/// projected out-of-band.
 #[tokio::test]
 async fn create_session_fires_the_lifecycle_sink_with_the_owner() {
     #[derive(Default)]
@@ -519,8 +520,72 @@ async fn create_session_fires_the_lifecycle_sink_with_the_owner() {
         (
             session.id.clone(),
             Some("wrkspc_acme".to_string()),
-            "session.status_idle".to_string()
+            "session.status_idled".to_string()
         ),
-        "the sink sees the session, its owner, and the idle fact"
+        "the sink sees the session, its owner, and the idled fact"
+    );
+}
+
+/// Archiving a session fires the lifecycle sink with the `session.status_terminated`
+/// fact and the session's owner — the terminal transition mirrors create's
+/// `session.status_idled`. Idempotent: a second archive fans out no second event.
+#[tokio::test]
+async fn archive_session_fires_the_terminated_fact_once() {
+    #[derive(Default)]
+    struct CapturingSink {
+        seen: Mutex<Vec<(String, Option<String>, String)>>,
+    }
+    #[async_trait::async_trait]
+    impl SessionLifecycleSink for CapturingSink {
+        async fn emit(&self, session_id: &str, workspace_id: Option<&str>, event_type: &str) {
+            self.seen.lock().unwrap().push((
+                session_id.to_string(),
+                workspace_id.map(str::to_string),
+                event_type.to_string(),
+            ));
+        }
+    }
+
+    let sink = Arc::new(CapturingSink::default());
+    let state = ManagedState::new(PreparingFake {
+        captured: Arc::new(Mutex::new(Vec::new())),
+        fail_with: None,
+    })
+    .with_lifecycle_sink(sink.clone());
+
+    let session = state
+        .create_session(
+            awaken_protocol_managed::types::SessionCreateParams {
+                agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
+                environment_id: None,
+                title: None,
+                metadata: Default::default(),
+                mcp_servers: Vec::new(),
+                vault_ids: Vec::new(),
+                resources: Vec::new(),
+            },
+            Some("wrkspc_acme".to_string()),
+        )
+        .await
+        .expect("create session");
+
+    // First archive → the terminated fact; second archive → nothing new.
+    state.archive_session(&session.id).await.expect("archive");
+    state
+        .archive_session(&session.id)
+        .await
+        .expect("re-archive is idempotent");
+
+    let seen = sink.seen.lock().unwrap();
+    // create's idled, then exactly one terminated (not two).
+    assert_eq!(seen.len(), 2, "idled on create, terminated once on archive");
+    assert_eq!(
+        seen[1],
+        (
+            session.id.clone(),
+            Some("wrkspc_acme".to_string()),
+            "session.status_terminated".to_string()
+        ),
+        "the sink sees the session, its owner, and the terminated fact",
     );
 }

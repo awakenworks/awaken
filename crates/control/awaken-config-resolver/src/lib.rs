@@ -15,7 +15,7 @@
 
 use awaken_agent_contract::RedactedString;
 use awaken_credential_vault::{
-    AvailabilityLedger, CredentialBinding, CredentialError, CredentialSource, SecretStore,
+    AvailabilityLedger, CredentialBinding, CredentialError, CredentialSource, SecretRef, SecretStore,
 };
 use awaken_model_catalog::{ApiDialect, ProviderCatalog};
 
@@ -27,8 +27,8 @@ pub mod stores;
 /// Telemetry ceiling composition (ADR-0050 D3): Org baseline tightened by lower layers.
 pub mod telemetry;
 pub use stores::{
-    InMemoryMcpStore, InMemoryProfileStore, InMemoryResourceStore, InferenceProfileStore, McpStore,
-    ResourceStore,
+    InMemoryMcpStore, InMemoryProfileStore, InMemoryResourceStore, InMemoryWebhookStore,
+    InferenceProfileStore, McpStore, ResourceStore, WebhookStore,
 };
 pub use telemetry::{RedactionMode, TelemetryCeiling};
 
@@ -473,6 +473,42 @@ pub struct McpServerDef {
     pub url: String,
     pub credential_binding: CredentialBinding,
     pub version: i64,
+}
+
+/// An authored webhook endpoint (ADR-0048): a workspace-scoped subscription that
+/// receives signed lifecycle events. A management config resource alongside
+/// [`McpServerDef`]/[`InferenceProfile`], so it shares the admin store, the tenant
+/// fence, and the secret-free invariant — the `whsec_` signing key is NOT on the
+/// row; it is sealed in the [`SecretStore`] and reached by [`secret_ref`], resolved
+/// only at dispatch. Unlike a provider credential it is a bare sealed secret (a
+/// symmetric signing key), not a [`CredentialBinding`]/[`CredentialSource`].
+///
+/// [`secret_ref`]: WebhookEndpointDef::secret_ref
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct WebhookEndpointDef {
+    pub id: String,
+    /// The owning workspace — events for this workspace only reach this endpoint.
+    /// Carried on the row (unlike mcp/profile) because dispatch enumerates by
+    /// workspace, not by id.
+    pub workspace_id: String,
+    /// The HTTPS endpoint the signed payload is POSTed to.
+    pub url: String,
+    /// The event types this endpoint receives; empty = all types.
+    pub event_types: Vec<String>,
+    /// Delivery suspended (manual, or auto after repeated failures).
+    pub disabled: bool,
+    /// Handle to the sealed `whsec_` signing secret in the [`SecretStore`] — never
+    /// the secret itself, never echoed after create.
+    pub secret_ref: SecretRef,
+}
+
+impl WebhookEndpointDef {
+    /// Whether this endpoint wants `event_type` (empty `event_types` = all).
+    #[must_use]
+    pub fn wants(&self, event_type: &str) -> bool {
+        self.event_types.is_empty() || self.event_types.iter().any(|t| t == event_type)
+    }
 }
 
 /// Which MCP servers an agent uses — the management-plane agent↔MCP binding

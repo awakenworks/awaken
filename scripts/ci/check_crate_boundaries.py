@@ -35,8 +35,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tower",
     },
     # Webhooks (ADR-0048 / S10): a protocol-neutral projection sink. Signing +
-    # HTTP delivery + a versioned scoped-migration subscription store. No dep on
-    # the Managed wire crate — it takes event type / id / tenancy as data.
+    # Signing, the event shape, and HTTP delivery only — storage-neutral. No dep on
+    # the Managed wire crate (it takes event type / id / tenancy as data) and no
+    # subscription store: subscriptions live in the config plane, reached through the
+    # SubscriptionSource port with secrets already resolved.
     "awaken-webhook": {
         "serde",
         "serde_json",
@@ -48,13 +50,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "async-trait",
         "reqwest",
         "tokio",
-        "rusqlite",
-        "awaken-scoped-migration",
-        "awaken-scoped-migration-sqlite",
         # dev-only: the e2e stands up a real axum receiver on an ephemeral port.
         "axum",
-        "tempfile",
-        "hyper",
     },
     # The managed webhook bridge (ADR-0048 / S10): connects protocol-managed's
     # SessionLifecycleSink to the neutral dispatcher + subscription CRUD + the
@@ -63,11 +60,17 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-protocol-managed",
         "awaken-authz-enforce",
         "awaken-webhook",
+        # Subscriptions are a config resource: the read-side WebhookStore port + the
+        # secret-free WebhookEndpointDef, and the vault SecretStore the whsec_ key is
+        # sealed behind (RedactedString at the seam). All open, port-only — the durable
+        # admin backend is injected by the assembly, never named here.
+        "awaken-config-resolver",
+        "awaken-credential-vault",
+        "awaken-agent-contract",
         "async-trait",
         "axum",
         "serde_json",
         "tokio",
-        "tempfile",
     },
     # The open single-machine assembly. Composes ONLY open crates — this closure
     # is the zero-BuSL invariant (no admin-config-api write plane, no iam-server,
@@ -83,6 +86,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-authz-enforce",
         "awaken-webhook-managed",
         "awaken-config-resolver",
+        # Open webhook plane over in-memory stores: the SecretStore the whsec_ key is
+        # sealed behind (standalone has no durable config-authoring plane).
+        "awaken-credential-vault",
         "awaken-runtime-contract",
         "axum",
         "async-trait",
