@@ -150,6 +150,37 @@ await step("publish permission agent (compiles the section)", "POST", "/v1/confi
 // gets a 404 and shows the placeholder (not a fabricated flag).
 await step("gated Observe face 404s (audit-log)", "GET", "/v1/audit-log", undefined, (s) => s === 404 || s === 405);
 
+// ---- Managed resources: memory / skills / environments / deployments ----
+// The surfaces (memory.tsx / skills.tsx / environments.tsx / deployments.tsx) drive
+// these; the create→list round-trip proves the console↔endpoint wiring.
+const mem = await step("create memory store", "POST", "/v1/memory_stores", { name: "smoke-mem" }, (s, p) => (s === 200 || s === 201) && typeof p.id === "string");
+await step("list memory stores", "GET", "/v1/memory_stores", undefined, (s, p) => s === 200 && p.data.some((x) => x.id === mem.id));
+// Bind the memory store to the published agent (ADR-0038 agent resources) — the loop
+// that makes a store usable: authored here → read into resource prompts + mounts at
+// compile (the config service shares this same resource store).
+await step("bind memory store to agent", "PUT", "/v1/config/agents/smoke-agent/resources", {
+  agent_id: "smoke-agent",
+  resources: [{ kind: "memory_store", resource_id: mem.id, mount_path: "/mnt/memory", access: "read_write" }],
+  version: 1,
+}, (s, p) => s === 200 && p.resources[0]?.resource_id === mem.id);
+await step("agent resources round-trip", "GET", "/v1/config/agents/smoke-agent/resources", undefined, (s, p) =>
+  s === 200 && p.resources.some((r) => r.kind === "memory_store" && r.resource_id === mem.id));
+// Skills are delivered from a durable skill store (SKILL.md files), not authored via
+// the console — the surface is list + delete only. Without a store wired, the list is
+// an empty (but live) page; the round-trip we lock is the surface's read.
+await step("list skills (surface read)", "GET", "/v1/skills", undefined, (s, p) => s === 200 && Array.isArray(p.data));
+const env = await step("create environment", "POST", "/v1/environments", { name: "smoke-env", config: { type: "cloud", networking: { type: "unrestricted" } } }, (s, p) => (s === 200 || s === 201) && typeof p.id === "string");
+await step("list environments", "GET", "/v1/environments", undefined, (s, p) => s === 200 && p.data.some((x) => x.id === env.id));
+// A deployment binds a published agent (smoke-agent, above) to an environment + schedule.
+const dep = await step("create deployment", "POST", "/v1/deployments", {
+  name: "smoke-dep",
+  agent: "smoke-agent",
+  environment_id: env.id,
+  schedule: { type: "cron", expression: "0 20 * * 5", timezone: "UTC" },
+  initial_events: [{ type: "user.message", content: [{ type: "text", text: "run" }] }],
+}, (s, p) => (s === 200 || s === 201) && typeof p.id === "string");
+await step("list deployments", "GET", "/v1/deployments", undefined, (s, p) => s === 200 && p.data.some((x) => x.id === dep.id));
+
 // ---- Project · Vaults (surfaces/vaults.tsx; bare face until §7.10) ----
 const vault = await step("create vault", "POST", "/v1/vaults", { display_name: "smoke" });
 await step("vault credential (static_bearer)", "POST", `/v1/vaults/${vault.id}/credentials`, {

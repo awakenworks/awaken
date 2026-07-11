@@ -6,7 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Button, Card, Pill, SelectField, TextAreaField, TextField } from "../components/ui";
 import { api } from "../lib/api/client";
-import type { Agent, Deployment, Environment, Page } from "../lib/api/types";
+import type { AgentConfigList, Deployment, Environment, Page } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 
 function CreateModal({ onClose }: { onClose: () => void }) {
@@ -19,9 +19,11 @@ function CreateModal({ onClose }: { onClose: () => void }) {
   const [timezone, setTimezone] = useState("UTC");
   const [message, setMessage] = useState("Run the scheduled task.");
 
+  // Published config agents are the deployable set — the same source the console
+  // authors against (/v1/config/agents), not the managed registry projection.
   const agents = useQuery({
-    queryKey: ["agents"],
-    queryFn: () => api.get<Page<Agent>>("/v1/agents"),
+    queryKey: ["config-agents"],
+    queryFn: () => api.get<AgentConfigList>("/v1/config/agents"),
   });
   const envs = useQuery({
     queryKey: ["environments"],
@@ -55,11 +57,13 @@ function CreateModal({ onClose }: { onClose: () => void }) {
         />
         <SelectField label={app.t("Agent", "智能体")} value={agentId} onChange={(e) => setAgentId(e.target.value)}>
           <option value="">{app.t("Select an agent…", "选择智能体…")}</option>
-          {(agents.data?.data ?? []).map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.name} ({a.id})
-            </option>
-          ))}
+          {(agents.data?.data ?? [])
+            .filter((a) => a.published)
+            .map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name ? `${a.name} (${a.id})` : a.id}
+              </option>
+            ))}
         </SelectField>
         <SelectField label={app.t("Environment", "运行环境")} value={envId} onChange={(e) => setEnvId(e.target.value)}>
           <option value="">{app.t("Select an environment…", "选择运行环境…")}</option>
