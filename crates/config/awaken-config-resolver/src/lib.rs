@@ -171,15 +171,89 @@ async fn resolve_inference_toggled(
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct InferenceProfile {
+    /// The pinned / primary model — tried first. Kept as a bare field for wire and
+    /// storage compatibility; the ordered model axis is [`model_axis`] (this plus
+    /// [`model_fallbacks`]).
+    ///
+    /// [`model_axis`]: InferenceProfile::model_axis
+    /// [`model_fallbacks`]: InferenceProfile::model_fallbacks
     pub model_id: String,
+    /// Additional models the resolver falls over to, in order, after `model_id`.
+    /// Empty (the default) means a single-model profile — unchanged behavior, and
+    /// older stored rows load without the field. Together with `model_id` these
+    /// form the [`AxisBinding`] the profile exposes as [`model_axis`].
+    ///
+    /// [`model_axis`]: InferenceProfile::model_axis
+    #[serde(default)]
+    pub model_fallbacks: Vec<String>,
+    /// The credential-identity axis. `CredentialBinding` is *already* an
+    /// [`AxisBinding`] over provider identities — `Exact` is a pin, and
+    /// `OneOfCredentialPool` is a pool with failover — so the identity axis needs
+    /// no new type here; each resolved model reuses this binding.
     pub credential_binding: CredentialBinding,
     #[serde(default)]
     pub disabled_endpoint_ids: Vec<String>,
 }
 
+impl InferenceProfile {
+    /// The model axis as an ordered [`AxisBinding`]: a lone `model_id` is a
+    /// [`Pin`](AxisBinding::Pin); `model_id` plus fallbacks is a
+    /// [`Pool`](AxisBinding::Pool) in try-order.
+    #[must_use]
+    pub fn model_axis(&self) -> AxisBinding<String> {
+        if self.model_fallbacks.is_empty() {
+            AxisBinding::Pin(self.model_id.clone())
+        } else {
+            let mut models = Vec::with_capacity(self.model_fallbacks.len() + 1);
+            models.push(self.model_id.clone());
+            models.extend(self.model_fallbacks.iter().cloned());
+            AxisBinding::Pool(models)
+        }
+    }
+}
+
+/// A per-axis binding: the agent either pins one value or pools an ordered set the
+/// resolver fails over across. The unifying shape behind "select a model" (`Pin`)
+/// and "spread across a model pool" (`Pool`) — and, via
+/// [`CredentialBinding`](awaken_credential_vault::CredentialBinding), behind the
+/// credential-identity axis too. Names align with awaken-next's `AxisBinding`
+/// (`Pin | Pool`); the `Any` variant is deferred until a slice needs it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case", tag = "kind", content = "value")]
+pub enum AxisBinding<T> {
+    /// Exactly this value.
+    Pin(T),
+    /// This ordered set, tried in order (the first is the preference).
+    Pool(Vec<T>),
+}
+
+impl<T: Clone> AxisBinding<T> {
+    /// The candidates in try-order: one for a [`Pin`](Self::Pin), the whole set for
+    /// a [`Pool`](Self::Pool).
+    #[must_use]
+    pub fn candidates(&self) -> Vec<T> {
+        match self {
+            AxisBinding::Pin(v) => vec![v.clone()],
+            AxisBinding::Pool(vs) => vs.clone(),
+        }
+    }
+
+    /// The preferred candidate: the pinned value, or the first pool member.
+    /// `None` only for an empty pool.
+    #[must_use]
+    pub fn primary(&self) -> Option<&T> {
+        match self {
+            AxisBinding::Pin(v) => Some(v),
+            AxisBinding::Pool(vs) => vs.first(),
+        }
+    }
+}
+
 /// Resolve an [`InferenceProfile`] into a [`ResolvedInference`]: the same core
 /// resolution, but selecting only endpoints the profile has not disabled and using
-/// the profile's credential binding (which may be a pool with failover).
+/// the profile's credential binding (which may be a pool with failover). Resolves
+/// the *primary* model only; use [`resolve_profile_candidates`] for the whole axis.
 pub async fn resolve_profile(
     catalog: &ProviderCatalog,
     profile: &InferenceProfile,
@@ -195,6 +269,50 @@ pub async fn resolve_profile(
         secret_store,
     )
     .await
+}
+
+/// Resolve an [`InferenceProfile`] into the **ordered candidate list** the engine
+/// fails over across: one [`ResolvedInference`] per model in the profile's
+/// [`model_axis`](InferenceProfile::model_axis), each carrying its own materialized
+/// credential (the credential axis fails over *within* each resolution). This is
+/// the unification of the model axis and the credential axis into one ordered set
+/// of `(model × identity)` candidates.
+///
+/// Fail-closed per candidate is *not* terminal: a model that does not resolve (no
+/// offering, or its whole credential pool is exhausted) is skipped, so one bad
+/// model does not sink the profile. The result preserves axis order; it is empty
+/// only when *no* candidate resolved, which the caller treats as fail-closed.
+pub async fn resolve_profile_candidates(
+    catalog: &ProviderCatalog,
+    profile: &InferenceProfile,
+    sources: &dyn SourceLookup,
+    secret_store: &dyn SecretStore,
+) -> Result<Vec<ResolvedInference>, ResolveError> {
+    let mut resolved = Vec::new();
+    let mut last_err = None;
+    for model_id in profile.model_axis().candidates() {
+        match resolve_inference_toggled(
+            catalog,
+            &model_id,
+            &profile.disabled_endpoint_ids,
+            &profile.credential_binding,
+            sources,
+            secret_store,
+        )
+        .await
+        {
+            Ok(r) => resolved.push(r),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    if resolved.is_empty() {
+        // Every candidate failed: surface the last reason (fail-closed) rather than
+        // an empty success.
+        return Err(
+            last_err.unwrap_or_else(|| ResolveError::ModelUnresolved(profile.model_id.clone()))
+        );
+    }
+    Ok(resolved)
 }
 
 /// Materialize the credential a binding selects. `None` yields no secret; `Exact`
@@ -710,5 +828,56 @@ mod tests {
             "sk-topsecret"
         );
         assert_eq!(run.inference.triple.model_id, "claude-opus-4-8");
+    }
+
+    #[test]
+    fn axis_binding_pin_yields_one_candidate() {
+        let axis = AxisBinding::Pin("m1".to_string());
+        assert_eq!(axis.candidates(), vec!["m1".to_string()]);
+        assert_eq!(axis.primary(), Some(&"m1".to_string()));
+    }
+
+    #[test]
+    fn axis_binding_pool_preserves_order_and_primary_is_first() {
+        let axis = AxisBinding::Pool(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        assert_eq!(axis.candidates(), vec!["a", "b", "c"]);
+        assert_eq!(axis.primary(), Some(&"a".to_string()));
+    }
+
+    #[test]
+    fn model_axis_is_a_pin_without_fallbacks_and_a_pool_with_them() {
+        let single = InferenceProfile {
+            model_id: "primary".into(),
+            model_fallbacks: Vec::new(),
+            credential_binding: CredentialBinding::None,
+            disabled_endpoint_ids: Vec::new(),
+        };
+        assert_eq!(single.model_axis(), AxisBinding::Pin("primary".into()));
+
+        let pooled = InferenceProfile {
+            model_id: "primary".into(),
+            model_fallbacks: vec!["backup1".into(), "backup2".into()],
+            credential_binding: CredentialBinding::None,
+            disabled_endpoint_ids: Vec::new(),
+        };
+        // The pinned model leads the pool, then fallbacks in order.
+        assert_eq!(
+            pooled.model_axis().candidates(),
+            vec!["primary", "backup1", "backup2"]
+        );
+    }
+
+    #[test]
+    fn axis_binding_serde_is_tagged_snake_case() {
+        let pin: AxisBinding<String> = AxisBinding::Pin("m".into());
+        assert_eq!(
+            serde_json::to_string(&pin).unwrap(),
+            r#"{"kind":"pin","value":"m"}"#
+        );
+        // A profile row written before `model_fallbacks` existed still loads.
+        let legacy = r#"{"model_id":"m","credential_binding":{"type":"none"}}"#;
+        let profile: InferenceProfile = serde_json::from_str(legacy).unwrap();
+        assert!(profile.model_fallbacks.is_empty());
+        assert_eq!(profile.model_axis(), AxisBinding::Pin("m".into()));
     }
 }
