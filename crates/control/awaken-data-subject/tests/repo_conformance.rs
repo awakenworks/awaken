@@ -93,3 +93,115 @@ async fn sqlite_survives_reopen() {
         awaken_data_subject::ContentCapture::Full
     );
 }
+
+/// Live Postgres conformance: the same `DataSubjectRepo` suites plus the
+/// captured-content erasure/TTL/Art.18 semantics, each on a fresh schema so the
+/// suites never see each other's rows. Skips when no Postgres is reachable
+/// (`AWAKEN_TEST_DATABASE_URL`), proving the same portable bundle renders on both.
+#[cfg(feature = "postgres")]
+mod postgres {
+    use super::*;
+    use awaken_data_subject::{PgCapturedContentStore, PgDataSubjectRepo};
+    use awaken_runtime_contract::{CaptureSink, ContentEraser, ContentKind};
+    use sqlx::Executor;
+    use sqlx::postgres::{PgPool, PgPoolOptions};
+
+    fn database_url() -> String {
+        std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
+            "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
+        })
+    }
+
+    async fn schema_pool(schema: &'static str) -> Option<PgPool> {
+        let admin = match PgPool::connect(&database_url()).await {
+            Ok(pool) => pool,
+            Err(err) => {
+                println!("[skip] no Postgres reachable: {err}");
+                return None;
+            }
+        };
+        let _ = admin
+            .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+            .await;
+        admin
+            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            .await
+            .expect("create schema");
+        admin.close().await;
+        PgPoolOptions::new()
+            .after_connect(move |conn, _meta| {
+                Box::pin(async move {
+                    conn.execute(format!("SET search_path = {schema}").as_str())
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(&database_url())
+            .await
+            .ok()
+    }
+
+    async fn repo(schema: &'static str) -> Option<PgDataSubjectRepo> {
+        Some(
+            PgDataSubjectRepo::with_pool(schema_pool(schema).await?)
+                .await
+                .expect("store"),
+        )
+    }
+
+    #[tokio::test]
+    async fn postgres_repo_conforms() {
+        let Some(r) = repo("t_ds_roundtrip").await else {
+            return;
+        };
+        round_trip_and_scope_by_org(&r).await;
+        put_is_upsert_preserving_consents(&repo("t_ds_upsert").await.unwrap()).await;
+        missing_is_not_found_and_delete_is_idempotent(&repo("t_ds_missing").await.unwrap()).await;
+    }
+
+    #[tokio::test]
+    async fn postgres_captured_content_erasure_ttl_and_restriction() {
+        let Some(pool) = schema_pool("t_ds_captured").await else {
+            return;
+        };
+        let store = PgCapturedContentStore::with_pool(pool).await.unwrap();
+        let a = DataSubjectId("subj_a".into());
+        let b = DataSubjectId("subj_b".into());
+        let tc = Purpose::TelemetryContent;
+
+        // Explicit-time inserts so the TTL math is deterministic.
+        store.insert(&a, tc, "x1", 100).await;
+        store.insert(&a, tc, "x2", 100).await;
+        store.insert(&b, tc, "y1", 100).await;
+        assert_eq!(store.len().await, 3);
+
+        // Erasure removes exactly the subject's (non-restricted) rows.
+        assert_eq!(store.erase_subject(&a).await, 2);
+        assert_eq!(store.len().await, 1, "only b's row remains");
+
+        // TTL sweep drops b's aged row (age 900 ≥ 50ms).
+        assert_eq!(store.sweep_expired(50, 1_000).await, 1);
+        assert_eq!(store.len().await, 0);
+
+        // Art. 18: a restricted row is exempt from both erasure and the TTL sweep.
+        store.insert(&b, tc, "y2", 100).await;
+        assert_eq!(store.restrict(&b).await, 1);
+        assert_eq!(store.erase_subject(&b).await, 0, "restricted → not erased");
+        assert_eq!(
+            store.sweep_expired(0, i64::MAX).await,
+            0,
+            "restricted → not swept"
+        );
+        assert_eq!(store.len().await, 1);
+        // Released, it becomes erasable/sweepable again.
+        assert_eq!(store.release(&b).await, 1);
+        assert_eq!(store.sweep_expired(0, i64::MAX).await, 1);
+        assert_eq!(store.len().await, 0);
+
+        // The CaptureSink port records a row (wall-clock time).
+        store
+            .record(&a, tc, ContentKind::InputMessages, "live")
+            .await;
+        assert_eq!(store.len().await, 1);
+    }
+}
