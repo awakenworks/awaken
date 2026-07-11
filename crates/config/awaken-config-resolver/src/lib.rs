@@ -14,7 +14,9 @@
 #![forbid(unsafe_code)]
 
 use awaken_agent_contract::RedactedString;
-use awaken_credential_vault::{CredentialBinding, CredentialError, CredentialSource, SecretStore};
+use awaken_credential_vault::{
+    AvailabilityLedger, CredentialBinding, CredentialError, CredentialSource, SecretStore,
+};
 use awaken_model_catalog::{ModelApiCompat, ProviderCatalog};
 
 /// Read ports for the authored aggregates (`McpStore`, `InferenceProfileStore`,
@@ -164,11 +166,14 @@ async fn resolve_inference_toggled(
     // Credential materialization (secret only exists from here to the seam). The
     // offering's provider gates the credential via can_consume — an incompatible
     // key never authenticates a model it cannot serve.
+    // Availability-aware pool selection is wired by the host when it tracks a live
+    // ledger; the base resolution path does not cool credentials itself.
     let credential = resolve_credential(
         binding,
         sources,
         secret_store,
         Some(offering.provider_id.0.as_str()),
+        None,
     )
     .await?;
 
@@ -362,6 +367,7 @@ async fn resolve_credential(
     sources: &dyn SourceLookup,
     secret_store: &dyn SecretStore,
     offering_provider: Option<&str>,
+    availability: Option<(&AvailabilityLedger, u64)>,
 ) -> Result<Option<RedactedString>, ResolveError> {
     match binding {
         CredentialBinding::None => Ok(None),
@@ -387,11 +393,19 @@ async fn resolve_credential(
             let pool = sources
                 .get_pool(credential_pool_id.0.as_str())
                 .ok_or_else(|| ResolveError::PoolMissing(credential_pool_id.0.clone()))?;
-            // Try members in selection order; skip a member whose source is absent,
+            // The eligible order drops cooled members (mid-run rotation) when a ledger
+            // is supplied; `cooled` is how many the cooldown excluded, for the
+            // fail-closed diagnostic.
+            let full = pool.selection_order();
+            let total = full.len();
+            let order = match availability {
+                Some((ledger, now_ms)) => pool.eligible_order(ledger, now_ms),
+                None => full,
+            };
+            let cooled = total - order.len();
+            // Try members in eligible order; skip a member whose source is absent,
             // incompatible with the provider, or fails to materialize, so one bad key
             // does not fail the run.
-            let order = pool.selection_order();
-            let total = order.len();
             for member in order {
                 let Some(source) = sources.get(member.credential_source_id.0.as_str()) else {
                     continue;
@@ -407,12 +421,37 @@ async fn resolve_credential(
             Err(ResolveError::NoEligibleCredential {
                 pool_id: credential_pool_id.0.clone(),
                 total,
-                // No cooldown / capacity signals yet (E3-4); every exclusion here is
-                // an absent-or-unmaterializable source.
-                cooled: 0,
+                cooled,
+                // Quota buckets are not modeled yet; capacity exclusion stays 0.
                 over_capacity: 0,
             })
         }
+    }
+}
+
+/// The cooldown deadline a failure disposition implies, in wall-clock ms, or `None`
+/// if the failure is not a quota/rate signal. The bridge from
+/// [`Disposition`](awaken_runtime_contract::resilience::Disposition) to the vault's
+/// [`AvailabilityLedger`](awaken_credential_vault::AvailabilityLedger): a
+/// `Quota{retry_after}` cools the identity that hit it until `now + retry_after`
+/// (or a default window when the provider sent no hint), which the caller records
+/// so the next selection rotates past it.
+#[must_use]
+pub fn cooldown_deadline(
+    disposition: awaken_runtime_contract::resilience::Disposition,
+    now_ms: u64,
+) -> Option<u64> {
+    use awaken_runtime_contract::resilience::Disposition;
+    /// Fallback cooldown when a 429/quota carries no `Retry-After` (60s).
+    const DEFAULT_COOLDOWN_MS: u64 = 60_000;
+    match disposition {
+        Disposition::Quota { retry_after } => {
+            let window = retry_after
+                .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+                .unwrap_or(DEFAULT_COOLDOWN_MS);
+            Some(now_ms.saturating_add(window))
+        }
+        Disposition::Transient | Disposition::Permanent => None,
     }
 }
 
@@ -577,9 +616,10 @@ pub async fn resolve_mcp_servers(
 ) -> Result<Vec<ResolvedMcpServer>, ResolveError> {
     let mut resolved = Vec::with_capacity(defs.len());
     for def in defs {
-        // MCP-server credential: not a model provider, so no can_consume join.
+        // MCP-server credential: not a model provider, so no can_consume join and no
+        // availability ledger.
         let credential =
-            resolve_credential(&def.credential_binding, sources, secret_store, None).await?;
+            resolve_credential(&def.credential_binding, sources, secret_store, None, None).await?;
         resolved.push(ResolvedMcpServer {
             name: def.display_name.clone(),
             url: def.url.clone(),
@@ -1003,5 +1043,30 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, ResolveError::IncompatibleCredential { .. }));
+    }
+
+    #[test]
+    fn cooldown_deadline_only_fires_for_quota_and_honors_the_retry_hint() {
+        use awaken_runtime_contract::resilience::Disposition;
+        use std::time::Duration;
+
+        // A 429 with a Retry-After cools until now + that hint.
+        assert_eq!(
+            cooldown_deadline(
+                Disposition::Quota {
+                    retry_after: Some(Duration::from_secs(30))
+                },
+                1_000
+            ),
+            Some(31_000)
+        );
+        // A quota signal without a hint uses the default 60s window.
+        assert_eq!(
+            cooldown_deadline(Disposition::Quota { retry_after: None }, 1_000),
+            Some(61_000)
+        );
+        // Transient / permanent failures never cool the identity.
+        assert_eq!(cooldown_deadline(Disposition::Transient, 1_000), None);
+        assert_eq!(cooldown_deadline(Disposition::Permanent, 1_000), None);
     }
 }
