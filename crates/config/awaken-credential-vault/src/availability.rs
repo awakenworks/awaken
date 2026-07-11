@@ -50,15 +50,22 @@ enum Entry {
 /// mutable state is the cooldown map. Absent sources are [`Available`].
 ///
 /// [`Available`]: AvailabilityState::Available
-#[derive(Default)]
 pub struct AvailabilityLedger {
     entries: Mutex<HashMap<String, Entry>>,
+}
+
+impl Default for AvailabilityLedger {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AvailabilityLedger {
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            entries: Mutex::new(HashMap::new()),
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Entry>> {

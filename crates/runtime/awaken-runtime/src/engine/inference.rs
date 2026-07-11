@@ -6,6 +6,7 @@
 //! `use super::*` (same-crate privates included).
 
 use super::*;
+use awaken_runtime_contract::resilience::Classify;
 
 /// Rebuild a request that carries the confirmed partial as an assistant prefix
 /// followed by a continuation prompt, so the model continues rather than
@@ -228,6 +229,17 @@ async fn infer_with_retry_inner(
                 if retryable {
                     breaker.record_failure(&model);
                 }
+                // Classify the same failure through the unified Disposition (E3-1)
+                // for failure-span observability. This never alters the retry/breaker
+                // gate above (that stays exactly `is_retryable`); the tuple forces the
+                // classification to run regardless of the trace level.
+                let disposition = err.disposition();
+                let classified = (
+                    disposition.is_retryable(),
+                    disposition.prefers_failover(),
+                    disposition.retry_after(),
+                );
+                tracing::debug!(?disposition, ?classified, "inference attempt failed");
                 let snapshot = sink.snapshot();
                 // The whole text so far: prior confirmed prefix + this attempt.
                 let combined_text = format!("{prefix}{}", snapshot.text);
