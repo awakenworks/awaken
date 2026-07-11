@@ -26,6 +26,23 @@ pub enum UIStreamEvent {
     TextEnd {
         id: String,
     },
+    /// A tool call has begun streaming its input, before any argument bytes.
+    /// `useChat` opens an `input-streaming` tool part on this frame.
+    ToolInputStart {
+        #[serde(rename = "toolCallId")]
+        tool_call_id: String,
+        #[serde(rename = "toolName")]
+        tool_name: String,
+    },
+    /// An incremental fragment of a tool call's input JSON, as the model streams
+    /// it. `inputTextDelta` is a raw text delta the SDK concatenates; the final
+    /// authoritative input arrives in the later `ToolInputAvailable`.
+    ToolInputDelta {
+        #[serde(rename = "toolCallId")]
+        tool_call_id: String,
+        #[serde(rename = "inputTextDelta")]
+        input_text_delta: String,
+    },
     ToolInputAvailable {
         #[serde(rename = "toolCallId")]
         tool_call_id: String,
@@ -148,6 +165,36 @@ pub struct HistoryResponse {
 /// A history UI message: `{ id, role, parts }`.
 pub fn history_message(id: &str, role: &str, parts: Vec<Value>) -> Value {
     serde_json::json!({ "id": id, "role": role, "parts": parts })
+}
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn tool_input_start_wire_shape() {
+        let ev = UIStreamEvent::ToolInputStart {
+            tool_call_id: "c1".into(),
+            tool_name: "read".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&ev).unwrap(),
+            json!({ "type": "tool-input-start", "toolCallId": "c1", "toolName": "read" })
+        );
+    }
+
+    #[test]
+    fn tool_input_delta_wire_shape() {
+        let ev = UIStreamEvent::ToolInputDelta {
+            tool_call_id: "c1".into(),
+            input_text_delta: "{\"pa".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&ev).unwrap(),
+            json!({ "type": "tool-input-delta", "toolCallId": "c1", "inputTextDelta": "{\"pa" })
+        );
+    }
 }
 
 /// Convert neutral content blocks to UI text parts (only text survives; images
