@@ -16,13 +16,13 @@ mod acp_provision;
 mod acp_serve;
 mod agent_catalog;
 mod background;
+mod commit_backend;
 mod compact;
 mod config;
 mod config_home;
 mod config_plane;
 mod data_subject_api;
 mod delegate;
-mod commit_backend;
 mod dispatch_backend;
 mod durable_ops;
 mod files;
@@ -59,7 +59,7 @@ use awaken_protocol_managed::{
 use awaken_protocol_transport::{
     DriverError, Pending as PortPending, ProtocolRuntime, Resume as PortResume, StepOutcome,
 };
-use awaken_runtime_contract::live_inbox::{EditError, LiveInboxMessageId, Offer};
+use awaken_runtime_contract::live_inbox::{EditError, LiveInboxMessageId, MessageOrigin, Offer};
 
 use crate::host::{HostError, HostErrorKind, PendingTool, TurnResult};
 
@@ -461,7 +461,9 @@ impl SessionRuntime for ManagedHost {
             .live_inbox(thread)
             .await
             .ok_or(LiveInboxError::Inactive)?;
-        match inbox.offer(user_message(content)) {
+        // Queued through the wire surface — an out-of-band injection into a live
+        // run, so it is tagged External (what a product maps operator steering onto).
+        match inbox.offer_as(MessageOrigin::External, user_message(content)) {
             Offer::Accepted(id) => Ok(id.0),
             // The attempt closed between lookup and offer: same outcome as no
             // attempt at all.
