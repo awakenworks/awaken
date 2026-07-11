@@ -160,6 +160,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tokio",
         "awaken-scoped-migration",
         "awaken-scoped-migration-sqlite",
+        # feature `postgres`: the PgDataSubjectRepo / PgCapturedContentStore backend.
+        "sqlx",
         # dev-only: reopen-from-file persistence test.
         "tempfile",
     },
@@ -206,6 +208,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-agent-contract",
         "awaken-api-contract",
         "awaken-config-resolver",
+        # The neutral `Disposition` resilience taxonomy: the ops cooldown routes map
+        # a credential-probe failure onto a retry/cool-down policy (E3-4).
+        "awaken-runtime-contract",
         "serde",
         "serde_json",
         "thiserror",
@@ -334,14 +339,38 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tempfile",
     },
     # Durable memory persistence (resources plane): id-keyed byte store behind the
-    # ADR-0038 memory_store family + the extraction store's durable root helper. A
-    # std-only leaf — names no runtime, host, or provider type, so the host backs
-    # memory durability with it while the runtime stays store-unaware.
-    "awaken-memory-store": set(),
-    # Durable skill catalog (resources plane): a SKILL.md-per-skill store on disk the
-    # host serves delivered skills from. A std-only leaf — names no runtime/host/ext
-    # type, so awaken-ext-skills stays store-unaware (it sees only SkillFile data).
-    "awaken-skill-store": set(),
+    # ADR-0038 memory_store family. A resources-plane store like awaken-data-subject —
+    # a scoped-migration bundle over sqlite (+ an optional postgres sibling) — so the
+    # host backs memory durability with it while the runtime stays store-unaware. It
+    # names no runtime/host/provider type; only the storage stack.
+    "awaken-memory-store": {
+        "async-trait",
+        "thiserror",
+        "tokio",
+        "rusqlite",
+        # feature `postgres`: the multi-node MemoryBlobStore backend.
+        "sqlx",
+        "awaken-scoped-migration",
+        "awaken-scoped-migration-sqlite",
+        # dev-only: conformance + reopen-from-file persistence tests.
+        "tempfile",
+    },
+    # Durable skill catalog (resources plane): a SKILL.md-per-skill store the host
+    # serves delivered skills from. A resources-plane store like awaken-data-subject —
+    # a scoped-migration bundle over sqlite (+ an optional postgres sibling); names no
+    # runtime/host/ext type, so awaken-ext-skills stays store-unaware.
+    "awaken-skill-store": {
+        "async-trait",
+        "thiserror",
+        "tokio",
+        "rusqlite",
+        # feature `postgres`: the multi-node SkillStore backend.
+        "sqlx",
+        "awaken-scoped-migration",
+        "awaken-scoped-migration-sqlite",
+        # dev-only: conformance + reopen-from-file persistence tests.
+        "tempfile",
+    },
     # Agent-transport seam (ADR-0041 amendment): the segregated `AgentChannel`
     # duplex + `AgentTransport` capability port, kept off `ProcessHandle` (ISP).
     # A leaf over tokio's async IO traits; names no provider, protocol, or host
