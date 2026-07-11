@@ -6,19 +6,22 @@
 //! process. The slot lives on `SessionCtx` with the same locking discipline
 //! as the cancel token — brief std locks, never held across an await.
 
-use awaken_agent_contract::agent::message::Message;
-use awaken_runtime_contract::live_inbox::LiveInbox;
+use awaken_runtime_contract::live_inbox::{LiveInbox, LiveInboxMessage};
 
 use crate::host::{SessionCtx, SharedHost};
 
 /// The per-thread live-inbox slot. `open` is `Some` only while a native
 /// direct turn is in flight; `leftovers` carries messages queued but not
 /// consumed when an attempt closed, seeded into the next attempt's inbox so
-/// a queued message survives the turn boundary instead of dying with it.
+/// a queued message survives the turn boundary instead of dying with it. The
+/// full [`LiveInboxMessage`] is kept (not just its content) so an entry's
+/// [`MessageOrigin`](awaken_runtime_contract::live_inbox::MessageOrigin) — e.g.
+/// an out-of-band External injection — is not relaundered to Run across the
+/// attempt boundary.
 #[derive(Default)]
 pub(crate) struct LiveInboxSlot {
     open: Option<LiveInbox>,
-    leftovers: Vec<Message>,
+    leftovers: Vec<LiveInboxMessage>,
 }
 
 impl SessionCtx {
@@ -28,9 +31,10 @@ impl SessionCtx {
     pub(crate) fn open_live_inbox(&self) -> LiveInbox {
         let inbox = LiveInbox::new();
         let mut slot = self.live_inbox.lock().expect("live-inbox slot poisoned");
-        for message in slot.leftovers.drain(..) {
+        for entry in slot.leftovers.drain(..) {
             // A freshly created inbox is never closed; the offer cannot fail.
-            let _ = inbox.offer(message);
+            // Re-offer with the entry's original origin so provenance carries over.
+            let _ = inbox.offer_as(entry.origin, entry.message);
         }
         slot.open = Some(inbox.clone());
         inbox
@@ -41,8 +45,8 @@ impl SessionCtx {
     pub(crate) fn close_live_inbox(&self) {
         let mut slot = self.live_inbox.lock().expect("live-inbox slot poisoned");
         if let Some(inbox) = slot.open.take() {
-            slot.leftovers
-                .extend(inbox.close().into_iter().map(|entry| entry.message));
+            // Keep the whole entry (origin included) for the next attempt.
+            slot.leftovers.extend(inbox.close());
         }
     }
 

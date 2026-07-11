@@ -35,11 +35,36 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct LiveInboxMessageId(pub u64);
 
-/// One queued message: content plus the identity that makes it editable.
-/// Identity ends at the drain — a consumed message can no longer be targeted.
+/// Where a live-inbox entry came from — the *only* new fact the neutral runtime
+/// needs to distinguish an out-of-band injection from the run's own carried-over
+/// input. The system-vs-task distinction is already the message's
+/// [`Role`](awaken_agent_contract::agent::message::Role); this names *provenance*,
+/// not role.
+///
+/// The runtime only carries this tag through the fold. A consumer (e.g. an
+/// operator-steering governance layer) reads it to decide policy — "an operator
+/// steer may not override governed fields" — which the neutral runtime takes no
+/// position on. Aligns with awaken-next's neutral `RunOrigin` vocabulary: the
+/// substrate names the origin, the product names the actor.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageOrigin {
+    /// The run's own input — activation carry-over, a sub-run's background-task
+    /// callback, or leftovers seeded into the next attempt. The default.
+    #[default]
+    Run,
+    /// Injected from outside the run while it was in flight (the host's
+    /// queued-message surface). What a product maps operator steering onto.
+    External,
+}
+
+/// One queued message: content, the identity that makes it editable, and where it
+/// came from. Identity ends at the drain — a consumed message can no longer be
+/// targeted.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LiveInboxMessage {
     pub id: LiveInboxMessageId,
+    pub origin: MessageOrigin,
     pub message: Message,
 }
 
@@ -116,16 +141,28 @@ impl LiveInbox {
         notify.notify_waiters();
     }
 
-    /// Queue a message for the run. Best-effort: `Closed` means the attempt
-    /// is gone and the sender must decide (durable fallback or drop).
+    /// Queue a message for the run as the run's own input
+    /// ([`MessageOrigin::Run`]). Best-effort: `Closed` means the attempt is gone
+    /// and the sender must decide (durable fallback or drop).
     pub fn offer(&self, message: Message) -> Offer {
+        self.offer_as(MessageOrigin::Run, message)
+    }
+
+    /// Queue a message tagged with its [`MessageOrigin`]. The host's
+    /// queued-message surface uses [`MessageOrigin::External`] for an out-of-band
+    /// injection so a consumer can tell it apart from the run's own input.
+    pub fn offer_as(&self, origin: MessageOrigin, message: Message) -> Offer {
         let mut state = self.state();
         if state.closed {
             return Offer::Closed;
         }
         state.next_id += 1;
         let id = LiveInboxMessageId(state.next_id);
-        state.entries.push_back(LiveInboxMessage { id, message });
+        state.entries.push_back(LiveInboxMessage {
+            id,
+            origin,
+            message,
+        });
         Self::bump_and_notify(&mut state, &self.shared.notify);
         Offer::Accepted(id)
     }
@@ -298,6 +335,54 @@ mod tests {
             .iter()
             .map(|entry| entry.message.text_content())
             .collect()
+    }
+
+    #[test]
+    fn offer_defaults_to_run_origin() {
+        let inbox = LiveInbox::new();
+        offered(&inbox, "a");
+        assert_eq!(inbox.list()[0].origin, MessageOrigin::Run);
+        assert_eq!(MessageOrigin::default(), MessageOrigin::Run);
+    }
+
+    #[test]
+    fn offer_as_tags_the_origin_and_it_survives_list_and_drain() {
+        let inbox = LiveInbox::new();
+        assert!(matches!(
+            inbox.offer_as(MessageOrigin::External, msg("steer")),
+            Offer::Accepted(_)
+        ));
+        let _ = inbox.offer(msg("task"));
+        // Listed in order with their origins intact.
+        let listed = inbox.list();
+        assert_eq!(listed[0].origin, MessageOrigin::External);
+        assert_eq!(listed[1].origin, MessageOrigin::Run);
+        // The tag rides through the drain the engine folds from.
+        let drained = inbox.drain_at_boundary();
+        assert_eq!(drained[0].origin, MessageOrigin::External);
+        assert_eq!(drained[1].origin, MessageOrigin::Run);
+    }
+
+    #[test]
+    fn replace_keeps_the_original_origin() {
+        let inbox = LiveInbox::new();
+        let id = match inbox.offer_as(MessageOrigin::External, msg("v1")) {
+            Offer::Accepted(id) => id,
+            Offer::Closed => panic!("closed"),
+        };
+        inbox.replace(id, msg("v2")).unwrap();
+        let entry = &inbox.list()[0];
+        assert_eq!(entry.message.text_content(), "v2");
+        // Editing content must not silently relaunder the provenance to Run.
+        assert_eq!(entry.origin, MessageOrigin::External);
+    }
+
+    #[test]
+    fn message_origin_serde_is_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&MessageOrigin::External).unwrap(),
+            "\"external\""
+        );
     }
 
     #[test]
