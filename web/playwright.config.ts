@@ -5,9 +5,9 @@ import { defineConfig, devices } from "@playwright/test";
 // webServers; set AWAKEN_HTTP_URL to point vite's proxy at an existing backend.
 export default defineConfig({
   testDir: "./e2e",
-  // real-llm.spec.ts needs a live-model backend (AWAKEN_MODEL_SOURCE=gemini + key); it
-  // is run explicitly against such a backend, not in the default in-process suite.
-  testIgnore: "**/real-llm.spec.ts",
+  // real-llm.spec.ts self-skips unless a model key is present (submitted via the
+  // credential API), so it is inert in the default CI run and executes only when a
+  // GOOGLE_API_KEY/GEMINI_API_KEY is provided to the test.
   timeout: 45_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,
