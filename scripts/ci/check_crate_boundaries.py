@@ -73,8 +73,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tokio",
     },
     # The open single-machine assembly. Composes ONLY open crates — this closure
-    # is the zero-BuSL invariant (no admin-config-api write plane, no iam-server,
-    # no store-postgres). Adding a BuSL dep here should fail review.
+    # is the zero-BuSL invariant (no admin-config-api write plane, no iam-server, no
+    # container/remote execution). A durable Postgres store IS allowed here (it is an
+    # open backend behind the store port); the closed line is the scaling fan-out
+    # above it, not the DB driver. Adding a BuSL dep here should fail review.
     "awaken-standalone": {
         "awaken-session-executor",
         "awaken-observability",
@@ -160,6 +162,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tokio",
         "awaken-scoped-migration",
         "awaken-scoped-migration-sqlite",
+        # feature `postgres`: the PgDataSubjectRepo / PgCapturedContentStore backend.
+        "sqlx",
         # dev-only: reopen-from-file persistence test.
         "tempfile",
     },
@@ -206,6 +210,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-agent-contract",
         "awaken-api-contract",
         "awaken-config-resolver",
+        # The neutral `Disposition` resilience taxonomy: the ops cooldown routes map
+        # a credential-probe failure onto a retry/cool-down policy (E3-4).
+        "awaken-runtime-contract",
         "serde",
         "serde_json",
         "thiserror",
@@ -334,14 +341,38 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tempfile",
     },
     # Durable memory persistence (resources plane): id-keyed byte store behind the
-    # ADR-0038 memory_store family + the extraction store's durable root helper. A
-    # std-only leaf — names no runtime, host, or provider type, so the host backs
-    # memory durability with it while the runtime stays store-unaware.
-    "awaken-memory-store": set(),
-    # Durable skill catalog (resources plane): a SKILL.md-per-skill store on disk the
-    # host serves delivered skills from. A std-only leaf — names no runtime/host/ext
-    # type, so awaken-ext-skills stays store-unaware (it sees only SkillFile data).
-    "awaken-skill-store": set(),
+    # ADR-0038 memory_store family. A resources-plane store like awaken-data-subject —
+    # a scoped-migration bundle over sqlite (+ an optional postgres sibling) — so the
+    # host backs memory durability with it while the runtime stays store-unaware. It
+    # names no runtime/host/provider type; only the storage stack.
+    "awaken-memory-store": {
+        "async-trait",
+        "thiserror",
+        "tokio",
+        "rusqlite",
+        # feature `postgres`: the multi-node MemoryBlobStore backend.
+        "sqlx",
+        "awaken-scoped-migration",
+        "awaken-scoped-migration-sqlite",
+        # dev-only: conformance + reopen-from-file persistence tests.
+        "tempfile",
+    },
+    # Durable skill catalog (resources plane): a SKILL.md-per-skill store the host
+    # serves delivered skills from. A resources-plane store like awaken-data-subject —
+    # a scoped-migration bundle over sqlite (+ an optional postgres sibling); names no
+    # runtime/host/ext type, so awaken-ext-skills stays store-unaware.
+    "awaken-skill-store": {
+        "async-trait",
+        "thiserror",
+        "tokio",
+        "rusqlite",
+        # feature `postgres`: the multi-node SkillStore backend.
+        "sqlx",
+        "awaken-scoped-migration",
+        "awaken-scoped-migration-sqlite",
+        # dev-only: conformance + reopen-from-file persistence tests.
+        "tempfile",
+    },
     # Agent-transport seam (ADR-0041 amendment): the segregated `AgentChannel`
     # duplex + `AgentTransport` capability port, kept off `ProcessHandle` (ISP).
     # A leaf over tokio's async IO traits; names no provider, protocol, or host
@@ -935,6 +966,11 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-skill-store",
         "awaken-store-sqlite",
         "awaken-store-fs",
+        # Multi-node durable commit coordinator (ADR-0022 D6). OPEN, like the other
+        # store backends: a Postgres queue is table stakes for self-hosted durability,
+        # not a paid differentiator — the closed line is placement/sharding/tenancy
+        # (the horizontal-scaling fan-out ABOVE this store port), not the DB driver.
+        "awaken-store-postgres",
         "awaken-config-store",
         # Tenancy edge aspect (ADR-0051/0052): the opaque `ScopeId` the scope-keyed
         # tool catalog and the scoped config plane are keyed by.
@@ -1344,10 +1380,15 @@ def check_runtime_is_secret_resolution_free() -> list[str]:
 # one node out to many, or to run a multi-tenant authoring plane. The open
 # single-machine bin's runtime dependency closure must contain NONE of them — that
 # is the open-core invariant, enforced here rather than left to review.
+#
+# The durable STORE backends (sqlite, fs, and postgres) are deliberately NOT here:
+# a durable/multi-node store is table stakes for self-hosting, not a paid
+# differentiator. The closed line sits ABOVE the store port — the horizontal-scaling
+# fan-out (Shard*/placement), multi-tenant authoring, durable IAM, and container/
+# remote execution — never the DB driver itself.
 BUSL_CRATES = {
     "awaken-admin-config-api",  # multi-tenant authoring HTTP plane
     "awaken-iam-server",  # durable IAM provisioning store
-    "awaken-store-postgres",  # distributed durable store
     "awaken-sandbox-container",  # container/remote execution
 }
 
