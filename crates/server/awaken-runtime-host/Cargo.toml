@@ -48,7 +48,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 # Durable Managed-session repository (sessions.db) — the open home for
 # the sqlite + postgres ManagedSessionRepository backends, moved here so any bin
-# (standalone/enterprise) gets restart-surviving sessions without the BuSL
+# (standalone/enterprise) gets restart-surviving sessions without the
 # authoring plane. Both back the same `managed` scoped-migration bundle.
 rusqlite = { version = "0.32", features = ["bundled"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }

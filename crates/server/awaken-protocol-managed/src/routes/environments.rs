@@ -7,7 +7,7 @@
 //! Open-tier semantics: the API shape is complete and usable, but a single-machine
 //! build leases work to **one** worker at a time — `poll` hands out a queued item
 //! only when no item in the environment is already `active`. Multi-worker
-//! fan-out (many concurrent leases) is the BuSL/managed scaling boundary; here the
+//! fan-out (many concurrent leases) is the managed scaling boundary; here the
 //! queue is one in-process store. Every new environment is seeded with one
 //! `healthcheck` work item so the queue is exercisable end to end.
 

@@ -10,10 +10,10 @@ path = "src/main.rs"
 
 [dependencies]
 # The open single-machine assembly: it composes ONLY open crates — no
-# admin-config-api write plane, no iam-server, no distributed store. The zero-BuSL
-# invariant is asserted in CI (check_crate_boundaries.py, license tier).
+# admin-config-api write plane, no iam-server, no distributed store. This minimal open set
+# is kept lean in CI (check_crate_boundaries.py).
 awaken-runtime-host.workspace = true
-# Cross-cutting telemetry (open-tier, zero-BuSL leaf): tracing subscriber + OTLP /
+# Cross-cutting telemetry (open leaf): tracing subscriber + OTLP /
 # AWAKEN_TRACE_FILE span export + W3C traceparent propagator + ingress middleware.
 awaken-observability.workspace = true
 awaken-protocol-managed.workspace = true

@@ -9,7 +9,7 @@
 //!
 //! All open crates (config-resolver / credential-vault / agent-contract are the
 //! read-side + vault ports, never the durable admin backend — that is injected by
-//! the assembly), so both `awaken-server-local` and the BuSL-free
+//! the assembly), so both `awaken-server-local` and
 //! `awaken-standalone` use it.
 
 use std::sync::Arc;
