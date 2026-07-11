@@ -1283,7 +1283,6 @@ dependencies = [
  "base64 0.22.1",
  "getrandom 0.2.17",
  "hmac 0.12.1",
- "hyper 1.10.1",
  "reqwest 0.11.27",
  "serde",
  "serde_json",
@@ -1305,7 +1304,6 @@ dependencies = [
  "awaken-webhook",
  "axum 0.7.9",
  "serde_json",
- "tempfile",
  "tokio",
 ]
 

@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use awaken_agent_contract::RedactedString;
-use awaken_config_resolver::{InMemoryWebhookStore, WebhookEndpointDef, WebhookStore};
-use awaken_credential_vault::{InMemorySecretStore, SecretRef, SecretStore};
+use awaken_config_resolver::{WebhookEndpointDef, WebhookStore};
+use awaken_credential_vault::{SecretRef, SecretStore};
 use awaken_protocol_managed::{SessionLifecycleSink, WorkspaceScope};
 use awaken_webhook::{
     ReqwestSender, ResolvedSubscription, SubscriptionSource, WebhookDispatcher, WebhookEvent,
@@ -360,14 +360,4 @@ pub fn assemble(
     let dispatcher = Arc::new(WebhookDispatcher::new(source, Arc::new(ReqwestSender::default())));
     let sink = Arc::new(WebhookLifecycleSink::new(dispatcher, org_id));
     (sink, webhook_config_router(store, secrets))
-}
-
-/// An in-memory webhook plane (tests): CRUD + sink over an in-memory store + an
-/// in-memory (sealed) secret store.
-pub fn assemble_in_memory(org_id: Option<String>) -> (Arc<WebhookLifecycleSink>, Router) {
-    assemble(
-        Arc::new(InMemoryWebhookStore::new()),
-        Arc::new(InMemorySecretStore::new()),
-        org_id,
-    )
 }

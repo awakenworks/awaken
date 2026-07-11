@@ -52,7 +52,6 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tokio",
         # dev-only: the e2e stands up a real axum receiver on an ephemeral port.
         "axum",
-        "hyper",
     },
     # The managed webhook bridge (ADR-0048 / S10): connects protocol-managed's
     # SessionLifecycleSink to the neutral dispatcher + subscription CRUD + the
@@ -72,7 +71,6 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "axum",
         "serde_json",
         "tokio",
-        "tempfile",
     },
     # The open single-machine assembly. Composes ONLY open crates — this closure
     # is the zero-BuSL invariant (no admin-config-api write plane, no iam-server,
