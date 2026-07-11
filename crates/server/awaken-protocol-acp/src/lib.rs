@@ -149,7 +149,7 @@ pub enum AppendError {
 /// Named an *appender*, not a "sink": each call durably commits one fact at a
 /// strictly increasing `seq` and may fail (unlike this repo's ephemeral,
 /// best-effort stream sinks). Appended facts land in the same fact log the native
-/// and A2A executors commit through the one boundary (`commit_run_turn`).
+/// and A2A executors commit through the one boundary (`commit_run`).
 #[async_trait]
 pub trait RunFactAppender: Send {
     /// Commit one projected event at `seq` (strictly increasing per run).

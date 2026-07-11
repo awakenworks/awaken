@@ -84,7 +84,7 @@ async fn a_delegate_call_is_fulfilled_over_the_a2a_wire() {
     let host = SharedHost::new(Arc::new(DelegatingModel), "parent")
         .with_remote_a2a("researcher", transport);
 
-    host.run_turn(None, "t", vec![user("u1", "research the answer")])
+    host.run(None, "t", vec![user("u1", "research the answer")])
         .await
         .unwrap();
 
@@ -124,7 +124,7 @@ async fn a_remote_transport_failure_surfaces_as_a_tool_error() {
 
     // The turn still completes: the delegate call parked, the remote failed, and
     // the parent resumed with the error as the tool result.
-    host.run_turn(None, "t", vec![user("u1", "research the answer")])
+    host.run(None, "t", vec![user("u1", "research the answer")])
         .await
         .unwrap();
 
@@ -153,7 +153,7 @@ async fn a_delegate_call_reaches_a_remote_over_real_http() {
     let host = SharedHost::new(Arc::new(DelegatingModel), "parent")
         .with_remote_a2a("researcher", transport);
 
-    host.run_turn(None, "t", vec![user("u1", "research the answer")])
+    host.run(None, "t", vec![user("u1", "research the answer")])
         .await
         .unwrap();
 
@@ -210,7 +210,7 @@ async fn a_working_task_is_polled_to_completion() {
     let host = SharedHost::new(Arc::new(DelegatingModel), "parent")
         .with_remote_a2a("researcher", transport);
 
-    host.run_turn(None, "t", vec![user("u1", "research the answer")])
+    host.run(None, "t", vec![user("u1", "research the answer")])
         .await
         .unwrap();
 
@@ -274,11 +274,8 @@ async fn a_parent_interrupt_cancels_the_remote_task() {
     );
 
     let driver = host.clone();
-    let task = tokio::spawn(async move {
-        driver
-            .run_turn(None, "t", vec![user("u1", "research")])
-            .await
-    });
+    let task =
+        tokio::spawn(async move { driver.run(None, "t", vec![user("u1", "research")]).await });
 
     // Once the remote task has been polled, interrupt the parent thread.
     polled.notified().await;
@@ -337,7 +334,7 @@ async fn a_remote_input_required_parks_the_parent_then_resumes() {
 
     // The turn parks: the remote asked for input, so the parent waits for the user.
     let turn = host
-        .run_turn(None, "t", vec![user("u1", "research the answer")])
+        .run(None, "t", vec![user("u1", "research the answer")])
         .await
         .unwrap();
     let pending = turn
@@ -411,7 +408,7 @@ async fn remote_artifacts_are_included_in_the_reply() {
     let host = SharedHost::new(Arc::new(DelegatingModel), "parent")
         .with_remote_a2a("researcher", Arc::new(ArtifactTransport));
 
-    host.run_turn(None, "t", vec![user("u1", "research the answer")])
+    host.run(None, "t", vec![user("u1", "research the answer")])
         .await
         .unwrap();
 

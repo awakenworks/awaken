@@ -163,10 +163,7 @@ async fn compaction_summary_reaches_the_same_long_turn() {
     let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, "hello")];
 
     // Turn 1: only the single user message → below threshold, no summary injected.
-    let r1 = host
-        .run_turn(None, "t-c", user("u1"))
-        .await
-        .expect("turn 1");
+    let r1 = host.run(None, "t-c", user("u1")).await.expect("turn 1");
     assert!(matches!(r1.phase, Phase::Ended(_)));
     let reply1 = r1
         .new_messages
@@ -179,10 +176,7 @@ async fn compaction_summary_reaches_the_same_long_turn() {
 
     // Turn 2: the conversation now exceeds the threshold, so the compact plugin's
     // BeforeInference hook summarizes the older slice inline and the model sees it.
-    let r2 = host
-        .run_turn(None, "t-c", user("u2"))
-        .await
-        .expect("turn 2");
+    let r2 = host.run(None, "t-c", user("u2")).await.expect("turn 2");
     let reply2 = r2
         .new_messages
         .iter()
@@ -265,7 +259,7 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
     let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, t)];
 
     // Thread 1: the user states a preference; extraction saves it.
-    host.run_turn(None, "thread-1", user("I really enjoy tea in the morning"))
+    host.run(None, "thread-1", user("I really enjoy tea in the morning"))
         .await
         .expect("thread 1 turn");
     assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
@@ -277,7 +271,7 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
     // Thread 2 (a fresh conversation): the saved memory is recalled into context
     // and the agent uses it to answer.
     let r = host
-        .run_turn(None, "thread-2", user("What beverage do I prefer?"))
+        .run(None, "thread-2", user("What beverage do I prefer?"))
         .await
         .expect("thread 2 turn");
     let reply = r
@@ -358,7 +352,7 @@ async fn resume_ended_turn_triggers_memory_extraction() {
 
     // Turn 1 parks on the Ask-gated `write`.
     let r1 = host
-        .run_turn(
+        .run(
             None,
             "t-res",
             vec![Message::text(MessageId("u1".into()), Role::User, "hi")],
@@ -452,13 +446,11 @@ async fn extraction_cursor_only_processes_new_messages() {
     let host = SharedHost::new(Arc::new(CursorModel), "stub").with_memory(&mem_dir);
     let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, t)];
 
-    host.run_turn(None, "t-cur", user("alpha"))
+    host.run(None, "t-cur", user("alpha"))
         .await
         .expect("turn 1");
     assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
-    host.run_turn(None, "t-cur", user("beta"))
-        .await
-        .expect("turn 2");
+    host.run(None, "t-cur", user("beta")).await.expect("turn 2");
     assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
 
     // The second extraction saw only "beta" — turn 1's "alpha" was past the cursor.
@@ -480,7 +472,7 @@ async fn turn_end_fires_background_memory_extraction() {
         Role::User,
         "I really like rust",
     )];
-    let result = host.run_turn(None, "t-mem", input).await.expect("run turn");
+    let result = host.run(None, "t-mem", input).await.expect("run turn");
     assert!(matches!(result.phase, Phase::Ended(_)), "turn should end");
 
     let drained = host.drain_memory(std::time::Duration::from_secs(10)).await;
@@ -523,7 +515,7 @@ async fn attach_resource_stages_the_mount_and_evicts_the_cached_sandbox() {
         .put(b"hello-attached")
         .await
         .expect("put blob");
-    host.run_turn(None, "t-attach", user("hi"))
+    host.run(None, "t-attach", user("hi"))
         .await
         .expect("first turn");
     assert!(

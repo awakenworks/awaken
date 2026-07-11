@@ -19,7 +19,7 @@ struct StreamingMock;
 
 #[async_trait::async_trait]
 impl ProtocolRuntime for StreamingMock {
-    async fn run_turn(
+    async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,
@@ -28,7 +28,7 @@ impl ProtocolRuntime for StreamingMock {
         Ok(committed())
     }
 
-    async fn run_turn_streaming(
+    async fn run_streaming(
         &self,
         _thread: &str,
         _agent: Option<String>,

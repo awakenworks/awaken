@@ -80,7 +80,7 @@ struct FakeQueue {
 
 #[async_trait::async_trait]
 impl SessionRuntime for QueueFake {
-    async fn run_turn(
+    async fn run(
         &self,
         _agent: &str,
         _thread: &str,
@@ -233,13 +233,13 @@ fn app(fake: Arc<QueueFake>) -> Router {
     struct Shared(Arc<QueueFake>);
     #[async_trait::async_trait]
     impl SessionRuntime for Shared {
-        async fn run_turn(
+        async fn run(
             &self,
             a: &str,
             t: &str,
             c: Vec<ContentBlock>,
         ) -> Result<TurnOutcome, RunError> {
-            self.0.run_turn(a, t, c).await
+            self.0.run(a, t, c).await
         }
         async fn resume(
             &self,

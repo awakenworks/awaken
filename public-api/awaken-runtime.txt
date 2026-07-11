@@ -98,6 +98,7 @@ pub fn awaken_runtime::Runtime::with_infer_retries(self, usize) -> Self
 pub fn awaken_runtime::Runtime::with_llm(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>) -> Self
 pub fn awaken_runtime::Runtime::with_max_consecutive_inference_failures(self, usize) -> Self
 pub fn awaken_runtime::Runtime::with_max_continuation_retries(self, usize) -> Self
+pub fn awaken_runtime::Runtime::with_metrics(self, alloc::sync::Arc<dyn awaken_runtime_contract::metrics::MetricsRecorder>) -> Self
 pub fn awaken_runtime::Runtime::with_plugin(self, alloc::sync::Arc<dyn awaken_runtime_contract::plugin::Plugin>) -> Self
 pub fn awaken_runtime::Runtime::with_resolver(self, alloc::sync::Arc<dyn awaken_runtime_contract::agent_resolver::AgentResolver>) -> Self
 pub fn awaken_runtime::Runtime::with_retry_policy(self, awaken_runtime::LlmRetryPolicy) -> Self
@@ -107,7 +108,7 @@ pub fn awaken_runtime::Runtime::install_for_resume(&self, &awaken_runtime_contra
 pub fn awaken_runtime::Runtime::prepare(&self, &awaken_runtime_contract::runnable::RunnableConfig, alloc::string::String, impl core::convert::Into<awaken_runtime::RunInput>) -> core::result::Result<(awaken_agent_contract::agent::run::Id, awaken_runtime_contract::activation::RunActivation), awaken_runtime_contract::execution::Error>
 pub async fn awaken_runtime::Runtime::run(&self, &awaken_runtime_contract::runnable::RunnableConfig, impl core::convert::Into<awaken_runtime::RunInput>, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_agent_contract::agent::run::Phase, awaken_runtime_contract::execution::Error>
 pub async fn awaken_runtime::Runtime::run_to_completion<F>(&self, &awaken_runtime_contract::runnable::RunnableConfig, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_runtime::RunInput>, awaken_runtime_contract::runtime_context::RuntimeRunContext, F) -> core::result::Result<awaken_agent_contract::agent::run::Phase, awaken_runtime_contract::execution::Error> where F: core::ops::function::FnMut(&awaken_agent_contract::agent::waiting::WaitingTicket) -> awaken_runtime_contract::resume::ResumeResult
-pub async fn awaken_runtime::Runtime::start_turn(&self, &awaken_runtime_contract::runnable::RunnableConfig, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_runtime::RunInput>, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::Phase), awaken_runtime_contract::execution::Error>
+pub async fn awaken_runtime::Runtime::start_run(&self, &awaken_runtime_contract::runnable::RunnableConfig, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_runtime::RunInput>, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::Phase), awaken_runtime_contract::execution::Error>
 impl awaken_runtime::Runtime
 pub fn awaken_runtime::Runtime::load_snapshot(&self, &awaken_runtime_contract::snapshot::AgentSnapshotInput) -> core::result::Result<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_runtime_contract::resolver::Error>
 impl awaken_runtime_contract::capability::RuntimeCapabilitySource for awaken_runtime::Runtime

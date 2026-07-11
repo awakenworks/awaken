@@ -48,6 +48,23 @@ impl core::marker::Sync for awaken_store_inmem::MemoryCommitCoordinator
 impl core::marker::Unpin for awaken_store_inmem::MemoryCommitCoordinator
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_store_inmem::MemoryCommitCoordinator
 impl core::panic::unwind_safe::UnwindSafe for awaken_store_inmem::MemoryCommitCoordinator
+pub struct awaken_store_inmem::MemoryStreamCheckpointStore
+impl awaken_store_inmem::MemoryStreamCheckpointStore
+pub fn awaken_store_inmem::MemoryStreamCheckpointStore::new() -> Self
+impl awaken_agent_contract::store::stream_checkpoint::StreamCheckpointStore for awaken_store_inmem::MemoryStreamCheckpointStore
+pub fn awaken_store_inmem::MemoryStreamCheckpointStore::delete<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_store_inmem::MemoryStreamCheckpointStore::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_agent_contract::store::stream_checkpoint::StreamCheckpoint>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_store_inmem::MemoryStreamCheckpointStore::put<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::store::stream_checkpoint::StreamCheckpoint) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl core::default::Default for awaken_store_inmem::MemoryStreamCheckpointStore
+pub fn awaken_store_inmem::MemoryStreamCheckpointStore::default() -> awaken_store_inmem::MemoryStreamCheckpointStore
+impl core::fmt::Debug for awaken_store_inmem::MemoryStreamCheckpointStore
+pub fn awaken_store_inmem::MemoryStreamCheckpointStore::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl !core::marker::Freeze for awaken_store_inmem::MemoryStreamCheckpointStore
+impl core::marker::Send for awaken_store_inmem::MemoryStreamCheckpointStore
+impl core::marker::Sync for awaken_store_inmem::MemoryStreamCheckpointStore
+impl core::marker::Unpin for awaken_store_inmem::MemoryStreamCheckpointStore
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_store_inmem::MemoryStreamCheckpointStore
+impl core::panic::unwind_safe::UnwindSafe for awaken_store_inmem::MemoryStreamCheckpointStore
 pub struct awaken_store_inmem::MemoryStreamSink
 impl awaken_store_inmem::MemoryStreamSink
 pub fn awaken_store_inmem::MemoryStreamSink::events(&self) -> alloc::vec::Vec<awaken_agent_contract::stream::event::Event>

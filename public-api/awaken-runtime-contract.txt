@@ -55,6 +55,7 @@ pub mod awaken_runtime_contract::agent_resolver
 pub enum awaken_runtime_contract::agent_resolver::AgentStep
 pub awaken_runtime_contract::agent_resolver::AgentStep::Done
 pub awaken_runtime_contract::agent_resolver::AgentStep::Done::text: alloc::string::String
+pub awaken_runtime_contract::agent_resolver::AgentStep::Done::usage: awaken_runtime_contract::llm::ThreadUsage
 pub awaken_runtime_contract::agent_resolver::AgentStep::Parked
 pub awaken_runtime_contract::agent_resolver::AgentStep::Parked::handle: serde_json::value::Value
 impl core::marker::Freeze for awaken_runtime_contract::agent_resolver::AgentStep
@@ -637,6 +638,7 @@ pub awaken_runtime_contract::llm::Error::Binding(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::ContentFiltered(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::ContextOverflow(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::InvalidRequest(alloc::string::String)
+pub awaken_runtime_contract::llm::Error::LoginRequired(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::ModelNotFound(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::Overloaded
 pub awaken_runtime_contract::llm::Error::Overloaded::message: alloc::string::String
@@ -647,9 +649,13 @@ pub awaken_runtime_contract::llm::Error::RateLimited::message: alloc::string::St
 pub awaken_runtime_contract::llm::Error::RateLimited::retry_after: core::option::Option<core::time::Duration>
 pub awaken_runtime_contract::llm::Error::Timeout(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::Unauthorized(alloc::string::String)
+pub awaken_runtime_contract::llm::Error::UsageLimit
+pub awaken_runtime_contract::llm::Error::UsageLimit::message: alloc::string::String
+pub awaken_runtime_contract::llm::Error::UsageLimit::reset_after: core::option::Option<core::time::Duration>
 impl awaken_runtime_contract::llm::Error
 pub fn awaken_runtime_contract::llm::Error::code(&self) -> &'static str
 pub fn awaken_runtime_contract::llm::Error::is_retryable(&self) -> bool
+pub fn awaken_runtime_contract::llm::Error::reset_hint(&self) -> core::option::Option<core::time::Duration>
 pub fn awaken_runtime_contract::llm::Error::retry_after(&self) -> core::option::Option<core::time::Duration>
 impl awaken_runtime_contract::resilience::Classify for awaken_runtime_contract::llm::Error
 pub fn awaken_runtime_contract::llm::Error::disposition(&self) -> awaken_runtime_contract::resilience::Disposition
@@ -779,6 +785,8 @@ impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::Chat
 pub struct awaken_runtime_contract::llm::ThreadUsage
 pub awaken_runtime_contract::llm::ThreadUsage::by_model: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_runtime_contract::llm::TokenUsage>
 impl awaken_runtime_contract::llm::ThreadUsage
+pub fn awaken_runtime_contract::llm::ThreadUsage::is_empty(&self) -> bool
+pub fn awaken_runtime_contract::llm::ThreadUsage::merge(&mut self, &awaken_runtime_contract::llm::ThreadUsage)
 pub fn awaken_runtime_contract::llm::ThreadUsage::record(&mut self, &str, awaken_runtime_contract::llm::TokenUsage)
 pub fn awaken_runtime_contract::llm::ThreadUsage::total(&self) -> awaken_runtime_contract::llm::TokenUsage
 impl core::clone::Clone for awaken_runtime_contract::llm::ThreadUsage
@@ -879,6 +887,47 @@ pub trait awaken_runtime_contract::llm::LlmExecutor: core::marker::Send + core::
 pub fn awaken_runtime_contract::llm::LlmExecutor::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_contract::llm::LlmExecutor::infer_streaming<'life0, 'life1, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest, &'life1 dyn awaken_runtime_contract::llm::DeltaSink) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub type awaken_runtime_contract::llm::Result<T> = core::result::Result<T, awaken_runtime_contract::llm::Error>
+pub mod awaken_runtime_contract::metrics
+pub struct awaken_runtime_contract::metrics::InferenceMetric<'a>
+pub awaken_runtime_contract::metrics::InferenceMetric::duration: core::time::Duration
+pub awaken_runtime_contract::metrics::InferenceMetric::input_tokens: core::option::Option<u64>
+pub awaken_runtime_contract::metrics::InferenceMetric::model: &'a str
+pub awaken_runtime_contract::metrics::InferenceMetric::outcome: &'a str
+pub awaken_runtime_contract::metrics::InferenceMetric::output_tokens: core::option::Option<u64>
+impl<'a> core::clone::Clone for awaken_runtime_contract::metrics::InferenceMetric<'a>
+pub fn awaken_runtime_contract::metrics::InferenceMetric<'a>::clone(&self) -> awaken_runtime_contract::metrics::InferenceMetric<'a>
+impl<'a> core::fmt::Debug for awaken_runtime_contract::metrics::InferenceMetric<'a>
+pub fn awaken_runtime_contract::metrics::InferenceMetric<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for awaken_runtime_contract::metrics::InferenceMetric<'a>
+impl<'a> core::marker::Freeze for awaken_runtime_contract::metrics::InferenceMetric<'a>
+impl<'a> core::marker::Send for awaken_runtime_contract::metrics::InferenceMetric<'a>
+impl<'a> core::marker::Sync for awaken_runtime_contract::metrics::InferenceMetric<'a>
+impl<'a> core::marker::Unpin for awaken_runtime_contract::metrics::InferenceMetric<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::metrics::InferenceMetric<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::metrics::InferenceMetric<'a>
+pub struct awaken_runtime_contract::metrics::NoopRecorder
+impl awaken_runtime_contract::metrics::MetricsRecorder for awaken_runtime_contract::metrics::NoopRecorder
+pub fn awaken_runtime_contract::metrics::NoopRecorder::record_inference(&self, awaken_runtime_contract::metrics::InferenceMetric<'_>)
+pub fn awaken_runtime_contract::metrics::NoopRecorder::record_tool(&self, &str, &str, core::time::Duration)
+impl core::clone::Clone for awaken_runtime_contract::metrics::NoopRecorder
+pub fn awaken_runtime_contract::metrics::NoopRecorder::clone(&self) -> awaken_runtime_contract::metrics::NoopRecorder
+impl core::default::Default for awaken_runtime_contract::metrics::NoopRecorder
+pub fn awaken_runtime_contract::metrics::NoopRecorder::default() -> awaken_runtime_contract::metrics::NoopRecorder
+impl core::fmt::Debug for awaken_runtime_contract::metrics::NoopRecorder
+pub fn awaken_runtime_contract::metrics::NoopRecorder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_runtime_contract::metrics::NoopRecorder
+impl core::marker::Freeze for awaken_runtime_contract::metrics::NoopRecorder
+impl core::marker::Send for awaken_runtime_contract::metrics::NoopRecorder
+impl core::marker::Sync for awaken_runtime_contract::metrics::NoopRecorder
+impl core::marker::Unpin for awaken_runtime_contract::metrics::NoopRecorder
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::metrics::NoopRecorder
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::metrics::NoopRecorder
+pub trait awaken_runtime_contract::metrics::MetricsRecorder: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::metrics::MetricsRecorder::record_inference(&self, awaken_runtime_contract::metrics::InferenceMetric<'_>)
+pub fn awaken_runtime_contract::metrics::MetricsRecorder::record_tool(&self, &str, &str, core::time::Duration)
+impl awaken_runtime_contract::metrics::MetricsRecorder for awaken_runtime_contract::metrics::NoopRecorder
+pub fn awaken_runtime_contract::metrics::NoopRecorder::record_inference(&self, awaken_runtime_contract::metrics::InferenceMetric<'_>)
+pub fn awaken_runtime_contract::metrics::NoopRecorder::record_tool(&self, &str, &str, core::time::Duration)
 pub mod awaken_runtime_contract::model_access
 pub enum awaken_runtime_contract::model_access::MaterializeError
 pub awaken_runtime_contract::model_access::MaterializeError::Unsupported(alloc::string::String)
@@ -1383,8 +1432,6 @@ impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin_co
 pub trait awaken_runtime_contract::plugin_config::PluginConfigValidator
 pub fn awaken_runtime_contract::plugin_config::PluginConfigValidator::validate_plugin_config(&self, &str, &serde_json::value::Value) -> core::result::Result<awaken_runtime_contract::plugin_config::PluginConfigValidation, awaken_runtime_contract::plugin_config::Error>
 pub mod awaken_runtime_contract::resilience
-pub trait awaken_runtime_contract::resilience::Classify
-pub fn awaken_runtime_contract::resilience::Classify::disposition(&self) -> awaken_runtime_contract::resilience::Disposition
 pub enum awaken_runtime_contract::resilience::Disposition
 pub awaken_runtime_contract::resilience::Disposition::Permanent
 pub awaken_runtime_contract::resilience::Disposition::Quota
@@ -1402,13 +1449,17 @@ pub fn awaken_runtime_contract::resilience::Disposition::eq(&self, &awaken_runti
 impl core::fmt::Debug for awaken_runtime_contract::resilience::Disposition
 pub fn awaken_runtime_contract::resilience::Disposition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for awaken_runtime_contract::resilience::Disposition
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::resilience::Disposition
 impl core::marker::Freeze for awaken_runtime_contract::resilience::Disposition
 impl core::marker::Send for awaken_runtime_contract::resilience::Disposition
-impl core::marker::StructuralPartialEq for awaken_runtime_contract::resilience::Disposition
 impl core::marker::Sync for awaken_runtime_contract::resilience::Disposition
 impl core::marker::Unpin for awaken_runtime_contract::resilience::Disposition
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resilience::Disposition
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resilience::Disposition
+pub trait awaken_runtime_contract::resilience::Classify
+pub fn awaken_runtime_contract::resilience::Classify::disposition(&self) -> awaken_runtime_contract::resilience::Disposition
+impl awaken_runtime_contract::resilience::Classify for awaken_runtime_contract::llm::Error
+pub fn awaken_runtime_contract::llm::Error::disposition(&self) -> awaken_runtime_contract::resilience::Disposition
 pub mod awaken_runtime_contract::resolved
 pub enum awaken_runtime_contract::resolved::Backend
 pub awaken_runtime_contract::resolved::Backend::Acp
@@ -1505,6 +1556,24 @@ impl core::marker::Sync for awaken_runtime_contract::resolved::ModelBinding
 impl core::marker::Unpin for awaken_runtime_contract::resolved::ModelBinding
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolved::ModelBinding
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved::ModelBinding
+pub struct awaken_runtime_contract::resolved::PresentedTools
+pub awaken_runtime_contract::resolved::PresentedTools::deferred: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
+pub awaken_runtime_contract::resolved::PresentedTools::face: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
+impl core::clone::Clone for awaken_runtime_contract::resolved::PresentedTools
+pub fn awaken_runtime_contract::resolved::PresentedTools::clone(&self) -> awaken_runtime_contract::resolved::PresentedTools
+impl core::cmp::PartialEq for awaken_runtime_contract::resolved::PresentedTools
+pub fn awaken_runtime_contract::resolved::PresentedTools::eq(&self, &awaken_runtime_contract::resolved::PresentedTools) -> bool
+impl core::default::Default for awaken_runtime_contract::resolved::PresentedTools
+pub fn awaken_runtime_contract::resolved::PresentedTools::default() -> awaken_runtime_contract::resolved::PresentedTools
+impl core::fmt::Debug for awaken_runtime_contract::resolved::PresentedTools
+pub fn awaken_runtime_contract::resolved::PresentedTools::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::resolved::PresentedTools
+impl core::marker::Freeze for awaken_runtime_contract::resolved::PresentedTools
+impl core::marker::Send for awaken_runtime_contract::resolved::PresentedTools
+impl core::marker::Sync for awaken_runtime_contract::resolved::PresentedTools
+impl core::marker::Unpin for awaken_runtime_contract::resolved::PresentedTools
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolved::PresentedTools
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved::PresentedTools
 pub struct awaken_runtime_contract::resolved::ResolvedRun
 pub awaken_runtime_contract::resolved::ResolvedRun::snapshot_id: awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
 pub awaken_runtime_contract::resolved::ResolvedRun::spec: awaken_runtime_contract::resolved::ResolvedSpec
@@ -1531,10 +1600,13 @@ pub awaken_runtime_contract::resolved::ResolvedSpec::context_policy: awaken_runt
 pub awaken_runtime_contract::resolved::ResolvedSpec::instructions: alloc::string::String
 pub awaken_runtime_contract::resolved::ResolvedSpec::max_steps: usize
 pub awaken_runtime_contract::resolved::ResolvedSpec::model_binding: awaken_runtime_contract::resolved::ModelBinding
+pub awaken_runtime_contract::resolved::ResolvedSpec::model_candidates: alloc::vec::Vec<awaken_runtime_contract::resolved::ModelBinding>
 pub awaken_runtime_contract::resolved::ResolvedSpec::plugin_config: alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>
 pub awaken_runtime_contract::resolved::ResolvedSpec::plugin_ids: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::resolved::ResolvedSpec::tool_descriptors: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
+pub awaken_runtime_contract::resolved::ResolvedSpec::tool_presentation: awaken_runtime_contract::resolved::ToolPresentation
 impl awaken_runtime_contract::resolved::ResolvedSpec
+pub fn awaken_runtime_contract::resolved::ResolvedSpec::candidate_bindings(&self) -> alloc::vec::Vec<&awaken_runtime_contract::resolved::ModelBinding>
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::runtime_adapter(&self) -> &str
 impl core::clone::Clone for awaken_runtime_contract::resolved::ResolvedSpec
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::clone(&self) -> awaken_runtime_contract::resolved::ResolvedSpec
@@ -1577,6 +1649,58 @@ impl core::marker::Sync for awaken_runtime_contract::resolved::ToolDescriptor
 impl core::marker::Unpin for awaken_runtime_contract::resolved::ToolDescriptor
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolved::ToolDescriptor
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved::ToolDescriptor
+pub struct awaken_runtime_contract::resolved::ToolFacet
+pub awaken_runtime_contract::resolved::ToolFacet::alias: core::option::Option<alloc::string::String>
+pub awaken_runtime_contract::resolved::ToolFacet::defer: bool
+pub awaken_runtime_contract::resolved::ToolFacet::description: core::option::Option<alloc::string::String>
+impl core::clone::Clone for awaken_runtime_contract::resolved::ToolFacet
+pub fn awaken_runtime_contract::resolved::ToolFacet::clone(&self) -> awaken_runtime_contract::resolved::ToolFacet
+impl core::cmp::PartialEq for awaken_runtime_contract::resolved::ToolFacet
+pub fn awaken_runtime_contract::resolved::ToolFacet::eq(&self, &awaken_runtime_contract::resolved::ToolFacet) -> bool
+impl core::default::Default for awaken_runtime_contract::resolved::ToolFacet
+pub fn awaken_runtime_contract::resolved::ToolFacet::default() -> awaken_runtime_contract::resolved::ToolFacet
+impl core::fmt::Debug for awaken_runtime_contract::resolved::ToolFacet
+pub fn awaken_runtime_contract::resolved::ToolFacet::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::resolved::ToolFacet
+impl serde_core::ser::Serialize for awaken_runtime_contract::resolved::ToolFacet
+pub fn awaken_runtime_contract::resolved::ToolFacet::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::resolved::ToolFacet
+pub fn awaken_runtime_contract::resolved::ToolFacet::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_runtime_contract::resolved::ToolFacet
+impl core::marker::Send for awaken_runtime_contract::resolved::ToolFacet
+impl core::marker::Sync for awaken_runtime_contract::resolved::ToolFacet
+impl core::marker::Unpin for awaken_runtime_contract::resolved::ToolFacet
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolved::ToolFacet
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved::ToolFacet
+pub struct awaken_runtime_contract::resolved::ToolPresentation
+impl awaken_runtime_contract::resolved::ToolPresentation
+pub fn awaken_runtime_contract::resolved::ToolPresentation::from_facets(impl core::iter::traits::collect::IntoIterator<Item = (alloc::string::String, awaken_runtime_contract::resolved::ToolFacet)>) -> Self
+pub fn awaken_runtime_contract::resolved::ToolPresentation::is_deferred(&self, &str) -> bool
+pub fn awaken_runtime_contract::resolved::ToolPresentation::is_empty(&self) -> bool
+pub fn awaken_runtime_contract::resolved::ToolPresentation::model_tools(&self, &[awaken_runtime_contract::resolved::ToolDescriptor], &alloc::collections::btree::set::BTreeSet<alloc::string::String>) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
+pub fn awaken_runtime_contract::resolved::ToolPresentation::present(&self, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> awaken_runtime_contract::resolved::PresentedTools
+pub fn awaken_runtime_contract::resolved::ToolPresentation::resolve<'a>(&'a self, &'a str) -> &'a str
+pub fn awaken_runtime_contract::resolved::ToolPresentation::targets(&self) -> impl core::iter::traits::iterator::Iterator<Item = &str>
+impl core::clone::Clone for awaken_runtime_contract::resolved::ToolPresentation
+pub fn awaken_runtime_contract::resolved::ToolPresentation::clone(&self) -> awaken_runtime_contract::resolved::ToolPresentation
+impl core::cmp::PartialEq for awaken_runtime_contract::resolved::ToolPresentation
+pub fn awaken_runtime_contract::resolved::ToolPresentation::eq(&self, &awaken_runtime_contract::resolved::ToolPresentation) -> bool
+impl core::default::Default for awaken_runtime_contract::resolved::ToolPresentation
+pub fn awaken_runtime_contract::resolved::ToolPresentation::default() -> awaken_runtime_contract::resolved::ToolPresentation
+impl core::fmt::Debug for awaken_runtime_contract::resolved::ToolPresentation
+pub fn awaken_runtime_contract::resolved::ToolPresentation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::resolved::ToolPresentation
+impl serde_core::ser::Serialize for awaken_runtime_contract::resolved::ToolPresentation
+pub fn awaken_runtime_contract::resolved::ToolPresentation::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::resolved::ToolPresentation
+pub fn awaken_runtime_contract::resolved::ToolPresentation::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_runtime_contract::resolved::ToolPresentation
+impl core::marker::Send for awaken_runtime_contract::resolved::ToolPresentation
+impl core::marker::Sync for awaken_runtime_contract::resolved::ToolPresentation
+impl core::marker::Unpin for awaken_runtime_contract::resolved::ToolPresentation
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolved::ToolPresentation
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved::ToolPresentation
+pub const awaken_runtime_contract::resolved::TOOL_OPEN_ID: &str
 pub mod awaken_runtime_contract::resolver
 pub enum awaken_runtime_contract::resolver::Error
 pub awaken_runtime_contract::resolver::Error::FingerprintMismatch
@@ -1706,10 +1830,12 @@ pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::fingerprint(sel
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::instructions(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::max_steps(self, usize) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::model(self, awaken_runtime_contract::resolved::ModelBinding) -> Self
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::model_candidates(self, impl core::iter::traits::collect::IntoIterator<Item = awaken_runtime_contract::resolved::ModelBinding>) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::plugin_capabilities(self, impl core::iter::traits::collect::IntoIterator<Item = awaken_runtime_contract::capability::PluginCapability>) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::plugin_config(self, impl core::iter::traits::collect::IntoIterator<Item = (alloc::string::String, serde_json::value::Value)>) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::plugins(self, impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::tool(self, awaken_runtime_contract::resolved::ToolDescriptor) -> Self
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::tool_presentation(self, awaken_runtime_contract::resolved::ToolPresentation) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::tools(self, impl core::iter::traits::collect::IntoIterator<Item = awaken_runtime_contract::resolved::ToolDescriptor>) -> Self
 impl core::clone::Clone for awaken_runtime_contract::runnable::RunnableConfigBuilder
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::clone(&self) -> awaken_runtime_contract::runnable::RunnableConfigBuilder
@@ -1951,6 +2077,7 @@ pub fn awaken_runtime_contract::tool::ToolExecutorProvider::provide<'life0, 'lif
 pub enum awaken_runtime_contract::AgentStep
 pub awaken_runtime_contract::AgentStep::Done
 pub awaken_runtime_contract::AgentStep::Done::text: alloc::string::String
+pub awaken_runtime_contract::AgentStep::Done::usage: awaken_runtime_contract::llm::ThreadUsage
 pub awaken_runtime_contract::AgentStep::Parked
 pub awaken_runtime_contract::AgentStep::Parked::handle: serde_json::value::Value
 impl core::marker::Freeze for awaken_runtime_contract::agent_resolver::AgentStep
@@ -2594,10 +2721,13 @@ pub awaken_runtime_contract::ResolvedSpec::context_policy: awaken_runtime_contra
 pub awaken_runtime_contract::ResolvedSpec::instructions: alloc::string::String
 pub awaken_runtime_contract::ResolvedSpec::max_steps: usize
 pub awaken_runtime_contract::ResolvedSpec::model_binding: awaken_runtime_contract::resolved::ModelBinding
+pub awaken_runtime_contract::ResolvedSpec::model_candidates: alloc::vec::Vec<awaken_runtime_contract::resolved::ModelBinding>
 pub awaken_runtime_contract::ResolvedSpec::plugin_config: alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>
 pub awaken_runtime_contract::ResolvedSpec::plugin_ids: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::ResolvedSpec::tool_descriptors: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
+pub awaken_runtime_contract::ResolvedSpec::tool_presentation: awaken_runtime_contract::resolved::ToolPresentation
 impl awaken_runtime_contract::resolved::ResolvedSpec
+pub fn awaken_runtime_contract::resolved::ResolvedSpec::candidate_bindings(&self) -> alloc::vec::Vec<&awaken_runtime_contract::resolved::ModelBinding>
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::runtime_adapter(&self) -> &str
 impl core::clone::Clone for awaken_runtime_contract::resolved::ResolvedSpec
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::clone(&self) -> awaken_runtime_contract::resolved::ResolvedSpec
@@ -2702,10 +2832,12 @@ pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::fingerprint(sel
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::instructions(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::max_steps(self, usize) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::model(self, awaken_runtime_contract::resolved::ModelBinding) -> Self
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::model_candidates(self, impl core::iter::traits::collect::IntoIterator<Item = awaken_runtime_contract::resolved::ModelBinding>) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::plugin_capabilities(self, impl core::iter::traits::collect::IntoIterator<Item = awaken_runtime_contract::capability::PluginCapability>) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::plugin_config(self, impl core::iter::traits::collect::IntoIterator<Item = (alloc::string::String, serde_json::value::Value)>) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::plugins(self, impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::tool(self, awaken_runtime_contract::resolved::ToolDescriptor) -> Self
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::tool_presentation(self, awaken_runtime_contract::resolved::ToolPresentation) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::tools(self, impl core::iter::traits::collect::IntoIterator<Item = awaken_runtime_contract::resolved::ToolDescriptor>) -> Self
 impl core::clone::Clone for awaken_runtime_contract::runnable::RunnableConfigBuilder
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::clone(&self) -> awaken_runtime_contract::runnable::RunnableConfigBuilder

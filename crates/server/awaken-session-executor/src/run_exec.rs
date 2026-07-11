@@ -1,4 +1,4 @@
-//! Turn-execution routing (R3/R4): drive a thread's activation on the native
+//! Run-execution routing (R3/R4): drive a thread's activation on the native
 //! ingress or, when the session selected an ACP runtime, on the ACP executor.
 //!
 //! Both commit through the thread's coordinator and return a `Phase`, so the

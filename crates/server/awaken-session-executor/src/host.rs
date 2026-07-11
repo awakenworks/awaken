@@ -2,7 +2,7 @@
 //!
 //! This is the "waist" both protocol adapters (Managed Agents, AI SDK) drive. It
 //! owns one sandboxed runtime + commit coordinator per **thread id**, and exposes
-//! neutral operations — `run_turn`, `resume`, `committed_messages` — over that
+//! neutral operations — `run`, `resume`, `committed_messages` — over that
 //! shared state. Because both adapters key by the same thread id and mutate the
 //! same coordinator and parked-run position, a turn started through one protocol
 //! can be observed or resumed through the other on the *same thread*.
@@ -99,7 +99,7 @@ pub struct PendingTool {
 
 /// The neutral result of one step (a turn or a resume): the messages committed
 /// during the step, the terminal phase, and the pending tool when the run parked.
-pub struct TurnResult {
+pub struct RunResult {
     pub new_messages: Vec<Message>,
     pub phase: Phase,
     pub pending: Option<PendingTool>,
@@ -888,7 +888,7 @@ impl SharedHost {
     /// recovered (slice D). The durable ingress shares this thread's `runtime` and
     /// `commit`, so execution and committed truth are identical to the direct path
     /// (G6) — only the delivery guarantee differs. Returns the ingress plus the
-    /// flag that tells `run_turn` to submit through the durable (queued) path.
+    /// flag that tells `run` to submit through the durable (queued) path.
     async fn build_ingress(
         &self,
         runtime: Arc<Runtime>,
@@ -1279,7 +1279,7 @@ impl SharedHost {
         };
         if let Some((run_id, _)) = commit.open_wait_for_thread(&thread_id) {
             // Prime the fresh runtime so the parked run's snapshot resolves on
-            // resume — `start_turn` would normally have installed it.
+            // resume — `start_run` would normally have installed it.
             runtime
                 .install_for_resume(&config)
                 .map_err(|e| HostError::internal(e.to_string()))?;
@@ -1287,7 +1287,7 @@ impl SharedHost {
         }
         let runtime = Arc::new(runtime);
         // The foreground delivery seam (slice C/D): a turn's execution goes through
-        // `RunIngress` rather than calling `runtime.start_turn` directly. Direct
+        // `RunIngress` rather than calling `runtime.start_run` directly. Direct
         // ingress runs inline on the same `runtime`; durable ingress queues the run
         // through a dispatch store first. Both share this thread's `runtime`/`commit`.
         let (ingress, durable_ingress) = self
@@ -1408,58 +1408,58 @@ impl SharedHost {
         Ok(())
     }
 
-    /// Run one turn on `thread`: buffered system messages first, then `input`.
+    /// Run `thread` once: buffered system messages first, then `input`.
     /// Runs to the first pause (a parked tool) or the natural end.
     #[tracing::instrument(
-        name = "host.run_turn",
+        name = "host.run",
         skip_all,
         fields(awaken.thread.id = %thread)
     )]
-    pub async fn run_turn(
+    pub async fn run(
         &self,
         agent: Option<&str>,
         thread: &str,
         input: Vec<Message>,
-    ) -> Result<TurnResult, HostError> {
-        self.deliver_turn(agent, thread, input, false, None).await
+    ) -> Result<RunResult, HostError> {
+        self.deliver_run(agent, thread, input, false, None).await
     }
 
-    /// Like [`SharedHost::run_turn`] but forwards the engine's best-effort live
+    /// Like [`SharedHost::run`] but forwards the engine's best-effort live
     /// progress to `sink` as the turn runs (the streaming protocol path). The
     /// committed result is identical; the sink only mirrors in-flight events.
-    pub async fn run_turn_streaming(
+    pub async fn run_streaming(
         &self,
         agent: Option<&str>,
         thread: &str,
         input: Vec<Message>,
         sink: Arc<dyn StreamSink>,
-    ) -> Result<TurnResult, HostError> {
-        self.deliver_turn(agent, thread, input, false, Some(sink))
+    ) -> Result<RunResult, HostError> {
+        self.deliver_run(agent, thread, input, false, Some(sink))
             .await
     }
 
     /// Submit a turn that *supersedes* the thread's prior pending/parked work
     /// (ADR-0022, slice E): the newest submission wins, stale dispatches are marked
     /// superseded and never claimed again, then the new run is driven. Requires
-    /// durable ingress. Unlike `run_turn` it does not fail closed on a parked
+    /// durable ingress. Unlike `run` it does not fail closed on a parked
     /// thread — superseding a parked run is the point.
-    pub(crate) async fn supersede_turn(
+    pub(crate) async fn supersede_run(
         &self,
         agent: Option<&str>,
         thread: &str,
         input: Vec<Message>,
-    ) -> Result<TurnResult, HostError> {
-        self.deliver_turn(agent, thread, input, true, None).await
+    ) -> Result<RunResult, HostError> {
+        self.deliver_run(agent, thread, input, true, None).await
     }
 
-    async fn deliver_turn(
+    async fn deliver_run(
         &self,
         agent: Option<&str>,
         thread: &str,
         input: Vec<Message>,
         supersede: bool,
         sink: Option<Arc<dyn StreamSink>>,
-    ) -> Result<TurnResult, HostError> {
+    ) -> Result<RunResult, HostError> {
         let ctx = self.ctx_for(thread, agent).await?;
         let mut st = ctx.state.lock().await;
         if st.parked.is_some() && !supersede {
@@ -1500,7 +1500,7 @@ impl SharedHost {
             awaken_ext_compact::compaction_count(&ctx.commit.committed_state(&ctx.thread_id));
         // Prepare the activation (install catalog + register snapshot + mint ids),
         // then deliver it through the ingress seam. Direct ingress executes inline,
-        // so this is behavior-identical to the former `start_turn` call.
+        // so this is behavior-identical to the former `start_run` call.
         let (mut run_id, mut activation) = ctx
             .runtime
             .prepare(&ctx.config, thread.to_string(), messages)
@@ -1526,7 +1526,7 @@ impl SharedHost {
         // ingress runs it inline (`submit`). All drive to the same terminal/parked
         // phase and commit through the same boundary, so `finish_step` is identical.
         // R3/R4: route to the ACP executor for acp:* threads, else the native
-        // ingress (direct / durable / superseding). See `crate::turn_exec`.
+        // ingress (direct / durable / superseding). See `crate::run_exec`.
         let phase = self
             .execute_activation(&ctx, thread, activation, supersede, sink)
             .await?;
@@ -1537,7 +1537,7 @@ impl SharedHost {
     }
 
     /// Fire the out-of-band auxiliary agents (memory extraction) after a step reaches
-    /// a terminal phase. Shared by `run_turn` and `resume`, so a turn that ended via a
+    /// a terminal phase. Shared by `run` and `resume`, so a turn that ended via a
     /// tool/delegation resume gets the same treatment as one that ended directly.
     /// No-op while the run is still parked. (Compaction is not out-of-band: it runs
     /// inline as the `compact` plugin's `BeforeInference` hook.)
@@ -1717,7 +1717,7 @@ impl SharedHost {
         thread: &str,
         tool_use_id: &str,
         resume: HostResume,
-    ) -> Result<TurnResult, HostError> {
+    ) -> Result<RunResult, HostError> {
         let ctx = self.ctx_for(thread, None).await?;
         let mut st = ctx.state.lock().await;
         let run_id = st
@@ -1880,7 +1880,7 @@ impl SharedHost {
         phase: Phase,
         before: usize,
         thread: &str,
-    ) -> TurnResult {
+    ) -> RunResult {
         let all = ctx.commit.committed_messages(&ctx.thread_id);
         let new_messages = all[before.min(all.len())..].to_vec();
         let (pending, waiting) = match &phase {
@@ -1903,14 +1903,14 @@ impl SharedHost {
         }
         self.hub.publish(thread, ThreadEvent::StepEnded { waiting });
         // A fold grows the committed compaction-marker count; compare the turn's
-        // start baseline (set in `deliver_turn`, spanning a parked→resumed turn) to
+        // start baseline (set in `deliver_run`, spanning a parked→resumed turn) to
         // the terminal-step count so the marker surfaces exactly once. Count-based,
         // not run-id-based, so it works under durable ingress (where the worker
         // mints its own run id). The compact extension owns the key (G16).
         let compacted = !waiting
             && awaken_ext_compact::compaction_count(&ctx.commit.committed_state(&ctx.thread_id))
                 > st.compactions_before;
-        TurnResult {
+        RunResult {
             new_messages,
             phase,
             pending,

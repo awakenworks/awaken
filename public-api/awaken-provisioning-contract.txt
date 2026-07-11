@@ -119,6 +119,25 @@ impl core::marker::Sync for awaken_provisioning_contract::IsolationClass
 impl core::marker::Unpin for awaken_provisioning_contract::IsolationClass
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::IsolationClass
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::IsolationClass
+pub enum awaken_provisioning_contract::LeaseLiveness
+pub awaken_provisioning_contract::LeaseLiveness::Expiring
+pub awaken_provisioning_contract::LeaseLiveness::Live
+pub awaken_provisioning_contract::LeaseLiveness::Reapable
+impl core::clone::Clone for awaken_provisioning_contract::LeaseLiveness
+pub fn awaken_provisioning_contract::LeaseLiveness::clone(&self) -> awaken_provisioning_contract::LeaseLiveness
+impl core::cmp::Eq for awaken_provisioning_contract::LeaseLiveness
+impl core::cmp::PartialEq for awaken_provisioning_contract::LeaseLiveness
+pub fn awaken_provisioning_contract::LeaseLiveness::eq(&self, &awaken_provisioning_contract::LeaseLiveness) -> bool
+impl core::fmt::Debug for awaken_provisioning_contract::LeaseLiveness
+pub fn awaken_provisioning_contract::LeaseLiveness::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_provisioning_contract::LeaseLiveness
+impl core::marker::StructuralPartialEq for awaken_provisioning_contract::LeaseLiveness
+impl core::marker::Freeze for awaken_provisioning_contract::LeaseLiveness
+impl core::marker::Send for awaken_provisioning_contract::LeaseLiveness
+impl core::marker::Sync for awaken_provisioning_contract::LeaseLiveness
+impl core::marker::Unpin for awaken_provisioning_contract::LeaseLiveness
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::LeaseLiveness
+impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::LeaseLiveness
 pub enum awaken_provisioning_contract::MountAccess
 pub awaken_provisioning_contract::MountAccess::ReadOnly
 pub awaken_provisioning_contract::MountAccess::ReadWrite
@@ -200,6 +219,7 @@ pub awaken_provisioning_contract::NetworkPolicy::Allowlist::hosts: alloc::vec::V
 pub awaken_provisioning_contract::NetworkPolicy::None
 pub awaken_provisioning_contract::NetworkPolicy::Unrestricted
 impl awaken_provisioning_contract::NetworkPolicy
+pub fn awaken_provisioning_contract::NetworkPolicy::is_restricted(&self) -> bool
 pub fn awaken_provisioning_contract::NetworkPolicy::rank(&self) -> u8
 impl core::clone::Clone for awaken_provisioning_contract::NetworkPolicy
 pub fn awaken_provisioning_contract::NetworkPolicy::clone(&self) -> awaken_provisioning_contract::NetworkPolicy
@@ -264,6 +284,25 @@ impl core::marker::Sync for awaken_provisioning_contract::Realization
 impl core::marker::Unpin for awaken_provisioning_contract::Realization
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::Realization
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::Realization
+pub enum awaken_provisioning_contract::ReapCause
+pub awaken_provisioning_contract::ReapCause::Expired
+pub awaken_provisioning_contract::ReapCause::Released
+pub awaken_provisioning_contract::ReapCause::Superseded
+impl core::clone::Clone for awaken_provisioning_contract::ReapCause
+pub fn awaken_provisioning_contract::ReapCause::clone(&self) -> awaken_provisioning_contract::ReapCause
+impl core::cmp::Eq for awaken_provisioning_contract::ReapCause
+impl core::cmp::PartialEq for awaken_provisioning_contract::ReapCause
+pub fn awaken_provisioning_contract::ReapCause::eq(&self, &awaken_provisioning_contract::ReapCause) -> bool
+impl core::fmt::Debug for awaken_provisioning_contract::ReapCause
+pub fn awaken_provisioning_contract::ReapCause::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_provisioning_contract::ReapCause
+impl core::marker::StructuralPartialEq for awaken_provisioning_contract::ReapCause
+impl core::marker::Freeze for awaken_provisioning_contract::ReapCause
+impl core::marker::Send for awaken_provisioning_contract::ReapCause
+impl core::marker::Sync for awaken_provisioning_contract::ReapCause
+impl core::marker::Unpin for awaken_provisioning_contract::ReapCause
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::ReapCause
+impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::ReapCause
 pub enum awaken_provisioning_contract::RootfsSource
 pub awaken_provisioning_contract::RootfsSource::Dir
 pub awaken_provisioning_contract::RootfsSource::Dir::path_template: alloc::string::String
@@ -355,6 +394,26 @@ impl core::marker::Sync for awaken_provisioning_contract::Stdio
 impl core::marker::Unpin for awaken_provisioning_contract::Stdio
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::Stdio
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::Stdio
+pub struct awaken_provisioning_contract::AdoptionPlan
+pub awaken_provisioning_contract::AdoptionPlan::adopt: alloc::vec::Vec<awaken_provisioning_contract::SandboxHandle>
+pub awaken_provisioning_contract::AdoptionPlan::orphan: alloc::vec::Vec<awaken_provisioning_contract::SandboxHandle>
+pub awaken_provisioning_contract::AdoptionPlan::reap: alloc::vec::Vec<awaken_provisioning_contract::SandboxHandle>
+impl core::clone::Clone for awaken_provisioning_contract::AdoptionPlan
+pub fn awaken_provisioning_contract::AdoptionPlan::clone(&self) -> awaken_provisioning_contract::AdoptionPlan
+impl core::cmp::Eq for awaken_provisioning_contract::AdoptionPlan
+impl core::cmp::PartialEq for awaken_provisioning_contract::AdoptionPlan
+pub fn awaken_provisioning_contract::AdoptionPlan::eq(&self, &awaken_provisioning_contract::AdoptionPlan) -> bool
+impl core::default::Default for awaken_provisioning_contract::AdoptionPlan
+pub fn awaken_provisioning_contract::AdoptionPlan::default() -> awaken_provisioning_contract::AdoptionPlan
+impl core::fmt::Debug for awaken_provisioning_contract::AdoptionPlan
+pub fn awaken_provisioning_contract::AdoptionPlan::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_provisioning_contract::AdoptionPlan
+impl core::marker::Freeze for awaken_provisioning_contract::AdoptionPlan
+impl core::marker::Send for awaken_provisioning_contract::AdoptionPlan
+impl core::marker::Sync for awaken_provisioning_contract::AdoptionPlan
+impl core::marker::Unpin for awaken_provisioning_contract::AdoptionPlan
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::AdoptionPlan
+impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::AdoptionPlan
 pub struct awaken_provisioning_contract::Artifact
 pub awaken_provisioning_contract::Artifact::content_hash: alloc::string::String
 pub awaken_provisioning_contract::Artifact::id: alloc::string::String
@@ -483,6 +542,27 @@ impl core::marker::Sync for awaken_provisioning_contract::ExitStatus
 impl core::marker::Unpin for awaken_provisioning_contract::ExitStatus
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::ExitStatus
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::ExitStatus
+pub struct awaken_provisioning_contract::LeaseGrant
+pub awaken_provisioning_contract::LeaseGrant::expires_ms: core::option::Option<u64>
+impl awaken_provisioning_contract::LeaseGrant
+pub fn awaken_provisioning_contract::LeaseGrant::indefinite() -> Self
+pub fn awaken_provisioning_contract::LeaseGrant::liveness(&self, u64, u64) -> awaken_provisioning_contract::LeaseLiveness
+pub fn awaken_provisioning_contract::LeaseGrant::until(u64) -> Self
+impl core::clone::Clone for awaken_provisioning_contract::LeaseGrant
+pub fn awaken_provisioning_contract::LeaseGrant::clone(&self) -> awaken_provisioning_contract::LeaseGrant
+impl core::cmp::Eq for awaken_provisioning_contract::LeaseGrant
+impl core::cmp::PartialEq for awaken_provisioning_contract::LeaseGrant
+pub fn awaken_provisioning_contract::LeaseGrant::eq(&self, &awaken_provisioning_contract::LeaseGrant) -> bool
+impl core::fmt::Debug for awaken_provisioning_contract::LeaseGrant
+pub fn awaken_provisioning_contract::LeaseGrant::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_provisioning_contract::LeaseGrant
+impl core::marker::StructuralPartialEq for awaken_provisioning_contract::LeaseGrant
+impl core::marker::Freeze for awaken_provisioning_contract::LeaseGrant
+impl core::marker::Send for awaken_provisioning_contract::LeaseGrant
+impl core::marker::Sync for awaken_provisioning_contract::LeaseGrant
+impl core::marker::Unpin for awaken_provisioning_contract::LeaseGrant
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::LeaseGrant
+impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::LeaseGrant
 pub struct awaken_provisioning_contract::MountRequirement
 pub awaken_provisioning_contract::MountRequirement::access: awaken_provisioning_contract::MountAccess
 pub awaken_provisioning_contract::MountRequirement::lifetime: awaken_provisioning_contract::MountLifetime
@@ -566,6 +646,8 @@ pub awaken_provisioning_contract::SandboxCapabilities::path_fidelity: bool
 pub awaken_provisioning_contract::SandboxCapabilities::resource_limits: bool
 pub awaken_provisioning_contract::SandboxCapabilities::secret_egress_substitution: bool
 pub awaken_provisioning_contract::SandboxCapabilities::tool_transparent: bool
+impl awaken_provisioning_contract::SandboxCapabilities
+pub fn awaken_provisioning_contract::SandboxCapabilities::satisfies(&self, &awaken_provisioning_contract::SandboxSpec) -> bool
 impl core::clone::Clone for awaken_provisioning_contract::SandboxCapabilities
 pub fn awaken_provisioning_contract::SandboxCapabilities::clone(&self) -> awaken_provisioning_contract::SandboxCapabilities
 impl core::cmp::Eq for awaken_provisioning_contract::SandboxCapabilities
@@ -650,6 +732,13 @@ impl core::marker::Unpin for awaken_provisioning_contract::SandboxSpec
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::SandboxSpec
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::SandboxSpec
 pub const awaken_provisioning_contract::RESERVED_ENV_KEYS: &[&str]
+pub trait awaken_provisioning_contract::BlobSource: core::marker::Send + core::marker::Sync
+pub fn awaken_provisioning_contract::BlobSource::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<alloc::vec::Vec<u8>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_provisioning_contract::MemoryMount: core::marker::Send + core::marker::Sync
+pub fn awaken_provisioning_contract::MemoryMount::realization(&self) -> awaken_provisioning_contract::Realization
+pub fn awaken_provisioning_contract::MemoryMount::teardown<'async_trait>(alloc::boxed::Box<Self>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait
+pub trait awaken_provisioning_contract::MemoryMounter: core::marker::Send + core::marker::Sync
+pub fn awaken_provisioning_contract::MemoryMounter::mount<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 std::path::Path, awaken_provisioning_contract::MountAccess) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_provisioning_contract::MemoryMount>, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub trait awaken_provisioning_contract::ProcessHandle: core::marker::Send + core::marker::Sync
 pub fn awaken_provisioning_contract::ProcessHandle::id(&self) -> &str
 pub fn awaken_provisioning_contract::ProcessHandle::poll<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_provisioning_contract::ExitStatus>, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
@@ -673,3 +762,4 @@ pub fn awaken_provisioning_contract::SandboxProvider::capabilities(&self) -> awa
 pub fn awaken_provisioning_contract::SandboxProvider::create<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::SandboxSpec) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_provisioning_contract::Sandbox>, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_provisioning_contract::check_environment_soundness(&awaken_provisioning_contract::EnvironmentDecl) -> core::result::Result<(), awaken_provisioning_contract::AdmissionError>
 pub fn awaken_provisioning_contract::prepare_environment(&awaken_provisioning_contract::SandboxSpec, &awaken_provisioning_contract::SandboxCapabilities) -> core::result::Result<awaken_provisioning_contract::EnvironmentPlan, awaken_provisioning_contract::PrepareError>
+pub fn awaken_provisioning_contract::reconcile_adoption(&[awaken_provisioning_contract::SandboxHandle], &[awaken_provisioning_contract::SandboxHandle]) -> awaken_provisioning_contract::AdoptionPlan

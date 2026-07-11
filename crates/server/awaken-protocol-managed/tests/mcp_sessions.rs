@@ -36,7 +36,7 @@ impl SessionRuntime for PreparingFake {
             None => Ok(()),
         }
     }
-    async fn run_turn(
+    async fn run(
         &self,
         _a: &str,
         _t: &str,
@@ -404,7 +404,7 @@ async fn minting_skips_session_ids_that_own_committed_truth() {
     struct HauntedRuntime;
     #[async_trait::async_trait]
     impl SessionRuntime for HauntedRuntime {
-        async fn run_turn(
+        async fn run(
             &self,
             _agent: &str,
             _thread: &str,
