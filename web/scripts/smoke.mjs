@@ -121,6 +121,9 @@ await step("capabilities (flat)", "GET", "/v1/capabilities", undefined, (s, p) =
   p.plugins.some((pl) => pl.id === "state_machine" && pl.config_schema && typeof pl.config_schema === "object"));
 // Uniform addressing: same snapshot under the workspace path prefix (ADR-0048).
 await step("capabilities (workspace-path)", "GET", "/v1/workspaces/default/capabilities", undefined, (s, p) => s === 200 && p.plugins.length > 0);
+// Gating truth: the Observe faces are genuinely unmounted, so GatedPage's probe
+// gets a 404 and shows the placeholder (not a fabricated flag).
+await step("gated Observe face 404s (audit-log)", "GET", "/v1/audit-log", undefined, (s) => s === 404 || s === 405);
 
 // ---- Project · Vaults (surfaces/vaults.tsx; bare face until §7.10) ----
 const vault = await step("create vault", "POST", "/v1/vaults", { display_name: "smoke" });
