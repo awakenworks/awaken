@@ -224,6 +224,81 @@ async fn drives_a_turn_commits_messages_and_returns_natural_end() {
 }
 
 #[tokio::test]
+async fn a_tool_call_and_its_result_commit_as_neutral_messages() {
+    use awaken_agent_contract::agent::content::ContentBlock;
+
+    // The external agent surfaces a tool call, then reports it completed with output.
+    let e = exec(vec![
+        r#"{"type":"tool_call","id":"c1","name":"read","input":{"path":"a.txt"}}"#.into(),
+        r#"{"type":"tool_result","id":"c1","content":"file body","is_error":false}"#.into(),
+        r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
+    ]);
+    let coord = Arc::new(RecordingCoordinator::default());
+    let phase = e
+        .execute(
+            activation(),
+            RuntimeRunContext::new().with_commit(coord.clone()),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    let commits = coord.commits.lock().unwrap();
+    let messages = &commits[0].messages;
+    assert_eq!(messages.len(), 2, "the call and its result both commit");
+
+    // The call is an assistant ToolUse carrying the correlating id.
+    assert_eq!(messages[0].role, Role::Assistant);
+    match &messages[0].content[0] {
+        ContentBlock::ToolUse { id, name, input } => {
+            assert_eq!(id, "c1");
+            assert_eq!(name, "read");
+            assert_eq!(input["path"], "a.txt");
+        }
+        other => panic!("expected a ToolUse, got {other:?}"),
+    }
+
+    // The result is a Role::Tool ToolResult addressed to that call — proving the
+    // external agent's tool output now reaches the neutral transcript.
+    assert_eq!(messages[1].role, Role::Tool);
+    match &messages[1].content[0] {
+        ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+        } => {
+            assert_eq!(tool_use_id, "c1");
+            assert_eq!(content[0], ContentBlock::text("file body"));
+        }
+        other => panic!("expected a ToolResult, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_failed_tool_result_is_marked_in_the_committed_text() {
+    use awaken_agent_contract::agent::content::ContentBlock;
+
+    let e = exec(vec![
+        r#"{"type":"tool_result","id":"c9","content":"denied","is_error":true}"#.into(),
+        r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
+    ]);
+    let coord = Arc::new(RecordingCoordinator::default());
+    e.execute(
+        activation(),
+        RuntimeRunContext::new().with_commit(coord.clone()),
+    )
+    .await
+    .unwrap();
+
+    let commits = coord.commits.lock().unwrap();
+    match &commits[0].messages[0].content[0] {
+        ContentBlock::ToolResult { content, .. } => {
+            assert_eq!(content[0], ContentBlock::text("[tool error] denied"));
+        }
+        other => panic!("expected a ToolResult, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn a_truncated_stream_is_classified_and_surfaces_an_error_prompt() {
     // Agent emits a message then closes without a turn_end → AcpError::Truncated.
     let e = exec(vec![r#"{"type":"message","text":"partial"}"#.into()]);
