@@ -558,36 +558,35 @@ pub enum ResolvedExecutorError {
 pub fn executor_from_resolved(
     inference: &ResolvedInference,
 ) -> Result<Arc<dyn LlmExecutor>, ResolvedExecutorError> {
-    match inference.adapter_kind {
-        // The genai provider speaks the Anthropic Messages wire (native + the many
-        // Anthropic-compatible gateways). Its base URL and key come from the catalog
-        // endpoint and the resolved credential, never inlined by the Managed wire.
-        "anthropic" => {
-            let base_url = inference
-                .base_url
-                .clone()
-                .ok_or(ResolvedExecutorError::MissingBaseUrl("anthropic"))?;
-            let credential = inference
-                .credential
-                .as_ref()
-                .ok_or(ResolvedExecutorError::MissingCredential)?;
-            Ok(Arc::new(GenaiExecutor::anthropic_compatible(
-                base_url,
-                credential.expose_secret(),
-            )))
-        }
-        // Gemini via Google AI Studio: the key comes from the resolved credential; the
-        // AI-Studio endpoint is genai's default, so no base URL is needed (unlike the
-        // Anthropic-gateway case). Vertex/OAuth is a separate binding, not this path.
-        "gemini" => {
-            let credential = inference
-                .credential
-                .as_ref()
-                .ok_or(ResolvedExecutorError::MissingCredential)?;
-            Ok(Arc::new(GenaiExecutor::gemini(credential.expose_secret())))
-        }
-        other => Err(ResolvedExecutorError::UnsupportedAdapter(other.to_string())),
-    }
+    // One path for every API-key provider: map the catalog's adapter-kind to a genai
+    // adapter and hand it the resolved credential + (optional) gateway base URL. The
+    // key comes from the resolved credential, never inlined by the Managed wire. A new
+    // provider is one line in `genai_adapter` + catalog config — no new branch here.
+    let adapter = genai_adapter(inference.adapter_kind).ok_or_else(|| {
+        ResolvedExecutorError::UnsupportedAdapter(inference.adapter_kind.to_string())
+    })?;
+    let credential = inference
+        .credential
+        .as_ref()
+        .ok_or(ResolvedExecutorError::MissingCredential)?;
+    Ok(Arc::new(GenaiExecutor::from_resolved(
+        adapter,
+        inference.base_url.clone(),
+        credential.expose_secret(),
+    )))
+}
+
+/// Map our catalog's wire flavor (`ModelApiCompat::adapter_kind`) to a genai adapter.
+/// The one place a supported provider wire is named; genai's default endpoint is used
+/// unless the catalog endpoint supplies a gateway base URL.
+fn genai_adapter(adapter_kind: &str) -> Option<awaken_provider_genai::AdapterKind> {
+    use awaken_provider_genai::AdapterKind;
+    Some(match adapter_kind {
+        "anthropic" => AdapterKind::Anthropic,
+        "gemini" => AdapterKind::Gemini,
+        "openai" => AdapterKind::OpenAI,
+        _ => return None,
+    })
 }
 
 /// Build the full server router for a resolved run: turn the [`ResolvedInference`]
