@@ -12,8 +12,6 @@
 //! calls after a mutation. It re-resolves and re-publishes `Auto` configs and skips
 //! `Pinned` ones; re-publish is idempotent by content address, so a retry is safe.
 
-use std::sync::Arc;
-
 use awaken_config_store::ModelSelection;
 use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_tenancy::ScopeId;
@@ -58,22 +56,23 @@ pub fn needs_resolution(selection: &ModelSelection) -> bool {
 }
 
 /// The concrete reconciler the host wires: it re-publishes a fixed set of agent ids
-/// (the reserved-scope assistant) in a scope through the ordinary
-/// [`ConfigService`](crate::config_plane::ConfigService) publish path.
+/// (the reserved-scope assistant) in a scope through the ordinary config-plane publish
+/// path. It holds the scope edge ([`ConfigPlane`](crate::config_plane::ConfigPlane)) —
+/// which binds the scope onto the scope-free service — plus the scope + ids.
 pub struct ConfigServiceReconciler {
-    service: Arc<crate::config_plane::ConfigService>,
+    plane: crate::config_plane::ConfigPlane,
     scope: ScopeId,
     agent_ids: Vec<String>,
 }
 
 impl ConfigServiceReconciler {
     pub fn new(
-        service: Arc<crate::config_plane::ConfigService>,
+        plane: crate::config_plane::ConfigPlane,
         scope: impl Into<ScopeId>,
         agent_ids: Vec<String>,
     ) -> Self {
         Self {
-            service,
+            plane,
             scope: scope.into(),
             agent_ids,
         }
@@ -85,7 +84,7 @@ impl AssistantBindingReconciler for ConfigServiceReconciler {
     async fn reconcile(&self) -> Result<usize, String> {
         let mut republished = 0;
         for id in &self.agent_ids {
-            if self.service.reconcile(&self.scope, id).await? {
+            if self.plane.reconcile(&self.scope, id).await? {
                 republished += 1;
             }
         }
