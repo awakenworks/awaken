@@ -114,11 +114,12 @@ test("Models Test opens a live model dialog (scratch session + composer)", async
   await expect(page.getByPlaceholder("Say hello…")).toBeVisible();
 });
 
-test("Admin Assistant is truth-driven: gates when the assistant agent isn't installed", async ({ page }) => {
+test("Admin Assistant is live: the seeded assistant opens a session composer", async ({ page }) => {
   await page.goto("/w/default/assistant");
   await expect(page.getByRole("heading", { name: /Admin Assistant|控制台助手/ })).toBeVisible();
-  // __admin_assistant is not installed in CI → the note explains why, not a fake copilot.
-  await expect(page.getByText(/Admin Assistant agent is not installed|助手 agent 尚未安装/)).toBeVisible();
+  // The assistant is seeded into the reserved scope (ADR-0052), so the surface opens
+  // a live session composer rather than the "not installed" gate.
+  await expect(page.getByPlaceholder("Describe the agent you want…")).toBeVisible();
 });
 
 test("Sandbox tab gates an unpublished draft (nothing live to talk to yet)", async ({ page }) => {
