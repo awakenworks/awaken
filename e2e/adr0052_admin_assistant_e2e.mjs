@@ -82,6 +82,21 @@ async function main() {
     assert.equal(reservedValidate.body.valid, true, 'config compiles in the reserved scope');
     pass('reserved scope: admin tool resolves → config validates');
 
+    // 2c. And it PUBLISHES in the reserved scope (the full author→publish path), then
+    // projects with the admin tool — proving a reserved-scope agent carrying a
+    // management tool is a first-class published agent (D1/D3).
+    assert.equal(
+      (await json('PUT', `/v1/workspaces/${RESERVED}/config/agents/sneaky`, namingAdmin)).status,
+      200,
+      'stored in the reserved scope',
+    );
+    const reservedPub = await json('POST', `/v1/workspaces/${RESERVED}/config/agents/sneaky/publish`, undefined);
+    assert.equal(reservedPub.status, 200, 'admin-tool config publishes in the reserved scope');
+    const sneakyProjected = await json('GET', `/v1/agents/sneaky`);
+    const sneakyTools = (sneakyProjected.body.tools ?? []).map((t) => t.name ?? t.id ?? t);
+    assert.ok(sneakyTools.includes(ADMIN_TOOL), 'the published reserved-scope agent carries the admin tool');
+    pass('reserved scope: admin-tool config publishes + projects');
+
     // 3a. Model selection wire (D5): an {"mode":"auto"} config publishes — the
     // resolver binds a concrete first-offering at publish.
     const autoAgent = {
