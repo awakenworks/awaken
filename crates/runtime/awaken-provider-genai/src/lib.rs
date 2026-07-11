@@ -18,6 +18,10 @@ use genai::chat::{
     Tool as GenaiTool, ToolCall as GenaiToolCall, ToolResponse, Usage,
 };
 
+/// The genai wire adapter, re-exported so a consumer selects a provider wire without
+/// naming the model SDK itself (which stays named only in this crate).
+pub use genai::adapter::AdapterKind;
+
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 /// How long the stream may go silent between events before the turn fails as
 /// a retryable timeout. The overall `timeout` only guards opening the call;
@@ -68,27 +72,33 @@ impl GenaiExecutor {
         self
     }
 
-    /// An executor pointed at a custom **Anthropic-compatible** endpoint — a
-    /// gateway that speaks the Anthropic Messages API (`{base_url}messages`), such
-    /// as `https://api.kimi.com/coding/v1/`. Every request routes through the
-    /// Anthropic adapter to `base_url`, authenticated by `api_key`; the model name
-    /// still comes from the request's `ModelBinding` (G22). This keeps the model
-    /// SDK named only here — a consumer passes a base URL, key, and model id.
-    pub fn anthropic_compatible(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
-        use genai::adapter::AdapterKind;
+    /// The single API-key executor path: inject the caller-supplied `key` (from a
+    /// config-plane credential, never the process env), force the declared `adapter`
+    /// (keeping the request's model name, G22), and override the endpoint only when a
+    /// gateway `base_url` is given (else genai's default for that adapter).
+    ///
+    /// **Every API-key provider routes through this one function** — Anthropic
+    /// (native or a compatible gateway), Gemini via AI Studio, OpenAI and its many
+    /// compatible vendors (Groq, Together, Moonshot, …). Adding a provider is a
+    /// catalog entry + an `adapter_kind` mapping, not a new constructor. (Vertex/OAuth
+    /// is a different auth shape — a Bearer token + a per-project URL — so it keeps
+    /// its own [`vertex_gemini`] constructor.)
+    pub fn from_resolved(
+        adapter: genai::adapter::AdapterKind,
+        base_url: Option<String>,
+        key: impl Into<String>,
+    ) -> Self {
         use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
         use genai::{ModelIden, ServiceTarget};
 
-        let base_url = base_url.into();
-        let api_key = api_key.into();
+        let key = key.into();
         let resolver = ServiceTargetResolver::from_resolver_fn(
             move |mut target: ServiceTarget| -> std::result::Result<ServiceTarget, genai::resolver::Error> {
-                // Force the Anthropic adapter + custom endpoint + key, keeping the
-                // caller-selected model name.
-                target.endpoint = Endpoint::from_owned(base_url.clone());
-                target.auth = AuthData::from_single(api_key.clone());
-                target.model =
-                    ModelIden::new(AdapterKind::Anthropic, target.model.model_name.clone());
+                target.auth = AuthData::from_single(key.clone());
+                target.model = ModelIden::new(adapter, target.model.model_name.clone());
+                if let Some(base_url) = &base_url {
+                    target.endpoint = Endpoint::from_owned(base_url.clone());
+                }
                 Ok(target)
             },
         );
@@ -96,6 +106,17 @@ impl GenaiExecutor {
             .with_service_target_resolver(resolver)
             .build();
         Self::with_client(client)
+    }
+
+    /// An executor pointed at a custom **Anthropic-compatible** endpoint (e.g.
+    /// `https://api.kimi.com/coding/v1/`). A thin wrapper over [`from_resolved`] kept
+    /// for the callers that name a base URL + key directly.
+    pub fn anthropic_compatible(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
+        Self::from_resolved(
+            genai::adapter::AdapterKind::Anthropic,
+            Some(base_url.into()),
+            api_key,
+        )
     }
 
     /// An executor for **Gemini on Vertex AI**, authenticated by a Google OAuth2
@@ -141,32 +162,6 @@ impl GenaiExecutor {
         Self::with_client(client)
     }
 
-    /// An executor for **Gemini via Google AI Studio**, authenticated by an API key
-    /// passed explicitly (a `GEMINI_API_KEY`-style key). Unlike [`vertex_gemini`],
-    /// this speaks the AI-Studio `generateContent` wire — genai's default Gemini
-    /// endpoint — so only the adapter + key are forced, keeping the default base URL.
-    /// The model name still comes from the request's `ModelBinding` (G22). The key is
-    /// handed in by the caller (a config-plane credential), never read from the env.
-    pub fn gemini(api_key: impl Into<String>) -> Self {
-        use genai::adapter::AdapterKind;
-        use genai::resolver::{AuthData, ServiceTargetResolver};
-        use genai::{ModelIden, ServiceTarget};
-
-        let api_key = api_key.into();
-        let resolver = ServiceTargetResolver::from_resolver_fn(
-            move |mut target: ServiceTarget| -> std::result::Result<ServiceTarget, genai::resolver::Error> {
-                // Force the Gemini adapter + explicit key, keeping genai's default
-                // AI-Studio endpoint and the caller-selected model name.
-                target.auth = AuthData::from_single(api_key.clone());
-                target.model = ModelIden::new(AdapterKind::Gemini, target.model.model_name.clone());
-                Ok(target)
-            },
-        );
-        let client = Client::builder()
-            .with_service_target_resolver(resolver)
-            .build();
-        Self::with_client(client)
-    }
 }
 
 #[async_trait]
