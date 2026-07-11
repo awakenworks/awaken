@@ -8,7 +8,7 @@ use awaken_credential_vault::repo::CredentialRepo;
 use awaken_credential_vault::sqlite::SqliteCredentialRepo;
 use awaken_credential_vault::{
     CredentialKind, CredentialPool, CredentialPoolId, CredentialPoolMember, CredentialSource,
-    CredentialSourceId, CredentialStatus,
+    CredentialSourceId, CredentialStatus, SelectionPolicy,
 };
 
 fn source(id: &str, ws: &str) -> CredentialSource {
@@ -39,6 +39,9 @@ async fn sources_and_pools_survive_a_reopen_from_file() {
             enabled: true,
             selection_weight: 0,
         }],
+        // A non-default policy so the round-trip assertion below actually
+        // exercises serde persistence of the new `policy` field.
+        policy: SelectionPolicy::RotateSpread,
     };
     {
         let repo = SqliteCredentialRepo::open(path).unwrap();

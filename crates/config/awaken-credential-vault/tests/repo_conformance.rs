@@ -6,7 +6,7 @@
 use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo};
 use awaken_credential_vault::{
     CredentialError, CredentialKind, CredentialPool, CredentialPoolId, CredentialPoolMember,
-    CredentialSource, CredentialSourceId, CredentialStatus,
+    CredentialSource, CredentialSourceId, CredentialStatus, SelectionPolicy,
 };
 
 fn source(id: &str, ws: &str) -> CredentialSource {
@@ -33,6 +33,7 @@ fn pool(id: &str, ws: &str) -> CredentialPool {
             enabled: true,
             selection_weight: 0,
         }],
+        policy: SelectionPolicy::FirstHealthy,
     }
 }
 

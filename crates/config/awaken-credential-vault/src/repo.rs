@@ -153,6 +153,7 @@ mod tests {
             id: CredentialPoolId(id.into()),
             workspace_id: ws.into(),
             members: Vec::new(),
+            policy: crate::SelectionPolicy::FirstHealthy,
         };
         repo.put_pool(pool("pool:a", "ws")).await.unwrap();
         repo.put_pool(pool("pool:b", "ws")).await.unwrap();

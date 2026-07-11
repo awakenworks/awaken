@@ -66,8 +66,22 @@ pub enum ResolveError {
     SourceMissing(String),
     #[error("credential pool `{0}` not provided")]
     PoolMissing(String),
-    #[error("credential pool `{0}` has no member that could be materialized (fail closed)")]
-    PoolExhausted(String),
+    #[error(
+        "credential pool `{pool_id}` has no eligible member (fail closed): \
+         {total} total, {cooled} cooled, {over_capacity} over capacity"
+    )]
+    NoEligibleCredential {
+        pool_id: String,
+        /// Members considered (the pool's eligible/enabled selection order).
+        total: usize,
+        /// Members excluded because their identity is in cooldown. Always 0 until
+        /// availability-aware selection lands (E3-4); present so the diagnostic
+        /// shape does not change when it does.
+        cooled: usize,
+        /// Members excluded because their account is over its capacity bucket.
+        /// Always 0 until quota buckets land; present for the same reason.
+        over_capacity: usize,
+    },
     #[error(transparent)]
     Credential(#[from] CredentialError),
 }
@@ -211,7 +225,9 @@ async fn resolve_credential(
                 .ok_or_else(|| ResolveError::PoolMissing(credential_pool_id.0.clone()))?;
             // Try members in selection order; skip a member whose source is absent
             // or fails to materialize, so one bad key does not fail the run.
-            for member in pool.selection_order() {
+            let order = pool.selection_order();
+            let total = order.len();
+            for member in order {
                 let Some(source) = sources.get(member.credential_source_id.0.as_str()) else {
                     continue;
                 };
@@ -220,7 +236,14 @@ async fn resolve_credential(
                     return Ok(Some(secret));
                 }
             }
-            Err(ResolveError::PoolExhausted(credential_pool_id.0.clone()))
+            Err(ResolveError::NoEligibleCredential {
+                pool_id: credential_pool_id.0.clone(),
+                total,
+                // No cooldown / capacity signals yet (E3-4); every exclusion here is
+                // an absent-or-unmaterializable source.
+                cooled: 0,
+                over_capacity: 0,
+            })
         }
     }
 }

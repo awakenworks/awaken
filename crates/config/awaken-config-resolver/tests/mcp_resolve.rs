@@ -13,7 +13,7 @@ use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo, ente
 use awaken_credential_vault::{
     CredentialBinding, CredentialCreateParams, CredentialKind, CredentialPool, CredentialPoolId,
     CredentialPoolMember, CredentialSource, CredentialSourceId, CredentialStatus,
-    InMemorySecretStore,
+    InMemorySecretStore, SelectionPolicy,
 };
 
 /// A lookup exposing both individual sources and one pool.
@@ -174,6 +174,7 @@ async fn pool_binding_fails_over_to_the_first_healthy_member() {
                 selection_weight: 0,
             },
         ],
+        policy: SelectionPolicy::FirstHealthy,
     };
     let ctx = PoolCtx { sources, pool };
 
@@ -211,6 +212,7 @@ async fn pool_with_no_usable_member_fails_closed() {
             enabled: true,
             selection_weight: 0,
         }],
+        policy: SelectionPolicy::FirstHealthy,
     };
     let ctx = PoolCtx { sources, pool };
 
@@ -226,5 +228,5 @@ async fn pool_with_no_usable_member_fails_closed() {
     )
     .await
     .expect_err("an exhausted pool fails closed");
-    assert!(matches!(err, ResolveError::PoolExhausted(_)));
+    assert!(matches!(err, ResolveError::NoEligibleCredential { .. }));
 }
