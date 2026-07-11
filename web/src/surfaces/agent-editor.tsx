@@ -11,14 +11,23 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import Drawer from "../components/ui/Drawer";
 import { useToast } from "../components/ui/Toast";
-import { Button, Card, Pill, TextAreaField, TextField } from "../components/ui";
+import { Button, Card, CheckPicker, Pill, SchemaForm, TextAreaField, TextField } from "../components/ui";
+import type { JsonSchema } from "../components/ui";
+import SandboxPane from "../components/session/SandboxPane";
 import { api, isAbsent } from "../lib/api/client";
-import type { AgentConfig, ContextPolicy, ProviderCatalog, PublishResult } from "../lib/api/types";
+import type {
+  AgentConfig,
+  AgentConfigItem,
+  ContextPolicy,
+  ProviderCatalog,
+  PublishResult,
+} from "../lib/api/types";
 import { useApp } from "../lib/app-state";
+import { useCapabilities } from "../lib/useCapabilities";
 import { useUnsavedGuard } from "../lib/useUnsavedGuard";
 import ModelsSurface from "./models";
 
-type Tab = "basics" | "context" | "tools" | "plugins";
+type Tab = "basics" | "context" | "tools" | "plugins" | "sandbox";
 
 const BLANK: AgentConfig = {
   id: "",
@@ -102,12 +111,13 @@ export default function AgentEditorSurface() {
   const existing = useQuery({
     queryKey: ["config-agent", id],
     enabled: !isNew,
-    queryFn: () => api.get<AgentConfig>(`/v1/config/agents/${id}`),
+    queryFn: () => api.get<AgentConfigItem>(`/v1/config/agents/${id}`),
     retry: (n, err) => !isAbsent(err) && n < 2,
   });
   useEffect(() => {
     if (existing.data) {
-      setCfg({ ...BLANK, ...existing.data });
+      const { published: _published, ...rest } = existing.data;
+      setCfg({ ...BLANK, ...rest });
       setDirty(false);
     }
   }, [existing.data]);
@@ -116,6 +126,7 @@ export default function AgentEditorSurface() {
     queryKey: ["catalog"],
     queryFn: () => api.get<ProviderCatalog>("/v1/config/catalog"),
   });
+  const caps = useCapabilities();
   const models = useMemo(
     () => Array.from(new Set((catalog.data?.offerings ?? []).map((o) => o.model_id))),
     [catalog.data],
@@ -136,13 +147,24 @@ export default function AgentEditorSurface() {
       r.valid ? toast.ok(app.t("Config is valid.", "配置有效。")) : toast.err(r.error ?? "invalid"),
     onError: (e) => toast.err(e instanceof Error ? e.message : "error"),
   });
+  // After a new agent's first save, navigate to its id URL — but only once `dirty`
+  // has actually flushed to false, else the unsaved-guard (useBlocker(dirty)) would
+  // swallow the navigation (the setDirty in onSuccess hasn't committed yet).
+  const [savedId, setSavedId] = useState<string | null>(null);
+  useEffect(() => {
+    if (savedId && !dirty) {
+      nav(`/w/${wsId}/agents/${savedId}`, { replace: true });
+      setSavedId(null);
+    }
+  }, [savedId, dirty, wsId, nav]);
+
   const save = useMutation({
     mutationFn: () => api.put<{ id: string }>(`/v1/config/agents/${targetId()}`, body()),
     onSuccess: () => {
       setDirty(false);
       toast.ok(app.t("Saved.", "已保存。"));
       void qc.invalidateQueries({ queryKey: ["config-agents"] });
-      if (isNew) nav(`/w/${wsId}/agents/${targetId()}`, { replace: true });
+      if (isNew) setSavedId(targetId());
     },
     onError: (e) => toast.err(e instanceof Error ? e.message : "error"),
   });
@@ -161,6 +183,7 @@ export default function AgentEditorSurface() {
     { key: "context", label: "Context", zh: "上下文" },
     { key: "tools", label: "Tools", zh: "工具" },
     { key: "plugins", label: "Plugins & policy", zh: "插件与策略" },
+    { key: "sandbox", label: "Sandbox", zh: "试运行" },
   ];
 
   return (
@@ -203,6 +226,11 @@ export default function AgentEditorSurface() {
         ))}
       </div>
 
+      {tab === "sandbox" && (
+        <SandboxPane agentId={id} ready={!isNew && !!existing.data?.published} dirty={dirty} />
+      )}
+
+      {tab !== "sandbox" && (
       <Card>
         {tab === "basics" && (
           <>
@@ -311,9 +339,28 @@ export default function AgentEditorSurface() {
           <div className="field">
             <label>{app.t("Tools", "工具")}</label>
             <span className="mut">
-              {app.t("Hand tools bound by id at compile. Empty = no hand tools.", "编译时按 id 绑定的 hand 工具;空 = 无。")}
+              {app.t(
+                "Pick from the host's advertised tools, or add an id not in the catalog (e.g. an MCP tool).",
+                "从 host 广告的工具中勾选,或添加目录外的 id(如 MCP 工具)。",
+              )}
             </span>
-            <ListEditor values={cfg.tools} onChange={(v) => patch({ tools: v })} placeholder="mcp__calc__add" />
+            <CheckPicker
+              options={[
+                ...(caps.data?.tools ?? []).map((t) => ({ id: t.id, description: t.description })),
+                // custom ids already on the agent but not in the catalog:
+                ...cfg.tools
+                  .filter((id) => !(caps.data?.tools ?? []).some((t) => t.id === id))
+                  .map((id) => ({ id })),
+              ]}
+              selected={cfg.tools}
+              onChange={(v) => patch({ tools: v })}
+              empty={caps.isLoading ? "…" : app.t("No tools advertised.", "无广告工具。")}
+            />
+            <ListEditor
+              values={cfg.tools}
+              onChange={(v) => patch({ tools: v })}
+              placeholder={app.t("add custom tool id (e.g. mcp__calc__add)", "添加自定义工具 id")}
+            />
           </div>
         )}
 
@@ -322,9 +369,14 @@ export default function AgentEditorSurface() {
             <div className="field">
               <label>{app.t("Enabled plugins", "启用的插件")}</label>
               <span className="mut">
-                {app.t("A runtime plugin contributes only when listed here.", "运行时插件只有列在此处才生效。")}
+                {app.t("A runtime plugin contributes only when enabled here.", "运行时插件只有在此启用才生效。")}
               </span>
-              <ListEditor values={cfg.plugins} onChange={(v) => patch({ plugins: v })} placeholder="permission" />
+              <CheckPicker
+                options={(caps.data?.plugins ?? []).map((p) => ({ id: p.id }))}
+                selected={cfg.plugins}
+                onChange={(v) => patch({ plugins: v })}
+                empty={caps.isLoading ? "…" : app.t("No plugins available.", "无可用插件。")}
+              />
             </div>
             <div className="field">
               <label>{app.t("Plugin config (policy sections)", "插件配置(策略段)")}</label>
@@ -337,12 +389,16 @@ export default function AgentEditorSurface() {
               <PluginConfigEditor
                 pluginIds={cfg.plugins}
                 config={cfg.plugin_config}
+                schemas={Object.fromEntries(
+                  (caps.data?.plugins ?? []).map((p) => [p.id, p.config_schema as JsonSchema]),
+                )}
                 onChange={(next) => patch({ plugin_config: next })}
               />
             </div>
           </>
         )}
       </Card>
+      )}
 
       {manageModels && (
         <Drawer title={app.t("Models", "模型")} onClose={() => setManageModels(false)}>
@@ -353,15 +409,17 @@ export default function AgentEditorSurface() {
   );
 }
 
-/** A JSON section editor keyed by plugin id — the honest general form for any
- * plugin's config (specialised visual builders can graft on later, keyed the same). */
+/** Per-plugin config editor: a schema-driven form when the plugin advertises a
+ * `config_schema` (from /v1/capabilities), else a validated JSON textarea. */
 function PluginConfigEditor({
   pluginIds,
   config,
+  schemas,
   onChange,
 }: {
   pluginIds: string[];
   config: Record<string, unknown>;
+  schemas: Record<string, JsonSchema>;
   onChange: (next: Record<string, unknown>) => void;
 }) {
   const app = useApp();
@@ -373,7 +431,7 @@ function PluginConfigEditor({
   if (keys.length === 0) return <span className="mut">{app.t("No plugins enabled.", "未启用插件。")}</span>;
 
   const textFor = (k: string) => drafts[k] ?? JSON.stringify(config[k] ?? {}, null, 2);
-  const commit = (k: string, raw: string) => {
+  const commitJson = (k: string, raw: string) => {
     setDrafts((d) => ({ ...d, [k]: raw }));
     try {
       const parsed = raw.trim() === "" ? {} : JSON.parse(raw);
@@ -385,20 +443,27 @@ function PluginConfigEditor({
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       {keys.map((k) => (
-        <div key={k}>
-          <label className="row" style={{ justifyContent: "space-between", fontSize: 12 }}>
+        <Card key={k} style={{ padding: "10px 12px" }}>
+          <label className="row" style={{ justifyContent: "space-between", fontSize: 12, marginBottom: 6 }}>
             <span className="mono">{k}</span>
-            {errs[k] && <span className="err" style={{ fontSize: 11 }}>{errs[k]}</span>}
+            {schemas[k] ? (
+              <span className="mut" style={{ fontSize: 10 }}>{app.t("schema-driven", "schema 驱动")}</span>
+            ) : (
+              errs[k] && <span className="err" style={{ fontSize: 11 }}>{errs[k]}</span>
+            )}
           </label>
-          <textarea
-            className="input mono"
-            rows={5}
-            value={textFor(k)}
-            onChange={(e) => commit(k, e.target.value)}
-          />
-        </div>
+          {schemas[k] ? (
+            <SchemaForm
+              schema={schemas[k]}
+              value={config[k] ?? {}}
+              onChange={(v) => onChange({ ...config, [k]: v })}
+            />
+          ) : (
+            <textarea className="input mono" rows={5} value={textFor(k)} onChange={(e) => commitJson(k, e.target.value)} />
+          )}
+        </Card>
       ))}
     </div>
   );

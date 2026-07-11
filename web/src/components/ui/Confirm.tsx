@@ -3,6 +3,7 @@
 
 import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from "react";
 import { useApp } from "../../lib/app-state";
+import Modal from "./Modal";
 
 interface ConfirmOpts {
   title: string;
@@ -43,20 +44,31 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
     <Ctx.Provider value={confirm}>
       {children}
       {opts && (
-        <div className="overlay" onClick={() => close(false)}>
-          <div className="modal" style={{ width: "min(420px, 92vw)" }} onClick={(e) => e.stopPropagation()}>
-            <h3>{opts.title}</h3>
-            {opts.body && <p className="mut" style={{ margin: 0 }}>{opts.body}</p>}
-            <div className="row" style={{ justifyContent: "flex-end" }}>
+        <Modal
+          title={opts.title}
+          onClose={() => close(false)}
+          width="min(420px, 92vw)"
+          footer={
+            <>
               <button className="btn" onClick={() => close(false)}>
                 {opts.cancelLabel ?? app.t("Cancel", "取消")}
               </button>
-              <button className={`btn ${opts.danger ? "danger" : "primary"}`} onClick={() => close(true)} autoFocus>
+              <button
+                className={`btn ${opts.danger ? "danger" : "primary"}`}
+                onClick={() => close(true)}
+                autoFocus
+              >
                 {opts.confirmLabel ?? app.t("Confirm", "确认")}
               </button>
-            </div>
-          </div>
-        </div>
+            </>
+          }
+        >
+          {opts.body && (
+            <p className="mut" style={{ margin: 0 }}>
+              {opts.body}
+            </p>
+          )}
+        </Modal>
       )}
     </Ctx.Provider>
   );

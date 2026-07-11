@@ -122,17 +122,27 @@ export interface SessionAgent {
   id: string;
   type: "agent";
   version?: number;
-  model?: string;
+  /** A bare id or a `{ id }` object, depending on how the agent was authored. */
+  model?: string | { id: string };
   name?: string;
   tools?: unknown[];
   mcp_servers?: unknown[];
   skills?: unknown[];
   multiagent?: unknown;
 }
+/** Accumulated token usage for a session (zero until the first turn commits). */
+export interface SessionUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number;
+  cache_creation_input_tokens: number;
+}
+
 export interface Session {
   id: string;
   type: "session";
   agent: SessionAgent;
+  usage?: SessionUsage;
   /** Extension: the project ingress the session was created through. */
   project_id?: string | null;
   environment_id?: string | null;
@@ -372,6 +382,25 @@ export interface PublishResult {
   fingerprint: string;
   agent_id: string;
   installed: boolean;
+}
+
+// ---- capabilities (GET /v1/capabilities) ----
+// Host-level facts the editor authors data-driven: tool descriptors (with their
+// JSON-Schema params) and installable plugins (with per-plugin config schema).
+export interface ToolCap {
+  id: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+export interface PluginCap {
+  id: string;
+  config_sections: string[];
+  config_schema: Record<string, unknown>;
+}
+export interface Capabilities {
+  runtime_version: string;
+  tools: ToolCap[];
+  plugins: PluginCap[];
 }
 
 // ---- vaults ----
