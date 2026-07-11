@@ -209,6 +209,46 @@ Net: the permission-model change (add Org / remove Project) is confined to the
 aspect + edge; the runtime engine, projection, session processing, and MCP
 resolution are untouched by tenancy.
 
+## Amendment (2026-07-11): webhook subscriptions are a config-plane resource
+
+The S10 webhook plane originally kept subscriptions in its own store
+(`awaken-webhook`'s `SqliteWebhookRepository`, env-gated by `AWAKEN_WEBHOOK_DIR`)
+with the `whsec_` signing secret stored **in plaintext** on the row. That row is
+config-shaped (id-addressed, workspace-scoped, CRUD'd through the management API),
+so an operator manages it exactly like an MCP-server def or inference profile —
+yet it sat outside the config plane and violated its **secret-free invariant**
+(ADR-0043: config rows carry secret *references*, the vault holds material).
+
+**Decision.** A webhook subscription is an id-addressed config resource
+(`WebhookEndpointDef`), stored beside MCP defs / inference profiles in the admin
+store (`awaken-admin-config-api`, one more secret-free table under the `admin`
+bundle), reached through the sync `WebhookStore` read-port in
+`awaken-config-resolver`. Its signing key is **sealed in the vault**
+(`SecretStore`, the same seam MCP/model credentials use); the row carries only a
+`secret_ref`, resolved to a `RedactedString` at dispatch. The `awaken-webhook`
+crate is now storage-neutral — signing, the event shape, and delivery only —
+driving a `SubscriptionSource` port whose config-plane adapter lives in
+`awaken-webhook-managed`.
+
+**Consequences.**
+- The CRUD surface moves to `/v1/config/webhook-subscriptions/{id}` (PUT/GET/
+  LIST/DELETE), joining the id-addressed resources under the `resource_owner`
+  tenant fence. PUT mints + seals the secret and returns it once; GET/LIST are
+  secret-free. Handlers **self-fence** on the row's `workspace_id` (the row
+  carries it, unlike MCP/profile, because dispatch enumerates by workspace), so
+  tenant isolation holds even without the management-plane ownership middleware.
+- The webhook plane moves from the plain `mount()` to the management path
+  (`management_router_over`), where the admin store + vault exist. A deployment
+  without the config plane has no durable webhooks.
+- **Standalone** (open, no `admin-config-api`) wires the plane over open
+  in-memory stores (`InMemoryWebhookStore` + `InMemorySecretStore`): webhooks
+  work but are not durable there — consistent with standalone having no durable
+  config-authoring plane. `AWAKEN_WEBHOOK_DIR` is retired.
+- Vocabulary boundary held: the config crate stays webhook-agnostic (it stores a
+  generic secret-free row); minting + sealing live in the webhook front door,
+  mirroring how the vault front door — not `admin-config-api` — seals MCP/model
+  secrets.
+
 ## References
 
 - [ADR-0042](0042-public-api-tenancy-authz-and-front-door-consistency.md) — the

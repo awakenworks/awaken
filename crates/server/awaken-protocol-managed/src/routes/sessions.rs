@@ -289,7 +289,11 @@ async fn archive_session(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Session>, WireErr> {
-    state.archive_session(&id).map(Json).map_err(error_response)
+    state
+        .archive_session(&id)
+        .await
+        .map(Json)
+        .map_err(error_response)
 }
 
 // -- Threads --

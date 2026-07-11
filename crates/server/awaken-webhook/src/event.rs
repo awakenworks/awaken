@@ -16,7 +16,9 @@ use serde::{Deserialize, Serialize};
 /// The `data` block: which resource changed, and the tenancy it belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WebhookEventData {
-    /// The event kind, e.g. `session.status_idled` (the `OutboundKind` wire name).
+    /// The event kind from the webhook lifecycle catalog, e.g. `session.status_idled`
+    /// (Anthropic's official set — a distinct vocabulary from the SSE `OutboundKind`
+    /// stream names, which stay present-tense like `session.status_idle`).
     #[serde(rename = "type")]
     pub event_type: String,
     /// The id of the object the event is about (session id, agent id, …).

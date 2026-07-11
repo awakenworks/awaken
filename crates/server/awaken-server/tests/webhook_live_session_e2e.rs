@@ -12,10 +12,11 @@ use awaken_authz_enforce::{EnforceEngine, TokenSpec, guard};
 use awaken_protocol_managed::ManagedState;
 use awaken_runtime_contract::llm::{ChatRequest, ChatResponse, LlmExecutor};
 use awaken_session_executor::{ManagedHost, SharedHost};
+use awaken_agent_contract::RedactedString;
+use awaken_config_resolver::{InMemoryWebhookStore, WebhookEndpointDef, WebhookStore};
+use awaken_credential_vault::{InMemorySecretStore, SecretRef, SecretStore};
 use awaken_server::webhooks;
-use awaken_webhook::{
-    InMemoryWebhookRepository, WebhookRepository, WebhookSubscription, generate_secret, verify,
-};
+use awaken_webhook::{generate_secret, verify};
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderMap, Request, StatusCode};
@@ -54,19 +55,31 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
     let addr: SocketAddr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, recv).await.unwrap() });
 
-    // 2. Webhook plane + a subscription for the token's workspace.
-    let repo = Arc::new(InMemoryWebhookRepository::default());
-    let (sink, _crud) = webhooks::assemble(repo.clone(), None);
+    // 2. Webhook plane over the config-plane stores + a subscription for the token's
+    // workspace: a secret-free endpoint row plus its `whsec_` secret sealed in the
+    // vault, exactly the shape the CRUD front door writes.
+    let store = Arc::new(InMemoryWebhookStore::new());
+    let secrets = Arc::new(InMemorySecretStore::new());
     let secret = generate_secret();
-    repo.upsert(WebhookSubscription {
+    secrets
+        .put(
+            &SecretRef("whsec:wh_live".into()),
+            RedactedString::new(secret.clone()),
+        )
+        .await
+        .expect("seal the signing secret");
+    store.put(WebhookEndpointDef {
         id: "wh_live".to_string(),
         workspace_id: "wrkspc_test".to_string(),
         url: format!("http://{addr}/hook"),
-        secret: secret.clone(),
-        event_types: vec!["session.status_idle".to_string()],
+        event_types: vec![
+            "session.status_idled".to_string(),
+            "session.status_terminated".to_string(),
+        ],
         disabled: false,
-    })
-    .await;
+        secret_ref: SecretRef("whsec:wh_live".into()),
+    });
+    let (sink, _crud) = webhooks::assemble(store, secrets, None);
 
     // 3. A managed surface with the sink, wrapped: guard (resolves + publishes the
     // owning workspace) → stamp_workspace_scope (maps it to WorkspaceScope).
@@ -94,7 +107,7 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
         .header("content-type", "application/json")
         .body(Body::from(r#"{"agent":"assistant"}"#))
         .unwrap();
-    let resp = app.oneshot(request).await.unwrap();
+    let resp = app.clone().oneshot(request).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "guarded create succeeds");
     let body = resp.into_body().collect().await.unwrap().to_bytes();
     let session: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -130,7 +143,7 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
         "the delivered signature verifies"
     );
     let v: serde_json::Value = serde_json::from_str(payload).unwrap();
-    assert_eq!(v["data"]["type"], "session.status_idle");
+    assert_eq!(v["data"]["type"], "session.status_idled");
     assert_eq!(
         v["data"]["id"], session_id,
         "the fact is about the created session"
@@ -139,4 +152,58 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
         v["data"]["workspace_id"], "wrkspc_test",
         "owner resolved from the API key by the guard, stamped edge-side"
     );
+
+    // 6. Archive the SAME session through the guarded surface → a second signed,
+    // workspace-scoped delivery carrying the terminal `session.status_terminated`
+    // fact. The owner is resolved from the persisted session (the archive edge
+    // carries only the id), so the same workspace subscription matches.
+    let archive = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/sessions/{session_id}/archive"))
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(archive).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "guarded archive succeeds");
+
+    for _ in 0..100 {
+        if inbox.lock().unwrap().len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let got2 = inbox.lock().unwrap().clone();
+    assert_eq!(
+        got2.len(),
+        2,
+        "create idled + archive terminated = two deliveries"
+    );
+    let (payload2, headers2) = &got2[1];
+    let hdr2 = |k: &str| {
+        headers2
+            .get(k)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let ts2: i64 = hdr2("webhook-timestamp").parse().unwrap();
+    assert!(
+        verify(
+            &secret,
+            &hdr2("webhook-id"),
+            ts2,
+            payload2,
+            &hdr2("webhook-signature")
+        )
+        .unwrap(),
+        "the terminated delivery's signature verifies too"
+    );
+    let v2: serde_json::Value = serde_json::from_str(payload2).unwrap();
+    assert_eq!(v2["data"]["type"], "session.status_terminated");
+    assert_eq!(
+        v2["data"]["id"], session_id,
+        "the terminal fact is about the same session"
+    );
+    assert_eq!(v2["data"]["workspace_id"], "wrkspc_test");
 }

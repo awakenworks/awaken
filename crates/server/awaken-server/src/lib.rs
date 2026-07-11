@@ -427,22 +427,13 @@ pub fn build_acp_sandboxed_router() -> Router {
 /// `/v1/ai-sdk...`, `/v1/ag-ui...`) and drive the same `host`, so all three
 /// protocols operate on the same threads.
 fn mount(host: Arc<SharedHost>) -> Router {
-    // Wire the webhook plane when configured (ADR-0048 / S10): the lifecycle sink
-    // goes into the managed state (so a committed session fact fans out) and the
-    // subscription CRUD router is merged into the surface. Unset env = no plane.
-    let mut state = ManagedState::new(ManagedHost::new(host.clone()));
-    let webhook_router = match webhooks::webhook_plane() {
-        Some((sink, router)) => {
-            state = state.with_lifecycle_sink(sink);
-            Some(router)
-        }
-        None => None,
-    };
-    let base = mount_with_managed(host, Arc::new(state));
-    match webhook_router {
-        Some(router) => base.merge(router),
-        None => base,
-    }
+    // The webhook plane (ADR-0048) now lives in the management path
+    // (`management_router_over`): subscriptions are a config resource in the admin
+    // store and their secret is sealed in the vault, so a webhook needs the config
+    // plane. The plain mount has neither, so it wires no sink — a bare host emits no
+    // webhooks (identical to an unconfigured plane before).
+    let state = ManagedState::new(ManagedHost::new(host.clone()));
+    mount_with_managed(host, Arc::new(state))
 }
 
 /// [`mount`], with a caller-assembled Managed state: the management server passes
@@ -1441,6 +1432,9 @@ struct ManagementStores {
     secrets: Arc<dyn awaken_credential_vault::SecretStore>,
     profiles: Arc<dyn awaken_admin_config_api::InferenceProfileStore>,
     mcp: Arc<dyn awaken_admin_config_api::McpStore>,
+    /// Authored webhook endpoints (ADR-0048), an id-addressed config resource beside
+    /// profiles/MCP — the same admin store, a distinct port.
+    webhooks: Arc<dyn awaken_admin_config_api::WebhookStore>,
     /// Durable home for the Managed session aggregate (its own `sessions.db`), so a
     /// rehydrated session reports its real config across a restart / peer process.
     sessions: Arc<dyn awaken_protocol_managed::ManagedSessionRepository>,
@@ -1459,6 +1453,7 @@ fn in_memory_management_stores() -> ManagementStores {
         secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
         profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
         mcp: Arc::new(awaken_admin_config_api::InMemoryMcpStore::new()),
+        webhooks: Arc::new(awaken_admin_config_api::InMemoryWebhookStore::new()),
         sessions: Arc::new(awaken_protocol_managed::InMemorySessionRepository::default()),
         config: Arc::new(
             awaken_config_store::SqliteConfigStore::open_in_memory().expect("open config store"),
@@ -1506,7 +1501,10 @@ fn durable_management_stores(dir: &std::path::Path, key: &[u8; 32]) -> Managemen
             Arc::new(blobs),
         )),
         profiles: admin.clone(),
-        mcp: admin,
+        mcp: admin.clone(),
+        // Webhook endpoints share admin.db (one more secret-free table under the
+        // `admin` bundle) — a config resource like the profiles/MCP defs above.
+        webhooks: admin,
         // A separate `sessions.db` (not a table in admin.db): a live session
         // instance is a different aggregate from the agent/MCP definitions admin.db
         // holds (ADR-0039 one-repository-per-aggregate).
@@ -1651,6 +1649,7 @@ async fn management_router_over(
         secrets,
         profiles,
         mcp: mcp_store,
+        webhooks: webhook_store,
         sessions,
         config,
     } = stores;
@@ -1686,10 +1685,22 @@ async fn management_router_over(
         // record here and pool resolution reads it.
         availability: Default::default(),
     });
+    // The webhook plane (ADR-0048): subscriptions are an id-addressed config resource
+    // in the same admin store, their `whsec_` secret sealed in the shared vault. Merge
+    // the front door into the admin router BEFORE the ownership fence so
+    // `/v1/config/webhook-subscriptions/{id}` is tenant-fenced like profiles/MCP; the
+    // sink (fed the same store + secrets) fans committed session facts out-of-band.
+    let (webhook_sink, webhook_crud) = webhooks::assemble(
+        webhook_store,
+        secrets.clone(),
+        std::env::var("AWAKEN_ORG_ID").ok(),
+    );
+    let admin = admin.merge(webhook_crud);
     // Tenant ownership for the id-addressed config resources (ADR-0051): MCP server
-    // defs and inference profiles are fenced by the authoring scope. The shared
-    // catalog is intentionally uncovered (org/deployment-level config). Wraps the
-    // admin router only; these are matched routes, so a route `layer` runs correctly.
+    // defs, inference profiles, and webhook subscriptions are fenced by the authoring
+    // scope. The shared catalog is intentionally uncovered (org/deployment-level
+    // config). Wraps the admin router only; these are matched routes, so a route
+    // `layer` runs correctly.
     let admin = admin.layer(axum::middleware::from_fn_with_state(
         crate::resource_owner::ResourceOwners::new(),
         crate::resource_owner::resource_ownership_guard,
@@ -1851,7 +1862,8 @@ async fn management_router_over(
         )
         .with_vaults(vault_state)
             .with_environments(env_state)
-            .with_session_repo(sessions),
+            .with_session_repo(sessions)
+            .with_lifecycle_sink(webhook_sink),
     );
     // Workspace path addressing (ADR-0048 D3 / ADR-0051): wrap the fully-merged flat
     // surface so a `/v1/workspaces/{ws}/…` request is captured, rewritten to its flat
