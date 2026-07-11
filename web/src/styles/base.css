@@ -652,6 +652,17 @@ textarea.input {
   font-size: 11.5px;
 }
 
+/* ---- schema-driven form ---- */
+.schema-object {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.schema-form .schema-object .schema-object {
+  border-left: 2px solid var(--line);
+  padding-left: 10px;
+}
+
 /* ---- toast ---- */
 .toast-stack {
   position: fixed;

@@ -9,6 +9,7 @@ export { Pill, Badge } from "./Pill";
 export { TextField, TextAreaField, SelectField } from "./Field";
 export { Segmented, type SegmentedOption } from "./Segmented";
 export { CheckPicker, type CheckOption } from "./CheckPicker";
+export { SchemaForm, type JsonSchema } from "./SchemaForm";
 export { default as Drawer } from "./Drawer";
 export { DataGrid, type Column } from "./DataGrid";
 export { SecretField, type SecretIntent, type SecretMode } from "./SecretField";

@@ -11,7 +11,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import Drawer from "../components/ui/Drawer";
 import { useToast } from "../components/ui/Toast";
-import { Button, Card, CheckPicker, Pill, TextAreaField, TextField } from "../components/ui";
+import { Button, Card, CheckPicker, Pill, SchemaForm, TextAreaField, TextField } from "../components/ui";
+import type { JsonSchema } from "../components/ui";
 import { api, isAbsent } from "../lib/api/client";
 import type { AgentConfig, ContextPolicy, ProviderCatalog, PublishResult } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
@@ -363,6 +364,9 @@ export default function AgentEditorSurface() {
               <PluginConfigEditor
                 pluginIds={cfg.plugins}
                 config={cfg.plugin_config}
+                schemas={Object.fromEntries(
+                  (caps.data?.plugins ?? []).map((p) => [p.id, p.config_schema as JsonSchema]),
+                )}
                 onChange={(next) => patch({ plugin_config: next })}
               />
             </div>
@@ -379,15 +383,17 @@ export default function AgentEditorSurface() {
   );
 }
 
-/** A JSON section editor keyed by plugin id — the honest general form for any
- * plugin's config (specialised visual builders can graft on later, keyed the same). */
+/** Per-plugin config editor: a schema-driven form when the plugin advertises a
+ * `config_schema` (from /v1/capabilities), else a validated JSON textarea. */
 function PluginConfigEditor({
   pluginIds,
   config,
+  schemas,
   onChange,
 }: {
   pluginIds: string[];
   config: Record<string, unknown>;
+  schemas: Record<string, JsonSchema>;
   onChange: (next: Record<string, unknown>) => void;
 }) {
   const app = useApp();
@@ -399,7 +405,7 @@ function PluginConfigEditor({
   if (keys.length === 0) return <span className="mut">{app.t("No plugins enabled.", "未启用插件。")}</span>;
 
   const textFor = (k: string) => drafts[k] ?? JSON.stringify(config[k] ?? {}, null, 2);
-  const commit = (k: string, raw: string) => {
+  const commitJson = (k: string, raw: string) => {
     setDrafts((d) => ({ ...d, [k]: raw }));
     try {
       const parsed = raw.trim() === "" ? {} : JSON.parse(raw);
@@ -411,20 +417,27 @@ function PluginConfigEditor({
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       {keys.map((k) => (
-        <div key={k}>
-          <label className="row" style={{ justifyContent: "space-between", fontSize: 12 }}>
+        <Card key={k} style={{ padding: "10px 12px" }}>
+          <label className="row" style={{ justifyContent: "space-between", fontSize: 12, marginBottom: 6 }}>
             <span className="mono">{k}</span>
-            {errs[k] && <span className="err" style={{ fontSize: 11 }}>{errs[k]}</span>}
+            {schemas[k] ? (
+              <span className="mut" style={{ fontSize: 10 }}>{app.t("schema-driven", "schema 驱动")}</span>
+            ) : (
+              errs[k] && <span className="err" style={{ fontSize: 11 }}>{errs[k]}</span>
+            )}
           </label>
-          <textarea
-            className="input mono"
-            rows={5}
-            value={textFor(k)}
-            onChange={(e) => commit(k, e.target.value)}
-          />
-        </div>
+          {schemas[k] ? (
+            <SchemaForm
+              schema={schemas[k]}
+              value={config[k] ?? {}}
+              onChange={(v) => onChange({ ...config, [k]: v })}
+            />
+          ) : (
+            <textarea className="input mono" rows={5} value={textFor(k)} onChange={(e) => commitJson(k, e.target.value)} />
+          )}
+        </Card>
       ))}
     </div>
   );
