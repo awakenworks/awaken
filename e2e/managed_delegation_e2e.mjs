@@ -11,6 +11,12 @@
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import { withScenarioServer } from './harness.mjs';
+import { FAKE_USAGE } from './fixtures/fake_anthropic_fixture.mjs';
+
+// The provider adapter (genai) normalizes input to the TOTAL input incl. the
+// prompt-cache tokens, so each inference reports this as `input_tokens`.
+const PER_INFERENCE_INPUT =
+  FAKE_USAGE.input_tokens + FAKE_USAGE.cache_read_input_tokens + FAKE_USAGE.cache_creation_input_tokens;
 
 const PORT = Number(process.env.E2E_PORT ?? 38105);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -48,6 +54,21 @@ async function main() {
     );
     const okIdle = [...okEvents].reverse().find((e) => e.type === 'session.status_idle');
     assert.equal(okIdle.stop_reason.type, 'end_turn');
+
+    // The delegated turn's usage counts the sub-agent's inference too: 2 coordinator
+    // inferences (emit agent_run, then report) + 1 delegate inference = 3, each
+    // reporting FAKE_USAGE. Without folding the sub-run's usage into the parent
+    // thread, session.usage would show only the 2 coordinator inferences.
+    const INFERENCES = 3;
+    const okUsage = (await client.beta.sessions.retrieve(ok.id, { betas: BETAS })).usage ?? {};
+    assert.equal(okUsage.output_tokens, FAKE_USAGE.output_tokens * INFERENCES,
+      `delegated usage folds in the sub-agent (output): ${JSON.stringify(okUsage)}`);
+    assert.equal(okUsage.input_tokens, PER_INFERENCE_INPUT * INFERENCES,
+      `delegated usage folds in the sub-agent (input): ${JSON.stringify(okUsage)}`);
+    assert.equal(okUsage.cache_read_input_tokens, FAKE_USAGE.cache_read_input_tokens * INFERENCES,
+      `delegated usage folds in the sub-agent (cache_read): ${JSON.stringify(okUsage)}`);
+    assert.equal(okUsage.cache_creation_input_tokens, FAKE_USAGE.cache_creation_input_tokens * INFERENCES,
+      `delegated usage folds in the sub-agent (cache_creation): ${JSON.stringify(okUsage)}`);
 
     // D4: the delegate call spawned a subagent child thread — announced by
     // `session.thread_created` and enumerable via the threads API.
