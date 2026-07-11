@@ -402,7 +402,7 @@ pub async fn probe_credential(
         .with_timeout(Duration::from_secs(30));
     let request = ChatRequest {
         model_binding: ModelBinding {
-            provider_instance_ref: "probe".into(),
+            provider_identity_ref: "probe".into(),
             model_ref: model.to_string(),
             backend_ref: "genai".into(),
         },

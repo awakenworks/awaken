@@ -18,7 +18,7 @@ async fn live_text_completion() {
 
     let request = ChatRequest {
         model_binding: ModelBinding {
-            provider_instance_ref: "live".to_string(),
+            provider_identity_ref: "live".to_string(),
             model_ref: model,
             backend_ref: "genai".to_string(),
         },

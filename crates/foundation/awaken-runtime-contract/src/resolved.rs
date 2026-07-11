@@ -156,7 +156,12 @@ pub enum ContextPolicy {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelBinding {
-    pub provider_instance_ref: String,
+    /// The *provider identity* — the principal whose key and quota this attempt
+    /// runs under. It is the cooldown / account-spread key: two candidates on the
+    /// same model but different identities differ here, so each tracks its own
+    /// circuit and quota. (Formerly `provider_instance_ref`; renamed to name the
+    /// principal, aligning with awaken-next's `ProviderIdentity`.)
+    pub provider_identity_ref: String,
     pub model_ref: String,
     pub backend_ref: String,
 }
@@ -164,12 +169,12 @@ pub struct ModelBinding {
 impl ModelBinding {
     /// The provider instance, model, and backend a run binds to.
     pub fn new(
-        provider_instance_ref: impl Into<String>,
+        provider_identity_ref: impl Into<String>,
         model_ref: impl Into<String>,
         backend_ref: impl Into<String>,
     ) -> Self {
         Self {
-            provider_instance_ref: provider_instance_ref.into(),
+            provider_identity_ref: provider_identity_ref.into(),
             model_ref: model_ref.into(),
             backend_ref: backend_ref.into(),
         }

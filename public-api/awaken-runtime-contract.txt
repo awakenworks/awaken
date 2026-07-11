@@ -1456,7 +1456,7 @@ impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved:
 pub struct awaken_runtime_contract::resolved::ModelBinding
 pub awaken_runtime_contract::resolved::ModelBinding::backend_ref: alloc::string::String
 pub awaken_runtime_contract::resolved::ModelBinding::model_ref: alloc::string::String
-pub awaken_runtime_contract::resolved::ModelBinding::provider_instance_ref: alloc::string::String
+pub awaken_runtime_contract::resolved::ModelBinding::provider_identity_ref: alloc::string::String
 impl awaken_runtime_contract::resolved::ModelBinding
 pub fn awaken_runtime_contract::resolved::ModelBinding::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 impl core::clone::Clone for awaken_runtime_contract::resolved::ModelBinding
@@ -2454,7 +2454,7 @@ impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::live_inbo
 pub struct awaken_runtime_contract::ModelBinding
 pub awaken_runtime_contract::ModelBinding::backend_ref: alloc::string::String
 pub awaken_runtime_contract::ModelBinding::model_ref: alloc::string::String
-pub awaken_runtime_contract::ModelBinding::provider_instance_ref: alloc::string::String
+pub awaken_runtime_contract::ModelBinding::provider_identity_ref: alloc::string::String
 impl awaken_runtime_contract::resolved::ModelBinding
 pub fn awaken_runtime_contract::resolved::ModelBinding::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 impl core::clone::Clone for awaken_runtime_contract::resolved::ModelBinding

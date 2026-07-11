@@ -10,7 +10,7 @@ fn spec(instructions: &str) -> ResolvedSpec {
         instructions: instructions.to_string(),
         max_steps: 16,
         model_binding: ModelBinding {
-            provider_instance_ref: "p".to_string(),
+            provider_identity_ref: "p".to_string(),
             model_ref: "m".to_string(),
             backend_ref: "b".to_string(),
         },
@@ -283,7 +283,7 @@ impl StreamCheckpointStore for SpyCheckpointStore {
 fn one_turn_request() -> ChatRequest {
     ChatRequest {
         model_binding: ModelBinding {
-            provider_instance_ref: "p".to_string(),
+            provider_identity_ref: "p".to_string(),
             model_ref: "m".to_string(),
             backend_ref: "b".to_string(),
         },

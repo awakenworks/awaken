@@ -16,7 +16,7 @@ use genai::chat::{ChatRole as GenaiRole, MessageContent, ToolCall as GenaiToolCa
 
 fn binding(model: &str) -> ModelBinding {
     ModelBinding {
-        provider_instance_ref: "p".to_string(),
+        provider_identity_ref: "p".to_string(),
         model_ref: model.to_string(),
         backend_ref: "b".to_string(),
     }

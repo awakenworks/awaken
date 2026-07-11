@@ -30,7 +30,7 @@ fn activation(run: &str, thread: &str) -> RunActivation {
                 instructions: String::new(),
                 max_steps: 8,
                 model_binding: ModelBinding {
-                    provider_instance_ref: "p".into(),
+                    provider_identity_ref: "p".into(),
                     model_ref: "m".into(),
                     backend_ref: "b".into(),
                 },

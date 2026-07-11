@@ -72,7 +72,7 @@ fn snapshot_for(model_id: &str) -> ExecutableAgentSnapshot {
             instructions: String::new(),
             max_steps: 8,
             model_binding: ModelBinding {
-                provider_instance_ref: "anthropic".into(),
+                provider_identity_ref: "anthropic".into(),
                 model_ref: model_id.into(),
                 backend_ref: "genai".into(),
             },
@@ -185,7 +185,7 @@ async fn managed_full_chain_calls_real_model() {
     );
     let request = ChatRequest {
         model_binding: ModelBinding {
-            provider_instance_ref: run.inference.triple.provider_id.clone(),
+            provider_identity_ref: run.inference.triple.provider_id.clone(),
             model_ref: run.inference.triple.model_id.clone(),
             backend_ref: "genai".into(),
         },
