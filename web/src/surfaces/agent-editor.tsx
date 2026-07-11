@@ -21,11 +21,11 @@ import type {
   AgentConfigItem,
   ContextPolicy,
   PermissionConfig,
-  ProviderCatalog,
   PublishResult,
 } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import { useCapabilities } from "../lib/useCapabilities";
+import { useModels } from "../lib/useModels";
 import { useUnsavedGuard } from "../lib/useUnsavedGuard";
 import ModelsSurface from "./models";
 
@@ -124,14 +124,16 @@ export default function AgentEditorSurface() {
     }
   }, [existing.data]);
 
-  const catalog = useQuery({
-    queryKey: ["catalog"],
-    queryFn: () => api.get<ProviderCatalog>("/v1/config/catalog"),
-  });
   const caps = useCapabilities();
-  const models = useMemo(
-    () => Array.from(new Set((catalog.data?.offerings ?? []).map((o) => o.model_id))),
-    [catalog.data],
+  // Only models whose provider has a credential — a picked model always resolves a
+  // real executor (never a run-time "no key" failure). `all` drives the hidden hint.
+  const { ready: models, all: allModels } = useModels();
+  const currentModel = modelId(cfg.model);
+  // Keep the current selection visible even if it lost its credential (editing an
+  // existing agent), flagged, so a save never silently drops the model.
+  const modelOptions = useMemo(
+    () => (currentModel && !models.includes(currentModel) ? [currentModel, ...models] : models),
+    [currentModel, models],
   );
 
   const patch = (p: Partial<AgentConfig>) => {
@@ -259,17 +261,34 @@ export default function AgentEditorSurface() {
                   {app.t("Manage ↗", "管理 ↗")}
                 </button>
               </label>
-              {models.length > 0 ? (
-                <select className="input mono" value={modelId(cfg.model)} onChange={(e) => patch({ model: { id: e.target.value } })}>
+              {modelOptions.length > 0 ? (
+                <select className="input mono" value={currentModel} onChange={(e) => patch({ model: { id: e.target.value } })}>
                   <option value="">{app.t("— select a model —", "— 选择模型 —")}</option>
-                  {models.map((m) => (
+                  {modelOptions.map((m) => (
                     <option key={m} value={m}>
                       {m}
+                      {!models.includes(m) ? app.t("  ⚠ no credential", "  ⚠ 无凭证") : ""}
                     </option>
                   ))}
                 </select>
               ) : (
-                <input className="input mono" value={modelId(cfg.model)} placeholder="kimi-k2" onChange={(e) => patch({ model: { id: e.target.value } })} />
+                <div className="banner gate">
+                  <span>◌</span>
+                  <span>
+                    {app.t(
+                      "No model has a credential yet. Configure a provider + key in Models (Manage ↗) — only credentialed models can be selected.",
+                      "还没有带凭证的模型。在 Models(管理 ↗)里配置一个 provider + key —— 只有带凭证的模型可选。",
+                    )}
+                  </span>
+                </div>
+              )}
+              {allModels.length > models.length && (
+                <span className="mut" style={{ fontSize: 12 }}>
+                  {app.t(
+                    `${allModels.length - models.length} model(s) hidden — no credential for their provider.`,
+                    `${allModels.length - models.length} 个模型因缺凭证已隐藏。`,
+                  )}
+                </span>
               )}
             </div>
             <TextField
