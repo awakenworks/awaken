@@ -68,7 +68,7 @@ async fn author_agent(app: &axum::Router, ws: &str, name: &str) -> String {
 
 #[tokio::test]
 async fn angle_agent_cross_tenant_read_is_404() {
-    let app = build_management_router();
+    let app = build_management_router().await;
     let id = author_agent(&app, "ws_a", "a").await;
     let (status, _) = call(
         &app,
@@ -90,7 +90,7 @@ async fn angle_agent_cross_tenant_read_is_404() {
 
 #[tokio::test]
 async fn angle_agent_cross_tenant_write_is_404() {
-    let app = build_management_router();
+    let app = build_management_router().await;
     let id = author_agent(&app, "ws_a", "a").await;
     let (status, _) = call(
         &app,
@@ -113,7 +113,7 @@ async fn angle_agent_cross_tenant_write_is_404() {
 
 #[tokio::test]
 async fn angle_agent_list_shows_only_the_caller() {
-    let app = build_management_router();
+    let app = build_management_router().await;
     let a = author_agent(&app, "ws_a", "a").await;
     let b = author_agent(&app, "ws_b", "b").await;
     let ids = |v: &Value| -> Vec<String> {
@@ -132,7 +132,7 @@ async fn angle_agent_list_shows_only_the_caller() {
 
 #[tokio::test]
 async fn angle_bare_request_cannot_see_a_scoped_agent() {
-    let app = build_management_router();
+    let app = build_management_router().await;
     let id = author_agent(&app, "ws_a", "a").await;
     // Flat (default scope) cannot see a ws_a-owned agent.
     let (status, _) = call(&app, "GET", &format!("/v1/agents/{id}"), None).await;
@@ -143,7 +143,7 @@ async fn angle_bare_request_cannot_see_a_scoped_agent() {
 
 #[tokio::test]
 async fn angle_inference_profile_is_tenant_fenced() {
-    let app = build_management_router();
+    let app = build_management_router().await;
     let body = json!({ "model_id": "kimi", "credential_binding": { "type": "none" } });
     let (status, _) = call(
         &app,
@@ -177,7 +177,7 @@ async fn angle_inference_profile_is_tenant_fenced() {
 
 #[tokio::test]
 async fn angle_d3_path_routes_to_the_flat_handler() {
-    let app = build_management_router();
+    let app = build_management_router().await;
     // A workspace-path create reaches the agents handler (200 with an agent body).
     let id = author_agent(&app, "acme", "x").await;
     assert!(id.starts_with("agent_"), "{id}");
@@ -199,7 +199,7 @@ async fn angle_d3_path_routes_to_the_flat_handler() {
 
 #[tokio::test]
 async fn angle_catalog_is_shared_across_workspaces() {
-    let app = build_management_router();
+    let app = build_management_router().await;
     // A provider authored under one workspace's path is visible under another's —
     // the model catalog is org/deployment-level shared config, NOT a per-workspace
     // resource (org isolation is by deployment boundary; org is cloud-only per

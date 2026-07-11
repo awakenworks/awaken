@@ -326,7 +326,7 @@ fn agent_messages(events: &[Value]) -> Vec<String> {
 #[tokio::test]
 async fn session_inline_mcp_server_with_vault_credential_converses_multi_turn() {
     let url = mock_calc_mcp().await;
-    let app = build_management_router();
+    let app = build_management_router().await;
     let vault_id = vault_with_calc_credential(&app, &url).await;
 
     // Session-inline binding: the session names the server, the vault supplies
@@ -387,7 +387,7 @@ async fn session_inline_mcp_server_with_vault_credential_converses_multi_turn() 
 #[tokio::test]
 async fn management_plane_agent_mcp_config_takes_effect_without_inline_servers() {
     let url = mock_calc_mcp().await;
-    let app = build_management_router();
+    let app = build_management_router().await;
 
     // Author the whole binding through the ADMIN routes: credential →
     // McpServerDef (Exact binding) → AgentMcpConfig for `calc-agent`.
@@ -456,7 +456,7 @@ async fn management_plane_agent_mcp_config_takes_effect_without_inline_servers()
 #[tokio::test]
 async fn missing_vault_credential_fails_the_first_turn_loudly() {
     let url = mock_calc_mcp().await;
-    let app = build_management_router();
+    let app = build_management_router().await;
 
     // The session names the server but binds NO vault: the prepared bearer is
     // None, so the mock answers 401 at the handshake.
@@ -557,7 +557,7 @@ async fn expired_mcp_oauth_token_is_refreshed_mid_connect_and_resealed() {
         ..OauthMock::default()
     }));
     let url = mock_oauth_calc_mcp(mock.clone()).await;
-    let app = build_management_router();
+    let app = build_management_router().await;
     let vault_id =
         vault_with_refreshable_credential(&app, &url, "expired-token", json!({ "type": "none" }))
             .await;
@@ -635,7 +635,7 @@ async fn refused_refresh_exchange_fails_the_turn_with_the_challenge() {
     // `token_response: None` = the token endpoint answers 400 invalid_grant.
     let mock = Arc::new(Mutex::new(OauthMock::default()));
     let url = mock_oauth_calc_mcp(mock.clone()).await;
-    let app = build_management_router();
+    let app = build_management_router().await;
     let vault_id =
         vault_with_refreshable_credential(&app, &url, "expired-token", json!({ "type": "none" }))
             .await;
@@ -681,7 +681,7 @@ async fn expired_token_turn_succeeds_with_client_secret_basic_refresh() {
         ..OauthMock::default()
     }));
     let url = mock_oauth_calc_mcp(mock.clone()).await;
-    let app = build_management_router();
+    let app = build_management_router().await;
     let vault_id = vault_with_refreshable_credential(
         &app,
         &url,
@@ -728,7 +728,7 @@ async fn expired_token_turn_succeeds_with_client_secret_post_refresh() {
         ..OauthMock::default()
     }));
     let url = mock_oauth_calc_mcp(mock.clone()).await;
-    let app = build_management_router();
+    let app = build_management_router().await;
     let vault_id = vault_with_refreshable_credential(
         &app,
         &url,
@@ -771,7 +771,7 @@ async fn wrong_client_secret_refuses_the_grant_and_surfaces_the_challenge() {
         ..OauthMock::default()
     }));
     let url = mock_oauth_calc_mcp(mock.clone()).await;
-    let app = build_management_router();
+    let app = build_management_router().await;
     let vault_id = vault_with_refreshable_credential(
         &app,
         &url,
@@ -989,7 +989,7 @@ async fn ext_mcp_probe_classifies_valid_invalid_and_unknown() {
 #[tokio::test]
 async fn mcp_oauth_validate_live_probes_over_the_management_router() {
     let url = mock_calc_mcp().await;
-    let app = build_management_router();
+    let app = build_management_router().await;
     let (s, vault) = call(
         &app,
         "POST",
@@ -1060,7 +1060,7 @@ async fn mcp_oauth_validate_live_probes_over_the_management_router() {
 #[tokio::test(flavor = "multi_thread")]
 async fn project_bindings_give_the_same_agent_different_tool_surfaces() {
     let url_a = mock_calc_mcp().await;
-    let app = build_management_router();
+    let app = build_management_router().await;
 
     // Supply (workspace-owned): one credential + one MCP server def.
     let (s, cred) = call(

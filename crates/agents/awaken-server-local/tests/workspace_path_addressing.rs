@@ -34,7 +34,7 @@ async fn call(
 
 #[tokio::test]
 async fn workspace_path_addresses_and_isolates_the_agent_registry() {
-    let app = build_management_router();
+    let app = build_management_router().await;
 
     // Author an agent under ws_a via the D3 path form: the middleware rewrites
     // `/v1/workspaces/ws_a/agents` → `/v1/agents` and stamps the scope ws_a, so the
@@ -88,7 +88,7 @@ async fn workspace_path_addresses_and_isolates_the_agent_registry() {
 
 #[tokio::test]
 async fn a_flat_management_request_is_untouched_by_the_path_middleware() {
-    let app = build_management_router();
+    let app = build_management_router().await;
     // A flat create (no workspace path) owns under the seeded default and lists there.
     let (status, agent) = call(
         &app,
@@ -105,7 +105,7 @@ async fn a_flat_management_request_is_untouched_by_the_path_middleware() {
 
 #[tokio::test]
 async fn workspace_path_isolates_inference_profiles() {
-    let app = build_management_router();
+    let app = build_management_router().await;
     let body = json!({
         "model_id": "kimi",
         "credential_binding": { "type": "none" }

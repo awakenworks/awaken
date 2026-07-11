@@ -1572,7 +1572,7 @@ fn mgmt_seal_key_from_env() -> [u8; 32] {
 /// `AWAKEN_MGMT_DIR` (the token/binding rows live in `<dir>/iam.sqlite`) and
 /// panics with a clear message when it is missing. Unset — the default — is
 /// today's open behavior, byte-identical.
-pub fn build_management_router() -> Router {
+pub async fn build_management_router() -> Router {
     let iam = match std::env::var("AWAKEN_MGMT_IAM") {
         Ok(mode) if mode == "embedded" => {
             let dir = std::env::var("AWAKEN_MGMT_DIR").unwrap_or_else(|_| {
@@ -1598,8 +1598,9 @@ pub fn build_management_router() -> Router {
                 durable_management_stores(std::path::Path::new(&dir), &key),
                 iam,
             )
+            .await
         }
-        Err(_) => management_router_over(in_memory_management_stores(), iam),
+        Err(_) => management_router_over(in_memory_management_stores(), iam).await,
     }
 }
 
@@ -1608,20 +1609,21 @@ pub fn build_management_router() -> Router {
 /// Exposed so a restart test can rebuild a router over one directory across
 /// simulated process lifetimes without racing on process-global env vars.
 /// No IAM guard — the open (default) management plane.
-pub fn build_durable_management_router(dir: &std::path::Path, key: &[u8; 32]) -> Router {
-    management_router_over(durable_management_stores(dir, key), None)
+pub async fn build_durable_management_router(dir: &std::path::Path, key: &[u8; 32]) -> Router {
+    management_router_over(durable_management_stores(dir, key), None).await
 }
 
 /// [`build_durable_management_router`] with the embedded IAM guard enabled —
 /// the env-free equivalent of `AWAKEN_MGMT_IAM=embedded`. Returns the
 /// [`ManagementAuthz`] handle too so a test (or an embedding) can mint
 /// further workspace tokens against the same policy state.
-pub fn build_secured_management_router(
+pub async fn build_secured_management_router(
     dir: &std::path::Path,
     key: &[u8; 32],
 ) -> (Router, Arc<ManagementAuthz>) {
     let iam = embedded_iam(dir);
-    let router = management_router_over(durable_management_stores(dir, key), Some(iam.clone()));
+    let router =
+        management_router_over(durable_management_stores(dir, key), Some(iam.clone())).await;
     (router, iam)
 }
 
@@ -1629,7 +1631,10 @@ pub fn build_secured_management_router(
 /// the embedded IAM guard (`iam`). The guard wraps ONLY the admin + vault
 /// routers: the Managed session surface keeps its own axis and P1 does not
 /// gate it (ADR-0043).
-fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAuthz>>) -> Router {
+async fn management_router_over(
+    stores: ManagementStores,
+    iam: Option<Arc<ManagementAuthz>>,
+) -> Router {
     let ManagementStores {
         catalog,
         credentials,
@@ -1682,10 +1687,8 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
     // ADR-0050 consent/erasure/enrollment routes come from `mount_with_managed`
     // (over the process-global captured-content store), so they are not mounted
     // here — doing so would double-mount and conflict.
-    // The public agent registry (`/v1/agents`) over its own in-mem store.
-    let agents = awaken_protocol_managed::agents_router(std::sync::Arc::new(
-        awaken_protocol_managed::AgentRegistryState::new(),
-    ));
+    // `/v1/agents` is defined with the config plane below, so it projects published
+    // config agents (ADR-0052) rather than a second in-mem store.
     // Deployments + deployment runs (`/v1/deployments`, `/v1/deployment_runs`).
     let deployments = awaken_protocol_managed::deployments_router(std::sync::Arc::new(
         awaken_protocol_managed::DeploymentState::new(),
@@ -1700,22 +1703,67 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
     // context) and `publish` compiles + installs it so sessions run that config.
     // The same service is wired into the host below, so a session for a published
     // agent resolves its installed config.
+    // The server's model (real Gemini under `AWAKEN_MODEL_SOURCE=gemini`, else the
+    // in-process MCP-driving model). Chosen up here because the admin assistant's
+    // `Auto` binding resolves against a catalog carrying this model at seed time.
+    let (model, model_ref) = scenario_model(Arc::new(McpToolModel), "management");
     // Scope-free `ConfigService` + the `ConfigPlane` scope edge (ADR-0051/0052): the
     // plane binds the request scope (a `ScopedConfig` registry + the scope's tool
-    // catalog) onto the service per call. The admin assistant is not productionized
-    // into this server yet, so the reserved scope carries no extra tools.
+    // catalog) onto the service per call. The reserved admin scope additionally sees
+    // the four management descriptors (ADR-0052 D3), so the seeded assistant compiles.
     let global = advertised_tools(&HashSet::new(), &HashSet::new(), &[]);
     let tool_catalog: Arc<dyn awaken_runtime_host::ToolCatalogSource> =
         Arc::new(awaken_runtime_host::ScopedToolCatalog::new(
             global.clone(),
             awaken_runtime_host::RESERVED_ADMIN_SCOPE,
-            Vec::new(),
+            awaken_admin_assistant::admin_tool_descriptors(),
         ));
-    let config_service = Arc::new(ConfigService::new());
-    let config_plane = config_router(awaken_runtime_host::ConfigPlane::new(
-        config_service.clone(),
-        config,
-        tool_catalog,
+    // A minimal catalog with an offering for the server model, so the assistant's
+    // `Auto` selection resolves to a concrete binding at seed/publish (ADR-0052 D5).
+    let seed_catalog = awaken_model_catalog::ProviderCatalog {
+        offerings: vec![awaken_model_catalog::Offering {
+            model_id: model_ref.clone(),
+            provider_id: awaken_model_catalog::ProviderId::new("default"),
+            protocol_endpoint_id: awaken_model_catalog::ProtocolEndpointId::new("ep"),
+            flavor: awaken_model_catalog::ModelApiCompat::AnthropicMessages,
+            upstream_model: None,
+        }],
+        ..Default::default()
+    };
+    let config_service = Arc::new(ConfigService::new().with_model_resolver(Arc::new(
+        crate::model_resolver::CatalogModelResolver::new(seed_catalog.clone()),
+    )));
+    let plane = awaken_runtime_host::ConfigPlane::new(config_service.clone(), config, tool_catalog);
+    // Seed the in-console Admin Assistant as an ordinary published agent in the
+    // reserved scope (ADR-0052 D1/D2), so `/v1/agents/__admin_assistant` is live and a
+    // session can run it. Best-effort: a server booted without a resolvable model still
+    // starts (the assistant stays a draft until a model is configured + it republishes).
+    if let Err(err) = crate::admin_assistant::seed_admin_assistant(&plane).await {
+        eprintln!("admin assistant not seeded (configure a model, then republish): {err}");
+    }
+    // The management tool executables (ADR-0052 D3/D4): the capability reader reads the
+    // shared catalog + advertised tools; the validator runs the publish-time compile
+    // check on drafts in the tenant scope; every call is audited.
+    let admin_execs = awaken_admin_assistant::admin_tools(
+        Arc::new(crate::admin_assistant::CatalogCapabilityReader::new(
+            &seed_catalog,
+            &global,
+            &[],
+        )),
+        Arc::new(crate::admin_assistant::ConfigServiceDraftValidator::new(
+            plane.clone(),
+            awaken_config_store::DEFAULT_SCOPE,
+        )),
+        Arc::new(awaken_admin_assistant::TracingAuditSink),
+    );
+    let config_plane = config_router(plane);
+    // `/v1/agents` projects the config plane it hosts: an agent published via
+    // `/v1/config/agents` is retrievable as a managed-wire projection of that single
+    // truth (no second store), which is how the console probes the assistant.
+    let agents = awaken_protocol_managed::agents_router(std::sync::Arc::new(
+        awaken_protocol_managed::AgentRegistryState::new().with_config_source(std::sync::Arc::new(
+            awaken_runtime_host::ConfigServiceAgentSource(config_service.clone()),
+        )),
     ));
     // Capability snapshot (`GET /v1/capabilities`): the host's tool descriptors +
     // installable plugins (with config schema) so the console authors data-driven.
@@ -1743,12 +1791,14 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
         ));
     }
 
-    // The MCP-driving deterministic model, so an e2e can hold a real multi-turn
-    // conversation through ext-mcp (`add a b` → mcp__calc__add → `result: …`);
-    // non-`add` turns still echo, preserving the prior expectations.
-    let (model, model_ref) = scenario_model(Arc::new(McpToolModel), "management");
-    let host =
-        Arc::new(SharedHost::new(model, model_ref).with_config_service(config_service.clone()));
+    // The host runs the server model (Gemini or MCP-driving), resolves a session's
+    // agent to its installed config, and carries the management tool executables so
+    // the reserved-scope assistant can call them.
+    let host = Arc::new(
+        SharedHost::new(model, model_ref)
+            .with_config_service(config_service.clone())
+            .with_admin_tools(admin_execs),
+    );
     let managed_state = Arc::new(
         ManagedState::new(ManagedHost::new(host.clone()).with_mcp(credentials, secrets, mcp_store))
             .with_vaults(vault_state)

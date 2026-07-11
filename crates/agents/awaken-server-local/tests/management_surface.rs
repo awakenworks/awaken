@@ -37,7 +37,7 @@ async fn call(
 
 #[tokio::test]
 async fn admin_and_vault_surfaces_are_served_together() {
-    let app = build_management_router();
+    let app = build_management_router().await;
 
     // Admin config CRUD: author a provider, read the catalog back.
     let (s, _) = call(
