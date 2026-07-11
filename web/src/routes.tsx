@@ -14,7 +14,6 @@ import SkillsSurface from "./surfaces/skills";
 import AgentEditorSurface from "./surfaces/agent-editor";
 import ProjectAgentsSurface from "./surfaces/project-agents";
 import ProjectOverviewSurface from "./surfaces/project-overview";
-import ProjectSettingsSurface from "./surfaces/project-settings";
 import SessionDetailSurface from "./surfaces/session-detail";
 import SessionsSurface from "./surfaces/sessions";
 import SettingsSurface from "./surfaces/settings";
@@ -27,31 +26,29 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <HomeSurface /> },
 
-      // Project scope = the Managed Agents run container.
-      { path: "p/:pid/overview", element: <ProjectOverviewSurface /> },
-      { path: "p/:pid/sessions", element: <SessionsSurface /> },
-      { path: "p/:pid/sessions/:sid", element: <SessionDetailSurface /> },
-      { path: "p/:pid/agents", element: <ProjectAgentsSurface /> },
-      { path: "p/:pid/agents/:id", element: <AgentEditorSurface /> },
-      { path: "p/:pid/environments", element: <EnvironmentsSurface /> },
-      { path: "p/:pid/vaults", element: <VaultsSurface /> },
-      { path: "p/:pid/memory", element: <MemorySurface /> },
-      { path: "p/:pid/deployments", element: <DeploymentsSurface /> },
-      { path: "p/:pid/skills", element: <SkillsSurface /> },
-      { path: "p/:pid/settings", element: <ProjectSettingsSurface /> },
+      // A workspace owns BOTH its run resources and its config/supply (ADR-0051):
+      // everything is addressed under /w/:ws/… with the active workspace scope.
+      { path: "w/:ws/overview", element: <ProjectOverviewSurface /> },
+      { path: "w/:ws/sessions", element: <SessionsSurface /> },
+      { path: "w/:ws/sessions/:sid", element: <SessionDetailSurface /> },
+      { path: "w/:ws/agents", element: <ProjectAgentsSurface /> },
+      { path: "w/:ws/agents/:id", element: <AgentEditorSurface /> },
+      { path: "w/:ws/environments", element: <EnvironmentsSurface /> },
+      { path: "w/:ws/vaults", element: <VaultsSurface /> },
+      { path: "w/:ws/memory", element: <MemorySurface /> },
+      { path: "w/:ws/deployments", element: <DeploymentsSurface /> },
+      { path: "w/:ws/skills", element: <SkillsSurface /> },
+      { path: "w/:ws/models", element: <ModelsSurface /> },
+      { path: "w/:ws/credentials", element: <CredentialsSurface /> },
+      { path: "w/:ws/mcp-servers", element: <McpServersSurface /> },
+      { path: "w/:ws/a2a-servers", element: <A2aSurface /> },
+      { path: "w/:ws/access", element: <AccessSurface /> },
+      { path: "w/:ws/settings", element: <SettingsSurface /> },
 
-      // Workspace scope = shared supply + governance.
-      { path: "models", element: <ModelsSurface /> },
-      { path: "credentials", element: <CredentialsSurface /> },
-      { path: "mcp-servers", element: <McpServersSurface /> },
-      { path: "a2a-servers", element: <A2aSurface /> },
-      { path: "access", element: <AccessSurface /> },
-      { path: "settings", element: <SettingsSurface /> },
-
-      { path: "dashboard", element: <GatedPage title="Dashboard" endpoint="/v1/runs/summary · /v1/system/info" /> },
-      { path: "audit-log", element: <GatedPage title="Audit log" endpoint="GET /v1/audit-log" /> },
-      { path: "datasets", element: <GatedPage title="Datasets" endpoint="/v1/eval/datasets" /> },
-      { path: "eval-runs", element: <GatedPage title="Eval runs" endpoint="/v1/eval/runs" /> },
+      { path: "w/:ws/dashboard", element: <GatedPage title="Dashboard" endpoint="/v1/runs/summary · /v1/system/info" /> },
+      { path: "w/:ws/audit-log", element: <GatedPage title="Audit log" endpoint="GET /v1/audit-log" /> },
+      { path: "w/:ws/datasets", element: <GatedPage title="Datasets" endpoint="/v1/eval/datasets" /> },
+      { path: "w/:ws/eval-runs", element: <GatedPage title="Eval runs" endpoint="/v1/eval/runs" /> },
       { path: "*", element: <HomeSurface /> },
     ],
   },

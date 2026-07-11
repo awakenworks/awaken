@@ -1,36 +1,17 @@
-// Workspace · Settings: the unified two-band rail. Sections link out to the
-// full surfaces; identity + project authoring live here.
+// Workspace · Settings: the supply/govern rail for the active workspace. Sections
+// link out to the full surfaces. Tenancy is Org ▸ Workspace (ADR-0051): a workspace
+// owns both its run resources and its config; Project was removed. Workspaces are a
+// client-held roster (no server registry) — managed from the sidebar switcher.
 
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
-import { useNavigate } from "react-router";
-import { api } from "../lib/api/client";
-import type { Project } from "../lib/api/types";
+import { useNavigate, useParams } from "react-router";
+import { getWorkspace } from "../lib/api/client";
 import { useApp } from "../lib/app-state";
-
-const WORKSPACE = "wrkspc_default";
 
 export default function SettingsSurface() {
   const app = useApp();
   const nav = useNavigate();
-  const qc = useQueryClient();
-  const [pid, setPid] = useState("");
-  const [pname, setPname] = useState("");
-  const createProject = useMutation({
-    mutationFn: () =>
-      api.put<Project>(`/v1/config/projects/${pid}`, {
-        id: pid,
-        workspace_id: WORKSPACE,
-        display_name: pname || pid,
-        version: 1,
-      }),
-    onSuccess: (p) => {
-      setPid("");
-      setPname("");
-      app.setProjectId(p.id);
-      void qc.invalidateQueries({ queryKey: ["projects"] });
-    },
-  });
+  const { ws: wsId = "default" } = useParams();
+
   const link = (label: string, to: string, hint: string) => (
     <button className="nav-item" style={{ height: "auto", padding: "8px 10px" }} onClick={() => nav(to)}>
       <span style={{ display: "flex", flexDirection: "column", textAlign: "left" }}>
@@ -42,49 +23,54 @@ export default function SettingsSurface() {
       <span style={{ marginLeft: "auto", color: "var(--fg3)" }}>↗</span>
     </button>
   );
+
+  const base = `/w/${wsId}`;
   return (
     <>
       <div className="banner info">
         <span>⚑</span>
         <span>
-          {app.t("Scoped to workspace", "作用域:工作区")} · <code>{WORKSPACE}</code> —{" "}
-          {app.t("shared across every project.", "全部项目共享。")}
+          {app.t("Scoped to workspace", "作用域:工作区")} · <code>{wsId}</code> —{" "}
+          {app.t(
+            getWorkspace() ? "addressed at /v1/workspaces/{ws}/…" : "default scope (flat /v1/…)",
+            getWorkspace() ? "以 /v1/workspaces/{ws}/… 寻址" : "默认作用域(扁平 /v1/…)",
+          )}
         </span>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
         <div className="card">
-          <h2>Workspace</h2>
-          {link("AI providers & models", "/models", app.t("Catalog, offerings, inference profiles, resolve dry-run", "目录、offering、profile 与 resolve 试算"))}
-          {link("Credentials", "/credentials", app.t("Supply-side sources & pools — secret-in, secret-free-out", "供给侧凭证与池——只进不出"))}
-          {link("MCP servers", "/mcp-servers", app.t("Authored definitions with fail-closed bindings", "作者化定义,fail-closed 绑定"))}
-          {link("A2A servers", "/a2a-servers", app.t("Remote delegate directory", "远程委托目录"))}
-          {link("Access", "/access", app.t("IAM tokens & roles", "IAM 令牌与角色"))}
+          <h2>{app.t("Supply & governance", "供给与治理")}</h2>
+          {link("AI providers & models", `${base}/models`, app.t("Catalog, offerings, inference profiles, resolve dry-run", "目录、offering、profile 与 resolve 试算"))}
+          {link("Credentials", `${base}/credentials`, app.t("Supply-side sources & pools — secret-in, secret-free-out", "供给侧凭证与池——只进不出"))}
+          {link("MCP servers", `${base}/mcp-servers`, app.t("Authored definitions with fail-closed bindings", "作者化定义,fail-closed 绑定"))}
+          {link("A2A servers", `${base}/a2a-servers`, app.t("Remote delegate directory", "远程委托目录"))}
+          {link("Access", `${base}/access`, app.t("IAM tokens & roles", "IAM 令牌与角色"))}
         </div>
         <div className="card">
-          <h2>{app.t("Projects", "项目")}</h2>
+          <h2>{app.t("Workspaces", "工作区")}</h2>
           <p className="hint">
             {app.t(
-              "Tenancy is now Org ▸ Workspace: a workspace owns both its run resources and its config, addressed at /v1/workspaces/{ws}/…. Project is a grouping within a workspace.",
-              "租户现为 Org ▸ Workspace:一个 workspace 同时拥有运行资源与配置,以 /v1/workspaces/{ws}/… 寻址。Project 是 workspace 内的分组。",
+              "Org ▸ Workspace: a workspace is the tenancy scope, owning both run resources and config. The roster is client-held (no server registry) — add/switch from the sidebar. \"default\" is the flat default scope.",
+              "Org ▸ Workspace:workspace 是租户作用域,同时拥有运行资源与配置。名册由客户端持有(无服务端注册)——在侧栏添加/切换。\"default\" 即扁平默认作用域。",
             )}
           </p>
-          {app.projects.map((p) => (
-            <div key={p.id} className="row" style={{ padding: "4px 0" }}>
-              <code>{p.id}</code>
-              <span>{p.display_name}</span>
-              <button className="btn ghost" style={{ marginLeft: "auto", height: 24 }} onClick={() => nav(`/p/${p.id}/settings`)}>
-                {app.t("open", "打开")}
+          {app.workspaces.map((w) => (
+            <div key={w.id} className="row" style={{ padding: "4px 0" }}>
+              <code>{w.id}</code>
+              <span>{w.display_name}</span>
+              {w.id === app.workspaceId && <span className="pill ok">{app.t("active", "当前")}</span>}
+              <button
+                className="btn ghost"
+                style={{ marginLeft: "auto", height: 24 }}
+                onClick={() => {
+                  app.setWorkspaceId(w.id);
+                  nav(`/w/${w.id}/overview`);
+                }}
+              >
+                {app.t("enter", "进入")}
               </button>
             </div>
           ))}
-          <div className="row" style={{ marginTop: 10 }}>
-            <input className="input mono" style={{ width: 140 }} placeholder="id (dns-safe)" value={pid} onChange={(e) => setPid(e.target.value)} />
-            <input className="input" style={{ flex: 1 }} placeholder={app.t("display name", "显示名")} value={pname} onChange={(e) => setPname(e.target.value)} />
-            <button className="btn primary" disabled={!pid || createProject.isPending} onClick={() => createProject.mutate()}>
-              + {app.t("Create", "创建")}
-            </button>
-          </div>
-          {createProject.error instanceof Error && <div className="err">{createProject.error.message}</div>}
         </div>
       </div>
     </>

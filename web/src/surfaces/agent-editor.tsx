@@ -88,7 +88,7 @@ export default function AgentEditorSurface() {
   const app = useApp();
   const nav = useNavigate();
   const qc = useQueryClient();
-  const { pid = "", id = "new" } = useParams();
+  const { ws: wsId = "default", id = "new" } = useParams();
   const isNew = id === "new";
   const [tab, setTab] = useState<Tab>("basics");
   const [cfg, setCfg] = useState<AgentConfig>(BLANK);
@@ -141,7 +141,7 @@ export default function AgentEditorSurface() {
       setDirty(false);
       toast.ok(app.t("Saved.", "已保存。"));
       void qc.invalidateQueries({ queryKey: ["config-agents"] });
-      if (isNew) nav(`/p/${pid}/agents/${targetId()}`, { replace: true });
+      if (isNew) nav(`/w/${wsId}/agents/${targetId()}`, { replace: true });
     },
     onError: (e) => toast.err(e instanceof Error ? e.message : "error"),
   });
@@ -166,7 +166,7 @@ export default function AgentEditorSurface() {
     <>
       <div className="row" style={{ justifyContent: "space-between" }}>
         <span className="row">
-          <button className="btn ghost" style={{ height: 26 }} onClick={() => nav(`/p/${pid}/agents`)}>
+          <button className="btn ghost" style={{ height: 26 }} onClick={() => nav(`/w/${wsId}/agents`)}>
             ← {app.t("Agents", "Agents")}
           </button>
           <span className="crumb-title mono">{isNew ? app.t("new agent", "新建 agent") : id}</span>

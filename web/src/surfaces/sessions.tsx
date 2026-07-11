@@ -36,7 +36,7 @@ export function StatusPill({ session }: { session: Session }) {
   return <span className="pill ok">idle</span>;
 }
 
-function NewSessionModal({ pid, onClose }: { pid: string; onClose: () => void }) {
+function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void }) {
   const app = useApp();
   const nav = useNavigate();
   const [agent, setAgent] = useState("");
@@ -58,14 +58,14 @@ function NewSessionModal({ pid, onClose }: { pid: string; onClose: () => void })
     mutationFn: (body: CreateSessionRequest) =>
       api.post<Session>(ws("/v1/sessions"), body),
     onSuccess: (session) => {
-      nav(`/p/${pid}/sessions/${session.id}`);
+      nav(`/w/${wsId}/sessions/${session.id}`);
     },
   });
   return (
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3>
-          {app.t("New session", "新建会话")} · {pid}
+          {app.t("New session", "新建会话")} · {wsId}
         </h3>
         <div className="field">
           <label className="row" style={{ justifyContent: "space-between" }}>
@@ -187,20 +187,20 @@ export default function SessionsSurface() {
   const app = useApp();
   const nav = useNavigate();
   const qc = useQueryClient();
-  const { pid = "" } = useParams();
+  const { ws: wsId = "default" } = useParams();
   const [creating, setCreating] = useState(false);
   const [openId, setOpenId] = useState("");
   // Anthropic's ListSessions is not server-filtered; scope by status client-side.
   const [filter, setFilter] = useState<"all" | "running" | "archived">("all");
 
   const sessions = useQuery({
-    queryKey: ["sessions", pid],
+    queryKey: ["sessions", wsId],
     queryFn: () => api.get<ListSessionsResponse>(ws("/v1/sessions")),
     refetchInterval: 15_000,
   });
   const archive = useMutation({
     mutationFn: (sid: string) => api.post<Session>(ws(`/v1/sessions/${sid}/archive`)),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["sessions", pid] }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["sessions", wsId] }),
   });
   const rows = (sessions.data?.data ?? []).filter((s) =>
     filter === "all"
@@ -260,7 +260,7 @@ export default function SessionsSurface() {
           </thead>
           <tbody>
             {rows.map((s) => (
-              <tr key={s.id} data-click="true" onClick={() => nav(`/p/${pid}/sessions/${s.id}`)}>
+              <tr key={s.id} data-click="true" onClick={() => nav(`/w/${wsId}/sessions/${s.id}`)}>
                 <td className="mono">{s.id}</td>
                 <td>{s.title || <span className="mut">(untitled)</span>}</td>
                 <td>
@@ -311,12 +311,12 @@ export default function SessionsSurface() {
         <button
           className="btn"
           disabled={!openId.trim()}
-          onClick={() => nav(`/p/${pid}/sessions/${openId.trim()}`)}
+          onClick={() => nav(`/w/${wsId}/sessions/${openId.trim()}`)}
         >
           {app.t("Open by id", "按 id 打开")}
         </button>
       </div>
-      {creating && <NewSessionModal pid={pid} onClose={() => setCreating(false)} />}
+      {creating && <NewSessionModal wsId={wsId} onClose={() => setCreating(false)} />}
     </>
   );
 }
