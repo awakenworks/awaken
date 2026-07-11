@@ -1,64 +1,84 @@
 //! The admin-config schema (ADR-0043). One portable [`MigrationBundle`] under
 //! the `admin` namespace with its own ledger, covering the aggregates the admin
 //! plane itself authors (inference profiles, MCP server defs, agent↔MCP
-//! bindings) — the catalog/credential domains keep their own bundles. All rows
-//! are **secret-free** (an MCP def carries a credential *binding by reference*,
-//! never material). Its own bundle prefix is what lets the admin plane be split
-//! into its own database/service (blast-radius isolation).
+//! bindings, webhook endpoints) — the catalog/credential domains keep their own
+//! bundles. All rows are **secret-free** (an MCP def carries a credential
+//! *binding by reference*, a webhook row a `secret_ref`, never material). Its own
+//! bundle prefix is what lets the admin plane be split into its own
+//! database/service (blast-radius isolation).
+//!
+//! The DDL is NOT encoded in this source: every migration is a `.sql` file under
+//! `migrations/`, embedded at build time with `include_str!`. The file name
+//! carries the version (`V0005__…` ⇒ version 5) and the first `-- comment` line
+//! is its description, so a schema change is a migration *file*, never a Rust
+//! string literal.
 
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 
 /// Namespaced bundle id — the split/merge unit for the admin-config domain.
 pub const BUNDLE_ID: &str = "awaken.admin";
 
-const SPECS: [(i64, &str, &str); 5] = [
+/// The embedded migration files, in apply order. Each entry is
+/// `(file_name, file_contents)`: the name yields the version, the contents yield
+/// the description (first `-- comment` line) and the SQL body. `include_str!`
+/// resolves relative to this source file, so the `.sql` files ship in the crate.
+const FILES: &[(&str, &str)] = &[
     (
-        1,
-        "inference profiles: authored admin-plane aggregates, one JSON row per id",
-        "CREATE TABLE {prefix}_inference_profile (\
-            id TEXT PRIMARY KEY, \
-            data {json} NOT NULL, \
-            created_at {timestamptz} NOT NULL DEFAULT {now})",
+        "V0001__inference_profile.sql",
+        include_str!("migrations/V0001__inference_profile.sql"),
     ),
     (
-        2,
-        "mcp servers: authored McpServerDef rows (secret-free; credential is a binding by reference)",
-        "CREATE TABLE {prefix}_mcp_server (\
-            id TEXT PRIMARY KEY, \
-            data {json} NOT NULL, \
-            created_at {timestamptz} NOT NULL DEFAULT {now})",
+        "V0002__mcp_server.sql",
+        include_str!("migrations/V0002__mcp_server.sql"),
     ),
     (
-        3,
-        "agent mcp bindings: which authored MCP servers an agent uses, one JSON row per agent",
-        "CREATE TABLE {prefix}_agent_mcp (\
-            agent_id TEXT PRIMARY KEY, \
-            data {json} NOT NULL, \
-            created_at {timestamptz} NOT NULL DEFAULT {now})",
+        "V0003__agent_mcp.sql",
+        include_str!("migrations/V0003__agent_mcp.sql"),
     ),
     (
-        4,
-        "agent resource bindings: which resources an agent is bound to (ADR-0038), one JSON row per agent",
-        "CREATE TABLE {prefix}_agent_resource (\
-            agent_id TEXT PRIMARY KEY, \
-            data {json} NOT NULL, \
-            created_at {timestamptz} NOT NULL DEFAULT {now})",
+        "V0004__agent_resource.sql",
+        include_str!("migrations/V0004__agent_resource.sql"),
     ),
     (
-        5,
-        "webhook endpoints: authored WebhookEndpointDef rows (secret-free; the whsec_ signing key is sealed in the SecretStore, the row carries only its secret_ref)",
-        "CREATE TABLE {prefix}_webhook (\
-            id TEXT PRIMARY KEY, \
-            data {json} NOT NULL, \
-            created_at {timestamptz} NOT NULL DEFAULT {now})",
+        "V0005__webhook.sql",
+        include_str!("migrations/V0005__webhook.sql"),
     ),
 ];
 
-/// Build the admin-schema migration bundle (prefix `admin`).
+/// Parse the version from a `Vnnnn__slug.sql` file name (`V0005__…` ⇒ 5). A name
+/// that does not carry a positive version yields `0`, which [`Migration::new`]
+/// rejects — so a mis-named file fails the bundle build loudly.
+fn version_of(name: &str) -> i64 {
+    name.trim_start_matches('V')
+        .split("__")
+        .next()
+        .and_then(|digits| digits.parse::<i64>().ok())
+        .unwrap_or(0)
+}
+
+/// The migration's description: the first `-- comment` line of the file, so the
+/// human-readable summary lives with the DDL rather than in this source.
+fn description_of(name: &str, contents: &str) -> String {
+    contents
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("--").map(|rest| rest.trim().to_string()))
+        .filter(|desc| !desc.is_empty())
+        .unwrap_or_else(|| name.to_string())
+}
+
+/// Build the admin-schema migration bundle (prefix `admin`) from the embedded
+/// `.sql` files.
 pub fn admin_bundle() -> Result<MigrationBundle, MigrationError> {
-    let migrations = SPECS
+    let migrations = FILES
         .iter()
-        .map(|(version, description, sql)| Migration::new(*version, *description, *sql))
+        .map(|(name, contents)| {
+            Migration::new(
+                version_of(name),
+                description_of(name, contents),
+                contents.trim(),
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
     MigrationBundle::new(BUNDLE_ID, migrations)
 }
@@ -71,5 +91,12 @@ mod tests {
     fn admin_bundle_lints() {
         let bundle = admin_bundle().expect("bundle builds");
         awaken_scoped_migration::lint(std::slice::from_ref(&bundle)).expect("bundle lints");
+    }
+
+    #[test]
+    fn versions_parse_contiguously_from_file_names() {
+        let bundle = admin_bundle().expect("bundle builds");
+        let versions: Vec<i64> = bundle.migrations().iter().map(|m| m.version()).collect();
+        assert_eq!(versions, (1..=5).collect::<Vec<_>>());
     }
 }
