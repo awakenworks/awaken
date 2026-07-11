@@ -49,7 +49,7 @@ fn agent_config() -> AgentConfig {
         instructions: "be helpful".to_string(),
         max_steps: 8,
         model_binding: ModelBinding {
-            provider_instance_ref: "p".to_string(),
+            provider_identity_ref: "p".to_string(),
             model_ref: "m".to_string(),
             backend_ref: "b".to_string(),
         },

@@ -15,6 +15,7 @@ pub mod model_access;
 pub mod permission;
 pub mod plugin;
 pub mod plugin_config;
+pub mod resilience;
 pub mod resolved;
 pub mod resolver;
 pub mod resume;

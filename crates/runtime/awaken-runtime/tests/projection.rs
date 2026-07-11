@@ -87,7 +87,7 @@ async fn run() -> (MemoryCommitCoordinator, MemoryStreamSink) {
                 instructions: String::new(),
                 max_steps: 16,
                 model_binding: ModelBinding {
-                    provider_instance_ref: "p".to_string(),
+                    provider_identity_ref: "p".to_string(),
                     model_ref: "m".to_string(),
                     backend_ref: "b".to_string(),
                 },

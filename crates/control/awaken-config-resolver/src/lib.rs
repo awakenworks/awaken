@@ -654,7 +654,7 @@ mod tests {
                 instructions: String::new(),
                 max_steps: 8,
                 model_binding: ModelBinding {
-                    provider_instance_ref: "anthropic".into(),
+                    provider_identity_ref: "anthropic".into(),
                     model_ref: "claude-opus-4-8".into(),
                     backend_ref: "genai".into(),
                 },

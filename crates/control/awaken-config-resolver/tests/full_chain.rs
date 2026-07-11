@@ -142,7 +142,7 @@ async fn full_chain_live_model_call() {
 
     let request = ChatRequest {
         model_binding: ModelBinding {
-            provider_instance_ref: resolved.triple.provider_id.clone(),
+            provider_identity_ref: resolved.triple.provider_id.clone(),
             model_ref: resolved.triple.model_id.clone(),
             backend_ref: "genai".to_string(),
         },
