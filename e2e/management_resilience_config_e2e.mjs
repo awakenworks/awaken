@@ -67,6 +67,30 @@ async function main() {
     assert.ok(cand.body.candidates.every((c) => c.credential_present), 'each candidate materialized a pool credential');
     pass('resolve-candidates -> ordered (model-a, model-b) candidate list (AxisBinding pool)');
 
+    // A single-model profile (no fallbacks) resolves to ONE candidate — the
+    // AxisBinding::Pin branch of the model axis.
+    ok(await cfg('PUT', '/v1/config/inference-profiles/pin1', {
+      model_id: 'model-a',
+      credential_binding: { type: 'one_of_credential_pool', credential_pool_id: 'pool1' },
+      disabled_endpoint_ids: [],
+    }), 200, 'pinned profile');
+    const pin = await cfg('POST', '/v1/config/inference-profiles/pin1/resolve-candidates', { workspace_id: WS });
+    ok(pin, 200, 'pin resolve-candidates');
+    assert.deepEqual(pin.body.candidates.map((c) => c.model_id), ['model-a'], 'a pinned model yields one candidate');
+    pass('resolve-candidates on a pinned (no-fallback) profile -> single candidate (AxisBinding::Pin)');
+
+    // A profile whose every model is unauthored → fail-closed (the all-candidates-
+    // failed path of resolve_profile_candidates).
+    ok(await cfg('PUT', '/v1/config/inference-profiles/dead', {
+      model_id: 'ghost-1',
+      model_fallbacks: ['ghost-2'],
+      credential_binding: { type: 'one_of_credential_pool', credential_pool_id: 'pool1' },
+      disabled_endpoint_ids: [],
+    }), 200, 'dead profile');
+    const deadCand = await cfg('POST', '/v1/config/inference-profiles/dead/resolve-candidates', { workspace_id: WS });
+    assert.ok(deadCand.status >= 400, `all-unresolvable candidates fail closed (got ${deadCand.status})`);
+    pass('resolve-candidates with no resolvable model -> fail-closed');
+
     // ── Availability + cooldown ops surface ─────────────────────────────────
     let avail = await cfg('GET', `/v1/config/credentials/${id1}/availability`);
     ok(avail, 200, 'availability');
@@ -93,6 +117,13 @@ async function main() {
     ok(await cfg('POST', `/v1/config/credentials/${id1}/cooldown`, { kind: 'available' }), 200, 'clear');
     elig = await cfg('GET', '/v1/config/credential-pools/pool1/eligible');
     assert.deepEqual(elig.body.eligible, [id1, id2], 'both eligible again after clear');
+
+    // A zero-window quota cooldown auto-resumes immediately (deadline == now): the
+    // CooledDown→Available time branch, no timer.
+    ok(await cfg('POST', `/v1/config/credentials/${id2}/cooldown`, { kind: 'quota', retry_after_secs: 0 }), 200, 'zero cooldown');
+    const resumed = await cfg('GET', `/v1/config/credentials/${id2}/availability`);
+    assert.equal(resumed.body.state, 'available', 'a zero-window cooldown reads available (auto-resume by time)');
+    pass('a past-deadline cooldown auto-resumes to available');
 
     // Hard exhaustion stays until cleared; transient/permanent are availability no-ops.
     const exh = await cfg('POST', `/v1/config/credentials/${id2}/cooldown`, { kind: 'exhausted' });
