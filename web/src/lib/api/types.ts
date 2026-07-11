@@ -397,10 +397,30 @@ export interface PluginCap {
   config_sections: string[];
   config_schema: Record<string, unknown>;
 }
+/** An always-on policy (not an installable plugin) whose `plugin_config` section
+ * shapes a run — e.g. the permission gate. Rendered by a dedicated editor. */
+export interface PolicyCap {
+  id: string;
+  config_section: string;
+  config_schema: Record<string, unknown>;
+}
 export interface Capabilities {
   runtime_version: string;
   tools: ToolCap[];
   plugins: PluginCap[];
+  policies?: PolicyCap[];
+}
+
+// ---- permission policy (the `permission` plugin_config section) ----
+export type PermissionBehavior = "allow" | "ask" | "deny";
+export interface PermissionRuleConfig {
+  pattern: string;
+  behavior: PermissionBehavior;
+}
+export interface PermissionConfig {
+  default_behavior?: PermissionBehavior;
+  mode?: string;
+  rules?: PermissionRuleConfig[];
 }
 
 // ---- vaults ----

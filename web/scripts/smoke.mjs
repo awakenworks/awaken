@@ -121,6 +121,31 @@ await step("capabilities (flat)", "GET", "/v1/capabilities", undefined, (s, p) =
   p.plugins.some((pl) => pl.id === "state_machine" && pl.config_schema && typeof pl.config_schema === "object"));
 // Uniform addressing: same snapshot under the workspace path prefix (ADR-0048).
 await step("capabilities (workspace-path)", "GET", "/v1/workspaces/default/capabilities", undefined, (s, p) => s === 200 && p.plugins.length > 0);
+// The permission policy is advertised as a policy (not a plugin), with its schema —
+// the PermissionEditor consumes this to author the `permission` section.
+await step("capabilities exposes the permission policy", "GET", "/v1/capabilities", undefined, (s, p) =>
+  s === 200 && Array.isArray(p.policies) &&
+  p.policies.some((pl) => pl.id === "permission" && pl.config_schema && typeof pl.config_schema === "object"));
+
+// ---- Permission policy authoring round-trips (surfaces/agent-editor PermissionEditor) ----
+const permAgent = {
+  id: "perm-agent",
+  name: "Perm Agent",
+  model: { id: "claude" },
+  system: "You gate your tools.",
+  tools: [],
+  mcp_servers: [],
+  skills: [],
+  max_steps: 8,
+  plugins: [],
+  plugin_config: { permission: { default_behavior: "deny", rules: [{ pattern: "Bash(*rm*)", behavior: "deny" }] } },
+  context_policy: { kind: "keep_all" },
+};
+await step("author agent with permission policy", "PUT", "/v1/config/agents/perm-agent", permAgent, (s, p) => s === 200 && p.id === "perm-agent");
+await step("permission section round-trips", "GET", "/v1/config/agents/perm-agent", undefined, (s, p) =>
+  s === 200 && p.plugin_config?.permission?.default_behavior === "deny" &&
+  p.plugin_config?.permission?.rules?.[0]?.pattern === "Bash(*rm*)");
+await step("publish permission agent (compiles the section)", "POST", "/v1/config/agents/perm-agent/publish", undefined, (s, p) => s === 200 && p.installed === true);
 // Gating truth: the Observe faces are genuinely unmounted, so GatedPage's probe
 // gets a 404 and shows the placeholder (not a fabricated flag).
 await step("gated Observe face 404s (audit-log)", "GET", "/v1/audit-log", undefined, (s) => s === 404 || s === 405);

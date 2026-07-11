@@ -40,6 +40,16 @@ test("agent editor Tools/Plugins are data-driven from /v1/capabilities", async (
   }
 });
 
+test("Plugins tab renders the Permission policy editor (data-driven from capabilities.policies)", async ({ page }) => {
+  await page.goto("/w/default/agents/new");
+  await page.getByRole("button", { name: "Plugins & policy" }).click();
+  await expect(page.getByText("Permission policy", { exact: true })).toBeVisible();
+  await expect(page.getByText("Default decision", { exact: true })).toBeVisible();
+  // Add a rule → an editable glob-pattern row appears.
+  await page.getByRole("button", { name: /add rule/ }).click();
+  await expect(page.getByPlaceholder("Bash(*rm*)")).toBeVisible();
+});
+
 test("enabling a plugin renders a schema-driven form (not raw JSON)", async ({ page }) => {
   await page.goto("/w/default/agents/new");
   await page.getByRole("button", { name: "Plugins & policy" }).click();

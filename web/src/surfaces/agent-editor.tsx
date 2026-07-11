@@ -14,11 +14,13 @@ import { useToast } from "../components/ui/Toast";
 import { Button, Card, CheckPicker, Pill, SchemaForm, TextAreaField, TextField } from "../components/ui";
 import type { JsonSchema } from "../components/ui";
 import SandboxPane from "../components/session/SandboxPane";
+import PermissionEditor from "../components/agent/PermissionEditor";
 import { api, isAbsent } from "../lib/api/client";
 import type {
   AgentConfig,
   AgentConfigItem,
   ContextPolicy,
+  PermissionConfig,
   ProviderCatalog,
   PublishResult,
 } from "../lib/api/types";
@@ -395,6 +397,21 @@ export default function AgentEditorSurface() {
                 onChange={(next) => patch({ plugin_config: next })}
               />
             </div>
+            {(caps.data?.policies ?? []).some((p) => p.id === "permission") && (
+              <div className="field">
+                <label>{app.t("Permission policy", "权限策略")}</label>
+                <span className="mut">
+                  {app.t(
+                    "Gate tool calls: a default decision plus ordered rules, enforced at runtime.",
+                    "门禁工具调用:默认裁决 + 有序规则,运行时强制执行。",
+                  )}
+                </span>
+                <PermissionEditor
+                  value={(cfg.plugin_config.permission as PermissionConfig) ?? {}}
+                  onChange={(v) => patch({ plugin_config: { ...cfg.plugin_config, permission: v } })}
+                />
+              </div>
+            )}
           </>
         )}
       </Card>
