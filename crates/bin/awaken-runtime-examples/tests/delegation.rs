@@ -261,7 +261,7 @@ async fn a_parked_delegation_resumes_through_the_resolver() {
 
     // The delegate parks: the run waits, holding the durable handle in its ticket.
     let (run_id, phase) = runtime
-        .start_turn(&config(), "delegate please", "delegate please", ctx)
+        .start_run(&config(), "delegate please", "delegate please", ctx)
         .await
         .expect("start");
     assert_eq!(phase, Phase::Waiting, "the parked delegation waits");

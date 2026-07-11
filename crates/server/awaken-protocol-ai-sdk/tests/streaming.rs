@@ -22,7 +22,7 @@ struct StreamingMock;
 
 #[async_trait::async_trait]
 impl ProtocolRuntime for StreamingMock {
-    async fn run_turn(
+    async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,
@@ -31,7 +31,7 @@ impl ProtocolRuntime for StreamingMock {
         Ok(committed())
     }
 
-    async fn run_turn_streaming(
+    async fn run_streaming(
         &self,
         _thread: &str,
         _agent: Option<String>,
@@ -185,12 +185,12 @@ async fn streams_tool_input_deltas_then_authoritative_available() {
 
 #[tokio::test]
 async fn falls_back_to_full_projection_when_nothing_streamed() {
-    // A runtime whose `run_turn_streaming` is the default (no live events) still
+    // A runtime whose `run_streaming` is the default (no live events) still
     // yields a well-formed stream with a single `start` and the committed tail.
     struct SilentMock;
     #[async_trait::async_trait]
     impl ProtocolRuntime for SilentMock {
-        async fn run_turn(
+        async fn run(
             &self,
             _t: &str,
             _a: Option<String>,

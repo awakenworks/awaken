@@ -86,10 +86,7 @@ async fn a_message_queued_mid_turn_reaches_the_same_turn() {
 
     let run = {
         let host = h.host.clone();
-        tokio::spawn(async move {
-            host.run_turn(None, thread, vec![user("u1", "First.")])
-                .await
-        })
+        tokio::spawn(async move { host.run(None, thread, vec![user("u1", "First.")]).await })
     };
 
     // Step 1 is in flight (started, not yet permitted): the inbox is open.
@@ -143,10 +140,7 @@ async fn a_message_the_cancelled_turn_never_consumed_carries_over() {
 
     let run = {
         let host = h.host.clone();
-        tokio::spawn(async move {
-            host.run_turn(None, thread, vec![user("u1", "First.")])
-                .await
-        })
+        tokio::spawn(async move { host.run(None, thread, vec![user("u1", "First.")]).await })
     };
 
     // Queue while step 1 is gated, then cancel the turn instead of permitting
@@ -171,10 +165,7 @@ async fn a_message_the_cancelled_turn_never_consumed_carries_over() {
     // consumed at the first natural-end boundary.
     let run = {
         let host = h.host.clone();
-        tokio::spawn(async move {
-            host.run_turn(None, thread, vec![user("u2", "Second.")])
-                .await
-        })
+        tokio::spawn(async move { host.run(None, thread, vec![user("u2", "Second.")]).await })
     };
     // Step 1 of turn 2, then step 2 after the drain.
     h.wait_step_started().await;

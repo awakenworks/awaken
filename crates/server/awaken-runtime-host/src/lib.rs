@@ -39,6 +39,7 @@ mod model_route;
 mod models;
 mod provisioning;
 mod redact;
+mod run_exec;
 mod sandbox_source;
 mod session_store;
 mod skills;
@@ -46,7 +47,6 @@ mod skills_api;
 mod store;
 mod subagent;
 mod tool_catalog;
-mod turn_exec;
 
 use std::sync::Arc;
 
@@ -64,7 +64,7 @@ use awaken_protocol_transport::{
 };
 use awaken_runtime_contract::live_inbox::{EditError, LiveInboxMessageId, MessageOrigin, Offer};
 
-use crate::host::{HostError, HostErrorKind, PendingTool, TurnResult};
+use crate::host::{HostError, HostErrorKind, PendingTool, RunResult};
 
 // The neutral session substrate and its resume vocabulary.
 pub use crate::commit_backend::init_shared_postgres_commit;
@@ -172,7 +172,7 @@ fn to_pending(pending: Option<PendingTool>) -> Option<Pending> {
     })
 }
 
-fn to_turn_outcome(result: TurnResult) -> TurnOutcome {
+fn to_turn_outcome(result: RunResult) -> TurnOutcome {
     // Carry a terminal fault through so the adapter projects `session.error`; the
     // neutral `Failure` owns the classification (code + message), not a string.
     let failure = match &result.phase {
@@ -439,7 +439,7 @@ impl SessionRuntime for ManagedHost {
         self.host.has_durable_thread(thread)
     }
 
-    async fn run_turn(
+    async fn run(
         &self,
         agent: &str,
         thread: &str,
@@ -447,7 +447,7 @@ impl SessionRuntime for ManagedHost {
     ) -> Result<TurnOutcome, RunError> {
         let result = self
             .host
-            .run_turn(Some(agent), thread, vec![user_message(content)])
+            .run(Some(agent), thread, vec![user_message(content)])
             .await
             .map_err(to_run_error)?;
         Ok(to_turn_outcome(result))
@@ -902,7 +902,7 @@ fn to_port_pending(pending: Option<PendingTool>) -> Option<PortPending> {
     })
 }
 
-fn to_step_outcome(result: TurnResult) -> StepOutcome {
+fn to_step_outcome(result: RunResult) -> StepOutcome {
     StepOutcome {
         waiting: matches!(result.phase, Phase::Waiting),
         exhausted: matches!(result.phase, Phase::Ended(EndCause::MaxSteps)),
@@ -927,7 +927,7 @@ impl ProtocolHost {
 
 #[async_trait::async_trait]
 impl ProtocolRuntime for ProtocolHost {
-    async fn run_turn(
+    async fn run(
         &self,
         thread: &str,
         _agent: Option<String>,
@@ -935,13 +935,13 @@ impl ProtocolRuntime for ProtocolHost {
     ) -> Result<StepOutcome, DriverError> {
         let result = self
             .host
-            .run_turn(None, thread, messages)
+            .run(None, thread, messages)
             .await
             .map_err(to_driver_error)?;
         Ok(to_step_outcome(result))
     }
 
-    async fn run_turn_streaming(
+    async fn run_streaming(
         &self,
         thread: &str,
         _agent: Option<String>,
@@ -950,7 +950,7 @@ impl ProtocolRuntime for ProtocolHost {
     ) -> Result<StepOutcome, DriverError> {
         let result = self
             .host
-            .run_turn_streaming(None, thread, messages, sink)
+            .run_streaming(None, thread, messages, sink)
             .await
             .map_err(to_driver_error)?;
         Ok(to_step_outcome(result))

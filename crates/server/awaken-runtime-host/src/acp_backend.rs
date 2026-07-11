@@ -2,7 +2,7 @@
 //! external ACP CLI, and the executor that drives them.
 //!
 //! A session selects its runtime through the Managed API (`agent.runtime`), staged
-//! here per thread. `is_acp` decides the routing in `turn_exec`; the executor is a
+//! here per thread. `is_acp` decides the routing in `run_exec`; the executor is a
 //! peer `RunExecutor` that launches the CLI and commits through the same boundary
 //! as the native path.
 

@@ -1,7 +1,7 @@
 //! Serve our brain *as* an ACP agent (the reverse of driving an external CLI): an
 //! ACP client (a gateway / orchestrator) drives our neutral [`ProtocolRuntime`]
 //! over the ACP session lifecycle. This is the anti-corruption adapter — it maps
-//! ACP `initialize` / `session/new` / `session/prompt` onto `run_turn`, and the
+//! ACP `initialize` / `session/new` / `session/prompt` onto `run`, and the
 //! run's outcome back onto an ACP stop reason. The WS / JSON-RPC transport wraps
 //! this driver (like the a2a router wraps the same port); the driver itself is
 //! transport-agnostic and unit-testable.
@@ -83,7 +83,7 @@ impl AcpServeHost {
             Role::User,
             text.to_string(),
         );
-        let outcome = self.runtime.run_turn(session, agent, vec![user]).await?;
+        let outcome = self.runtime.run(session, agent, vec![user]).await?;
         Ok(AcpTurn {
             stop: map_stop(outcome.waiting, outcome.exhausted),
             messages: outcome.new_messages,

@@ -105,7 +105,7 @@ async fn run_send(
         }
         // No parked run → a fresh turn.
         None => {
-            rt.run_turn(&thread, processed.agent_id.clone(), vec![processed.message])
+            rt.run(&thread, processed.agent_id.clone(), vec![processed.message])
                 .await?
         }
     };

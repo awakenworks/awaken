@@ -63,7 +63,7 @@ struct EchoFake;
 
 #[async_trait::async_trait]
 impl SessionRuntime for EchoFake {
-    async fn run_turn(
+    async fn run(
         &self,
         _agent: &str,
         _thread: &str,
@@ -121,7 +121,7 @@ struct FailingFake(RunErrorKind);
 
 #[async_trait::async_trait]
 impl SessionRuntime for FailingFake {
-    async fn run_turn(
+    async fn run(
         &self,
         _a: &str,
         _t: &str,
@@ -235,7 +235,7 @@ struct CapableFake;
 
 #[async_trait::async_trait]
 impl SessionRuntime for CapableFake {
-    async fn run_turn(
+    async fn run(
         &self,
         _a: &str,
         _t: &str,
@@ -390,7 +390,7 @@ struct ParkingFake;
 
 #[async_trait::async_trait]
 impl SessionRuntime for ParkingFake {
-    async fn run_turn(
+    async fn run(
         &self,
         _agent: &str,
         _thread: &str,
@@ -476,7 +476,7 @@ struct OutcomeFake;
 
 #[async_trait::async_trait]
 impl SessionRuntime for OutcomeFake {
-    async fn run_turn(
+    async fn run(
         &self,
         _a: &str,
         _t: &str,
@@ -689,7 +689,7 @@ struct CustomToolFake;
 
 #[async_trait::async_trait]
 impl SessionRuntime for CustomToolFake {
-    async fn run_turn(
+    async fn run(
         &self,
         _a: &str,
         _t: &str,

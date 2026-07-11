@@ -394,7 +394,7 @@ pub trait SessionRuntime: Send + Sync {
     /// Run one user turn on `thread` to its first pause or end. `content` is the
     /// user message's full block list (multimodal): text interleaved with any
     /// image blocks, never flattened to a bare string.
-    async fn run_turn(
+    async fn run(
         &self,
         agent: &str,
         thread: &str,
@@ -1777,7 +1777,7 @@ impl ManagedState {
                     }
                     let outcome = self
                         .runtime
-                        .run_turn(&agent_id, session_id, content.clone())
+                        .run(&agent_id, session_id, content.clone())
                         .await?;
                     self.append_turn(session_id, outcome)?;
                 }
@@ -1938,7 +1938,7 @@ mod tests {
 
     #[async_trait]
     impl SessionRuntime for RehydrateFake {
-        async fn run_turn(
+        async fn run(
             &self,
             _agent: &str,
             _thread: &str,

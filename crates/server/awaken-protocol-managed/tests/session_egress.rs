@@ -29,7 +29,7 @@ impl SessionRuntime for CapturingFake {
         self.egress.lock().unwrap().push(init.deny_egress);
         Ok(())
     }
-    async fn run_turn(
+    async fn run(
         &self,
         _a: &str,
         _t: &str,

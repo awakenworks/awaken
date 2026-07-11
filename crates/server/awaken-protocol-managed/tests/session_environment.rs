@@ -28,7 +28,7 @@ impl SessionRuntime for AcceptingFake {
     async fn prepare_session(&self, _thread: &str, _init: SessionInit) -> Result<(), RunError> {
         Ok(())
     }
-    async fn run_turn(
+    async fn run(
         &self,
         _a: &str,
         _t: &str,

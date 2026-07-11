@@ -1,7 +1,7 @@
 //! Per-attempt live-inbox lifecycle: open with carry-over, close with
 //! leftover capture, and the in-flight lookup wire handlers use.
 //!
-//! Only the native direct turn path opens an inbox (see `turn_exec`): the
+//! Only the native direct turn path opens an inbox (see `run_exec`): the
 //! ACP executor never drains one, and the durable path runs in the worker's
 //! process. The slot lives on `SessionCtx` with the same locking discipline
 //! as the cancel token — brief std locks, never held across an await.

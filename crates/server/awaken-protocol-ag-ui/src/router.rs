@@ -128,9 +128,7 @@ fn stream_turn(
         let mut transcoder = AgUiLiveTranscoder::new(thread.clone(), run_id.clone());
         let close_thread = thread.clone();
         let turn =
-            tokio::spawn(
-                async move { rt.run_turn_streaming(&thread, agent, messages, sink).await },
-            );
+            tokio::spawn(async move { rt.run_streaming(&thread, agent, messages, sink).await });
         while let Some(kind) = live_rx.recv().await {
             for event in transcoder.transcode(&kind) {
                 if out_tx.send(sse_line(&event)).is_err() {

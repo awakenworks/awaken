@@ -23,7 +23,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use crate::Runtime;
 
 impl Runtime {
-    /// Run one turn of `config` on a fresh thread, returning the resulting phase.
+    /// Run `config` once on a fresh thread, returning the resulting phase.
     ///
     /// This is the single-shot entry: it installs the config and executes once. If
     /// the run parks on a tool approval it returns `Phase::Waiting` — use
@@ -39,7 +39,7 @@ impl Runtime {
         self.execute(activation, context).await
     }
 
-    /// Run one turn of `config` on `thread`, driving it to a terminal phase and
+    /// Run `config` once on `thread`, driving it to a terminal phase and
     /// asking `decide` for the answer each time it parks on a tool approval.
     ///
     /// This owns the `execute → (park → decide → resume)* → end` loop, so callers
@@ -74,13 +74,13 @@ impl Runtime {
         Ok(phase)
     }
 
-    /// Start one turn of `config` on `thread` and run it to its first pause or end,
+    /// Start one run of `config` on `thread` and drive it to its first pause or end,
     /// returning the run id and phase. Unlike [`Runtime::run_to_completion`], it
     /// does not answer a park: it returns `Phase::Waiting` so a durable caller
     /// (HITL, an out-of-band client) can read the [`WaitingTicket`] and later
     /// [`Runtime::resume`] the run by id. This is the public durable-park twin of
     /// `run_to_completion` (ADR-0033); the caller owns the park→resume loop.
-    pub async fn start_turn(
+    pub async fn start_run(
         &self,
         config: &RunnableConfig,
         thread: impl Into<String>,
@@ -93,7 +93,7 @@ impl Runtime {
     }
 
     /// Idempotently install a config's catalog and register its snapshot, so a run
-    /// parked under this config can be resumed without a prior `start_turn` — e.g.
+    /// parked under this config can be resumed without a prior `start_run` — e.g.
     /// after a restart, when a session is rebuilt from a durable store and the
     /// waiting ticket's snapshot must resolve. Safe to call repeatedly.
     pub fn install_for_resume(&self, config: &RunnableConfig) -> Result<(), Error> {
