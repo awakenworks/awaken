@@ -1,5 +1,5 @@
 //! Live Gemini-on-Vertex probe via an OAuth2 Bearer token (ADR-0043 Phase 3
-//! multi-flavor + OAuth). Ignored by default; needs network + a Google OAuth2
+//! multi-dialect + OAuth). Ignored by default; needs network + a Google OAuth2
 //! access token with the cloud-platform scope. Run with:
 //!
 //! ```sh

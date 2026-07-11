@@ -13,7 +13,7 @@ export interface Provider {
 export interface ProtocolEndpoint {
   id: string;
   provider_id: string;
-  flavor: ModelApiCompat;
+  dialect: ApiDialect;
   base_url?: string | null;
   timeout_secs?: number;
   display_name: string;
@@ -23,7 +23,7 @@ export interface Offering {
   model_id: string;
   provider_id: string;
   protocol_endpoint_id: string;
-  flavor: ModelApiCompat;
+  dialect: ApiDialect;
   upstream_model?: string | null;
 }
 export interface ProviderCatalog {
@@ -32,7 +32,7 @@ export interface ProviderCatalog {
   offerings: Offering[];
 }
 
-export type ModelApiCompat = "anthropic_messages" | "open_ai_chat" | "gemini";
+export type ApiDialect = "anthropic_messages" | "open_ai_chat" | "gemini";
 
 export type CredentialBinding =
   | { type: "none" }

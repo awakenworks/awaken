@@ -20,7 +20,7 @@ use awaken_credential_vault::{
 };
 use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
 use awaken_model_catalog::{
-    ModelApiCompat, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderCatalog,
+    ApiDialect, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderCatalog,
     ProviderId,
 };
 use awaken_server_local::{ResolvedExecutorError, build_resolved_router, executor_from_resolved};
@@ -39,7 +39,7 @@ async fn seed_catalog(base_url: &str, model_id: &str) -> ProviderCatalog {
     repo.put_endpoint(ProtocolEndpoint {
         id: ProtocolEndpointId::new("ep1"),
         provider_id: ProviderId::new("anthropic"),
-        flavor: ModelApiCompat::AnthropicMessages,
+        dialect: ApiDialect::AnthropicMessages,
         base_url: Some(base_url.into()),
         timeout_secs: 300,
         display_name: "prod".into(),
@@ -51,7 +51,7 @@ async fn seed_catalog(base_url: &str, model_id: &str) -> ProviderCatalog {
         model_id: model_id.into(),
         provider_id: ProviderId::new("anthropic"),
         protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
-        flavor: ModelApiCompat::AnthropicMessages,
+        dialect: ApiDialect::AnthropicMessages,
         upstream_model: None,
     })
     .await

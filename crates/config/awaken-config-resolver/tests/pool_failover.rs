@@ -18,7 +18,7 @@ use awaken_credential_vault::{
 };
 use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
 use awaken_model_catalog::{
-    ModelApiCompat, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderCatalog,
+    ApiDialect, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderCatalog,
     ProviderId,
 };
 
@@ -50,7 +50,7 @@ async fn catalog() -> ProviderCatalog {
     repo.put_endpoint(ProtocolEndpoint {
         id: ProtocolEndpointId::new("ep1"),
         provider_id: ProviderId::new("anthropic"),
-        flavor: ModelApiCompat::AnthropicMessages,
+        dialect: ApiDialect::AnthropicMessages,
         base_url: Some("https://api.anthropic.com/v1/".into()),
         timeout_secs: 300,
         display_name: "prod".into(),
@@ -62,7 +62,7 @@ async fn catalog() -> ProviderCatalog {
         model_id: "claude-opus-4-8".into(),
         provider_id: ProviderId::new("anthropic"),
         protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
-        flavor: ModelApiCompat::AnthropicMessages,
+        dialect: ApiDialect::AnthropicMessages,
         upstream_model: None,
     })
     .await
@@ -222,7 +222,7 @@ async fn dual_endpoint_catalog() -> ProviderCatalog {
         repo.put_endpoint(ProtocolEndpoint {
             id: ProtocolEndpointId::new(ep),
             provider_id: ProviderId::new("anthropic"),
-            flavor: ModelApiCompat::AnthropicMessages,
+            dialect: ApiDialect::AnthropicMessages,
             base_url: Some(url.into()),
             timeout_secs: 300,
             display_name: ep.into(),
@@ -234,7 +234,7 @@ async fn dual_endpoint_catalog() -> ProviderCatalog {
             model_id: "claude-opus-4-8".into(),
             provider_id: ProviderId::new("anthropic"),
             protocol_endpoint_id: ProtocolEndpointId::new(ep),
-            flavor: ModelApiCompat::AnthropicMessages,
+            dialect: ApiDialect::AnthropicMessages,
             upstream_model: None,
         })
         .await

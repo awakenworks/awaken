@@ -4,7 +4,7 @@
 
 use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo, RepoError};
 use awaken_model_catalog::{
-    ModelApiCompat, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
+    ApiDialect, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
 };
 
 fn provider(id: &str) -> Provider {
@@ -16,11 +16,11 @@ fn provider(id: &str) -> Provider {
     }
 }
 
-fn endpoint(id: &str, provider: &str, flavor: ModelApiCompat) -> ProtocolEndpoint {
+fn endpoint(id: &str, provider: &str, dialect: ApiDialect) -> ProtocolEndpoint {
     ProtocolEndpoint {
         id: ProtocolEndpointId::new(id),
         provider_id: ProviderId::new(provider),
-        flavor,
+        dialect,
         base_url: None,
         timeout_secs: 300,
         display_name: id.into(),
@@ -28,12 +28,12 @@ fn endpoint(id: &str, provider: &str, flavor: ModelApiCompat) -> ProtocolEndpoin
     }
 }
 
-fn offering(model: &str, ep: &str, flavor: ModelApiCompat) -> Offering {
+fn offering(model: &str, ep: &str, dialect: ApiDialect) -> Offering {
     Offering {
         model_id: model.into(),
         provider_id: ProviderId::new("anthropic"),
         protocol_endpoint_id: ProtocolEndpointId::new(ep),
-        flavor,
+        dialect,
         upstream_model: None,
     }
 }
@@ -43,14 +43,14 @@ async fn crud_round_trip_and_snapshot(repo: &dyn CatalogRepo) {
     repo.put_endpoint(endpoint(
         "ep1",
         "anthropic",
-        ModelApiCompat::AnthropicMessages,
+        ApiDialect::AnthropicMessages,
     ))
     .await
     .unwrap();
     repo.put_offering(offering(
         "claude-opus-4-8",
         "ep1",
-        ModelApiCompat::AnthropicMessages,
+        ApiDialect::AnthropicMessages,
     ))
     .await
     .unwrap();
@@ -74,7 +74,7 @@ async fn crud_round_trip_and_snapshot(repo: &dyn CatalogRepo) {
     assert_eq!(snap.endpoints.len(), 1);
     assert_eq!(snap.offerings.len(), 1);
     assert!(
-        snap.resolve_offering("claude-opus-4-8", ModelApiCompat::AnthropicMessages)
+        snap.resolve_offering("claude-opus-4-8", ApiDialect::AnthropicMessages)
             .is_some()
     );
 }
@@ -92,7 +92,7 @@ async fn missing_rows_are_not_found(repo: &dyn CatalogRepo) {
 
 async fn endpoint_needs_existing_provider(repo: &dyn CatalogRepo) {
     assert!(matches!(
-        repo.put_endpoint(endpoint("ep1", "ghost", ModelApiCompat::OpenAiChat))
+        repo.put_endpoint(endpoint("ep1", "ghost", ApiDialect::OpenAiChat))
             .await,
         Err(RepoError::ProviderNotFound(id)) if id == "ghost"
     ));
@@ -101,7 +101,7 @@ async fn endpoint_needs_existing_provider(repo: &dyn CatalogRepo) {
 async fn offering_needs_existing_endpoint(repo: &dyn CatalogRepo) {
     repo.put_provider(provider("anthropic")).await.unwrap();
     assert!(matches!(
-        repo.put_offering(offering("m", "ghost", ModelApiCompat::AnthropicMessages))
+        repo.put_offering(offering("m", "ghost", ApiDialect::AnthropicMessages))
             .await,
         Err(RepoError::EndpointNotFound(id)) if id == "ghost"
     ));
@@ -112,12 +112,12 @@ async fn rejected_offering_leaves_no_trace(repo: &dyn CatalogRepo) {
     repo.put_endpoint(endpoint(
         "ep1",
         "anthropic",
-        ModelApiCompat::AnthropicMessages,
+        ApiDialect::AnthropicMessages,
     ))
     .await
     .unwrap();
-    // Flavor mismatch with the endpoint → fail-closed…
-    let bad = offering("m", "ep1", ModelApiCompat::OpenAiChat);
+    // Dialect mismatch with the endpoint → fail-closed…
+    let bad = offering("m", "ep1", ApiDialect::OpenAiChat);
     assert!(matches!(
         repo.put_offering(bad).await,
         Err(RepoError::Invariant(_))
@@ -144,11 +144,11 @@ async fn put_is_upsert(repo: &dyn CatalogRepo) {
     repo.put_endpoint(endpoint(
         "ep1",
         "anthropic",
-        ModelApiCompat::AnthropicMessages,
+        ApiDialect::AnthropicMessages,
     ))
     .await
     .unwrap();
-    let mut ep2 = endpoint("ep1", "anthropic", ModelApiCompat::AnthropicMessages);
+    let mut ep2 = endpoint("ep1", "anthropic", ApiDialect::AnthropicMessages);
     ep2.timeout_secs = 60;
     ep2.version = 2;
     repo.put_endpoint(ep2).await.unwrap();
@@ -262,14 +262,14 @@ mod sqlite {
             repo.put_endpoint(endpoint(
                 "ep1",
                 "anthropic",
-                ModelApiCompat::AnthropicMessages,
+                ApiDialect::AnthropicMessages,
             ))
             .await
             .unwrap();
             repo.put_offering(offering(
                 "claude-opus-4-8",
                 "ep1",
-                ModelApiCompat::AnthropicMessages,
+                ApiDialect::AnthropicMessages,
             ))
             .await
             .unwrap();

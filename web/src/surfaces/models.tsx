@@ -87,7 +87,7 @@ export default function ModelsSurface() {
     endpoint: "anthropic-messages",
     baseUrl: "",
     model: "claude-sonnet-4-5",
-    flavor: "anthropic_messages",
+    dialect: "anthropic_messages",
   });
   const upsert = useMutation({
     mutationFn: async () => {
@@ -100,7 +100,7 @@ export default function ModelsSurface() {
       await api.put(`/v1/config/endpoints/${draft.endpoint}`, {
         id: draft.endpoint,
         provider_id: draft.provider,
-        flavor: draft.flavor,
+        dialect: draft.dialect,
         base_url: draft.baseUrl || null,
         timeout_secs: 60,
         display_name: draft.endpoint,
@@ -110,7 +110,7 @@ export default function ModelsSurface() {
         model_id: draft.model,
         provider_id: draft.provider,
         protocol_endpoint_id: draft.endpoint,
-        flavor: draft.flavor,
+        dialect: draft.dialect,
         upstream_model: null,
       });
     },
@@ -148,7 +148,7 @@ export default function ModelsSurface() {
               <th>Model</th>
               <th>Provider</th>
               <th>Endpoint</th>
-              <th>Flavor</th>
+              <th>Dialect</th>
               <th style={{ textAlign: "right" }}></th>
             </tr>
           </thead>
@@ -159,7 +159,7 @@ export default function ModelsSurface() {
                 <td>{o.provider_id}</td>
                 <td className="mono mut">{o.protocol_endpoint_id}</td>
                 <td>
-                  <Pill tone="neutral">{o.flavor}</Pill>
+                  <Pill tone="neutral">{o.dialect}</Pill>
                 </td>
                 <td style={{ textAlign: "right" }}>
                   <Button style={{ height: 24 }} onClick={() => setTestModel(o.model_id)}>
@@ -188,7 +188,7 @@ export default function ModelsSurface() {
             <label>base_url ({app.t("optional", "可选")})</label>
             <input className="input mono" value={draft.baseUrl} onChange={(e) => setDraft({ ...draft, baseUrl: e.target.value })} />
           </span>
-          <SelectField label="Flavor" value={draft.flavor} onChange={(e) => setDraft({ ...draft, flavor: e.target.value })}>
+          <SelectField label="Dialect" value={draft.dialect} onChange={(e) => setDraft({ ...draft, dialect: e.target.value })}>
             <option value="anthropic_messages">anthropic_messages</option>
             <option value="open_ai_chat">open_ai_chat</option>
             <option value="gemini">gemini</option>

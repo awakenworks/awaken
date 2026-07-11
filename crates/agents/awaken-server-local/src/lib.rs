@@ -576,7 +576,7 @@ pub fn executor_from_resolved(
     )))
 }
 
-/// Map our catalog's wire flavor (`ModelApiCompat::adapter_kind`) to a genai adapter.
+/// Map our catalog's wire dialect (`ApiDialect::adapter_kind`) to a genai adapter.
 /// The one place a supported provider wire is named; genai's default endpoint is used
 /// unless the catalog endpoint supplies a gateway base URL.
 fn genai_adapter(adapter_kind: &str) -> Option<awaken_provider_genai::AdapterKind> {
@@ -684,7 +684,7 @@ pub fn build_real_router() -> Router {
 }
 
 /// A server backed by **Gemini on Vertex AI**, authenticated by an OAuth2 Bearer
-/// token (ADR-0043 Phase 3 multi-flavor + OAuth). The token is refreshed through
+/// token (ADR-0043 Phase 3 multi-dialect + OAuth). The token is refreshed through
 /// the credential domain's OAuth helper: `GEMINI_ACCESS_TOKEN` if set, else
 /// `gcloud auth print-access-token` (which holds the long-lived Google grant).
 /// Config from the environment: `GEMINI_PROJECT` (required), `GEMINI_LOCATION`
@@ -730,7 +730,7 @@ pub async fn build_resolved_real_router() -> Router {
     };
     use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
     use awaken_model_catalog::{
-        ModelApiCompat, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
+        ApiDialect, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
     };
 
     let key = std::env::var("ANTHROPIC_API_KEY")
@@ -758,7 +758,7 @@ pub async fn build_resolved_real_router() -> Router {
         .put_endpoint(ProtocolEndpoint {
             id: ProtocolEndpointId::new("ep1"),
             provider_id: ProviderId::new("anthropic"),
-            flavor: ModelApiCompat::AnthropicMessages,
+            dialect: ApiDialect::AnthropicMessages,
             base_url: Some(base),
             timeout_secs: 300,
             display_name: "prod".into(),
@@ -771,7 +771,7 @@ pub async fn build_resolved_real_router() -> Router {
             model_id: model.clone(),
             provider_id: ProviderId::new("anthropic"),
             protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
-            flavor: ModelApiCompat::AnthropicMessages,
+            dialect: ApiDialect::AnthropicMessages,
             upstream_model: None,
         })
         .await
@@ -830,7 +830,7 @@ pub async fn build_oauth_resolved_router() -> Router {
     };
     use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
     use awaken_model_catalog::{
-        ModelApiCompat, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
+        ApiDialect, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
     };
 
     // The token the helper mints — the fake upstream authenticates exactly this.
@@ -854,7 +854,7 @@ pub async fn build_oauth_resolved_router() -> Router {
         .put_endpoint(ProtocolEndpoint {
             id: ProtocolEndpointId::new("ep1"),
             provider_id: ProviderId::new("anthropic"),
-            flavor: ModelApiCompat::AnthropicMessages,
+            dialect: ApiDialect::AnthropicMessages,
             base_url: Some(base),
             timeout_secs: 300,
             display_name: "prod".into(),
@@ -867,7 +867,7 @@ pub async fn build_oauth_resolved_router() -> Router {
             model_id: model.clone(),
             provider_id: ProviderId::new("anthropic"),
             protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
-            flavor: ModelApiCompat::AnthropicMessages,
+            dialect: ApiDialect::AnthropicMessages,
             upstream_model: None,
         })
         .await
@@ -1355,7 +1355,7 @@ pub async fn build_config_router() -> Router {
             model_id: model_ref.clone(),
             provider_id: awaken_model_catalog::ProviderId::new("default"),
             protocol_endpoint_id: awaken_model_catalog::ProtocolEndpointId::new("ep"),
-            flavor: awaken_model_catalog::ModelApiCompat::AnthropicMessages,
+            dialect: awaken_model_catalog::ApiDialect::AnthropicMessages,
             upstream_model: None,
         }],
         ..Default::default()
@@ -1741,7 +1741,7 @@ async fn management_router_over(
             model_id: model_ref.clone(),
             provider_id: awaken_model_catalog::ProviderId::new("default"),
             protocol_endpoint_id: awaken_model_catalog::ProtocolEndpointId::new("ep"),
-            flavor: awaken_model_catalog::ModelApiCompat::AnthropicMessages,
+            dialect: awaken_model_catalog::ApiDialect::AnthropicMessages,
             upstream_model: None,
         }],
         ..Default::default()

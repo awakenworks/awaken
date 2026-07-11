@@ -9,7 +9,7 @@ use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_runtime_host::{ModelResolver, ResolvedModel};
 
 /// Resolves `Auto` against a snapshot of the org-shared provider catalog. Every
-/// catalog offering is provider-backed (the catalog has no "scripted" flavor), so the
+/// catalog offering is provider-backed (the catalog has no "scripted" dialect), so the
 /// first offering is the first provider-backed model.
 pub struct CatalogModelResolver {
     catalog: ProviderCatalog,
@@ -46,14 +46,14 @@ impl ModelResolver for CatalogModelResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_model_catalog::{ModelApiCompat, ProtocolEndpointId, ProviderId};
+    use awaken_model_catalog::{ApiDialect, ProtocolEndpointId, ProviderId};
 
     fn offering(model: &str) -> Offering {
         Offering {
             model_id: model.to_string(),
             provider_id: ProviderId::new("anthropic"),
             protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
-            flavor: ModelApiCompat::AnthropicMessages,
+            dialect: ApiDialect::AnthropicMessages,
             upstream_model: None,
         }
     }

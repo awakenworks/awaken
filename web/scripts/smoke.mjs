@@ -37,7 +37,7 @@ await step("author provider", "PUT", "/v1/config/providers/anthropic", {
 await step("author endpoint", "PUT", "/v1/config/endpoints/anthropic-messages", {
   id: "anthropic-messages",
   provider_id: "anthropic",
-  flavor: "anthropic_messages",
+  dialect: "anthropic_messages",
   base_url: null,
   timeout_secs: 60,
   display_name: "Anthropic Messages",
@@ -47,7 +47,7 @@ await step("author offering", "POST", "/v1/config/offerings", {
   model_id: "claude-sonnet-4-5",
   provider_id: "anthropic",
   protocol_endpoint_id: "anthropic-messages",
-  flavor: "anthropic_messages",
+  dialect: "anthropic_messages",
   upstream_model: null,
 });
 await step("catalog snapshot", "GET", "/v1/config/catalog", undefined, (s, p) => s === 200 && p.offerings.length >= 1);

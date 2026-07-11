@@ -113,7 +113,7 @@ mod tests {
     use super::*;
     use awaken_config_store::{DEFAULT_SCOPE, ModelSelection, SqliteConfigStore};
     use awaken_model_catalog::{
-        ModelApiCompat, Offering, ProtocolEndpointId, Provider, ProviderId,
+        ApiDialect, Offering, ProtocolEndpointId, Provider, ProviderId,
     };
     use awaken_runtime_host::{ConfigPlane, ConfigService, ScopedToolCatalog, StaticToolCatalog};
     use std::collections::BTreeMap;
@@ -140,7 +140,7 @@ mod tests {
                 model_id: model.to_string(),
                 provider_id: ProviderId::new("anthropic"),
                 protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
-                flavor: ModelApiCompat::AnthropicMessages,
+                dialect: ApiDialect::AnthropicMessages,
                 upstream_model: None,
             }],
             ..Default::default()

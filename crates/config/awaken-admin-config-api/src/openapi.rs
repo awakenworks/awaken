@@ -31,7 +31,7 @@ pub fn contract_schemas() -> Map<String, Value> {
     add!("Provider", awaken_model_catalog::Provider);
     add!("ProtocolEndpoint", awaken_model_catalog::ProtocolEndpoint);
     add!("Offering", awaken_model_catalog::Offering);
-    add!("ModelApiCompat", awaken_model_catalog::ModelApiCompat);
+    add!("ApiDialect", awaken_model_catalog::ApiDialect);
     add!("ProviderCatalog", awaken_model_catalog::ProviderCatalog);
 
     // Credential domain (secret-free projections only).

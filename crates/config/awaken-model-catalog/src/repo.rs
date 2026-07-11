@@ -119,7 +119,7 @@ impl CatalogRepo for InMemoryCatalogRepo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ModelApiCompat;
+    use crate::ApiDialect;
 
     fn provider() -> Provider {
         Provider {
@@ -133,7 +133,7 @@ mod tests {
         ProtocolEndpoint {
             id: ProtocolEndpointId::new("ep1"),
             provider_id: ProviderId::new("anthropic"),
-            flavor: ModelApiCompat::AnthropicMessages,
+            dialect: ApiDialect::AnthropicMessages,
             base_url: None,
             timeout_secs: 300,
             display_name: "prod".into(),
@@ -150,7 +150,7 @@ mod tests {
             model_id: "claude-opus-4-8".into(),
             provider_id: ProviderId::new("anthropic"),
             protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
-            flavor: ModelApiCompat::AnthropicMessages,
+            dialect: ApiDialect::AnthropicMessages,
             upstream_model: None,
         })
         .await
@@ -185,7 +185,7 @@ mod tests {
             model_id: "m".into(),
             provider_id: ProviderId::new("anthropic"),
             protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
-            flavor: ModelApiCompat::OpenAiChat, // endpoint is AnthropicMessages
+            dialect: ApiDialect::OpenAiChat, // endpoint is AnthropicMessages
             upstream_model: None,
         };
         assert!(repo.put_offering(bad).await.is_err());

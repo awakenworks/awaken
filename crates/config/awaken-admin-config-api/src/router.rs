@@ -279,7 +279,7 @@ async fn post_offering(
 ) -> Result<Json<Offering>, Problem> {
     // Fail-closed reference integrity (offering → provider/endpoint) lives in the
     // repo's put_offering: a dangling endpoint ref is a 404 (referenced resource
-    // not found); a flavor mismatch that breaks the whole catalog is a 422 invariant.
+    // not found); a dialect mismatch that breaks the whole catalog is a 422 invariant.
     state
         .catalog
         .put_offering(offering.clone())

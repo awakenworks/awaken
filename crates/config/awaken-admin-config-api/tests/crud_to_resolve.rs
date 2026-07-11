@@ -100,7 +100,7 @@ async fn author_catalog_and_credential_then_resolve_a_run() {
         Some(json!({
             "id": "ep1",
             "provider_id": "anthropic",
-            "flavor": "anthropic_messages",
+            "dialect": "anthropic_messages",
             "base_url": "https://api.anthropic.com/v1/",
             "timeout_secs": 300,
             "display_name": "prod",
@@ -118,7 +118,7 @@ async fn author_catalog_and_credential_then_resolve_a_run() {
             "model_id": "claude-opus-4-8",
             "provider_id": "anthropic",
             "protocol_endpoint_id": "ep1",
-            "flavor": "anthropic_messages",
+            "dialect": "anthropic_messages",
             "upstream_model": null
         })),
     )
@@ -157,7 +157,7 @@ async fn author_catalog_and_credential_then_resolve_a_run() {
             "model_id": "ghost",
             "provider_id": "anthropic",
             "protocol_endpoint_id": "does-not-exist",
-            "flavor": "anthropic_messages",
+            "dialect": "anthropic_messages",
             "upstream_model": null
         })),
     )

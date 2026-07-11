@@ -18,7 +18,7 @@ use awaken_credential_vault::{
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_model_catalog::repo::InMemoryCatalogRepo;
 use awaken_model_catalog::{
-    ModelApiCompat, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
+    ApiDialect, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
 };
 use awaken_protocol_managed::{McpProbe, McpProbeStatus, TokenEndpointAuthBinding};
 use awaken_protocol_managed::{VaultState, vault_router};
@@ -218,7 +218,7 @@ async fn seed_catalog(_h: &Harness) -> awaken_model_catalog::ProviderCatalog {
     repo.put_endpoint(ProtocolEndpoint {
         id: ProtocolEndpointId::new("ep1"),
         provider_id: ProviderId::new("anthropic"),
-        flavor: ModelApiCompat::AnthropicMessages,
+        dialect: ApiDialect::AnthropicMessages,
         base_url: Some("https://api.anthropic.com/v1/".into()),
         timeout_secs: 300,
         display_name: "prod".into(),
@@ -230,7 +230,7 @@ async fn seed_catalog(_h: &Harness) -> awaken_model_catalog::ProviderCatalog {
         model_id: "claude-opus-4-8".into(),
         provider_id: ProviderId::new("anthropic"),
         protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
-        flavor: ModelApiCompat::AnthropicMessages,
+        dialect: ApiDialect::AnthropicMessages,
         upstream_model: None,
     })
     .await
