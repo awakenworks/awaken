@@ -241,6 +241,28 @@ export const BEHAVIORS = {
     if (lastText.includes('"skills"')) return tool('s', 'Skill', { skill: 'greet' });
     return text(`USED-SKILL: ${lastText}`);
   },
+  // AdminAssistantModel (ADR-0052): drive the seeded management assistant through all
+  // four read-only admin tools in one run, sequenced by tool-result count, then a
+  // final marker. Every draft it passes is a valid ordinary config (auto-bound, no
+  // tools) so the real DraftValidator accepts it.
+  adminDrive(parsed) {
+    const draft = {
+      id: 'drafted-agent',
+      instructions: 'a drafted agent',
+      max_steps: 4,
+      model_binding: { mode: 'auto' },
+      tool_ids: [],
+      plugin_ids: [],
+      plugin_config: {},
+    };
+    switch (toolResults(parsed).length) {
+      case 0: return tool('c0', 'admin_get_platform_capabilities', {});
+      case 1: return tool('c1', 'admin_create_agent_draft', { id: 'drafted-agent', instructions: 'a drafted agent' });
+      case 2: return tool('c2', 'admin_validate_agent', { draft });
+      case 3: return tool('c3', 'admin_set_plugin_config', { draft, plugin_id: 'state_machine', config: { machines: [] } });
+      default: return text('ADMIN-RUN-DONE: capabilities read, draft created, validated, plugin set');
+    }
+  },
   // DelegatingModel: with `agent_run` it delegates (to `researcher`, or `ghost` if
   // asked) and reports the delegate's result; without it, it answers plainly (so the
   // same behavior serves as the delegate sub-agent).

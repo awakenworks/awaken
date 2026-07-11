@@ -1317,6 +1317,10 @@ pub fn build_statemachine_rich_router() -> Router {
 /// agent runs with that agent's installed config (slice A); the model echoes the
 /// agent's instructions so an e2e can assert the published config took effect.
 pub async fn build_config_router() -> Router {
+    // The MODEL is chosen by `scenario_model` (in-process echo, or the real provider
+    // pointed at the fake upstream when `AWAKEN_MODEL_SOURCE=http`); the fake upstream
+    // is what drives the seeded assistant through its admin tools in the run e2e.
+    let (model, model_ref) = scenario_model(Arc::new(InstructionEchoModel), "config");
     let registry = Arc::new(
         awaken_config_store::SqliteConfigStore::open_in_memory().expect("open config store"),
     );
@@ -1329,7 +1333,6 @@ pub async fn build_config_router() -> Router {
         awaken_session_executor::RESERVED_ADMIN_SCOPE,
         awaken_admin_assistant::admin_tool_descriptors(),
     ));
-    let (model, model_ref) = scenario_model(Arc::new(InstructionEchoModel), "config");
     // A minimal provider catalog with an offering for the scenario model, so an
     // `Auto` config (the management assistant) resolves to a concrete binding at
     // publish (ADR-0052 D5).
@@ -1382,9 +1385,13 @@ pub async fn build_config_router() -> Router {
             awaken_session_executor::ConfigServiceAgentSource(service.clone()),
         )),
     ));
-    mount(Arc::new(host))
+    // Workspace-path addressing (ADR-0048/0052 D2): `/v1/workspaces/{ws}/config/...`
+    // is rewritten to the flat config route and stamped with `{ws}` as the scope, so
+    // the reserved admin scope is reachable and the tenant/default scope is fenced.
+    let flat = mount(Arc::new(host))
         .merge(config_router(service))
-        .merge(agents)
+        .merge(agents);
+    crate::workspace_path::with_workspace_path_addressing(flat)
 }
 
 /// The live credential-validation probe port (ADR-0043), backed by provider-genai.
