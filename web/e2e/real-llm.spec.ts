@@ -22,8 +22,8 @@ test("Sandbox answers for real via config-plane credential (no env)", async ({ p
   // Operator-style setup, all through the config-plane API — no server env:
   //   provider + endpoint + offering (the model menu) …
   await request.put("/v1/config/providers/google", { data: { id: "google", slug: "google", display_name: "Google", version: 1 } });
-  await request.put("/v1/config/endpoints/gemini-ep", { data: { id: "gemini-ep", provider_id: "google", flavor: "gemini", base_url: null, timeout_secs: 60, display_name: "Gemini", version: 1 } });
-  await request.post("/v1/config/offerings", { data: { model_id: "gemini-2.5-flash", provider_id: "google", protocol_endpoint_id: "gemini-ep", flavor: "gemini", upstream_model: null } });
+  await request.put("/v1/config/endpoints/gemini-ep", { data: { id: "gemini-ep", provider_id: "google", dialect: "gemini", base_url: null, timeout_secs: 60, display_name: "Gemini", version: 1 } });
+  await request.post("/v1/config/offerings", { data: { model_id: "gemini-2.5-flash", provider_id: "google", protocol_endpoint_id: "gemini-ep", dialect: "gemini", upstream_model: null } });
   //   … and the KEY as a workspace vault credential (the secret enters via API).
   await request.post("/v1/config/credentials", { data: { workspace_id: "wrkspc_default", kind: "vault", provider_id: "google", secret: KEY } });
 

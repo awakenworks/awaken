@@ -65,7 +65,7 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
             "PUT",
             "/v1/config/endpoints/ep1",
             Some(json!({
-                "id": "ep1", "provider_id": "anthropic", "flavor": "anthropic_messages",
+                "id": "ep1", "provider_id": "anthropic", "dialect": "anthropic_messages",
                 "base_url": "https://api.anthropic.com/v1/", "timeout_secs": 300,
                 "display_name": "prod", "version": 1
             })),
@@ -78,7 +78,7 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
             "/v1/config/offerings",
             Some(json!({
                 "model_id": "claude-opus-4-8", "provider_id": "anthropic",
-                "protocol_endpoint_id": "ep1", "flavor": "anthropic_messages",
+                "protocol_endpoint_id": "ep1", "dialect": "anthropic_messages",
                 "upstream_model": null
             })),
         )

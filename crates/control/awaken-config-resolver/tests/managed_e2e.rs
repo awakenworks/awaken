@@ -20,7 +20,7 @@ use awaken_credential_vault::{
 use awaken_managed_bridge::decode_model_axis;
 use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
 use awaken_model_catalog::{
-    ModelApiCompat, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
+    ApiDialect, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
 };
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::snapshot::{
@@ -41,7 +41,7 @@ async fn seed_catalog(base_url: &str, model_id: &str) -> InMemoryCatalogRepo {
     repo.put_endpoint(ProtocolEndpoint {
         id: ProtocolEndpointId::new("ep1"),
         provider_id: ProviderId::new("anthropic"),
-        flavor: ModelApiCompat::AnthropicMessages,
+        dialect: ApiDialect::AnthropicMessages,
         base_url: Some(base_url.into()),
         timeout_secs: 300,
         display_name: "prod".into(),
@@ -53,7 +53,7 @@ async fn seed_catalog(base_url: &str, model_id: &str) -> InMemoryCatalogRepo {
         model_id: model_id.into(),
         provider_id: ProviderId::new("anthropic"),
         protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
-        flavor: ModelApiCompat::AnthropicMessages,
+        dialect: ApiDialect::AnthropicMessages,
         upstream_model: None,
     })
     .await
@@ -144,7 +144,7 @@ async fn managed_full_chain_resolves_secret_free_snapshot_and_credential() {
     )
     .await;
 
-    // Resolved triple points at the configured provider/endpoint/flavor.
+    // Resolved triple points at the configured provider/endpoint/dialect.
     assert_eq!(run.inference.triple.provider_id, "anthropic");
     assert_eq!(run.inference.triple.model_id, "claude-opus-4-8");
     assert_eq!(run.inference.adapter_kind, "anthropic");
