@@ -185,7 +185,9 @@ pub fn admin_tool_descriptors() -> Vec<ToolDescriptor> {
             CAPABILITIES_TOOL,
             "List the platform's available models, providers, tools, plugins, skills, \
              and MCP servers (redacted; no secrets). Call this before proposing a config.",
-            serde_json::json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+            // No `additionalProperties`: Gemini's function-declaration schema rejects it,
+            // and an empty-params object needs no closure clause to be well-formed.
+            serde_json::json!({ "type": "object", "properties": {} }),
         ),
         ToolDescriptor::pinned(
             "admin",
