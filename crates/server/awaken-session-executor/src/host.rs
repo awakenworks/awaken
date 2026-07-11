@@ -52,7 +52,7 @@ use awaken_runtime_contract::subagent_runner::SubagentRunner;
 use crate::agent_catalog::AgentCatalog;
 use crate::background::BackgroundRuns;
 use crate::compact::compact_runner as build_compact_runner;
-use crate::config::{build_runtime, server_config};
+use crate::config::{build_runtime, config_permission_ruleset, server_config, server_gate_with};
 use crate::delegate::DelegationResolver;
 use crate::hub::{ThreadEvent, ThreadEventHub};
 use crate::judge::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
@@ -1096,13 +1096,33 @@ impl SharedHost {
             .cloned()
             .chain(admin_ids.iter().cloned())
             .collect();
-        let base_gate = crate::config::server_gate_allowing(&pre_authorized);
+        // A published agent runs with its own installed config (slice A); an
+        // unknown/unpublished agent falls back to the server's built-in default.
+        // Fetched here because its `plugin_config["permission"]` shapes the gate.
+        let installed = self
+            .config_service
+            .as_ref()
+            .zip(agent)
+            .and_then(|(svc, agent)| svc.installed(agent));
+        // An authored permission policy (the agent's `permission` config section)
+        // shapes the gate: its rules layer over the built-in baseline (perception +
+        // the pre-authorized MCP/admin tools) and its default governs unmatched calls.
+        // A malformed/absent section → None → the strict built-in default (mutations
+        // asked), so a bad policy never fails open.
+        let authored_permission = config_permission_ruleset(
+            installed
+                .as_ref()
+                .map(|c| &c.snapshot().resolved_spec.plugin_config)
+                .unwrap_or(&self.plugin_config),
+        );
+        let apply_base_gate = !pre_authorized.is_empty() || authored_permission.is_some();
+        let base_gate = server_gate_with(authored_permission, &pre_authorized);
         // R1/R2: per-session executor resolved from the thread's bound model.
         let exec = self
             .model_route
             .resolve_executor(thread, &self.model_ref, &self.llm);
         let mut runtime = build_runtime(exec, &env);
-        if !pre_authorized.is_empty() {
+        if apply_base_gate {
             runtime = runtime.with_gate(base_gate.clone());
         }
         // Register the discovered MCP tools; their descriptors join the advertised
@@ -1180,14 +1200,6 @@ impl SharedHost {
             }
             _ => awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
         };
-        // A published agent runs with its own installed config (slice A); an
-        // unknown/unpublished agent falls back to the server's built-in default,
-        // carrying the run's dynamic plugin list and context policy.
-        let installed = self
-            .config_service
-            .as_ref()
-            .zip(agent)
-            .and_then(|(svc, agent)| svc.installed(agent));
         // Everything dynamically provisioned on this thread that the config must
         // advertise: the skill tools plus the discovered MCP tools.
         let mut dynamic_descriptors = skill_descriptors;
