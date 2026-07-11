@@ -69,6 +69,8 @@ pub fn admin_assistant_config() -> AgentConfig {
         context_policy: Default::default(),
         tool_patterns: Vec::new(),
         model_candidates: Vec::new(),
+        // Managed identity/wire fields (config-plane authoring metadata); unused here.
+        ..Default::default()
     }
 }
 
@@ -345,6 +347,7 @@ impl RawTool for CreateAgentDraft {
             context_policy: Default::default(),
             tool_patterns: Vec::new(),
             model_candidates: Vec::new(),
+            ..Default::default()
         };
         emit_draft(call.call_id, &draft)
     }

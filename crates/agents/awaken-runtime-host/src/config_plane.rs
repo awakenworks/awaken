@@ -22,7 +22,7 @@ use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::routing::{post, put};
+use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use serde_json::{Value, json};
 
@@ -130,6 +130,20 @@ impl ConfigService {
         config: &AgentConfig,
     ) -> Result<(), String> {
         registry.put_config(config).await.map_err(|e| e.to_string())
+    }
+
+    /// Load a stored config draft by id from the scope-bound `registry`.
+    pub async fn get(
+        &self,
+        registry: &dyn ConfigRegistry,
+        id: &str,
+    ) -> Result<Option<AgentConfig>, String> {
+        registry.get_config(id).await.map_err(|e| e.to_string())
+    }
+
+    /// Every stored config draft in the scope-bound `registry` (the console's list).
+    pub async fn list(&self, registry: &dyn ConfigRegistry) -> Result<Vec<AgentConfig>, String> {
+        registry.list_configs().await.map_err(|e| e.to_string())
     }
 
     /// Publish: resolve an `Auto` model to a concrete binding (D5), compile the stored
@@ -264,6 +278,16 @@ impl ConfigPlane {
         self.service.put(&self.registry_for(scope), config).await
     }
 
+    /// Load one stored config draft owned by `scope`.
+    pub async fn get(&self, scope: &ScopeId, id: &str) -> Result<Option<AgentConfig>, String> {
+        self.service.get(&self.registry_for(scope), id).await
+    }
+
+    /// Every stored config draft owned by `scope`.
+    pub async fn list(&self, scope: &ScopeId) -> Result<Vec<AgentConfig>, String> {
+        self.service.list(&self.registry_for(scope)).await
+    }
+
     /// Publish a stored config in `scope`.
     pub async fn publish(
         &self,
@@ -313,9 +337,10 @@ impl awaken_protocol_managed::AgentConfigSource for ConfigServiceAgentSource {
 /// edge — it binds the request scope onto the scope-free service.
 pub fn config_router(plane: ConfigPlane) -> Router {
     Router::new()
+        .route("/v1/config/agents", get(list_configs))
         .route("/v1/config/agents/:id/validate", post(validate))
         .route("/v1/config/agents/:id/publish", post(publish))
-        .route("/v1/config/agents/:id", put(put_config))
+        .route("/v1/config/agents/:id", get(get_config).put(put_config))
         .with_state(plane)
 }
 
@@ -326,13 +351,73 @@ fn request_scope(ext: Option<Extension<awaken_protocol_managed::WorkspaceScope>>
         .unwrap_or_else(|| ScopeId::from(DEFAULT_SCOPE))
 }
 
+/// `GET /v1/config/agents` — every stored draft in the request's scope, each tagged
+/// `published` when a compiled config is currently installed for it.
+async fn list_configs(
+    State(plane): State<ConfigPlane>,
+    scope: Option<Extension<awaken_protocol_managed::WorkspaceScope>>,
+) -> (StatusCode, Json<Value>) {
+    let scope = request_scope(scope);
+    match plane.list(&scope).await {
+        Ok(configs) => {
+            let data: Vec<Value> = configs
+                .into_iter()
+                .map(|config| {
+                    let published = plane.service().installed(&config.id).is_some();
+                    managed_from_agent_config(&config, published)
+                })
+                .collect();
+            (StatusCode::OK, Json(json!({ "data": data })))
+        }
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": error })),
+        ),
+    }
+}
+
+/// `GET /v1/config/agents/:id` — one stored draft within the request's scope
+/// (`404` when absent, or owned by another scope — never disclose cross-tenant).
+async fn get_config(
+    State(plane): State<ConfigPlane>,
+    Path(id): Path<String>,
+    scope: Option<Extension<awaken_protocol_managed::WorkspaceScope>>,
+) -> (StatusCode, Json<Value>) {
+    let scope = request_scope(scope);
+    match plane.get(&scope, &id).await {
+        Ok(Some(config)) => {
+            let published = plane.service().installed(&id).is_some();
+            (
+                StatusCode::OK,
+                Json(managed_from_agent_config(&config, published)),
+            )
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": format!("no config stored for agent `{id}`") })),
+        ),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": error })),
+        ),
+    }
+}
+
 async fn validate(
     State(plane): State<ConfigPlane>,
     scope: Option<Extension<awaken_protocol_managed::WorkspaceScope>>,
     Path(id): Path<String>,
-    Json(mut config): Json<AgentConfig>,
+    Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
-    config.id = id;
+    let config = match agent_config_from_managed(id, &body) {
+        Ok(c) => c,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "valid": false, "error": error })),
+            );
+        }
+    };
     match plane.validate(&request_scope(scope), &config) {
         Ok(()) => (StatusCode::OK, Json(json!({ "valid": true }))),
         Err(error) => (
@@ -346,13 +431,123 @@ async fn put_config(
     State(plane): State<ConfigPlane>,
     scope: Option<Extension<awaken_protocol_managed::WorkspaceScope>>,
     Path(id): Path<String>,
-    Json(mut config): Json<AgentConfig>,
+    Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
-    config.id = id.clone();
+    let config = match agent_config_from_managed(id.clone(), &body) {
+        Ok(c) => c,
+        Err(error) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
+    };
     match plane.put(&request_scope(scope), &config).await {
         Ok(()) => (StatusCode::OK, Json(json!({ "id": id }))),
         Err(error) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
     }
+}
+
+// ---- object model: the managed Agent object (+ our extensions) ----
+// The config plane's agent object is the SDK `/v1/agents` object shape — name,
+// model {id}, system, tools, mcp_servers, skills, multiagent, metadata — plus the
+// extension block that carries our differentiated value (plugins, plugin_config,
+// context_policy, max_steps). The runtime `AgentConfig` is the compile-input the
+// object maps to; these two functions are the only translation seam.
+
+fn managed_tool_id(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Object(o) => o
+            .get("id")
+            .or_else(|| o.get("name"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        _ => None,
+    }
+}
+
+/// Parse the managed-shaped agent object into the runtime compile-input. The
+/// `model` object carries only `{id}` (managed); a concrete id becomes a `Pinned`
+/// selection (provider/backend resolve downstream), an absent one stays `Auto`.
+fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig, String> {
+    let string = |k: &str| body.get(k).and_then(Value::as_str).map(str::to_string);
+    let model_ref = match body.get("model") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Object(o)) => o
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        _ => String::new(),
+    };
+    let array = |k: &str| {
+        body.get(k)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let context_policy = match body.get("context_policy").cloned() {
+        Some(v) => serde_json::from_value(v).map_err(|e| e.to_string())?,
+        None => Default::default(),
+    };
+    let metadata = body
+        .get("metadata")
+        .and_then(Value::as_object)
+        .map(|o| {
+            o.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(AgentConfig {
+        id,
+        instructions: string("system").unwrap_or_default(),
+        max_steps: body.get("max_steps").and_then(Value::as_u64).unwrap_or(8) as usize,
+        model_binding: if model_ref.is_empty() {
+            ModelSelection::Auto
+        } else {
+            ModelSelection::pinned("", model_ref, "")
+        },
+        tool_ids: array("tools").iter().filter_map(managed_tool_id).collect(),
+        plugin_ids: array("plugins")
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+        plugin_config: body
+            .get("plugin_config")
+            .and_then(Value::as_object)
+            .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default(),
+        context_policy,
+        tool_patterns: Vec::new(),
+        model_candidates: Vec::new(),
+        name: string("name"),
+        description: string("description"),
+        metadata,
+        mcp_servers: array("mcp_servers"),
+        skills: array("skills"),
+        multiagent: body.get("multiagent").filter(|v| !v.is_null()).cloned(),
+    })
+}
+
+/// Project the stored config back into the managed-shaped object (+ extensions +
+/// live `published` flag), so a read round-trips to the same object the SDK sees.
+fn managed_from_agent_config(cfg: &AgentConfig, published: bool) -> Value {
+    json!({
+        "id": cfg.id,
+        "type": "agent",
+        "name": cfg.name,
+        "description": cfg.description,
+        "model": { "id": cfg.model_binding.resolved().map(|b| b.model_ref.clone()).unwrap_or_default() },
+        "system": cfg.instructions,
+        "metadata": cfg.metadata,
+        "tools": cfg.tool_ids,
+        "mcp_servers": cfg.mcp_servers,
+        "skills": cfg.skills,
+        "multiagent": cfg.multiagent,
+        // extensions (our differentiated value, additive to the managed object):
+        "max_steps": cfg.max_steps,
+        "plugins": cfg.plugin_ids,
+        "plugin_config": cfg.plugin_config,
+        "context_policy": cfg.context_policy,
+        "published": published,
+    })
 }
 
 async fn publish(
@@ -407,6 +602,7 @@ mod resource_prompt_tests {
             plugin_config: Default::default(),
             context_policy: ContextPolicy::KeepAll,
             tool_patterns: Vec::new(),
+            ..Default::default()
         }
     }
 

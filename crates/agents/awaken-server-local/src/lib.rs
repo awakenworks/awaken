@@ -1700,12 +1700,26 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
     // context) and `publish` compiles + installs it so sessions run that config.
     // The same service is wired into the host below, so a session for a published
     // agent resolves its installed config.
-    let tools = advertised_tools(&HashSet::new(), &HashSet::new(), &[]);
-    let config_service = Arc::new(ConfigService::new(config, tools.clone()));
-    let config_plane = config_router(config_service.clone());
+    // Scope-free `ConfigService` + the `ConfigPlane` scope edge (ADR-0051/0052): the
+    // plane binds the request scope (a `ScopedConfig` registry + the scope's tool
+    // catalog) onto the service per call. The admin assistant is not productionized
+    // into this server yet, so the reserved scope carries no extra tools.
+    let global = advertised_tools(&HashSet::new(), &HashSet::new(), &[]);
+    let tool_catalog: Arc<dyn awaken_runtime_host::ToolCatalogSource> =
+        Arc::new(awaken_runtime_host::ScopedToolCatalog::new(
+            global.clone(),
+            awaken_runtime_host::RESERVED_ADMIN_SCOPE,
+            Vec::new(),
+        ));
+    let config_service = Arc::new(ConfigService::new());
+    let config_plane = config_router(awaken_runtime_host::ConfigPlane::new(
+        config_service.clone(),
+        config,
+        tool_catalog,
+    ));
     // Capability snapshot (`GET /v1/capabilities`): the host's tool descriptors +
     // installable plugins (with config schema) so the console authors data-driven.
-    let capabilities = capabilities_router(tools);
+    let capabilities = capabilities_router(global);
 
     // The IAM guard (when enabled) wraps the admin + vault routers only. An
     // axum layer binds to the routes present when it is applied, so merging
