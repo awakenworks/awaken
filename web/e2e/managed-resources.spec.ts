@@ -115,6 +115,27 @@ test("Agent Resources: add a skill to an agent and persist it", async ({ page, r
   await expect(page.getByPlaceholder("/mnt/…")).toHaveValue(/skills/);
 });
 
+test("Tool presentation: alias a tool in the editor and persist it", async ({ page, request }) => {
+  const agent = `tools-agent-${Date.now()}`;
+  // Seed an agent with a static tool selected, so the override target picker has one.
+  await request.put(`/v1/config/agents/${agent}`, { data: { id: agent, system: "hi", tools: ["read"], plugins: [], plugin_config: {}, context_policy: { kind: "keep_all" }, max_steps: 8 } });
+
+  await page.goto(`/w/default/agents/${agent}`);
+  await page.getByRole("button", { name: "Tools", exact: true }).click();
+  await page.getByRole("button", { name: /override a tool/ }).click();
+  // The override row: target <select> (defaults to "read"), then an "alias" input.
+  await page.getByPlaceholder("alias").fill("open_file");
+  await page.getByPlaceholder("description override").fill("Read a file.");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.locator(".toast").filter({ hasText: /Saved|已保存/ })).toBeVisible();
+
+  // Reload → the override rehydrates from the stored config.
+  await page.reload();
+  await page.getByRole("button", { name: "Tools", exact: true }).click();
+  await expect(page.getByPlaceholder("alias")).toHaveValue("open_file");
+  await expect(page.getByPlaceholder("description override")).toHaveValue("Read a file.");
+});
+
 test("Deployment: create in the UI (agent + environment) and see it listed", async ({ page, request }) => {
   const name = `dep-${Date.now()}`;
   // A deployment needs a published agent + an environment — seed both via the API.
