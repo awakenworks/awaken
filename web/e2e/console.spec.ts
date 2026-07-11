@@ -56,6 +56,13 @@ test("gated Observe page is truth-driven: probes the endpoint and shows the gate
   await expect(page.getByText(/backend face is not mounted yet|后端面尚未就绪/)).toBeVisible();
 });
 
+test("Admin Assistant is truth-driven: gates when the assistant agent isn't installed", async ({ page }) => {
+  await page.goto("/w/default/assistant");
+  await expect(page.getByRole("heading", { name: /Admin Assistant|控制台助手/ })).toBeVisible();
+  // __admin_assistant is not installed in CI → the note explains why, not a fake copilot.
+  await expect(page.getByText(/Admin Assistant agent is not installed|助手 agent 尚未安装/)).toBeVisible();
+});
+
 test("Sandbox tab gates an unpublished draft (nothing live to talk to yet)", async ({ page }) => {
   await page.goto("/w/default/agents/new");
   await page.getByRole("button", { name: "Sandbox", exact: true }).click();

@@ -3,6 +3,7 @@ import AppShell from "./components/app/AppShell";
 import GatedPage from "./components/app/GatedPage";
 import A2aSurface from "./surfaces/a2a";
 import AccessSurface from "./surfaces/access";
+import AssistantSurface from "./surfaces/assistant";
 import CredentialsSurface from "./surfaces/credentials";
 import DeploymentsSurface from "./surfaces/deployments";
 import EnvironmentsSurface from "./surfaces/environments";
@@ -33,6 +34,7 @@ export const router = createBrowserRouter([
       { path: "w/:ws/sessions/:sid", element: <SessionDetailSurface /> },
       { path: "w/:ws/agents", element: <ProjectAgentsSurface /> },
       { path: "w/:ws/agents/:id", element: <AgentEditorSurface /> },
+      { path: "w/:ws/assistant", element: <AssistantSurface /> },
       { path: "w/:ws/environments", element: <EnvironmentsSurface /> },
       { path: "w/:ws/vaults", element: <VaultsSurface /> },
       { path: "w/:ws/memory", element: <MemorySurface /> },
