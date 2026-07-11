@@ -724,7 +724,23 @@ async fn drive(
         // Commit the assistant turn verbatim — text and tool-use blocks may
         // interleave. The text already streamed to the live sink; the committed
         // message is the assembled whole.
-        let calls = response.output.tool_calls();
+        // Reverse the model-facing tool id back to its canonical id (ADR-0053) at the
+        // single ingress, BEFORE any gate / delegation / dispatch / audit — so an alias
+        // (or an MCP-tool alias) never leaks past this boundary; every internal consumer
+        // sees the canonical id. Identity when the agent has no tool presentation.
+        let calls: Vec<ToolCall> = response
+            .output
+            .tool_calls()
+            .into_iter()
+            .map(|mut call| {
+                call.tool_id = resolved
+                    .spec
+                    .tool_presentation
+                    .resolve(&call.tool_id)
+                    .to_string();
+                call
+            })
+            .collect();
         let assistant = assistant_message(run_id, step_base + step, response.output.blocks);
         transcript.push(assistant.clone());
         new_messages.push(assistant);

@@ -36,10 +36,22 @@ pub(crate) fn build_chat_request(
     messages.extend(prelude.iter().map(to_chat_message));
     messages.extend(transcript.iter().map(to_chat_message));
     let messages = apply_context_policy(&spec.context_policy, messages);
-    let tools = spec
+    // The model-facing tool face (ADR-0053): the static descriptors and the dynamic
+    // (plugin/MCP) descriptors converge here — the ONE place both meet — so the agent's
+    // `ToolPresentation` (alias + description override) is applied over the combined set,
+    // covering static and MCP tools uniformly. An empty presentation returns the set
+    // unchanged, so the tool face stays byte-identical for an agent with no overrides.
+    let combined: Vec<ToolDescriptor> = spec
         .tool_descriptors
         .iter()
         .chain(dynamic.iter())
+        .cloned()
+        .collect();
+    let presented = spec.tool_presentation.present(&combined);
+    let tools = presented
+        .face
+        .iter()
+        .chain(presented.deferred.iter())
         .map(to_tool_schema)
         .collect();
     ChatRequest {

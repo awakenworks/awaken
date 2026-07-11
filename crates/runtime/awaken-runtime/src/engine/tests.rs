@@ -18,6 +18,7 @@ fn spec(instructions: &str) -> ResolvedSpec {
         plugin_ids: Vec::new(),
         plugin_config: Default::default(),
         context_policy: ContextPolicy::KeepAll,
+            tool_presentation: Default::default(),
     }
 }
 

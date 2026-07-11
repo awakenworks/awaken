@@ -137,6 +137,7 @@ fn activation() -> RunActivation {
                 plugin_ids: vec!["state_machine".to_string()],
                 plugin_config: Default::default(),
                 context_policy: awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+                            tool_presentation: Default::default(),
             },
             fingerprint,
         },
