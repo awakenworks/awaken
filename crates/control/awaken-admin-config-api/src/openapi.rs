@@ -67,11 +67,6 @@ pub fn contract_schemas() -> Map<String, Value> {
         "AgentResourceConfig",
         awaken_config_resolver::AgentResourceConfig
     );
-    add!("Project", awaken_config_resolver::Project);
-    add!(
-        "ProjectAgentConfig",
-        awaken_config_resolver::ProjectAgentConfig
-    );
 
     // Route request bodies (secret-in is write-only by construction).
     add!("EnterCredentialRequest", crate::EnterCredentialRequest);
@@ -139,14 +134,13 @@ pub fn openapi_document() -> Value {
         "info": {
             "title": "Awaken Admin Config API",
             "version": crate::API_VERSION,
-            "summary": "Self-hosted management plane: catalog, credentials, MCP, projects (ADR-0043). Sessions/vaults are the official Anthropic SDK wire and are not described here."
+            "summary": "Self-hosted management plane: catalog, credentials, MCP (ADR-0043). Sessions/vaults are the official Anthropic SDK wire and are not described here."
         },
         "tags": [
             { "name": "catalog", "description": "Providers, protocol endpoints, offerings" },
             { "name": "credentials", "description": "Credential sources and pools (secret-in, secret-free-out)" },
             { "name": "inference", "description": "Inference profiles and dry-run resolution" },
-            { "name": "mcp", "description": "MCP server definitions and agent bindings" },
-            { "name": "projects", "description": "Projects and per-project agent bindings" }
+            { "name": "mcp", "description": "MCP server definitions and agent bindings" }
         ],
         "paths": paths(),
         "components": { "schemas": Value::Object(contract_schemas()) }
@@ -287,24 +281,6 @@ fn paths() -> Value {
                 &id("MCP server id"), Some(schema_ref("McpServerDef")), 200, schema_ref("McpServerDef")),
             "get": op("get_mcp_server", "mcp", "Fetch an MCP server definition",
                 &id("MCP server id"), None, 200, schema_ref("McpServerDef"))
-        },
-        "/v1/config/projects": {
-            "get": op("list_projects", "projects", "List authored projects",
-                &[], None, 200, array_of("Project"))
-        },
-        "/v1/config/projects/{id}": {
-            "put": op("put_project", "projects", "Author (upsert) a project; the DNS-safe path id doubles as the ingress address segment",
-                &id("Project id (DNS-safe lowercase)"), Some(schema_ref("Project")), 200, schema_ref("Project")),
-            "get": op("get_project", "projects", "Fetch a project",
-                &id("Project id"), None, 200, schema_ref("Project"))
-        },
-        "/v1/config/projects/{project_id}/agents/{agent_id}/mcp": {
-            "put": op("put_project_agent_mcp", "projects", "Bind which MCP servers an agent uses within one project (fail-closed)",
-                &[path_param("project_id", "Project id"), path_param("agent_id", "Agent id")],
-                Some(schema_ref("ProjectAgentConfig")), 200, schema_ref("ProjectAgentConfig")),
-            "get": op("get_project_agent_mcp", "projects", "Fetch a project-scoped agent MCP binding",
-                &[path_param("project_id", "Project id"), path_param("agent_id", "Agent id")],
-                None, 200, schema_ref("ProjectAgentConfig"))
         },
         "/v1/config/agents/{agent_id}/mcp": {
             "put": op("put_agent_mcp", "mcp", "Bind which MCP servers an agent uses at workspace level (fail-closed)",
