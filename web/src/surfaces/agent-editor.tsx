@@ -139,13 +139,24 @@ export default function AgentEditorSurface() {
       r.valid ? toast.ok(app.t("Config is valid.", "配置有效。")) : toast.err(r.error ?? "invalid"),
     onError: (e) => toast.err(e instanceof Error ? e.message : "error"),
   });
+  // After a new agent's first save, navigate to its id URL — but only once `dirty`
+  // has actually flushed to false, else the unsaved-guard (useBlocker(dirty)) would
+  // swallow the navigation (the setDirty in onSuccess hasn't committed yet).
+  const [savedId, setSavedId] = useState<string | null>(null);
+  useEffect(() => {
+    if (savedId && !dirty) {
+      nav(`/w/${wsId}/agents/${savedId}`, { replace: true });
+      setSavedId(null);
+    }
+  }, [savedId, dirty, wsId, nav]);
+
   const save = useMutation({
     mutationFn: () => api.put<{ id: string }>(`/v1/config/agents/${targetId()}`, body()),
     onSuccess: () => {
       setDirty(false);
       toast.ok(app.t("Saved.", "已保存。"));
       void qc.invalidateQueries({ queryKey: ["config-agents"] });
-      if (isNew) nav(`/w/${wsId}/agents/${targetId()}`, { replace: true });
+      if (isNew) setSavedId(targetId());
     },
     onError: (e) => toast.err(e instanceof Error ? e.message : "error"),
   });
