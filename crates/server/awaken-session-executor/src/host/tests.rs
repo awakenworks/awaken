@@ -676,3 +676,67 @@ async fn prepare_session_mounts_the_agents_bound_memory_store() {
         "an unbound agent mounts nothing extra: {empty}"
     );
 }
+
+/// The same auto-attach realizes an agent's other bound resource kinds (ADR-0038): a
+/// bound FILE is mounted from the blob store carrying its bytes, and a bound
+/// github_repository is staged for the host-side clone (a repo is not a byte mount, so
+/// it's observed via the repo stage rather than `sandbox_spec`).
+#[tokio::test]
+async fn prepare_session_mounts_bound_file_and_stages_bound_repo() {
+    use awaken_config_resolver::{
+        AgentResourceConfig, InMemoryResourceStore, ResourceAccess, ResourceBinding, ResourceKind,
+        ResourceStore,
+    };
+    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+
+    // Seed a file blob, and bind BOTH a file and a repo to agent `a`.
+    let file_id = host.file_store().put(b"port is 8080").await.expect("put blob");
+    let bindings: Arc<dyn ResourceStore> = Arc::new(InMemoryResourceStore::new());
+    bindings.put_agent_resource(AgentResourceConfig {
+        agent_id: "a".into(),
+        resources: vec![
+            ResourceBinding {
+                kind: ResourceKind::File,
+                resource_id: file_id.clone(),
+                mount_path: "/mnt/files/notes.txt".into(),
+                access: ResourceAccess::ReadOnly,
+                instructions: None,
+            },
+            ResourceBinding {
+                kind: ResourceKind::GithubRepository,
+                resource_id: "https://github.com/awaken/example.git".into(),
+                mount_path: "/mnt/repo".into(),
+                access: ResourceAccess::ReadOnly,
+                instructions: None,
+            },
+        ],
+        version: 1,
+    });
+    let managed = crate::ManagedHost::new(host.clone()).with_resources(bindings);
+
+    managed
+        .prepare_session(
+            "t-multi",
+            SessionInit {
+                agent_id: "a".into(),
+                mcp_servers: Vec::new(),
+                resources: Vec::new(),
+                model: None,
+                runtime: None,
+                deny_egress: false,
+            },
+        )
+        .await
+        .unwrap();
+
+    // The file is a byte mount carrying its content, at its path.
+    let dump = serde_json::to_string(&host.sandbox_spec("t-multi").mounts).unwrap();
+    assert!(dump.contains("files/notes.txt"), "bound file mounted at its path: {dump}");
+    assert!(dump.contains("port is 8080"), "file mount carries its bytes: {dump}");
+
+    // The repo is staged for a host-side clone (not a byte mount).
+    let repos = host.thread_repos("t-multi");
+    assert_eq!(repos.len(), 1, "the bound repo is staged for cloning");
+    assert_eq!(repos[0].url, "https://github.com/awaken/example.git");
+}

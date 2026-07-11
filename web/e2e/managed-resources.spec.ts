@@ -38,17 +38,81 @@ test("Agent Resources: bind a memory store to an agent and persist it", async ({
   await page.goto(`/w/default/agents/${agent}`);
   await page.getByRole("button", { name: "Resources", exact: true }).click();
   await page.getByRole("button", { name: /bind a store/ }).click();
-  await page.locator("select").first().selectOption({ label: store });
-  // The row has one text input (mount path) among two selects (store, access).
+  // A memory row has three selects (kind, store, access); the store is the 2nd, and the
+  // mount path is the only field carrying the `/mnt/…` placeholder.
+  await page.locator("select").nth(1).selectOption({ label: store });
   const path = `/mnt/${store}`;
-  await page.locator("input").first().fill(path);
+  await page.getByPlaceholder("/mnt/…").fill(path);
   await page.getByRole("button", { name: /Save resources/ }).click();
   await expect(page.locator(".toast").filter({ hasText: /Resources saved|资源已保存/ })).toBeVisible();
 
   // Reload → the binding rehydrates from the stored resource config.
   await page.reload();
   await page.getByRole("button", { name: "Resources", exact: true }).click();
-  await expect(page.locator("input").first()).toHaveValue(path);
+  await expect(page.getByPlaceholder("/mnt/…")).toHaveValue(path);
+});
+
+const MIN_AGENT = { system: "hi", tools: [], plugins: [], plugin_config: {}, context_policy: { kind: "keep_all" }, max_steps: 8 };
+
+test("Agent Resources: attach a file to an agent and persist it", async ({ page, request }) => {
+  const agent = `file-agent-${Date.now()}`;
+  await request.put(`/v1/config/agents/${agent}`, { data: { id: agent, ...MIN_AGENT } });
+
+  await page.goto(`/w/default/agents/${agent}`);
+  await page.getByRole("button", { name: "Resources", exact: true }).click();
+  await page.getByRole("button", { name: /attach a file/ }).click();
+  // Uploading is a two-step: the row's button opens a file chooser; feeding it POSTs the
+  // bytes to the Files API and stamps the returned blob id (+ filename) onto the row.
+  const chooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: /Upload/ }).click();
+  await (await chooser).setFiles({ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("the port is 8080") });
+  await expect(page.getByRole("button", { name: "notes.txt" })).toBeVisible(); // filename shown after upload
+  await page.getByRole("button", { name: /Save resources/ }).click();
+  await expect(page.locator(".toast").filter({ hasText: /Resources saved|资源已保存/ })).toBeVisible();
+
+  // Reload → the file binding rehydrates (label is client-only; the mount path persists).
+  await page.reload();
+  await page.getByRole("button", { name: "Resources", exact: true }).click();
+  await expect(page.getByPlaceholder("/mnt/…")).toHaveValue("/mnt/files/notes.txt");
+});
+
+test("Agent Resources: connect a GitHub repo to an agent and persist it", async ({ page, request }) => {
+  const agent = `repo-agent-${Date.now()}`;
+  await request.put(`/v1/config/agents/${agent}`, { data: { id: agent, ...MIN_AGENT } });
+  const url = "https://github.com/awaken/example.git";
+
+  await page.goto(`/w/default/agents/${agent}`);
+  await page.getByRole("button", { name: "Resources", exact: true }).click();
+  await page.getByRole("button", { name: /connect a repo/ }).click();
+  await page.getByPlaceholder("https://github.com/owner/repo.git").fill(url);
+  await page.getByRole("button", { name: /Save resources/ }).click();
+  await expect(page.locator(".toast").filter({ hasText: /Resources saved|资源已保存/ })).toBeVisible();
+
+  await page.reload();
+  await page.getByRole("button", { name: "Resources", exact: true }).click();
+  await expect(page.getByPlaceholder("https://github.com/owner/repo.git")).toHaveValue(url);
+});
+
+test("Agent Resources: add a skill to an agent and persist it", async ({ page, request }) => {
+  const agent = `skill-agent-${Date.now()}`;
+  await request.put(`/v1/config/agents/${agent}`, { data: { id: agent, ...MIN_AGENT } });
+  // Seed a skill via the multipart Skills API (the durable skill store is wired in
+  // management mode, so create persists) so there's one to pick.
+  await request.post("/v1/skills", {
+    multipart: { file: { name: "SKILL.md", mimeType: "text/markdown", buffer: Buffer.from("# Greeter\nSay hello.") }, name: `e2e-skill-${Date.now()}` },
+  });
+
+  await page.goto(`/w/default/agents/${agent}`);
+  await page.getByRole("button", { name: "Resources", exact: true }).click();
+  await page.getByRole("button", { name: /add a skill/ }).click();
+  // A skill row: [kind][skill][mount][access] — pick the seeded skill (2nd select).
+  await page.locator("select").nth(1).selectOption({ index: 0 });
+  await page.getByRole("button", { name: /Save resources/ }).click();
+  await expect(page.locator(".toast").filter({ hasText: /Resources saved|资源已保存/ })).toBeVisible();
+
+  await page.reload();
+  await page.getByRole("button", { name: "Resources", exact: true }).click();
+  await expect(page.getByPlaceholder("/mnt/…")).toHaveValue(/skills/);
 });
 
 test("Deployment: create in the UI (agent + environment) and see it listed", async ({ page, request }) => {

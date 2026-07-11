@@ -94,11 +94,26 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return (await res.json()) as T;
 }
 
+/** Multipart upload (the Files API is the one endpoint that takes bytes, not JSON).
+ * FormData sets its own multipart content-type + boundary, so we must NOT set it. */
+async function upload<T>(path: string, file: File, fields?: Record<string, string>): Promise<T> {
+  const headers: Record<string, string> = {};
+  const token = getToken();
+  if (token) headers.authorization = `Bearer ${token}`;
+  const form = new FormData();
+  form.append("file", file);
+  for (const [k, v] of Object.entries(fields ?? {})) form.append(k, v);
+  const res = await fetch(path, { method: "POST", headers, body: form });
+  if (!res.ok) throw await toError(res);
+  return (await res.json()) as T;
+}
+
 export const api = {
   get: <T>(path: string) => request<T>("GET", path),
   post: <T>(path: string, body?: unknown) => request<T>("POST", path, body),
   put: <T>(path: string, body?: unknown) => request<T>("PUT", path, body),
   del: <T>(path: string) => request<T>("DELETE", path),
+  upload,
 };
 
 /** URL for EventSource consumers (sessions SSE; that face carries no bearer). */
