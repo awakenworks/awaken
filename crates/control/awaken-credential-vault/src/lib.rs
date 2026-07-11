@@ -12,6 +12,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod availability;
 #[cfg(feature = "oauth-command")]
 pub mod oauth;
 #[cfg(feature = "postgres")]
@@ -23,6 +24,7 @@ pub mod sealed;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 
+pub use availability::{AvailabilityLedger, AvailabilityState};
 #[cfg(feature = "oauth-command")]
 pub use oauth::{CommandTokenSource, TokenSource};
 #[cfg(feature = "postgres")]
@@ -194,6 +196,22 @@ impl CredentialPool {
                 .then_with(|| a.credential_source_id.0.cmp(&b.credential_source_id.0))
         });
         members
+    }
+
+    /// [`selection_order`](Self::selection_order) with cooled/exhausted members
+    /// dropped per the availability ledger at `now_ms` — the members a selector may
+    /// actually pick right now. A cooled source rotates out until its deadline; this
+    /// is the mid-run credential rotation the engine's candidate loop rides.
+    #[must_use]
+    pub fn eligible_order(
+        &self,
+        ledger: &crate::availability::AvailabilityLedger,
+        now_ms: u64,
+    ) -> Vec<&CredentialPoolMember> {
+        self.selection_order()
+            .into_iter()
+            .filter(|m| ledger.is_available(&m.credential_source_id, now_ms))
+            .collect()
     }
 }
 
@@ -622,5 +640,40 @@ mod tests {
             serde_json::to_string(&SelectionPolicy::RotateSpread).unwrap(),
             "\"rotate_spread\""
         );
+    }
+
+    #[test]
+    fn eligible_order_rotates_past_a_cooled_member() {
+        use crate::availability::AvailabilityLedger;
+        let member = |id: &str, ordinal: u32| CredentialPoolMember {
+            credential_source_id: CredentialSourceId(id.into()),
+            ordinal,
+            enabled: true,
+            selection_weight: 0,
+        };
+        let pool = CredentialPool {
+            id: CredentialPoolId("pool".into()),
+            workspace_id: "ws".into(),
+            members: vec![member("cred:a", 0), member("cred:b", 1)],
+            policy: SelectionPolicy::FirstHealthy,
+        };
+        let ledger = AvailabilityLedger::new();
+        ledger.cool_down(&CredentialSourceId("cred:a".into()), 1_000);
+
+        // While cred:a is cooled, only cred:b is eligible — the selection rotates.
+        let eligible: Vec<&str> = pool
+            .eligible_order(&ledger, 500)
+            .iter()
+            .map(|m| m.credential_source_id.0.as_str())
+            .collect();
+        assert_eq!(eligible, ["cred:b"]);
+
+        // Past the deadline cred:a is back at the head of the order.
+        let resumed: Vec<&str> = pool
+            .eligible_order(&ledger, 1_000)
+            .iter()
+            .map(|m| m.credential_source_id.0.as_str())
+            .collect();
+        assert_eq!(resumed, ["cred:a", "cred:b"]);
     }
 }
