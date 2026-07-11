@@ -56,7 +56,9 @@ mod tests {
         };
         init_shared_postgres_commit(&url).await.expect("first init");
         // A second init keeps the first coordinator (idempotent, no reconnect).
-        init_shared_postgres_commit(&url).await.expect("second init is a no-op");
+        init_shared_postgres_commit(&url)
+            .await
+            .expect("second init is a no-op");
         assert!(shared_postgres_commit().is_some());
     }
 }
