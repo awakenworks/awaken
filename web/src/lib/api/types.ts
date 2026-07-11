@@ -129,10 +129,19 @@ export interface SessionAgent {
   skills?: unknown[];
   multiagent?: unknown;
 }
+/** Accumulated token usage for a session (zero until the first turn commits). */
+export interface SessionUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number;
+  cache_creation_input_tokens: number;
+}
+
 export interface Session {
   id: string;
   type: "session";
   agent: SessionAgent;
+  usage?: SessionUsage;
   /** Extension: the project ingress the session was created through. */
   project_id?: string | null;
   environment_id?: string | null;
