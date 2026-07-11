@@ -374,6 +374,25 @@ export interface PublishResult {
   installed: boolean;
 }
 
+// ---- capabilities (GET /v1/capabilities) ----
+// Host-level facts the editor authors data-driven: tool descriptors (with their
+// JSON-Schema params) and installable plugins (with per-plugin config schema).
+export interface ToolCap {
+  id: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+export interface PluginCap {
+  id: string;
+  config_sections: string[];
+  config_schema: Record<string, unknown>;
+}
+export interface Capabilities {
+  runtime_version: string;
+  tools: ToolCap[];
+  plugins: PluginCap[];
+}
+
 // ---- vaults ----
 
 export interface Vault {

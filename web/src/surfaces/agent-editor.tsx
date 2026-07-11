@@ -11,10 +11,11 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import Drawer from "../components/ui/Drawer";
 import { useToast } from "../components/ui/Toast";
-import { Button, Card, Pill, TextAreaField, TextField } from "../components/ui";
+import { Button, Card, CheckPicker, Pill, TextAreaField, TextField } from "../components/ui";
 import { api, isAbsent } from "../lib/api/client";
 import type { AgentConfig, ContextPolicy, ProviderCatalog, PublishResult } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
+import { useCapabilities } from "../lib/useCapabilities";
 import { useUnsavedGuard } from "../lib/useUnsavedGuard";
 import ModelsSurface from "./models";
 
@@ -116,6 +117,7 @@ export default function AgentEditorSurface() {
     queryKey: ["catalog"],
     queryFn: () => api.get<ProviderCatalog>("/v1/config/catalog"),
   });
+  const caps = useCapabilities();
   const models = useMemo(
     () => Array.from(new Set((catalog.data?.offerings ?? []).map((o) => o.model_id))),
     [catalog.data],
@@ -311,9 +313,28 @@ export default function AgentEditorSurface() {
           <div className="field">
             <label>{app.t("Tools", "工具")}</label>
             <span className="mut">
-              {app.t("Hand tools bound by id at compile. Empty = no hand tools.", "编译时按 id 绑定的 hand 工具;空 = 无。")}
+              {app.t(
+                "Pick from the host's advertised tools, or add an id not in the catalog (e.g. an MCP tool).",
+                "从 host 广告的工具中勾选,或添加目录外的 id(如 MCP 工具)。",
+              )}
             </span>
-            <ListEditor values={cfg.tools} onChange={(v) => patch({ tools: v })} placeholder="mcp__calc__add" />
+            <CheckPicker
+              options={[
+                ...(caps.data?.tools ?? []).map((t) => ({ id: t.id, description: t.description })),
+                // custom ids already on the agent but not in the catalog:
+                ...cfg.tools
+                  .filter((id) => !(caps.data?.tools ?? []).some((t) => t.id === id))
+                  .map((id) => ({ id })),
+              ]}
+              selected={cfg.tools}
+              onChange={(v) => patch({ tools: v })}
+              empty={caps.isLoading ? "…" : app.t("No tools advertised.", "无广告工具。")}
+            />
+            <ListEditor
+              values={cfg.tools}
+              onChange={(v) => patch({ tools: v })}
+              placeholder={app.t("add custom tool id (e.g. mcp__calc__add)", "添加自定义工具 id")}
+            />
           </div>
         )}
 
@@ -322,9 +343,14 @@ export default function AgentEditorSurface() {
             <div className="field">
               <label>{app.t("Enabled plugins", "启用的插件")}</label>
               <span className="mut">
-                {app.t("A runtime plugin contributes only when listed here.", "运行时插件只有列在此处才生效。")}
+                {app.t("A runtime plugin contributes only when enabled here.", "运行时插件只有在此启用才生效。")}
               </span>
-              <ListEditor values={cfg.plugins} onChange={(v) => patch({ plugins: v })} placeholder="permission" />
+              <CheckPicker
+                options={(caps.data?.plugins ?? []).map((p) => ({ id: p.id }))}
+                selected={cfg.plugins}
+                onChange={(v) => patch({ plugins: v })}
+                empty={caps.isLoading ? "…" : app.t("No plugins available.", "无可用插件。")}
+              />
             </div>
             <div className="field">
               <label>{app.t("Plugin config (policy sections)", "插件配置(策略段)")}</label>
