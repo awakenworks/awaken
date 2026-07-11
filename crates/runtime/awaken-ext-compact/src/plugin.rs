@@ -173,12 +173,14 @@ impl CompactHook {
             )?,
         };
         // Seed the `compactor` sub-agent with the older slice plus the summarize
-        // prompt, through the shared aux-run port.
+        // prompt, through the shared aux-run port. A per-agent `instructions` override
+        // (config) replaces the built-in prompt; otherwise the default is used.
         let mut seed = conversation[..fold_to].to_vec();
+        let prompt = self.config.instructions.as_deref().unwrap_or(SUMMARIZE_PROMPT);
         seed.push(Message::text(
             MessageId("compact-prompt".into()),
             Role::User,
-            SUMMARIZE_PROMPT,
+            prompt,
         ));
         let reply = runner
             .run(SubagentRequest {
@@ -310,6 +312,54 @@ mod tests {
         );
     }
 
+    /// Records the text of the last seed message — the compaction prompt the hook
+    /// appended — so a test can assert which prompt reached the compactor.
+    struct PromptRecorder {
+        seen_prompt: std::sync::Mutex<String>,
+    }
+    #[async_trait]
+    impl SubagentRunner for PromptRecorder {
+        async fn run(&self, request: SubagentRequest) -> Result<SubagentReply, SubagentError> {
+            *self.seen_prompt.lock().unwrap() =
+                request.seed.last().map(|m| m.text_content()).unwrap_or_default();
+            Ok(SubagentReply {
+                text: Some("s".to_string()),
+            })
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_custom_instructions_config_overrides_the_compaction_prompt() {
+        let recorder = Arc::new(PromptRecorder {
+            seen_prompt: std::sync::Mutex::new(String::new()),
+        });
+        // With no override, the built-in summarize prompt is used.
+        let default_plugin = CompactPlugin::new(CompactConfig {
+            threshold: 4,
+            keep_last: 2,
+            ..Default::default()
+        })
+        .with_runner(recorder.clone());
+        default_plugin.resolve().phase_hooks[0]
+            .on_phase(&phase_ctx(), &convo(10))
+            .await;
+        assert_eq!(*recorder.seen_prompt.lock().unwrap(), SUMMARIZE_PROMPT);
+
+        // With an override, the per-agent instructions replace it verbatim.
+        let custom = "Keep only the API endpoints mentioned.";
+        let tuned_plugin = CompactPlugin::new(CompactConfig {
+            threshold: 4,
+            keep_last: 2,
+            instructions: Some(custom.to_string()),
+            ..Default::default()
+        })
+        .with_runner(recorder.clone());
+        tuned_plugin.resolve().phase_hooks[0]
+            .on_phase(&phase_ctx(), &convo(10))
+            .await;
+        assert_eq!(*recorder.seen_prompt.lock().unwrap(), custom);
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn a_fold_stages_a_readable_compaction_marker() {
         let plugin = CompactPlugin::new(CompactConfig {
@@ -370,6 +420,7 @@ mod tests {
             keep_last: 2,
             max_tokens: Some(10), // budget = 0.8 * 10 = 8 tokens
             trigger_ratio: 0.8,
+            instructions: None,
         })
         .with_runner(Arc::new(FixedSummarizer {
             seen_len: std::sync::Mutex::new(0),
@@ -392,6 +443,7 @@ mod tests {
             keep_last: 2,
             max_tokens: Some(1_000_000), // budget far beyond a tiny conversation
             trigger_ratio: 0.8,
+            instructions: None,
         })
         .with_runner(Arc::new(FixedSummarizer {
             seen_len: std::sync::Mutex::new(0),
