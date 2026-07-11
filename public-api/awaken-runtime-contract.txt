@@ -625,6 +625,8 @@ impl awaken_runtime_contract::llm::Error
 pub fn awaken_runtime_contract::llm::Error::code(&self) -> &'static str
 pub fn awaken_runtime_contract::llm::Error::is_retryable(&self) -> bool
 pub fn awaken_runtime_contract::llm::Error::retry_after(&self) -> core::option::Option<core::time::Duration>
+impl awaken_runtime_contract::resilience::Classify for awaken_runtime_contract::llm::Error
+pub fn awaken_runtime_contract::llm::Error::disposition(&self) -> awaken_runtime_contract::resilience::Disposition
 impl core::error::Error for awaken_runtime_contract::llm::Error
 impl core::fmt::Debug for awaken_runtime_contract::llm::Error
 pub fn awaken_runtime_contract::llm::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -1354,6 +1356,33 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin_config::PluginConfigValidation
 pub trait awaken_runtime_contract::plugin_config::PluginConfigValidator
 pub fn awaken_runtime_contract::plugin_config::PluginConfigValidator::validate_plugin_config(&self, &str, &serde_json::value::Value) -> core::result::Result<awaken_runtime_contract::plugin_config::PluginConfigValidation, awaken_runtime_contract::plugin_config::Error>
+pub mod awaken_runtime_contract::resilience
+pub trait awaken_runtime_contract::resilience::Classify
+pub fn awaken_runtime_contract::resilience::Classify::disposition(&self) -> awaken_runtime_contract::resilience::Disposition
+pub enum awaken_runtime_contract::resilience::Disposition
+pub awaken_runtime_contract::resilience::Disposition::Permanent
+pub awaken_runtime_contract::resilience::Disposition::Quota
+pub awaken_runtime_contract::resilience::Disposition::Quota::retry_after: core::option::Option<core::time::Duration>
+pub awaken_runtime_contract::resilience::Disposition::Transient
+impl awaken_runtime_contract::resilience::Disposition
+pub fn awaken_runtime_contract::resilience::Disposition::is_retryable(self) -> bool
+pub fn awaken_runtime_contract::resilience::Disposition::prefers_failover(self) -> bool
+pub fn awaken_runtime_contract::resilience::Disposition::retry_after(self) -> core::option::Option<core::time::Duration>
+impl core::clone::Clone for awaken_runtime_contract::resilience::Disposition
+pub fn awaken_runtime_contract::resilience::Disposition::clone(&self) -> awaken_runtime_contract::resilience::Disposition
+impl core::cmp::Eq for awaken_runtime_contract::resilience::Disposition
+impl core::cmp::PartialEq for awaken_runtime_contract::resilience::Disposition
+pub fn awaken_runtime_contract::resilience::Disposition::eq(&self, &awaken_runtime_contract::resilience::Disposition) -> bool
+impl core::fmt::Debug for awaken_runtime_contract::resilience::Disposition
+pub fn awaken_runtime_contract::resilience::Disposition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_runtime_contract::resilience::Disposition
+impl core::marker::Freeze for awaken_runtime_contract::resilience::Disposition
+impl core::marker::Send for awaken_runtime_contract::resilience::Disposition
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::resilience::Disposition
+impl core::marker::Sync for awaken_runtime_contract::resilience::Disposition
+impl core::marker::Unpin for awaken_runtime_contract::resilience::Disposition
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resilience::Disposition
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resilience::Disposition
 pub mod awaken_runtime_contract::resolved
 pub enum awaken_runtime_contract::resolved::Backend
 pub awaken_runtime_contract::resolved::Backend::Acp
