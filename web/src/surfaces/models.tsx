@@ -2,13 +2,57 @@
 // Offering) plus inference profiles and the dry-run resolve chain.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
-import { Button, Card, Pill, SelectField, TextField } from "../components/ui";
-import { api } from "../lib/api/client";
-import type { ProviderCatalog, ResolvedInferenceView } from "../lib/api/types";
+import { useEffect, useRef, useState } from "react";
+import Transcript from "../components/session/Transcript";
+import { Button, Card, Modal, Pill, SelectField, Skeleton, TextField, UsageBadges } from "../components/ui";
+import { api, ws } from "../lib/api/client";
+import type { ProviderCatalog, ResolvedInferenceView, Session } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 
 const WORKSPACE = "wrkspc_default";
+
+/** A live model test: a scratch session (via the `default` agent) pinned to the
+ * chosen model, so a real reply proves the connection — the same transcript
+ * engine as the Sandbox. No provider key → the run errors honestly, not a stub. */
+function TestChat({ model }: { model: string }) {
+  const app = useApp();
+  const [sid, setSid] = useState<string | null>(null);
+  const [latencyMs, setLatencyMs] = useState<number | undefined>();
+  const started = useRef(false);
+  const start = useMutation({
+    mutationFn: () =>
+      api.post<Session>(ws("/v1/sessions"), { agent: "default", title: `test · ${model}` }),
+    onSuccess: (s) => setSid(s.id),
+  });
+  useEffect(() => {
+    if (!started.current) {
+      started.current = true;
+      start.mutate();
+    }
+  }, [start]);
+  const session = useQuery({
+    queryKey: ["test-session", sid],
+    enabled: !!sid,
+    queryFn: () => api.get<Session>(ws(`/v1/sessions/${sid}`)),
+    refetchInterval: 4_000,
+  });
+  if (!sid) return <Skeleton height={60} />;
+  return (
+    <>
+      <div className="row" style={{ margin: "4px 0 8px" }}>
+        <Pill tone="agent">{model}</Pill>
+        <UsageBadges usage={session.data?.usage} latencyMs={latencyMs} />
+      </div>
+      <Transcript
+        base={ws(`/v1/sessions/${sid}`)}
+        queryKey={["test-events", sid]}
+        fixedModel={model}
+        placeholder={app.t("Say hello…", "打个招呼…")}
+        onLatency={setLatencyMs}
+      />
+    </>
+  );
+}
 
 function ResolveChain({ view }: { view: ResolvedInferenceView }) {
   return (
@@ -72,6 +116,7 @@ export default function ModelsSurface() {
     },
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["catalog"] }),
   });
+  const [testModel, setTestModel] = useState<string | null>(null);
   const [resolveModel, setResolveModel] = useState("claude-sonnet-4-5");
   const [resolveBinding, setResolveBinding] = useState("");
   const resolve = useMutation({
@@ -104,6 +149,7 @@ export default function ModelsSurface() {
               <th>Provider</th>
               <th>Endpoint</th>
               <th>Flavor</th>
+              <th style={{ textAlign: "right" }}></th>
             </tr>
           </thead>
           <tbody>
@@ -115,11 +161,16 @@ export default function ModelsSurface() {
                 <td>
                   <Pill tone="neutral">{o.flavor}</Pill>
                 </td>
+                <td style={{ textAlign: "right" }}>
+                  <Button style={{ height: 24 }} onClick={() => setTestModel(o.model_id)}>
+                    {app.t("Test", "测试")}
+                  </Button>
+                </td>
               </tr>
             ))}
             {(c?.offerings ?? []).length === 0 && (
               <tr>
-                <td colSpan={4} className="mut">
+                <td colSpan={5} className="mut">
                   {app.t("Empty catalog — author one below.", "目录为空——在下方作者化。")}
                 </td>
               </tr>
@@ -174,6 +225,22 @@ export default function ModelsSurface() {
         {resolve.data && <ResolveChain view={resolve.data} />}
         {resolve.error instanceof Error && <div className="err">{resolve.error.message}</div>}
       </Card>
+
+      {testModel && (
+        <Modal
+          title={app.t(`Test model · ${testModel}`, `测试模型 · ${testModel}`)}
+          onClose={() => setTestModel(null)}
+          width="min(680px, 94vw)"
+        >
+          <p className="hint">
+            {app.t(
+              "A live round-trip through the resolve chain — a real reply proves the connection.",
+              "一次经过 resolve 链的真实往返——真实回复即证明连接可用。",
+            )}
+          </p>
+          <TestChat model={testModel} />
+        </Modal>
+      )}
     </>
   );
 }

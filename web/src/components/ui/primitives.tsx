@@ -3,6 +3,50 @@
 
 import { useState, type ReactNode } from "react";
 import { useApp } from "../../lib/app-state";
+import type { SessionUsage } from "../../lib/api/types";
+
+// ---- usage badges (tokens / cache / client-measured latency) ----
+/** Sum of billable tokens in a usage record (input + output + both cache legs). */
+export function usageTotal(u: SessionUsage | undefined): number {
+  if (!u) return 0;
+  return (
+    (u.input_tokens ?? 0) +
+    (u.output_tokens ?? 0) +
+    (u.cache_read_input_tokens ?? 0) +
+    (u.cache_creation_input_tokens ?? 0)
+  );
+}
+
+export function UsageBadges({
+  usage,
+  latencyMs,
+}: {
+  usage?: SessionUsage;
+  latencyMs?: number;
+}) {
+  const hasTokens = usageTotal(usage) > 0;
+  const cache = (usage?.cache_read_input_tokens ?? 0) + (usage?.cache_creation_input_tokens ?? 0);
+  if (!hasTokens && latencyMs == null) return null;
+  return (
+    <span className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+      {hasTokens && (
+        <span className="pill neutral" title="input → output tokens">
+          {usage!.input_tokens}↑ {usage!.output_tokens}↓
+        </span>
+      )}
+      {cache > 0 && (
+        <span className="pill neutral" title="cache read + creation tokens">
+          ⚡ {cache} cache
+        </span>
+      )}
+      {latencyMs != null && (
+        <span className="pill neutral" title="round-trip latency">
+          {latencyMs < 1000 ? `${latencyMs}ms` : `${(latencyMs / 1000).toFixed(1)}s`}
+        </span>
+      )}
+    </span>
+  );
+}
 
 // ---- source-state badge (builtin / customized / user-defined) ----
 export type SourceState = "builtin" | "customized" | "user-defined";

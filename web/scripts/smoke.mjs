@@ -121,6 +121,9 @@ await step("capabilities (flat)", "GET", "/v1/capabilities", undefined, (s, p) =
   p.plugins.some((pl) => pl.id === "state_machine" && pl.config_schema && typeof pl.config_schema === "object"));
 // Uniform addressing: same snapshot under the workspace path prefix (ADR-0048).
 await step("capabilities (workspace-path)", "GET", "/v1/workspaces/default/capabilities", undefined, (s, p) => s === 200 && p.plugins.length > 0);
+// Gating truth: the Observe faces are genuinely unmounted, so GatedPage's probe
+// gets a 404 and shows the placeholder (not a fabricated flag).
+await step("gated Observe face 404s (audit-log)", "GET", "/v1/audit-log", undefined, (s) => s === 404 || s === 405);
 
 // ---- Project · Vaults (surfaces/vaults.tsx; bare face until §7.10) ----
 const vault = await step("create vault", "POST", "/v1/vaults", { display_name: "smoke" });
@@ -140,7 +143,10 @@ const session = await step("create session (flat)", "POST", "/v1/sessions", {
   title: "smoke",
   vault_ids: [vault.id],
 }, (s, p) => s === 200 || s === 201 ? typeof p.id === "string" : false);
-await step("retrieve session", "GET", `/v1/sessions/${session.id}`, undefined, (s, p) => s === 200 && p.id === session.id);
+// The session carries an accumulated `usage` object (input/output/cache tokens) —
+// the Sandbox/Test UsageBadges read it. Zero until the first turn commits.
+await step("retrieve session (usage shape)", "GET", `/v1/sessions/${session.id}`, undefined, (s, p) =>
+  s === 200 && p.id === session.id && p.usage && typeof p.usage.input_tokens === "number");
 await step("list events", "GET", `/v1/sessions/${session.id}/events`, undefined, (s, p) => s === 200 && Array.isArray(p.data));
 await step("list sessions", "GET", "/v1/sessions", undefined, (s, p) => s === 200 && p.data.some((x) => x.id === session.id));
 const renamed = await step("rename session", "POST", `/v1/sessions/${session.id}`, { title: "smoke (renamed)" }, (s, p) => s === 200 && p.title === "smoke (renamed)");
