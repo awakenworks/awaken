@@ -56,6 +56,20 @@ test("gated Observe page is truth-driven: probes the endpoint and shows the gate
   await expect(page.getByText(/backend face is not mounted yet|后端面尚未就绪/)).toBeVisible();
 });
 
+test("Models Test opens a live model dialog (scratch session + composer)", async ({ page }) => {
+  // The smoke seeds an offering; if the catalog is empty, author one via the UI first.
+  await page.goto("/w/default/models");
+  const testBtn = page.getByRole("button", { name: "Test", exact: true }).first();
+  if ((await testBtn.count()) === 0) {
+    await page.getByRole("button", { name: "Author", exact: true }).click();
+    await page.waitForTimeout(300);
+  }
+  await page.getByRole("button", { name: "Test", exact: true }).first().click();
+  // The modal mounts the shared transcript against the pinned model.
+  await expect(page.getByRole("heading", { name: /Test model ·/ })).toBeVisible();
+  await expect(page.getByPlaceholder("Say hello…")).toBeVisible();
+});
+
 test("Admin Assistant is truth-driven: gates when the assistant agent isn't installed", async ({ page }) => {
   await page.goto("/w/default/assistant");
   await expect(page.getByRole("heading", { name: /Admin Assistant|控制台助手/ })).toBeVisible();

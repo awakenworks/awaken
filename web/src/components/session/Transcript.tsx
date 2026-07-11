@@ -109,6 +109,8 @@ export interface TranscriptProps {
   composer?: boolean;
   /** Show the per-message model-override field (default false). */
   modelOverride?: boolean;
+  /** Pin every user message to this model (Test-a-model; hides the override field). */
+  fixedModel?: string;
   /** Placeholder for the composer input. */
   placeholder?: string;
   /** Rendered above the log (e.g. an empty-state hint). */
@@ -128,6 +130,7 @@ export default function Transcript({
   header,
   live = true,
   onLatency,
+  fixedModel,
 }: TranscriptProps) {
   const app = useApp();
   const { log, results, pendingIds, running, freshCount, applyPending, send, sendError, loadError } =
@@ -167,12 +170,13 @@ export default function Transcript({
 
   const submit = () => {
     if (!draft.trim()) return;
+    const useModel = fixedModel || model;
     sentAt.current = Date.now();
     send([
       {
         type: "user.message",
         content: [{ type: "text", text: draft.trim() }],
-        ...(model ? { model } : {}),
+        ...(useModel ? { model: useModel } : {}),
       },
     ]);
     setDraft("");

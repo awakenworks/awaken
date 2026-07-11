@@ -11,6 +11,7 @@ export { Segmented, type SegmentedOption } from "./Segmented";
 export { CheckPicker, type CheckOption } from "./CheckPicker";
 export { SchemaForm, type JsonSchema } from "./SchemaForm";
 export { default as Drawer } from "./Drawer";
+export { default as Modal } from "./Modal";
 export { DataGrid, type Column } from "./DataGrid";
 export { SecretField, type SecretIntent, type SecretMode } from "./SecretField";
 export { ToastProvider, useToast } from "./Toast";
