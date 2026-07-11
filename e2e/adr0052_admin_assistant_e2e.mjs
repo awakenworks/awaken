@@ -121,7 +121,7 @@ async function main() {
       id: 'pinned-agent',
       instructions: 'pinned model',
       max_steps: 4,
-      model_binding: { provider_instance_ref: 'default', model_ref: 'pinned-model', backend_ref: 'default' },
+      model_binding: { provider_identity_ref: 'default', model_ref: 'pinned-model', backend_ref: 'default' },
       tool_ids: [],
       plugin_ids: [],
       plugin_config: {},

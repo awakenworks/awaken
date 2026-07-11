@@ -13,7 +13,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// level, so no reader has to know that an absent value carries behavior.
 ///
 /// Wire compatibility is deliberate: a `Pinned` binding serializes as the bare flat
-/// triple it always was (`{provider_instance_ref, model_ref, backend_ref}`), so
+/// triple it always was (`{provider_identity_ref, model_ref, backend_ref}`), so
 /// every config authored before this type — and its content-address fingerprint —
 /// is byte-identical. Only `Auto` is new, serialized as `{"mode":"auto"}`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,12 +35,12 @@ impl ModelSelection {
     /// A pinned binding from its three refs (ergonomic constructor for the many
     /// call sites that authored a concrete `ModelBinding::new(...)`).
     pub fn pinned(
-        provider_instance_ref: impl Into<String>,
+        provider_identity_ref: impl Into<String>,
         model_ref: impl Into<String>,
         backend_ref: impl Into<String>,
     ) -> Self {
         ModelSelection::Pinned(ModelBinding::new(
-            provider_instance_ref,
+            provider_identity_ref,
             model_ref,
             backend_ref,
         ))

@@ -307,7 +307,7 @@ mod tests {
         let json = serde_json::to_value(&selection).unwrap();
         assert_eq!(
             json,
-            serde_json::json!({"provider_instance_ref": "p", "model_ref": "m", "backend_ref": "b"})
+            serde_json::json!({"provider_identity_ref": "p", "model_ref": "m", "backend_ref": "b"})
         );
         // Round-trips, and the historic flat triple still decodes as Pinned.
         assert_eq!(
