@@ -275,6 +275,24 @@ export interface MemoryStore {
   updated_at: string;
 }
 
+// ---- agent resource bindings (ADR-0038): which resources an agent mounts ----
+export type ResourceKind = "outputs" | "file" | "memory_store" | "github_repository" | "skill";
+export type ResourceAccess = "read_only" | "read_write";
+export interface ResourceBinding {
+  kind: ResourceKind;
+  /** The backing resource id (a memory store id, file id, repo URL; empty for outputs). */
+  resource_id?: string;
+  /** Where it appears in the sandbox. */
+  mount_path: string;
+  access: ResourceAccess;
+  instructions?: string | null;
+}
+export interface AgentResourceConfig {
+  agent_id: string;
+  resources: ResourceBinding[];
+  version: number;
+}
+
 // ---- skills ----
 
 export interface Skill {
