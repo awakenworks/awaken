@@ -484,7 +484,7 @@ mod tests {
             .events
             .iter()
             .find_map(|(_, e)| match e {
-                AgentEvent::ToolCall { name, input } => Some((name.clone(), input.clone())),
+                AgentEvent::ToolCall { name, input, .. } => Some((name.clone(), input.clone())),
                 _ => None,
             })
             .expect("a tool call was projected");
