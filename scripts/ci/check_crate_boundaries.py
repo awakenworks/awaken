@@ -73,8 +73,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tokio",
     },
     # The open single-machine assembly. Composes ONLY open crates — this closure
-    # is the zero-BuSL invariant (no admin-config-api write plane, no iam-server,
-    # no store-postgres). Adding a BuSL dep here should fail review.
+    # is the zero-BuSL invariant (no admin-config-api write plane, no iam-server, no
+    # container/remote execution). A durable Postgres store IS allowed here (it is an
+    # open backend behind the store port); the closed line is the scaling fan-out
+    # above it, not the DB driver. Adding a BuSL dep here should fail review.
     "awaken-standalone": {
         "awaken-runtime-host",
         "awaken-observability",
@@ -964,6 +966,11 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-skill-store",
         "awaken-store-sqlite",
         "awaken-store-fs",
+        # Multi-node durable commit coordinator (ADR-0022 D6). OPEN, like the other
+        # store backends: a Postgres queue is table stakes for self-hosted durability,
+        # not a paid differentiator — the closed line is placement/sharding/tenancy
+        # (the horizontal-scaling fan-out ABOVE this store port), not the DB driver.
+        "awaken-store-postgres",
         "awaken-config-store",
         # Tenancy edge aspect (ADR-0051/0052): the opaque `ScopeId` the scope-keyed
         # tool catalog and the scoped config plane are keyed by.
@@ -1373,10 +1380,15 @@ def check_runtime_is_secret_resolution_free() -> list[str]:
 # one node out to many, or to run a multi-tenant authoring plane. The open
 # single-machine bin's runtime dependency closure must contain NONE of them — that
 # is the open-core invariant, enforced here rather than left to review.
+#
+# The durable STORE backends (sqlite, fs, and postgres) are deliberately NOT here:
+# a durable/multi-node store is table stakes for self-hosting, not a paid
+# differentiator. The closed line sits ABOVE the store port — the horizontal-scaling
+# fan-out (Shard*/placement), multi-tenant authoring, durable IAM, and container/
+# remote execution — never the DB driver itself.
 BUSL_CRATES = {
     "awaken-admin-config-api",  # multi-tenant authoring HTTP plane
     "awaken-iam-server",  # durable IAM provisioning store
-    "awaken-store-postgres",  # distributed durable store
     "awaken-sandbox-container",  # container/remote execution
 }
 
