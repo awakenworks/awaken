@@ -113,15 +113,15 @@ pub fn deployments_router(state: Arc<DeploymentState>) -> Router {
             post(create_deployment).get(list_deployments),
         )
         .route(
-            "/v1/deployments/:id",
+            "/v1/deployments/{id}",
             get(retrieve_deployment).post(update_deployment),
         )
-        .route("/v1/deployments/:id/archive", post(archive_deployment))
-        .route("/v1/deployments/:id/pause", post(pause_deployment))
-        .route("/v1/deployments/:id/unpause", post(unpause_deployment))
-        .route("/v1/deployments/:id/run", post(run_deployment))
+        .route("/v1/deployments/{id}/archive", post(archive_deployment))
+        .route("/v1/deployments/{id}/pause", post(pause_deployment))
+        .route("/v1/deployments/{id}/unpause", post(unpause_deployment))
+        .route("/v1/deployments/{id}/run", post(run_deployment))
         .route("/v1/deployment_runs", get(list_runs))
-        .route("/v1/deployment_runs/:id", get(retrieve_run))
+        .route("/v1/deployment_runs/{id}", get(retrieve_run))
         .with_state(state)
 }
 

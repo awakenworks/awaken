@@ -33,7 +33,7 @@ use tower::ServiceExt;
 #[must_use]
 pub fn with_workspace_path_addressing(flat: Router) -> Router {
     Router::new()
-        .route("/v1/workspaces/:ws/*rest", any(dispatch))
+        .route("/v1/workspaces/{ws}/{*rest}", any(dispatch))
         .with_state(flat.clone())
         .fallback_service(flat)
 }
@@ -57,8 +57,8 @@ async fn dispatch(
         parts.uri = uri;
     }
     // Rebuild with FRESH extensions: the outer catch-all route stored its own
-    // matched path params (`:ws`/`*rest`) in the request, which would collide with
-    // the flat router's `:id` extraction and 500 it. Drop them; carry only the
+    // matched path params (`{ws}`/`{*rest}`) in the request, which would collide with
+    // the flat router's `{id}` extraction and 500 it. Drop them; carry only the
     // resolved scope so the handlers + ownership guards see the tenancy.
     let mut extensions = axum::http::Extensions::new();
     extensions.insert(WorkspaceScope(ws.clone()));
@@ -88,7 +88,7 @@ mod tests {
         }
         Router::new()
             .route("/v1/agents", get(echo))
-            .route("/v1/config/agents/:id", get(echo))
+            .route("/v1/config/agents/{id}", get(echo))
     }
 
     async fn get_path(app: &Router, uri: &str) -> (StatusCode, String) {

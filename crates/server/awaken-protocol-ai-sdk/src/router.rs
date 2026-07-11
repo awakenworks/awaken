@@ -42,7 +42,6 @@ const AI_SDK_STREAM_HEADER: &str = "x-vercel-ai-ui-message-stream";
 /// so `useChat` sees the failure as a stream error like any driver error.
 struct AiSdkJson<T>(T);
 
-#[async_trait::async_trait]
 impl<S, T> FromRequest<S> for AiSdkJson<T>
 where
     Json<T>: FromRequest<S, Rejection = JsonRejection>,
@@ -63,10 +62,10 @@ where
 pub fn router(runtime: Runtime) -> Router {
     Router::new()
         .route("/v1/ai-sdk/chat", post(chat))
-        .route("/v1/ai-sdk/threads/:thread_id/runs", post(chat_threaded))
-        .route("/v1/ai-sdk/agents/:agent_id/runs", post(chat_agent_scoped))
+        .route("/v1/ai-sdk/threads/{thread_id}/runs", post(chat_threaded))
+        .route("/v1/ai-sdk/agents/{agent_id}/runs", post(chat_agent_scoped))
         .route(
-            "/v1/ai-sdk/threads/:thread_id/messages",
+            "/v1/ai-sdk/threads/{thread_id}/messages",
             get(thread_messages),
         )
         .with_state(runtime)
