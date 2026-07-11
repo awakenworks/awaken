@@ -15,6 +15,7 @@ import { Button, Card, CheckPicker, Pill, SchemaForm, TextAreaField, TextField }
 import type { JsonSchema } from "../components/ui";
 import SandboxPane from "../components/session/SandboxPane";
 import PermissionEditor from "../components/agent/PermissionEditor";
+import ResourcesTab from "../components/agent/ResourcesTab";
 import { api, isAbsent } from "../lib/api/client";
 import type {
   AgentConfig,
@@ -29,7 +30,7 @@ import { useModels } from "../lib/useModels";
 import { useUnsavedGuard } from "../lib/useUnsavedGuard";
 import ModelsSurface from "./models";
 
-type Tab = "basics" | "context" | "tools" | "plugins" | "sandbox";
+type Tab = "basics" | "context" | "tools" | "plugins" | "resources" | "sandbox";
 
 const BLANK: AgentConfig = {
   id: "",
@@ -187,6 +188,7 @@ export default function AgentEditorSurface() {
     { key: "context", label: "Context", zh: "上下文" },
     { key: "tools", label: "Tools", zh: "工具" },
     { key: "plugins", label: "Plugins & policy", zh: "插件与策略" },
+    { key: "resources", label: "Resources", zh: "资源" },
     { key: "sandbox", label: "Sandbox", zh: "试运行" },
   ];
 
@@ -230,11 +232,24 @@ export default function AgentEditorSurface() {
         ))}
       </div>
 
+      {tab === "resources" && (
+        <Card>
+          {isNew ? (
+            <div className="banner gate">
+              <span>◌</span>
+              <span>{app.t("Save the agent first, then bind resources to it.", "先保存 agent,再给它绑定资源。")}</span>
+            </div>
+          ) : (
+            <ResourcesTab agentId={id} />
+          )}
+        </Card>
+      )}
+
       {tab === "sandbox" && (
         <SandboxPane agentId={id} ready={!isNew && !!existing.data?.published} dirty={dirty} />
       )}
 
-      {tab !== "sandbox" && (
+      {tab !== "sandbox" && tab !== "resources" && (
       <Card>
         {tab === "basics" && (
           <>

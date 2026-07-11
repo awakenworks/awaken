@@ -29,6 +29,28 @@ test("Skills: the surface reads the delivered-skill catalog", async ({ page }) =
   await expect(page.getByText(/No skills delivered yet|尚无已交付技能/)).toBeVisible();
 });
 
+test("Agent Resources: bind a memory store to an agent and persist it", async ({ page, request }) => {
+  const store = `store-${Date.now()}`;
+  const agent = `res-agent-${Date.now()}`;
+  await request.post("/v1/memory_stores", { data: { name: store } });
+  await request.put(`/v1/config/agents/${agent}`, { data: { id: agent, system: "hi", tools: [], plugins: [], plugin_config: {}, context_policy: { kind: "keep_all" }, max_steps: 8 } });
+
+  await page.goto(`/w/default/agents/${agent}`);
+  await page.getByRole("button", { name: "Resources", exact: true }).click();
+  await page.getByRole("button", { name: /bind a store/ }).click();
+  await page.locator("select").first().selectOption({ label: store });
+  // The row has one text input (mount path) among two selects (store, access).
+  const path = `/mnt/${store}`;
+  await page.locator("input").first().fill(path);
+  await page.getByRole("button", { name: /Save resources/ }).click();
+  await expect(page.locator(".toast").filter({ hasText: /Resources saved|资源已保存/ })).toBeVisible();
+
+  // Reload → the binding rehydrates from the stored resource config.
+  await page.reload();
+  await page.getByRole("button", { name: "Resources", exact: true }).click();
+  await expect(page.locator("input").first()).toHaveValue(path);
+});
+
 test("Deployment: create in the UI (agent + environment) and see it listed", async ({ page, request }) => {
   const name = `dep-${Date.now()}`;
   // A deployment needs a published agent + an environment — seed both via the API.

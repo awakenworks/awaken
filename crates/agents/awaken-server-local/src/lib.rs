@@ -1660,6 +1660,12 @@ async fn management_router_over(
     let exec_catalog = catalog.clone();
     let exec_credentials = credentials.clone();
     let exec_secrets = secrets.clone();
+    // ONE resource-binding store shared by the admin router (which authors an agent's
+    // resources via `PUT /v1/config/agents/:id/resources`) and the config service
+    // (which reads them into resource prompts + mounts at compile) — so a binding
+    // authored through the API reaches the compiled config (ADR-0038).
+    let resource_store: Arc<dyn awaken_config_resolver::ResourceStore> =
+        Arc::new(awaken_admin_config_api::InMemoryResourceStore::new());
     // ONE MCP store across the admin router and the ManagedHost, and ONE
     // credential repo + secret store across admin, vaults, and sessions: a
     // credential or MCP config entered through any surface is the same row a
@@ -1672,7 +1678,7 @@ async fn management_router_over(
         mcp: mcp_store.clone(),
         // Per-agent resource bindings (ADR-0038). Ephemeral in-memory for now; the
         // durable SqliteAdminStore also implements `ResourceStore` for a later wire.
-        resources: Arc::new(awaken_admin_config_api::InMemoryResourceStore::new()),
+        resources: resource_store.clone(),
         // The live credential probe is backed by provider-genai here — the only
         // place the model SDK is named; the admin CRUD crate stays SDK-free.
         probe: Some(Arc::new(GenaiProbe)),
@@ -1746,9 +1752,13 @@ async fn management_router_over(
         }],
         ..Default::default()
     };
-    let config_service = Arc::new(ConfigService::new().with_model_resolver(Arc::new(
-        crate::model_resolver::CatalogModelResolver::new(seed_catalog.clone()),
-    )));
+    let config_service = Arc::new(
+        ConfigService::new()
+            .with_model_resolver(Arc::new(crate::model_resolver::CatalogModelResolver::new(
+                seed_catalog.clone(),
+            )))
+            .with_resources(resource_store.clone()),
+    );
     let plane = awaken_runtime_host::ConfigPlane::new(config_service.clone(), config, tool_catalog);
     // Seed the in-console Admin Assistant as an ordinary published agent in the
     // reserved scope (ADR-0052 D1/D2), so `/v1/agents/__admin_assistant` is live and a
