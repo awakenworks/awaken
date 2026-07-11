@@ -336,9 +336,12 @@ async fn commit(
     Ok(())
 }
 
-/// A [`RunFactAppender`] that collects projected assistant text into committable
-/// messages, enforcing the monotonic-seq contract. Tool calls are not committed
-/// as messages in this slice; `TurnEnd` is carried by the returned reason.
+/// A [`RunFactAppender`] that projects an ACP turn's facts into committable neutral
+/// messages, enforcing the monotonic-seq contract. Assistant text, tool calls, and
+/// tool results each become a message so the committed transcript mirrors the
+/// external agent's turn (a tool call is an assistant `ToolUse`; its result is a
+/// `Role::Tool` `ToolResult` addressed to that call). `TurnEnd` carries no message —
+/// it is returned as the turn's reason.
 #[derive(Default)]
 struct CollectingAppender {
     last: u64,
@@ -352,6 +355,8 @@ impl RunFactAppender for CollectingAppender {
         seq: u64,
         event: &AgentEvent,
     ) -> std::result::Result<(), AppendError> {
+        use awaken_agent_contract::agent::content::ContentBlock;
+
         if seq <= self.last {
             return Err(AppendError::NonMonotonic {
                 got: seq,
@@ -359,14 +364,56 @@ impl RunFactAppender for CollectingAppender {
             });
         }
         self.last = seq;
-        if let AgentEvent::Message { text } = event {
-            self.messages.push(Message::text(
+        match event {
+            AgentEvent::Message { text } => self.messages.push(Message::text(
                 MessageId(format!("acp-{seq}")),
                 Role::Assistant,
                 text.clone(),
-            ));
+            )),
+            AgentEvent::ToolCall { id, name, input } => self.messages.push(Message {
+                id: MessageId(format!("acp-{seq}")),
+                role: Role::Assistant,
+                content: vec![ContentBlock::tool_use(
+                    tool_use_id(id, seq),
+                    name.clone(),
+                    input.clone(),
+                )],
+            }),
+            AgentEvent::ToolResult {
+                id,
+                content,
+                is_error,
+            } => {
+                // The neutral `ToolResult` has no error flag, so a failed call's
+                // error surfaces in the result text (marked) rather than being lost.
+                let body = if *is_error {
+                    format!("[tool error] {content}")
+                } else {
+                    content.clone()
+                };
+                self.messages.push(Message {
+                    id: MessageId(format!("acp-{seq}")),
+                    role: Role::Tool,
+                    content: vec![ContentBlock::tool_result(
+                        tool_use_id(id, seq),
+                        vec![ContentBlock::text(body)],
+                    )],
+                });
+            }
+            AgentEvent::TurnEnd { .. } => {}
         }
         Ok(())
+    }
+}
+
+/// The neutral tool-use id for an ACP tool call: the ACP `tool_call_id` when the
+/// agent supplied one, else a per-seq fallback so a call and its result still
+/// correlate within the turn.
+fn tool_use_id(acp_id: &str, seq: u64) -> String {
+    if acp_id.is_empty() {
+        format!("acp-tool-{seq}")
+    } else {
+        acp_id.to_string()
     }
 }
 

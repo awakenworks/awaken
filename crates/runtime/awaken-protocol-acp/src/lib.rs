@@ -100,11 +100,26 @@ impl Default for SupervisePolicy {
 pub enum AgentEvent {
     /// Assistant text.
     Message { text: String },
-    /// The agent surfaced a tool call to us (the inbound-tool path).
+    /// The agent surfaced a tool call to us (the inbound-tool path). `id` is the
+    /// ACP `tool_call_id`, so a later [`ToolResult`](Self::ToolResult) correlates
+    /// to this call.
     ToolCall {
+        #[serde(default)]
+        id: String,
         name: String,
         #[serde(default)]
         input: serde_json::Value,
+    },
+    /// A tool call's result, surfaced when the agent reports the call reached a
+    /// terminal status (completed or failed). `id` is the [`ToolCall`](Self::ToolCall)
+    /// `tool_call_id` it answers; `content` is the result's text; `is_error` is set
+    /// when the tool failed.
+    ToolResult {
+        #[serde(default)]
+        id: String,
+        content: String,
+        #[serde(default)]
+        is_error: bool,
     },
     /// The turn ended with a reason.
     TurnEnd { reason: TerminationReason },
