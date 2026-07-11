@@ -213,7 +213,6 @@ impl ConfigRegistry for SqliteConfigStore {
 mod scope_tests {
     use super::*;
     use crate::store::ScopedConfigRegistry;
-    use awaken_runtime_contract::resolved::ModelBinding;
     use awaken_tenancy::ScopeId;
 
     fn agent(id: &str) -> AgentConfig {
@@ -222,7 +221,7 @@ mod scope_tests {
             id: id.to_string(),
             instructions: "be helpful".to_string(),
             max_steps: 8,
-            model_binding: ModelBinding::new("p", "m", "b"),
+            model_binding: crate::config::ModelSelection::pinned("p", "m", "b"),
             tool_ids: Vec::new(),
             model_candidates: Vec::new(),
             plugin_ids: Vec::new(),

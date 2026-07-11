@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use awaken_config_store::{AgentConfig, compile};
+use awaken_config_store::{AgentConfig, ModelSelection, compile};
 use awaken_runtime_examples::prelude::*;
 
 #[tokio::main]
@@ -27,7 +27,7 @@ async fn main() {
         id: "greeter".to_string(),
         instructions: "You are a friendly greeter.".to_string(),
         max_steps: 4,
-        model_binding: ModelBinding::new("demo", "stub", "stub"),
+        model_binding: ModelSelection::pinned("demo", "stub", "stub"),
         tool_ids: Vec::new(),
         model_candidates: Vec::new(),
         plugin_ids: Vec::new(),
