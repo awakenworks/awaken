@@ -16,15 +16,18 @@ use awaken_api_contract::{ApiError, PROBLEM_JSON_CONTENT_TYPE, REQUEST_ID_HEADER
 use awaken_config_resolver::{
     AgentMcpConfig, AgentResourceConfig, InferenceProfile, InferenceProfileStore, McpServerDef,
     McpServerId, McpStore, ResolveError, ResolvedInference, ResourceStore, SourceLookup,
-    resolve_inference, resolve_mcp_servers, resolve_profile,
+    cooldown_deadline, resolve_inference, resolve_mcp_servers, resolve_profile,
+    resolve_profile_candidates,
 };
 use awaken_credential_vault::repo::{CredentialRepo, enter_credential};
 use awaken_credential_vault::{
-    CredentialBinding, CredentialCreateParams, CredentialError, CredentialKind, CredentialPool,
-    CredentialPoolId, CredentialSource, CredentialSourceId, CredentialStatus, SecretStore,
+    AvailabilityLedger, AvailabilityState, CredentialBinding, CredentialCreateParams,
+    CredentialError, CredentialKind, CredentialPool, CredentialPoolId, CredentialSource,
+    CredentialSourceId, CredentialStatus, SecretStore,
 };
 use awaken_model_catalog::repo::{CatalogRepo, RepoError};
 use awaken_model_catalog::{Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId};
+use awaken_runtime_contract::resilience::Disposition;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header::CONTENT_TYPE};
 use axum::response::{IntoResponse, Response};
@@ -53,6 +56,11 @@ pub struct AdminState {
     /// otherwise it reports `unknown` (the model SDK never enters this CRUD crate —
     /// it arrives behind this port).
     pub probe: Option<Arc<dyn CredentialProbe>>,
+    /// Credential availability cooldowns (ADR-0043 / E3-4). An operator (or an
+    /// external rate-limit signal) cools a source through `POST
+    /// /credentials/:id/cooldown`; pool resolution then rotates past it. Shared, so
+    /// every route observes the same cooldown state.
+    pub availability: Arc<AvailabilityLedger>,
 }
 
 /// The result of a live credential probe (secret-free), aligned with the Managed
@@ -113,7 +121,23 @@ pub fn admin_router(state: AdminState) -> Router {
             "/v1/config/inference-profiles/:id/resolve",
             post(resolve_profile_route),
         )
+        .route(
+            "/v1/config/inference-profiles/:id/resolve-candidates",
+            post(resolve_profile_candidates_route),
+        )
         .route("/v1/config/inference/resolve", post(resolve_route))
+        .route(
+            "/v1/config/credentials/:id/cooldown",
+            post(cooldown_credential),
+        )
+        .route(
+            "/v1/config/credentials/:id/availability",
+            get(get_availability),
+        )
+        .route(
+            "/v1/config/credential-pools/:id/eligible",
+            get(get_pool_eligible),
+        )
         .route("/v1/config/mcp-servers", get(list_mcp_servers))
         .route(
             "/v1/config/mcp-servers/:id",
@@ -405,6 +429,144 @@ fn view_of(resolved: ResolvedInference) -> ResolvedInferenceView {
         base_url: resolved.base_url,
         credential_present: resolved.credential.is_some(),
     }
+}
+
+/// The ordered candidate list a profile resolves to (E3-2): one secret-free view per
+/// model in the profile's axis, in failover order.
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ResolvedCandidatesView {
+    candidates: Vec<ResolvedInferenceView>,
+}
+
+/// Dry-run a stored profile's whole model axis (`AxisBinding` pin/pool) into its
+/// ordered `(model × credential)` candidate list — the failover order a run would
+/// use. An unresolvable model is skipped; all-unresolvable is fail-closed.
+async fn resolve_profile_candidates_route(
+    State(state): State<AdminState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<ResolveProfileRequest>,
+) -> Result<Json<ResolvedCandidatesView>, Problem> {
+    let rid = req_id(&headers);
+    let profile = state
+        .profiles
+        .get(&id)
+        .ok_or_else(|| profile_missing(&id, &rid))?;
+    let catalog = state
+        .catalog
+        .snapshot()
+        .await
+        .map_err(|e| repo_problem(&e, &rid))?;
+    let lookup = workspace_lookup(&state, &request.workspace_id, &rid).await?;
+    let resolved = resolve_profile_candidates(&catalog, &profile, &lookup, &*state.secrets)
+        .await
+        .map_err(|e| resolve_problem(&e, &rid))?;
+    Ok(Json(ResolvedCandidatesView {
+        candidates: resolved.into_iter().map(view_of).collect(),
+    }))
+}
+
+/// Wall-clock milliseconds since the epoch — the `now` the availability ledger reads.
+/// Only the HTTP layer touches the clock; the ledger itself stays time-argument pure.
+fn now_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
+/// A cooldown signal an operator (or an external rate-limit integration) records
+/// against a credential source. `kind` maps to a failure
+/// [`Disposition`](awaken_runtime_contract::resilience::Disposition): `quota` cools
+/// until `retry_after_secs` (or a default window); `exhausted` cools until cleared;
+/// `available` / `clear` lifts any cooldown; `transient` / `permanent` are no-ops on
+/// availability (they are retry/next-binding decisions, not identity cooldowns).
+#[derive(serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CooldownRequest {
+    kind: String,
+    #[serde(default)]
+    retry_after_secs: Option<u64>,
+}
+
+async fn cooldown_credential(
+    State(state): State<AdminState>,
+    Path(id): Path<String>,
+    Json(request): Json<CooldownRequest>,
+) -> Json<AvailabilityState> {
+    let source = CredentialSourceId(id);
+    let now = now_ms();
+    match request.kind.as_str() {
+        "quota" => {
+            let disposition = Disposition::Quota {
+                retry_after: request.retry_after_secs.map(std::time::Duration::from_secs),
+            };
+            if let Some(deadline) = cooldown_deadline(disposition, now) {
+                state.availability.cool_down(&source, deadline);
+            }
+        }
+        "exhausted" => state.availability.exhaust(&source),
+        "available" | "clear" => state.availability.clear(&source),
+        // A transient / permanent failure is a retry / next-binding decision, not an
+        // identity cooldown — its disposition yields no deadline.
+        other => {
+            let disposition = match other {
+                "permanent" => Disposition::Permanent,
+                _ => Disposition::Transient,
+            };
+            let _ = cooldown_deadline(disposition, now);
+        }
+    }
+    Json(state.availability.state(&source, now))
+}
+
+/// The current availability of a credential source (cooldown auto-resumes by time).
+async fn get_availability(
+    State(state): State<AdminState>,
+    Path(id): Path<String>,
+) -> Json<AvailabilityState> {
+    Json(state.availability.state(&CredentialSourceId(id), now_ms()))
+}
+
+/// Which members of a pool are selectable right now — `selection_order` with cooled
+/// members dropped (`eligible_order`). The ops view of the mid-run rotation.
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct PoolEligibleView {
+    eligible: Vec<String>,
+    cooled: Vec<String>,
+}
+
+async fn get_pool_eligible(
+    State(state): State<AdminState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<PoolEligibleView>, Problem> {
+    let rid = req_id(&headers);
+    let pool = state
+        .credentials
+        .get_pool(&CredentialPoolId(id))
+        .await
+        .map_err(|e| cred_problem(&e, &rid))?;
+    let now = now_ms();
+    let eligible: Vec<String> = pool
+        .eligible_order(&state.availability, now)
+        .iter()
+        .map(|m| m.credential_source_id.0.clone())
+        .collect();
+    let cooled: Vec<String> = pool
+        .selection_order()
+        .iter()
+        .filter(|m| {
+            !state
+                .availability
+                .is_available(&m.credential_source_id, now)
+        })
+        .map(|m| m.credential_source_id.0.clone())
+        .collect();
+    Ok(Json(PoolEligibleView { eligible, cooled }))
 }
 
 /// Snapshot a workspace's credential sources + pools into a resolver lookup.
