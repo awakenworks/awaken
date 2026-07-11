@@ -20,8 +20,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # zeroize backs RedactedString's zero-on-drop (ADR-0043); a leaf crypto-hygiene
     # primitive, not a model/provider SDK.
     "awaken-agent-contract": {"serde", "serde_json", "thiserror", "async-trait", "tokio", "zeroize"},
-    # Open "judgment" half of access control: authenticate + authorize over the
-    # shared in-memory iam engine (no iam-server / durable store — that is BuSL).
+    # The "judgment" half of access control: authenticate + authorize over the
+    # shared in-memory iam engine (the durable iam-server store is wired by the
+    # composition root, not named here).
     "awaken-authz-enforce": {
         "awaken-iam-contract",
         "awaken-iam-core",
@@ -72,11 +73,11 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "tokio",
     },
-    # The open single-machine assembly. Composes ONLY open crates — this closure
-    # is the zero-BuSL invariant (no admin-config-api write plane, no iam-server, no
-    # container/remote execution). A durable Postgres store IS allowed here (it is an
-    # open backend behind the store port); the closed line is the scaling fan-out
-    # above it, not the DB driver. Adding a BuSL dep here should fail review.
+    # The minimal single-machine assembly (a `bin/` deployable). Everything in this
+    # repo is open, so there is no licensing boundary here; this allowlist just keeps
+    # the standalone binary lean — it composes the open runtime + protocol planes and
+    # a durable Postgres store, but not the fuller management/authoring surface that
+    # server-local carries.
     "awaken-standalone": {
         "awaken-runtime-host",
         "awaken-observability",
@@ -1391,62 +1392,12 @@ def check_runtime_is_secret_resolution_free() -> list[str]:
     return errors
 
 
-# BuSL tier (the paid private-deployment half): crates that exist only to scale
-# one node out to many, or to run a multi-tenant authoring plane. The open
-# single-machine bin's runtime dependency closure must contain NONE of them — that
-# is the open-core invariant, enforced here rather than left to review.
-#
-# The durable STORE backends (sqlite, fs, and postgres) are deliberately NOT here:
-# a durable/multi-node store is table stakes for self-hosting, not a paid
-# differentiator. The closed line sits ABOVE the store port — the horizontal-scaling
-# fan-out (Shard*/placement), multi-tenant authoring, durable IAM, and container/
-# remote execution — never the DB driver itself.
-BUSL_CRATES = {
-    "awaken-admin-config-api",  # multi-tenant authoring HTTP plane
-    "awaken-iam-server",  # durable IAM provisioning store
-    "awaken-sandbox-container",  # container/remote execution
-}
-
-# Bins that must stay wholly open: their runtime closure may not reach a BuSL crate.
-OPEN_BINS = {"awaken-standalone"}
-
-
-def runtime_dependency_names(manifest: dict) -> set[str]:
-    """Non-dev dependency names — what the crate actually ships (dev-deps do not
-    travel into a downstream bin's binary)."""
-    deps: set[str] = set()
-    for section in ("dependencies", "build-dependencies"):
-        deps.update(manifest.get(section, {}).keys())
-    return deps
-
-
-def check_open_tier_closure() -> list[str]:
-    """Assert each open bin's transitive `awaken-*` runtime closure is BuSL-free."""
-    errors: list[str] = []
-    graph: dict[str, set[str]] = {}
-    for manifest_path in iter_crate_manifests():
-        manifest = load_manifest(manifest_path)
-        name = package_name(manifest)
-        graph[name] = {
-            dep for dep in runtime_dependency_names(manifest) if dep.startswith("awaken-")
-        }
-    for bin_name in OPEN_BINS:
-        seen: set[str] = set()
-        stack = [bin_name]
-        while stack:
-            crate = stack.pop()
-            for dep in sorted(graph.get(crate, set())):
-                if dep in seen:
-                    continue
-                seen.add(dep)
-                if dep in BUSL_CRATES:
-                    errors.append(
-                        f"open bin `{bin_name}` reaches BuSL crate `{dep}` through its "
-                        f"runtime closure; the single-machine tier must stay open — put "
-                        f"the capability behind a port with an open local impl."
-                    )
-                stack.append(dep)
-    return errors
+# NOTE: this repo is fully open source. The open/closed line is the REPOSITORY
+# boundary — closed commercial capabilities (placement, sharded dispatch, multi-
+# region, microVM sandbox, billing/license/oversight) live in the separate
+# `awaken-cloud` repo, which composes these open crates and injects closed
+# implementations at the open ports (compose-not-merge). There is therefore no
+# in-repo "BuSL" tier and no open-bin closure check: everything here ships open.
 
 
 def main() -> int:
@@ -1457,7 +1408,6 @@ def main() -> int:
         + check_tests_are_not_arch_owners()
         + check_bucket_direction()
         + check_runtime_is_secret_resolution_free()
-        + check_open_tier_closure()
     )
     if errors:
         for error in errors:
