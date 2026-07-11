@@ -6,6 +6,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
+import { Button, Card, Pill } from "../components/ui";
 import { api, streamUrl, ws } from "../lib/api/client";
 import type {
   ContentBlock,
@@ -59,15 +60,15 @@ function ToolCard({
       <summary style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}>
         <span>🛠</span>
         <code>{name}</code>
-        {custom && <span className="pill neutral">client-executed</span>}
+        {custom && <Pill tone="neutral">client-executed</Pill>}
         {"evaluated_permission" in ev && typeof ev.evaluated_permission === "string" && (
-          <span className="pill neutral">{ev.evaluated_permission}</span>
+          <Pill tone="neutral">{ev.evaluated_permission}</Pill>
         )}
         <span style={{ marginLeft: "auto" }}>
           {pendingConfirm ? (
-            <span className="pill warn">{app.t("awaiting approval", "待确认")}</span>
+            <Pill tone="warn">{app.t("awaiting approval", "待确认")}</Pill>
           ) : result ? (
-            <span className={`pill ${isError ? "danger" : "ok"}`}>{isError ? "error" : "done ✓"}</span>
+            <Pill tone={isError ? "danger" : "ok"}>{isError ? "error" : "done ✓"}</Pill>
           ) : (
             <span className="pill agent">
               <span className="dot pulse" style={{ background: "var(--agent)" }} />
@@ -108,12 +109,12 @@ function ToolCard({
               value={note}
               onChange={(e) => setNote(e.target.value)}
             />
-            <button className="btn" onClick={() => onConfirm(false, note)}>
+            <Button onClick={() => onConfirm(false, note)}>
               {app.t("Deny", "拒绝")}
-            </button>
-            <button className="btn primary" onClick={() => onConfirm(true, note)}>
+            </Button>
+            <Button variant="primary" onClick={() => onConfirm(true, note)}>
               ✓ {app.t("Allow", "允许")}
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -230,59 +231,59 @@ export default function SessionDetailSurface() {
           <code style={{ marginLeft: 8 }}>{sid}</code>{" "}
           {session.data?.title && <strong style={{ marginLeft: 6 }}>{session.data.title}</strong>}
           {session.data?.archived_at && (
-            <span className="pill neutral" style={{ marginLeft: 8 }}>
+            <Pill tone="neutral" style={{ marginLeft: 8 }}>
               {app.t("archived", "已归档")}
-            </span>
+            </Pill>
           )}
         </span>
         <span className="row">
-          <button
-            className="btn ghost"
+          <Button
+            variant="ghost"
             onClick={() => {
               const next = prompt(app.t("Session title", "会话标题"), session.data?.title ?? "");
               if (next !== null) rename.mutate(next);
             }}
           >
             ✎ {app.t("rename", "重命名")}
-          </button>
+          </Button>
           {!session.data?.archived_at && (
-            <button className="btn ghost" onClick={() => archive.mutate()}>
+            <Button variant="ghost" onClick={() => archive.mutate()}>
               ⌫ {app.t("archive", "归档")}
-            </button>
+            </Button>
           )}
-          <button className="btn ghost" onClick={() => send.mutate([{ type: "user.pause" }])}>
+          <Button variant="ghost" onClick={() => send.mutate([{ type: "user.pause" }])}>
             ⏸ pause
-          </button>
-          <button className="btn ghost" onClick={() => send.mutate([{ type: "user.resume" }])}>
+          </Button>
+          <Button variant="ghost" onClick={() => send.mutate([{ type: "user.resume" }])}>
             ▶ resume
-          </button>
-          <button className="btn danger" onClick={() => send.mutate([{ type: "user.interrupt" }])}>
+          </Button>
+          <Button variant="danger" onClick={() => send.mutate([{ type: "user.interrupt" }])}>
             ⏹ interrupt
-          </button>
+          </Button>
         </span>
       </div>
 
       <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
         <div style={{ flex: 1.8, minWidth: 0, display: "flex", flexDirection: "column", gap: 8 }}>
           {freshCount > 0 && (
-            <button className="btn" style={{ alignSelf: "flex-start", borderRadius: 999 }} onClick={applyPending}>
+            <Button style={{ alignSelf: "flex-start", borderRadius: 999 }} onClick={applyPending}>
               <span className="dot pulse" style={{ background: "var(--agent)" }} />
               {freshCount} {app.t("new updates · Refresh", "条新事件 · 刷新")}
-            </button>
+            </Button>
           )}
           {session.error instanceof Error && <div className="err">{session.error.message}</div>}
           {log.map((ev) => {
             switch (ev.type) {
               case "agent.message":
                 return (
-                  <div key={ev.id} className="card" style={{ padding: "10px 14px", maxWidth: "92%" }}>
+                  <Card key={ev.id} style={{ padding: "10px 14px", maxWidth: "92%" }}>
                     <span className="mut" style={{ fontSize: 10.5 }}>
                       ⬡ agent
                     </span>
                     <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.55 }}>
                       {textOf("content" in ev ? (ev.content as ContentBlock[]) : undefined)}
                     </div>
-                  </div>
+                  </Card>
                 );
               case "agent.tool_use":
               case "agent.custom_tool_use":
@@ -386,14 +387,14 @@ export default function SessionDetailSurface() {
         </div>
 
         <aside style={{ width: 300, flex: "none", display: "flex", flexDirection: "column", gap: 12 }}>
-          <div className="card" style={{ padding: "12px 14px" }}>
+          <Card style={{ padding: "12px 14px" }}>
             <h2 style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--fg3)" }}>
               Agent
             </h2>
             {session.data ? (
               <>
                 <div className="row">
-                  <span className="pill agent">{session.data.agent.id}</span>
+                  <Pill tone="agent">{session.data.agent.id}</Pill>
                   {session.data.agent.model && <code>{session.data.agent.model}</code>}
                 </div>
                 <div className="mut" style={{ marginTop: 8, fontSize: 12 }}>
@@ -404,8 +405,8 @@ export default function SessionDetailSurface() {
             ) : (
               <span className="mut">…</span>
             )}
-          </div>
-          <div className="card" style={{ padding: "12px 14px" }}>
+          </Card>
+          <Card style={{ padding: "12px 14px" }}>
             <h2 style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--fg3)" }}>
               {app.t("Properties", "属性")}
             </h2>
@@ -414,15 +415,15 @@ export default function SessionDetailSurface() {
               <span>status {session.data?.status ?? "—"}</span>
               <span>env {session.data?.environment_id ?? "—"}</span>
             </div>
-          </div>
-          <div className="card" style={{ padding: "12px 14px" }}>
+          </Card>
+          <Card style={{ padding: "12px 14px" }}>
             <h2 style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--fg3)" }}>
               Durable ops
             </h2>
             <span className="mut" style={{ fontSize: 12 }}>
               {app.t("Enabled only under AWAKEN_INGRESS=durable.", "仅在 AWAKEN_INGRESS=durable 下可用。")}
             </span>
-          </div>
+          </Card>
         </aside>
       </div>
     </>

@@ -11,6 +11,7 @@ import { useState } from "react";
 import { api } from "../lib/api/client";
 import type { CredentialBinding, McpServerDef } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
+import { Button, Card, Pill } from "../components/ui";
 
 export default function McpServersSurface() {
   const app = useApp();
@@ -52,7 +53,7 @@ export default function McpServersSurface() {
           )}
         </span>
       </div>
-      <div className="card" style={{ padding: 0 }}>
+      <Card style={{ padding: 0 }}>
         <table className="table">
           <thead>
             <tr>
@@ -70,11 +71,11 @@ export default function McpServersSurface() {
                 <td>{s.display_name}</td>
                 <td className="mono mut">{s.url}</td>
                 <td>
-                  <span className="pill neutral">
+                  <Pill tone="neutral">
                     {s.credential_binding.type}
                     {"credential_source_id" in s.credential_binding && ` · ${s.credential_binding.credential_source_id}`}
                     {"credential_pool_id" in s.credential_binding && ` · ${s.credential_binding.credential_pool_id}`}
-                  </span>
+                  </Pill>
                 </td>
                 <td className="mut">{s.version}</td>
               </tr>
@@ -88,8 +89,8 @@ export default function McpServersSurface() {
             )}
           </tbody>
         </table>
-      </div>
-      <div className="card">
+      </Card>
+      <Card>
         <h2>{app.t("Author MCP server", "作者化 MCP 服务器")}</h2>
         <p className="hint">
           {app.t(
@@ -124,12 +125,12 @@ export default function McpServersSurface() {
               <input className="input mono" value={form.bindId} onChange={(e) => setForm({ ...form, bindId: e.target.value })} />
             </span>
           )}
-          <button className="btn primary" style={{ alignSelf: "flex-end" }} disabled={!form.id || !form.url || upsert.isPending} onClick={() => upsert.mutate()}>
+          <Button variant="primary" style={{ alignSelf: "flex-end" }} disabled={!form.id || !form.url || upsert.isPending} onClick={() => upsert.mutate()}>
             {app.t("Save", "保存")}
-          </button>
+          </Button>
         </div>
         {upsert.error instanceof Error && <div className="err">{upsert.error.message}</div>}
-      </div>
+      </Card>
       <div className="banner gate">
         <span>◌</span>
         <span>{app.t("Health/status + Restart land with the probe extension (roadmap §7.9).", "健康状态与 Restart 随探针扩展落地(路线 §7.9)。")}</span>

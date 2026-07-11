@@ -3,6 +3,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { Button, Card, Pill, SelectField, TextField } from "../components/ui";
 import { api } from "../lib/api/client";
 import type { ProviderCatalog, ResolvedInferenceView } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
@@ -87,7 +88,7 @@ export default function ModelsSurface() {
   const c = catalog.data;
   return (
     <>
-      <div className="card" style={{ padding: 0 }}>
+      <Card style={{ padding: 0 }}>
         <div className="row" style={{ padding: "13px 16px" }}>
           <h2 style={{ margin: 0, fontSize: 14 }}>{app.t("Catalog", "模型目录")}</h2>
           <span className="mut">
@@ -112,7 +113,7 @@ export default function ModelsSurface() {
                 <td>{o.provider_id}</td>
                 <td className="mono mut">{o.protocol_endpoint_id}</td>
                 <td>
-                  <span className="pill neutral">{o.flavor}</span>
+                  <Pill tone="neutral">{o.flavor}</Pill>
                 </td>
               </tr>
             ))}
@@ -125,43 +126,31 @@ export default function ModelsSurface() {
             )}
           </tbody>
         </table>
-      </div>
+      </Card>
 
-      <div className="card">
+      <Card>
         <h2>{app.t("Author provider / endpoint / offering", "作者化 provider / endpoint / offering")}</h2>
         <div className="row">
-          <span className="field">
-            <label>Provider</label>
-            <input className="input mono" value={draft.provider} onChange={(e) => setDraft({ ...draft, provider: e.target.value })} />
-          </span>
-          <span className="field">
-            <label>Endpoint id</label>
-            <input className="input mono" value={draft.endpoint} onChange={(e) => setDraft({ ...draft, endpoint: e.target.value })} />
-          </span>
+          <TextField label="Provider" mono value={draft.provider} onChange={(e) => setDraft({ ...draft, provider: e.target.value })} />
+          <TextField label="Endpoint id" mono value={draft.endpoint} onChange={(e) => setDraft({ ...draft, endpoint: e.target.value })} />
           <span className="field" style={{ flex: 1 }}>
             <label>base_url ({app.t("optional", "可选")})</label>
             <input className="input mono" value={draft.baseUrl} onChange={(e) => setDraft({ ...draft, baseUrl: e.target.value })} />
           </span>
-          <span className="field">
-            <label>Flavor</label>
-            <select className="input" value={draft.flavor} onChange={(e) => setDraft({ ...draft, flavor: e.target.value })}>
-              <option value="anthropic_messages">anthropic_messages</option>
-              <option value="open_ai_chat">open_ai_chat</option>
-              <option value="gemini">gemini</option>
-            </select>
-          </span>
-          <span className="field">
-            <label>Model id</label>
-            <input className="input mono" value={draft.model} onChange={(e) => setDraft({ ...draft, model: e.target.value })} />
-          </span>
-          <button className="btn primary" style={{ alignSelf: "flex-end" }} disabled={upsert.isPending} onClick={() => upsert.mutate()}>
+          <SelectField label="Flavor" value={draft.flavor} onChange={(e) => setDraft({ ...draft, flavor: e.target.value })}>
+            <option value="anthropic_messages">anthropic_messages</option>
+            <option value="open_ai_chat">open_ai_chat</option>
+            <option value="gemini">gemini</option>
+          </SelectField>
+          <TextField label="Model id" mono value={draft.model} onChange={(e) => setDraft({ ...draft, model: e.target.value })} />
+          <Button variant="primary" style={{ alignSelf: "flex-end" }} disabled={upsert.isPending} onClick={() => upsert.mutate()}>
             {app.t("Author", "写入")}
-          </button>
+          </Button>
         </div>
         {upsert.error instanceof Error && <div className="err">{upsert.error.message}</div>}
-      </div>
+      </Card>
 
-      <div className="card">
+      <Card>
         <h2>{app.t("Resolve dry-run", "Resolve 试算")}</h2>
         <p className="hint">
           {app.t(
@@ -170,21 +159,21 @@ export default function ModelsSurface() {
           )}
         </p>
         <div className="row">
-          <span className="field">
-            <label>Model</label>
-            <input className="input mono" value={resolveModel} onChange={(e) => setResolveModel(e.target.value)} />
-          </span>
-          <span className="field">
-            <label>{app.t("Credential source (empty = none)", "凭证源(留空 = none)")}</label>
-            <input className="input mono" placeholder="cs_…" value={resolveBinding} onChange={(e) => setResolveBinding(e.target.value)} />
-          </span>
-          <button className="btn primary" style={{ alignSelf: "flex-end" }} onClick={() => resolve.mutate()}>
+          <TextField label="Model" mono value={resolveModel} onChange={(e) => setResolveModel(e.target.value)} />
+          <TextField
+            label={app.t("Credential source (empty = none)", "凭证源(留空 = none)")}
+            mono
+            placeholder="cs_…"
+            value={resolveBinding}
+            onChange={(e) => setResolveBinding(e.target.value)}
+          />
+          <Button variant="primary" style={{ alignSelf: "flex-end" }} onClick={() => resolve.mutate()}>
             Resolve
-          </button>
+          </Button>
         </div>
         {resolve.data && <ResolveChain view={resolve.data} />}
         {resolve.error instanceof Error && <div className="err">{resolve.error.message}</div>}
-      </div>
+      </Card>
     </>
   );
 }

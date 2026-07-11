@@ -7,6 +7,7 @@ import { api, isAbsent } from "../lib/api/client";
 import type { IamTokenView } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import GatedPage from "../components/app/GatedPage";
+import { Button, Card, Pill, TextField, SelectField } from "../components/ui";
 
 const WORKSPACE = "wrkspc_default";
 
@@ -58,15 +59,15 @@ export default function AccessSurface() {
             {app.t("Cleartext shown ONCE — copy it now: ", "明文只显示一次——立即复制:")}
             <code>{minted}</code>
           </span>
-          <button className="btn" onClick={() => navigator.clipboard.writeText(minted)}>
+          <Button onClick={() => navigator.clipboard.writeText(minted)}>
             copy
-          </button>
-          <button className="btn ghost" onClick={() => setMinted(null)}>
+          </Button>
+          <Button variant="ghost" onClick={() => setMinted(null)}>
             ✕
-          </button>
+          </Button>
         </div>
       )}
-      <div className="card" style={{ padding: 0 }}>
+      <Card style={{ padding: 0 }}>
         <table className="table">
           <thead>
             <tr>
@@ -82,37 +83,31 @@ export default function AccessSurface() {
                 <td className="mono">{t.id}</td>
                 <td>{t.name ?? "—"}</td>
                 <td>
-                  <span className="pill neutral">{t.role ?? "?"}</span>
+                  <Pill tone="neutral">{t.role ?? "?"}</Pill>
                 </td>
                 <td style={{ textAlign: "right" }}>
-                  <button className="btn danger" style={{ height: 26 }} onClick={() => revoke.mutate(t.id)}>
+                  <Button variant="danger" style={{ height: 26 }} onClick={() => revoke.mutate(t.id)}>
                     {app.t("Revoke", "吊销")}
-                  </button>
+                  </Button>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
-      </div>
-      <div className="card">
+      </Card>
+      <Card>
         <h2>{app.t("Mint token", "铸造令牌")}</h2>
         <div className="row">
-          <span className="field">
-            <label>{app.t("Name", "名称")}</label>
-            <input className="input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-          </span>
-          <span className="field">
-            <label>{app.t("Role", "角色")}</label>
-            <select className="input" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
-              <option>admin</option>
-              <option>workspace_admin</option>
-              <option>workspace_restricted_developer</option>
-              <option>workspace_user</option>
-            </select>
-          </span>
-          <button className="btn primary" style={{ alignSelf: "flex-end" }} disabled={mint.isPending} onClick={() => mint.mutate()}>
+          <TextField label={app.t("Name", "名称")} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          <SelectField label={app.t("Role", "角色")} value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
+            <option>admin</option>
+            <option>workspace_admin</option>
+            <option>workspace_restricted_developer</option>
+            <option>workspace_user</option>
+          </SelectField>
+          <Button variant="primary" style={{ alignSelf: "flex-end" }} disabled={mint.isPending} onClick={() => mint.mutate()}>
             {app.t("Mint", "铸造")}
-          </button>
+          </Button>
         </div>
         {mint.error instanceof Error && <div className="err">{mint.error.message}</div>}
         <p className="mut" style={{ marginBottom: 0 }}>
@@ -121,7 +116,7 @@ export default function AccessSurface() {
             "角色:admin / workspace_admin / restricted_developer(全读)/ workspace_user(无 apikey 权限)。",
           )}
         </p>
-      </div>
+      </Card>
     </>
   );
 }

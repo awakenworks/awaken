@@ -6,6 +6,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router";
 import { DataGrid, type Column } from "../components/ui/DataGrid";
+import { Button, Pill } from "../components/ui";
 import { api } from "../lib/api/client";
 import type { AgentConfig, AgentConfigItem, AgentConfigList } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
@@ -43,9 +44,9 @@ export default function ProjectAgentsSurface() {
       sortValue: (a) => (a.published ? 1 : 0),
       cell: (a) =>
         a.published ? (
-          <span className="pill ok">{app.t("published", "已发布")}</span>
+          <Pill tone="ok">{app.t("published", "已发布")}</Pill>
         ) : (
-          <span className="pill neutral">{app.t("draft", "草稿")}</span>
+          <Pill tone="neutral">{app.t("draft", "草稿")}</Pill>
         ),
     },
   ];
@@ -59,9 +60,9 @@ export default function ProjectAgentsSurface() {
         )}
       </p>
       <div className="row" style={{ justifyContent: "flex-end" }}>
-        <button className="btn primary" onClick={() => nav(`/w/${wsId}/agents/new`)}>
+        <Button variant="primary" onClick={() => nav(`/w/${wsId}/agents/new`)}>
           + {app.t("New agent", "新建 Agent")}
-        </button>
+        </Button>
       </div>
       {agents.error instanceof Error && <div className="err">{agents.error.message}</div>}
       <DataGrid

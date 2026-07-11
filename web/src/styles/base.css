@@ -43,9 +43,18 @@ a {
 /* ---- shell ---- */
 .shell {
   display: flex;
+  flex-direction: column;
   height: 100vh;
   overflow: hidden;
   position: relative;
+}
+.shell-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+  position: relative;
+  z-index: 1;
 }
 .dawn {
   position: absolute;
@@ -59,14 +68,15 @@ a {
   pointer-events: none;
 }
 .sidebar {
-  width: 236px;
+  width: 224px;
   flex: none;
   height: 100%;
   padding: 12px 10px;
   background: var(--rail);
-  border-right: 1px solid var(--line);
+  border-right: 1px solid var(--line-strong);
   display: flex;
   flex-direction: column;
+  gap: 2px;
   overflow-y: auto;
   z-index: 1;
 }
@@ -79,19 +89,115 @@ a {
 }
 .topbar {
   flex: none;
-  height: 42px;
+  height: 52px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 22px;
+  gap: 0;
+  padding: 0 20px;
   border-bottom: 1px solid var(--line);
+  background: var(--rail);
   font-size: 13px;
   color: var(--fg3);
+  position: relative;
+  z-index: 2;
 }
 .topbar .crumb-title {
   font-size: 15px;
   font-weight: 600;
   color: var(--fg);
+}
+
+/* ---- topbar chrome (design handoff: scope switcher in the topbar) ---- */
+.org-anchor {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 9px 5px 6px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line);
+  cursor: pointer;
+  font-family: inherit;
+  flex: none;
+}
+.org-badge {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: var(--fg);
+  color: var(--canvas);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  font-weight: 700;
+  font-size: 12px;
+}
+.crumb-sep {
+  width: 1px;
+  height: 26px;
+  background: var(--line-strong);
+  margin: 0 14px;
+  flex: none;
+}
+.ws-crumb {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 9px 5px 8px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--accent-tint);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--accent-ink);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  flex: none;
+}
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--fg3);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+}
+.search-box kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  background: var(--soft);
+  color: var(--fg3);
+  border-radius: 4px;
+  padding: 2px 5px;
+}
+.chrome-btn {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--fg2);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+}
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 .content {
   flex: 1;
@@ -132,17 +238,17 @@ a {
 }
 .nav-caption {
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--fg3);
-  padding: 12px 10px 5px;
+  padding: 10px 10px 6px;
 }
 .nav-item {
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 30px;
+  height: 32px;
   padding: 0 10px;
   border: 0;
   border-radius: var(--r-md);
