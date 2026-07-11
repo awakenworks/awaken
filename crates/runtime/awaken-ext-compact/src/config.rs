@@ -26,6 +26,12 @@ pub struct CompactConfig {
     /// Fold once the estimated context reaches this fraction of `max_tokens`
     /// (e.g. `0.8` = compact at 80% of the window). Ignored without `max_tokens`.
     pub trigger_ratio: f64,
+    /// Optional per-agent compaction prompt: the instruction appended to the older
+    /// slice that tells the compactor what to preserve. `None` falls back to the
+    /// built-in [`SUMMARIZE_PROMPT`](crate::SUMMARIZE_PROMPT). This is the one knob
+    /// that shapes *what* the summary keeps (the thresholds shape *when* it fires).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
 }
 
 impl Default for CompactConfig {
@@ -35,6 +41,7 @@ impl Default for CompactConfig {
             keep_last: 8,
             max_tokens: None,
             trigger_ratio: 0.8,
+            instructions: None,
         }
     }
 }
@@ -59,6 +66,10 @@ pub fn config_schema() -> serde_json::Value {
             "trigger_ratio": {
                 "type": "number", "exclusiveMinimum": 0, "maximum": 1,
                 "description": "Fold once estimated context reaches this fraction of max_tokens (e.g. 0.8)."
+            },
+            "instructions": {
+                "type": ["string", "null"], "format": "textarea",
+                "description": "Compaction prompt: what the summary should preserve. Blank uses the built-in default."
             }
         },
         "additionalProperties": false
