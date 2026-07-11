@@ -274,6 +274,33 @@ async fn a_tool_call_and_its_result_commit_as_neutral_messages() {
 }
 
 #[tokio::test]
+async fn a_tool_call_without_an_id_gets_a_correlating_fallback_id() {
+    use awaken_agent_contract::agent::content::ContentBlock;
+
+    // An agent that omits tool_call_id (some CLIs do): the call and its result
+    // still correlate via a per-seq fallback id, so the transcript stays coherent.
+    let e = exec(vec![
+        r#"{"type":"tool_call","name":"read","input":{}}"#.into(),
+        r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
+    ]);
+    let coord = Arc::new(RecordingCoordinator::default());
+    e.execute(
+        activation(),
+        RuntimeRunContext::new().with_commit(coord.clone()),
+    )
+    .await
+    .unwrap();
+
+    let commits = coord.commits.lock().unwrap();
+    match &commits[0].messages[0].content[0] {
+        ContentBlock::ToolUse { id, .. } => {
+            assert!(id.starts_with("acp-tool-"), "fallback id, got {id}");
+        }
+        other => panic!("expected a ToolUse, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn a_failed_tool_result_is_marked_in_the_committed_text() {
     use awaken_agent_contract::agent::content::ContentBlock;
 

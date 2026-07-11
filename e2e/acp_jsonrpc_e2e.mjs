@@ -13,12 +13,16 @@ import { withServer, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 
-async function agentTexts(client, sessionId) {
+async function listEvents(client, sessionId) {
   const events = [];
   for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
     events.push(ev);
   }
-  return events
+  return events;
+}
+
+async function agentTexts(client, sessionId) {
+  return (await listEvents(client, sessionId))
     .filter((e) => e.type === 'agent.message')
     .map((m) => (m.content ?? []).map((c) => c.text ?? '').join('').trim());
 }
@@ -49,6 +53,21 @@ async function main() {
         `official ACP JSON-RPC turn projected the agent message, got ${JSON.stringify(texts)}`,
       );
       pass('runtime:"acp:claude" runs over the official ACP JSON-RPC codec (handshake + prompt + update projection)');
+
+      // The agent's tool_call + its terminal tool_call_update project into the
+      // transcript: the external agent's tool result now surfaces (previously
+      // dropped by the ACL). Managed sees an agent.tool_use and an agent.tool_result.
+      const events = await listEvents(client, acp.id);
+      const toolUse = events.find((e) => e.type === 'agent.tool_use' && e.name === 'read');
+      assert.ok(toolUse, `the ACP tool call surfaced as agent.tool_use, got ${events.map((e) => e.type)}`);
+      const toolResult = events.find((e) => e.type === 'agent.tool_result');
+      assert.ok(toolResult, `the ACP tool result surfaced as agent.tool_result, got ${events.map((e) => e.type)}`);
+      const resultText = (toolResult.content ?? []).map((c) => c.text ?? '').join('');
+      assert.ok(
+        resultText.includes('file body'),
+        `the external agent's tool output reached the transcript, got ${JSON.stringify(toolResult.content)}`,
+      );
+      pass('an ACP tool call and its result project into the transcript (agent.tool_use + agent.tool_result)');
 
       // A second turn relaunches the CLI and completes another JSON-RPC handshake.
       await send(client, acp.id, 'again');

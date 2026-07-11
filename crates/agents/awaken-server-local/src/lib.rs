@@ -237,14 +237,18 @@ pub fn build_worker_router() -> Router {
 
 /// A fake ACP agent speaking the OFFICIAL JSON-RPC 2.0 wire (shell builtins only,
 /// so it survives `env_clear`): answer `initialize` (id 1) and `session/new`
-/// (id 2), then on `session/prompt` (id 3) stream one `session/update`
-/// agent-message chunk and reply with `stopReason:"end_turn"`. Stands in for a real
-/// `claude --acp` to exercise the [`awaken_run_executor_acp::Codec::Acp`] driver.
+/// (id 2), then on `session/prompt` (id 3) stream a tool call, its completed
+/// result, and one agent-message chunk as `session/update`s, and reply with
+/// `stopReason:"end_turn"`. Stands in for a real `claude --acp` to exercise the
+/// [`awaken_run_executor_acp::Codec::Acp`] driver, including the tool-call/result
+/// projection (a `tool_call` + a terminal `tool_call_update` with content).
 const FAKE_ACP_JSONRPC_SCRIPT: &str = "while IFS= read -r line; do \
       case \"$line\" in \
         *'\"id\":1'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}';; \
         *'\"id\":2'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\"}}';; \
         *'\"id\":3'*) \
+          printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"tool_call\",\"toolCallId\":\"c1\",\"title\":\"read\",\"rawInput\":{\"path\":\"a.txt\"}}}}'; \
+          printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"tool_call_update\",\"toolCallId\":\"c1\",\"status\":\"completed\",\"content\":[{\"type\":\"content\",\"content\":{\"type\":\"text\",\"text\":\"file body\"}}]}}}'; \
           printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"acp-jsonrpc reply\"}}}}'; \
           printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; \
           exit 0;; \
