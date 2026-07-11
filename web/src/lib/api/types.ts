@@ -388,6 +388,18 @@ export interface AgentConfig {
    * deferred-tools / generative-ui all live here as JSON). */
   plugin_config: Record<string, unknown>;
   context_policy: ContextPolicy;
+  /** Per-tool model-facing presentation (ADR-0053): alias / description override /
+   * defer, keyed by canonical tool id (a catalog id or an MCP `mcp__server__tool`). */
+  tool_overrides?: ToolOverride[];
+}
+/** One tool's presentation override. `target` is the canonical tool id; `alias`
+ * renames it for the model, `description` replaces its text, `defer` withholds its
+ * schema until the model loads it via `tool_open`. */
+export interface ToolOverride {
+  target: string;
+  alias?: string;
+  description?: string;
+  defer?: boolean;
 }
 /** A list/get item: the object plus a live `published` flag (a compiled config is
  * currently installed in the runtime catalog). */

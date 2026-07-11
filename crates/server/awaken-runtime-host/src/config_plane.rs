@@ -16,7 +16,7 @@ use awaken_config_resolver::ResourceStore;
 use awaken_config_store::ModelSelection;
 use awaken_config_store::{
     AgentConfig, ConfigRegistry, DEFAULT_SCOPE, RunnableConfig, ScopedConfig, ScopedConfigRegistry,
-    StoredPublication, compile_with_resource_prompts,
+    StoredPublication, ToolOverride, compile_with_resource_prompts,
 };
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
@@ -487,6 +487,11 @@ fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig, St
         Some(v) => serde_json::from_value(v).map_err(|e| e.to_string())?,
         None => Default::default(),
     };
+    // Tool presentation overrides (ADR-0053): alias / description / defer per tool.
+    let tool_overrides: Vec<ToolOverride> = match body.get("tool_overrides").cloned() {
+        Some(v) => serde_json::from_value(v).map_err(|e| e.to_string())?,
+        None => Vec::new(),
+    };
     let metadata = body
         .get("metadata")
         .and_then(Value::as_object)
@@ -520,7 +525,7 @@ fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig, St
         mcp_servers: array("mcp_servers"),
         skills: array("skills"),
         multiagent: body.get("multiagent").filter(|v| !v.is_null()).cloned(),
-            tool_overrides: Vec::new(),
+            tool_overrides,
     })
 }
 
@@ -544,6 +549,7 @@ fn managed_from_agent_config(cfg: &AgentConfig, published: bool) -> Value {
         "plugins": cfg.plugin_ids,
         "plugin_config": cfg.plugin_config,
         "context_policy": cfg.context_policy,
+        "tool_overrides": cfg.tool_overrides,
         "published": published,
     })
 }
