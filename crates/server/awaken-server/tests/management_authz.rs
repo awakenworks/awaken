@@ -72,7 +72,7 @@ fn credential_body() -> Value {
 #[tokio::test(flavor = "multi_thread")]
 async fn missing_and_garbage_tokens_are_rejected_with_401() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_management_router(dir.path(), &KEY);
+    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
 
     // No token at all → 401 in the Managed error envelope.
     let (s, err) = call(&app, "GET", "/v1/config/catalog", None, None).await;
@@ -104,7 +104,7 @@ async fn missing_and_garbage_tokens_are_rejected_with_401() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_expired_token_fails_authentication_with_401() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, iam) = build_secured_management_router(dir.path(), &KEY);
+    let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
 
     // Minted in the past and already expired (expiry must be strictly after
     // creation, so both stamps are historical).
@@ -134,7 +134,7 @@ async fn an_expired_token_fails_authentication_with_401() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_bootstrap_admin_token_authorizes_full_crud_over_http() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_management_router(dir.path(), &KEY);
+    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
     let token = admin_token(dir.path());
     let t = Some(token.as_str());
 
@@ -247,7 +247,7 @@ async fn the_bootstrap_admin_token_authorizes_full_crud_over_http() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_restricted_developer_token_reads_everything_but_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, iam) = build_secured_management_router(dir.path(), &KEY);
+    let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
 
     // Per the preset catalog, workspace_restricted_developer holds
     // `apikey.read` + `workspace.read` (among file/skill), but no write.
@@ -306,7 +306,7 @@ async fn a_restricted_developer_token_reads_everything_but_writes_nothing() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_workspace_user_token_reads_config_but_not_credentials() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, iam) = build_secured_management_router(dir.path(), &KEY);
+    let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
 
     // workspace_user holds workspace.read but NO apikey pattern at all.
     let token = iam
@@ -338,7 +338,7 @@ async fn a_workspace_user_token_reads_config_but_not_credentials() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_workspace_mismatch_is_refused_fail_closed() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_management_router(dir.path(), &KEY);
+    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
     let token = admin_token(dir.path());
     let t = Some(token.as_str());
 
@@ -370,7 +370,7 @@ async fn minted_tokens_survive_a_restart_over_the_same_directory() {
     let bootstrap;
     let developer;
     {
-        let (app, iam) = build_secured_management_router(dir.path(), &KEY);
+        let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
         bootstrap = admin_token(dir.path());
         developer = iam
             .mint_service_token(TokenSpec {
@@ -394,7 +394,7 @@ async fn minted_tokens_survive_a_restart_over_the_same_directory() {
     } // drop router A: "process" ends
 
     // ---- lifetime B: same dir — hydration, not re-bootstrap ----------------
-    let (app, _iam) = build_secured_management_router(dir.path(), &KEY);
+    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
 
     // The directory hydrated, so no fresh bootstrap overwrote the token file.
     assert_eq!(admin_token(dir.path()), bootstrap);
@@ -425,7 +425,7 @@ async fn without_the_guard_the_management_plane_stays_open() {
     // Regression pin: the default (AWAKEN_MGMT_IAM unset ⇒ no guard) is
     // byte-identical to the pre-IAM behavior — no token, everything works.
     let dir = tempfile::tempdir().unwrap();
-    let app = build_durable_management_router(dir.path(), &KEY);
+    let app = build_durable_management_router(dir.path(), &KEY).await;
 
     let (s, _) = call(&app, "GET", "/v1/config/catalog", None, None).await;
     assert_eq!(s, StatusCode::OK);
@@ -503,7 +503,7 @@ async fn a_legacy_hand_rolled_iam_layout_is_imported_once_on_boot() {
     // Boot the SqlStore-backed code over the legacy file: the import must carry
     // the token across (no re-bootstrap: the hydrated directory is non-empty,
     // so no admin-token file appears), authenticating and authorizing as before.
-    let (app, _iam) = build_secured_management_router(dir.path(), &KEY);
+    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
     assert!(!dir.path().join(ADMIN_TOKEN_FILE).exists());
     let (s, _) = call(
         &app,
@@ -517,7 +517,7 @@ async fn a_legacy_hand_rolled_iam_layout_is_imported_once_on_boot() {
 
     // A second boot must not import again (the legacy tables were renamed).
     drop(app);
-    let (app, _iam) = build_secured_management_router(dir.path(), &KEY);
+    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
     let (s, _) = call(&app, "GET", "/v1/config/catalog", Some(&cleartext), None).await;
     assert_eq!(s, StatusCode::OK);
 }
