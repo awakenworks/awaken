@@ -9,6 +9,7 @@ import { useNavigate } from "react-router";
 import { api } from "../lib/api/client";
 import type { ListSessionsResponse } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
+import { Card } from "../components/ui";
 
 export default function HomeSurface() {
   const app = useApp();
@@ -43,7 +44,7 @@ export default function HomeSurface() {
           <span className="label">{app.t("Running now", "正在运行")}</span>
         </div>
       </div>
-      <div className="card" style={{ padding: 0 }}>
+      <Card style={{ padding: 0 }}>
         <div className="row" style={{ padding: "13px 16px" }}>
           <h2 style={{ margin: 0, fontSize: 14 }}>{app.t("Workspaces", "工作区")}</h2>
           <span className="mut">{app.t("click one to enter it", "点击进入")}</span>
@@ -66,7 +67,7 @@ export default function HomeSurface() {
             ))}
           </tbody>
         </table>
-      </div>
+      </Card>
     </>
   );
 }

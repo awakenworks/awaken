@@ -4,6 +4,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { Button, Card, Pill, SelectField, TextAreaField, TextField } from "../components/ui";
 import { api } from "../lib/api/client";
 import type { Agent, Deployment, Environment, Page } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
@@ -46,53 +47,54 @@ function CreateModal({ onClose }: { onClose: () => void }) {
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3>{app.t("New deployment", "新建部署")}</h3>
-        <div className="field">
-          <label>{app.t("Name", "名称")}</label>
-          <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="nightly-report" />
-        </div>
-        <div className="field">
-          <label>{app.t("Agent", "智能体")}</label>
-          <select className="input" value={agentId} onChange={(e) => setAgentId(e.target.value)}>
-            <option value="">{app.t("Select an agent…", "选择智能体…")}</option>
-            {(agents.data?.data ?? []).map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name} ({a.id})
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="field">
-          <label>{app.t("Environment", "运行环境")}</label>
-          <select className="input" value={envId} onChange={(e) => setEnvId(e.target.value)}>
-            <option value="">{app.t("Select an environment…", "选择运行环境…")}</option>
-            {(envs.data?.data ?? []).map((v) => (
-              <option key={v.id} value={v.id}>
-                {v.name} ({v.id})
-              </option>
-            ))}
-          </select>
-        </div>
+        <TextField
+          label={app.t("Name", "名称")}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="nightly-report"
+        />
+        <SelectField label={app.t("Agent", "智能体")} value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+          <option value="">{app.t("Select an agent…", "选择智能体…")}</option>
+          {(agents.data?.data ?? []).map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name} ({a.id})
+            </option>
+          ))}
+        </SelectField>
+        <SelectField label={app.t("Environment", "运行环境")} value={envId} onChange={(e) => setEnvId(e.target.value)}>
+          <option value="">{app.t("Select an environment…", "选择运行环境…")}</option>
+          {(envs.data?.data ?? []).map((v) => (
+            <option key={v.id} value={v.id}>
+              {v.name} ({v.id})
+            </option>
+          ))}
+        </SelectField>
         <div className="field">
           <label>{app.t("Cron expression", "Cron 表达式")}</label>
           <input className="input mono" value={expression} onChange={(e) => setExpression(e.target.value)} placeholder="0 20 * * 5" />
           <span className="mut">{app.t("Standard cron; each firing creates a session.", "标准 cron;每次触发创建一个会话。")}</span>
         </div>
-        <div className="field">
-          <label>{app.t("Timezone", "时区")}</label>
-          <input className="input mono" value={timezone} onChange={(e) => setTimezone(e.target.value)} placeholder="UTC" />
-        </div>
-        <div className="field">
-          <label>{app.t("Kickoff message", "启动消息")}</label>
-          <textarea className="input" rows={3} value={message} onChange={(e) => setMessage(e.target.value)} />
-        </div>
+        <TextField
+          label={app.t("Timezone", "时区")}
+          mono
+          value={timezone}
+          onChange={(e) => setTimezone(e.target.value)}
+          placeholder="UTC"
+        />
+        <TextAreaField
+          label={app.t("Kickoff message", "启动消息")}
+          rows={3}
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+        />
         {create.error instanceof Error && <div className="err">{create.error.message}</div>}
         <div className="row" style={{ justifyContent: "flex-end" }}>
-          <button className="btn" onClick={onClose}>
+          <Button onClick={onClose}>
             {app.t("Cancel", "取消")}
-          </button>
-          <button className="btn primary" disabled={create.isPending || !agentId || !envId} onClick={() => create.mutate()}>
+          </Button>
+          <Button variant="primary" disabled={create.isPending || !agentId || !envId} onClick={() => create.mutate()}>
             {app.t("Create", "创建")}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -123,12 +125,12 @@ export default function DeploymentsSurface() {
             "部署按 cron 计划运行智能体;每次触发创建一个会话。",
           )}
         </span>
-        <button className="btn primary" onClick={() => setCreating(true)}>
+        <Button variant="primary" onClick={() => setCreating(true)}>
           + {app.t("New deployment", "新建部署")}
-        </button>
+        </Button>
       </div>
       {deployments.error instanceof Error && <div className="err">{deployments.error.message}</div>}
-      <div className="card" style={{ padding: 0 }}>
+      <Card style={{ padding: 0 }}>
         <table className="table">
           <thead>
             <tr>
@@ -150,33 +152,33 @@ export default function DeploymentsSurface() {
                 <td className="mut">{d.schedule.upcoming_runs_at?.[0] ?? "—"}</td>
                 <td style={{ textAlign: "right" }}>
                   {d.archived_at ? (
-                    <span className="pill neutral">{app.t("archived", "已归档")}</span>
+                    <Pill tone="neutral">{app.t("archived", "已归档")}</Pill>
                   ) : (
                     <div className="row" style={{ justifyContent: "flex-end" }}>
-                      <button
-                        className="btn primary"
+                      <Button
+                        variant="primary"
                         style={{ height: 22 }}
                         disabled={act.isPending}
                         onClick={() => act.mutate({ id: d.id, action: "run" })}
                       >
                         {app.t("Run", "运行")}
-                      </button>
-                      <button
-                        className="btn ghost"
+                      </Button>
+                      <Button
+                        variant="ghost"
                         style={{ height: 22 }}
                         disabled={act.isPending}
                         onClick={() => act.mutate({ id: d.id, action: d.paused_reason ? "unpause" : "pause" })}
                       >
                         {d.paused_reason ? app.t("Unpause", "恢复") : app.t("Pause", "暂停")}
-                      </button>
-                      <button
-                        className="btn ghost"
+                      </Button>
+                      <Button
+                        variant="ghost"
                         style={{ height: 22 }}
                         disabled={act.isPending}
                         onClick={() => act.mutate({ id: d.id, action: "archive" })}
                       >
                         {app.t("Archive", "归档")}
-                      </button>
+                      </Button>
                     </div>
                   )}
                 </td>
@@ -191,7 +193,7 @@ export default function DeploymentsSurface() {
             )}
           </tbody>
         </table>
-      </div>
+      </Card>
       {creating && <CreateModal onClose={() => setCreating(false)} />}
     </>
   );

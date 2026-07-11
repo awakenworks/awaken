@@ -7,7 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import Drawer from "../components/ui/Drawer";
-import { Segmented } from "../components/ui";
+import { Button, Card, Pill, Segmented, TextField } from "../components/ui";
 import { api, getWorkspace, ws } from "../lib/api/client";
 import type {
   AgentConfigList,
@@ -24,7 +24,7 @@ import ProjectAgentsSurface from "./project-agents";
 export function StatusPill({ session }: { session: Session }) {
   const app = useApp();
   if (session.archived_at) {
-    return <span className="pill neutral">{app.t("archived", "已归档")}</span>;
+    return <Pill tone="neutral">{app.t("archived", "已归档")}</Pill>;
   }
   if (session.status === "running") {
     return (
@@ -34,7 +34,7 @@ export function StatusPill({ session }: { session: Session }) {
       </span>
     );
   }
-  return <span className="pill ok">idle</span>;
+  return <Pill tone="ok">idle</Pill>;
 }
 
 function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void }) {
@@ -105,19 +105,18 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
             ))}
           </select>
         </div>
-        <div className="field">
-          <label>{app.t("Title", "标题")}</label>
-          <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} />
-        </div>
-        <div className="field">
-          <label>{app.t("Vault ids (comma separated)", "Vault id(逗号分隔)")}</label>
-          <input
-            className="input mono"
-            placeholder="vlt_…"
-            value={vaultIds}
-            onChange={(e) => setVaultIds(e.target.value)}
-          />
-        </div>
+        <TextField
+          label={app.t("Title", "标题")}
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+        />
+        <TextField
+          label={app.t("Vault ids (comma separated)", "Vault id(逗号分隔)")}
+          mono
+          placeholder="vlt_…"
+          value={vaultIds}
+          onChange={(e) => setVaultIds(e.target.value)}
+        />
         <div className="field">
           <label>{app.t("Inline MCP servers", "内联 MCP 服务器")}</label>
           {mcp.map((m, i) => (
@@ -135,23 +134,23 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
                 value={m.url}
                 onChange={(e) => setMcp(mcp.map((x, j) => (j === i ? { ...x, url: e.target.value } : x)))}
               />
-              <button className="btn ghost" onClick={() => setMcp(mcp.filter((_, j) => j !== i))}>
+              <Button variant="ghost" onClick={() => setMcp(mcp.filter((_, j) => j !== i))}>
                 ✕
-              </button>
+              </Button>
             </div>
           ))}
-          <button className="btn ghost" onClick={() => setMcp([...mcp, { name: "", url: "" }])}>
+          <Button variant="ghost" onClick={() => setMcp([...mcp, { name: "", url: "" }])}>
             + {app.t("add inline server", "添加内联服务器")}
-          </button>
+          </Button>
           <span className="mut">{app.t("Project-bound MCP servers merge in automatically.", "项目绑定的 MCP 自动并入。")}</span>
         </div>
         {create.error instanceof Error && <div className="err">{create.error.message}</div>}
         <div className="row" style={{ justifyContent: "flex-end" }}>
-          <button className="btn" onClick={onClose}>
+          <Button onClick={onClose}>
             {app.t("Cancel", "取消")}
-          </button>
-          <button
-            className="btn primary"
+          </Button>
+          <Button
+            variant="primary"
             disabled={create.isPending || !agent}
             onClick={() =>
               create.mutate({
@@ -167,7 +166,7 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
             }
           >
             {app.t("Create", "创建")} ➤
-          </button>
+          </Button>
         </div>
       </div>
       {manage === "agents" && (
@@ -226,8 +225,8 @@ export default function SessionsSurface() {
           />
           <span className="mut">
             baseURL <code>{getWorkspace() ? `/v1/workspaces/${getWorkspace()}` : "/ (default scope)"}</code>
-            <button
-              className="btn ghost"
+            <Button
+              variant="ghost"
               style={{ height: 22, marginLeft: 6 }}
               onClick={() =>
                 navigator.clipboard.writeText(
@@ -236,15 +235,15 @@ export default function SessionsSurface() {
               }
             >
               copy
-            </button>
+            </Button>
           </span>
         </span>
-        <button className="btn primary" onClick={() => setCreating(true)}>
+        <Button variant="primary" onClick={() => setCreating(true)}>
           + {app.t("New session", "新建会话")}
-        </button>
+        </Button>
       </div>
       {sessions.error instanceof Error && <div className="err">{sessions.error.message}</div>}
-      <div className="card" style={{ padding: 0 }}>
+      <Card style={{ padding: 0 }}>
         <table className="table">
           <thead>
             <tr>
@@ -261,15 +260,15 @@ export default function SessionsSurface() {
                 <td className="mono">{s.id}</td>
                 <td>{s.title || <span className="mut">(untitled)</span>}</td>
                 <td>
-                  <span className="pill agent">{s.agent.id}</span>
+                  <Pill tone="agent">{s.agent.id}</Pill>
                 </td>
                 <td>
                   <StatusPill session={s} />
                 </td>
                 <td style={{ textAlign: "right" }}>
                   {!s.archived_at && (
-                    <button
-                      className="btn ghost"
+                    <Button
+                      variant="ghost"
                       style={{ height: 22 }}
                       disabled={archive.isPending}
                       onClick={(e) => {
@@ -278,7 +277,7 @@ export default function SessionsSurface() {
                       }}
                     >
                       {app.t("Archive", "归档")}
-                    </button>
+                    </Button>
                   )}
                 </td>
               </tr>
@@ -296,7 +295,7 @@ export default function SessionsSurface() {
             )}
           </tbody>
         </table>
-      </div>
+      </Card>
       <div className="row">
         <input
           className="input mono"
@@ -305,13 +304,12 @@ export default function SessionsSurface() {
           value={openId}
           onChange={(e) => setOpenId(e.target.value)}
         />
-        <button
-          className="btn"
+        <Button
           disabled={!openId.trim()}
           onClick={() => nav(`/w/${wsId}/sessions/${openId.trim()}`)}
         >
           {app.t("Open by id", "按 id 打开")}
-        </button>
+        </Button>
       </div>
       {creating && <NewSessionModal wsId={wsId} onClose={() => setCreating(false)} />}
     </>

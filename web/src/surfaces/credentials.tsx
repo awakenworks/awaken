@@ -8,6 +8,7 @@ import { useState } from "react";
 import { api } from "../lib/api/client";
 import type { CredentialSource, CredentialValidation } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
+import { Button, Card, Pill, TextField } from "../components/ui";
 
 const WORKSPACE = "wrkspc_default";
 
@@ -31,21 +32,19 @@ function SourceRow({ source }: { source: CredentialSource }) {
     <tr>
       <td className="mono">{source.id}</td>
       <td>
-        <span className="pill neutral">{source.kind}</span>
+        <Pill tone="neutral">{source.kind}</Pill>
       </td>
       <td>{source.provider_id ?? source.env_key ?? "—"}</td>
       <td>
-        <span className={`pill ${statusTone}`}>{source.status}</span>
+        <Pill tone={statusTone}>{source.status}</Pill>
       </td>
       <td>
         {validate.data && (
-          <span
-            className={`pill ${
-              validate.data.status === "valid" ? "ok" : validate.data.status === "invalid" ? "danger" : "neutral"
-            }`}
+          <Pill
+            tone={validate.data.status === "valid" ? "ok" : validate.data.status === "invalid" ? "danger" : "neutral"}
           >
             {validate.data.status} · {validate.data.adapter_kind}
-          </span>
+          </Pill>
         )}
         {validate.error instanceof Error && <span className="err">{validate.error.message}</span>}
       </td>
@@ -57,17 +56,17 @@ function SourceRow({ source }: { source: CredentialSource }) {
           onChange={(e) => setModel(e.target.value)}
           title={app.t("model to probe with", "用于探针的模型")}
         />
-        <button className="btn ghost" style={{ height: 26 }} disabled={validate.isPending} onClick={() => validate.mutate()}>
+        <Button variant="ghost" style={{ height: 26 }} disabled={validate.isPending} onClick={() => validate.mutate()}>
           {app.t("Validate", "验证")}
-        </button>{" "}
-        <button
-          className="btn ghost"
+        </Button>{" "}
+        <Button
+          variant="ghost"
           style={{ height: 26 }}
           disabled={archive.isPending || source.status !== "active"}
           onClick={() => archive.mutate()}
         >
           {app.t("Archive", "归档")}
-        </button>
+        </Button>
       </td>
     </tr>
   );
@@ -112,11 +111,11 @@ export default function CredentialsSurface() {
         <span className="mut">
           {app.t("Supply-side sources — never echoed; validation is a live provider probe.", "供给侧凭证——永不回显;验证是真实的供应商探针。")}
         </span>
-        <button className="btn primary" onClick={() => setEntering(true)}>
+        <Button variant="primary" onClick={() => setEntering(true)}>
           + {app.t("Enter credential", "录入凭证")}
-        </button>
+        </Button>
       </div>
-      <div className="card" style={{ padding: 0 }}>
+      <Card style={{ padding: 0 }}>
         <table className="table">
           <thead>
             <tr>
@@ -141,7 +140,7 @@ export default function CredentialsSurface() {
             )}
           </tbody>
         </table>
-      </div>
+      </Card>
       {sources.error instanceof Error && <div className="err">{sources.error.message}</div>}
 
       <div className="banner gate">
@@ -160,20 +159,14 @@ export default function CredentialsSurface() {
             <h3>{app.t("Enter credential", "录入凭证")}</h3>
             <div className="row">
               {["vault", "env"].map((k) => (
-                <button key={k} className={`btn ${form.kind === k ? "primary" : "ghost"}`} onClick={() => setForm({ ...form, kind: k })}>
+                <Button key={k} variant={form.kind === k ? "primary" : "ghost"} onClick={() => setForm({ ...form, kind: k })}>
                   {k}
-                </button>
+                </Button>
               ))}
             </div>
-            <div className="field">
-              <label>provider_id</label>
-              <input className="input mono" value={form.provider} onChange={(e) => setForm({ ...form, provider: e.target.value })} />
-            </div>
+            <TextField label="provider_id" mono value={form.provider} onChange={(e) => setForm({ ...form, provider: e.target.value })} />
             {form.kind === "env" ? (
-              <div className="field">
-                <label>env_key</label>
-                <input className="input mono" placeholder="ANTHROPIC_API_KEY" value={form.envKey} onChange={(e) => setForm({ ...form, envKey: e.target.value })} />
-              </div>
+              <TextField label="env_key" mono placeholder="ANTHROPIC_API_KEY" value={form.envKey} onChange={(e) => setForm({ ...form, envKey: e.target.value })} />
             ) : (
               <div className="field">
                 <label>secret ({app.t("write-only, sealed", "只写,密封")})</label>
@@ -182,9 +175,9 @@ export default function CredentialsSurface() {
             )}
             {enter.error instanceof Error && <div className="err">{enter.error.message}</div>}
             <div className="row" style={{ justifyContent: "flex-end" }}>
-              <button className="btn primary" disabled={enter.isPending} onClick={() => enter.mutate()}>
+              <Button variant="primary" disabled={enter.isPending} onClick={() => enter.mutate()}>
                 {app.t("Seal & save", "密封保存")}
-              </button>
+              </Button>
             </div>
           </div>
         </div>

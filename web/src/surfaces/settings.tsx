@@ -6,6 +6,7 @@
 import { useNavigate, useParams } from "react-router";
 import { getWorkspace } from "../lib/api/client";
 import { useApp } from "../lib/app-state";
+import { Button, Card, Pill } from "../components/ui";
 
 export default function SettingsSurface() {
   const app = useApp();
@@ -38,15 +39,15 @@ export default function SettingsSurface() {
         </span>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-        <div className="card">
+        <Card>
           <h2>{app.t("Supply & governance", "供给与治理")}</h2>
           {link("AI providers & models", `${base}/models`, app.t("Catalog, offerings, inference profiles, resolve dry-run", "目录、offering、profile 与 resolve 试算"))}
           {link("Credentials", `${base}/credentials`, app.t("Supply-side sources & pools — secret-in, secret-free-out", "供给侧凭证与池——只进不出"))}
           {link("MCP servers", `${base}/mcp-servers`, app.t("Authored definitions with fail-closed bindings", "作者化定义,fail-closed 绑定"))}
           {link("A2A servers", `${base}/a2a-servers`, app.t("Remote delegate directory", "远程委托目录"))}
           {link("Access", `${base}/access`, app.t("IAM tokens & roles", "IAM 令牌与角色"))}
-        </div>
-        <div className="card">
+        </Card>
+        <Card>
           <h2>{app.t("Workspaces", "工作区")}</h2>
           <p className="hint">
             {app.t(
@@ -58,9 +59,9 @@ export default function SettingsSurface() {
             <div key={w.id} className="row" style={{ padding: "4px 0" }}>
               <code>{w.id}</code>
               <span>{w.display_name}</span>
-              {w.id === app.workspaceId && <span className="pill ok">{app.t("active", "当前")}</span>}
-              <button
-                className="btn ghost"
+              {w.id === app.workspaceId && <Pill tone="ok">{app.t("active", "当前")}</Pill>}
+              <Button
+                variant="ghost"
                 style={{ marginLeft: "auto", height: 24 }}
                 onClick={() => {
                   app.setWorkspaceId(w.id);
@@ -68,10 +69,10 @@ export default function SettingsSurface() {
                 }}
               >
                 {app.t("enter", "进入")}
-              </button>
+              </Button>
             </div>
           ))}
-        </div>
+        </Card>
       </div>
     </>
   );

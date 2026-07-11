@@ -8,6 +8,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useConfirm } from "../components/ui/Confirm";
 import { useToast } from "../components/ui/Toast";
+import { Button, Card, Pill, TextAreaField } from "../components/ui";
 import { api } from "../lib/api/client";
 import type { Page, Vault, VaultCredential } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
@@ -49,20 +50,20 @@ function CredentialRow({ vaultId, cred }: { vaultId: string; cred: VaultCredenti
     <tr>
       <td className="mono">{cred.id}</td>
       <td>
-        <span className="pill neutral">{kind}</span>
+        <Pill tone="neutral">{kind}</Pill>
       </td>
       <td className="mono mut">{target}</td>
       <td style={{ textAlign: "right" }}>
         {kind === "mcp_oauth" ? (
           <span className="row" style={{ justifyContent: "flex-end" }}>
             {validate.data && (
-              <span className={`pill ${validate.data.status === "valid" ? "ok" : "warn"}`}>
+              <Pill tone={validate.data.status === "valid" ? "ok" : "warn"}>
                 {validate.data.status ?? "checked"}
-              </span>
+              </Pill>
             )}
-            <button className="btn ghost" style={{ height: 22 }} disabled={validate.isPending} onClick={() => validate.mutate()}>
+            <Button variant="ghost" style={{ height: 22 }} disabled={validate.isPending} onClick={() => validate.mutate()}>
               {app.t("Validate", "验证")}
-            </button>
+            </Button>
           </span>
         ) : (
           <span className="mut">—</span>
@@ -110,17 +111,17 @@ function VaultCard({ id, name }: { id: string; name?: string }) {
   };
   const rows = creds.data?.data ?? [];
   return (
-    <div className="card" style={{ padding: 0 }}>
+    <Card style={{ padding: 0 }}>
       <div className="row" style={{ padding: "12px 16px" }}>
         <code>{id}</code>
         {name && <span className="mut">{name}</span>}
         <span style={{ flex: 1 }} />
-        <button className="btn ghost" onClick={() => setAdding(true)}>
+        <Button variant="ghost" onClick={() => setAdding(true)}>
           + {app.t("Add credential", "添加凭证")}
-        </button>
-        <button className="btn danger" disabled={del.isPending} onClick={confirmDelete}>
+        </Button>
+        <Button variant="danger" disabled={del.isPending} onClick={confirmDelete}>
           {app.t("Delete", "删除")}
-        </button>
+        </Button>
       </div>
       {rows.length > 0 && (
         <table className="table">
@@ -142,26 +143,29 @@ function VaultCard({ id, name }: { id: string; name?: string }) {
             <h3>{app.t("Add credential", "添加凭证")}</h3>
             <div className="row">
               {["environment_variable", "static_bearer", "mcp_oauth"].map((t) => (
-                <button
+                <Button
                   key={t}
-                  className={`btn ${type === t ? "primary" : "ghost"}`}
+                  variant={type === t ? "primary" : "ghost"}
                   onClick={() => {
                     setType(t);
                     setBody(CRED_TEMPLATES[t] ?? body);
                   }}
                 >
                   {t}
-                </button>
+                </Button>
               ))}
             </div>
-            <div className="field">
-              <label>{app.t("Payload (secret fields are write-only)", "请求体(秘密字段只写)")}</label>
-              <textarea className="input mono" rows={8} value={body} onChange={(e) => setBody(e.target.value)} />
-            </div>
+            <TextAreaField
+              label={app.t("Payload (secret fields are write-only)", "请求体(秘密字段只写)")}
+              mono
+              rows={8}
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+            />
             {create.error instanceof Error && <div className="err">{create.error.message}</div>}
             <div className="row" style={{ justifyContent: "flex-end" }}>
-              <button
-                className="btn primary"
+              <Button
+                variant="primary"
                 onClick={() => {
                   try {
                     create.mutate({ type, ...(JSON.parse(body) as object) });
@@ -171,12 +175,12 @@ function VaultCard({ id, name }: { id: string; name?: string }) {
                 }}
               >
                 {app.t("Save", "保存")}
-              </button>
+              </Button>
             </div>
           </div>
         </div>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -211,9 +215,9 @@ export default function VaultsSurface() {
             onChange={(e) => setVaultName(e.target.value)}
             placeholder={app.t("display name", "显示名")}
           />
-          <button className="btn primary" disabled={create.isPending} onClick={() => create.mutate()}>
+          <Button variant="primary" disabled={create.isPending} onClick={() => create.mutate()}>
             + {app.t("Create vault", "创建 vault")}
-          </button>
+          </Button>
         </span>
       </div>
       {(create.error instanceof Error || vaults.error instanceof Error) && (

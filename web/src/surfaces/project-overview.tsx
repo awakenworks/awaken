@@ -8,6 +8,7 @@ import { api, ws } from "../lib/api/client";
 import type { ListSessionsResponse } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import { StatusPill } from "./sessions";
+import { Card } from "../components/ui";
 
 export default function ProjectOverviewSurface() {
   const app = useApp();
@@ -48,7 +49,7 @@ export default function ProjectOverviewSurface() {
           <span className="label">{app.t("Agent MCP bindings", "Agent MCP 绑定")}</span>
         </button>
       </div>
-      <div className="card" style={{ padding: 0 }}>
+      <Card style={{ padding: 0 }}>
         <div className="row" style={{ padding: "13px 16px" }}>
           <h2 style={{ margin: 0, fontSize: 14 }}>{app.t("Recent sessions", "最近会话")}</h2>
           <span className="mut">{app.t("newest first", "最新在前")}</span>
@@ -74,7 +75,7 @@ export default function ProjectOverviewSurface() {
             )}
           </tbody>
         </table>
-      </div>
+      </Card>
     </>
   );
 }

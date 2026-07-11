@@ -11,6 +11,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import Drawer from "../components/ui/Drawer";
 import { useToast } from "../components/ui/Toast";
+import { Button, Card, Pill, TextAreaField, TextField } from "../components/ui";
 import { api, isAbsent } from "../lib/api/client";
 import type { AgentConfig, ContextPolicy, ProviderCatalog, PublishResult } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
@@ -60,9 +61,9 @@ function ListEditor({
         {values.map((v) => (
           <span className="chip" key={v}>
             <span className="mono">{v}</span>
-            <button className="btn ghost" style={{ height: 20 }} onClick={() => onChange(values.filter((x) => x !== v))}>
+            <Button variant="ghost" style={{ height: 20 }} onClick={() => onChange(values.filter((x) => x !== v))}>
               ✕
-            </button>
+            </Button>
           </span>
         ))}
         {values.length === 0 && <span className="mut">—</span>}
@@ -76,9 +77,9 @@ function ListEditor({
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && add()}
         />
-        <button className="btn" onClick={add}>
+        <Button onClick={add}>
           + add
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -166,43 +167,43 @@ export default function AgentEditorSurface() {
     <>
       <div className="row" style={{ justifyContent: "space-between" }}>
         <span className="row">
-          <button className="btn ghost" style={{ height: 26 }} onClick={() => nav(`/w/${wsId}/agents`)}>
+          <Button variant="ghost" style={{ height: 26 }} onClick={() => nav(`/w/${wsId}/agents`)}>
             ← {app.t("Agents", "Agents")}
-          </button>
+          </Button>
           <span className="crumb-title mono">{isNew ? app.t("new agent", "新建 agent") : id}</span>
-          {dirty && <span className="pill warn">{app.t("unsaved", "未保存")}</span>}
+          {dirty && <Pill tone="warn">{app.t("unsaved", "未保存")}</Pill>}
         </span>
         <span className="row">
-          <button className="btn ghost" disabled={!canSave || validate.isPending} onClick={() => validate.mutate()}>
+          <Button variant="ghost" disabled={!canSave || validate.isPending} onClick={() => validate.mutate()}>
             {app.t("Validate", "校验")}
-          </button>
-          <button className="btn" disabled={!canSave || save.isPending} onClick={() => save.mutate()}>
+          </Button>
+          <Button disabled={!canSave || save.isPending} onClick={() => save.mutate()}>
             {app.t("Save", "保存")}
-          </button>
-          <button
-            className="btn primary"
+          </Button>
+          <Button
+            variant="primary"
             disabled={!canSave || dirty || publish.isPending || isNew}
             title={dirty ? app.t("Save before publishing", "发布前请先保存") : ""}
             onClick={() => publish.mutate()}
           >
             {app.t("Publish", "发布")} ➤
-          </button>
+          </Button>
         </span>
       </div>
       <div className="row">
         {TABS.map((t) => (
-          <button
+          <Button
             key={t.key}
-            className={`btn ${tab === t.key ? "primary" : "ghost"}`}
+            variant={tab === t.key ? "primary" : "ghost"}
             style={{ height: 26 }}
             onClick={() => setTab(t.key)}
           >
             {app.t(t.label, t.zh)}
-          </button>
+          </Button>
         ))}
       </div>
 
-      <div className="card">
+      <Card>
         {tab === "basics" && (
           <>
             <div className="row">
@@ -241,24 +242,27 @@ export default function AgentEditorSurface() {
                 <input className="input mono" value={modelId(cfg.model)} placeholder="kimi-k2" onChange={(e) => patch({ model: { id: e.target.value } })} />
               )}
             </div>
-            <div className="field">
-              <label>{app.t("Description", "描述")}</label>
-              <input className="input" value={cfg.description ?? ""} onChange={(e) => patch({ description: e.target.value })} />
-            </div>
-            <div className="field" style={{ width: 140 }}>
-              <label>{app.t("Max steps", "最大步数")}</label>
-              <input
-                className="input mono"
-                type="number"
-                min={1}
-                value={cfg.max_steps}
-                onChange={(e) => patch({ max_steps: Math.max(1, Number(e.target.value) || 1) })}
-              />
-            </div>
-            <div className="field">
-              <label>{app.t("System instructions", "系统指令")}</label>
-              <textarea className="input mono" rows={8} value={cfg.system ?? ""} onChange={(e) => patch({ system: e.target.value })} />
-            </div>
+            <TextField
+              label={app.t("Description", "描述")}
+              value={cfg.description ?? ""}
+              onChange={(e) => patch({ description: e.target.value })}
+            />
+            <TextField
+              label={app.t("Max steps", "最大步数")}
+              mono
+              type="number"
+              min={1}
+              style={{ width: 140 }}
+              value={cfg.max_steps}
+              onChange={(e) => patch({ max_steps: Math.max(1, Number(e.target.value) || 1) })}
+            />
+            <TextAreaField
+              label={app.t("System instructions", "系统指令")}
+              mono
+              rows={8}
+              value={cfg.system ?? ""}
+              onChange={(e) => patch({ system: e.target.value })}
+            />
           </>
         )}
 
@@ -268,9 +272,9 @@ export default function AgentEditorSurface() {
               <label>{app.t("Context window policy", "上下文窗口策略")}</label>
               <div className="row">
                 {(["keep_all", "keep_last"] as const).map((k) => (
-                  <button
+                  <Button
                     key={k}
-                    className={`btn ${cfg.context_policy.kind === k ? "primary" : "ghost"}`}
+                    variant={cfg.context_policy.kind === k ? "primary" : "ghost"}
                     style={{ height: 26 }}
                     onClick={() =>
                       patch({
@@ -279,21 +283,20 @@ export default function AgentEditorSurface() {
                     }
                   >
                     {k === "keep_all" ? app.t("Keep all", "全保留") : app.t("Keep last N", "保留最近 N")}
-                  </button>
+                  </Button>
                 ))}
               </div>
             </div>
             {cfg.context_policy.kind === "keep_last" && (
-              <div className="field" style={{ width: 200 }}>
-                <label>{app.t("Keep last (non-system)", "保留最近条数")}</label>
-                <input
-                  className="input mono"
-                  type="number"
-                  min={0}
-                  value={cfg.context_policy.keep_last}
-                  onChange={(e) => patch({ context_policy: { kind: "keep_last", keep_last: Math.max(0, Number(e.target.value) || 0) } })}
-                />
-              </div>
+              <TextField
+                label={app.t("Keep last (non-system)", "保留最近条数")}
+                mono
+                type="number"
+                min={0}
+                style={{ width: 200 }}
+                value={cfg.context_policy.keep_last}
+                onChange={(e) => patch({ context_policy: { kind: "keep_last", keep_last: Math.max(0, Number(e.target.value) || 0) } })}
+              />
             )}
             <span className="mut">
               {app.t(
@@ -339,7 +342,7 @@ export default function AgentEditorSurface() {
             </div>
           </>
         )}
-      </div>
+      </Card>
 
       {manageModels && (
         <Drawer title={app.t("Models", "模型")} onClose={() => setManageModels(false)}>

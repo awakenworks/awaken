@@ -7,6 +7,7 @@ import { useState } from "react";
 import { api } from "../lib/api/client";
 import type { Environment, Page } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
+import { Button, Card, Pill, TextField } from "../components/ui";
 
 function CreateModal({ onClose }: { onClose: () => void }) {
   const app = useApp();
@@ -44,17 +45,14 @@ function CreateModal({ onClose }: { onClose: () => void }) {
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3>{app.t("New environment", "新建运行环境")}</h3>
-        <div className="field">
-          <label>{app.t("Name", "名称")}</label>
-          <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="my-dev-env" />
-        </div>
+        <TextField label={app.t("Name", "名称")} value={name} onChange={(e) => setName(e.target.value)} placeholder="my-dev-env" />
         <div className="field">
           <label>{app.t("Runtime", "运行时")}</label>
           <div className="row">
             {(["cloud", "self_hosted"] as const).map((k) => (
-              <button key={k} className={`btn ${kind === k ? "primary" : "ghost"}`} onClick={() => setKind(k)}>
+              <Button key={k} variant={kind === k ? "primary" : "ghost"} onClick={() => setKind(k)}>
                 {k}
-              </button>
+              </Button>
             ))}
           </div>
           <span className="mut">
@@ -68,9 +66,9 @@ function CreateModal({ onClose }: { onClose: () => void }) {
             <label>{app.t("Networking", "网络")}</label>
             <div className="row">
               {(["unrestricted", "limited"] as const).map((n) => (
-                <button key={n} className={`btn ${net === n ? "primary" : "ghost"}`} onClick={() => setNet(n)}>
+                <Button key={n} variant={net === n ? "primary" : "ghost"} onClick={() => setNet(n)}>
                   {n}
-                </button>
+                </Button>
               ))}
             </div>
             {net === "limited" && (
@@ -85,12 +83,12 @@ function CreateModal({ onClose }: { onClose: () => void }) {
         )}
         {create.error instanceof Error && <div className="err">{create.error.message}</div>}
         <div className="row" style={{ justifyContent: "flex-end" }}>
-          <button className="btn" onClick={onClose}>
+          <Button onClick={onClose}>
             {app.t("Cancel", "取消")}
-          </button>
-          <button className="btn primary" disabled={create.isPending} onClick={() => create.mutate()}>
+          </Button>
+          <Button variant="primary" disabled={create.isPending} onClick={() => create.mutate()}>
             {app.t("Create", "创建")}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -121,12 +119,12 @@ export default function EnvironmentsSurface() {
             "可复用的容器模板。会话按 environment_id 引用。",
           )}
         </span>
-        <button className="btn primary" onClick={() => setCreating(true)}>
+        <Button variant="primary" onClick={() => setCreating(true)}>
           + {app.t("New environment", "新建环境")}
-        </button>
+        </Button>
       </div>
       {envs.error instanceof Error && <div className="err">{envs.error.message}</div>}
-      <div className="card" style={{ padding: 0 }}>
+      <Card style={{ padding: 0 }}>
         <table className="table">
           <thead>
             <tr>
@@ -143,23 +141,23 @@ export default function EnvironmentsSurface() {
                 <td className="mono">{e.id}</td>
                 <td>{e.name}</td>
                 <td>
-                  <span className={`pill ${e.config.type === "self_hosted" ? "agent" : "neutral"}`}>
+                  <Pill tone={e.config.type === "self_hosted" ? "agent" : "neutral"}>
                     {e.config.type}
-                  </span>
+                  </Pill>
                 </td>
                 <td className="mut">{e.config.networking?.type ?? "—"}</td>
                 <td style={{ textAlign: "right" }}>
                   {e.archived_at ? (
-                    <span className="pill neutral">{app.t("archived", "已归档")}</span>
+                    <Pill tone="neutral">{app.t("archived", "已归档")}</Pill>
                   ) : (
-                    <button
-                      className="btn ghost"
+                    <Button
+                      variant="ghost"
                       style={{ height: 22 }}
                       disabled={archive.isPending}
                       onClick={() => archive.mutate(e.id)}
                     >
                       {app.t("Archive", "归档")}
-                    </button>
+                    </Button>
                   )}
                 </td>
               </tr>
@@ -173,7 +171,7 @@ export default function EnvironmentsSurface() {
             )}
           </tbody>
         </table>
-      </div>
+      </Card>
       {creating && <CreateModal onClose={() => setCreating(false)} />}
     </>
   );
