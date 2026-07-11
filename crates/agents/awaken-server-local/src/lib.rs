@@ -49,9 +49,9 @@ pub use crate::models::*;
 pub use awaken_runtime_host::{
     ConfigService, ExecutorProvider, ExtMcpProbe, HostResume, HttpTransport, ManagedHost,
     PreparedMcpRefresh, ProtocolHost, Response, SharedHost, SkillContext, SkillSpec, ThreadEvent,
-    ThreadEventHub, Transport, VaultRefresher, advertised_tools, config_router,
-    content_fingerprint, default_models, durable_ops_router, files_router, memory_stores_router,
-    models_router, parse_skill_md, skills_router,
+    ThreadEventHub, Transport, VaultRefresher, advertised_tools, capabilities_router,
+    config_router, content_fingerprint, default_models, durable_ops_router, files_router,
+    memory_stores_router, models_router, parse_skill_md, skills_router,
 };
 
 /// An [`ExecutorProvider`] mapping a model ref to a labeled executor, so a
@@ -1700,11 +1700,12 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
     // context) and `publish` compiles + installs it so sessions run that config.
     // The same service is wired into the host below, so a session for a published
     // agent resolves its installed config.
-    let config_service = Arc::new(ConfigService::new(
-        config,
-        advertised_tools(&HashSet::new(), &HashSet::new(), &[]),
-    ));
+    let tools = advertised_tools(&HashSet::new(), &HashSet::new(), &[]);
+    let config_service = Arc::new(ConfigService::new(config, tools.clone()));
     let config_plane = config_router(config_service.clone());
+    // Capability snapshot (`GET /v1/capabilities`): the host's tool descriptors +
+    // installable plugins (with config schema) so the console authors data-driven.
+    let capabilities = capabilities_router(tools);
 
     // The IAM guard (when enabled) wraps the admin + vault routers only. An
     // axum layer binds to the routes present when it is applied, so merging
@@ -1718,7 +1719,8 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
         .merge(agents)
         .merge(deployments)
         .merge(environments)
-        .merge(config_plane);
+        .merge(config_plane)
+        .merge(capabilities);
     if let Some(iam) = iam {
         mgmt = mgmt.merge(crate::authz::token_router(iam.clone()));
         mgmt = mgmt.layer(axum::middleware::from_fn_with_state(

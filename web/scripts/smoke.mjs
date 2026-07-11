@@ -115,6 +115,13 @@ await step("list config agents (draft)", "GET", "/v1/config/agents", undefined, 
 await step("publish config agent", "POST", "/v1/config/agents/smoke-agent/publish", undefined, (s, p) => s === 200 && p.installed === true);
 await step("list config agents (published)", "GET", "/v1/config/agents", undefined, (s, p) => s === 200 && p.data.some((a) => a.id === "smoke-agent" && a.published === true));
 
+// ---- Capability snapshot (surfaces/agent-editor data-driven pickers) ----
+await step("capabilities (flat)", "GET", "/v1/capabilities", undefined, (s, p) =>
+  s === 200 && Array.isArray(p.tools) && p.tools.length > 0 &&
+  p.plugins.some((pl) => pl.id === "state_machine" && pl.config_schema && typeof pl.config_schema === "object"));
+// Uniform addressing: same snapshot under the workspace path prefix (ADR-0048).
+await step("capabilities (workspace-path)", "GET", "/v1/workspaces/default/capabilities", undefined, (s, p) => s === 200 && p.plugins.length > 0);
+
 // ---- Project · Vaults (surfaces/vaults.tsx; bare face until §7.10) ----
 const vault = await step("create vault", "POST", "/v1/vaults", { display_name: "smoke" });
 await step("vault credential (static_bearer)", "POST", `/v1/vaults/${vault.id}/credentials`, {
