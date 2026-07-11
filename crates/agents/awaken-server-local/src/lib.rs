@@ -1321,7 +1321,7 @@ pub async fn build_config_router() -> Router {
     // pointed at the fake upstream when `AWAKEN_MODEL_SOURCE=http`); the fake upstream
     // is what drives the seeded assistant through its admin tools in the run e2e.
     let (model, model_ref) = scenario_model(Arc::new(InstructionEchoModel), "config");
-    let registry = Arc::new(
+    let store = Arc::new(
         awaken_config_store::SqliteConfigStore::open_in_memory().expect("open config store"),
     );
     // Scope-keyed tool visibility (ADR-0052 D3): every scope sees the advertised
@@ -1346,15 +1346,16 @@ pub async fn build_config_router() -> Router {
         }],
         ..Default::default()
     };
-    let service = Arc::new(
-        ConfigService::new(registry, tools).with_model_resolver(Arc::new(
-            crate::model_resolver::CatalogModelResolver::new(catalog.clone()),
-        )),
-    );
+    // The service is scope-free (ADR-0051); `ConfigPlane` is the scope edge that binds
+    // the request scope (a `ScopedConfig` registry + the scope's tool catalog) onto it.
+    let service = Arc::new(ConfigService::new().with_model_resolver(Arc::new(
+        crate::model_resolver::CatalogModelResolver::new(catalog.clone()),
+    )));
+    let plane = awaken_runtime_host::ConfigPlane::new(service.clone(), store, tools);
     // Seed the management assistant as an ordinary published agent in the reserved
     // scope (ADR-0052 D1/D2): it becomes a compiled RunnableConfig via the same path
     // as any agent, projectable on `/v1/agents`.
-    crate::admin_assistant::seed_admin_assistant(&service)
+    crate::admin_assistant::seed_admin_assistant(&plane)
         .await
         .expect("seed admin assistant");
     // The management tool executables, backed by real ports (D3/D4): the capability
@@ -1366,7 +1367,7 @@ pub async fn build_config_router() -> Router {
         &[],
     ));
     let validator = Arc::new(crate::admin_assistant::ConfigServiceDraftValidator::new(
-        service.clone(),
+        plane.clone(),
         awaken_config_store::DEFAULT_SCOPE,
     ));
     let admin_execs = awaken_admin_assistant::admin_tools(
@@ -1389,7 +1390,7 @@ pub async fn build_config_router() -> Router {
     // is rewritten to the flat config route and stamped with `{ws}` as the scope, so
     // the reserved admin scope is reachable and the tenant/default scope is fenced.
     let flat = mount(Arc::new(host))
-        .merge(config_router(service))
+        .merge(config_router(plane))
         .merge(agents);
     crate::workspace_path::with_workspace_path_addressing(flat)
 }

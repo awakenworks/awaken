@@ -6,8 +6,6 @@
 //! seeding here is exactly a `put` + `publish` through `ConfigService`, in the reserved
 //! scope (D2), where the scope-keyed catalog makes the four admin tools nameable (D3).
 
-use std::sync::Arc;
-
 use awaken_admin_assistant::{
     ADMIN_ASSISTANT_AGENT_ID, CapabilityReader, DraftValidator, PlatformCapabilities, PluginInfo,
     admin_assistant_config,
@@ -16,17 +14,17 @@ use awaken_config_store::AgentConfig;
 use awaken_model_catalog::ProviderCatalog;
 use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_host::{ConfigService, RESERVED_ADMIN_SCOPE};
+use awaken_runtime_host::{ConfigPlane, RESERVED_ADMIN_SCOPE};
 use awaken_tenancy::ScopeId;
 
 /// Publish the management assistant into the reserved scope through the ordinary
-/// publish path (D1/D2). Idempotent — re-seeding recompiles to the same content
-/// address. Returns the publish error verbatim so a caller can surface a bad setup
-/// (e.g. no provider-backed model → the resolver reports it).
-pub async fn seed_admin_assistant(service: &ConfigService) -> Result<(), String> {
+/// publish path (D1/D2), via the scope edge ([`ConfigPlane`]). Idempotent —
+/// re-seeding recompiles to the same content address. Returns the publish error
+/// verbatim so a caller can surface a bad setup (e.g. no provider-backed model).
+pub async fn seed_admin_assistant(plane: &ConfigPlane) -> Result<(), String> {
     let scope = ScopeId::from(RESERVED_ADMIN_SCOPE);
-    service.put(&scope, &admin_assistant_config()).await?;
-    service
+    plane.put(&scope, &admin_assistant_config()).await?;
+    plane
         .publish(&scope, ADMIN_ASSISTANT_AGENT_ID)
         .await
         .map(|_| ())
@@ -85,19 +83,20 @@ impl CapabilityReader for CatalogCapabilityReader {
     }
 }
 
-/// Validates a drafted config through the ordinary `ConfigService::validate` in a
-/// target scope (the tenant/default scope — a draft is an ordinary agent, so it is
-/// validated against the global catalog, and naming an admin tool in a draft is
-/// correctly rejected). This is the same check `/v1/config/agents/validate` runs.
+/// Validates a drafted config through the ordinary config-plane validate in a target
+/// scope (the tenant/default scope — a draft is an ordinary agent, so it is validated
+/// against the global catalog, and naming an admin tool in a draft is correctly
+/// rejected). This is the same check `/v1/config/agents/validate` runs. It holds the
+/// scope edge ([`ConfigPlane`]) so the scope-free service stays untouched.
 pub struct ConfigServiceDraftValidator {
-    service: Arc<ConfigService>,
+    plane: ConfigPlane,
     scope: ScopeId,
 }
 
 impl ConfigServiceDraftValidator {
-    pub fn new(service: Arc<ConfigService>, scope: impl Into<ScopeId>) -> Self {
+    pub fn new(plane: ConfigPlane, scope: impl Into<ScopeId>) -> Self {
         Self {
-            service,
+            plane,
             scope: scope.into(),
         }
     }
@@ -105,7 +104,7 @@ impl ConfigServiceDraftValidator {
 
 impl DraftValidator for ConfigServiceDraftValidator {
     fn validate(&self, draft: &AgentConfig) -> Result<(), String> {
-        self.service.validate(&self.scope, draft)
+        self.plane.validate(&self.scope, draft)
     }
 }
 
@@ -116,8 +115,9 @@ mod tests {
     use awaken_model_catalog::{
         ModelApiCompat, Offering, ProtocolEndpointId, Provider, ProviderId,
     };
-    use awaken_runtime_host::{ScopedToolCatalog, StaticToolCatalog};
+    use awaken_runtime_host::{ConfigPlane, ConfigService, ScopedToolCatalog, StaticToolCatalog};
     use std::collections::BTreeMap;
+    use std::sync::Arc;
 
     fn tool(id: &str) -> ToolDescriptor {
         ToolDescriptor::pinned("t", id, "d", serde_json::json!({"type": "object"}))
@@ -150,19 +150,18 @@ mod tests {
     #[tokio::test]
     async fn seeding_publishes_the_assistant_into_the_reserved_scope_only() {
         // A scope-keyed catalog + a resolver so the Auto assistant can publish.
-        let registry = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
         let tools = Arc::new(ScopedToolCatalog::new(
             Vec::new(),
             RESERVED_ADMIN_SCOPE,
             awaken_admin_assistant::admin_tool_descriptors(),
         ));
-        let service = Arc::new(
-            ConfigService::new(registry, tools).with_model_resolver(Arc::new(
-                crate::model_resolver::CatalogModelResolver::new(catalog("m-1")),
-            )),
-        );
+        let service = Arc::new(ConfigService::new().with_model_resolver(Arc::new(
+            crate::model_resolver::CatalogModelResolver::new(catalog("m-1")),
+        )));
+        let plane = ConfigPlane::new(service.clone(), store, tools);
 
-        seed_admin_assistant(&service).await.expect("seed");
+        seed_admin_assistant(&plane).await.expect("seed");
 
         // Published + installed under the reserved id, model auto-resolved.
         let installed = service
@@ -188,12 +187,13 @@ mod tests {
 
     #[tokio::test]
     async fn draft_validator_rejects_an_unknown_tool_in_a_tenant_draft() {
-        let registry = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
-        let service = Arc::new(ConfigService::new(
-            registry,
+        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let plane = ConfigPlane::new(
+            Arc::new(ConfigService::new()),
+            store,
             Arc::new(StaticToolCatalog(vec![tool("read")])),
-        ));
-        let validator = ConfigServiceDraftValidator::new(service, DEFAULT_SCOPE);
+        );
+        let validator = ConfigServiceDraftValidator::new(plane, DEFAULT_SCOPE);
 
         let mut good = admin_assistant_config();
         good.model_binding = ModelSelection::pinned("p", "m", "b");

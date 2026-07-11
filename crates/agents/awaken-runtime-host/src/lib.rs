@@ -87,7 +87,7 @@ pub use crate::binding_resolver::{
 pub use crate::config::{advertised_tools, block_text};
 pub use crate::config_home::{ConfigHome, RetentionPolicy, SessionReuse};
 pub use crate::config_plane::{
-    ConfigService, ConfigServiceAgentSource, PublishError, config_router,
+    ConfigPlane, ConfigService, ConfigServiceAgentSource, PublishError, config_router,
 };
 pub use crate::tool_catalog::{
     RESERVED_ADMIN_SCOPE, ScopedToolCatalog, StaticToolCatalog, ToolCatalogSource,

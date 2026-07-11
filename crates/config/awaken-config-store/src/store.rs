@@ -139,13 +139,14 @@ pub trait ScopedConfigRegistry: Send + Sync {
 /// delegating to a [`ScopedConfigRegistry`]. Constructed at the management edge
 /// from the request's resolved scope, so every authoring write auto-stamps the
 /// bound owner and every read auto-filters by it — no call site can forget.
-pub struct ScopedConfig<S: ScopedConfigRegistry> {
+pub struct ScopedConfig<S: ScopedConfigRegistry + ?Sized> {
     inner: Arc<S>,
     scope: ScopeId,
 }
 
-impl<S: ScopedConfigRegistry> ScopedConfig<S> {
-    /// Bind `store` to `scope` for one tenant's authoring requests.
+impl<S: ScopedConfigRegistry + ?Sized> ScopedConfig<S> {
+    /// Bind `store` to `scope` for one tenant's authoring requests. `S` may be a
+    /// trait object (`dyn ScopedConfigRegistry`), so the edge can bind a boxed store.
     pub fn new(store: Arc<S>, scope: ScopeId) -> Self {
         Self {
             inner: store,
@@ -161,7 +162,7 @@ impl<S: ScopedConfigRegistry> ScopedConfig<S> {
 }
 
 #[async_trait::async_trait]
-impl<S: ScopedConfigRegistry> ConfigRegistry for ScopedConfig<S> {
+impl<S: ScopedConfigRegistry + ?Sized> ConfigRegistry for ScopedConfig<S> {
     async fn put_config(&self, config: &AgentConfig) -> Result<(), ConfigStoreError> {
         self.inner.put_config_scoped(&self.scope, config).await
     }
