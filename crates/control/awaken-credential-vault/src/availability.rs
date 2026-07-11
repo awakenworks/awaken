@@ -17,7 +17,9 @@ use std::sync::Mutex;
 use crate::CredentialSourceId;
 
 /// The availability of one credential source at a point in time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "state", rename_all = "snake_case")]
 pub enum AvailabilityState {
     /// Selectable now.
     Available,

@@ -217,6 +217,7 @@ dependencies = [
  "awaken-config-resolver",
  "awaken-credential-vault",
  "awaken-model-catalog",
+ "awaken-runtime-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "axum 0.7.9",

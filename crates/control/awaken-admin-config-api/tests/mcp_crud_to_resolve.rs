@@ -23,6 +23,7 @@ fn harness() -> Router {
         mcp: Arc::new(awaken_admin_config_api::InMemoryMcpStore::new()),
         resources: Arc::new(awaken_admin_config_api::InMemoryResourceStore::new()),
         probe: None,
+        availability: Default::default(),
     })
 }
 
