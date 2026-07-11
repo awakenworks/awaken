@@ -124,6 +124,31 @@ pub enum CredentialBinding {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CredentialPoolId(pub String);
 
+/// How a pool picks among its eligible members — the *intent* behind selection,
+/// consumed by the runtime selector (an availability-aware picker, per ADR-0043).
+/// The pool's [`selection_order`](CredentialPool::selection_order) always yields the
+/// eligible members in ordinal order; this policy decides which of them the picker
+/// commits to.
+///
+/// Names align with awaken-next's `SelectionPolicy`. `#[non_exhaustive]` so adding a
+/// policy is not a breaking change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum SelectionPolicy {
+    /// Pin the first eligible member in ordinal order (the default; the historical
+    /// behavior). Deterministic — the same pool state always picks the same member.
+    #[default]
+    FirstHealthy,
+    /// Round-robin across the eligible members to spread load and delay quota
+    /// exhaustion. Rotation state lives in the selector, not the pool.
+    RotateSpread,
+    /// Reuse the member a prior run in the same scope committed to, when it is still
+    /// eligible, for prompt-cache / session affinity.
+    StickyResume,
+}
+
 /// A pool of interchangeable credential sources for one provider principal
 /// (oversight-next account grouping). The resolver picks one eligible member per
 /// run; members are tried in policy order so a disabled/exhausted member fails
@@ -134,6 +159,13 @@ pub struct CredentialPool {
     pub id: CredentialPoolId,
     pub workspace_id: String,
     pub members: Vec<CredentialPoolMember>,
+    /// How the selector picks among eligible members. `#[serde(default)]` keeps
+    /// existing pool rows (persisted as JSON) loadable as [`FirstHealthy`], the
+    /// historical behavior.
+    ///
+    /// [`FirstHealthy`]: SelectionPolicy::FirstHealthy
+    #[serde(default)]
+    pub policy: SelectionPolicy,
 }
 
 /// One source's membership in a pool. `ordinal` is the default selection order
@@ -550,6 +582,7 @@ mod tests {
                 member("cred:c", 1, true),
                 member("cred:a", 0, false),
             ],
+            policy: SelectionPolicy::FirstHealthy,
         };
         let order: Vec<&str> = pool
             .selection_order()
@@ -558,5 +591,36 @@ mod tests {
             .collect();
         // The disabled ordinal-0 member is skipped; the ordinal-1 tie breaks by id.
         assert_eq!(order, ["cred:b", "cred:c", "cred:d"]);
+    }
+
+    #[test]
+    fn selection_policy_defaults_to_first_healthy() {
+        assert_eq!(SelectionPolicy::default(), SelectionPolicy::FirstHealthy);
+    }
+
+    #[test]
+    fn a_pool_json_without_policy_loads_as_first_healthy() {
+        // A row written before the `policy` field existed must still load — the
+        // #[serde(default)] keeps historical pools readable, unchanged behavior.
+        let legacy = r#"{"id":"pool:1","workspace_id":"ws","members":[]}"#;
+        let pool: CredentialPool = serde_json::from_str(legacy).unwrap();
+        assert_eq!(pool.policy, SelectionPolicy::FirstHealthy);
+    }
+
+    #[test]
+    fn selection_policy_round_trips_through_serde() {
+        for p in [
+            SelectionPolicy::FirstHealthy,
+            SelectionPolicy::RotateSpread,
+            SelectionPolicy::StickyResume,
+        ] {
+            let json = serde_json::to_string(&p).unwrap();
+            assert_eq!(serde_json::from_str::<SelectionPolicy>(&json).unwrap(), p);
+        }
+        // snake_case wire form.
+        assert_eq!(
+            serde_json::to_string(&SelectionPolicy::RotateSpread).unwrap(),
+            "\"rotate_spread\""
+        );
     }
 }
