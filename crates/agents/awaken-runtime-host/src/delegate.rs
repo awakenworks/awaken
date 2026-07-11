@@ -18,7 +18,7 @@ use awaken_protocol_a2a::client::{self as a2a, Transport};
 use awaken_protocol_a2a::{AgentCard, Task, TaskState};
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::agent_resolver::{AgentError, AgentRequest, AgentResolver, AgentStep};
-use awaken_runtime_contract::llm::LlmExecutor;
+use awaken_runtime_contract::llm::{LlmExecutor, ThreadUsage};
 use awaken_sandbox_local::LocalSandboxProvider;
 use serde_json::{Value, json};
 
@@ -68,8 +68,11 @@ fn completed_reply(task: &Task) -> String {
 /// failed → error.
 fn step_from_task(agent_id: &str, task: Task) -> Result<AgentStep, AgentError> {
     match task.status.state {
+        // A remote (A2A) delegate runs on another host: its token spend is not
+        // observable over the A2A wire, so no usage rolls into the parent tally.
         TaskState::Completed => Ok(AgentStep::Done {
             text: completed_reply(&task),
+            usage: ThreadUsage::default(),
         }),
         TaskState::InputRequired | TaskState::AuthRequired => Ok(AgentStep::Parked {
             handle: json!({ "agent_id": agent_id, "task_id": task.id }),
@@ -166,7 +169,9 @@ impl DelegationResolver {
     ) -> Result<AgentStep, AgentError> {
         let n = BASE_SEQ.fetch_add(1, Ordering::SeqCst);
         let name = format!("{agent_id}-sub-{n}");
-        let text = crate::subagent::run_subagent(
+        // The sub-run's usage rides back on the step so the kernel folds it into the
+        // parent thread's tally (its own isolated store is dropped here).
+        let (text, usage) = crate::subagent::run_subagent(
             self.llm.clone(),
             &self.model_ref,
             &self.provider,
@@ -176,7 +181,7 @@ impl DelegationResolver {
         )
         .await
         .map_err(AgentError::new)?;
-        Ok(AgentStep::Done { text })
+        Ok(AgentStep::Done { text, usage })
     }
 }
 

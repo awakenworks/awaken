@@ -82,6 +82,8 @@ struct ForkRunner {
 impl SubAgentRunner for ForkRunner {
     async fn run(&self, skill_id: &str, prompt: &str) -> Result<String, String> {
         let name = format!("skill-{skill_id}");
+        // A `context: fork` skill runs its own isolated sub-thread; its usage stays
+        // there (this port surfaces only the reply text).
         crate::subagent::run_subagent(
             self.llm.clone(),
             &self.model_ref,
@@ -91,6 +93,7 @@ impl SubAgentRunner for ForkRunner {
             None,
         )
         .await
+        .map(|(text, _usage)| text)
     }
 }
 

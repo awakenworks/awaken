@@ -7,7 +7,8 @@ use std::sync::Arc;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_runtime_contract::agent_resolver::{AgentError, AgentRequest, AgentResolver, AgentStep};
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
+    AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor, THREAD_USAGE_STATE_KEY,
+    ThreadUsage, TokenUsage, ToolCall,
 };
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_examples::prelude::*;
@@ -73,6 +74,7 @@ impl AgentResolver for DoneResolver {
         let agent = request.arguments["agent_id"].as_str().unwrap_or_default();
         Ok(AgentStep::Done {
             text: format!("reply from {agent}"),
+            usage: ThreadUsage::default(),
         })
     }
     async fn resume(
@@ -82,6 +84,41 @@ impl AgentResolver for DoneResolver {
         _cancellation: Option<&awaken_runtime_contract::CancellationToken>,
     ) -> Result<AgentStep, AgentError> {
         unreachable!("DoneResolver never parks")
+    }
+}
+
+/// A resolver that finishes and reports the delegate spent tokens — so a test can
+/// prove the kernel folds a sub-agent's usage into the parent thread's tally.
+struct UsageResolver;
+
+#[async_trait::async_trait]
+impl AgentResolver for UsageResolver {
+    fn tool_id(&self) -> &str {
+        "agent_run"
+    }
+    async fn run(&self, _request: AgentRequest) -> Result<AgentStep, AgentError> {
+        let mut usage = ThreadUsage::default();
+        usage.record(
+            "sub-model",
+            TokenUsage {
+                prompt_tokens: 13,
+                completion_tokens: 5,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+            },
+        );
+        Ok(AgentStep::Done {
+            text: "reply from sub".into(),
+            usage,
+        })
+    }
+    async fn resume(
+        &self,
+        _handle: &serde_json::Value,
+        _input: &str,
+        _cancellation: Option<&awaken_runtime_contract::CancellationToken>,
+    ) -> Result<AgentStep, AgentError> {
+        unreachable!("UsageResolver never parks")
     }
 }
 
@@ -107,6 +144,7 @@ impl AgentResolver for ParkingResolver {
         assert_eq!(handle["task"], "t-1", "the durable handle round-trips");
         Ok(AgentStep::Done {
             text: format!("finished with: {input}"),
+            usage: ThreadUsage::default(),
         })
     }
 }
@@ -159,6 +197,53 @@ async fn the_kernel_runs_agent_run_through_the_resolver() {
             .iter()
             .any(|m| m.text_content().contains("coordinator: reply from sub")),
         "the resolver's reply flowed back through the delegation tool"
+    );
+}
+
+#[tokio::test]
+async fn a_delegates_usage_folds_into_the_parent_thread_tally() {
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(CoordinatorLlm))
+        .with_gate(Arc::new(allow_all()))
+        .with_resolver(Arc::new(UsageResolver));
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ctx = RuntimeRunContext::new()
+        .with_commit(commit.clone())
+        .with_reader(commit.clone());
+
+    let phase = runtime
+        .run(&config(), "delegate please", ctx)
+        .await
+        .expect("run");
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+
+    // The coordinator model reports no usage, so the parent thread's committed
+    // tally is exactly the delegate's spend — proving it rolled up rather than
+    // vanishing with the sub-run's isolated store.
+    let thread_id = commit
+        .committed()
+        .thread_id
+        .expect("the turn committed a thread");
+    let mut tally = ThreadUsage::default();
+    for cmd in commit.committed_state(&thread_id) {
+        use awaken_agent_contract::agent::state::{Action, Scope};
+        if cmd.scope == Scope::Thread && cmd.key.0 == THREAD_USAGE_STATE_KEY {
+            if let Action::Set(value) = &cmd.action {
+                tally = serde_json::from_value(value.clone()).expect("thread usage");
+            }
+        }
+    }
+    let total = tally.total();
+    assert_eq!(total.prompt_tokens, 13, "delegate input tokens rolled up");
+    assert_eq!(
+        total.completion_tokens, 5,
+        "delegate output tokens rolled up"
+    );
+    assert_eq!(
+        tally.by_model.get("sub-model").map(|u| u.prompt_tokens),
+        Some(13),
+        "the delegate's model is attributed in the parent tally"
     );
 }
 
