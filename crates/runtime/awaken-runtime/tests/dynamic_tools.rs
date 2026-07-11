@@ -269,6 +269,105 @@ async fn presentation_aliases_an_mcp_tool_and_dispatches_the_alias_to_canonical(
     );
 }
 
+/// A scripted model for the defer flow: step 0 records the face and calls `tool_open`
+/// to load the deferred tool; step 1 records the face and calls the now-loaded tool;
+/// step 2 ends.
+struct DeferProbe {
+    seen: Arc<Mutex<Vec<Vec<String>>>>,
+    calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for DeferProbe {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        self.seen
+            .lock()
+            .unwrap()
+            .push(request.tools.iter().map(|t| t.id.clone()).collect());
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        let output = match n {
+            0 => AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "open".to_string(),
+                tool_id: awaken_runtime_contract::resolved::TOOL_OPEN_ID.to_string(),
+                arguments: serde_json::json!({ "name": "create_issue" }),
+            }]),
+            1 => AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "c1".to_string(),
+                tool_id: "create_issue".to_string(),
+                arguments: serde_json::json!({}),
+            }]),
+            _ => AssistantOutput::text("done".to_string()),
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+/// ADR-0053 defer: a deferred MCP tool is withheld from the model face (only the reserved
+/// `tool_open` meta-tool is shown); after the model opens it, its full schema appears and
+/// it executes. Proves lazy tool loading over the same dynamic-tool seam, for MCP.
+#[tokio::test]
+async fn a_deferred_tool_is_hidden_until_tool_open_then_callable() {
+    let version = Arc::new(AtomicU64::new(1));
+    let tools = Arc::new(Mutex::new(vec!["mcp__srv__a".to_string()]));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(DeferProbe {
+            seen: seen.clone(),
+            calls: AtomicUsize::new(0),
+        }))
+        .with_plugin(Arc::new(DynPlugin {
+            version: version.clone(),
+            tools: tools.clone(),
+        }));
+    install(&runtime);
+
+    let mut act = activation();
+    act.snapshot.resolved_spec.tool_presentation = ToolPresentation::from_facets([(
+        "mcp__srv__a".to_string(),
+        ToolFacet {
+            alias: Some("create_issue".to_string()),
+            description: Some("Create a GitHub issue.".to_string()),
+            defer: true,
+        },
+    )]);
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
+    let outcome = runtime.execute(act, context).await.expect("runs");
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+
+    let seen = seen.lock().unwrap();
+    let open_id = awaken_runtime_contract::resolved::TOOL_OPEN_ID.to_string();
+    // Step 0: only `tool_open` is shown — the deferred tool's schema is withheld.
+    assert!(seen[0].contains(&open_id), "tool_open is offered");
+    assert!(
+        !seen[0].contains(&"create_issue".to_string()),
+        "the deferred tool is withheld until opened"
+    );
+    // Step 1: after opening, the tool's full schema is on the face.
+    assert!(
+        seen[1].contains(&"create_issue".to_string()),
+        "the opened tool appears on the next step"
+    );
+    // And it executed (reverse-mapped to the canonical MCP id).
+    let committed = commit.committed();
+    assert!(
+        committed
+            .messages
+            .iter()
+            .any(|m| m.role == Role::Tool && m.text_content().contains("ran mcp__srv__a")),
+        "the opened tool executed"
+    );
+}
+
 #[tokio::test]
 async fn dynamic_tool_is_visible_executes_and_refreshes_at_the_step_boundary() {
     let version = Arc::new(AtomicU64::new(1));

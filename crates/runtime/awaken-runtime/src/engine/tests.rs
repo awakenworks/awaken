@@ -28,7 +28,7 @@ fn user_message() -> Message {
 
 #[test]
 fn instructions_lead_the_request_as_a_system_message() {
-    let request = build_chat_request(&spec("be helpful"), &[], &[user_message()], &[]);
+    let request = build_chat_request(&spec("be helpful"), &[], &[user_message()], &[], &Default::default());
     assert_eq!(request.messages.len(), 2);
     assert!(matches!(request.messages[0].role, ChatRole::System));
     assert_eq!(
@@ -40,7 +40,7 @@ fn instructions_lead_the_request_as_a_system_message() {
 
 #[test]
 fn empty_instructions_contribute_no_system_message() {
-    let request = build_chat_request(&spec(""), &[], &[user_message()], &[]);
+    let request = build_chat_request(&spec(""), &[], &[user_message()], &[], &Default::default());
     assert_eq!(request.messages.len(), 1);
     assert!(matches!(request.messages[0].role, ChatRole::User));
 }
@@ -77,7 +77,7 @@ fn user_texts(request: &ChatRequest) -> Vec<String> {
 #[test]
 fn keep_all_sends_the_whole_transcript() {
     let transcript: Vec<Message> = (0..5).map(numbered).collect();
-    let request = build_chat_request(&spec_with(ContextPolicy::KeepAll), &[], &transcript, &[]);
+    let request = build_chat_request(&spec_with(ContextPolicy::KeepAll), &[], &transcript, &[], &Default::default());
     // 1 system + 5 users
     assert_eq!(request.messages.len(), 6);
 }
@@ -90,6 +90,7 @@ fn keep_last_keeps_system_prefix_plus_the_last_n() {
         &[],
         &transcript,
         &[],
+        &Default::default(),
     );
     // system stays; only the last 2 user messages survive.
     assert!(matches!(request.messages[0].role, ChatRole::System));
@@ -104,6 +105,7 @@ fn keep_last_larger_than_history_keeps_everything() {
         &[],
         &transcript,
         &[],
+        &Default::default(),
     );
     assert_eq!(user_texts(&request).len(), 3);
 }
@@ -116,6 +118,7 @@ fn keep_last_zero_keeps_only_the_system_prefix() {
         &[],
         &transcript,
         &[],
+        &Default::default(),
     );
     assert_eq!(request.messages.len(), 1);
     assert!(matches!(request.messages[0].role, ChatRole::System));
@@ -129,7 +132,7 @@ fn prelude_is_injected_after_instructions_before_the_transcript() {
         "recalled context",
     )];
     let transcript = vec![user_message()];
-    let request = build_chat_request(&spec("be helpful"), &prelude, &transcript, &[]);
+    let request = build_chat_request(&spec("be helpful"), &prelude, &transcript, &[], &Default::default());
     assert_eq!(request.messages.len(), 3);
     assert!(matches!(request.messages[0].role, ChatRole::System));
     assert_eq!(

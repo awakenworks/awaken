@@ -35,7 +35,7 @@ use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
 use awaken_runtime_contract::plugin::{
     PhaseContext, PhaseHookPoint, ResolvedExecutionEnv, RunEndContext, RunEndDecision,
 };
-use awaken_runtime_contract::resolved::ResolvedRun;
+use awaken_runtime_contract::resolved::{ResolvedRun, ToolPresentation};
 use awaken_runtime_contract::resolver::{self, RunResolver};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resume};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -375,6 +375,32 @@ fn permission_audit(call: &ToolCall, outcome: &GateOutcome) -> EventDraft {
     }
 }
 
+/// Handle a call to the reserved `tool_open` meta-tool (ADR-0053): mark the requested
+/// tool opened for the rest of the run so its full schema is sent next step. The `name`
+/// is reverse-mapped to its canonical id; an unknown or non-deferred name is reported
+/// back to the model rather than silently accepted.
+fn open_deferred_tool(
+    presentation: &ToolPresentation,
+    call: &ToolCall,
+    opened: &mut std::collections::BTreeSet<String>,
+) -> ToolOutput {
+    let name = call
+        .arguments
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let canonical = presentation.resolve(name);
+    if presentation.is_deferred(canonical) {
+        opened.insert(canonical.to_string());
+        ToolOutput::ok(
+            &call.call_id,
+            format!("Tool `{name}` is now available; call it directly on your next step."),
+        )
+    } else {
+        ToolOutput::error(&call.call_id, format!("no deferred tool named `{name}`"))
+    }
+}
+
 /// Run the model/tool loop over a prepared transcript. Shared by fresh execution
 /// and resume; the caller seeds the transcript, the already-produced messages,
 /// and any state the resume itself staged (`seed_state`).
@@ -471,6 +497,9 @@ async fn drive(
     // Failed inference steps in a row (post-retry). The runtime's tolerance
     // decides when the streak is terminal; a success resets it.
     let mut consecutive_inference_failures = 0usize;
+    // Deferred tools (ADR-0053) the model has opened via `tool_open` this run, by
+    // canonical id: once opened, a tool's full schema is sent on subsequent steps.
+    let mut opened: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for step in 0..resolved.spec.max_steps {
         // Step-boundary incremental commit: everything the completed steps
         // staged — messages, state, audit — becomes durable under a `Running`
@@ -577,6 +606,7 @@ async fn drive(
                     &prelude,
                     &transcript,
                     &env.dynamic_descriptors(),
+                    &opened,
                 );
                 // Route this attempt to the current candidate. The breaker inside
                 // `infer_with_retry` keys on `request.model_binding`, so a failed-over
@@ -815,12 +845,18 @@ async fn drive(
 
         // Otherwise run each requested tool and feed the results back.
         for call in calls {
+            // The reserved `tool_open` meta-tool (ADR-0053) loads a deferred tool for
+            // later steps: it mutates this run's `opened` set and returns a result, so it
+            // bypasses the gate and never reaches an executor.
+            let output = if call.tool_id == awaken_runtime_contract::resolved::TOOL_OPEN_ID {
+                open_deferred_tool(&resolved.spec.tool_presentation, &call, &mut opened)
+            } else {
             let outcome = gate_decision(runtime, &call, env, &store).await;
             // Audit the decision of a real (policy-backed) gate (ADR-0030).
             if runtime.gate().is_some() {
                 audit.push(permission_audit(&call, &outcome));
             }
-            let output = match outcome {
+            match outcome {
                 GateOutcome::Allow => match run_delegation(runtime, context, &call).await {
                     Some(Ok(AgentStep::Done { text, usage })) => {
                         // Fold the delegate's token spend into this thread's running
@@ -915,6 +951,7 @@ async fn drive(
                     .await;
                     break;
                 }
+            }
             };
             staged_state.extend(output.state.clone());
             let message = tool_result_message(&call, &output);

@@ -21,6 +21,7 @@ pub(crate) fn build_chat_request(
     prelude: &[Message],
     transcript: &[Message],
     dynamic: &[ToolDescriptor],
+    opened: &std::collections::BTreeSet<String>,
 ) -> ChatRequest {
     // The agent's instructions lead the request as a system message, ahead of the
     // transcript. Empty instructions contribute no system message.
@@ -47,11 +48,13 @@ pub(crate) fn build_chat_request(
         .chain(dynamic.iter())
         .cloned()
         .collect();
-    let presented = spec.tool_presentation.present(&combined);
-    let tools = presented
-        .face
+    // `model_tools` applies the alias/description overrides, withholds deferred tools the
+    // model has not yet opened this run, and appends the `tool_open` meta-tool listing
+    // whatever stays deferred (absent when nothing is deferred).
+    let tools = spec
+        .tool_presentation
+        .model_tools(&combined, opened)
         .iter()
-        .chain(presented.deferred.iter())
         .map(to_tool_schema)
         .collect();
     ChatRequest {

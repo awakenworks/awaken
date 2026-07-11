@@ -224,6 +224,36 @@ impl ToolDescriptor {
     }
 }
 
+/// Reserved id of the meta-tool that loads a deferred tool (ADR-0053). Double-underscore
+/// namespaced so it cannot collide with a catalog id or an MCP `mcp__…` id; the compile
+/// alias-collision check keeps an author from minting the same facing id.
+pub const TOOL_OPEN_ID: &str = "tool__open";
+
+/// Build the reserved `tool_open` descriptor from the still-deferred tools: its
+/// description lists each deferred tool's model-facing name + description so the model
+/// knows what it can load, and its one argument is the `name` to load.
+fn tool_open_descriptor(deferred: &[ToolDescriptor]) -> ToolDescriptor {
+    let list = deferred
+        .iter()
+        .map(|d| format!("- {}: {}", d.id, d.description))
+        .collect::<Vec<_>>()
+        .join("\n");
+    ToolDescriptor::pinned(
+        "builtin:presentation",
+        TOOL_OPEN_ID,
+        format!(
+            "Load a tool's full definition before you can call it. Call this with the \
+             `name` of the tool you need, then call that tool on the next step. Deferred \
+             tools:\n{list}"
+        ),
+        serde_json::json!({
+            "type": "object",
+            "properties": { "name": { "type": "string", "description": "The deferred tool to load." } },
+            "required": ["name"]
+        }),
+    )
+}
+
 /// The model-facing presentation of an agent's tools (ADR-0053): a per-tool `alias`,
 /// `description` override, and `defer` flag, keyed by the tool's **canonical** id — a
 /// catalog id or an MCP `mcp__<server>__<tool>` id — so it applies uniformly to static
@@ -300,6 +330,41 @@ impl ToolPresentation {
             .iter()
             .find(|(_, f)| f.alias.as_deref() == Some(model_id))
             .map_or(model_id, |(canonical, _)| canonical.as_str())
+    }
+
+    /// Whether the tool with this canonical id is deferred (lazy-loaded, ADR-0053).
+    #[must_use]
+    pub fn is_deferred(&self, canonical: &str) -> bool {
+        self.facets.get(canonical).is_some_and(|f| f.defer)
+    }
+
+    /// The model-facing tool list for one step: [`present`](Self::present) applied, then
+    /// each deferred tool withheld *unless* its canonical id is in `opened` (the tools
+    /// the model has loaded via `tool_open` this run). When any deferred tool is still
+    /// withheld, the reserved [`tool_open`](TOOL_OPEN_ID) meta-tool is appended, listing
+    /// them — so the model can load a tool's full schema on demand instead of paying its
+    /// tokens every step. No deferred tools ⇒ the list is exactly `present().face`.
+    #[must_use]
+    pub fn model_tools(
+        &self,
+        descriptors: &[ToolDescriptor],
+        opened: &std::collections::BTreeSet<String>,
+    ) -> Vec<ToolDescriptor> {
+        let presented = self.present(descriptors);
+        let mut face = presented.face;
+        let mut withheld: Vec<ToolDescriptor> = Vec::new();
+        for d in presented.deferred {
+            // `d.id` is the model-facing (possibly aliased) id; `opened` keys on canonical.
+            if opened.contains(self.resolve(&d.id)) {
+                face.push(d);
+            } else {
+                withheld.push(d);
+            }
+        }
+        if !withheld.is_empty() {
+            face.push(tool_open_descriptor(&withheld));
+        }
+        face
     }
 
     /// Split canonical descriptors into the model face (alias + description applied) and
@@ -390,6 +455,30 @@ mod tests {
         // The MCP tool is deferred (renamed) — withheld from the face.
         assert!(out.face.iter().all(|d| d.id != "y"));
         assert!(out.deferred.iter().any(|d| d.id == "y"));
+    }
+
+    #[test]
+    fn model_tools_withholds_a_deferred_tool_until_opened_and_offers_tool_open() {
+        use super::TOOL_OPEN_ID;
+        let p = ToolPresentation::from_facets([(
+            "mcp__srv__a".to_string(),
+            ToolFacet { alias: Some("create_issue".into()), description: None, defer: true },
+        )]);
+        let tools = [td("mcp__srv__a"), td("keep")];
+
+        // Nothing opened: the deferred tool is withheld; tool_open is offered.
+        let closed = std::collections::BTreeSet::new();
+        let face = p.model_tools(&tools, &closed);
+        let ids: Vec<&str> = face.iter().map(|d| d.id.as_str()).collect();
+        assert!(ids.contains(&"keep"));
+        assert!(ids.contains(&TOOL_OPEN_ID));
+        assert!(!ids.contains(&"create_issue"), "deferred tool withheld");
+
+        // Opened (by canonical id): the tool appears, and tool_open is gone.
+        let opened: std::collections::BTreeSet<String> = ["mcp__srv__a".to_string()].into();
+        let ids2: Vec<String> = p.model_tools(&tools, &opened).iter().map(|d| d.id.clone()).collect();
+        assert!(ids2.contains(&"create_issue".to_string()));
+        assert!(!ids2.iter().any(|i| i == TOOL_OPEN_ID), "no deferred left ⇒ no tool_open");
     }
 
     #[test]

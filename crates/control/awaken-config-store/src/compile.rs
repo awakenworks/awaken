@@ -105,6 +105,14 @@ pub fn compile_with_resource_prompts(
                 reason: format!("target {:?} is not a selected tool", ov.target),
             });
         }
+        // The reserved `tool_open` id is minted by the runtime for deferred tools; an
+        // alias must not shadow it.
+        if ov.alias.as_deref() == Some(awaken_runtime_contract::resolved::TOOL_OPEN_ID) {
+            return Err(CompileError::InvalidToolOverride {
+                agent: config.id.clone(),
+                reason: "alias uses the reserved tool_open id".to_string(),
+            });
+        }
     }
     // No two selected tools may share a model-facing id (a tool's alias if overridden,
     // else its id) — that would show the model two tools under one name.
