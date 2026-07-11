@@ -203,7 +203,7 @@ async fn create_store(State(state): State<Arc<MemoryStoreApi>>, body: Bytes) -> 
     } else {
         serde_json::from_slice(&body).unwrap_or(Value::Null)
     };
-    let id = state.host.create_memory_store();
+    let id = state.host.create_memory_store().await;
     let meta = StoreMeta {
         name: parsed
             .get("name")
@@ -240,7 +240,7 @@ async fn get_store(
     State(state): State<Arc<MemoryStoreApi>>,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let blob = state.host.memory_get(&id);
+    let blob = state.host.memory_get(&id).await;
     let registry = state.registry.lock().unwrap();
     let meta = registry.get(&id);
     if blob.is_none() && meta.is_none() {

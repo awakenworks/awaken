@@ -338,7 +338,7 @@ impl ManagedHost {
                 }
             },
             _ => {
-                let Some(bytes) = self.host.memory_get(&res.id) else {
+                let Some(bytes) = self.host.memory_get(&res.id).await else {
                     return Err(RunError::bad_request(format!(
                         "memory_store resource `{}` does not exist",
                         res.id

@@ -47,26 +47,21 @@ impl SkillSource for EnvSkillSource {
     }
 }
 
-/// Bridges the durable [`awaken_skill_store::SkillStore`] to the [`SkillSource`] port:
-/// scans the persisted catalog live, returning each `SKILL.md` as neutral file data.
-/// The host owns this bridge so `awaken-ext-skills` stays store-unaware — it sees only
-/// `SkillFile`s, never the store. Scanned on every query so a skill added through the
-/// `/v1/skills` API this run is discovered without a rebuild.
-struct StoreSkillSource {
-    store: Arc<awaken_skill_store::SkillStore>,
+/// Bridges a snapshot of the durable delivered catalog to the [`SkillSource`] port,
+/// returning each `SKILL.md` as neutral file data. The host owns this bridge so
+/// `awaken-ext-skills` stays store-unaware — it sees only `SkillFile`s, never the
+/// store. The snapshot is loaded (async) from the [`SkillStore`] at session setup —
+/// the run-loop scan is synchronous, so a network-DB (async) catalog cannot be hit
+/// per query; it is read once into this snapshot instead.
+///
+/// [`SkillStore`]: awaken_skill_store::SkillStore
+struct SnapshotSkillSource {
+    files: Vec<SkillFile>,
 }
 
-impl SkillSource for StoreSkillSource {
+impl SkillSource for SnapshotSkillSource {
     fn scan(&self) -> Vec<SkillFile> {
-        self.store
-            .list()
-            .into_iter()
-            .map(|(id, content)| SkillFile {
-                id,
-                content,
-                dir: None,
-            })
-            .collect()
+        self.files.clone()
     }
 }
 
@@ -113,7 +108,7 @@ pub(crate) struct SkillWiring {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn wire_skills(
     configured: &[SkillSpec],
-    skill_store: Option<Arc<awaken_skill_store::SkillStore>>,
+    delivered: Option<Vec<(String, String)>>,
     env: Arc<Environment>,
     llm: Arc<dyn LlmExecutor>,
     model_ref: &str,
@@ -124,22 +119,32 @@ pub(crate) fn wire_skills(
     // Offer skills when either a static set is configured or a durable catalog is
     // wired — the workspace-authored source alone never opens the surface (a run with
     // no delivered skills shows nothing until the agent authors one it can re-read).
-    if configured.is_empty() && skill_store.is_none() {
+    // `delivered` is `Some` (possibly empty) exactly when a durable store is wired.
+    if configured.is_empty() && delivered.is_none() {
         return None;
     }
     // Delivered skills come from two trusted sources: the static configured set and —
-    // when wired — the durable `/v1/skills` catalog (both `Delivered` provenance),
-    // plus a live scan of the workspace for skills the agent authored this run
-    // (`AgentCreated`). Static wins over durable wins over authored on a duplicate id.
+    // when wired — the durable `/v1/skills` catalog snapshot (both `Delivered`
+    // provenance), plus a live scan of the workspace for skills the agent authored
+    // this run (`AgentCreated`). Static wins over durable wins over authored on a
+    // duplicate id.
     let mut registries: Vec<Arc<dyn SkillRegistry>> = Vec::new();
     if !configured.is_empty() {
         registries.push(Arc::new(InMemorySkillRegistry::from_specs(
             configured.iter().cloned(),
         )));
     }
-    if let Some(store) = skill_store {
+    if let Some(delivered) = delivered {
+        let files = delivered
+            .into_iter()
+            .map(|(id, content)| SkillFile {
+                id,
+                content,
+                dir: None,
+            })
+            .collect();
         registries.push(Arc::new(SourceSkillRegistry::new(
-            Arc::new(StoreSkillSource { store }),
+            Arc::new(SnapshotSkillSource { files }),
             SkillProvenance::Delivered,
         )));
     }
@@ -189,21 +194,31 @@ mod tests {
     use super::*;
     use awaken_sandbox_local::{SandboxProvider, SandboxSpec};
 
-    #[test]
-    fn durable_store_source_scans_the_catalog_as_delivered_skill_files() {
-        // The host's bridge over the durable skill store yields neutral SkillFiles the
-        // extension parses — so a skill persisted in the store is offered as Delivered
-        // without awaken-ext-skills ever seeing the store.
+    #[tokio::test]
+    async fn durable_store_snapshot_scans_the_catalog_as_delivered_skill_files() {
+        // The host loads a snapshot of the durable catalog (async) and the bridge
+        // yields neutral SkillFiles the extension parses — so a skill persisted in the
+        // store is offered as Delivered without awaken-ext-skills ever seeing the store.
+        use awaken_skill_store::{FsSkillStore, SkillStore};
         let root = std::env::temp_dir().join(format!("awaken-skillsrc-{}", std::process::id()));
         std::fs::remove_dir_all(&root).ok();
-        let store = Arc::new(awaken_skill_store::SkillStore::open(&root).unwrap());
+        let store = FsSkillStore::open(&root).unwrap();
         store
-            .put("greet", "---\ndescription: say hi\n---\nHELLO")
+            .put("ws", "greet", "---\ndescription: say hi\n---\nHELLO")
+            .await
             .unwrap();
 
-        let source = StoreSkillSource {
-            store: store.clone(),
-        };
+        // The host's snapshot → SkillFiles.
+        let snapshot = store.list("ws").await.unwrap();
+        let files = snapshot
+            .into_iter()
+            .map(|(id, content)| SkillFile {
+                id,
+                content,
+                dir: None,
+            })
+            .collect();
+        let source = SnapshotSkillSource { files };
         let files = source.scan();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].id, "greet");
