@@ -105,6 +105,32 @@ pub fn encode_step(outcome: &StepOutcome) -> Vec<UIStreamEvent> {
     AiSdkEncoder.transcode_all(&events)
 }
 
+/// Project the *authoritative tail* of a committed step, for a turn whose
+/// in-flight prefix — `start`/`start-step`, streamed `text-*`, and
+/// `tool-input-start`/`tool-input-delta` — was already emitted live (see
+/// [`crate::live::LiveTranscoder`]). Drops `RunStarted` (already `start`ed) and
+/// assistant text (already streamed as deltas); keeps the parsed authoritative
+/// `tool-input-available`, any tool output, and the `finish` frames. The live
+/// prefix plus this tail form one well-formed UI Message Stream.
+pub fn encode_close(outcome: &StepOutcome) -> Vec<UIStreamEvent> {
+    let pending = outcome
+        .pending
+        .as_ref()
+        .map(|p| (p.tool_use_id.as_str(), p.client_executed));
+    let mut events = project_messages(&outcome.new_messages, pending);
+    events.push(if outcome.waiting {
+        terminal_waiting(outcome.pending.as_ref().map(|p| p.tool_use_id.as_str()))
+    } else {
+        AgentEvent::RunFinished {
+            exhausted: outcome.exhausted,
+        }
+    });
+    // The live channel already carried `start`/`start-step` and every text delta;
+    // emitting them again would double the stream. Keep only tool + finish frames.
+    events.retain(|e| !matches!(e, AgentEvent::AssistantMessage { .. }));
+    AiSdkEncoder.transcode_all(&events)
+}
+
 /// Parse a tool result's text as JSON, falling back to a string.
 fn parse_output(content: &[ContentBlock]) -> Value {
     let text = blocks_text(content);
@@ -247,6 +273,41 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, UIStreamEvent::TextDelta { delta, .. } if delta == "hello"))
         );
+    }
+
+    #[test]
+    fn close_emits_authoritative_tail_without_start_or_text() {
+        let outcome = StepOutcome {
+            new_messages: vec![
+                Message::text(Id("a1".into()), Role::Assistant, "let me read"),
+                assistant_tool("a2", "c1", "read", json!({"path": "x"})),
+            ],
+            waiting: true,
+            exhausted: false,
+            pending: Some(Pending {
+                tool_use_id: "c1".into(),
+                name: "read".into(),
+                input: json!({"path": "x"}),
+                client_executed: true,
+            }),
+        };
+        let events = encode_close(&outcome);
+        // No start/step/text — those were streamed live.
+        assert!(events.iter().all(|e| !matches!(
+            e,
+            UIStreamEvent::Start
+                | UIStreamEvent::StartStep
+                | UIStreamEvent::TextStart { .. }
+                | UIStreamEvent::TextDelta { .. }
+                | UIStreamEvent::TextEnd { .. }
+        )));
+        // The authoritative parsed input arrives, plus the finish frames.
+        assert!(events.iter().any(|e| matches!(
+            e,
+            UIStreamEvent::ToolInputAvailable { tool_call_id, input, .. }
+                if tool_call_id == "c1" && input == &json!({"path": "x"})
+        )));
+        assert!(events.contains(&UIStreamEvent::finish("tool-calls")));
     }
 
     #[test]
