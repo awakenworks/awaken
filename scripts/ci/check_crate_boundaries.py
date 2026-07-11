@@ -561,6 +561,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "async-trait",
         "serde_json",
         "thiserror",
+        # `ChannelStreamSink` forwards live stream events onto an mpsc channel a
+        # streaming adapter drains (the tool-input streaming path); `sync` only.
+        "tokio",
     },
     # Managed Agents protocol adapter: the anti-corruption boundary between the
     # public Anthropic wire and the neutral runtime. It owns the public DTOs and
@@ -716,6 +719,18 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "async-trait",
         "awaken-runtime-contract",
+        "tokio",
+    },
+    # Management ("admin") assistant (ADR-0052): the four read-only management tools
+    # and their descriptors plus the seeded prompt. A leaf that names only the neutral
+    # tool contract and the config aggregate (for drafting/validating AgentConfigs);
+    # the host implements its CapabilityReader/DraftValidator ports.
+    "awaken-admin-assistant": {
+        "serde",
+        "serde_json",
+        "async-trait",
+        "awaken-runtime-contract",
+        "awaken-config-store",
         "tokio",
     },
     # Memory extension: cross-session memory as a bounded context — the file store,
