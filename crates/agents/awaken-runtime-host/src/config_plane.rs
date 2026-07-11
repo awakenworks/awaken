@@ -114,11 +114,15 @@ impl ConfigService {
     }
 
     /// Validate a config by compiling it against `scope`'s tool catalog (a dry run of
-    /// publish); no store write. A config naming a tool absent from its scope's
-    /// catalog fails closed with `UnknownTool` (ADR-0052 D3).
+    /// publish); no store write. Mirrors publish: an `Auto` model is resolved first
+    /// (D5) so a draft with the default binding validates, and a config naming a tool
+    /// absent from its scope's catalog fails closed with `UnknownTool` (D3).
     pub fn validate(&self, scope: &ScopeId, config: &AgentConfig) -> Result<(), String> {
+        let compile_input = self
+            .resolve_for_compile(config.clone())
+            .map_err(|e| e.to_string())?;
         compile_with_resource_prompts(
-            config,
+            &compile_input,
             &self.tools.catalog_for(scope),
             &self.resource_prompts(&config.id),
         )

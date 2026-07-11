@@ -1382,9 +1382,13 @@ pub async fn build_config_router() -> Router {
             awaken_runtime_host::ConfigServiceAgentSource(service.clone()),
         )),
     ));
-    mount(Arc::new(host))
+    // Workspace-path addressing (ADR-0048/0052 D2): `/v1/workspaces/{ws}/config/...`
+    // is rewritten to the flat config route and stamped with `{ws}` as the scope, so
+    // the reserved admin scope is reachable and the tenant/default scope is fenced.
+    let flat = mount(Arc::new(host))
         .merge(config_router(service))
-        .merge(agents)
+        .merge(agents);
+    crate::workspace_path::with_workspace_path_addressing(flat)
 }
 
 /// The live credential-validation probe port (ADR-0043), backed by provider-genai.
