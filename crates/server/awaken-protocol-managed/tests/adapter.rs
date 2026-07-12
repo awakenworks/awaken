@@ -184,6 +184,25 @@ async fn run_error_kind_maps_to_http_status() {
 }
 
 #[tokio::test]
+async fn an_unknown_inbound_event_type_is_rejected() {
+    // A well-formed body carrying an unknown event `type` fails the tagged-enum
+    // decode → 400, not a silently-ignored event.
+    let app = router(Arc::new(ManagedState::new(EchoFake)));
+    let id = create(&app).await;
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/sessions/{id}/events"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&serde_json::json!({ "events": [{ "type": "user.bogus" }] }))
+                .unwrap(),
+        ))
+        .unwrap();
+    let status = app.clone().oneshot(req).await.unwrap().status();
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn happy_path_projects_message_and_idle() {
     let app = router(Arc::new(ManagedState::new(EchoFake)));
     let id = create(&app).await;
