@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::state::Store;
 use awaken_ext_mcp::transport::{ListChangedKind, McpToolTransport};
 use awaken_ext_mcp::{
     AuthChallenge, Credential, CredentialRefresher, HttpTransport, HttpTransportBuilder,
@@ -17,6 +18,7 @@ use awaken_protocol_mcp::export::{ProgressRawTool, ToolExportSource};
 use awaken_protocol_mcp::{
     McpExportedTool, McpHttpConfig, McpToolService, SharedExports, StaticExports, router,
 };
+use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 use serde_json::json;
@@ -74,7 +76,16 @@ fn exports() -> Vec<McpExportedTool> {
 
 /// Serve the router on an ephemeral local port; returns the endpoint URL.
 async fn serve(source: Arc<dyn ToolExportSource>, bearer_token: Option<String>) -> String {
-    let service = Arc::new(McpToolService::new("http-test", "0.0.0", source));
+    serve_with(
+        McpToolService::new("http-test", "0.0.0", source),
+        bearer_token,
+    )
+    .await
+}
+
+/// Serve a pre-built (possibly gated) service on an ephemeral local port.
+async fn serve_with(service: McpToolService, bearer_token: Option<String>) -> String {
+    let service = Arc::new(service);
     let app = router(
         service,
         McpHttpConfig {
@@ -218,4 +229,50 @@ async fn export_change_reaches_the_client_as_tools_list_changed() {
     let tools = transport.list_tools().await.expect("tools/list");
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].name, "echo");
+}
+
+/// A gate that parks every call for out-of-band approval — the `ask`/HITL outcome
+/// a permission policy produces. An external MCP client has no run to park, so the
+/// service must fail this closed rather than execute the tool.
+struct SuspendGate;
+
+#[async_trait]
+impl ToolGateHook for SuspendGate {
+    async fn gate(&self, _ctx: &PermissionContext, _state: &Store) -> GateOutcome {
+        GateOutcome::Suspend {
+            ticket_id: "ticket-1".to_string(),
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_approval_gated_tool_fails_closed_for_an_external_mcp_client() {
+    // HITL over MCP: a tool the gate would park (suspend) cannot be honored — an
+    // external client has no run to suspend — so `tools/call` returns a
+    // model-visible error instead of running the effect (ADR-0035, fail closed).
+    let service = McpToolService::new(
+        "http-test",
+        "0.0.0",
+        Arc::new(StaticExports::new(exports())),
+    )
+    .with_gate(Arc::new(SuspendGate));
+    let url = serve_with(service, None).await;
+    let transport = HttpTransport::connect(url, Credential::None)
+        .await
+        .expect("handshake");
+
+    let result = transport
+        .call_tool("echo", json!({ "message": "should never run" }))
+        .await
+        .expect("tools/call returns a result (the transport succeeds; the call is refused)");
+
+    assert!(
+        result.is_error.unwrap_or(false),
+        "a suspend/ask gate must fail closed over MCP, got {result:?}",
+    );
+    let body = format!("{:?}", result.content);
+    assert!(
+        body.contains("out-of-band approval"),
+        "the refusal names the missing out-of-band approval, got {body}",
+    );
 }

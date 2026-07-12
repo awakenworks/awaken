@@ -521,6 +521,31 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_progress_token_on_a_non_progress_tool_is_ignored() {
+        // `echo` is a plain tool; a `progressToken` cannot make it stream — the
+        // call returns the plain result and emits no notifications.
+        let sink = Arc::new(RecordingSink::default());
+        let service = service();
+        let result = service
+            .handle(
+                "tools/call",
+                json!({
+                    "name": "echo",
+                    "arguments": { "message": "hi" },
+                    "_meta": { "progressToken": 9 },
+                }),
+                Arc::clone(&sink) as Arc<dyn NotifySink>,
+            )
+            .await
+            .expect("calls");
+        assert_eq!(result["content"][0]["text"], "echo: hi");
+        assert!(
+            sink.seen.lock().unwrap().is_empty(),
+            "a plain tool emits no progress even when a token is supplied"
+        );
+    }
+
     struct DenyGate;
 
     #[async_trait]
@@ -550,5 +575,190 @@ mod tests {
                 .unwrap()
                 .contains("echo is not allowed here")
         );
+    }
+
+    struct SetResultGate;
+
+    #[async_trait]
+    impl ToolGateHook for SetResultGate {
+        async fn gate(&self, ctx: &PermissionContext, _state: &Store) -> GateOutcome {
+            GateOutcome::SetResult(ToolOutput::ok(ctx.call_id.clone(), "supplied by the gate"))
+        }
+    }
+
+    #[tokio::test]
+    async fn gate_set_result_supplies_the_output_without_running_the_tool() {
+        let source = StaticExports::new(vec![McpExportedTool::plain(
+            descriptor("echo"),
+            Arc::new(EchoTool),
+        )]);
+        let service = McpToolService::new("test-server", "0.0.0", Arc::new(source))
+            .with_gate(Arc::new(SetResultGate));
+        let result = handle(
+            &service,
+            "tools/call",
+            json!({ "name": "echo", "arguments": { "message": "hi" } }),
+        )
+        .await
+        .expect("the gate supplies a result");
+        assert_eq!(result["isError"], false);
+        // The gate's output is returned; the tool never ran (no "echo: hi").
+        assert_eq!(result["content"][0]["text"], "supplied by the gate");
+    }
+
+    struct ScheduleGate;
+
+    #[async_trait]
+    impl ToolGateHook for ScheduleGate {
+        async fn gate(&self, _ctx: &PermissionContext, _state: &Store) -> GateOutcome {
+            GateOutcome::Schedule {
+                correlation_id: "corr-1".to_string(),
+                action_kind: None,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn gate_schedule_fails_closed_like_suspend() {
+        // Schedule parks a *run*; an external MCP client has none, so — like
+        // Suspend — it fails closed as a model-visible refusal (distinct enum arm).
+        let source = StaticExports::new(vec![McpExportedTool::plain(
+            descriptor("echo"),
+            Arc::new(EchoTool),
+        )]);
+        let service = McpToolService::new("test-server", "0.0.0", Arc::new(source))
+            .with_gate(Arc::new(ScheduleGate));
+        let result = handle(&service, "tools/call", json!({ "name": "echo" }))
+            .await
+            .expect("schedule is a model-visible refusal, not a protocol error");
+        assert_eq!(result["isError"], true);
+        assert!(
+            result["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("out-of-band approval")
+        );
+    }
+
+    struct AllowGate;
+
+    #[async_trait]
+    impl ToolGateHook for AllowGate {
+        async fn gate(&self, _ctx: &PermissionContext, _state: &Store) -> GateOutcome {
+            GateOutcome::Allow
+        }
+    }
+
+    #[tokio::test]
+    async fn gate_allow_lets_the_tool_execute() {
+        // A gate is wired and allows — the `None ⇒ execute` path: the tool runs.
+        let source = StaticExports::new(vec![McpExportedTool::plain(
+            descriptor("echo"),
+            Arc::new(EchoTool),
+        )]);
+        let service = McpToolService::new("test-server", "0.0.0", Arc::new(source))
+            .with_gate(Arc::new(AllowGate));
+        let result = handle(
+            &service,
+            "tools/call",
+            json!({ "name": "echo", "arguments": { "message": "hi" } }),
+        )
+        .await
+        .expect("allow runs the tool");
+        assert_eq!(result["isError"], false);
+        assert_eq!(result["content"][0]["text"], "echo: hi");
+    }
+
+    #[tokio::test]
+    async fn ping_returns_an_empty_result() {
+        let result = handle(&service(), "ping", json!({})).await.expect("ping");
+        assert_eq!(result, json!({}));
+    }
+
+    #[tokio::test]
+    async fn initialize_reports_the_server_name_and_version() {
+        let result = handle(
+            &service(),
+            "initialize",
+            json!({ "protocolVersion": "2025-06-18" }),
+        )
+        .await
+        .expect("initializes");
+        assert_eq!(result["serverInfo"]["name"], "test-server");
+        assert_eq!(result["serverInfo"]["version"], "0.0.0");
+    }
+
+    #[tokio::test]
+    async fn initialize_without_a_version_echoes_the_server_default() {
+        let result = handle(&service(), "initialize", json!({}))
+            .await
+            .expect("initializes without a requested version");
+        assert_eq!(result["protocolVersion"], mcp::MCP_PROTOCOL_VERSION);
+    }
+
+    #[tokio::test]
+    async fn malformed_tools_call_params_is_invalid_params() {
+        // No `name` — the CallToolParams decode fails before dispatch.
+        let err = handle(
+            &service(),
+            "tools/call",
+            json!({ "arguments": { "message": "hi" } }),
+        )
+        .await
+        .expect_err("missing name is a decode failure");
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("tools/call"));
+    }
+
+    struct BadArgsTool;
+
+    #[async_trait]
+    impl RawTool for BadArgsTool {
+        fn id(&self) -> &str {
+            "badargs"
+        }
+        async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
+            Err(ToolError::InvalidArguments("path is required".to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn invoke_time_invalid_arguments_is_invalid_params() {
+        let source = StaticExports::new(vec![McpExportedTool::plain(
+            descriptor("badargs"),
+            Arc::new(BadArgsTool),
+        )]);
+        let service = McpToolService::new("test-server", "0.0.0", Arc::new(source));
+        let err = handle(&service, "tools/call", json!({ "name": "badargs" }))
+            .await
+            .expect_err("invalid arguments at invoke time");
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("path is required"));
+    }
+
+    struct UnknownAtInvokeTool;
+
+    #[async_trait]
+    impl RawTool for UnknownAtInvokeTool {
+        fn id(&self) -> &str {
+            "unk"
+        }
+        async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
+            Err(ToolError::Unknown("unk".to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn invoke_time_unknown_is_invalid_params() {
+        let source = StaticExports::new(vec![McpExportedTool::plain(
+            descriptor("unk"),
+            Arc::new(UnknownAtInvokeTool),
+        )]);
+        let service = McpToolService::new("test-server", "0.0.0", Arc::new(source));
+        let err = handle(&service, "tools/call", json!({ "name": "unk" }))
+            .await
+            .expect_err("unknown tool at invoke time");
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("unknown tool: unk"));
     }
 }

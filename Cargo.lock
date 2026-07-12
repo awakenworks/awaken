@@ -799,11 +799,13 @@ dependencies = [
  "awaken-mcp-wire",
  "awaken-runtime-contract",
  "axum",
+ "http-body-util",
  "model-context-protocol",
  "serde",
  "serde_json",
  "tokio",
  "tokio-stream",
+ "tower",
  "uuid",
 ]
 
