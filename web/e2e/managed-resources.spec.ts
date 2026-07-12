@@ -136,6 +136,31 @@ test("Tool presentation: alias a tool in the editor and persist it", async ({ pa
   await expect(page.getByPlaceholder("override description")).toHaveValue("Read a file.");
 });
 
+test("Session Files: the view projects a session's mounted resources", async ({ page, request }) => {
+  // Mount a memory store on a fresh session, then prove the session's Files view
+  // projects it (mounted resources) — the Anthropic Managed Agents parity view over
+  // `GET /sessions/:id/resources`. Output artifacts only exist after a real run writes
+  // to the outputs mount (covered by real-llm.spec harvest), so here that list is the
+  // live empty-state, proving the artifacts read reached the endpoint.
+  const store = `sfstore-${Date.now()}`;
+  const storeId = (await (await request.post("/v1/memory_stores", { data: { name: store } })).json()).id as string;
+  // A memory_store binds at session creation (Managed Agents contract — it can't be
+  // attached to a running session), so mount it via the create body's resources[].
+  const sid = (await (await request.post("/v1/sessions", {
+    data: {
+      agent: "default",
+      title: "files-e2e",
+      resources: [{ type: "memory_store", memory_store_id: storeId, mount_path: "/mnt/memory/notes" }],
+    },
+  })).json()).id as string;
+
+  await page.goto(`/w/default/sessions/${sid}`);
+  await page.getByRole("button", { name: "Files", exact: true }).click();
+  await expect(page.getByText("/mnt/memory/notes")).toBeVisible(); // mounted resource path
+  await expect(page.getByText(storeId)).toBeVisible(); // backing reference
+  await expect(page.getByText(/No artifacts yet|还没有产物/)).toBeVisible(); // live artifacts read
+});
+
 test("Deployment: create in the UI (agent + environment) and see it listed", async ({ page, request }) => {
   const name = `dep-${Date.now()}`;
   // A deployment needs a published agent + an environment — seed both via the API.

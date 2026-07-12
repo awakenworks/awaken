@@ -8,6 +8,7 @@ import { useState } from "react";
 import { Link, useParams } from "react-router";
 import Transcript from "../components/session/Transcript";
 import TraceView from "../components/session/TraceView";
+import SessionFiles from "../components/session/SessionFiles";
 import { Button, Card, Pill, Segmented } from "../components/ui";
 import { api, ws } from "../lib/api/client";
 import type { InboundEvent, Session } from "../lib/api/types";
@@ -27,7 +28,7 @@ export default function SessionDetailSurface() {
   // Workspace-scoped via ws() (tenancy is an edge aspect); flat under default scope.
   const base = ws(`/v1/sessions/${sid}`);
   const eventsKey = ["session-events", wsId, sid];
-  const [view, setView] = useState<"chat" | "trace">("chat");
+  const [view, setView] = useState<"chat" | "trace" | "files">("chat");
 
   const session = useQuery({
     queryKey: ["session", wsId, sid],
@@ -105,15 +106,14 @@ export default function SessionDetailSurface() {
             options={[
               { value: "chat", label: app.t("Chat", "对话") },
               { value: "trace", label: app.t("Trace", "追踪") },
+              { value: "files", label: app.t("Files", "文件") },
             ]}
             value={view}
             onChange={setView}
           />
-          {view === "chat" ? (
-            <Transcript base={base} queryKey={eventsKey} modelOverride />
-          ) : (
-            <TraceView base={base} queryKey={eventsKey} />
-          )}
+          {view === "chat" && <Transcript base={base} queryKey={eventsKey} modelOverride />}
+          {view === "trace" && <TraceView base={base} queryKey={eventsKey} />}
+          {view === "files" && <SessionFiles base={base} sid={sid} />}
         </div>
 
         <aside style={{ width: 300, flex: "none", display: "flex", flexDirection: "column", gap: 12 }}>
