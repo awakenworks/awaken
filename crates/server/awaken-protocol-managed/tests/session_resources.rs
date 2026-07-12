@@ -229,3 +229,13 @@ async fn memory_store_cannot_attach_to_a_running_session() {
     assert_eq!(s, StatusCode::OK);
     assert!(listed["data"].as_array().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn getting_or_deleting_an_unknown_session_resource_is_404() {
+    let (app, id) = app_with_session().await;
+    let uri = format!("/v1/sessions/{id}/resources/res_does_not_exist");
+    let (get_status, _) = call(&app, "GET", &uri, None).await;
+    assert_eq!(get_status, StatusCode::NOT_FOUND);
+    let (del_status, _) = call(&app, "DELETE", &uri, None).await;
+    assert_eq!(del_status, StatusCode::NOT_FOUND);
+}
