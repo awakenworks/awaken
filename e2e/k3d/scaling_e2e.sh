@@ -62,7 +62,14 @@ docker build --load -q -t "$IMAGE" -f "$DEPLOY_DIR/Dockerfile" "$DEPLOY_DIR" >/d
 
 log "3/5 create MULTI-node k3d cluster $CLUSTER (server + 2 agents)"
 k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || true
-k3d cluster create "$CLUSTER" --agents 2 --wait --timeout 180s >/dev/null
+# Relax the kubelet disk-eviction thresholds: on a busy dev host (docker images +
+# Rust target dir) the shared disk can sit past k3s's default nodefs/imagefs<10%,
+# which taints the node DiskPressure and refuses to schedule the postgres pod. This
+# is a test box, not a capacity test, so push eviction to ~2%.
+EVICT="eviction-hard=imagefs.available<2%,nodefs.available<2%"
+k3d cluster create "$CLUSTER" --agents 2 --wait --timeout 180s \
+  --k3s-arg "--kubelet-arg=$EVICT@server:*" \
+  --k3s-arg "--kubelet-arg=$EVICT@agent:*" >/dev/null
 
 log "4/5 side-load images into the cluster (single-platform tars → all nodes)"
 PAUSE_IMG=$(docker exec "$NODE" sh -c 'grep -hoE "sandbox_image = \"[^\"]+\"" /var/lib/rancher/k3s/agent/etc/containerd/config.toml* 2>/dev/null | head -1 | cut -d\" -f2' 2>/dev/null)
