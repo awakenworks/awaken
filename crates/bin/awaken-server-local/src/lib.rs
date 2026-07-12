@@ -457,7 +457,14 @@ fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -
     let durable_ops = durable_ops_router(host.clone());
     // The Files API (`/v1/files`) over the host's blob store — file resources + artifacts.
     let files = files_router(host.clone());
-    let memory_stores = memory_stores_router(host.clone());
+    // Tenant ownership for memory stores (ADR-0053 / ADR-0051): fence cross-tenant
+    // access to a store (and its memories/versions) by the scope that created it. A
+    // single-tenant deployment resolves to the default scope and is never fenced.
+    let memory_stores =
+        memory_stores_router(host.clone()).layer(axum::middleware::from_fn_with_state(
+            crate::resource_owner::ResourceOwners::new(),
+            crate::resource_owner::memory_store_ownership_guard,
+        ));
     // The skills API (`/v1/skills`) over the host's durable delivered-skill catalog.
     let skills = skills_router(host.clone());
     // The Models API (`/v1/models`) over the deployment's model directory.
@@ -1836,7 +1843,9 @@ async fn management_router_over(
     // sessions. Under the management storage dir when set, else a per-process temp dir.
     let skill_dir = std::env::var("AWAKEN_MGMT_DIR")
         .map(|d| std::path::PathBuf::from(d).join("skills"))
-        .unwrap_or_else(|_| std::env::temp_dir().join(format!("awaken-skills-{}", std::process::id())));
+        .unwrap_or_else(|_| {
+            std::env::temp_dir().join(format!("awaken-skills-{}", std::process::id()))
+        });
     let host = Arc::new(
         SharedHost::new(model, model_ref)
             .with_config_service(config_service.clone())
@@ -1861,9 +1870,9 @@ async fn management_router_over(
                 .with_resources(resource_store.clone()),
         )
         .with_vaults(vault_state)
-            .with_environments(env_state)
-            .with_session_repo(sessions)
-            .with_lifecycle_sink(webhook_sink),
+        .with_environments(env_state)
+        .with_session_repo(sessions)
+        .with_lifecycle_sink(webhook_sink),
     );
     // Workspace path addressing (ADR-0048 D3 / ADR-0051): wrap the fully-merged flat
     // surface so a `/v1/workspaces/{ws}/…` request is captured, rewritten to its flat

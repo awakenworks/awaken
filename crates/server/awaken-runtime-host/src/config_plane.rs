@@ -525,7 +525,7 @@ fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig, St
         mcp_servers: array("mcp_servers"),
         skills: array("skills"),
         multiagent: body.get("multiagent").filter(|v| !v.is_null()).cloned(),
-            tool_overrides,
+        tool_overrides,
     })
 }
 

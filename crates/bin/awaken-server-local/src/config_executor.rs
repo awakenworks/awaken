@@ -70,12 +70,19 @@ impl ConfigExecutorProvider {
         let binding = CredentialBinding::Exact {
             credential_source_id: chosen.id.clone(),
         };
-        let lookup: HashMap<String, CredentialSource> =
-            sources.iter().map(|s| (s.id.0.clone(), s.clone())).collect();
-        let inference =
-            resolve_inference(&catalog, model_ref, &binding, &lookup, self.secrets.as_ref())
-                .await
-                .ok()?;
+        let lookup: HashMap<String, CredentialSource> = sources
+            .iter()
+            .map(|s| (s.id.0.clone(), s.clone()))
+            .collect();
+        let inference = resolve_inference(
+            &catalog,
+            model_ref,
+            &binding,
+            &lookup,
+            self.secrets.as_ref(),
+        )
+        .await
+        .ok()?;
         executor_from_resolved(&inference).ok()
     }
 }

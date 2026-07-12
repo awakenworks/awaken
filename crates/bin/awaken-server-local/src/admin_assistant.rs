@@ -112,9 +112,7 @@ impl DraftValidator for ConfigServiceDraftValidator {
 mod tests {
     use super::*;
     use awaken_config_store::{DEFAULT_SCOPE, ModelSelection, SqliteConfigStore};
-    use awaken_model_catalog::{
-        ApiDialect, Offering, ProtocolEndpointId, Provider, ProviderId,
-    };
+    use awaken_model_catalog::{ApiDialect, Offering, ProtocolEndpointId, Provider, ProviderId};
     use awaken_runtime_host::{ConfigPlane, ConfigService, ScopedToolCatalog, StaticToolCatalog};
     use std::collections::BTreeMap;
     use std::sync::Arc;

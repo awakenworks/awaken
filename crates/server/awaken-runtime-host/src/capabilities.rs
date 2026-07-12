@@ -113,7 +113,10 @@ mod tests {
             .iter()
             .find(|p| p["id"] == "permission")
             .expect("permission policy is advertised");
-        assert!(perm["config_schema"].is_object(), "carries an object schema");
+        assert!(
+            perm["config_schema"].is_object(),
+            "carries an object schema"
+        );
         assert_eq!(perm["config_section"], "permission");
     }
 }
