@@ -696,7 +696,11 @@ async fn prepare_session_mounts_bound_file_and_stages_bound_repo() {
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
 
     // Seed a file blob, and bind BOTH a file and a repo to agent `a`.
-    let file_id = host.file_store().put(b"port is 8080").await.expect("put blob");
+    let file_id = host
+        .file_store()
+        .put(b"port is 8080")
+        .await
+        .expect("put blob");
     let bindings: Arc<dyn ResourceStore> = Arc::new(InMemoryResourceStore::new());
     bindings.put_agent_resource(AgentResourceConfig {
         agent_id: "a".into(),
@@ -737,8 +741,14 @@ async fn prepare_session_mounts_bound_file_and_stages_bound_repo() {
 
     // The file is a byte mount carrying its content, at its path.
     let dump = serde_json::to_string(&host.sandbox_spec("t-multi").mounts).unwrap();
-    assert!(dump.contains("files/notes.txt"), "bound file mounted at its path: {dump}");
-    assert!(dump.contains("port is 8080"), "file mount carries its bytes: {dump}");
+    assert!(
+        dump.contains("files/notes.txt"),
+        "bound file mounted at its path: {dump}"
+    );
+    assert!(
+        dump.contains("port is 8080"),
+        "file mount carries its bytes: {dump}"
+    );
 
     // The repo is staged for a host-side clone (not a byte mount).
     let repos = host.thread_repos("t-multi");

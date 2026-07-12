@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxProvider;
-use awaken_sandbox_local::{FileStore, InMemoryFileStore, LocalProvider, NamespaceProvider};
+mod common;
+use awaken_file_store::{FileStore, InMemoryFileStore};
+use awaken_sandbox_local::{LocalProvider, NamespaceProvider};
 
 /// A declared environment (control plane) projected to admission facts + a runnable
 /// spec. Mirrors `EnvironmentKind::Sandbox` with a seeded input file and one env var.
@@ -65,7 +67,7 @@ async fn full_declare_admit_prepare_realize_execute_retrieve() {
     pc::check_environment_soundness(&decl).expect("declaration is sound");
 
     // 2. Build the provider (Workdir tier) with the content-addressed store.
-    let provider = LocalProvider::new(tmp.path()).with_file_store(store);
+    let provider = LocalProvider::new(tmp.path()).with_blob_source(common::blob_source(store));
 
     // 3. Validate the spec against the backend's capabilities (fail-closed).
     let plan = pc::prepare_environment(&spec, &provider.capabilities()).expect("spec fits backend");
@@ -140,6 +142,7 @@ async fn capability_driven_tier_selection() {
     assert!(pc::prepare_environment(&spec, &namespace.capabilities()).is_ok());
     // realize succeeds without executing (bwrap only needed at spawn time)
     let store = declared().await.2;
-    let namespace = NamespaceProvider::new(tmp.path().join("c")).with_file_store(store);
+    let namespace =
+        NamespaceProvider::new(tmp.path().join("c")).with_blob_source(common::blob_source(store));
     assert!(namespace.create(&spec).await.is_ok());
 }

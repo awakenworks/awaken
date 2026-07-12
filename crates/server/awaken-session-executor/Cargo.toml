@@ -26,6 +26,10 @@ awaken-memory-store = { workspace = true }
 # skill added via /v1/skills survives a restart; awaken-ext-skills stays store-unaware.
 awaken-skill-store = { workspace = true }
 awaken-sandbox-local = { workspace = true }
+# The content-addressed store the host serves files/artifacts from + adapts behind
+# the sandbox providers' BlobSource port (was re-exported via awaken-sandbox-local,
+# now a direct dependency since that worker-tier crate no longer links it).
+awaken-file-store = { workspace = true }
 # The neutral sandbox vocabulary the sandboxed ACP channel source speaks
 # (SandboxSpec/Command/NetworkPolicy) when realizing the namespace tier.
 awaken-provisioning-contract = { workspace = true }

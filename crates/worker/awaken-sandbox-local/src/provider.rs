@@ -28,8 +28,6 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use std::sync::Arc;
 
-use awaken_file_store::FileStore;
-
 use crate::{IsolatedRoot, content_fingerprint};
 
 fn err(e: impl ToString) -> pc::SandboxError {
@@ -37,11 +35,11 @@ fn err(e: impl ToString) -> pc::SandboxError {
 }
 
 /// Resolve a mount's bytes: an in-memory seed map first, then an optional
-/// content-addressed [`FileStore`], then inline `Other({content})`.
+/// content-addressed [`BlobSource`](pc::BlobSource), then inline `Other({content})`.
 pub(crate) async fn resolve_source(
     source: &pc::MountSource,
     blobs: &HashMap<String, Vec<u8>>,
-    store: &Option<Arc<dyn FileStore>>,
+    store: &Option<Arc<dyn pc::BlobSource>>,
 ) -> Option<Vec<u8>> {
     // Inline `Other({content})` and unresolvable memory stores short-circuit before
     // any store hit; the rest resolve by id (seed map first, then the store).
@@ -62,7 +60,7 @@ pub(crate) async fn resolve_source(
         return Some(bytes.clone());
     }
     if let Some(store) = store
-        && let Ok(Some(bytes)) = store.get(id).await
+        && let Some(bytes) = store.get(id).await
     {
         return Some(bytes);
     }
@@ -98,7 +96,7 @@ pub struct LocalProvider {
     /// In-memory blob seed for `File`/`Resource` mounts (keyed by id).
     blobs: HashMap<String, Vec<u8>>,
     /// Optional content-addressed store consulted after the seed map (Slice 4).
-    file_store: Option<Arc<dyn FileStore>>,
+    file_store: Option<Arc<dyn pc::BlobSource>>,
 }
 
 impl LocalProvider {
@@ -119,7 +117,7 @@ impl LocalProvider {
 
     /// Resolve `File`/`Resource` mounts from a content-addressed store.
     #[must_use]
-    pub fn with_file_store(mut self, store: Arc<dyn FileStore>) -> Self {
+    pub fn with_blob_source(mut self, store: Arc<dyn pc::BlobSource>) -> Self {
         self.file_store = Some(store);
         self
     }

@@ -372,6 +372,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tracing",
         "fuser",
         "libc",
+        # dev-only: the kernel-VFS test issues a `truncate` by path (setattr without
+        # an fd) via nix's safe wrapper.
+        "nix",
     },
     # Durable skill catalog (resources plane): a SKILL.md-per-skill store the host
     # serves delivered skills from. A resources-plane store like awaken-data-subject —
@@ -884,14 +887,16 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # (jailing their paths to an IsolatedRoot), so it depends on the extension it
     # wraps and the neutral tool port. The remote/container provider lives in a
     # distributed repo and plugs in through the `SandboxProvider` trait.
+    # Worker tier (ADR-0041/ADR-0053): the isolated-execution sandbox provider. It
+    # links NO durable store (A-G17) — it resolves mount bytes through the injected
+    # `BlobSource` port and computes the BLAKE3 content id itself.
     "awaken-sandbox-local": {
         "awaken-runtime-contract",
         # Implements the neutral sandbox ports (ADR-0041): a LocalProvider over the
         # provisioning contract, alongside the pre-contract Environment surface.
         "awaken-provisioning-contract",
-        # Content-addressed blob store (ADR-0041): the canonical BLAKE3 content id +
-        # FileStore port the provider resolves mount bytes from (ADR-0038 D6).
-        "awaken-file-store",
+        # BLAKE3 content id for the mount pin (was awaken_file_store::content_id).
+        "blake3",
         # The tool-transparent capability: spawn_agent returns a pipe-backed AgentChannel.
         "awaken-agent-channel",
         "awaken-ext-builtin-tools",
@@ -899,8 +904,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "thiserror",
         "tokio",
-        # dev-only: temp dirs for the LocalProvider spawn/artifact tests.
+        # dev-only: temp dirs + a real content store behind a BlobSource test adapter.
         "tempfile",
+        "awaken-file-store",
     },
     # Container/K8s provider (ADR-0041 Slice 5): realizes the neutral sandbox ports
     # over a dependency-inverted ContainerRuntime port + pure plan renderers. The
@@ -971,6 +977,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-ext-goal",
         "awaken-ext-state-machine",
         "awaken-sandbox-local",
+        # The content-addressed store the host serves files/artifacts from and adapts
+        # behind the sandbox providers' BlobSource port (was re-exported via
+        # awaken-sandbox-local before that crate moved to the worker tier).
+        "awaken-file-store",
         # The neutral sandbox vocabulary (SandboxSpec/Command/NetworkPolicy) the
         # sandboxed ACP channel source speaks when realizing the namespace tier —
         # already in the closure via awaken-sandbox-local; named directly here.
