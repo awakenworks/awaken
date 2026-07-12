@@ -77,6 +77,30 @@ impl AnyDispatchStore {
         Ok((Self::from_store(store), wake))
     }
 
+    /// Connect the Postgres durable backend but pair it with a [`NatsWakeSignal`]
+    /// (feature `nats`) instead of `pg_notify` for the cross-node wake hint. The
+    /// durable STORE stays Postgres (the queue authority); only the best-effort wake
+    /// fan-out moves to a NATS `subject`, for a fleet that already runs a NATS broker
+    /// (ADR-0019/0028). Returns the store plus the ready wake signal. Like every
+    /// [`WakeSignal`] the hint is non-authoritative — a lost NATS message only defers
+    /// a drain to the poll fallback, so correctness never depends on it.
+    #[cfg(feature = "nats")]
+    pub async fn connect_postgres_with_nats_wake(
+        db_url: &str,
+        nats_url: &str,
+        subject: &str,
+    ) -> Result<(Self, Arc<dyn crate::wake::WakeSignal>), String> {
+        let store = PostgresDispatchStore::connect(db_url)
+            .await
+            .map_err(|e| e.to_string())?;
+        let wake: Arc<dyn crate::wake::WakeSignal> = Arc::new(
+            crate::wake::NatsWakeSignal::connect(nats_url, subject.to_string())
+                .await
+                .map_err(|e| e.to_string())?,
+        );
+        Ok((Self::from_store(store), wake))
+    }
+
     fn from_store(store: impl Dispatch + 'static) -> Self {
         Self {
             inner: Arc::new(store),
