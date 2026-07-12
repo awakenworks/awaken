@@ -278,6 +278,26 @@ async fn dispose_removes_the_environment() {
 }
 
 #[tokio::test]
+async fn adopt_of_a_disposed_handle_reports_terminated() {
+    // A durable handle outlives the process, but the environment it names may be
+    // gone by the time we adopt (crash after dispose, stale dispatch binding).
+    // `adopt` still reconnects — but the reconnected sandbox reports Terminated,
+    // the signal `reconcile_adoption` reaps an orphan on rather than a false Ready.
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = LocalProvider::new(tmp.path());
+    let sandbox = provider.create(&spec("t-stale")).await.unwrap();
+    let handle = sandbox.handle();
+    sandbox.dispose().await.unwrap();
+
+    let adopted = provider.adopt(&handle).await.unwrap();
+    assert_eq!(adopted.id(), "t-stale");
+    assert!(matches!(
+        adopted.status().await.unwrap(),
+        pc::SandboxStatus::Terminated
+    ));
+}
+
+#[tokio::test]
 async fn spawn_missing_program_errors() {
     let tmp = tempfile::tempdir().unwrap();
     let sandbox = LocalProvider::new(tmp.path())

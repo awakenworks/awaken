@@ -250,6 +250,21 @@ mod tests {
     }
 
     #[test]
+    fn config_home_open_failure_yields_no_env_not_a_panic() {
+        // The store dir is a regular FILE, so `ConfigHome::open`'s `create_dir_all`
+        // fails. The resolver must degrade to no env (the CLI falls back to its own
+        // default home) rather than abort the launch.
+        let file = std::env::temp_dir().join(format!("awaken-ch-notdir-{}", std::process::id()));
+        std::fs::write(&file, b"x").unwrap();
+        let r = resolver_with(&[], Some(file.clone()));
+        assert!(
+            r.config_home_env("thr").is_empty(),
+            "an unopenable config home must degrade to no env"
+        );
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
     fn extra_env_points_the_cli_at_the_threads_config_home() {
         let base = std::env::temp_dir().join(format!("awaken-aclr-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);

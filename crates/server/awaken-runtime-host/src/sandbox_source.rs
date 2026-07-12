@@ -156,3 +156,67 @@ impl AgentChannelSource for SandboxChannelSource {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("awaken-sbxsrc-ut-{}", std::process::id()))
+    }
+
+    #[test]
+    fn spec_shares_the_host_network_without_a_registration() {
+        let src = SandboxChannelSource::new(base(), AcpLaunch::custom(vec!["a".into()], vec![]));
+        let spec = src.spec("t");
+        assert!(matches!(spec.network, pc::NetworkPolicy::Unrestricted));
+        assert_eq!(spec.isolation, pc::IsolationClass::Namespace);
+        assert_eq!(spec.scope, "t");
+        assert_eq!(spec.outputs_path, "/mnt/session/outputs");
+    }
+
+    #[test]
+    fn spec_maps_a_deny_egress_thread_to_no_network() {
+        let egress = ThreadEgress::new();
+        egress.set("iso", true);
+        let src = SandboxChannelSource::new(base(), AcpLaunch::custom(vec!["a".into()], vec![]))
+            .with_thread_egress(egress);
+        assert!(matches!(src.spec("iso").network, pc::NetworkPolicy::None));
+        // A sibling thread with no registration still shares the host network.
+        assert!(matches!(
+            src.spec("open").network,
+            pc::NetworkPolicy::Unrestricted
+        ));
+    }
+
+    #[test]
+    fn command_projects_launch_env_as_inline_process_vars_with_piped_stdio() {
+        let src = SandboxChannelSource::new(
+            base(),
+            AcpLaunch::custom(
+                vec!["prog".into(), "--flag".into()],
+                vec![("K".into(), "V".into())],
+            ),
+        );
+        let cmd = src.command();
+        assert_eq!(cmd.argv, vec!["prog".to_string(), "--flag".to_string()]);
+        assert!(matches!(cmd.stdio, pc::Stdio::Piped));
+        assert_eq!(cmd.env.len(), 1);
+        assert_eq!(cmd.env[0].name, "K");
+        assert!(matches!(cmd.env[0].value, pc::EnvValue::Inline { .. }));
+        assert!(matches!(cmd.env[0].visibility, pc::EnvVisibility::Process));
+    }
+
+    #[test]
+    fn thread_egress_defaults_false_and_set_overwrites() {
+        let e = ThreadEgress::new();
+        assert!(
+            !e.denies("x"),
+            "an unregistered thread shares the host network"
+        );
+        e.set("x", true);
+        assert!(e.denies("x"));
+        e.set("x", false); // a later registration replaces the prior one
+        assert!(!e.denies("x"));
+    }
+}

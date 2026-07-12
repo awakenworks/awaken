@@ -13,6 +13,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_run_executor_acp::AgentChannelSource;
 use awaken_run_executor_acp::{AcpLaunch, AcpRunExecutor};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
@@ -169,4 +170,47 @@ async fn deny_egress_confines_the_sandboxed_agent_network() {
     );
 
     drop(listener);
+}
+
+// ── Failure mapping (ungated: no bwrap required) ────────────────────────────────
+
+#[tokio::test]
+async fn open_maps_a_sandbox_create_failure_to_open_error() {
+    // The provider base is a regular FILE, so realizing the sandbox tree
+    // (`create_dir_all(base/scope)`) fails deterministically — no bwrap needed.
+    let file = std::env::temp_dir().join(format!("awaken-sbx-notdir-{}", std::process::id()));
+    std::fs::write(&file, b"x").unwrap();
+    let launch = AcpLaunch::custom(vec!["/bin/true".to_string()], vec![]);
+    let source = SandboxChannelSource::new(file.clone(), launch);
+
+    let err = match source.open(&activation("t-create-fail")).await {
+        Ok(_) => panic!("expected a sandbox-create failure"),
+        Err(e) => e,
+    };
+    assert!(
+        err.0.contains("sandbox create"),
+        "a create failure must surface as a sandbox-create OpenError: {}",
+        err.0
+    );
+    let _ = std::fs::remove_file(&file);
+}
+
+#[tokio::test]
+async fn open_maps_a_spawn_failure_to_open_error() {
+    // The sandbox realizes fine (writable base, no bwrap for `create`), but the
+    // launch has empty argv, so `spawn_agent` fails in `render_argv` before bwrap —
+    // proving the launch-side error arm maps to a distinct OpenError.
+    let base = sandbox_base("spawn-fail");
+    let launch = AcpLaunch::custom(Vec::new(), vec![]);
+    let source = SandboxChannelSource::new(base, launch);
+
+    let err = match source.open(&activation("t-spawn-fail")).await {
+        Ok(_) => panic!("expected a sandboxed-agent-launch failure"),
+        Err(e) => e,
+    };
+    assert!(
+        err.0.contains("sandboxed agent launch"),
+        "a launch failure must surface as a sandboxed-agent-launch OpenError: {}",
+        err.0
+    );
 }
