@@ -50,8 +50,9 @@ fn id_filename(id: &str) -> String {
 }
 
 /// Reduce `name` to a safe single stem: keep alphanumerics, `-`, `_`; map every other
-/// run to a single `-`; never empty. A `put` cannot escape the root.
-fn sanitize_stem(name: &str) -> String {
+/// run to a single `-`; never empty. So a crafted store/workspace id can name neither
+/// a file that escapes a store root nor a FUSE mountpoint that escapes its parent.
+pub fn sanitize_stem(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     for c in name.chars() {
         if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
