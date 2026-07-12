@@ -462,12 +462,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_non_projecting_update_is_skipped_while_the_message_still_projects() {
+        let (mut ours, theirs) = channel();
+        let updates = vec![
+            // A user-message echo has no runtime projection — it must be skipped.
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"echo of the prompt"}}}}"#.into(),
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"the answer"}}}}"#.into(),
+        ];
+        let agent = tokio::spawn(scripted_agent(theirs, updates, "end_turn"));
+        let mut sink = RecordingSink::default();
+        run_turn(ours.as_mut(), "p", &mut sink, None).await.unwrap();
+        // Only the agent message projected; the user echo produced no event.
+        let messages: Vec<String> = sink
+            .events
+            .iter()
+            .filter_map(|(_, e)| match e {
+                AgentEvent::Message { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(messages, vec!["the answer".to_string()]);
+        agent.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn refusal_stop_reason_projects_a_refusal() {
         let (mut ours, theirs) = channel();
         let agent = tokio::spawn(scripted_agent(theirs, vec![], "refusal"));
         let mut sink = RecordingSink::default();
         let reason = run_turn(ours.as_mut(), "p", &mut sink, None).await.unwrap();
         assert_eq!(reason, TerminationReason::Refusal);
+        agent.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_stop_reason_maps_to_cancelled_over_the_live_driver() {
+        let (mut ours, theirs) = channel();
+        let agent = tokio::spawn(scripted_agent(theirs, vec![], "cancelled"));
+        let mut sink = RecordingSink::default();
+        let reason = run_turn(ours.as_mut(), "p", &mut sink, None).await.unwrap();
+        assert_eq!(reason, TerminationReason::Cancelled);
+        agent.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn max_tokens_stop_reason_maps_to_timed_out_over_the_live_driver() {
+        let (mut ours, theirs) = channel();
+        let agent = tokio::spawn(scripted_agent(theirs, vec![], "max_tokens"));
+        let mut sink = RecordingSink::default();
+        let reason = run_turn(ours.as_mut(), "p", &mut sink, None).await.unwrap();
+        assert_eq!(reason, TerminationReason::TimedOut);
         agent.await.unwrap();
     }
 
@@ -557,5 +601,99 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, AcpError::Truncated));
         agent.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn fs_request_gets_method_not_found_because_we_advertise_no_fs_capability() {
+        // We advertise no `fs`/`terminal` capabilities; an agent that asks for one
+        // mid-turn must be answered fail-closed with a JSON-RPC method_not_found, not
+        // silently granted. This is the core "we serve no client capabilities" claim.
+        let (mut ours, theirs) = channel();
+        let seen = Arc::new(Mutex::new(String::new()));
+        let fs_req = r#"{"jsonrpc":"2.0","id":42,"method":"fs/read_text_file","params":{"sessionId":"sess-1","path":"/etc/passwd"}}"#;
+        let seen2 = seen.clone();
+        let agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            io.read().await;
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#,
+            )
+            .await;
+            io.read().await;
+            io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-1"}}"#)
+                .await;
+            io.read().await; // prompt request
+            io.write_line(fs_req).await;
+            io.read().await; // the client's fail-closed reply
+            *seen2.lock().unwrap() = io.line.clone();
+            io.write_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#)
+                .await;
+        });
+
+        let mut sink = RecordingSink::default();
+        let reason = run_turn(ours.as_mut(), "p", &mut sink, None).await.unwrap();
+        assert_eq!(reason, TerminationReason::NaturalEnd);
+        agent.await.unwrap();
+        let reply = seen.lock().unwrap().clone();
+        assert!(
+            reply.contains("\"id\":42"),
+            "replied to the request id: {reply}"
+        );
+        assert!(reply.contains("-32601"), "method_not_found code: {reply}");
+        assert!(
+            reply.contains("capability not supported"),
+            "names the unsupported capability: {reply}"
+        );
+    }
+
+    fn perm_req(options: serde_json::Value) -> RequestPermissionRequest {
+        serde_json::from_value(serde_json::json!({
+            "sessionId": "sess-1",
+            "toolCall": { "toolCallId": "t1" },
+            "options": options,
+        }))
+        .expect("a valid permission request")
+    }
+
+    fn outcome_json(outcome: &RequestPermissionOutcome) -> String {
+        serde_json::to_value(outcome).unwrap().to_string()
+    }
+
+    #[test]
+    fn reject_once_is_preferred_over_allow_and_reject_always() {
+        let req = perm_req(serde_json::json!([
+            {"optionId":"ok","name":"Allow","kind":"allow_once"},
+            {"optionId":"no","name":"Reject","kind":"reject_once"},
+            {"optionId":"never","name":"Reject always","kind":"reject_always"},
+        ]));
+        let out = reject_outcome(&req);
+        assert!(matches!(out, RequestPermissionOutcome::Selected(_)));
+        assert!(
+            outcome_json(&out).contains("\"no\""),
+            "{}",
+            outcome_json(&out)
+        );
+    }
+
+    #[test]
+    fn reject_always_is_the_fallback_when_no_reject_once() {
+        let req = perm_req(serde_json::json!([
+            {"optionId":"ok","name":"Allow","kind":"allow_once"},
+            {"optionId":"never","name":"Reject always","kind":"reject_always"},
+        ]));
+        let out = reject_outcome(&req);
+        assert!(matches!(out, RequestPermissionOutcome::Selected(_)));
+        assert!(outcome_json(&out).contains("\"never\""));
+    }
+
+    #[test]
+    fn no_reject_option_offered_cancels_the_turn() {
+        let req = perm_req(serde_json::json!([
+            {"optionId":"ok","name":"Allow","kind":"allow_once"},
+        ]));
+        assert!(matches!(
+            reject_outcome(&req),
+            RequestPermissionOutcome::Cancelled
+        ));
     }
 }
