@@ -145,7 +145,11 @@ impl Runtime {
         self
     }
 
-    pub(crate) fn metrics(&self) -> &dyn awaken_runtime_contract::metrics::MetricsRecorder {
+    /// The injected structure-only metrics recorder (or the no-op default). Public
+    /// so a durable dispatch worker holding this `Runtime` records its own
+    /// `awaken.dispatch.*` counters onto the SAME recorder that meters model/tool
+    /// calls — one sink, one OTLP pipeline, no extra wiring.
+    pub fn metrics(&self) -> &dyn awaken_runtime_contract::metrics::MetricsRecorder {
         match &self.metrics {
             Some(m) => m.as_ref(),
             None => &NOOP_METRICS,
