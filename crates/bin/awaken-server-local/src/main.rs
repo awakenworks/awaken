@@ -112,11 +112,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     eprintln!("awaken-server-local listening on http://{addr}");
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
+        .with_graceful_shutdown(shutdown_signal())
         .await?;
     // Flush any buffered spans (OTLP batch / trace-file) before exit.
     awaken_observability::shutdown();
     Ok(())
+}
+
+/// Resolve when the process is asked to stop, so `axum::serve` stops accepting new
+/// connections and drains in-flight requests before returning. We wait on BOTH
+/// SIGINT (Ctrl-C, a developer's foreground stop) AND SIGTERM (the signal an
+/// orchestrator — Kubernetes, systemd, `docker stop` — sends first, before the
+/// hard SIGKILL). Handling SIGTERM is what makes the drain fire under a real
+/// deployment: a durable foreground run is held open by its still-pending HTTP
+/// handler (which awaits the dispatch pool's settle event), so graceful shutdown
+/// waits for that request to finish — the run settles and commits instead of being
+/// abandoned mid-drive (stranded claimed-but-not-settled until its lease expires).
+/// Without the SIGTERM arm the process took the default disposition — an immediate
+/// kill (exit 143) that dropped in-flight foreground work and skipped the span
+/// flush below. Background/queued pool work not tied to a live request is not
+/// covered here; it relies on lease-expiry recovery on the next start.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        // If SIGTERM can't be registered, fall back to Ctrl-C only rather than
+        // refuse to shut down.
+        let mut term = match signal(SignalKind::terminate()) {
+            Ok(term) => term,
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
