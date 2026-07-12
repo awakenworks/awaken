@@ -20,6 +20,8 @@ fn next(prefix: &str) -> String {
 pub struct ToolResultInput {
     pub tool_call_id: String,
     pub content: String,
+    /// The AG-UI `error` message, when the tool failed or the approval was denied.
+    pub error: Option<String>,
 }
 
 /// A decoded `RunAgentInput` ready for the runtime.
@@ -146,6 +148,7 @@ fn extract_tool_results(messages: &[AgUiMessage]) -> Vec<ToolResultInput> {
             Some(ToolResultInput {
                 tool_call_id,
                 content: content_text(&m.content),
+                error: m.error.clone(),
             })
         })
         .collect()
@@ -228,9 +231,178 @@ mod tests {
             p.tool_results,
             vec![ToolResultInput {
                 tool_call_id: "c1".into(),
-                content: "42".into()
+                content: "42".into(),
+                error: None,
             }]
         );
         assert!(p.run_id.starts_with("run-"));
+    }
+
+    #[test]
+    fn decodes_a_url_image_source_into_an_image_url_block() {
+        use awaken_agent_contract::agent::content::ImageSource;
+        let input = RunAgentInput {
+            thread_id: Some("t".into()),
+            run_id: Some("r".into()),
+            messages: vec![
+                serde_json::from_value(json!({
+                    "id": "u1",
+                    "role": "user",
+                    "content": [
+                        { "type": "image", "source": { "type": "url", "value": "https://x/y.png" } },
+                    ],
+                }))
+                .unwrap(),
+            ],
+        };
+        let p = process(input, None, &HashSet::new());
+        assert!(matches!(
+            &p.messages[0].content[0],
+            ContentBlock::Image {
+                source: ImageSource::Url { url }
+            } if url == "https://x/y.png"
+        ));
+    }
+
+    #[test]
+    fn system_role_maps_to_system() {
+        let input = RunAgentInput {
+            thread_id: Some("t".into()),
+            run_id: Some("r".into()),
+            messages: vec![msg("system", "s1", Some("be terse"), None)],
+        };
+        let p = process(input, None, &HashSet::new());
+        assert_eq!(p.messages.len(), 1);
+        assert_eq!(p.messages[0].role, Role::System);
+    }
+
+    #[test]
+    fn a_message_without_an_id_gets_a_generated_one() {
+        let input = RunAgentInput {
+            thread_id: Some("t".into()),
+            run_id: Some("r".into()),
+            messages: vec![
+                serde_json::from_value(json!({ "role": "user", "content": "hi" })).unwrap(),
+            ],
+        };
+        let p = process(input, None, &HashSet::new());
+        assert_eq!(p.messages.len(), 1);
+        assert!(!p.messages[0].id.0.is_empty());
+    }
+
+    #[test]
+    fn developer_role_maps_to_system() {
+        let input = RunAgentInput {
+            thread_id: Some("t".into()),
+            run_id: Some("r".into()),
+            messages: vec![msg("developer", "d1", Some("guidance"), None)],
+        };
+        let p = process(input, None, &HashSet::new());
+        assert_eq!(p.messages[0].role, Role::System);
+    }
+
+    #[test]
+    fn duplicate_ids_within_one_batch_are_both_converted() {
+        // Dedup checks committed history (`known_ids`) only, not intra-batch dupes.
+        let input = RunAgentInput {
+            thread_id: Some("t".into()),
+            run_id: Some("r".into()),
+            messages: vec![
+                msg("user", "dup", Some("one"), None),
+                msg("user", "dup", Some("two"), None),
+            ],
+        };
+        let p = process(input, None, &HashSet::new());
+        assert_eq!(p.messages.len(), 2);
+    }
+
+    #[test]
+    fn a_message_with_no_content_is_skipped() {
+        let input = RunAgentInput {
+            thread_id: Some("t".into()),
+            run_id: Some("r".into()),
+            messages: vec![
+                msg("user", "e1", None, None),
+                msg("user", "u2", Some("hi"), None),
+            ],
+        };
+        let p = process(input, None, &HashSet::new());
+        assert_eq!(p.messages.len(), 1);
+        assert_eq!(blocks_text(&p.messages[0].content), "hi");
+    }
+
+    #[test]
+    fn a_tool_result_decodes_the_ag_ui_error_string() {
+        // AG-UI `ToolMessage.error` is an optional error message string.
+        let input = RunAgentInput {
+            thread_id: Some("t".into()),
+            run_id: None,
+            messages: vec![
+                serde_json::from_value(json!({
+                    "id": "tr1", "role": "tool", "toolCallId": "c1", "content": "", "error": "it failed"
+                }))
+                .unwrap(),
+            ],
+        };
+        let p = process(input, None, &HashSet::new());
+        assert_eq!(p.tool_results[0].error.as_deref(), Some("it failed"));
+    }
+
+    #[test]
+    fn a_tool_result_without_an_error_has_none() {
+        let input = RunAgentInput {
+            thread_id: Some("t".into()),
+            run_id: None,
+            messages: vec![msg("tool", "tr1", Some("ok"), Some("c1"))],
+        };
+        let p = process(input, None, &HashSet::new());
+        assert!(p.tool_results[0].error.is_none());
+    }
+
+    #[test]
+    fn a_tool_result_with_multimodal_content_extracts_only_text() {
+        let input = RunAgentInput {
+            thread_id: Some("t".into()),
+            run_id: None,
+            messages: vec![
+                serde_json::from_value(json!({
+                    "id": "tr1", "role": "tool", "toolCallId": "c1",
+                    "content": [
+                        { "type": "text", "text": "result" },
+                        { "type": "image", "source": { "type": "url", "value": "x" } }
+                    ]
+                }))
+                .unwrap(),
+            ],
+        };
+        let p = process(input, None, &HashSet::new());
+        assert_eq!(p.tool_results[0].content, "result");
+    }
+
+    #[test]
+    fn a_plain_string_content_becomes_one_text_block() {
+        let input = RunAgentInput {
+            thread_id: Some("t".into()),
+            run_id: Some("r".into()),
+            messages: vec![msg("user", "u1", Some("hello"), None)],
+        };
+        let p = process(input, None, &HashSet::new());
+        assert_eq!(p.messages[0].content.len(), 1);
+        assert_eq!(blocks_text(&p.messages[0].content), "hello");
+    }
+
+    #[test]
+    fn an_empty_string_content_is_skipped() {
+        let input = RunAgentInput {
+            thread_id: Some("t".into()),
+            run_id: Some("r".into()),
+            messages: vec![
+                msg("user", "e1", Some(""), None),
+                msg("user", "u2", Some("hi"), None),
+            ],
+        };
+        let p = process(input, None, &HashSet::new());
+        assert_eq!(p.messages.len(), 1);
+        assert_eq!(blocks_text(&p.messages[0].content), "hi");
     }
 }

@@ -271,4 +271,104 @@ mod tests {
                 .any(|e| matches!(e, AgUiEvent::RunFinished { .. }))
         );
     }
+
+    #[test]
+    fn run_failed_transcodes_to_a_run_error() {
+        let mut enc = AgUiEncoder::new("t1", "r1");
+        let events = enc.transcode(&AgentEvent::RunFailed {
+            code: "overloaded".into(),
+            message: "try later".into(),
+        });
+        assert!(matches!(
+            events.as_slice(),
+            [AgUiEvent::RunError { message }]
+                if message.contains("overloaded") && message.contains("try later")
+        ));
+    }
+
+    #[test]
+    fn waiting_transcodes_to_a_run_finished_not_an_interrupt() {
+        // Documents the current shape: a parked built-in tool surfaces as a plain
+        // RUN_FINISHED (no dedicated RUN_INTERRUPTED event exists in this adapter).
+        let mut enc = AgUiEncoder::new("t1", "r1");
+        let events = enc.transcode(&AgentEvent::Waiting {
+            pending_tool_use_id: Some("c1".into()),
+        });
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AgUiEvent::RunFinished { .. }))
+        );
+    }
+
+    #[test]
+    fn successive_tool_results_get_distinct_message_ids() {
+        let mut enc = AgUiEncoder::new("t1", "r1");
+        let first = enc.transcode(&AgentEvent::ToolResult {
+            id: "c1".into(),
+            content: vec![ContentBlock::text("one")],
+            is_error: false,
+        });
+        let second = enc.transcode(&AgentEvent::ToolResult {
+            id: "c2".into(),
+            content: vec![ContentBlock::text("two")],
+            is_error: false,
+        });
+        let id = |evs: &[AgUiEvent]| match &evs[0] {
+            AgUiEvent::ToolCallResult { message_id, .. } => message_id.clone(),
+            other => panic!("expected a tool-call result, got {other:?}"),
+        };
+        let a = id(&first);
+        let b = id(&second);
+        assert_eq!(a, "r1-tr-0");
+        assert_eq!(b, "r1-tr-1");
+        assert_ne!(a, b, "each tool result must carry a distinct message id");
+    }
+
+    #[test]
+    fn an_empty_assistant_message_transcodes_to_nothing() {
+        let mut enc = AgUiEncoder::new("t1", "r1");
+        let events = enc.transcode(&AgentEvent::AssistantMessage {
+            id: "a1".into(),
+            content: vec![],
+        });
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn an_assistant_message_transcodes_to_a_bracketed_text_message() {
+        let mut enc = AgUiEncoder::new("t1", "r1");
+        let events = enc.transcode(&AgentEvent::AssistantMessage {
+            id: "a1".into(),
+            content: vec![ContentBlock::text("hello")],
+        });
+        assert!(matches!(
+            events.first(),
+            Some(AgUiEvent::TextMessageStart { .. })
+        ));
+        assert!(matches!(
+            events.last(),
+            Some(AgUiEvent::TextMessageEnd { .. })
+        ));
+        assert!(
+            events.iter().any(
+                |e| matches!(e, AgUiEvent::TextMessageContent { delta, .. } if delta == "hello")
+            )
+        );
+    }
+
+    #[test]
+    fn a_tool_call_transcodes_to_start_args_end() {
+        use awaken_agent_contract::project::ToolDisposition;
+        let mut enc = AgUiEncoder::new("t1", "r1");
+        let events = enc.transcode(&AgentEvent::ToolCall {
+            id: "c1".into(),
+            name: "read".into(),
+            input: json!({ "path": "x" }),
+            disposition: ToolDisposition::PendingBuiltin,
+        });
+        assert!(matches!(events[0], AgUiEvent::ToolCallStart { .. }));
+        assert!(matches!(events[1], AgUiEvent::ToolCallArgs { .. }));
+        assert!(matches!(events[2], AgUiEvent::ToolCallEnd { .. }));
+    }
 }
