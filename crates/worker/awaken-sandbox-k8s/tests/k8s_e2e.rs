@@ -91,11 +91,18 @@ async fn collects_and_reads_artifacts_over_real_k8s() {
 
     let arts = sandbox.artifacts().await.expect("artifacts");
     assert_eq!(arts.len(), 1, "one produced artifact, got {arts:?}");
-    assert!(arts[0].path.ends_with("result.txt"), "path: {}", arts[0].path);
+    assert!(
+        arts[0].path.ends_with("result.txt"),
+        "path: {}",
+        arts[0].path
+    );
     assert_eq!(arts[0].size_bytes, 14);
     assert_eq!(arts[0].id, arts[0].content_hash);
 
-    let bytes = sandbox.read_artifact(&arts[0].id).await.expect("read_artifact");
+    let bytes = sandbox
+        .read_artifact(&arts[0].id)
+        .await
+        .expect("read_artifact");
     assert_eq!(bytes, b"hello-artifact");
     assert!(sandbox.read_artifact("deadbeef").await.is_err());
 

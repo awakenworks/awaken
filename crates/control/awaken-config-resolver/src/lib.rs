@@ -15,7 +15,8 @@
 
 use awaken_agent_contract::RedactedString;
 use awaken_credential_vault::{
-    AvailabilityLedger, CredentialBinding, CredentialError, CredentialSource, SecretRef, SecretStore,
+    AvailabilityLedger, CredentialBinding, CredentialError, CredentialSource, SecretRef,
+    SecretStore,
 };
 use awaken_model_catalog::{ApiDialect, ProviderCatalog};
 
@@ -954,7 +955,7 @@ mod tests {
                 plugin_ids: Vec::new(),
                 plugin_config: Default::default(),
                 context_policy: Default::default(),
-                            tool_presentation: Default::default(),
+                tool_presentation: Default::default(),
             },
             fingerprint: CatalogFingerprint("fp".into()),
         };

@@ -161,7 +161,6 @@ impl GenaiExecutor {
             .build();
         Self::with_client(client)
     }
-
 }
 
 #[async_trait]

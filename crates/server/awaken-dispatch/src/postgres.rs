@@ -241,12 +241,7 @@ impl DispatchQueue for PostgresDispatchStore {
         // running, this UPDATE hits the unique violation. That claim simply lost the
         // race — roll back and report "nothing claimed", the pool retries next tick.
         if let Err(err) = claimed {
-            if err
-                .as_database_error()
-                .and_then(|e| e.code())
-                .as_deref()
-                == Some("23505")
-            {
+            if err.as_database_error().and_then(|e| e.code()).as_deref() == Some("23505") {
                 let _ = tx.rollback().await;
                 return Ok(None);
             }
