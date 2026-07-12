@@ -175,22 +175,25 @@ async fn resume_step(
         .find(|r| r.tool_call_id == pending.tool_use_id)
         .or_else(|| tool_results.first())
         .ok_or_else(|| DriverError::BadRequest("no tool result for the parked tool".into()))?;
-    let resume = to_resume(&result.content, &pending);
+    let resume = to_resume(&result.content, result.error.as_deref(), &pending);
     rt.resume(thread, &pending.tool_use_id, resume).await
 }
 
 /// Map an AG-UI tool result to a neutral resume, matching the pending tool's
-/// binding (client-executed delivers the content; built-in reads it as approval).
-fn to_resume(content: &str, pending: &Pending) -> Resume {
+/// binding. A client-executed tool delivers its content, flagged as an error when
+/// the message's `error` (the AG-UI `ToolMessage.error` string) is present; a
+/// built-in tool awaiting approval reads a present `error` as a denial (carrying it
+/// as the note) and anything else as an allow.
+fn to_resume(content: &str, error: Option<&str>, pending: &Pending) -> Resume {
     if pending.client_executed {
         Resume::ClientResult {
             content: content.to_string(),
-            is_error: false,
+            is_error: error.is_some(),
         }
     } else {
         Resume::Confirm {
-            allow: true,
-            note: None,
+            allow: error.is_none(),
+            note: error.map(str::to_string),
         }
     }
 }
@@ -246,4 +249,56 @@ fn error_events(thread: &str, run_id: &str, err: DriverError, started: bool) -> 
 /// A run bracketed by `RUN_STARTED` / `RUN_ERROR` for a non-streaming failure.
 fn sse_error(thread: &str, run_id: &str, err: DriverError) -> Response {
     sse_response(error_events(thread, run_id, err, false))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pending(client_executed: bool) -> Pending {
+        Pending {
+            tool_use_id: "t1".into(),
+            name: "probe".into(),
+            input: serde_json::Value::Null,
+            client_executed,
+        }
+    }
+
+    #[test]
+    fn client_executed_tool_delivers_the_content_as_its_result() {
+        let r = to_resume("the answer", None, &pending(true));
+        assert!(
+            matches!(r, Resume::ClientResult { content, is_error: false } if content == "the answer")
+        );
+    }
+
+    #[test]
+    fn a_client_executed_tool_error_is_delivered_as_an_error_result() {
+        let r = to_resume("it failed", Some("it failed"), &pending(true));
+        assert!(
+            matches!(r, Resume::ClientResult { content, is_error: true } if content == "it failed")
+        );
+    }
+
+    #[test]
+    fn a_builtin_tool_result_without_an_error_is_read_as_an_approval() {
+        let r = to_resume("anything", None, &pending(false));
+        assert!(matches!(
+            r,
+            Resume::Confirm {
+                allow: true,
+                note: None
+            }
+        ));
+    }
+
+    #[test]
+    fn a_builtin_tool_result_with_an_error_is_a_denial() {
+        // The AG-UI `error` message denies a built-in approval, carried as the note.
+        let r = to_resume("ignored content", Some("not permitted"), &pending(false));
+        assert!(matches!(
+            r,
+            Resume::Confirm { allow: false, note: Some(n) } if n == "not permitted"
+        ));
+    }
 }

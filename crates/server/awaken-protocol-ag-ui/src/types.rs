@@ -5,7 +5,6 @@
 //! `HttpAgent` consumes over SSE; inbound is the `RunAgentInput` request body.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 /// One AG-UI event. Serializes as `{ "type": "RUN_STARTED", ... }`, matching the
 /// AG-UI SDK event schema.
@@ -106,9 +105,11 @@ pub struct AgUiMessage {
     pub content: Option<AgUiContent>,
     #[serde(rename = "toolCallId", default)]
     pub tool_call_id: Option<String>,
-    #[allow(dead_code)]
-    #[serde(rename = "toolCalls", default)]
-    pub tool_calls: Vec<Value>,
+    /// The AG-UI `ToolMessage.error` field (`error?: string`): the failure message
+    /// when a client-executed tool failed, or a denied built-in tool approval.
+    /// Absent for a plain result / an approval.
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// Message content: the plain-string form, or a multimodal list of typed parts.
@@ -139,4 +140,43 @@ pub enum InputContentSource {
     Url {
         value: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn run_error_wire_shape() {
+        assert_eq!(
+            serde_json::to_value(AgUiEvent::error("boom")).unwrap(),
+            json!({ "type": "RUN_ERROR", "message": "boom" })
+        );
+    }
+
+    #[test]
+    fn run_started_wire_shape() {
+        let ev = AgUiEvent::RunStarted {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(ev).unwrap(),
+            json!({ "type": "RUN_STARTED", "threadId": "t1", "runId": "r1" })
+        );
+    }
+
+    #[test]
+    fn tool_call_result_wire_shape() {
+        let ev = AgUiEvent::ToolCallResult {
+            message_id: "m1".into(),
+            tool_call_id: "c1".into(),
+            content: "42".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(ev).unwrap(),
+            json!({ "type": "TOOL_CALL_RESULT", "messageId": "m1", "toolCallId": "c1", "content": "42" })
+        );
+    }
 }

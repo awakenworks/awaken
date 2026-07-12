@@ -191,4 +191,109 @@ mod tests {
             1
         );
     }
+
+    #[test]
+    fn a_repeated_run_started_is_idempotent() {
+        let events = run(&[Kind::RunStarted, Kind::RunStarted]);
+        assert_eq!(
+            events,
+            vec![AgUiEvent::RunStarted {
+                thread_id: "t1".into(),
+                run_id: "r1".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn concurrent_tool_calls_stream_independently_by_call_id() {
+        let events = run(&[
+            Kind::RunStarted,
+            Kind::ToolCall {
+                call_id: "c1".into(),
+                tool_id: "read".into(),
+                arguments: json!(""),
+            },
+            Kind::ToolCall {
+                call_id: "c2".into(),
+                tool_id: "write".into(),
+                arguments: json!(""),
+            },
+            Kind::ToolCall {
+                call_id: "c1".into(),
+                tool_id: "read".into(),
+                arguments: json!("{\"a\":1}"),
+            },
+            Kind::ToolCall {
+                call_id: "c2".into(),
+                tool_id: "write".into(),
+                arguments: json!("{\"b\":2}"),
+            },
+        ]);
+        assert!(events.contains(&AgUiEvent::ToolCallStart {
+            tool_call_id: "c1".into(),
+            tool_call_name: "read".into(),
+        }));
+        assert!(events.contains(&AgUiEvent::ToolCallStart {
+            tool_call_id: "c2".into(),
+            tool_call_name: "write".into(),
+        }));
+        assert!(events.contains(&AgUiEvent::ToolCallArgs {
+            tool_call_id: "c1".into(),
+            delta: "{\"a\":1}".into(),
+        }));
+        assert!(events.contains(&AgUiEvent::ToolCallArgs {
+            tool_call_id: "c2".into(),
+            delta: "{\"b\":2}".into(),
+        }));
+    }
+
+    #[test]
+    fn text_reopens_with_a_fresh_id_after_a_tool_call() {
+        let events = run(&[
+            Kind::RunStarted,
+            Kind::OutputText { text: "hi".into() },
+            Kind::ToolCall {
+                call_id: "c1".into(),
+                tool_id: "read".into(),
+                arguments: json!(""),
+            },
+            Kind::OutputText {
+                text: "more".into(),
+            },
+        ]);
+        assert!(events.contains(&AgUiEvent::TextMessageEnd {
+            message_id: "r1-msg-0".into()
+        }));
+        assert!(events.contains(&AgUiEvent::TextMessageStart {
+            message_id: "r1-msg-1".into(),
+            role: "assistant".into(),
+        }));
+    }
+
+    #[test]
+    fn a_snapshot_boundary_mid_codepoint_is_skipped_without_panicking() {
+        // The tracked byte offset falling inside a multibyte char must be skipped
+        // (the `is_char_boundary` guard), never sliced — else `s[offset..]` panics.
+        let events = run(&[
+            Kind::RunStarted,
+            Kind::ToolCall {
+                call_id: "c1".into(),
+                tool_id: "t".into(),
+                arguments: json!("a"),
+            },
+            Kind::ToolCall {
+                call_id: "c1".into(),
+                tool_id: "t".into(),
+                arguments: json!("é"),
+            },
+        ]);
+        let deltas: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                AgUiEvent::ToolCallArgs { delta, .. } => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(deltas, vec!["a"]);
+    }
 }
