@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_container::k8s::K8sRuntime;
-use awaken_sandbox_container::{ContainerPlan, ContainerRuntime, ContainerState, NetworkMode};
+use awaken_sandbox_container::{
+    ContainerPlan, ContainerRuntime, ContainerState, NetworkMode, RootfsPlan,
+};
 
 fn plan(cmd: &[&str]) -> ContainerPlan {
     ContainerPlan {
@@ -20,6 +22,7 @@ fn plan(cmd: &[&str]) -> ContainerPlan {
         network: NetworkMode::Open,
         limits: pc::ResourceLimits::default(),
         memory_mounts: Vec::new(),
+        rootfs: RootfsPlan::HostUserland,
     }
 }
 

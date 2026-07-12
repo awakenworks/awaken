@@ -497,6 +497,7 @@ mod tests {
                 ..Default::default()
             },
             memory_mounts: mounts,
+            rootfs: crate::RootfsPlan::HostUserland,
         }
     }
 

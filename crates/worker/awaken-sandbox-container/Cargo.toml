@@ -34,6 +34,9 @@ docker = ["dep:bollard", "dep:futures-util", "connection"]
 # Real Kubernetes ContainerRuntime (kube). Process-as-container Pod + native-GC.
 # Compile-verified; running needs a cluster.
 k8s = ["dep:kube", "dep:k8s-openapi", "dep:rustls", "connection"]
+# Rootless Podman ContainerRuntime (daemonless CLI fork-exec). Honors the rootfs
+# plan (Image / IsolatedRoot). Compile-verified; running needs the `podman` binary.
+podman = ["connection", "tokio/process"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "io-util", "net", "time"] }

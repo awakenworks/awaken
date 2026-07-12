@@ -1,9 +1,9 @@
 //! Container / Kubernetes sandbox provider (ADR-0041 Slice 5), below the neutral
 //! seam. It realizes the same [`pc::SandboxProvider`]/[`pc::Sandbox`] ports as the
 //! local tier, over a dependency-inverted [`ContainerRuntime`] port so the provider
-//! *logic* is exercised by a fake while the real bollard/kube clients slot in as
-//! adapters behind the port (kept out of the neutral contract; never depended on by
-//! the agents plane — G2).
+//! *logic* is exercised by a fake while the real bollard (Docker), kube (K8s), and
+//! rootless-podman CLI clients slot in as adapters behind the port (kept out of the
+//! neutral contract; never depended on by the agents plane — G2).
 //!
 //! Three decisions from the ADR amendment are made concrete and unit-testable here
 //! as **pure planners** (no daemon needed):
@@ -85,6 +85,9 @@ pub struct ContainerPlan {
     pub limits: pc::ResourceLimits,
     /// Memory-store mounts, realized as memoryd sidecars + shared volumes (NOT binds).
     pub memory_mounts: Vec<MemoryMount>,
+    /// The rootfs the agent runs on (Image / private IsolatedRoot). Honored by the
+    /// rootless-podman adapter; the docker/k8s adapters run `image` directly.
+    pub rootfs: RootfsPlan,
 }
 
 /// Neutral cgroup caps derived from [`pc::ResourceLimits`] — what a container
@@ -271,6 +274,7 @@ mod cgroup_caps_tests {
                 disk_bytes: None,
             },
             memory_mounts: Vec::new(),
+            rootfs: RootfsPlan::HostUserland,
         }
     }
 
@@ -631,7 +635,22 @@ pub fn container_plan(
         network: network_of(&spec.network),
         limits: spec.limits.clone(),
         memory_mounts: memory_mounts_of(spec),
+        rootfs: rootfs_of(spec, default_image),
     }
+}
+
+/// Resolve the rootfs from a declared `spec.extra.environment` (a serialized
+/// [`pc::EnvironmentKind`]) via [`rootfs_plan`]; absent (or a non-container kind)
+/// falls back to running the resolved image. So a plain spec runs its image, and an
+/// `IsolatedRoot`/`Image` environment declaration is honored by the podman adapter.
+fn rootfs_of(spec: &pc::SandboxSpec, default_image: &str) -> RootfsPlan {
+    let declared = spec
+        .extra
+        .as_ref()
+        .and_then(|v| v.get("environment"))
+        .and_then(|v| serde_json::from_value::<pc::EnvironmentKind>(v.clone()).ok())
+        .and_then(|kind| rootfs_plan(&kind).ok());
+    declared.unwrap_or_else(|| RootfsPlan::Image(image_of(spec, default_image)))
 }
 
 /// A neutral Kubernetes Pod plan (the k8s path). Encodes **process-as-container**
@@ -997,6 +1016,11 @@ pub mod docker;
 /// here, running requires a cluster.
 #[cfg(feature = "k8s")]
 pub mod k8s;
+
+/// Rootless Podman backend (daemonless CLI fork-exec). Gated behind the `podman`
+/// feature; compile-verified here, running requires the `podman` binary.
+#[cfg(feature = "podman")]
+pub mod podman;
 
 #[cfg(test)]
 mod tests;
