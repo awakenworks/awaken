@@ -553,6 +553,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # the ADR-0044/0045 composition root lives here, not in the leaf crates.
         "awaken-tool-relay",
         "awaken-connection-plan",
+        # dev-dep: `tcp_relay_e2e` drives the brain↔hand relay over a real TCP
+        # socket, so it needs the agent-channel transport the topology plan wires.
+        "awaken-agent-channel",
         # coding-agent example (feature-gated): built-in tools, a real model, a TUI.
         "awaken-ext-builtin-tools",
         "awaken-provider-genai",
