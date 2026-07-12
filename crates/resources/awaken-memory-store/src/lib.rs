@@ -35,11 +35,11 @@ mod schema;
 mod sqlite;
 
 #[cfg(feature = "postgres")]
-pub use postgres::{PgMemoryBlobStore, PgStoreError};
+pub use postgres::{PgMemoryBlobStore, PgMemoryFs, PgStoreError};
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub use schema::{BUNDLE_ID, memory_store_bundle};
 #[cfg(feature = "sqlite")]
-pub use sqlite::{SqliteMemoryBlobStore, StoreError};
+pub use sqlite::{SqliteMemoryBlobStore, SqliteMemoryFs, StoreError};
 
 /// The filename backing a store id. Ids minted by [`MemoryBlobStore::create`] are
 /// safe (`memstore_<n>`), but a session can reference an arbitrary id on the wire — so
