@@ -45,6 +45,15 @@ pub enum PublishError {
     Store(String),
 }
 
+/// A single validation problem, projected from the config domain's compile so the UI can
+/// route it to the right section instead of parsing a free-text string. `path` is the
+/// config field (`""` = whole config); `message` is the domain's own wording.
+#[derive(Debug, Clone)]
+pub struct ValidationIssue {
+    pub path: String,
+    pub message: String,
+}
+
 /// The config domain service: validate, store, publish, and expose the installed
 /// (published) runnable config per agent.
 ///
@@ -113,13 +122,21 @@ impl ConfigService {
     /// resolved first (D5) so a draft with the default binding validates, and a config
     /// naming a tool absent from that catalog fails closed with `UnknownTool` (D3 —
     /// the edge resolves the catalog for the request scope).
-    pub fn validate(&self, config: &AgentConfig, catalog: &[ToolDescriptor]) -> Result<(), String> {
-        let compile_input = self
-            .resolve_for_compile(config.clone())
-            .map_err(|e| e.to_string())?;
+    pub fn validate(
+        &self,
+        config: &AgentConfig,
+        catalog: &[ToolDescriptor],
+    ) -> Result<(), ValidationIssue> {
+        // The config domain owns validation truth; it also owns *which field* failed
+        // (`CompileError::field_path`), so the UI projects the issue to the right section
+        // instead of parsing a free-text string. An auto-model that can't resolve is a
+        // `model` issue; a compile failure carries its own field.
+        let compile_input = self.resolve_for_compile(config.clone()).map_err(|e| {
+            ValidationIssue { path: "model".to_string(), message: e.to_string() }
+        })?;
         compile_with_resource_prompts(&compile_input, catalog, &self.resource_prompts(&config.id))
             .map(|_| ())
-            .map_err(|e| e.to_string())
+            .map_err(|e| ValidationIssue { path: e.field_path().to_string(), message: e.to_string() })
     }
 
     /// Store a config draft (upsert by id) in the caller-supplied scope-bound
@@ -295,7 +312,7 @@ impl ConfigPlane {
     }
 
     /// Validate a config in `scope` (compile dry-run against the scope's catalog).
-    pub fn validate(&self, scope: &ScopeId, config: &AgentConfig) -> Result<(), String> {
+    pub fn validate(&self, scope: &ScopeId, config: &AgentConfig) -> Result<(), ValidationIssue> {
         self.service.validate(config, &self.catalog_for(scope))
     }
 
@@ -437,18 +454,29 @@ async fn validate(
 ) -> (StatusCode, Json<Value>) {
     let config = match agent_config_from_managed(id, &body) {
         Ok(c) => c,
+        // A body the projection can't even parse is a whole-config issue (path "").
         Err(error) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "valid": false, "error": error })),
+                Json(json!({
+                    "valid": false,
+                    "issues": [{ "path": "", "message": error, "severity": "error" }],
+                })),
             );
         }
     };
+    // Validation is a query — the request succeeds even when the config is invalid, so
+    // both outcomes are 200 with `{ valid, issues }`. Structured, field-routed issues
+    // (ADR-0053): the UI highlights the section, never re-derives the rule. Compile fails
+    // fast, so there is at most one issue today.
     match plane.validate(&request_scope(scope), &config) {
-        Ok(()) => (StatusCode::OK, Json(json!({ "valid": true }))),
-        Err(error) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "valid": false, "error": error })),
+        Ok(()) => (StatusCode::OK, Json(json!({ "valid": true, "issues": [] }))),
+        Err(issue) => (
+            StatusCode::OK,
+            Json(json!({
+                "valid": false,
+                "issues": [{ "path": issue.path, "message": issue.message, "severity": "error" }],
+            })),
         ),
     }
 }
@@ -826,9 +854,11 @@ mod resource_prompt_tests {
         let err = plane
             .validate(&ScopeId::from("wrkspc_acme"), &cfg)
             .unwrap_err();
+        assert_eq!(err.path, "tools", "an unknown tool is a `tools` issue");
         assert!(
-            err.contains("unknown tool") && err.contains("admin_x"),
-            "tenant scope must reject the admin tool: {err}"
+            err.message.contains("unknown tool") && err.message.contains("admin_x"),
+            "tenant scope must reject the admin tool: {}",
+            err.message
         );
     }
 

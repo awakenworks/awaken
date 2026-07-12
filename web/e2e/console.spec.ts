@@ -16,6 +16,17 @@ test("shell renders the topbar org + workspace switcher and the scoped rail", as
   await expect(rail.getByRole("button", { name: "Models" })).toBeVisible();
 });
 
+test("responsive: a narrow viewport keeps the shell usable with no horizontal overflow", async ({ page }) => {
+  await page.setViewportSize({ width: 400, height: 800 });
+  await page.goto("/w/default/sessions");
+  // The sidebar collapses to a top nav strip; nav + content stay reachable.
+  await expect(page.locator(".sidebar")).toBeVisible();
+  await expect(page.locator(".sidebar").getByRole("button", { name: "Agents", exact: true })).toBeVisible();
+  // The page never scrolls wider than the viewport (the fixed rail no longer pushes it).
+  const noOverflow = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 2);
+  expect(noOverflow).toBe(true);
+});
+
 test("workspace switcher opens the roster dropdown with an add-workspace input", async ({ page }) => {
   await page.goto("/w/default/sessions");
   await page.locator(".ws-crumb").click();
@@ -25,25 +36,26 @@ test("workspace switcher opens the roster dropdown with an add-workspace input",
   await expect(page.getByPlaceholder("ws_acme")).toBeVisible();
 });
 
-test("agent editor Tools/Plugins are data-driven from /v1/capabilities", async ({ page }) => {
+test("agent editor Tools/Behavior are data-driven from /v1/capabilities", async ({ page }) => {
   await page.goto("/w/default/agents/new");
   // Tools tab → CheckPicker fed by capabilities.tools (a hand tool like bash/write).
-  await page.getByRole("button", { name: "Tools", exact: true }).click();
+  await page.getByRole("tab", { name: "Tools" }).click();
   const picker = page.locator(".check-picker").first();
   await expect(picker).toBeVisible();
   await expect(picker.locator(".check-row").first()).toBeVisible();
 
-  // Plugins tab → the schema-carrying plugins from capabilities.plugins.
-  await page.getByRole("button", { name: "Plugins & policy" }).click();
-  for (const id of ["state_machine", "compact", "memory"]) {
-    await expect(page.locator(".check-row", { hasText: id })).toBeVisible();
+  // Behavior tab → the schema-carrying plugins from capabilities.plugins, rendered as
+  // named behavior cards (not raw ids).
+  await page.getByRole("tab", { name: "Behavior" }).click();
+  for (const title of ["Auto-compaction", "Memory recall", "Tool-call ordering"]) {
+    await expect(page.locator(".behavior-card", { hasText: title })).toBeVisible();
   }
 });
 
-test("Plugins tab renders the Permission policy editor (data-driven from capabilities.policies)", async ({ page }) => {
+test("Tools tab renders the Permissions editor (data-driven from capabilities.policies)", async ({ page }) => {
   await page.goto("/w/default/agents/new");
-  await page.getByRole("button", { name: "Plugins & policy" }).click();
-  await expect(page.getByText("Permission policy", { exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "Tools" }).click();
+  await expect(page.getByText("Permissions", { exact: true })).toBeVisible();
   await expect(page.getByText("Default decision", { exact: true })).toBeVisible();
   // Add a rule → an editable glob-pattern row appears.
   await page.getByRole("button", { name: /add rule/ }).click();
@@ -55,7 +67,7 @@ test("PermissionEditor authors a rule and persists it through save + reload", as
   await page.goto("/w/default/agents/new");
   await page.getByPlaceholder("coding-agent").fill(id);
   await page.locator("textarea").first().fill("You gate your tools.");
-  await page.getByRole("button", { name: "Plugins & policy" }).click();
+  await page.getByRole("tab", { name: "Tools" }).click();
 
   const editor = page.locator(".permission-editor");
   // Default decision → Deny (only the default-decision Segmented exists yet).
@@ -69,17 +81,16 @@ test("PermissionEditor authors a rule and persists it through save + reload", as
 
   // Reload → the authored policy rehydrates from the stored config (round-trips).
   await page.reload();
-  await page.getByRole("button", { name: "Plugins & policy" }).click();
+  await page.getByRole("tab", { name: "Tools" }).click();
   await expect(editor.getByPlaceholder("Bash(*rm*)")).toHaveValue("Bash(*rm*)");
 });
 
-test("enabling a plugin renders a schema-driven form (not raw JSON)", async ({ page }) => {
+test("enabling a behavior renders a schema-driven form (not raw JSON)", async ({ page }) => {
   await page.goto("/w/default/agents/new");
-  await page.getByRole("button", { name: "Plugins & policy" }).click();
-  // Enable `compact` → its config_schema (numeric knobs) renders as a form.
-  await page.locator(".check-row", { hasText: "compact" }).getByRole("checkbox").check();
-  // The per-plugin section is schema-driven and exposes compact's fields.
-  await expect(page.getByText("schema-driven")).toBeVisible();
+  await page.getByRole("tab", { name: "Behavior" }).click();
+  // Toggle the Auto-compaction behavior on → its config_schema renders as a form.
+  await page.locator(".behavior-card", { hasText: "Auto-compaction" }).getByRole("switch").check();
+  // The schema-driven form exposes compact's fields (e.g. keep_last).
   await expect(page.getByText("keep_last")).toBeVisible();
 });
 
@@ -124,7 +135,7 @@ test("Admin Assistant is live: the seeded assistant opens a session composer", a
 
 test("Sandbox tab gates an unpublished draft (nothing live to talk to yet)", async ({ page }) => {
   await page.goto("/w/default/agents/new");
-  await page.getByRole("button", { name: "Sandbox", exact: true }).click();
+  await page.getByRole("button", { name: /Try it/ }).click();
   await expect(page.getByText(/Publish to test in the Sandbox|发布后即可在 Sandbox 试运行/)).toBeVisible();
 });
 
@@ -158,18 +169,50 @@ test("author → publish a config agent, and see it in the list", async ({ page 
   // After the first save the editor navigates to the new id URL (guard-safe nav —
   // a regression this e2e caught and fixed), then Publish compiles + installs it.
   await expect(page).toHaveURL(new RegExp(`/agents/${id}$`));
+  // Publish opens a confirm modal previewing the config diff; confirm inside it.
   await page.getByRole("button", { name: /Publish/ }).click();
+  await expect(page.getByRole("heading", { name: /Publish changes|发布改动/ })).toBeVisible();
+  await page.locator(".modal").getByRole("button", { name: /Publish/ }).click();
   await expect(page.locator(".toast").filter({ hasText: /Published|已发布/ })).toBeVisible();
 
   // The agents list shows the published agent.
   await page.goto("/w/default/agents");
   await expect(page.getByText(id)).toBeVisible();
 
-  // Sandbox: a published agent is installed, so a live scratch session opens here
-  // (the same transcript engine the session detail uses). No provider key in CI, so
-  // we assert the session + composer come up, not a model reply.
+  // Sandbox: the published agent opens a live scratch session (same transcript engine
+  // the session detail uses). No provider key in CI, so we assert the session + composer
+  // come up, not a model reply.
   await page.goto(`/w/default/agents/${id}`);
-  await page.getByRole("button", { name: "Sandbox", exact: true }).click();
+  await page.getByRole("button", { name: /Try it/ }).click();
   await page.getByRole("button", { name: /Start session/ }).click();
   await expect(page.getByPlaceholder("Ask the agent…")).toBeVisible();
+});
+
+test("publish preview shows the config diff, domain-labeled", async ({ page, request }) => {
+  const id = `diff-e2e-${Date.now()}`;
+  await request.put(`/v1/config/agents/${id}`, { data: { id, system: "original", tools: [], plugins: [], plugin_config: {}, context_policy: { kind: "keep_all" }, max_steps: 8 } });
+  await page.goto(`/w/default/agents/${id}`);
+  // Wait for the stored config to load into the field before editing, else the load
+  // effect would overwrite the edit (and the diff would be empty).
+  await expect(page.locator("textarea").first()).toHaveValue("original");
+  await page.locator("textarea").first().fill("edited instructions");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.locator(".toast").filter({ hasText: /Saved|已保存/ })).toBeVisible();
+  await page.getByRole("button", { name: /Publish/ }).click();
+  // The diff names the change with its domain label (not the raw path).
+  await expect(page.locator(".modal").getByText("System instructions")).toBeVisible();
+});
+
+test("validation issues are field-routed to their section", async ({ page, request }) => {
+  const id = `val-e2e-${Date.now()}`;
+  // A config that fails compile: a selected tool that isn't in the catalog.
+  await request.put(`/v1/config/agents/${id}`, { data: { id, model: { id: "m" }, system: "hi", tools: ["nonexistent_tool"], plugins: [], plugin_config: {}, context_policy: { kind: "keep_all" }, max_steps: 8 } });
+  await page.goto(`/w/default/agents/${id}`);
+  await expect(page.locator("textarea").first()).toHaveValue("hi"); // wait for load
+  await page.getByRole("button", { name: "Validate", exact: true }).click();
+  // The backend's structured issue is projected to a banner labeled for its section…
+  await expect(page.locator(".banner").filter({ hasText: "Tools" })).toBeVisible();
+  // …and routes the user there (no client-side rule was re-derived).
+  await page.getByRole("button", { name: /Go to section/ }).click();
+  await expect(page.getByRole("tab", { name: "Tools" })).toHaveAttribute("aria-selected", "true");
 });

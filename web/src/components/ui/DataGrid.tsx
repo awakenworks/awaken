@@ -92,7 +92,7 @@ export function DataGrid<T>({
         </span>
       </div>
 
-      <div className="card" style={{ padding: 0 }}>
+      <div className="card grid-scroll" style={{ padding: 0 }}>
         <table className="table">
           <thead>
             <tr>
