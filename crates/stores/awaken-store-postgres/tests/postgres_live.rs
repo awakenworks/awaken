@@ -14,7 +14,7 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::state::{Command as StateCommand, MergePolicy, Scope};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::{WaitingReason, WaitingTicket};
-use awaken_agent_contract::commit::coordinator::Coordinator;
+use awaken_agent_contract::commit::coordinator::{Coordinator, Error as CommitError};
 use awaken_agent_contract::commit::staged::ThreadCommit;
 use awaken_agent_contract::event::draft::Draft;
 use awaken_agent_contract::event::kind::Kind as EventKind;
@@ -85,6 +85,13 @@ fn ended(run: &str) -> RunFact {
     RunFact {
         run_id: RunId(run.to_string()),
         phase: Phase::Ended(EndCause::NaturalEnd),
+    }
+}
+
+fn running(run: &str) -> RunFact {
+    RunFact {
+        run_id: RunId(run.to_string()),
+        phase: Phase::Running,
     }
 }
 
@@ -173,11 +180,15 @@ async fn fence_increments_monotonically() {
         .await
         .expect("coordinator");
 
+    // A distinct run per commit: the fence increments across successive commits,
+    // which is what this pins. (Re-committing one terminal run would trip the
+    // terminal-is-final guard, which fences a stale owner's duplicate post-terminal
+    // commit; a run ends exactly once.)
     for expected in 1..=3u64 {
         let record = coordinator
             .commit(ThreadCommit {
                 thread_id: ThreadId("thread-1".to_string()),
-                run_fact: ended("run-1"),
+                run_fact: ended(&format!("run-{expected}")),
                 messages: vec![],
                 state: vec![],
                 events: vec![],
@@ -189,6 +200,79 @@ async fn fence_increments_monotonically() {
         assert_eq!(record.sequence, expected);
     }
     assert_eq!(coordinator.commit_count(), 3);
+}
+
+#[tokio::test]
+async fn post_terminal_commit_is_fenced_durably() {
+    // Terminal-is-final, fenced durably in the shared DB (the cross-node case): a
+    // stale owner's duplicate commit over an already-`Ended` run is rejected by the
+    // in-transaction `SELECT ... FOR UPDATE` on the run's `run_record` row, not by a
+    // per-process projection. Exactly one terminal fact and no duplicate transcript
+    // land in the database.
+    let Some(pool) = schema_pool("t_terminal_final").await else {
+        return;
+    };
+    let coordinator = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .expect("coordinator");
+    let thread = ThreadId("thread-1".to_string());
+    let run = RunId("run-1".to_string());
+
+    let commit = |fact: RunFact, msg_id: &str, text: &str| ThreadCommit {
+        thread_id: thread.clone(),
+        run_fact: fact,
+        messages: vec![message(msg_id, text)],
+        state: vec![],
+        events: vec![],
+        outbox: Vec::new(),
+        waiting: None,
+    };
+
+    // A mid-flight Running step, then the terminal Ended commit — both land.
+    coordinator
+        .commit(commit(running("run-1"), "m1", "step"))
+        .await
+        .expect("running step commits");
+    coordinator
+        .commit(commit(ended("run-1"), "m2", "all done"))
+        .await
+        .expect("first terminal commit lands");
+
+    // A stale owner re-drives and tries to commit a duplicate over the now-terminal
+    // run — terminal-is-final rejects it durably.
+    let err = coordinator
+        .commit(commit(ended("run-1"), "m3", "duplicate"))
+        .await
+        .expect_err("a post-terminal commit must be rejected");
+    assert!(
+        matches!(err, CommitError::Rejected(_)),
+        "expected a Rejected error, got {err:?}"
+    );
+
+    // The shared DB carries exactly one terminal fact for the run and no duplicate
+    // message; the rejected commit rolled back (and never advanced the fence).
+    assert_eq!(
+        coordinator.commit_count(),
+        2,
+        "the rejected commit did not advance the fence"
+    );
+    assert_eq!(
+        RunStore::get(&coordinator, &run).map(|record| record.phase),
+        Some(Phase::Ended(EndCause::NaturalEnd)),
+        "the run stays terminal"
+    );
+    let commit_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM runtime_commit WHERE run_id = $1")
+            .bind(&run.0)
+            .fetch_one(&pool)
+            .await
+            .expect("count commit rows");
+    assert_eq!(commit_rows, 2, "only the Running + Ended facts landed");
+    let message_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtime_message")
+        .fetch_one(&pool)
+        .await
+        .expect("count message rows");
+    assert_eq!(message_rows, 2, "the duplicate transcript never landed");
 }
 
 #[tokio::test]

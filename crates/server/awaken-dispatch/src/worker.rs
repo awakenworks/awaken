@@ -181,9 +181,18 @@ impl<S: Dispatch> DispatchWorker<S> {
             // deferred action, not waits for external input. This also covers a
             // crash recovery of a scheduled park (no pending input is expected).
             Some(ticket) if ticket.reason == WaitingReason::ScheduledAction => {
-                self.perform_scheduled(&run_id, now_ms)
+                match self
+                    .perform_scheduled(&run_id, now_ms)
                     .instrument(dispatch.clone())
-                    .await?
+                    .await
+                {
+                    Ok(phase) => phase,
+                    Err(err) => {
+                        return self
+                            .settle_if_terminal_or_raise(&run_id, &all_pending, err)
+                            .await;
+                    }
+                }
             }
             // The run is parked. Deliver only input whose correlation matches the
             // committed ticket; input for a superseded ticket (stale) is dropped
@@ -199,10 +208,19 @@ impl<S: Dispatch> DispatchWorker<S> {
                 match matched {
                     Some(input) => {
                         let command = ResumeCommand::from_ticket(&ticket, input.result, now_ms);
-                        self.runtime
+                        match self
+                            .runtime
                             .resume(command, self.reader.as_ref(), self.execution_context())
                             .instrument(dispatch.clone())
-                            .await?
+                            .await
+                        {
+                            Ok(phase) => phase,
+                            Err(err) => {
+                                return self
+                                    .settle_if_terminal_or_raise(&run_id, &all_pending, err)
+                                    .await;
+                            }
+                        }
                     }
                     None => {
                         // No input answers the current ticket; drop stale input
@@ -259,10 +277,19 @@ impl<S: Dispatch> DispatchWorker<S> {
                     }
                     // Consumed on settle, not on read, so a crash re-delivers them.
                     all_pending.extend(unbound.into_iter().map(|input| input.message_id));
-                    self.runtime
+                    match self
+                        .runtime
                         .execute(activation, self.execution_context())
                         .instrument(dispatch.clone())
-                        .await?
+                        .await
+                    {
+                        Ok(phase) => phase,
+                        Err(err) => {
+                            return self
+                                .settle_if_terminal_or_raise(&run_id, &all_pending, err)
+                                .await;
+                        }
+                    }
                 }
             },
         };
@@ -273,7 +300,14 @@ impl<S: Dispatch> DispatchWorker<S> {
         while phase == Phase::Waiting {
             match self.reader.waiting_ticket(&run_id) {
                 Some(ticket) if ticket.reason == WaitingReason::ScheduledAction => {
-                    phase = self.perform_scheduled(&run_id, now_ms).await?;
+                    phase = match self.perform_scheduled(&run_id, now_ms).await {
+                        Ok(phase) => phase,
+                        Err(err) => {
+                            return self
+                                .settle_if_terminal_or_raise(&run_id, &all_pending, err)
+                                .await;
+                        }
+                    };
                 }
                 _ => break,
             }
@@ -282,6 +316,38 @@ impl<S: Dispatch> DispatchWorker<S> {
         let outcome = settle_outcome(&phase)?;
         self.store.settle(&run_id, outcome, &all_pending).await?;
         Ok(Some((run_id, phase)))
+    }
+
+    /// Convert a runtime-drive failure into a benign already-done when committed
+    /// truth shows the run has reached a terminal phase.
+    ///
+    /// The commit coordinators enforce terminal-is-final: once a run's committed
+    /// phase is `Ended`, a later commit for that run is rejected. That fence keeps
+    /// the committed LOG exactly-once when a *stale* owner (slow-but-alive, its
+    /// lease lapsed and superseded by a reclaimer that already drove the run to
+    /// `Ended`) re-executes and tries to append a duplicate transcript — its commit
+    /// fails. Surfacing that as a fatal error would strand the dispatch: it would
+    /// sit un-settled until its lease lapsed, then be re-driven into the same
+    /// rejected commit, burning crash-retries until it dead-lettered — even though
+    /// the run is already complete. Instead the worker treats the lost race as
+    /// already-done and settles the dispatch `Done` from committed truth, exactly
+    /// as the "terminal committed record" recovery branch does. Any other error is
+    /// a genuine fault and is re-raised unchanged.
+    async fn settle_if_terminal_or_raise(
+        &self,
+        run_id: &RunId,
+        consumed: &[String],
+        err: impl Into<Error>,
+    ) -> Result<Option<(RunId, Phase)>, Error> {
+        match self.runs.get(run_id) {
+            Some(record) if matches!(record.phase, Phase::Ended(_)) => {
+                self.store
+                    .settle(run_id, DispatchOutcome::Done, consumed)
+                    .await?;
+                Ok(Some((run_id.clone(), record.phase)))
+            }
+            _ => Err(err.into()),
+        }
     }
 
     /// Drain the queue until no dispatch is runnable, returning every processed
