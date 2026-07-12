@@ -19,6 +19,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 
+/// Path-addressed, CAS memory model (ADR-0053): the `MemoryFs` port a write-through
+/// FUSE mount projects, distinct from the id-keyed blob port above.
+pub mod memfs;
+
+pub use memfs::{
+    FsMemoryFs, InMemoryFs, MAX_MEMORY_BYTES, MemErr, Memory, MemoryEntry, MemoryFs, sha256_hex,
+};
+
 #[cfg(feature = "postgres")]
 mod postgres;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]

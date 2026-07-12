@@ -355,6 +355,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "sqlx",
         "awaken-scoped-migration",
         "awaken-scoped-migration-sqlite",
+        # ADR-0053 path-addressed MemoryFs: content hashing + durable record format.
+        "sha2",
+        "serde",
+        "serde_json",
         # dev-only: conformance + reopen-from-file persistence tests.
         "tempfile",
     },
