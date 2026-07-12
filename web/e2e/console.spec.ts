@@ -25,7 +25,7 @@ test("workspace switcher opens the roster dropdown with an add-workspace input",
   await expect(page.getByPlaceholder("ws_acme")).toBeVisible();
 });
 
-test("agent editor Tools/Plugins are data-driven from /v1/capabilities", async ({ page }) => {
+test("agent editor Tools/Behavior are data-driven from /v1/capabilities", async ({ page }) => {
   await page.goto("/w/default/agents/new");
   // Tools tab → CheckPicker fed by capabilities.tools (a hand tool like bash/write).
   await page.getByRole("button", { name: "Tools", exact: true }).click();
@@ -33,17 +33,18 @@ test("agent editor Tools/Plugins are data-driven from /v1/capabilities", async (
   await expect(picker).toBeVisible();
   await expect(picker.locator(".check-row").first()).toBeVisible();
 
-  // Plugins tab → the schema-carrying plugins from capabilities.plugins.
-  await page.getByRole("button", { name: "Plugins & policy" }).click();
-  for (const id of ["state_machine", "compact", "memory"]) {
-    await expect(page.locator(".check-row", { hasText: id })).toBeVisible();
+  // Behavior tab → the schema-carrying plugins from capabilities.plugins, rendered as
+  // named behavior cards (not raw ids).
+  await page.getByRole("button", { name: "Behavior", exact: true }).click();
+  for (const title of ["Auto-compaction", "Memory recall", "Tool-call ordering"]) {
+    await expect(page.locator(".behavior-card", { hasText: title })).toBeVisible();
   }
 });
 
-test("Plugins tab renders the Permission policy editor (data-driven from capabilities.policies)", async ({ page }) => {
+test("Tools tab renders the Permissions editor (data-driven from capabilities.policies)", async ({ page }) => {
   await page.goto("/w/default/agents/new");
-  await page.getByRole("button", { name: "Plugins & policy" }).click();
-  await expect(page.getByText("Permission policy", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Tools", exact: true }).click();
+  await expect(page.getByText("Permissions", { exact: true })).toBeVisible();
   await expect(page.getByText("Default decision", { exact: true })).toBeVisible();
   // Add a rule → an editable glob-pattern row appears.
   await page.getByRole("button", { name: /add rule/ }).click();
@@ -55,7 +56,7 @@ test("PermissionEditor authors a rule and persists it through save + reload", as
   await page.goto("/w/default/agents/new");
   await page.getByPlaceholder("coding-agent").fill(id);
   await page.locator("textarea").first().fill("You gate your tools.");
-  await page.getByRole("button", { name: "Plugins & policy" }).click();
+  await page.getByRole("button", { name: "Tools", exact: true }).click();
 
   const editor = page.locator(".permission-editor");
   // Default decision → Deny (only the default-decision Segmented exists yet).
@@ -69,17 +70,16 @@ test("PermissionEditor authors a rule and persists it through save + reload", as
 
   // Reload → the authored policy rehydrates from the stored config (round-trips).
   await page.reload();
-  await page.getByRole("button", { name: "Plugins & policy" }).click();
+  await page.getByRole("button", { name: "Tools", exact: true }).click();
   await expect(editor.getByPlaceholder("Bash(*rm*)")).toHaveValue("Bash(*rm*)");
 });
 
-test("enabling a plugin renders a schema-driven form (not raw JSON)", async ({ page }) => {
+test("enabling a behavior renders a schema-driven form (not raw JSON)", async ({ page }) => {
   await page.goto("/w/default/agents/new");
-  await page.getByRole("button", { name: "Plugins & policy" }).click();
-  // Enable `compact` → its config_schema (numeric knobs) renders as a form.
-  await page.locator(".check-row", { hasText: "compact" }).getByRole("checkbox").check();
-  // The per-plugin section is schema-driven and exposes compact's fields.
-  await expect(page.getByText("schema-driven")).toBeVisible();
+  await page.getByRole("button", { name: "Behavior", exact: true }).click();
+  // Toggle the Auto-compaction behavior on → its config_schema renders as a form.
+  await page.locator(".behavior-card", { hasText: "Auto-compaction" }).getByRole("checkbox").check();
+  // The schema-driven form exposes compact's fields (e.g. keep_last).
   await expect(page.getByText("keep_last")).toBeVisible();
 });
 
@@ -124,7 +124,7 @@ test("Admin Assistant is live: the seeded assistant opens a session composer", a
 
 test("Sandbox tab gates an unpublished draft (nothing live to talk to yet)", async ({ page }) => {
   await page.goto("/w/default/agents/new");
-  await page.getByRole("button", { name: "Sandbox", exact: true }).click();
+  await page.getByRole("button", { name: "Try it", exact: true }).click();
   await expect(page.getByText(/Publish to test in the Sandbox|发布后即可在 Sandbox 试运行/)).toBeVisible();
 });
 
@@ -169,7 +169,7 @@ test("author → publish a config agent, and see it in the list", async ({ page 
   // (the same transcript engine the session detail uses). No provider key in CI, so
   // we assert the session + composer come up, not a model reply.
   await page.goto(`/w/default/agents/${id}`);
-  await page.getByRole("button", { name: "Sandbox", exact: true }).click();
+  await page.getByRole("button", { name: "Try it", exact: true }).click();
   await page.getByRole("button", { name: /Start session/ }).click();
   await expect(page.getByPlaceholder("Ask the agent…")).toBeVisible();
 });

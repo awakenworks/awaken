@@ -69,7 +69,7 @@ test("Sandbox answers for real via config-plane credential (no env)", async ({ p
 
   // Sandbox: the runtime resolves the model to a REAL Gemini executor from the
   // configured credential (no env), and a real reply lands on screen.
-  await page.getByRole("button", { name: "Sandbox", exact: true }).click();
+  await page.getByRole("button", { name: "Try it", exact: true }).click();
   await page.getByRole("button", { name: /Start session/ }).click();
   const ask = page.getByPlaceholder("Ask the agent…");
   await expect(ask).toBeVisible();

@@ -31,7 +31,34 @@ import { useModels } from "../lib/useModels";
 import { useUnsavedGuard } from "../lib/useUnsavedGuard";
 import ModelsSurface from "./models";
 
-type Tab = "basics" | "context" | "tools" | "plugins" | "resources" | "sandbox";
+// Editor sections, organized by user intent (not by mechanism): Behavior groups the
+// runtime behaviors (context window, auto-compaction, memory recall, tool ordering) as
+// named cards; Tools holds selection + presentation + permissions.
+type Tab = "overview" | "behavior" | "tools" | "resources" | "sandbox";
+
+/// Friendly title + one-line description for a runtime plugin, so the Behavior section
+/// shows a named behavior card instead of a raw plugin id. Unknown plugins fall back to
+/// their id; their config still renders (schema-driven or JSON), so nothing is lost.
+const BEHAVIORS: Record<string, { title: string; zh: string; desc: string; descZh: string }> = {
+  compact: {
+    title: "Auto-compaction",
+    zh: "自动压缩",
+    desc: "When the conversation gets long, summarize the older turns in the background so the model keeps the essentials without the full history.",
+    descZh: "对话变长时,在后台把较早的轮次总结压缩,让模型保留要点而不必带上全部历史。",
+  },
+  memory: {
+    title: "Memory recall",
+    zh: "记忆召回",
+    desc: "Recall relevant long-term memories into context on demand.",
+    descZh: "按需把相关的长期记忆召回到上下文。",
+  },
+  state_machine: {
+    title: "Tool-call ordering",
+    zh: "工具调用顺序",
+    desc: "Constrain the order tools may be called in (e.g. read a file before writing it).",
+    descZh: "约束工具调用的顺序(例如先读文件再写)。",
+  },
+};
 
 const BLANK: AgentConfig = {
   id: "",
@@ -148,7 +175,7 @@ export default function AgentEditorSurface() {
   const qc = useQueryClient();
   const { ws: wsId = "default", id = "new" } = useParams();
   const isNew = id === "new";
-  const [tab, setTab] = useState<Tab>("basics");
+  const [tab, setTab] = useState<Tab>("overview");
   const [cfg, setCfg] = useState<AgentConfig>(BLANK);
   const [dirty, setDirty] = useState(false);
   const [manageModels, setManageModels] = useState(false);
@@ -228,13 +255,12 @@ export default function AgentEditorSurface() {
     onError: (e) => toast.err(e instanceof Error ? e.message : "error"),
   });
 
-  const TABS: { key: Tab; label: string; zh: string }[] = [
-    { key: "basics", label: "Basics", zh: "基础" },
-    { key: "context", label: "Context", zh: "上下文" },
+  const SECTIONS: { key: Tab; label: string; zh: string }[] = [
+    { key: "overview", label: "Overview", zh: "概览" },
+    { key: "behavior", label: "Behavior", zh: "行为" },
     { key: "tools", label: "Tools", zh: "工具" },
-    { key: "plugins", label: "Plugins & policy", zh: "插件与策略" },
     { key: "resources", label: "Resources", zh: "资源" },
-    { key: "sandbox", label: "Sandbox", zh: "试运行" },
+    { key: "sandbox", label: "Try it", zh: "试运行" },
   ];
 
   return (
@@ -264,18 +290,22 @@ export default function AgentEditorSurface() {
           </Button>
         </span>
       </div>
-      <div className="row">
-        {TABS.map((t) => (
-          <Button
-            key={t.key}
-            variant={tab === t.key ? "primary" : "ghost"}
-            style={{ height: 26 }}
-            onClick={() => setTab(t.key)}
-          >
-            {app.t(t.label, t.zh)}
-          </Button>
-        ))}
-      </div>
+      <div className="row" style={{ alignItems: "flex-start", gap: 16 }}>
+        {/* Left rail: sections by intent (Overview / Behavior / Tools / Resources / Try it). */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 148 }}>
+          {SECTIONS.map((s) => (
+            <Button
+              key={s.key}
+              variant={tab === s.key ? "primary" : "ghost"}
+              style={{ height: 30, justifyContent: "flex-start" }}
+              onClick={() => setTab(s.key)}
+            >
+              {app.t(s.label, s.zh)}
+            </Button>
+          ))}
+        </div>
+        {/* Content column: one section at a time. */}
+        <div style={{ flex: 1, minWidth: 0 }}>
 
       {tab === "resources" && (
         <Card>
@@ -296,7 +326,7 @@ export default function AgentEditorSurface() {
 
       {tab !== "sandbox" && tab !== "resources" && (
       <Card>
-        {tab === "basics" && (
+        {tab === "overview" && (
           <>
             <div className="row">
               <div className="field" style={{ flex: 1 }}>
@@ -384,7 +414,7 @@ export default function AgentEditorSurface() {
           </>
         )}
 
-        {tab === "context" && (
+        {tab === "behavior" && (
           <>
             <div className="field">
               <label>{app.t("Context window policy", "上下文窗口策略")}</label>
@@ -422,6 +452,33 @@ export default function AgentEditorSurface() {
                 "只裁剪送模型的可见视图;已提交的历史保持完整。",
               )}
             </span>
+            <div className="field" style={{ marginTop: 16 }}>
+              <label>{app.t("Runtime behaviors", "运行时行为")}</label>
+              <span className="mut">
+                {app.t(
+                  "Each behavior runs automatically when enabled — toggle it on and tune it. Advanced fields are one click away.",
+                  "每个行为启用后自动生效——打开开关并微调。高级字段一键展开。",
+                )}
+              </span>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 8 }}>
+                {(caps.data?.plugins ?? []).map((p) => (
+                  <BehaviorCard
+                    key={p.id}
+                    id={p.id}
+                    schema={p.config_schema as JsonSchema | undefined}
+                    enabled={cfg.plugins.includes(p.id)}
+                    config={(cfg.plugin_config[p.id] as Record<string, unknown>) ?? {}}
+                    onToggle={(on) =>
+                      patch({ plugins: on ? [...cfg.plugins, p.id] : cfg.plugins.filter((x) => x !== p.id) })
+                    }
+                    onConfig={(v) => patch({ plugin_config: { ...cfg.plugin_config, [p.id]: v } })}
+                  />
+                ))}
+                {(caps.data?.plugins ?? []).length === 0 && (
+                  <span className="mut">{caps.isLoading ? "…" : app.t("No behaviors available.", "无可用行为。")}</span>
+                )}
+              </div>
+            </div>
           </>
         )}
 
@@ -465,43 +522,9 @@ export default function AgentEditorSurface() {
                 onChange={(v) => patch({ tool_overrides: v })}
               />
             </div>
-          </div>
-        )}
-
-        {tab === "plugins" && (
-          <>
-            <div className="field">
-              <label>{app.t("Enabled plugins", "启用的插件")}</label>
-              <span className="mut">
-                {app.t("A runtime plugin contributes only when enabled here.", "运行时插件只有在此启用才生效。")}
-              </span>
-              <CheckPicker
-                options={(caps.data?.plugins ?? []).map((p) => ({ id: p.id }))}
-                selected={cfg.plugins}
-                onChange={(v) => patch({ plugins: v })}
-                empty={caps.isLoading ? "…" : app.t("No plugins available.", "无可用插件。")}
-              />
-            </div>
-            <div className="field">
-              <label>{app.t("Plugin config (policy sections)", "插件配置(策略段)")}</label>
-              <span className="mut">
-                {app.t(
-                  "Per-plugin JSON: permission policy, state machine, deferred-tools, generative-UI all live here.",
-                  "每插件 JSON:权限策略、状态机、deferred-tools、generative-UI 都在这里。",
-                )}
-              </span>
-              <PluginConfigEditor
-                pluginIds={cfg.plugins}
-                config={cfg.plugin_config}
-                schemas={Object.fromEntries(
-                  (caps.data?.plugins ?? []).map((p) => [p.id, p.config_schema as JsonSchema]),
-                )}
-                onChange={(next) => patch({ plugin_config: next })}
-              />
-            </div>
             {(caps.data?.policies ?? []).some((p) => p.id === "permission") && (
-              <div className="field">
-                <label>{app.t("Permission policy", "权限策略")}</label>
+              <div className="field" style={{ marginTop: 16 }}>
+                <label>{app.t("Permissions", "权限")}</label>
                 <span className="mut">
                   {app.t(
                     "Gate tool calls: a default decision plus ordered rules, enforced at runtime.",
@@ -514,10 +537,13 @@ export default function AgentEditorSurface() {
                 />
               </div>
             )}
-          </>
+          </div>
         )}
+
       </Card>
       )}
+        </div>
+      </div>
 
       {manageModels && (
         <Drawer title={app.t("Models", "模型")} onClose={() => setManageModels(false)}>
@@ -528,62 +554,83 @@ export default function AgentEditorSurface() {
   );
 }
 
-/** Per-plugin config editor: a schema-driven form when the plugin advertises a
- * `config_schema` (from /v1/capabilities), else a validated JSON textarea. */
-function PluginConfigEditor({
-  pluginIds,
+/** One runtime behavior as a named card (ADR IA): a title + description + enable toggle,
+ * and — when enabled — its config as a friendly schema-driven form (reusing `SchemaForm`)
+ * with an "Advanced (raw JSON)" escape hatch so no field is ever unreachable. A plugin
+ * with no schema falls back to the JSON box directly. Enabling adds the plugin id to the
+ * agent's `plugins`; the form writes its `plugin_config[id]` section. */
+function BehaviorCard({
+  id,
+  schema,
+  enabled,
   config,
-  schemas,
-  onChange,
+  onToggle,
+  onConfig,
 }: {
-  pluginIds: string[];
+  id: string;
+  schema?: JsonSchema;
+  enabled: boolean;
   config: Record<string, unknown>;
-  schemas: Record<string, JsonSchema>;
-  onChange: (next: Record<string, unknown>) => void;
+  onToggle: (on: boolean) => void;
+  onConfig: (next: unknown) => void;
 }) {
   const app = useApp();
-  // Sections to show: every enabled plugin, plus any config key already present.
-  const keys = Array.from(new Set([...pluginIds, ...Object.keys(config)]));
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [errs, setErrs] = useState<Record<string, string>>({});
-
-  if (keys.length === 0) return <span className="mut">{app.t("No plugins enabled.", "未启用插件。")}</span>;
-
-  const textFor = (k: string) => drafts[k] ?? JSON.stringify(config[k] ?? {}, null, 2);
-  const commitJson = (k: string, raw: string) => {
-    setDrafts((d) => ({ ...d, [k]: raw }));
+  const meta = BEHAVIORS[id];
+  const title = meta ? app.t(meta.title, meta.zh) : id;
+  const desc = meta ? app.t(meta.desc, meta.descZh) : app.t("Runtime plugin.", "运行时插件。");
+  const [draft, setDraft] = useState<string | null>(null);
+  const [err, setErr] = useState("");
+  const commitJson = (raw: string) => {
+    setDraft(raw);
     try {
-      const parsed = raw.trim() === "" ? {} : JSON.parse(raw);
-      setErrs((e) => ({ ...e, [k]: "" }));
-      onChange({ ...config, [k]: parsed });
+      onConfig(raw.trim() === "" ? {} : JSON.parse(raw));
+      setErr("");
     } catch {
-      setErrs((e) => ({ ...e, [k]: app.t("invalid JSON — not saved", "JSON 非法 — 未保存") }));
+      setErr(app.t("invalid JSON — not saved", "JSON 非法 — 未保存"));
     }
   };
-
+  const jsonBox = (
+    <>
+      <textarea
+        className="input mono"
+        rows={5}
+        value={draft ?? JSON.stringify(config ?? {}, null, 2)}
+        onChange={(e) => commitJson(e.target.value)}
+      />
+      {err && <span className="err" style={{ fontSize: 11 }}>{err}</span>}
+    </>
+  );
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      {keys.map((k) => (
-        <Card key={k} style={{ padding: "10px 12px" }}>
-          <label className="row" style={{ justifyContent: "space-between", fontSize: 12, marginBottom: 6 }}>
-            <span className="mono">{k}</span>
-            {schemas[k] ? (
-              <span className="mut" style={{ fontSize: 10 }}>{app.t("schema-driven", "schema 驱动")}</span>
-            ) : (
-              errs[k] && <span className="err" style={{ fontSize: 11 }}>{errs[k]}</span>
-            )}
-          </label>
-          {schemas[k] ? (
-            <SchemaForm
-              schema={schemas[k]}
-              value={config[k] ?? {}}
-              onChange={(v) => onChange({ ...config, [k]: v })}
-            />
+    <Card className="behavior-card" style={{ padding: "12px 14px" }}>
+      <label className="row" style={{ justifyContent: "space-between", alignItems: "flex-start", cursor: "pointer", gap: 12 }}>
+        <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <strong>{title}</strong>
+          <span className="mut" style={{ fontSize: 12 }}>{desc}</span>
+        </span>
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => onToggle(e.target.checked)}
+          style={{ accentColor: "var(--accent)", width: 18, height: 18, flexShrink: 0 }}
+        />
+      </label>
+      {enabled && (
+        <div style={{ marginTop: 10 }}>
+          {schema ? (
+            <>
+              <SchemaForm schema={schema} value={config} onChange={onConfig} />
+              <details style={{ marginTop: 8 }}>
+                <summary className="mut" style={{ fontSize: 12, cursor: "pointer" }}>
+                  {app.t("Advanced (raw JSON)", "高级(原始 JSON)")}
+                </summary>
+                <div style={{ marginTop: 6 }}>{jsonBox}</div>
+              </details>
+            </>
           ) : (
-            <textarea className="input mono" rows={5} value={textFor(k)} onChange={(e) => commitJson(k, e.target.value)} />
+            jsonBox
           )}
-        </Card>
-      ))}
-    </div>
+        </div>
+      )}
+    </Card>
   );
 }
