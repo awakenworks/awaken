@@ -136,6 +136,52 @@ mod cgroup_caps_tests {
         assert_eq!(caps, CgroupCaps::default());
         assert!(caps.memory_swap_bytes.is_none());
     }
+
+    #[test]
+    fn unrestricted_egress_needs_no_proxy() {
+        let r = egress_plan(&pc::NetworkPolicy::Unrestricted, None).unwrap();
+        assert_eq!(r.network, NetworkMode::Open);
+        assert!(r.proxy_env.is_empty());
+    }
+
+    #[test]
+    fn no_egress_needs_no_proxy() {
+        let r = egress_plan(&pc::NetworkPolicy::None, None).unwrap();
+        assert_eq!(r.network, NetworkMode::None);
+        assert!(r.proxy_env.is_empty());
+    }
+
+    #[test]
+    fn allowlist_routes_through_the_brokered_proxy() {
+        let proxy = EgressProxy {
+            url: "http://gw.internal:8888".into(),
+        };
+        let policy = pc::NetworkPolicy::Allowlist {
+            hosts: vec!["api.anthropic.com".into()],
+        };
+        let r = egress_plan(&policy, Some(&proxy)).unwrap();
+        assert_eq!(
+            r.network,
+            NetworkMode::Allowlist(vec!["api.anthropic.com".into()])
+        );
+        assert!(
+            r.proxy_env
+                .contains(&("HTTPS_PROXY".into(), "http://gw.internal:8888".into()))
+        );
+        assert!(
+            r.proxy_env
+                .contains(&("HTTP_PROXY".into(), "http://gw.internal:8888".into()))
+        );
+        assert!(r.proxy_env.iter().any(|(k, _)| k == "NO_PROXY"));
+    }
+
+    #[test]
+    fn allowlist_without_a_proxy_fails_closed() {
+        let policy = pc::NetworkPolicy::Allowlist {
+            hosts: vec!["api.anthropic.com".into()],
+        };
+        assert_eq!(egress_plan(&policy, None), Err(EgressError::ProxyRequired));
+    }
 }
 
 fn image_of(spec: &pc::SandboxSpec, default_image: &str) -> String {
@@ -152,6 +198,66 @@ fn network_of(policy: &pc::NetworkPolicy) -> NetworkMode {
         pc::NetworkPolicy::Unrestricted => NetworkMode::Open,
         pc::NetworkPolicy::Allowlist { hosts } => NetworkMode::Allowlist(hosts.clone()),
         pc::NetworkPolicy::None => NetworkMode::None,
+    }
+}
+
+/// A brokered egress chokepoint the sandbox routes through. The host allowlist is
+/// enforced **at the proxy**, out of the sandbox — the same secretless-gateway route
+/// used for model/MCP egress. The endpoint is supplied by the host's gateway; it is
+/// never chosen inside the sandbox tier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EgressProxy {
+    /// The forward-proxy URL the agent's HTTP client must use (e.g. `http://gw:8888`).
+    pub url: String,
+}
+
+/// How egress is realized for a container: the effective network mode plus any proxy
+/// env the agent process must export.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EgressRealization {
+    pub network: NetworkMode,
+    /// `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` pairs — empty for `Open`/`None`.
+    pub proxy_env: Vec<(String, String)>,
+}
+
+/// Why an egress policy cannot be realized on this tier.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum EgressError {
+    /// An allowlist policy needs a brokered chokepoint; none was supplied.
+    #[error("allowlist egress requires a brokered proxy endpoint, none supplied")]
+    ProxyRequired,
+}
+
+/// Realize an egress policy for the container tier, fail-closed. An `Allowlist` is
+/// realized as a route through the brokered `proxy` (direct egress denied; all
+/// traffic flows through the chokepoint that enforces the host allowlist). Without a
+/// proxy an allowlist **cannot** be enforced, so it is rejected rather than silently
+/// opened — the sandbox never runs believing egress is controlled when it is not.
+pub fn egress_plan(
+    policy: &pc::NetworkPolicy,
+    proxy: Option<&EgressProxy>,
+) -> Result<EgressRealization, EgressError> {
+    match policy {
+        pc::NetworkPolicy::Unrestricted => Ok(EgressRealization {
+            network: NetworkMode::Open,
+            proxy_env: Vec::new(),
+        }),
+        pc::NetworkPolicy::None => Ok(EgressRealization {
+            network: NetworkMode::None,
+            proxy_env: Vec::new(),
+        }),
+        pc::NetworkPolicy::Allowlist { hosts } => {
+            let proxy = proxy.ok_or(EgressError::ProxyRequired)?;
+            Ok(EgressRealization {
+                network: NetworkMode::Allowlist(hosts.clone()),
+                proxy_env: vec![
+                    ("HTTPS_PROXY".to_string(), proxy.url.clone()),
+                    ("HTTP_PROXY".to_string(), proxy.url.clone()),
+                    // Keep loopback (the agent's own sidecars) direct.
+                    ("NO_PROXY".to_string(), "localhost,127.0.0.1".to_string()),
+                ],
+            })
+        }
     }
 }
 

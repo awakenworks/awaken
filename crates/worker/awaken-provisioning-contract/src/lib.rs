@@ -33,6 +33,7 @@ mod admission;
 mod lease;
 mod prepare;
 mod sandbox;
+mod shape;
 mod spec;
 mod vocab;
 
@@ -47,6 +48,7 @@ pub use sandbox::{
     SandboxCapabilities, SandboxError, SandboxHandle, SandboxProvider, SandboxStatus,
     SelectionError, Signal, select_provider,
 };
+pub use shape::{ExecutionShape, plan_shape};
 pub use spec::{Command, EnvironmentKind, RootfsSource, SandboxSpec, Stdio};
 pub use vocab::{
     Artifact, EnvValue, EnvVar, EnvVisibility, MountAccess, MountLifetime, MountRequirement,
