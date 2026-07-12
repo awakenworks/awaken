@@ -945,6 +945,7 @@ version = "1.0.0-dev"
 dependencies = [
  "anyhow",
  "async-trait",
+ "awaken-agent-channel",
  "awaken-agent-contract",
  "awaken-config-store",
  "awaken-connection-plan",
