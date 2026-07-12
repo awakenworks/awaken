@@ -37,7 +37,10 @@ mod spec;
 mod vocab;
 
 pub use admission::{AdmissionError, EnvironmentDecl, check_environment_soundness};
-pub use lease::{AdoptionPlan, LeaseGrant, LeaseLiveness, ReapCause, reconcile_adoption};
+pub use lease::{
+    AdoptionPlan, LeaseGrant, LeaseLiveness, ReapCause, ReconcileOutcome, apply_adoption_plan,
+    reconcile_adoption, reconcile_and_apply,
+};
 pub use prepare::{EnvironmentPlan, PrepareError, prepare_environment};
 pub use sandbox::{
     BlobSource, ExitStatus, IsolationClass, MemoryMount, MemoryMounter, ProcessHandle, Sandbox,
