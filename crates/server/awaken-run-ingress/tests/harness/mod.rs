@@ -239,6 +239,110 @@ pub fn schedule_runtime() -> (Arc<Runtime>, Arc<AtomicUsize>) {
     (runtime, ran)
 }
 
+/// Always answers with fixed text (a fresh run ends in one step), but counts every
+/// inference — so a lease test can assert a run's model was driven *exactly once*
+/// even after a stale reclaim tries to re-run it.
+struct CountingTextLlm {
+    infers: Arc<AtomicUsize>,
+}
+#[async_trait::async_trait]
+impl LlmExecutor for CountingTextLlm {
+    async fn infer(&self, _r: ChatRequest) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        self.infers.fetch_add(1, Ordering::SeqCst);
+        Ok(ChatResponse {
+            output: AssistantOutput::text("done".to_string()),
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+/// A text runtime that counts inferences, exposing the counter so a test can prove
+/// a settled run is not re-executed on a stale reclaim (exactly-once execution).
+pub fn counting_text_runtime() -> (Arc<Runtime>, Arc<AtomicUsize>) {
+    let infers = Arc::new(AtomicUsize::new(0));
+    let runtime = Arc::new(Runtime::new().with_llm(Arc::new(CountingTextLlm {
+        infers: infers.clone(),
+    })));
+    install(&runtime);
+    (runtime, infers)
+}
+
+/// A model that calls `echo` until a tool result is present in the transcript, then
+/// ends with text. Unlike [`ToolThenText`] it keys off *transcript content*, not a
+/// shared call counter, so a re-execution over a fresh transcript repeats the same
+/// tool-then-text arc — exactly what a mid-flight reclaim of a running run triggers.
+struct ToolUntilResult;
+#[async_trait::async_trait]
+impl LlmExecutor for ToolUntilResult {
+    async fn infer(&self, r: ChatRequest) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let has_tool_result = r.messages.iter().any(|m| matches!(m.role, ChatRole::Tool));
+        let output = if has_tool_result {
+            AssistantOutput::text("all done".to_string())
+        } else {
+            AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "call-1".to_string(),
+                tool_id: "echo".to_string(),
+                arguments: serde_json::json!({"text": "ping"}),
+            }])
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+/// An echo tool that counts every invocation and blocks its FIRST invocation on a
+/// release gate. A test uses it to freeze one owner mid-step — after it has
+/// committed a `Running` fact but before it finishes — while a second owner whose
+/// lease has lapsed reclaims and re-drives the same run.
+struct BlockingEcho {
+    ran: Arc<AtomicUsize>,
+    release: Arc<tokio::sync::Semaphore>,
+    first_seen: std::sync::atomic::AtomicBool,
+}
+#[async_trait::async_trait]
+impl RawTool for BlockingEcho {
+    fn id(&self) -> &str {
+        "echo"
+    }
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        self.ran.fetch_add(1, Ordering::SeqCst);
+        // Only the first-ever invocation blocks; a later re-drive runs straight
+        // through, so the test observes the second (double) execution.
+        if !self
+            .first_seen
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            let _permit = self.release.acquire().await;
+        }
+        Ok(ToolOutput::ok(call.call_id, "echoed: ping"))
+    }
+}
+
+/// A runtime that runs one inline `echo` tool call then ends with text, but whose
+/// tool blocks its first invocation until `release` grants a permit. Returns the
+/// runtime and the shared tool-invocation counter, so a lease test can freeze a
+/// run mid-flight and observe whether a reclaim re-runs the tool.
+pub fn blocking_tool_runtime(
+    release: Arc<tokio::sync::Semaphore>,
+) -> (Arc<Runtime>, Arc<AtomicUsize>) {
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = Arc::new(
+        Runtime::new()
+            .with_llm(Arc::new(ToolUntilResult))
+            .with_tool(Arc::new(BlockingEcho {
+                ran: ran.clone(),
+                release,
+                first_seen: std::sync::atomic::AtomicBool::new(false),
+            })),
+    );
+    install(&runtime);
+    (runtime, ran)
+}
+
 /// Build a pending input for the test thread. The one place the `PendingInput`
 /// shape lives, so each suite's convenience builder delegates here.
 pub fn pending(
