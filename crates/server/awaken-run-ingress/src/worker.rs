@@ -237,16 +237,24 @@ impl<S: Dispatch> DispatchWorker<S> {
                         .filter(|input| input.run_id.0.is_empty())
                         .collect();
                     let mut activation = claimed.request.activation;
-                    for (idx, input) in unbound.iter().enumerate() {
+                    // Prepend each delivered unbound *input* in arrival order. The
+                    // insert position tracks how many were actually inserted, not the
+                    // raw scan index — a non-`Input` unbound row (e.g. a stray
+                    // decision) is skipped without shifting the target, so a skipped
+                    // entry never desyncs the index and pushes a later insert past the
+                    // vector's end (which would panic).
+                    let mut at = 0;
+                    for input in &unbound {
                         if let ResumeResult::Input(text) = &input.result {
                             activation.input.insert(
-                                idx,
+                                at,
                                 Message {
                                     id: MessageId(input.message_id.clone()),
                                     role: Role::User,
                                     content: vec![ContentBlock::text(text)],
                                 },
                             );
+                            at += 1;
                         }
                     }
                     // Consumed on settle, not on read, so a crash re-delivers them.
@@ -271,20 +279,7 @@ impl<S: Dispatch> DispatchWorker<S> {
             }
         }
 
-        let outcome = match &phase {
-            Phase::Waiting => DispatchOutcome::Parked,
-            Phase::Ended(_) => DispatchOutcome::Done,
-            // `execute`/`resume` only ever return a parked or ended phase;
-            // `Running` exists as durable mid-flight truth, never as an
-            // executor result. Fail loudly rather than settle a live run.
-            Phase::Running => {
-                return Err(Error::Execution(
-                    awaken_runtime_contract::execution::Error::Execution(
-                        "executor returned a non-settled Running phase".to_string(),
-                    ),
-                ));
-            }
-        };
+        let outcome = settle_outcome(&phase)?;
         self.store.settle(&run_id, outcome, &all_pending).await?;
         Ok(Some((run_id, phase)))
     }
@@ -297,5 +292,60 @@ impl<S: Dispatch> DispatchWorker<S> {
             processed.push(result);
         }
         Ok(processed)
+    }
+}
+
+/// Map a settled executor phase to the dispatch outcome the worker commits.
+///
+/// `execute`/`resume` only ever return a parked or ended phase; `Running` exists
+/// as durable mid-flight truth, never as an executor result. A `Running` result
+/// therefore signals a broken executor, and the worker fails loudly rather than
+/// settle a live run to a terminal (`Done`) or parked outcome — committed truth,
+/// not a bogus return, decides a run's fate (G1/G13).
+fn settle_outcome(phase: &Phase) -> Result<DispatchOutcome, Error> {
+    match phase {
+        Phase::Waiting => Ok(DispatchOutcome::Parked),
+        Phase::Ended(_) => Ok(DispatchOutcome::Done),
+        Phase::Running => Err(Error::Execution(
+            awaken_runtime_contract::execution::Error::Execution(
+                "executor returned a non-settled Running phase".to_string(),
+            ),
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::settle_outcome;
+    use awaken_agent_contract::agent::run::{EndCause, Phase};
+
+    use crate::Error;
+    use crate::dispatch::DispatchOutcome;
+
+    // Behavior 1: an illegal `Running` executor result fails loudly — the worker
+    // must NOT settle a live run to Done/Parked. `settle_outcome` is the decision
+    // point `drive_claimed` consults before it calls `store.settle`, so proving it
+    // errors on `Running` proves the worker never settles a mid-flight run.
+    #[test]
+    fn running_phase_result_is_rejected_not_settled() {
+        let err = settle_outcome(&Phase::Running).expect_err("Running must fail loudly");
+        // It is an execution error, not a dispatch/storage error — a broken executor
+        // is not a queue fault.
+        assert!(
+            matches!(err, Error::Execution(_)),
+            "a non-settled Running result is an execution error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn ended_settles_done_and_waiting_settles_parked() {
+        assert!(matches!(
+            settle_outcome(&Phase::Ended(EndCause::NaturalEnd)).unwrap(),
+            DispatchOutcome::Done
+        ));
+        assert!(matches!(
+            settle_outcome(&Phase::Waiting).unwrap(),
+            DispatchOutcome::Parked
+        ));
     }
 }
