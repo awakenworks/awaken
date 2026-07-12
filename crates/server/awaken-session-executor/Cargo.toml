@@ -20,8 +20,10 @@ awaken-ext-mcp = { workspace = true }
 awaken-ext-goal = { workspace = true }
 awaken-ext-state-machine = { workspace = true, features = ["schema"] }
 # Durable memory persistence (resources plane): backs the ADR-0038 memory_store
-# family so a harvested write-back survives a process restart.
-awaken-memory-store = { workspace = true }
+# family so a harvested write-back survives a process restart. The `sqlite` feature
+# provides the path-addressed store with **crash-atomic** rename/CAS (one transaction)
+# — the durable backend for the ADR-0053 `/memories` surface.
+awaken-memory-store = { workspace = true, features = ["sqlite"] }
 # Durable skill catalog (resources plane): backs the delivered-skill source so a
 # skill added via /v1/skills survives a restart; awaken-ext-skills stays store-unaware.
 awaken-skill-store = { workspace = true }

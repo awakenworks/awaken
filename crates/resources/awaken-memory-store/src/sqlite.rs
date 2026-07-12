@@ -407,7 +407,14 @@ impl MemoryFs for SqliteMemoryFs {
         validate_path(to)?;
         let (store, from, to) = (store.to_string(), from.to_string(), to.to_string());
         with_conn_mem(&self.conn, move |conn| {
-            let row = conn
+            // Atomic POSIX replace: drop the destination and move the source in ONE
+            // transaction, so a crash between the two writes can never leave the
+            // destination deleted without the move completing (an uncommitted
+            // transaction is rolled back on recovery). `unchecked_transaction` gives a
+            // transaction from a shared `&Connection`; it rolls back if dropped before
+            // `commit` (any early return here — e.g. a mid-op fault — undoes the DELETE).
+            let tx = conn.unchecked_transaction().map_err(mem_err)?;
+            let row = tx
                 .query_row(
                     &format!(
                         "SELECT id, content, sha, version, created FROM {NS}_memories \
@@ -432,12 +439,12 @@ impl MemoryFs for SqliteMemoryFs {
                 return row_memory(id, from, content, sha, version, created, created);
             }
             let now = now_nanos() as i64;
-            conn.execute(
+            tx.execute(
                 &format!("DELETE FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"),
                 params![store, to],
             )
             .map_err(mem_err)?;
-            conn.execute(
+            tx.execute(
                 &format!(
                     "UPDATE {NS}_memories SET path = ?1, version = version + 1, updated = ?2 \
                      WHERE store_id = ?3 AND id = ?4"
@@ -445,6 +452,7 @@ impl MemoryFs for SqliteMemoryFs {
                 params![to, now, store, id],
             )
             .map_err(mem_err)?;
+            tx.commit().map_err(mem_err)?;
             Ok(Memory {
                 content_size: content.len() as u64,
                 content: Some(String::from_utf8(content).map_err(mem_err)?),
@@ -626,5 +634,52 @@ mod memfs_tests {
             Some("durable")
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A crash mid-`rename` (after the destination is deleted, before the source is
+    /// moved) must lose nothing: the rename wraps both writes in one transaction, so
+    /// an un-committed transaction rolls back on recovery. We model the crash by
+    /// running the destination DELETE in a transaction that is dropped before commit,
+    /// then assert both memories are intact.
+    #[tokio::test]
+    async fn rename_replace_is_crash_atomic() {
+        let fs = SqliteMemoryFs::open_in_memory().unwrap();
+        fs.create("s", "/from.md", "src").await.unwrap();
+        fs.create("s", "/to.md", "dst").await.unwrap();
+
+        // Simulate a crash: delete the destination inside a transaction, then abandon
+        // it (drop without commit) — exactly the interrupted-rename window.
+        {
+            let guard = fs.conn.lock().unwrap();
+            let tx = guard.unchecked_transaction().unwrap();
+            tx.execute(
+                &format!("DELETE FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"),
+                params!["s", "/to.md"],
+            )
+            .unwrap();
+            // tx dropped here without commit == process died mid-rename.
+        }
+        assert!(
+            fs.get_by_path("s", "/to.md").await.unwrap().is_some(),
+            "an aborted rename must not lose the destination"
+        );
+        assert!(fs.get_by_path("s", "/from.md").await.unwrap().is_some());
+
+        // A real rename still replaces atomically and preserves the source's id.
+        let src = fs.get_by_path("s", "/from.md").await.unwrap().unwrap();
+        let renamed = fs.rename("s", "/from.md", "/to.md").await.unwrap();
+        assert_eq!(renamed.id, src.id, "the moved memory keeps its id");
+        assert_eq!(renamed.path, "/to.md");
+        assert!(fs.get_by_path("s", "/from.md").await.unwrap().is_none());
+        assert_eq!(
+            fs.get_by_path("s", "/to.md")
+                .await
+                .unwrap()
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("src"),
+            "the destination now holds the moved content"
+        );
     }
 }

@@ -457,15 +457,21 @@ impl SharedHost {
                 .expect("open durable memory-store root"),
         );
         // ADR-0053 path-addressed memory files persist alongside, under the same
-        // durability rule.
-        let memory_fs_root = match &store_dir {
-            Some(dir) => dir.join("memory_fs"),
-            None => std::env::temp_dir().join(format!("awaken-memfs-{}", std::process::id())),
-        };
-        let memory_fs: Arc<dyn awaken_memory_store::MemoryFs> = Arc::new(
-            awaken_memory_store::FsMemoryFs::open(&memory_fs_root)
-                .expect("open durable memory-fs root"),
-        );
+        // durability rule. Backed by the SQLite store so rename-replace and CAS are
+        // **crash-atomic** (one transaction) — the plain-file backend is only no-loss
+        // (a crash mid-rename can leave a transient duplicate source).
+        let memory_fs: Arc<dyn awaken_memory_store::MemoryFs> = Arc::new(match &store_dir {
+            Some(dir) => {
+                let db = dir.join("memory_fs.db");
+                awaken_memory_store::SqliteMemoryFs::open(
+                    db.to_str().expect("memory-fs db path is valid UTF-8"),
+                )
+                .expect("open durable memory-fs sqlite store")
+            }
+            // No durable dir → an ephemeral in-memory database (dies with the process).
+            None => awaken_memory_store::SqliteMemoryFs::open_in_memory()
+                .expect("open ephemeral memory-fs sqlite store"),
+        });
         Self {
             llm,
             model_ref: model_ref.into(),
