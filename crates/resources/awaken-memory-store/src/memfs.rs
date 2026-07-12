@@ -691,6 +691,44 @@ mod tests {
         ));
     }
 
+    /// The `NotFound` paths of `update`/`rename`, over any backend.
+    async fn not_found_paths(fs: &dyn MemoryFs) {
+        let store = "s";
+        // update on a store that does not exist yet → NotFound.
+        assert!(matches!(
+            fs.update(store, "no_id", "x", "sha").await,
+            Err(MemErr::NotFound(_))
+        ));
+        // update an unknown id in an existing store → NotFound.
+        fs.create(store, "/seed.md", "s").await.unwrap();
+        assert!(matches!(
+            fs.update(store, "no_such_id", "x", "sha").await,
+            Err(MemErr::NotFound(_))
+        ));
+        // rename a source that does not exist → NotFound (both the from==to and the
+        // from!=to shapes).
+        assert!(matches!(
+            fs.rename(store, "/gone.md", "/x.md").await,
+            Err(MemErr::NotFound(_))
+        ));
+        assert!(matches!(
+            fs.rename(store, "/gone.md", "/gone.md").await,
+            Err(MemErr::NotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn in_memory_not_found_paths() {
+        not_found_paths(&InMemoryFs::new()).await;
+    }
+
+    #[tokio::test]
+    async fn fs_not_found_paths() {
+        let root = temp_root("nf");
+        not_found_paths(&FsMemoryFs::open(&root).unwrap()).await;
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     #[tokio::test]
     async fn in_memory_backend_conforms() {
         conformance(&InMemoryFs::new()).await;
@@ -719,5 +757,91 @@ mod tests {
         let fresh = fs.create("s1", "/new.md", "n").await.unwrap();
         assert_ne!(fresh.id, got.id, "reopened store mints a fresh id");
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    // --- Concurrency (ADR-0053 P2.5): the store is the shared source of truth
+    //     under concurrent mounts, and writes are CAS-serialized. ---
+
+    #[tokio::test]
+    async fn concurrent_create_of_the_same_path_has_exactly_one_winner() {
+        let fs = std::sync::Arc::new(InMemoryFs::new());
+        let mut handles = Vec::new();
+        for i in 0..8u32 {
+            let fs = fs.clone();
+            handles.push(tokio::spawn(async move {
+                fs.create("s", "/race.md", &format!("v{i}")).await
+            }));
+        }
+        let (mut oks, mut conflicts) = (0, 0);
+        for h in handles {
+            match h.await.unwrap() {
+                Ok(_) => oks += 1,
+                Err(MemErr::PathConflict(_)) => conflicts += 1,
+                other => panic!("unexpected: {other:?}"),
+            }
+        }
+        assert_eq!(oks, 1, "exactly one create wins the path");
+        assert_eq!(conflicts, 7);
+    }
+
+    #[tokio::test]
+    async fn concurrent_update_on_the_same_base_has_exactly_one_cas_winner() {
+        let fs = std::sync::Arc::new(InMemoryFs::new());
+        let m = fs.create("s", "/c.md", "v0").await.unwrap();
+        let mut handles = Vec::new();
+        for i in 0..8u32 {
+            let (fs, id, base) = (fs.clone(), m.id.clone(), m.content_sha256.clone());
+            handles.push(tokio::spawn(async move {
+                fs.update("s", &id, &format!("w{i}"), &base).await
+            }));
+        }
+        let (mut oks, mut conflicts) = (0, 0);
+        for h in handles {
+            match h.await.unwrap() {
+                Ok(_) => oks += 1,
+                Err(MemErr::Conflict { .. }) => conflicts += 1,
+                other => panic!("unexpected: {other:?}"),
+            }
+        }
+        assert_eq!(
+            oks, 1,
+            "exactly one CAS write wins; the rest conflict, none clobbers"
+        );
+        assert_eq!(conflicts, 7);
+    }
+
+    #[tokio::test]
+    async fn a_write_through_one_handle_is_visible_through_another() {
+        // Two handles to one store stand in for two mounts sharing the same source
+        // of truth — the basis of ADR-0053's shared-mount read coherence.
+        let fs = std::sync::Arc::new(InMemoryFs::new());
+        let (writer, reader) = (fs.clone(), fs.clone());
+        let m = writer.create("s", "/shared.md", "hello").await.unwrap();
+        assert_eq!(
+            reader
+                .get_by_path("s", "/shared.md")
+                .await
+                .unwrap()
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("hello"),
+            "the second handle sees the create"
+        );
+        writer
+            .update("s", &m.id, "updated", &m.content_sha256)
+            .await
+            .unwrap();
+        assert_eq!(
+            reader
+                .get_by_path("s", "/shared.md")
+                .await
+                .unwrap()
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("updated"),
+            "the second handle sees the update"
+        );
     }
 }
