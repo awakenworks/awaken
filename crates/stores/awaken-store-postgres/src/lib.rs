@@ -224,6 +224,34 @@ impl CommitCoordinator for PostgresCommitCoordinator {
             .await
             .map_err(|err| Error::Rejected(err.to_string()))?;
 
+        // Terminal-is-final (exactly-once committed LOG under a stale reclaim),
+        // fenced DURABLY and IN-TRANSACTION — this is the authoritative check, not
+        // the per-process projection. In a fleet the projection is per-process
+        // (cross-node visibility is reconnect-only), so a stale owner on a DIFFERENT
+        // node would never see the reclaimer's `Ended` in its own projection; only
+        // the shared database is common ground. `SELECT ... FOR UPDATE` locks the
+        // run's `run_record` row (a row exists once any Running/Ended fact was
+        // committed, which is always true by the time a run could be terminal), so
+        // two committers racing the same run serialize on it: the first commits
+        // `Ended`; the second's read then sees `Ended` and is rejected — no
+        // duplicate terminal fact or transcript lands in the shared DB. A rejected
+        // commit drops `tx` unread, rolling back and releasing the lock. When no row
+        // exists (the run's first-ever commit) there is nothing to reject, so the
+        // first commit — even a first `Ended` — lands.
+        let existing: Option<Json<Phase>> = sqlx::query_scalar(&format!(
+            "SELECT phase FROM {p}_run_record WHERE run_id = $1 FOR UPDATE"
+        ))
+        .bind(&run_id.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(reject)?;
+        if matches!(existing, Some(Json(Phase::Ended(_)))) {
+            return Err(Error::Rejected(format!(
+                "run {} is already terminal; refusing post-terminal commit",
+                run_id.0
+            )));
+        }
+
         // Allocate the commit sequence at the database, not from the in-process
         // projection counter: that counter is per-process, so concurrent commits —
         // parallel drives in one process AND a cross-process fleet — would read the

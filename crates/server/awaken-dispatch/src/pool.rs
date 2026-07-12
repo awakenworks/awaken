@@ -307,7 +307,15 @@ async fn drain_loop<S: Dispatch + 'static>(
         .await
         {
             Ok(true) => continue,
-            Ok(false) | Err(_) => {}
+            Ok(false) => {}
+            // A store/drive error is transient — the next tick retries — so log it
+            // and back off rather than kill the task. A stale owner's rejected
+            // commit (terminal-is-final fence) never reaches here: `drive_claimed`
+            // absorbs it as an already-done settle, so this only fires on genuine
+            // faults.
+            Err(err) => {
+                tracing::warn!(owner = %owner, error = %err, "drain tick failed; retrying");
+            }
         }
         tokio::select! {
             _ = shutdown.cancelled() => break,

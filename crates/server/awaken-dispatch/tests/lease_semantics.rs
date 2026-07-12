@@ -11,10 +11,14 @@
 //!    settles Done without re-executing (committed truth is authority);
 //! 4. lease renewal keeps a slow-but-alive owner from being stolen across many
 //!    lease periods (the exact fence that stops a fleet double-drive); and
-//! 5. the residual risk: a run reclaimed while its first execution is *genuinely
-//!    still in flight* (owner slow, lease lapsed, renewal failed) IS re-executed.
-//!    Test 5 demonstrates that double-execution and documents it as the gap that
-//!    only lease renewal (test 4) fences — there is no fence token on commit/settle.
+//! 5. the residual case: a run reclaimed while its first execution is *genuinely
+//!    still in flight* (owner slow, lease lapsed, renewal failed) IS re-executed —
+//!    but the durable COMMITTED LOG stays exactly-once. The commit coordinators
+//!    enforce terminal-is-final, so once a reclaimer drives the run to `Ended` the
+//!    slow owner's late duplicate commit is fenced (no double end, no duplicate
+//!    assistant turn). Test 5 pins that guarantee and documents the two inherent
+//!    residuals it does NOT fix (the tool side effect ran twice; the input is
+//!    duplicated with an orphan `Running` fact from re-executing the activation).
 
 mod harness;
 
@@ -233,24 +237,41 @@ async fn renewal_keeps_a_slow_owner_across_multiple_lease_periods() {
     );
 }
 
-// --- 5. Mid-flight reclaim safety — THE risk --------------------------------
+// --- 5. Mid-flight reclaim — the committed LOG stays exactly-once ------------
 
 #[tokio::test]
-async fn mid_flight_reclaim_re_executes_a_still_running_run() {
-    // THE risk: a run reclaimed while its FIRST execution is genuinely still in
-    // flight (owner slow, not dead; lease lapsed; renewal failed) is RE-EXECUTED.
+async fn mid_flight_reclaim_keeps_the_committed_log_exactly_once() {
+    // The residual risk of lease-based recovery: a run reclaimed while its FIRST
+    // execution is genuinely still in flight (owner slow, not dead; lease lapsed;
+    // renewal failed) is RE-EXECUTED. owner-a claims and starts driving; its tool
+    // blocks after A has committed a `Running` fact (mid-step, no waiting ticket).
+    // Its lease lapses with no renewal. owner-b reclaims — sees no ticket and a
+    // non-terminal `Running` record, so it re-executes and drives the run to
+    // `Ended`, running the tool a SECOND time.
     //
-    // owner-a claims and starts driving; its tool blocks after A has committed a
-    // `Running` fact (mid-step, no waiting ticket). Its lease lapses with no
-    // renewal. owner-b reclaims — sees no ticket and a non-terminal `Running`
-    // record, so it FALLS THROUGH and re-executes, running the tool a SECOND time.
+    // The achievable guarantee this test pins: the durable COMMITTED LOG stays
+    // exactly-once. The commit coordinators enforce terminal-is-final — once a run
+    // is committed `Ended`, any later commit for it is rejected. So when the slow
+    // owner A finally unblocks and re-drives the (now-terminal) run, its duplicate
+    // commit is FENCED: the transcript never gets a second terminal `Ended` fact or
+    // a duplicate final assistant message. The worker absorbs the rejected commit
+    // as an already-done settle (a benign lost race), so A's tick still resolves
+    // cleanly and the dispatch is not stranded.
     //
-    // This is the exactly-once-side-effect gap: nothing on the commit/settle path
-    // carries a fence token, so only a healthy lease renewal (test 4) prevents it.
+    // Two residuals are INHERENT to lease-based recovery and are NOT fixed here
+    // (documented so the invariant is honest):
+    //   1. the external tool SIDE EFFECT ran twice (`ran == 2`) — an at-least-once
+    //      effect; the tool runs during `execute`, before any commit, so it cannot
+    //      be un-run. Only lease renewal (test 4) fences the common case.
+    //   2. the user input "go" appears twice in the transcript and A's partial
+    //      leaves an orphan `Running` fact — a reclaimed fresh run re-executes from
+    //      its activation rather than resuming from the committed transcript. This
+    //      is transcript *noise*, not a duplicated assistant turn or a double end.
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let (runtime, ran) = blocking_tool_runtime(release.clone());
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
+    let run = RunId("run-1".to_string());
 
     store
         .enqueue(RunExecutionRequest::new(activation("run-1")))
@@ -279,41 +300,88 @@ async fn mid_flight_reclaim_re_executes_a_still_running_run() {
     assert_eq!(ran.load(Ordering::SeqCst), 1, "the tool ran once (owner A)");
 
     // A is mid-flight: it committed a `Running` fact and parked NO waiting ticket.
-    let record = RunStore::get(commit.as_ref(), &RunId("run-1".to_string())).expect("record");
+    let record = RunStore::get(commit.as_ref(), &run).expect("record");
     assert_eq!(
         record.phase,
         Phase::Running,
         "A committed a mid-flight Running fact"
     );
     assert!(
-        commit.waiting_for(&RunId("run-1".to_string())).is_none(),
+        commit.waiting_for(&run).is_none(),
         "and there is no waiting ticket — the reclaim hits the no-ticket branch"
     );
 
     // B's lease-expired reclaim re-drives the SAME run to completion, running the
-    // tool a SECOND time. This documents the double-execution gap.
+    // tool a SECOND time (the inherent double side effect).
     let worker_b = DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-b")
         .with_lease_ms(LEASE);
     let processed = worker_b.tick(LEASE + 1).await.unwrap();
     assert_eq!(
         processed,
-        Some((
-            RunId("run-1".to_string()),
-            Phase::Ended(EndCause::NaturalEnd)
-        )),
-        "B reclaimed the still-running run and re-drove it to completion"
+        Some((run.clone(), Phase::Ended(EndCause::NaturalEnd))),
+        "B reclaimed the still-running run and drove it to completion"
     );
+
+    // Release A so it unwinds. Its re-drive re-runs the tool, then tries to commit
+    // a duplicate transcript over the now-terminal run — terminal-is-final REJECTS
+    // that commit, and the worker absorbs it as an already-done settle, so A's tick
+    // resolves cleanly (no panic, no stranded dispatch) reporting the run terminal.
+    release.add_permits(1);
+    let a_result = tokio::time::timeout(Duration::from_secs(5), a_handle)
+        .await
+        .expect("A's background task joined")
+        .expect("A's task did not panic")
+        .expect("A's drive resolved without a fatal error");
+    assert_eq!(
+        a_result,
+        Some((run.clone(), Phase::Ended(EndCause::NaturalEnd))),
+        "the stale owner's rejected re-drive settles as already-done, not a fault"
+    );
+
+    // Residual (documented): the tool side effect ran twice.
     assert_eq!(
         ran.load(Ordering::SeqCst),
         2,
-        "GAP: the tool executed TWICE — a slow-but-alive owner whose lease lapsed \
-         was double-driven. Only lease renewal (test 4) fences this; there is no \
-         fence token on commit/settle to reject the stale re-execution."
+        "the tool ran twice — an at-least-once external effect inherent to recovery"
     );
 
-    // Release A so the background task can unwind; its late settle is a no-op.
-    release.add_permits(1);
-    let _ = tokio::time::timeout(Duration::from_secs(5), a_handle).await;
+    // THE guarantee: the committed LOG is exactly-once. Despite two executions and
+    // A's fenced re-commit, the run has exactly ONE terminal `Ended` fact and the
+    // transcript carries exactly ONE final "all done" assistant message.
+    let committed = commit.committed();
+    let ended_facts = committed
+        .run_facts
+        .iter()
+        .filter(|fact| fact.run_id == run && matches!(fact.phase, Phase::Ended(_)))
+        .count();
+    assert_eq!(
+        ended_facts, 1,
+        "exactly one terminal Ended fact — the stale owner's second Ended was fenced"
+    );
+    let all_done = committed
+        .messages
+        .iter()
+        .filter(|message| message_text(message).as_deref() == Some("all done"))
+        .count();
+    assert_eq!(
+        all_done, 1,
+        "exactly one final assistant message — no duplicate terminal turn"
+    );
+}
+
+/// The concatenated text of a message's text blocks, if any — a small test helper
+/// for asserting on committed transcript content.
+fn message_text(message: &awaken_agent_contract::agent::message::Message) -> Option<String> {
+    use awaken_agent_contract::agent::content::ContentBlock;
+    let text: String = message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    (!text.is_empty()).then_some(text)
 }
 
 // --- guard: text_runtime is a real end-to-end fresh run (sanity) ------------
