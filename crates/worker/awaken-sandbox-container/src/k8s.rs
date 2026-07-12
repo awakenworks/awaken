@@ -512,6 +512,29 @@ mod tests {
     }
 
     #[test]
+    fn build_pod_carries_the_brokered_lease_token_env_not_a_raw_key() {
+        // D-R2: the host injects the gateway + short-lived lease token into plan.env
+        // (via acp_provision → spec.env). The k8s pod must carry those to the agent so
+        // it reaches the model through the egress proxy — and never a raw provider key.
+        let mut plan = plan_with_memory(Vec::new());
+        plan.env = vec![
+            ("AWAKEN_ACP_GATEWAY_URL".into(), "http://gw.internal".into()),
+            ("AWAKEN_ACP_LEASE_TOKEN".into(), "lease-abc".into()),
+            ("HTTPS_PROXY".into(), "http://gw.internal:8888".into()),
+        ];
+        let spec = build_pod("r", &plan, &None, "m", None).spec.unwrap();
+        let env = spec.containers[0].env.clone().unwrap();
+        assert!(
+            env.iter()
+                .any(|e| e.name == "AWAKEN_ACP_LEASE_TOKEN"
+                    && e.value.as_deref() == Some("lease-abc"))
+        );
+        assert!(env.iter().any(|e| e.name == "AWAKEN_ACP_GATEWAY_URL"));
+        // The sandbox holds no raw provider key.
+        assert!(env.iter().all(|e| e.name != "ANTHROPIC_API_KEY"));
+    }
+
+    #[test]
     fn build_pod_without_memory_mounts_is_a_single_container() {
         let pod = build_pod("r", &plan_with_memory(Vec::new()), &None, "m", None);
         let spec = pod.spec.unwrap();
