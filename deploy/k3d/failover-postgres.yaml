@@ -1,0 +1,113 @@
+# Cross-node failover (ADR-0022 D6 / ADR-0019): a fleet of BRAIN pods on different
+# k3s nodes shares ONE Postgres for both the dispatch queue and the commit history.
+# A durable run submitted on one pod is committed to shared Postgres; when that pod
+# is deleted, a surviving pod on another node warm-reloads the same thread and
+# continues it — no per-node SQLite file pins the thread, no run is lost.
+#
+#   [brain-A pod / node α] ─┐                          ┌─ submit run  (durable)
+#   [brain-B pod / node β] ─┼── shared Postgres ───────┤
+#                           │   (dispatch + commit)    └─ kill A → B serves the thread
+#
+# Loaded into a k3d cluster with `imagePullPolicy: Never` (never pulled).
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels: { app: postgres }
+spec:
+  selector: { app: postgres }
+  ports:
+    - { name: pg, port: 5432, targetPort: 5432 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels: { app: postgres }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          imagePullPolicy: Never
+          env:
+            - { name: POSTGRES_PASSWORD, value: "test" }
+            - { name: POSTGRES_DB, value: "awaken" }
+            # Speed: this is an ephemeral test DB, durability of PG's own WAL is moot.
+            - { name: PGDATA, value: "/var/lib/postgresql/data/pgdata" }
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "awaken"]
+            initialDelaySeconds: 2
+            periodSeconds: 2
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: brain
+  labels: { app: brain }
+spec:
+  selector: { app: brain }
+  ports:
+    - { name: http, port: 3000, targetPort: 3000 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: brain
+  labels: { app: brain }
+spec:
+  # One owner per thread (shard-by-thread_id, ADR cloud-hosting rules): a thread is
+  # served by a single node at a time. Failover = that node dies and the ReplicaSet
+  # reschedules a FRESH pod (a new process) that warm-reloads the thread from shared
+  # Postgres on connect. The test cordons the origin node so the replacement lands
+  # on a different node — a genuine cross-node handoff, not a same-box restart.
+  replicas: 1
+  selector:
+    matchLabels: { app: brain }
+  template:
+    metadata:
+      labels: { app: brain }
+    spec:
+      # Delete fast: the failover assertion should not wait 30s for graceful drain.
+      terminationGracePeriodSeconds: 2
+      containers:
+        - name: brain
+          image: awaken-topology:latest
+          imagePullPolicy: Never
+          env:
+            # Durable ingress backed by a SHARED Postgres queue + commit history, so
+            # any pod claims/serves any thread (the horizontal-scaling substrate).
+            - { name: AWAKEN_MODEL_MODE, value: echo }
+            - { name: AWAKEN_INGRESS, value: durable }
+            - { name: AWAKEN_DISPATCH_BACKEND, value: postgres }
+            - { name: AWAKEN_STORE, value: postgres }
+            - { name: AWAKEN_DATABASE_URL, value: "postgres://postgres:test@postgres:5432/awaken" }
+            # Cross-node wake: a submit on pod A must wake pod B's pool over the DB.
+            - { name: AWAKEN_DISPATCH_WAKE, value: pg-notify }
+            - { name: AWAKEN_HTTP_ADDR, value: "0.0.0.0:3000" }
+            # A local dir is still set (session store), but nothing durable for the
+            # thread lives here — Postgres is the source of truth. Proves portability.
+            - { name: AWAKEN_STORAGE_DIR, value: "/tmp/awaken" }
+          ports:
+            - containerPort: 3000
+          readinessProbe:
+            # Ready only once the HTTP surface binds, which happens after the pod has
+            # connected to Postgres — so readiness proves the shared backend is up.
+            tcpSocket: { port: 3000 }
+            initialDelaySeconds: 2
+            periodSeconds: 2
