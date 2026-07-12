@@ -16,6 +16,17 @@ test("shell renders the topbar org + workspace switcher and the scoped rail", as
   await expect(rail.getByRole("button", { name: "Models" })).toBeVisible();
 });
 
+test("responsive: a narrow viewport keeps the shell usable with no horizontal overflow", async ({ page }) => {
+  await page.setViewportSize({ width: 400, height: 800 });
+  await page.goto("/w/default/sessions");
+  // The sidebar collapses to a top nav strip; nav + content stay reachable.
+  await expect(page.locator(".sidebar")).toBeVisible();
+  await expect(page.locator(".sidebar").getByRole("button", { name: "Agents", exact: true })).toBeVisible();
+  // The page never scrolls wider than the viewport (the fixed rail no longer pushes it).
+  const noOverflow = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 2);
+  expect(noOverflow).toBe(true);
+});
+
 test("workspace switcher opens the roster dropdown with an add-workspace input", async ({ page }) => {
   await page.goto("/w/default/sessions");
   await page.locator(".ws-crumb").click();

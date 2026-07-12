@@ -864,3 +864,37 @@ textarea.input {
   }
   .editor-rail .btn { justify-content: center; }
 }
+
+/* ── Responsive layer ──────────────────────────────────────────────────── */
+/* Data grids/tables never break the layout — they scroll horizontally in-card. */
+.grid-scroll { overflow-x: auto; }
+
+/* Tablet / small laptop: tighten the rail + content gutters. */
+@media (max-width: 980px) {
+  .sidebar { width: 188px; }
+  .content-inner { padding-left: 16px; padding-right: 16px; }
+}
+
+/* Narrow: the sidebar becomes a horizontal, scrollable nav strip on top so the
+   content gets the full width; nav stays reachable without a JS drawer. */
+@media (max-width: 760px) {
+  .shell-body { flex-direction: column; }
+  .sidebar {
+    width: 100%;
+    height: auto;
+    flex-direction: row;
+    align-items: center;
+    overflow-x: auto;
+    overflow-y: hidden;
+    gap: 6px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line-strong);
+    padding: 8px 10px;
+  }
+  .sidebar .nav-group { flex-direction: row; align-items: center; gap: 4px; }
+  .sidebar .nav-caption,
+  .sidebar-footer { display: none; }
+  .sidebar .btn { white-space: nowrap; }
+  .topbar { height: auto; min-height: 52px; flex-wrap: wrap; padding: 6px 8px; }
+  .content-inner { padding-left: 12px; padding-right: 12px; }
+}
