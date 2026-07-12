@@ -8,10 +8,13 @@
 //! Two things coexist without regression: the original **mount blob** (a store is
 //! a mutable directory a session mounts read-write; the host harvests the write
 //! back under the same id and it survives a restart) stays exactly as-is — the
-//! store's `content` / `size_bytes` are still read from that blob — while the SDK's
-//! richer object model (named stores + individual memories at paths + version
-//! history) is layered on top in an in-memory registry keyed by store id. The
-//! legacy no-body `POST /v1/memory_stores` still works; the SDK sends a `name`.
+//! store's `content` / `size_bytes` are still read from that blob. On top, the SDK's
+//! richer object model: each **memory** (a path-addressed file with a
+//! `content_sha256` + CAS update) is the durable [`awaken_memory_store::MemoryFs`]
+//! (ADR-0053) — the same store the write-through FUSE mount projects, so memories
+//! survive a restart — while the **version history** the `/memory_versions`
+//! endpoints surface is an in-memory log keyed by store id. The legacy no-body
+//! `POST /v1/memory_stores` still works; the SDK sends a `name`.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
