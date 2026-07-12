@@ -201,7 +201,13 @@ async fn cross_tenant_access_to_a_webhook_id_is_fenced() {
     assert_eq!(status, StatusCode::CREATED);
 
     // The intruder cannot see it, cannot list it, and its DELETE is a silent no-op.
-    let (status, _) = call(&intruder, "GET", "/v1/config/webhook-subscriptions/wh_1", None).await;
+    let (status, _) = call(
+        &intruder,
+        "GET",
+        "/v1/config/webhook-subscriptions/wh_1",
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "cross-tenant GET is 404");
     let (_s, listed) = call(&intruder, "GET", "/v1/config/webhook-subscriptions", None).await;
     assert!(
