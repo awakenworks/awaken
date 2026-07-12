@@ -1,0 +1,145 @@
+# NATS-backed dispatch wake (ADR-0019/0028): a FLEET of brain pods behind one Service,
+# all draining ONE shared Postgres dispatch queue via `FOR UPDATE SKIP LOCKED`. The
+# durable STORE is Postgres; the cross-node WAKE hint is fanned over a NATS broker
+# (AWAKEN_DISPATCH_WAKE=nats) instead of pg_notify. pg-notify is DISABLED here, so a
+# peer's enqueue can only nudge an idle pool through NATS. Concurrent durable
+# submissions fan out across the fleet; each run must be claimed and driven by EXACTLY
+# ONE pod (no loss, no double-drive) — verified authoritatively against Postgres.
+#
+#   submit ×M ─→ [Service brain] ─┬─ pod-1 ┐   wake hint ↘ nats:4222 (broker)
+#                                 ├─ pod-2 ┼── shared Postgres queue (SKIP LOCKED)
+#                                 └─ pod-3 ┘   each run drained once
+#
+# Loaded into a k3d cluster with `imagePullPolicy: Never`.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats
+  labels: { app: nats }
+spec:
+  selector: { app: nats }
+  ports:
+    - { name: client, port: 4222, targetPort: 4222 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats
+  labels: { app: nats }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: nats }
+  template:
+    metadata:
+      labels: { app: nats }
+    spec:
+      containers:
+        - name: nats
+          image: nats:2
+          imagePullPolicy: Never
+          args: ["-p", "4222"]
+          ports:
+            - containerPort: 4222
+          readinessProbe:
+            tcpSocket: { port: 4222 }
+            initialDelaySeconds: 1
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels: { app: postgres }
+spec:
+  selector: { app: postgres }
+  ports:
+    - { name: pg, port: 5432, targetPort: 5432 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels: { app: postgres }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          imagePullPolicy: Never
+          env:
+            - { name: POSTGRES_PASSWORD, value: "test" }
+            - { name: POSTGRES_DB, value: "awaken" }
+            - { name: PGDATA, value: "/var/lib/postgresql/data/pgdata" }
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "awaken"]
+            initialDelaySeconds: 2
+            periodSeconds: 2
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: brain
+  labels: { app: brain }
+spec:
+  selector: { app: brain }
+  ports:
+    - { name: http, port: 3000, targetPort: 3000 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: brain
+  labels: { app: brain }
+spec:
+  # A fleet: three pools competing for the one shared queue, waking each other over NATS.
+  replicas: 3
+  selector:
+    matchLabels: { app: brain }
+  template:
+    metadata:
+      labels: { app: brain }
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: brain }
+      containers:
+        - name: brain
+          image: awaken-topology:latest
+          imagePullPolicy: Never
+          env:
+            - { name: AWAKEN_MODEL_MODE, value: echo }
+            - { name: AWAKEN_INGRESS, value: durable }
+            - { name: AWAKEN_DISPATCH_BACKEND, value: postgres }
+            - { name: AWAKEN_STORE, value: postgres }
+            - { name: AWAKEN_DATABASE_URL, value: "postgres://postgres:test@postgres:5432/awaken" }
+            # Cross-node wake over NATS (pg-notify DISABLED). Requires a binary built
+            # with `--features nats`; the durable store stays Postgres above.
+            - { name: AWAKEN_DISPATCH_WAKE, value: nats }
+            - { name: AWAKEN_NATS_URL, value: "nats://nats:4222" }
+            - { name: AWAKEN_HTTP_ADDR, value: "0.0.0.0:3000" }
+            - { name: AWAKEN_STORAGE_DIR, value: "/tmp/awaken" }
+          ports:
+            - containerPort: 3000
+          readinessProbe:
+            tcpSocket: { port: 3000 }
+            initialDelaySeconds: 2
+            periodSeconds: 2
