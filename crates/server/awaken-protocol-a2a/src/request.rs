@@ -148,4 +148,123 @@ mod tests {
         let p = process(r, Some("path-agent".into()));
         assert_eq!(p.agent_id.as_deref(), Some("path-agent"));
     }
+
+    fn file_req(file: crate::types::FilePart) -> SendMessageRequest {
+        SendMessageRequest {
+            agent_id: None,
+            message: SendMessage {
+                message_id: Some("m1".into()),
+                context_id: Some("c".into()),
+                task_id: None,
+                role: MessageRole::User,
+                parts: vec![Part {
+                    kind: Some("file".into()),
+                    text: None,
+                    file: Some(file),
+                }],
+            },
+        }
+    }
+
+    #[test]
+    fn task_id_is_the_thread_when_no_context_id() {
+        let mut r = req(None, "hi");
+        r.message.task_id = Some("task-9".into());
+        let p = process(r, None);
+        assert_eq!(p.thread_id, "task-9");
+    }
+
+    #[test]
+    fn whitespace_only_context_is_trimmed_then_minted() {
+        let p = process(req(Some("   "), "hi"), None);
+        assert!(p.thread_id.starts_with("thread-"));
+    }
+
+    #[test]
+    fn uri_image_file_part_becomes_an_image_url_block() {
+        use crate::types::FilePart;
+        use awaken_agent_contract::agent::content::ImageSource;
+        let p = process(
+            file_req(FilePart {
+                bytes: None,
+                uri: Some("https://x/y.png".into()),
+                mime_type: Some("image/png".into()),
+            }),
+            None,
+        );
+        assert!(matches!(
+            &p.message.content[0],
+            ContentBlock::Image { source: ImageSource::Url { url } } if url == "https://x/y.png"
+        ));
+    }
+
+    #[test]
+    fn non_image_file_part_is_dropped() {
+        use crate::types::FilePart;
+        let p = process(
+            file_req(FilePart {
+                bytes: Some("AAAA".into()),
+                uri: None,
+                mime_type: Some("application/pdf".into()),
+            }),
+            None,
+        );
+        assert!(p.message.content.is_empty());
+    }
+
+    #[test]
+    fn image_file_part_without_bytes_or_uri_is_dropped() {
+        use crate::types::FilePart;
+        let p = process(
+            file_req(FilePart {
+                bytes: None,
+                uri: None,
+                mime_type: Some("image/png".into()),
+            }),
+            None,
+        );
+        assert!(p.message.content.is_empty());
+    }
+
+    #[test]
+    fn absent_message_id_is_minted() {
+        let mut r = req(Some("c"), "hi");
+        r.message.message_id = None;
+        let p = process(r, None);
+        assert!(p.message.id.0.starts_with("msg-"));
+    }
+
+    #[test]
+    fn a_data_kind_part_with_no_text_or_file_is_dropped() {
+        let r = SendMessageRequest {
+            agent_id: None,
+            message: SendMessage {
+                message_id: Some("m1".into()),
+                context_id: Some("c".into()),
+                task_id: None,
+                role: MessageRole::User,
+                parts: vec![
+                    Part {
+                        kind: Some("data".into()),
+                        text: None,
+                        file: None,
+                    },
+                    Part::text("keep me"),
+                ],
+            },
+        };
+        let p = process(r, None);
+        // The unsupported `data` part is dropped; only the text survives.
+        assert_eq!(p.message.content.len(), 1);
+        assert_eq!(p.message.content[0], ContentBlock::text("keep me"));
+    }
+
+    #[test]
+    fn the_inbound_message_is_always_the_user_turn() {
+        // `message/send` carries the caller's turn; the wire `role` is not honored.
+        let mut r = req(Some("c"), "hi");
+        r.message.role = MessageRole::Agent;
+        let p = process(r, None);
+        assert_eq!(p.message.role, Role::User);
+    }
 }

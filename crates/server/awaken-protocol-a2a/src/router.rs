@@ -16,13 +16,13 @@ use axum::routing::{get, post};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use awaken_protocol_transport::{DriverError, Pending, ProtocolRuntime, Resume};
+use awaken_protocol_transport::{DriverError, Pending, ProtocolRuntime, Resume, StepOutcome};
 
 use crate::encoder::encode_task;
 use crate::request::process;
 use crate::types::{
     AgentCapabilities, AgentCard, AgentSkill, ErrorResponse, SendMessageRequest,
-    SendMessageResponse, Task,
+    SendMessageResponse, Task, TaskState,
 };
 
 type Runtime = Arc<dyn ProtocolRuntime>;
@@ -122,6 +122,61 @@ async fn send(rt: Runtime, req: SendMessageRequest, path_agent: Option<String>) 
     }
 }
 
+/// Project the current state of the task on the context recovered from `id`
+/// (`task-{thread}`): a parked run reads back as `input-required`, otherwise the
+/// committed history is a `completed` task.
+async fn get_task(rt: &Runtime, id: &str) -> Task {
+    let thread = id.strip_prefix("task-").unwrap_or(id).to_string();
+    let pending = rt.pending(&thread).await;
+    let history = rt.history(&thread).await;
+    let outcome = StepOutcome {
+        new_messages: Vec::new(),
+        waiting: pending.is_some(),
+        exhausted: false,
+        pending,
+    };
+    encode_task(&thread, &history, &outcome)
+}
+
+/// Cancel the task on the context recovered from `id` (`task-{thread}`). A2A has
+/// no in-band "deny" for a built-in tool approval; canceling the task is the
+/// protocol-native way to reject it: a parked run is denied (unblocked with
+/// `allow: false`) and the task reads back `canceled`. A task with nothing parked
+/// is returned in its current state (not falsely canceled).
+async fn cancel_task(rt: &Runtime, id: &str) -> Task {
+    let thread = id.strip_prefix("task-").unwrap_or(id).to_string();
+    let was_parked = if let Some(pending) = rt.pending(&thread).await {
+        let _ = rt
+            .resume(
+                &thread,
+                &pending.tool_use_id,
+                Resume::Confirm {
+                    allow: false,
+                    note: Some("task canceled by the client".to_string()),
+                },
+            )
+            .await;
+        true
+    } else {
+        false
+    };
+    let history = rt.history(&thread).await;
+    let mut task = encode_task(
+        &thread,
+        &history,
+        &StepOutcome {
+            new_messages: Vec::new(),
+            waiting: false,
+            exhausted: false,
+            pending: None,
+        },
+    );
+    if was_parked {
+        task.status.state = TaskState::Canceled;
+    }
+    task
+}
+
 /// A minimal JSON-RPC 2.0 request envelope (the fields the A2A binding uses).
 #[derive(Deserialize)]
 struct JsonRpcRequest {
@@ -132,8 +187,9 @@ struct JsonRpcRequest {
     params: Value,
 }
 
-/// The JSON-RPC endpoint: dispatch by `method`. Only `message/send` is
-/// implemented; other methods return a JSON-RPC "method not found".
+/// The JSON-RPC endpoint: dispatch by `method`. `message/send` drives a turn;
+/// `tasks/get` reads a task's state; `tasks/cancel` cancels/denies a parked task;
+/// other methods return a JSON-RPC "method not found".
 async fn jsonrpc(State(rt): State<Runtime>, A2aJson(req): A2aJson<JsonRpcRequest>) -> Response {
     let id = req.id;
     match req.method.as_str() {
@@ -148,6 +204,14 @@ async fn jsonrpc(State(rt): State<Runtime>, A2aJson(req): A2aJson<JsonRpcRequest
                 }
             },
             Err(err) => rpc_error(id, -32602, format!("invalid params: {err}")),
+        },
+        "tasks/get" => match req.params.get("id").and_then(|v| v.as_str()) {
+            Some(task_id) => rpc_ok(id, get_task(&rt, task_id).await),
+            None => rpc_error(id, -32602, "invalid params: missing task `id`".to_string()),
+        },
+        "tasks/cancel" => match req.params.get("id").and_then(|v| v.as_str()) {
+            Some(task_id) => rpc_ok(id, cancel_task(&rt, task_id).await),
+            None => rpc_error(id, -32602, "invalid params: missing task `id`".to_string()),
         },
         other => rpc_error(id, -32601, format!("method not found: {other}")),
     }
@@ -264,5 +328,35 @@ mod tests {
         assert_eq!(card.protocol_version, "1.0");
         assert!(!card.capabilities.streaming);
         assert!(card.description.contains("echo-model"));
+    }
+
+    fn pending(client_executed: bool) -> Pending {
+        Pending {
+            tool_use_id: "c1".into(),
+            name: "t".into(),
+            input: serde_json::Value::Null,
+            client_executed,
+        }
+    }
+
+    #[test]
+    fn to_resume_delivers_the_text_to_a_client_executed_tool() {
+        let r = to_resume("the answer", &pending(true));
+        assert!(
+            matches!(r, Resume::ClientResult { content, is_error: false } if content == "the answer")
+        );
+    }
+
+    #[test]
+    fn to_resume_reads_any_answer_as_an_allow_for_a_builtin_tool() {
+        // A2A carries no in-band deny for a built-in approval (that is `tasks/cancel`).
+        let r = to_resume("whatever", &pending(false));
+        assert!(matches!(
+            r,
+            Resume::Confirm {
+                allow: true,
+                note: None
+            }
+        ));
     }
 }
