@@ -9,7 +9,7 @@
 //! optimistic concurrency**: [`MemoryFs::update`] is a compare-and-swap on the base
 //! sha, so two writers never silently clobber each other.
 //!
-//! Backends: [`InMemoryFs`] (tests / ephemeral) and [`FsMemoryFs`] (a durable JSON
+//! Backends: [`InMemoryFs`], [`FsMemoryFs`] (JSON record per memory), and — feature-
 //! record per memory). Sqlite/postgres are a later slice (ADR-0053 P4).
 //!
 //! [`MemoryBlobStore`]: crate::MemoryBlobStore
@@ -115,7 +115,7 @@ pub fn sha256_hex(content: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn now_nanos() -> u128 {
+pub(crate) fn now_nanos() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -124,7 +124,7 @@ fn now_nanos() -> u128 {
 
 /// Validate a memory path: absolute, non-root, no `//`, no `.`/`..` segment, no
 /// control chars, ≤ [`MAX_PATH_BYTES`].
-fn validate_path(path: &str) -> Result<(), MemErr> {
+pub(crate) fn validate_path(path: &str) -> Result<(), MemErr> {
     let bad = |p: &str| MemErr::InvalidPath(p.to_string());
     if path.len() > MAX_PATH_BYTES
         || !path.starts_with('/')
@@ -142,7 +142,7 @@ fn validate_path(path: &str) -> Result<(), MemErr> {
     Ok(())
 }
 
-fn validate_size(content: &str) -> Result<(), MemErr> {
+pub(crate) fn validate_size(content: &str) -> Result<(), MemErr> {
     if content.len() > MAX_MEMORY_BYTES {
         Err(MemErr::TooLarge)
     } else {
@@ -187,7 +187,7 @@ impl Record {
     }
 }
 
-fn under_prefix(path: &str, prefix: &str) -> bool {
+pub(crate) fn under_prefix(path: &str, prefix: &str) -> bool {
     if prefix.is_empty() || prefix == "/" {
         return true;
     }
