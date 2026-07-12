@@ -28,16 +28,38 @@ pub struct MemoryStoreMounter {
     fs: Arc<dyn MemoryFs>,
     /// The shared invalidation bus every FUSE mount subscribes to.
     bus: Arc<LocalInvalidator>,
+    /// When false, never mount FUSE — always copy. Set for isolation tiers that
+    /// cannot splice a host FUSE mount into their namespace yet (bwrap/container;
+    /// live-FUSE-in-namespace is ADR-0053 item 2, deferred). The Workdir tier runs in
+    /// the host mount namespace, so it FUSE-mounts directly at the sandbox path.
+    prefer_fuse: bool,
 }
 
 impl MemoryStoreMounter {
-    /// Wrap `durable` (the resources-plane store) with the invalidation bus.
+    /// Wrap `durable` (the resources-plane store) with the invalidation bus, FUSE
+    /// where available. For the Workdir tier (host mount namespace).
     #[must_use]
     pub fn new(durable: Arc<dyn MemoryFs>) -> Self {
+        Self::with_fuse(durable, true)
+    }
+
+    /// A copy-only mounter (never FUSE) for a tier that cannot expose a host FUSE
+    /// mount inside its isolation (bwrap/container). The store is materialized to
+    /// plain files that bind into the namespace, and harvested back on teardown.
+    #[must_use]
+    pub fn copy_only(durable: Arc<dyn MemoryFs>) -> Self {
+        Self::with_fuse(durable, false)
+    }
+
+    fn with_fuse(durable: Arc<dyn MemoryFs>, prefer_fuse: bool) -> Self {
         let bus = Arc::new(LocalInvalidator::default());
         let invalidator: Arc<dyn Invalidator> = bus.clone();
         let fs: Arc<dyn MemoryFs> = Arc::new(InvalidatingMemoryFs::new(durable, invalidator));
-        Self { fs, bus }
+        Self {
+            fs,
+            bus,
+            prefer_fuse,
+        }
     }
 }
 
@@ -56,7 +78,7 @@ impl MemoryMounter for MemoryStoreMounter {
         std::fs::create_dir_all(host_path).map_err(sandbox_err)?;
 
         #[cfg(feature = "fuse")]
-        if copy::fuse_available() {
+        if self.prefer_fuse && copy::fuse_available() {
             let handle = crate::fuse::spawn_mount_with_invalidations(
                 self.fs.clone(),
                 store_id.to_string(),
