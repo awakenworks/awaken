@@ -105,14 +105,48 @@ impl WakeSignal for NatsWakeSignal {
 pub struct PgNotifyWake {
     pool: sqlx::postgres::PgPool,
     channel: String,
+    /// In-process fan-out: the single background listener nudges this, every drain
+    /// task waits on it. Keeps `wait` off the connection pool.
+    local: Arc<Notify>,
 }
 
 impl PgNotifyWake {
     /// Wake over `channel` on the same database as the dispatch store `pool`.
+    ///
+    /// Spawns ONE background listener holding a single dedicated connection; each
+    /// `pg_notify` fans out to every waiter through an in-process [`Notify`]. This is
+    /// deliberate: `PgListener::connect_with` takes a pool connection and holds it for
+    /// the whole `recv`, so a per-`wait` listener (the previous design) had every one
+    /// of the pool's `available_parallelism()` drain tasks pin a connection while idle
+    /// — starving the claim/commit/settle path in a fleet, so a concurrent burst
+    /// stranded. With one listener, `wait` costs no pool connection. A missed hint
+    /// (listener reconnect, or a notify with no waiter yet) only defers a drain to the
+    /// poll fallback, which stays authoritative.
     pub fn new(pool: sqlx::postgres::PgPool, channel: impl Into<String>) -> Self {
+        let channel = channel.into();
+        let local = Arc::new(Notify::new());
+        let listen_pool = pool.clone();
+        let listen_channel = channel.clone();
+        let waiters = local.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Ok(mut listener) =
+                    sqlx::postgres::PgListener::connect_with(&listen_pool).await
+                    && listener.listen(&listen_channel).await.is_ok()
+                {
+                    while listener.recv().await.is_ok() {
+                        waiters.notify_waiters();
+                    }
+                }
+                // The connection dropped (or never opened): back off, then reconnect.
+                // The poll fallback covers the gap, so no wake is lost, only deferred.
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        });
         Self {
             pool,
-            channel: channel.into(),
+            channel,
+            local,
         }
     }
 }
@@ -129,11 +163,6 @@ impl WakeSignal for PgNotifyWake {
     }
 
     async fn wait(&self) {
-        // A failed listen is tolerable — the poll fallback still drains.
-        if let Ok(mut listener) = sqlx::postgres::PgListener::connect_with(&self.pool).await {
-            if listener.listen(&self.channel).await.is_ok() {
-                let _ = listener.recv().await;
-            }
-        }
+        self.local.notified().await;
     }
 }

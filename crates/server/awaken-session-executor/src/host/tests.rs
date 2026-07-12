@@ -747,3 +747,22 @@ async fn prepare_session_mounts_bound_file_and_stages_bound_repo() {
     assert_eq!(repos.len(), 1, "the bound repo is staged for cloning");
     assert_eq!(repos[0].url, "https://github.com/awaken/example.git");
 }
+
+#[tokio::test]
+async fn ctx_for_installs_a_catalog_so_any_node_can_resolve_a_claimed_run() {
+    use awaken_runtime_contract::capability::RuntimeCapabilitySource;
+
+    // A durable run is driven by whichever pool node CLAIMS it (ADR-0019), calling
+    // `Runtime::execute` directly on a session runtime built by `ctx_for` — never the
+    // in-process `prepare` that installs the catalog on the submitting node. So the
+    // catalog must be installed by `ctx_for` itself, or `resolve` fails closed with
+    // NoActiveCatalog and the claimed run strands. Assert the session runtime carries
+    // an active catalog (a non-empty fingerprint) straight out of `ctx_for`.
+    let host = SharedHost::new(Arc::new(OkModel), "stub");
+    let ctx = host.ctx_for("t-catalog", None).await.expect("session builds");
+    let caps = ctx.runtime.runtime_capabilities();
+    assert!(
+        !caps.catalog_fingerprint.0.trim().is_empty(),
+        "ctx_for must install a catalog on the session runtime (fingerprint was empty)"
+    );
+}
