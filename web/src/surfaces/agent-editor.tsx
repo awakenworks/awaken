@@ -10,6 +10,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import Drawer from "../components/ui/Drawer";
+import Modal from "../components/ui/Modal";
+import ConfigDiff from "../components/agent/ConfigDiff";
 import { useToast } from "../components/ui/Toast";
 import { Button, Card, CheckPicker, Pill, Segmented, TextAreaField, TextField } from "../components/ui";
 import type { JsonSchema } from "../components/ui";
@@ -25,7 +27,10 @@ import type {
   ContextPolicy,
   PermissionConfig,
   PublishResult,
+  ValidationIssue,
+  ValidationResult,
 } from "../lib/api/types";
+import { labelForPath, sectionForPath } from "../lib/config-diff";
 import { useApp } from "../lib/app-state";
 import { useCapabilities } from "../lib/useCapabilities";
 import { useModels } from "../lib/useModels";
@@ -112,6 +117,8 @@ export default function AgentEditorSurface() {
   // "Try it" opens the sandbox as a slide-over from any section, so you can tweak → test
   // without leaving your place.
   const [showSandbox, setShowSandbox] = useState(false);
+  // Publish opens a confirm modal previewing the diff vs the config as loaded.
+  const [showPublish, setShowPublish] = useState(false);
   const [cfg, setCfg] = useState<AgentConfig>(BLANK);
   const [dirty, setDirty] = useState(false);
   const [manageModels, setManageModels] = useState(false);
@@ -144,20 +151,35 @@ export default function AgentEditorSurface() {
     () => (currentModel && !models.includes(currentModel) ? [currentModel, ...models] : models),
     [currentModel, models],
   );
+  // The config as loaded when the editor opened (the detail query is not refetched on
+  // save), so the publish preview diffs the outgoing config against the pre-session state.
+  const baseline = useMemo(() => {
+    if (!existing.data) return {};
+    const { published: _published, ...rest } = existing.data;
+    return rest;
+  }, [existing.data]);
 
   const patch = (p: Partial<AgentConfig>) => {
     setCfg((c) => ({ ...c, ...p }));
     setDirty(true);
+    if (issues.length) setIssues([]); // an edit invalidates the previous validation
+
   };
 
   const targetId = () => (isNew ? cfg.id.trim() : id);
   const canSave = targetId().length > 0 && (cfg.system ?? "").trim().length > 0;
   const body = () => ({ ...cfg, id: targetId() });
 
+  // Validation issues from the config domain (compile), field-routed. The UI only
+  // projects them — it never re-derives a rule (that truth lives in compile).
+  const [issues, setIssues] = useState<ValidationIssue[]>([]);
   const validate = useMutation({
-    mutationFn: () => api.post<{ valid: boolean; error?: string }>(`/v1/config/agents/${targetId()}/validate`, body()),
-    onSuccess: (r) =>
-      r.valid ? toast.ok(app.t("Config is valid.", "配置有效。")) : toast.err(r.error ?? "invalid"),
+    mutationFn: () => api.post<ValidationResult>(`/v1/config/agents/${targetId()}/validate`, body()),
+    onSuccess: (r) => {
+      setIssues(r.issues ?? []);
+      if (r.valid) toast.ok(app.t("Config is valid.", "配置有效。"));
+      else toast.err(app.t("Config has issues — see below.", "配置有问题 — 见下方。"));
+    },
     onError: (e) => toast.err(e instanceof Error ? e.message : "error"),
   });
   // After a new agent's first save, navigate to its id URL — but only once `dirty`
@@ -222,7 +244,7 @@ export default function AgentEditorSurface() {
             variant="primary"
             disabled={!canSave || dirty || publish.isPending || isNew}
             title={dirty ? app.t("Save before publishing", "发布前请先保存") : ""}
-            onClick={() => publish.mutate()}
+            onClick={() => setShowPublish(true)}
           >
             {app.t("Publish", "发布")} ➤
           </Button>
@@ -233,6 +255,7 @@ export default function AgentEditorSurface() {
         <div className="editor-rail" role="tablist" aria-label={app.t("Agent config sections", "Agent 配置分区")}>
           {SECTIONS.map((s) => {
             const n = sectionBadge(s.key);
+            const hasIssue = issues.some((i) => sectionForPath(i.path) === s.key);
             return (
               <Button
                 key={s.key}
@@ -241,7 +264,10 @@ export default function AgentEditorSurface() {
                 variant={tab === s.key ? "primary" : "ghost"}
                 onClick={() => setTab(s.key)}
               >
-                <span>{app.t(s.label, s.zh)}</span>
+                <span>
+                  {app.t(s.label, s.zh)}
+                  {hasIssue && <span title={app.t("has a validation issue", "有校验问题")} style={{ color: "var(--danger)", marginLeft: 4 }}>●</span>}
+                </span>
                 {n > 0 && <span className="rail-badge">{n}</span>}
               </Button>
             );
@@ -253,6 +279,23 @@ export default function AgentEditorSurface() {
         </div>
         {/* Content column: one section at a time. */}
         <div className="editor-content">
+
+      {issues.length > 0 && (
+        <div className="banner warn" style={{ flexDirection: "column", alignItems: "stretch", gap: 6 }}>
+          {issues.map((iss, i) => (
+            <div key={i} className="row" style={{ justifyContent: "space-between", gap: 8 }}>
+              <span>
+                <strong>{labelForPath(iss.path) || app.t("Config", "配置")}</strong>
+                {" — "}
+                {iss.message}
+              </span>
+              <Button variant="ghost" style={{ height: 24 }} onClick={() => setTab(sectionForPath(iss.path))}>
+                {app.t("Go to section →", "前往该项 →")}
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {tab === "resources" && (
         <Card>
@@ -501,6 +544,38 @@ export default function AgentEditorSurface() {
         <Drawer title={app.t("Try it", "试运行")} onClose={() => setShowSandbox(false)}>
           <SandboxPane agentId={id} ready={!isNew && !!existing.data?.published} dirty={dirty} />
         </Drawer>
+      )}
+
+      {showPublish && (
+        <Modal
+          title={app.t("Publish changes?", "发布改动?")}
+          onClose={() => setShowPublish(false)}
+          footer={
+            <>
+              <button className="btn" onClick={() => setShowPublish(false)}>
+                {app.t("Cancel", "取消")}
+              </button>
+              <button
+                className="btn primary"
+                disabled={publish.isPending}
+                onClick={() => {
+                  publish.mutate();
+                  setShowPublish(false);
+                }}
+              >
+                {app.t("Publish", "发布")} ➤
+              </button>
+            </>
+          }
+        >
+          <p className="mut" style={{ marginTop: 0 }}>
+            {app.t(
+              "These changes will compile and go live for new runs of this agent:",
+              "以下改动将编译并对该 agent 的新运行生效:",
+            )}
+          </p>
+          <ConfigDiff before={baseline} after={body()} />
+        </Modal>
       )}
     </>
   );

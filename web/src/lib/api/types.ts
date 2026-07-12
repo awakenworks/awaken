@@ -407,6 +407,17 @@ export type AgentConfigItem = AgentConfig & { published?: boolean };
 export interface AgentConfigList {
   data: AgentConfigItem[];
 }
+/** One validation problem from `/validate`, field-routed by the config domain (compile).
+ * `path` is the config field the issue is about (`""` = whole config). */
+export interface ValidationIssue {
+  path: string;
+  message: string;
+  severity?: string;
+}
+export interface ValidationResult {
+  valid: boolean;
+  issues: ValidationIssue[];
+}
 export interface PublishResult {
   publication_id: string;
   fingerprint: string;

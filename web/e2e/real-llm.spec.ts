@@ -65,6 +65,7 @@ test("Sandbox answers for real via config-plane credential (no env)", async ({ p
   await expect(page.locator(".toast").filter({ hasText: /Saved|已保存/ })).toBeVisible();
   await expect(page).toHaveURL(new RegExp(`/agents/${id}$`));
   await page.getByRole("button", { name: /Publish/ }).click();
+  await page.locator(".modal").getByRole("button", { name: /Publish/ }).click(); // confirm in the diff modal
   await expect(page.locator(".toast").filter({ hasText: /Published|已发布/ })).toBeVisible();
 
   // Sandbox: the runtime resolves the model to a REAL Gemini executor from the

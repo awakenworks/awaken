@@ -169,18 +169,50 @@ test("author → publish a config agent, and see it in the list", async ({ page 
   // After the first save the editor navigates to the new id URL (guard-safe nav —
   // a regression this e2e caught and fixed), then Publish compiles + installs it.
   await expect(page).toHaveURL(new RegExp(`/agents/${id}$`));
+  // Publish opens a confirm modal previewing the config diff; confirm inside it.
   await page.getByRole("button", { name: /Publish/ }).click();
+  await expect(page.getByRole("heading", { name: /Publish changes|发布改动/ })).toBeVisible();
+  await page.locator(".modal").getByRole("button", { name: /Publish/ }).click();
   await expect(page.locator(".toast").filter({ hasText: /Published|已发布/ })).toBeVisible();
 
   // The agents list shows the published agent.
   await page.goto("/w/default/agents");
   await expect(page.getByText(id)).toBeVisible();
 
-  // Sandbox: a published agent is installed, so a live scratch session opens here
-  // (the same transcript engine the session detail uses). No provider key in CI, so
-  // we assert the session + composer come up, not a model reply.
+  // Sandbox: the published agent opens a live scratch session (same transcript engine
+  // the session detail uses). No provider key in CI, so we assert the session + composer
+  // come up, not a model reply.
   await page.goto(`/w/default/agents/${id}`);
   await page.getByRole("button", { name: /Try it/ }).click();
   await page.getByRole("button", { name: /Start session/ }).click();
   await expect(page.getByPlaceholder("Ask the agent…")).toBeVisible();
+});
+
+test("publish preview shows the config diff, domain-labeled", async ({ page, request }) => {
+  const id = `diff-e2e-${Date.now()}`;
+  await request.put(`/v1/config/agents/${id}`, { data: { id, system: "original", tools: [], plugins: [], plugin_config: {}, context_policy: { kind: "keep_all" }, max_steps: 8 } });
+  await page.goto(`/w/default/agents/${id}`);
+  // Wait for the stored config to load into the field before editing, else the load
+  // effect would overwrite the edit (and the diff would be empty).
+  await expect(page.locator("textarea").first()).toHaveValue("original");
+  await page.locator("textarea").first().fill("edited instructions");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.locator(".toast").filter({ hasText: /Saved|已保存/ })).toBeVisible();
+  await page.getByRole("button", { name: /Publish/ }).click();
+  // The diff names the change with its domain label (not the raw path).
+  await expect(page.locator(".modal").getByText("System instructions")).toBeVisible();
+});
+
+test("validation issues are field-routed to their section", async ({ page, request }) => {
+  const id = `val-e2e-${Date.now()}`;
+  // A config that fails compile: a selected tool that isn't in the catalog.
+  await request.put(`/v1/config/agents/${id}`, { data: { id, model: { id: "m" }, system: "hi", tools: ["nonexistent_tool"], plugins: [], plugin_config: {}, context_policy: { kind: "keep_all" }, max_steps: 8 } });
+  await page.goto(`/w/default/agents/${id}`);
+  await expect(page.locator("textarea").first()).toHaveValue("hi"); // wait for load
+  await page.getByRole("button", { name: "Validate", exact: true }).click();
+  // The backend's structured issue is projected to a banner labeled for its section…
+  await expect(page.locator(".banner").filter({ hasText: "Tools" })).toBeVisible();
+  // …and routes the user there (no client-side rule was re-derived).
+  await page.getByRole("button", { name: /Go to section/ }).click();
+  await expect(page.getByRole("tab", { name: "Tools" })).toHaveAttribute("aria-selected", "true");
 });
