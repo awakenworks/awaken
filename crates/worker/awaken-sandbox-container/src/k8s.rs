@@ -13,8 +13,8 @@ use async_trait::async_trait;
 use awaken_agent_channel::{AgentChannel, AgentTransport};
 use awaken_provisioning_contract as pc;
 use k8s_openapi::api::core::v1::{
-    Container, EmptyDirVolumeSource, EnvVar, Pod, PodSpec, ResourceRequirements, Volume,
-    VolumeMount,
+    Capabilities, Container, EmptyDirVolumeSource, EnvVar, Pod, PodSpec, ResourceRequirements,
+    SecurityContext, Volume, VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
@@ -189,13 +189,27 @@ fn build_pod(
             // Enforce the advertised resource caps as the container's limits.
             resources: pod_resources(&plan.limits),
             volume_mounts: (!agent_mounts.is_empty()).then_some(agent_mounts),
+            // Harden the untrusted agent: no privilege escalation, all caps dropped.
+            security_context: Some(hardened_security_context()),
             ..Default::default()
         }];
         containers.extend(sidecars);
 
+        // Label the Pod with its egress posture so a platform-managed NetworkPolicy
+        // selects and enforces it (deny-all-except-proxy/DNS for `restricted`). The
+        // per-cluster NetworkPolicy holds the real proxy/DNS addresses; the adapter
+        // only declares the posture — it does not invent IPs it doesn't have.
+        let mut labels = std::collections::BTreeMap::new();
+        labels.insert("app".to_string(), "awaken-sandbox".to_string());
+        labels.insert(
+            "awaken-egress".to_string(),
+            egress_label(&plan.network).to_string(),
+        );
+
         Pod {
             metadata: ObjectMeta {
                 name: Some(format!("awaken-{id}")),
+                labels: Some(labels),
                 // native GC: the platform reaps this Pod when the owner is deleted.
                 owner_references: owner.clone().map(|o| vec![o]),
                 ..Default::default()
@@ -205,10 +219,35 @@ fn build_pod(
                 volumes: (!volumes.is_empty()).then_some(volumes),
                 // a finished agent Pod is reaped, not looped.
                 restart_policy: Some("Never".into()),
+                // The untrusted agent must NOT reach the kube API (no SA token): its
+                // only control-plane channel is the ACP data channel, nothing else.
+                automount_service_account_token: Some(false),
                 ..Default::default()
             }),
             status: None,
         }
+    }
+}
+
+/// The egress-posture label value a platform NetworkPolicy selects on: `restricted`
+/// for any non-`Open` policy (routed through the proxy chokepoint), else `open`.
+fn egress_label(network: &crate::NetworkMode) -> &'static str {
+    match network {
+        crate::NetworkMode::Open => "open",
+        crate::NetworkMode::Allowlist(_) | crate::NetworkMode::None => "restricted",
+    }
+}
+
+/// The hardened `securityContext` for the untrusted agent container: no privilege
+/// escalation, every Linux capability dropped.
+fn hardened_security_context() -> SecurityContext {
+    SecurityContext {
+        allow_privilege_escalation: Some(false),
+        capabilities: Some(Capabilities {
+            drop: Some(vec!["ALL".to_string()]),
+            add: None,
+        }),
+        ..Default::default()
     }
 }
 
@@ -417,9 +456,8 @@ mod tests {
                 .any(|e| e.name == "AWAKEN_MEMORY_STORE_ID" && e.value.as_deref() == Some("s1"))
         );
         assert!(
-            env.iter()
-                .any(|e| e.name == "AWAKEN_MOUNT_PATH"
-                    && e.value.as_deref() == Some("/workspace/.mnt/a"))
+            env.iter().any(|e| e.name == "AWAKEN_MOUNT_PATH"
+                && e.value.as_deref() == Some("/workspace/.mnt/a"))
         );
     }
 
@@ -430,5 +468,44 @@ mod tests {
         assert_eq!(spec.containers.len(), 1);
         assert!(spec.volumes.is_none());
         assert!(spec.containers[0].volume_mounts.is_none());
+    }
+
+    #[test]
+    fn build_pod_hardens_the_untrusted_agent() {
+        let spec = build_pod("r", &plan_with_memory(Vec::new()), &None, "m")
+            .spec
+            .unwrap();
+        // No SA token → the agent cannot reach the kube API.
+        assert_eq!(spec.automount_service_account_token, Some(false));
+        let sc = spec.containers[0].security_context.as_ref().unwrap();
+        assert_eq!(sc.allow_privilege_escalation, Some(false));
+        assert_eq!(
+            sc.capabilities.as_ref().unwrap().drop.as_deref(),
+            Some(&["ALL".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn build_pod_labels_the_egress_posture_for_a_networkpolicy() {
+        // Restricted egress → the pod is labeled so a platform NetworkPolicy fences it.
+        let mut plan = plan_with_memory(Vec::new());
+        plan.network = crate::NetworkMode::Allowlist(vec!["api.anthropic.com".into()]);
+        let pod = build_pod("r", &plan, &None, "m");
+        let labels = pod.metadata.labels.unwrap();
+        assert_eq!(
+            labels.get("awaken-egress").map(String::as_str),
+            Some("restricted")
+        );
+
+        plan.network = crate::NetworkMode::Open;
+        let open = build_pod("r", &plan, &None, "m");
+        assert_eq!(
+            open.metadata
+                .labels
+                .unwrap()
+                .get("awaken-egress")
+                .map(String::as_str),
+            Some("open")
+        );
     }
 }
