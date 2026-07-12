@@ -7,8 +7,10 @@ license.workspace = true
 [dependencies]
 awaken-runtime-contract.workspace = true
 awaken-provisioning-contract.workspace = true
-awaken-file-store.workspace = true
 awaken-agent-channel.workspace = true
+# BLAKE3 content id for the mount pin (was awaken_file_store::content_id) — kept a
+# leaf dep so this worker-tier crate links no durable store (A-G17).
+blake3 = "1"
 awaken-ext-builtin-tools = { workspace = true }
 async-trait.workspace = true
 serde_json.workspace = true
@@ -18,3 +20,7 @@ tokio = { workspace = true, features = ["process", "rt", "sync", "io-util"] }
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util"] }
 tempfile = "3"
+# Tests wire a real content-addressed store behind the `BlobSource` port via a small
+# adapter — the store stays a dev-only dependency (dev-deps are boundary-exempt).
+awaken-file-store.workspace = true
+async-trait.workspace = true

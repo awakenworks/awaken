@@ -6,8 +6,9 @@
 
 use std::sync::Arc;
 
+use awaken_file_store::FileStore;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_sandbox_local::{FileStore, Mount, SandboxSpec};
+use awaken_sandbox_local::{Mount, SandboxSpec};
 
 use crate::host::SharedHost;
 

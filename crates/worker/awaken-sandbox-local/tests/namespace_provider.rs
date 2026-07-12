@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxProvider;
-use awaken_sandbox_local::{FileStore, FsFileStore, NamespaceProvider};
+mod common;
+use awaken_file_store::{FileStore, FsFileStore};
+use awaken_sandbox_local::NamespaceProvider;
 
 fn spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
@@ -194,7 +196,8 @@ async fn file_store_mount_is_realized_as_a_bind() {
     let tmp = tempfile::tempdir().unwrap();
     let store = Arc::new(FsFileStore::open(tmp.path().join("blobs")).await.unwrap());
     let id = store.put(b"seed-bytes").await.unwrap();
-    let provider = NamespaceProvider::new(tmp.path().join("envs")).with_file_store(store);
+    let provider = NamespaceProvider::new(tmp.path().join("envs"))
+        .with_blob_source(common::blob_source(store));
     let mut spec = spec("t-fs");
     spec.mounts.push(pc::MountRequirement {
         mount_id: "in".into(),

@@ -21,8 +21,6 @@ use tokio::process::Command as TokioCommand;
 
 use std::sync::Arc;
 
-use awaken_file_store::FileStore;
-
 use crate::provider::{LocalProcess, resolve_source, verify};
 use crate::{IsolatedRoot, content_fingerprint};
 
@@ -144,7 +142,7 @@ pub fn sandbox_exec_argv(input: &RenderInput) -> Vec<String> {
 pub struct NamespaceProvider {
     base: PathBuf,
     blobs: std::collections::HashMap<String, Vec<u8>>,
-    file_store: Option<Arc<dyn FileStore>>,
+    file_store: Option<Arc<dyn pc::BlobSource>>,
 }
 
 impl NamespaceProvider {
@@ -164,7 +162,7 @@ impl NamespaceProvider {
 
     /// Resolve `File`/`Resource` mounts from a content-addressed store.
     #[must_use]
-    pub fn with_file_store(mut self, store: Arc<dyn FileStore>) -> Self {
+    pub fn with_blob_source(mut self, store: Arc<dyn pc::BlobSource>) -> Self {
         self.file_store = Some(store);
         self
     }

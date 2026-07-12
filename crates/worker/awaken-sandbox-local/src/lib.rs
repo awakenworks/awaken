@@ -33,10 +33,9 @@ use serde_json::Value;
 mod artifacts;
 mod namespace;
 mod provider;
-// The content-addressed blob store is the canonical `awaken-file-store` (ADR-0041,
-// BLAKE3), re-exported here for existing consumers; the provider resolves mount bytes
-// from a `FileStore` handle injected at config time (ADR-0038 D6).
-pub use awaken_file_store::{FileStore, FileStoreError, FsFileStore, InMemoryFileStore};
+// The provider resolves mount bytes from an injected [`pc::BlobSource`] port
+// (ADR-0038 D6, dependency-inverted) — this worker-tier crate links no durable
+// store; the composition root adapts the content-addressed store to the port.
 pub use namespace::{NamespaceProvider, NamespaceSandbox, bubblewrap_argv, sandbox_exec_argv};
 pub use provider::{LocalProcess, LocalProvider, LocalSandbox};
 
@@ -294,12 +293,12 @@ pub(crate) fn rooted_hand_tools(root: IsolatedRoot, deny_egress: bool) -> Vec<Ar
 }
 
 /// A stable content id over provisioning bytes — the pin identity a mount declares
-/// and the provider verifies. Delegates to [`awaken_file_store::content_id`] (BLAKE3),
-/// so the id is identical to what the content-addressed [`FileStore`] assigns and is
+/// and the provider verifies. BLAKE3 (the same hash the content-addressed store
+/// assigns), so the id is identical to what that store computes and is
 /// stable across processes, Rust versions, and nodes (unlike the old 64-bit
 /// `DefaultHasher`), which distributed reference-passing (ADR-0038 D6) requires.
 pub fn content_fingerprint(bytes: &[u8]) -> String {
-    awaken_file_store::content_id(bytes)
+    blake3::hash(bytes).to_hex().to_string()
 }
 
 /// A typed provisioning input carried in [`SandboxSpec::mounts`] as an opaque
@@ -969,7 +968,7 @@ mod tests {
         let bytes = b"provisioned bytes";
         assert_eq!(
             content_fingerprint(bytes),
-            awaken_file_store::content_id(bytes)
+            blake3::hash(bytes).to_hex().to_string()
         );
         assert_eq!(content_fingerprint(bytes).len(), 64);
     }
