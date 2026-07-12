@@ -7,8 +7,9 @@
 use std::collections::{HashMap, VecDeque};
 use std::ffi::OsStr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use awaken_memory_store::{MemErr, Memory, MemoryFs};
@@ -18,8 +19,16 @@ use fuser::{
 };
 use libc::{EAGAIN, EEXIST, EINVAL, EIO, ENOENT, ENOSYS, ENOTEMPTY, O_TRUNC};
 use tokio::runtime::Runtime;
+use tokio::sync::broadcast;
 
+use crate::invalidate::Invalidation;
 use crate::{FuseError, immediate_children, splice_bytes};
+
+/// Poll cadence for the cross-host invalidation listener (ADR-0053 D5). An
+/// invalidation only prompts a cache refetch, so sub-frame latency is unnecessary;
+/// polling (rather than a blocking recv) lets the listener honour its stop flag
+/// promptly at unmount without a second wakeup channel.
+const INVALIDATION_POLL: Duration = Duration::from_millis(20);
 
 const TTL: Duration = Duration::from_secs(1);
 const ROOT_INO: u64 = 1;
@@ -42,9 +51,56 @@ fn to_systime(nanos: u128) -> SystemTime {
 /// A live mount: gracefully unmount via [`unmount`](Self::unmount) (draining open
 /// fds up to a bounded timeout); dropping the handle also unmounts.
 pub struct MemoryMountHandle {
-    session: BackgroundSession,
+    // `Option` so `unmount` can take the session by value (`join`) without moving out
+    // of a `Drop` type; a still-`Some` session at drop unmounts via its own `Drop`.
+    session: Option<BackgroundSession>,
     state: Arc<MountState>,
     drain_timeout: Duration,
+    listener: Option<InvalidationListener>,
+}
+
+/// A background thread draining cross-host invalidations into a mount's cache
+/// (ADR-0053 D5). Stops when its flag is set (at unmount) or the bus closes.
+struct InvalidationListener {
+    stop: Arc<AtomicBool>,
+    handle: JoinHandle<()>,
+}
+
+impl InvalidationListener {
+    fn stop(self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = self.handle.join();
+    }
+}
+
+/// Drain `rx`, dropping any invalidated path for `store_id` from `cache`, until
+/// `stop` is set or the bus closes. Non-matching stores and lag are ignored (a
+/// lagged listener has missed invalidations, so it clears the whole cache to be
+/// safe rather than serve a possibly-stale entry).
+fn run_invalidation_listener(
+    cache: Arc<Mutex<ContentLruCache>>,
+    store_id: String,
+    mut rx: broadcast::Receiver<Invalidation>,
+    stop: Arc<AtomicBool>,
+) {
+    while !stop.load(Ordering::SeqCst) {
+        match rx.try_recv() {
+            Ok((store, path)) => {
+                if store == store_id
+                    && let Ok(mut cache) = cache.lock()
+                {
+                    cache.remove_path(&path);
+                }
+            }
+            Err(broadcast::error::TryRecvError::Empty) => std::thread::sleep(INVALIDATION_POLL),
+            Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                if let Ok(mut cache) = cache.lock() {
+                    cache.clear();
+                }
+            }
+            Err(broadcast::error::TryRecvError::Closed) => break,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -56,7 +112,10 @@ impl MemoryMountHandle {
     /// Unmount and wait for the background session to exit. Drains open fds up to
     /// the drain timeout so a close-flush in flight is not cut off; warns (never
     /// hangs) if fds remain.
-    pub fn unmount(self) {
+    pub fn unmount(mut self) {
+        if let Some(listener) = self.listener.take() {
+            listener.stop();
+        }
         let deadline = Instant::now() + self.drain_timeout;
         while self.state.open_fds.load(Ordering::SeqCst) != 0 && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
@@ -69,7 +128,9 @@ impl MemoryMountHandle {
                 "memory FUSE unmount drain timeout elapsed with open file descriptors"
             );
         }
-        self.session.join();
+        if let Some(session) = self.session.take() {
+            session.join();
+        }
     }
 
     #[must_use]
@@ -84,20 +145,63 @@ impl MemoryMountHandle {
     }
 }
 
+impl Drop for MemoryMountHandle {
+    fn drop(&mut self) {
+        // Dropping the handle (without an explicit unmount) still stops the listener
+        // thread rather than leaving it polling a detached bus.
+        if let Some(listener) = self.listener.take() {
+            listener.stop();
+        }
+    }
+}
+
 /// Spawn a background mount of `store` at `mountpoint`, returning its handle.
 pub fn spawn_mount(
     fs: Arc<dyn MemoryFs>,
     store_id: String,
     mountpoint: PathBuf,
 ) -> Result<MemoryMountHandle, FuseError> {
+    spawn_mount_inner(fs, store_id, mountpoint, None)
+}
+
+/// Like [`spawn_mount`], but the mount also drains `invalidations` — a cross-host
+/// invalidation feed (ADR-0053 D5) — dropping stale paths from its cache so a write
+/// on another node is reflected here. Pass a [`LocalInvalidator`](crate::LocalInvalidator)
+/// subscription (or a NATS/pg-notify bridge over the same broadcast).
+pub fn spawn_mount_with_invalidations(
+    fs: Arc<dyn MemoryFs>,
+    store_id: String,
+    mountpoint: PathBuf,
+    invalidations: broadcast::Receiver<Invalidation>,
+) -> Result<MemoryMountHandle, FuseError> {
+    spawn_mount_inner(fs, store_id, mountpoint, Some(invalidations))
+}
+
+fn spawn_mount_inner(
+    fs: Arc<dyn MemoryFs>,
+    store_id: String,
+    mountpoint: PathBuf,
+    invalidations: Option<broadcast::Receiver<Invalidation>>,
+) -> Result<MemoryMountHandle, FuseError> {
     let state = Arc::new(MountState::default());
-    let fuse = MemoryFuse::new_with_state(fs, store_id, state.clone())?;
+    let fuse = MemoryFuse::new_with_state(fs, store_id.clone(), state.clone())?;
+    // Capture a cache handle before `fuse` is moved into the kernel session.
+    let listener = invalidations.map(|rx| {
+        let cache = fuse.cache_handle();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_thread = stop.clone();
+        let handle = std::thread::spawn(move || {
+            run_invalidation_listener(cache, store_id, rx, stop_thread);
+        });
+        InvalidationListener { stop, handle }
+    });
     let session = fuser::spawn_mount2(fuse, mountpoint, &mount_options())
         .map_err(|e| FuseError::Internal(e.to_string()))?;
     Ok(MemoryMountHandle {
-        session,
+        session: Some(session),
         state,
         drain_timeout: DEFAULT_UNMOUNT_DRAIN_TIMEOUT,
+        listener,
     })
 }
 
@@ -117,7 +221,7 @@ pub struct MemoryFuse {
     runtime: Runtime,
     mount_time: u128,
     inodes: Mutex<InodeTable>,
-    content_cache: Mutex<ContentLruCache>,
+    content_cache: Arc<Mutex<ContentLruCache>>,
     mount_state: Arc<MountState>,
 }
 
@@ -200,6 +304,11 @@ impl ContentLruCache {
         self.order.retain(|c| c != path);
     }
 
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+    }
+
     fn clear_path_prefix(&mut self, prefix: &str) {
         self.entries.retain(|path, _| !path.starts_with(prefix));
         self.order.retain(|path| self.entries.contains_key(path));
@@ -254,7 +363,7 @@ impl MemoryFuse {
             runtime: Runtime::new().map_err(|e| FuseError::Internal(e.to_string()))?,
             mount_time,
             inodes: Mutex::new(table),
-            content_cache: Mutex::new(ContentLruCache::new(CONTENT_CACHE_CAPACITY)),
+            content_cache: Arc::new(Mutex::new(ContentLruCache::new(CONTENT_CACHE_CAPACITY))),
             mount_state,
         })
     }
@@ -404,6 +513,12 @@ impl MemoryFuse {
         table.open_files.insert(fh, open);
         self.mount_state.open_fds.fetch_add(1, Ordering::SeqCst);
         fh
+    }
+
+    /// A shared handle to the content cache, so a cross-host invalidation listener
+    /// can drop stale paths after the fuse is moved into the kernel session.
+    fn cache_handle(&self) -> Arc<Mutex<ContentLruCache>> {
+        self.content_cache.clone()
     }
 
     fn cache_get(&self, path: &str) -> Option<Memory> {
@@ -1066,6 +1181,41 @@ mod tests {
             updated_unix_nanos: 200,
             content: Some(content.to_string()),
         }
+    }
+
+    #[test]
+    fn invalidation_listener_drops_matching_paths_only() {
+        use crate::LocalInvalidator;
+        use crate::invalidate::Invalidator;
+
+        let cache = Arc::new(Mutex::new(ContentLruCache::new(8)));
+        cache.lock().unwrap().put(memory("/a.md", "one"));
+        cache.lock().unwrap().put(memory("/b.md", "two"));
+
+        let bus = LocalInvalidator::new(16);
+        let rx = bus.subscribe();
+        let stop = Arc::new(AtomicBool::new(false));
+        let listener = {
+            let (cache, stop) = (cache.clone(), stop.clone());
+            std::thread::spawn(move || run_invalidation_listener(cache, "s".into(), rx, stop))
+        };
+
+        // A write on another node for our store drops that path here…
+        bus.publish("s", "/a.md");
+        // …while a write for a different store is ignored.
+        bus.publish("other", "/b.md");
+
+        // Wait for the listener to observe the invalidation (poll cadence is 20ms).
+        let mut waited = Duration::ZERO;
+        while cache.lock().unwrap().get("/a.md").is_some() && waited < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(10));
+            waited += Duration::from_millis(10);
+        }
+        assert!(cache.lock().unwrap().get("/a.md").is_none(), "matching path dropped");
+        assert!(cache.lock().unwrap().get("/b.md").is_some(), "other store untouched");
+
+        stop.store(true, Ordering::SeqCst);
+        listener.join().unwrap();
     }
 
     #[test]

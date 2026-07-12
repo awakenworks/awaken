@@ -367,6 +367,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # provisioning-contract `MountSource::MemoryStore` → `Realization::Fuse`.
     "awaken-sandbox-memoryd": {
         "awaken-memory-store",
+        "async-trait",
         "thiserror",
         "tokio",
         "tracing",
