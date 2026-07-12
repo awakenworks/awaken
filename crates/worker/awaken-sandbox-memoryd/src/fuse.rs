@@ -1211,8 +1211,14 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
             waited += Duration::from_millis(10);
         }
-        assert!(cache.lock().unwrap().get("/a.md").is_none(), "matching path dropped");
-        assert!(cache.lock().unwrap().get("/b.md").is_some(), "other store untouched");
+        assert!(
+            cache.lock().unwrap().get("/a.md").is_none(),
+            "matching path dropped"
+        );
+        assert!(
+            cache.lock().unwrap().get("/b.md").is_some(),
+            "other store untouched"
+        );
 
         stop.store(true, Ordering::SeqCst);
         listener.join().unwrap();

@@ -97,6 +97,9 @@ pub struct LocalProvider {
     blobs: HashMap<String, Vec<u8>>,
     /// Optional content-addressed store consulted after the seed map (Slice 4).
     file_store: Option<Arc<dyn pc::BlobSource>>,
+    /// Optional memory-store realizer (FUSE / copy). Absent → a `MemoryStore` mount
+    /// fails loud rather than being faked as an empty file (ADR-0053 item 1).
+    memory_mounter: Option<Arc<dyn pc::MemoryMounter>>,
 }
 
 impl LocalProvider {
@@ -105,6 +108,7 @@ impl LocalProvider {
             base: base.into(),
             blobs: HashMap::new(),
             file_store: None,
+            memory_mounter: None,
         }
     }
 
@@ -119,6 +123,14 @@ impl LocalProvider {
     #[must_use]
     pub fn with_blob_source(mut self, store: Arc<dyn pc::BlobSource>) -> Self {
         self.file_store = Some(store);
+        self
+    }
+
+    /// Realize `MemoryStore` mounts via an injected mounter (FUSE where available,
+    /// else a harvested copy). Without one, a `MemoryStore` mount fails loud.
+    #[must_use]
+    pub fn with_memory_mounter(mut self, mounter: Arc<dyn pc::MemoryMounter>) -> Self {
+        self.memory_mounter = Some(mounter);
         self
     }
 
@@ -147,8 +159,15 @@ impl LocalProvider {
         // All-or-nothing: a failed mount reaps the whole environment (no partial dir).
         for req in &spec.mounts {
             match self.realize_mount(&sandbox.root, req).await {
-                Ok(m) => sandbox.realized.push(m),
+                Ok((m, guard)) => {
+                    sandbox.realized.push(m);
+                    if let Some(guard) = guard {
+                        sandbox.memory_mounts.lock().unwrap().push(guard);
+                    }
+                }
                 Err(e) => {
+                    // Tear down any memory mounts already realized before reaping.
+                    sandbox.teardown_memory_mounts().await;
                     let _ = std::fs::remove_dir_all(sandbox.root.root());
                     return Err(e);
                 }
@@ -174,54 +193,67 @@ impl LocalProvider {
         &self,
         root: &IsolatedRoot,
         req: &pc::MountRequirement,
-    ) -> Result<pc::RealizedMount, pc::SandboxError> {
+    ) -> Result<(pc::RealizedMount, Option<Box<dyn pc::MemoryMount>>), pc::SandboxError> {
         let host = root.resolve(&req.mount_path).map_err(err)?;
-        // A memory_store is a genuine keyed store (ADR-0038), not a byte blob. This
-        // Workdir provider has no memory backend wired, so realizing it would either
-        // silently produce an empty placeholder file (misleading the agent into
-        // thinking it has a store) or fake it. Fail loud instead — a real backend
-        // realizes it, not a File copy.
-        if matches!(req.source, pc::MountSource::MemoryStore { .. }) {
-            return Err(err(format!(
-                "mount {:?}: memory_store is not realizable on this provider (no memory backend wired)",
-                req.mount_id
-            )));
+        // A memory_store is a genuine keyed store (ADR-0038/0053), not a byte blob:
+        // realize it through the injected mounter (FUSE where the kernel supports it,
+        // else a harvested copy). Without a mounter, fail loud rather than fake it
+        // with an empty file that misleads the agent into thinking it has a store.
+        if let pc::MountSource::MemoryStore { store_id } = &req.source {
+            let Some(mounter) = &self.memory_mounter else {
+                return Err(err(format!(
+                    "mount {:?}: memory_store is not realizable on this provider (no memory mounter wired)",
+                    req.mount_id
+                )));
+            };
+            let guard = mounter.mount(store_id, &host, req.access).await?;
+            let realized = pc::RealizedMount {
+                mount_id: req.mount_id.clone(),
+                mount_path: req.mount_path.clone(),
+                access: req.access,
+                realization: guard.realization(),
+                content_hash: None,
+            };
+            return Ok((realized, Some(guard)));
         }
         let bytes = resolve_source(&req.source, &self.blobs, &self.file_store).await;
-        match bytes {
+        let realized = match bytes {
             Some(bytes) => {
                 verify(&req.source, &bytes)?; // fail closed on content-hash mismatch
                 if let Some(parent) = host.parent() {
                     std::fs::create_dir_all(parent).map_err(err)?;
                 }
                 std::fs::write(&host, &bytes).map_err(err)?;
-                Ok(pc::RealizedMount {
+                pc::RealizedMount {
                     mount_id: req.mount_id.clone(),
                     mount_path: req.mount_path.clone(),
                     access: req.access,
                     realization: pc::Realization::Copy,
                     content_hash: Some(content_fingerprint(&bytes)),
-                })
+                }
             }
-            None if req.required => Err(err(format!(
-                "required mount {:?} has no resolvable source on the local provider",
-                req.mount_id
-            ))),
+            None if req.required => {
+                return Err(err(format!(
+                    "required mount {:?} has no resolvable source on the local provider",
+                    req.mount_id
+                )));
+            }
             None => {
                 // Optional + unresolvable: create an empty placeholder so the path exists.
                 if let Some(parent) = host.parent() {
                     std::fs::create_dir_all(parent).map_err(err)?;
                 }
                 std::fs::write(&host, b"").map_err(err)?;
-                Ok(pc::RealizedMount {
+                pc::RealizedMount {
                     mount_id: req.mount_id.clone(),
                     mount_path: req.mount_path.clone(),
                     access: req.access,
                     realization: pc::Realization::Copy,
                     content_hash: None,
-                })
+                }
             }
-        }
+        };
+        Ok((realized, None))
     }
 
     fn build(&self, id: &str, outputs_path: &str) -> LocalSandbox {
@@ -232,6 +264,7 @@ impl LocalProvider {
             outputs_path: outputs_path.to_string(),
             base_env: Vec::new(),
             realized: Vec::new(),
+            memory_mounts: std::sync::Mutex::new(Vec::new()),
         }
     }
 }
@@ -271,9 +304,22 @@ pub struct LocalSandbox {
     outputs_path: String,
     base_env: Vec<(String, String)>,
     realized: Vec<pc::RealizedMount>,
+    /// Live memory-store mounts (FUSE / copy), torn down (unmount / harvest) at
+    /// [`dispose`](pc::Sandbox::dispose) before the sandbox directory is reaped.
+    memory_mounts: std::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>>,
 }
 
 impl LocalSandbox {
+    /// Tear down every live memory mount: unmount a FUSE mount, or harvest a writable
+    /// copy back to its store. Drains the guard list so a later dispose is a no-op.
+    async fn teardown_memory_mounts(&self) {
+        let mounts: Vec<Box<dyn pc::MemoryMount>> =
+            std::mem::take(&mut self.memory_mounts.lock().unwrap());
+        for mount in mounts {
+            mount.teardown().await;
+        }
+    }
+
     fn host_outputs(&self) -> Result<PathBuf, pc::SandboxError> {
         self.root.resolve(&self.outputs_path).map_err(err)
     }
@@ -427,6 +473,10 @@ impl pc::Sandbox for LocalSandbox {
     }
 
     async fn dispose(&self) -> Result<(), pc::SandboxError> {
+        // Harvest / unmount memory stores BEFORE the directory is reaped — a copy
+        // harvest reads the edited files back, and a FUSE mount must be unmounted
+        // before its mountpoint directory can be removed.
+        self.teardown_memory_mounts().await;
         let root = self.root.root();
         if root.exists() {
             std::fs::remove_dir_all(root).map_err(err)?;

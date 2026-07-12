@@ -40,8 +40,8 @@ pub use admission::{AdmissionError, EnvironmentDecl, check_environment_soundness
 pub use lease::{AdoptionPlan, LeaseGrant, LeaseLiveness, ReapCause, reconcile_adoption};
 pub use prepare::{EnvironmentPlan, PrepareError, prepare_environment};
 pub use sandbox::{
-    BlobSource, ExitStatus, IsolationClass, ProcessHandle, Sandbox, SandboxCapabilities,
-    SandboxError, SandboxHandle, SandboxProvider, SandboxStatus, Signal,
+    BlobSource, ExitStatus, IsolationClass, MemoryMount, MemoryMounter, ProcessHandle, Sandbox,
+    SandboxCapabilities, SandboxError, SandboxHandle, SandboxProvider, SandboxStatus, Signal,
 };
 pub use spec::{Command, EnvironmentKind, RootfsSource, SandboxSpec, Stdio};
 pub use vocab::{

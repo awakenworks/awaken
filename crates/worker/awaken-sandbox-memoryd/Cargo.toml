@@ -13,6 +13,7 @@ license.workspace = true
 
 [dependencies]
 awaken-memory-store = { workspace = true }
+awaken-provisioning-contract = { workspace = true }
 async-trait.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync"] }

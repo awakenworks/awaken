@@ -94,6 +94,7 @@ awaken-connection-plan = { path = "crates/worker/awaken-connection-plan" }
 awaken-tool-relay = { path = "crates/worker/awaken-tool-relay" }
 awaken-file-store = { path = "crates/resources/awaken-file-store" }
 awaken-sandbox-local = { path = "crates/worker/awaken-sandbox-local" }
+awaken-sandbox-memoryd = { path = "crates/worker/awaken-sandbox-memoryd" }
 awaken-sandbox-container = { path = "crates/worker/awaken-sandbox-container" }
 awaken-runtime-examples = { path = "crates/bin/awaken-runtime-examples" }
 awaken-run-ingress-contract = { path = "crates/server/awaken-run-ingress-contract" }
