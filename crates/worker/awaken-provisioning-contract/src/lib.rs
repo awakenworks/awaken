@@ -41,7 +41,8 @@ pub use lease::{AdoptionPlan, LeaseGrant, LeaseLiveness, ReapCause, reconcile_ad
 pub use prepare::{EnvironmentPlan, PrepareError, prepare_environment};
 pub use sandbox::{
     BlobSource, ExitStatus, IsolationClass, MemoryMount, MemoryMounter, ProcessHandle, Sandbox,
-    SandboxCapabilities, SandboxError, SandboxHandle, SandboxProvider, SandboxStatus, Signal,
+    SandboxCapabilities, SandboxError, SandboxHandle, SandboxProvider, SandboxStatus,
+    SelectionError, Signal, select_provider,
 };
 pub use spec::{Command, EnvironmentKind, RootfsSource, SandboxSpec, Stdio};
 pub use vocab::{

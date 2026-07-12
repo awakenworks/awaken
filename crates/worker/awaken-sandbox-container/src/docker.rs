@@ -82,12 +82,21 @@ impl DockerRuntime {
                 host_port: Some(String::new()),
             }]),
         );
+        let caps = crate::CgroupCaps::from_limits(&plan.limits);
         HostConfig {
             binds: (!binds.is_empty()).then_some(binds),
             port_bindings: Some(port_bindings),
-            memory: plan.limits.memory_bytes.map(|m| m as i64),
-            nano_cpus: plan.limits.cpu_millis.map(|c| i64::from(c) * 1_000_000),
-            pids_limit: plan.limits.pids.map(i64::from),
+            memory: caps.memory_bytes,
+            // Pin swap to the memory cap so a memory-limited agent cannot escape it by
+            // swapping (the swap-escape close).
+            memory_swap: caps.memory_swap_bytes,
+            nano_cpus: caps.nano_cpus,
+            pids_limit: caps.pids,
+            storage_opt: caps.disk_size.map(|size| {
+                let mut o = HashMap::new();
+                o.insert("size".to_string(), size);
+                o
+            }),
             ..Default::default()
         }
     }

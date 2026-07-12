@@ -154,7 +154,38 @@ impl SandboxCapabilities {
         use crate::vocab::NetworkPolicy;
         self.isolation >= spec.isolation
             && (matches!(spec.network, NetworkPolicy::Unrestricted) || self.network_isolation)
+            // Resource caps are load-bearing too: a spec that asks for cgroup limits
+            // must not be placed on a tier that can't enforce them.
+            && (!spec.limits.is_set() || self.resource_limits)
     }
+}
+
+/// Why no backend could be selected for a spec.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum SelectionError {
+    /// No configured backend both satisfies the spec and passed its readiness probe.
+    #[error("no configured backend can satisfy the requested isolation/network/limits")]
+    NoCapableBackend,
+}
+
+/// Fail-closed provider selection: the first candidate whose capabilities
+/// [`satisfies`](SandboxCapabilities::satisfies) the spec **and** whose
+/// [`probe_ready`](SandboxProvider::probe_ready) check passes. It never downgrades to
+/// a weaker tier — if nothing qualifies it returns [`SelectionError::NoCapableBackend`]
+/// (the host maps this to a `Gated` outcome), so a spec is never silently placed on an
+/// under-isolating or unavailable backend. This is the deliberate divergence from a
+/// "degrade to a portable scope" policy: in a managed/multi-tenant plane a silent
+/// isolation downgrade is a security regression, not a convenience.
+pub async fn select_provider<'a>(
+    candidates: &'a [Box<dyn SandboxProvider>],
+    spec: &SandboxSpec,
+) -> Result<&'a dyn SandboxProvider, SelectionError> {
+    for provider in candidates {
+        if provider.capabilities().satisfies(spec) && provider.probe_ready().await.is_ok() {
+            return Ok(provider.as_ref());
+        }
+    }
+    Err(SelectionError::NoCapableBackend)
 }
 
 /// Realizes environments. The local impl lives in `awaken-sandbox-local`; a
@@ -163,6 +194,15 @@ impl SandboxCapabilities {
 pub trait SandboxProvider: Send + Sync {
     /// What this backend can enforce (probed at startup for selection).
     fn capabilities(&self) -> SandboxCapabilities;
+
+    /// A cheap liveness probe run at selection time: `Ok` iff this backend is
+    /// actually usable *right now* — bwrap/unprivileged-userns available, a container
+    /// daemon reachable, etc. The default assumes readiness; the namespace/container
+    /// providers override it with a real check so `select_provider` fails closed
+    /// (never a silent unisolated run) rather than deferring the failure to `create`.
+    async fn probe_ready(&self) -> Result<(), SandboxError> {
+        Ok(())
+    }
 
     /// Realize a validated spec into a live sandbox (bind mounts, apply ro/env/
     /// network/limits). Callers should validate first via `prepare_environment`.
@@ -434,6 +474,100 @@ mod tests {
         // unrestricted egress needs no network isolation
         s.network = NetworkPolicy::Unrestricted;
         assert!(caps(IsolationClass::Workdir, false).satisfies(&s));
+    }
+
+    #[test]
+    fn satisfies_requires_resource_limit_enforcement_when_limits_are_set() {
+        let mut s = spec();
+        s.limits.memory_bytes = Some(256 * 1024 * 1024);
+        // A tier that can't cgroup fails closed; one that can passes.
+        let mut weak = caps(IsolationClass::Workdir, false);
+        weak.resource_limits = false;
+        assert!(!weak.satisfies(&s));
+        let mut strong = caps(IsolationClass::Workdir, false);
+        strong.resource_limits = true;
+        assert!(strong.satisfies(&s));
+        // Unset limits don't require enforcement.
+        s.limits = Default::default();
+        assert!(weak.satisfies(&s));
+    }
+
+    /// A provider whose readiness probe can be toggled, to exercise `select_provider`.
+    struct ProbeProvider {
+        caps: SandboxCapabilities,
+        ready: bool,
+    }
+    #[async_trait]
+    impl SandboxProvider for ProbeProvider {
+        fn capabilities(&self) -> SandboxCapabilities {
+            self.caps.clone()
+        }
+        async fn probe_ready(&self) -> Result<(), SandboxError> {
+            if self.ready {
+                Ok(())
+            } else {
+                Err(SandboxError::new("backend not ready"))
+            }
+        }
+        async fn create(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>, SandboxError> {
+            Ok(Box::new(FakeSandbox {
+                id: spec.scope.clone(),
+                renews: Arc::new(AtomicU32::new(0)),
+            }))
+        }
+        async fn adopt(&self, handle: &SandboxHandle) -> Result<Box<dyn Sandbox>, SandboxError> {
+            Ok(Box::new(FakeSandbox {
+                id: handle.sandbox_id.clone(),
+                renews: Arc::new(AtomicU32::new(0)),
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn select_provider_picks_the_first_capable_and_ready_backend() {
+        let mut s = spec();
+        s.isolation = IsolationClass::Namespace;
+        let candidates: Vec<Box<dyn SandboxProvider>> = vec![
+            // capable but not ready → skipped
+            Box::new(ProbeProvider {
+                caps: caps(IsolationClass::Container, true),
+                ready: false,
+            }),
+            // capable AND ready → chosen
+            Box::new(ProbeProvider {
+                caps: caps(IsolationClass::Namespace, true),
+                ready: true,
+            }),
+        ];
+        let chosen = select_provider(&candidates, &s).await.unwrap();
+        assert_eq!(chosen.capabilities().isolation, IsolationClass::Namespace);
+    }
+
+    #[tokio::test]
+    async fn select_provider_fails_closed_rather_than_downgrading() {
+        let mut s = spec();
+        s.isolation = IsolationClass::Container;
+        // Only an under-isolating and a not-ready backend are offered.
+        let candidates: Vec<Box<dyn SandboxProvider>> = vec![
+            Box::new(ProbeProvider {
+                caps: caps(IsolationClass::Namespace, true),
+                ready: true,
+            }),
+            Box::new(ProbeProvider {
+                caps: caps(IsolationClass::Container, true),
+                ready: false,
+            }),
+        ];
+        let result = select_provider(&candidates, &s).await;
+        assert!(matches!(result, Err(SelectionError::NoCapableBackend)));
+    }
+
+    #[tokio::test]
+    async fn default_probe_ready_is_ok() {
+        let provider = FakeProvider {
+            renews: Arc::new(AtomicU32::new(0)),
+        };
+        assert!(provider.probe_ready().await.is_ok());
     }
 
     #[tokio::test]

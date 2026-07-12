@@ -285,6 +285,29 @@ impl pc::SandboxProvider for NamespaceProvider {
         Self::caps()
     }
 
+    /// A real readiness probe: bwrap must actually run an unprivileged user
+    /// namespace *here*. On a host that blocks userns this returns an error, so
+    /// `select_provider` fails closed at selection instead of deferring the failure
+    /// to `create` (or, worse, launching an unisolated process).
+    async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
+        let ok = TokioCommand::new("bwrap")
+            .args(["--unshare-user", "--ro-bind", "/", "/", "--", "true"])
+            .stdin(ProcStdio::null())
+            .stdout(ProcStdio::null())
+            .stderr(ProcStdio::null())
+            .status()
+            .await
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            Ok(())
+        } else {
+            Err(err(
+                "bwrap/unprivileged user namespaces unavailable on this host",
+            ))
+        }
+    }
+
     async fn create(
         &self,
         spec: &pc::SandboxSpec,

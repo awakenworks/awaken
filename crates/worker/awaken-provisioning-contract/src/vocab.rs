@@ -200,6 +200,18 @@ pub struct ResourceLimits {
     pub disk_bytes: Option<u64>,
 }
 
+impl ResourceLimits {
+    /// Whether any cap is requested. A backend with `resource_limits = false` must
+    /// fail closed on a spec whose limits are set, never silently ignore them.
+    #[must_use]
+    pub fn is_set(&self) -> bool {
+        self.cpu_millis.is_some()
+            || self.memory_bytes.is_some()
+            || self.pids.is_some()
+            || self.disk_bytes.is_some()
+    }
+}
+
 // ── Artifacts (sandbox → host) ────────────────────────────────────────────────
 
 /// A file the agent wrote under the outputs path, retrievable by the host.

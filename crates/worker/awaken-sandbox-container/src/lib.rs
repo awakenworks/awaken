@@ -73,6 +73,71 @@ pub struct ContainerPlan {
     pub limits: pc::ResourceLimits,
 }
 
+/// Neutral cgroup caps derived from [`pc::ResourceLimits`] — what a container
+/// runtime (Docker `HostConfig`, k8s `resources.limits`) must apply. Extracted as a
+/// pure value so the swap-escape pin and disk mapping are unit-testable without a
+/// live daemon (the daemon-backed adapters just translate the fields).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CgroupCaps {
+    /// Hard memory cap, bytes.
+    pub memory_bytes: Option<i64>,
+    /// Swap ceiling, **pinned equal to `memory_bytes`** so a memory-capped container
+    /// cannot escape the cap by swapping (awaken-next parity; in Docker's model
+    /// `memory_swap == memory` disables swap beyond the memory limit).
+    pub memory_swap_bytes: Option<i64>,
+    /// CPU quota expressed in nano-CPUs (`cpu_millis * 1e6`).
+    pub nano_cpus: Option<i64>,
+    /// Max process/thread count.
+    pub pids: Option<i64>,
+    /// Writable-layer size limit for `--storage-opt size=` (as the runtime expects it).
+    pub disk_size: Option<String>,
+}
+
+impl CgroupCaps {
+    /// Map neutral limits onto container-runtime cgroup fields, pinning swap to the
+    /// memory cap (the swap-escape close).
+    #[must_use]
+    pub fn from_limits(limits: &pc::ResourceLimits) -> Self {
+        let memory = limits.memory_bytes.map(|m| m as i64);
+        Self {
+            memory_bytes: memory,
+            memory_swap_bytes: memory,
+            nano_cpus: limits.cpu_millis.map(|c| i64::from(c) * 1_000_000),
+            pids: limits.pids.map(i64::from),
+            disk_size: limits.disk_bytes.map(|d| d.to_string()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod cgroup_caps_tests {
+    use super::*;
+
+    #[test]
+    fn pins_swap_to_the_memory_cap_and_maps_every_field() {
+        let limits = pc::ResourceLimits {
+            cpu_millis: Some(1500),
+            memory_bytes: Some(512 * 1024 * 1024),
+            pids: Some(256),
+            disk_bytes: Some(2 * 1024 * 1024 * 1024),
+        };
+        let caps = CgroupCaps::from_limits(&limits);
+        assert_eq!(caps.memory_bytes, Some(512 * 1024 * 1024));
+        // The swap-escape close: swap ceiling == memory cap.
+        assert_eq!(caps.memory_swap_bytes, caps.memory_bytes);
+        assert_eq!(caps.nano_cpus, Some(1_500_000_000));
+        assert_eq!(caps.pids, Some(256));
+        assert_eq!(caps.disk_size.as_deref(), Some("2147483648"));
+    }
+
+    #[test]
+    fn unset_limits_map_to_no_caps() {
+        let caps = CgroupCaps::from_limits(&pc::ResourceLimits::default());
+        assert_eq!(caps, CgroupCaps::default());
+        assert!(caps.memory_swap_bytes.is_none());
+    }
+}
+
 fn image_of(spec: &pc::SandboxSpec, default_image: &str) -> String {
     spec.extra
         .as_ref()

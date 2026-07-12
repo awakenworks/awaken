@@ -54,6 +54,16 @@ async fn capabilities_are_tool_transparent_namespace() {
 }
 
 #[tokio::test]
+async fn probe_ready_reflects_real_bwrap_availability() {
+    // Ungated: the probe must return exactly whether a throwaway userns bwrap runs
+    // here — Ok on a capable host, Err where userns is blocked. This is the signal
+    // `select_provider` fails closed on.
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = NamespaceProvider::new(tmp.path());
+    assert_eq!(provider.probe_ready().await.is_ok(), bwrap_works().await);
+}
+
+#[tokio::test]
 async fn host_allowlist_egress_is_rejected() {
     let tmp = tempfile::tempdir().unwrap();
     let mut spec = spec("t-net");
