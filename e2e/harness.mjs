@@ -93,8 +93,8 @@ export const FAKE_KEY = 'sk-fake-upstream-key'; // awaken-allow: secret
 // model for real (`behavior` on the wire). `mode` and `behavior` are named
 // separately because they often differ (mode `delegate` ↔ behavior `delegating`,
 // mode `management` ↔ behavior `mcp`, mode `git-repo` ↔ behavior `gitRepo`).
-export function withScenarioServer(mode, behavior, port, fn, extraEnv = {}) {
-  return withRealServer(behavior, port, fn, { mode, extraEnv });
+export function withScenarioServer(mode, behavior, port, fn, extraEnv = {}, opts = {}) {
+  return withRealServer(behavior, port, fn, { mode, extraEnv, ...opts });
 }
 
 // A standalone fake Anthropic upstream reproducing `behavior`, for tests that
@@ -134,10 +134,24 @@ export async function withRealServer(behavior, port, fn, opts = {}) {
   const bin = ensureBuilt();
   const addr = `127.0.0.1:${port}`;
   const upstream = await startFakeAnthropic(FAKE_KEY, { behavior });
+  // When `opts.capture` is set, pipe the child's stdout/stderr so a test can scan
+  // the server logs (e.g. the secret-non-leak invariant), teeing them through to
+  // this process's streams so behavior is unchanged for a human watching. The
+  // accumulated text is exposed to `fn` as a third `{ text() }` argument.
+  const capture = opts.capture ? { buf: '' } : null;
   const server = spawn(bin, {
     env: { ...process.env, AWAKEN_HTTP_ADDR: addr, ...realServerEnv(behavior, upstream, opts) },
-    stdio: ['ignore', 'inherit', 'inherit'],
+    stdio: capture ? ['ignore', 'pipe', 'pipe'] : ['ignore', 'inherit', 'inherit'],
   });
+  if (capture) {
+    const tee = (chunk, sink) => {
+      const s = chunk.toString();
+      capture.buf += s;
+      sink.write(s);
+    };
+    server.stdout.on('data', (c) => tee(c, process.stdout));
+    server.stderr.on('data', (c) => tee(c, process.stderr));
+  }
   let exitedEarly = false;
   server.on('exit', (code) => {
     if (code !== null && code !== 0) exitedEarly = true;
@@ -145,7 +159,7 @@ export async function withRealServer(behavior, port, fn, opts = {}) {
   try {
     await waitForPort(port);
     if (exitedEarly) throw new Error('server exited before it listened');
-    return await fn(`http://${addr}`, upstream);
+    return await fn(`http://${addr}`, upstream, capture ? { text: () => capture.buf } : null);
   } finally {
     server.kill('SIGINT');
     upstream.close();
