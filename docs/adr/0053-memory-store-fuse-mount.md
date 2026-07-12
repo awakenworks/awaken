@@ -243,6 +243,13 @@ is to make them realize it, and to fill the currently-stubbed `Sandbox::attach`
   contract means **routing the memory-store family through the contract provider**
   and retiring the copy/harvest pair for it — the non-throwaway path, aligned to
   ADR-0041's direction.
+- **Capability-gated fallback (no FUSE → copy/harvest).** FUSE needs `/dev/fuse`,
+  absent on macOS, in CI, and in unprivileged containers. `fuse_available()` gates
+  the realization: when true, mount the live write-through FUSE; when false, the same
+  path-addressed store is materialized the old way — `materialize` copies every
+  memory out to plain files at prepare, and `harvest` folds them back after the turn
+  (create new, CAS-update changed, skip unchanged). Both realizations back the one
+  durable `MemoryFs`, so a store is portable across FUSE-capable and FUSE-less hosts.
 - **Workdir tier first, then the namespace splice.** The Workdir `LocalProvider`
   realizes the FUSE mount at the sandbox path with **no mount-namespace splice**
   (directly visible to rooted tools); this is the first integration target. The
