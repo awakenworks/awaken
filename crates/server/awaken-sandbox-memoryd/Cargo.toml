@@ -1,0 +1,27 @@
+[package]
+name = "awaken-sandbox-memoryd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# ADR-0053: a write-through FUSE filesystem projecting a path-addressed memory store
+# (awaken-memory-store's `MemoryFs`) as `/mnt/memory/{store}/*`, so an LLM edits
+# memory with native filesystem verbs. The FUSE logic is a faithful port of
+# awaken-next's `awaken-sandbox-memoryd`, but over an in-process `MemoryFs` (not
+# HTTP) and with faithful `getattr` timestamps. The `fuse` feature gates the
+# fuser-backed mount (needs `/dev/fuse`); the fs logic + helpers build without it.
+
+[dependencies]
+awaken-memory-store = { workspace = true }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
+tracing = "0.1"
+fuser = { version = "0.15", default-features = false, optional = true }
+libc = { version = "0.2", optional = true }
+
+[features]
+default = ["fuse"]
+fuse = ["dep:fuser", "dep:libc"]
+
+[lints]
+workspace = true

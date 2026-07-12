@@ -362,6 +362,17 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # dev-only: conformance + reopen-from-file persistence tests.
         "tempfile",
     },
+    # ADR-0053: the write-through memory-store FUSE server. A `server`-bucket crate
+    # (it depends on the resources-tier `MemoryFs` and links `fuser`), realizing the
+    # provisioning-contract `MountSource::MemoryStore` → `Realization::Fuse`.
+    "awaken-sandbox-memoryd": {
+        "awaken-memory-store",
+        "thiserror",
+        "tokio",
+        "tracing",
+        "fuser",
+        "libc",
+    },
     # Durable skill catalog (resources plane): a SKILL.md-per-skill store the host
     # serves delivered skills from. A resources-plane store like awaken-data-subject —
     # a scoped-migration bundle over sqlite (+ an optional postgres sibling); names no
