@@ -230,4 +230,41 @@ mod tests {
         );
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    #[tokio::test]
+    async fn copy_only_mount_realizes_copy_and_harvests_through_the_public_api() {
+        use awaken_provisioning_contract::{MemoryMounter, MountAccess};
+        // `copy_only` forces the no-FUSE path regardless of /dev/fuse on this host, so
+        // this deterministically exercises the PUBLIC `mount()` → copy branch (not the
+        // CopyMount constructor the other tests drive) — the exact path the
+        // namespace/no-FUSE tier uses.
+        let durable = Arc::new(InMemoryFs::new());
+        durable.create("s", "/note.md", "v1").await.unwrap();
+        let mounter = MemoryStoreMounter::copy_only(durable.clone());
+        let dir = temp("copyonly");
+
+        let guard = mounter
+            .mount("s", &dir, MountAccess::ReadWrite)
+            .await
+            .unwrap();
+        assert_eq!(guard.realization(), Realization::Copy);
+        // The store was materialized into the host dir (no FUSE).
+        assert_eq!(std::fs::read_to_string(dir.join("note.md")).unwrap(), "v1");
+
+        // An edit is harvested back on teardown.
+        std::fs::write(dir.join("note.md"), "v2").unwrap();
+        guard.teardown().await;
+        assert_eq!(
+            durable
+                .get_by_path("s", "/note.md")
+                .await
+                .unwrap()
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("v2"),
+            "copy_only mount harvested the edit back"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
