@@ -22,6 +22,17 @@ impl SandboxError {
     }
 }
 
+/// A content-addressed byte source a provider consults to resolve a `File`/`Resource`
+/// mount's bytes by id. Dependency-inverted so the worker-tier sandbox providers stay
+/// free of any durable store: the composition root injects an adapter over the
+/// resources-tier content store (A-G17 — the isolated exec tier links no store).
+#[async_trait]
+pub trait BlobSource: Send + Sync {
+    /// The bytes for content id `id`, or `None` if absent (errors are folded to
+    /// `None`; a required mount that resolves to nothing fails closed downstream).
+    async fn get(&self, id: &str) -> Option<Vec<u8>>;
+}
+
 /// A serializable, **durable** reference to a realized sandbox. Persist it the
 /// moment a sandbox is created; a live `Box<dyn Sandbox>` cannot survive a host
 /// restart, but the handle can be stored and later passed to
