@@ -86,6 +86,7 @@ impl core::panic::unwind_safe::UnwindSafe for awaken_runtime::RunInput
 pub struct awaken_runtime::Runtime
 impl awaken_runtime::Runtime
 pub async fn awaken_runtime::Runtime::cancel_run(&self, awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::thread::Id, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_agent_contract::agent::run::Phase, awaken_runtime_contract::execution::Error>
+pub fn awaken_runtime::Runtime::metrics(&self) -> &dyn awaken_runtime_contract::metrics::MetricsRecorder
 pub fn awaken_runtime::Runtime::new() -> Self
 pub async fn awaken_runtime::Runtime::perform_scheduled_action(&self, &awaken_agent_contract::agent::run::Id, &dyn awaken_agent_contract::store::thread_reader::ThreadReader, awaken_runtime_contract::runtime_context::RuntimeRunContext, u64) -> core::result::Result<awaken_agent_contract::agent::run::Phase, awaken_runtime_contract::execution::Error>
 pub fn awaken_runtime::Runtime::register_snapshot(&self, awaken_runtime_contract::snapshot::ExecutableAgentSnapshot) -> awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
