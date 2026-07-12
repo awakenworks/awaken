@@ -12,16 +12,45 @@ use std::net::SocketAddr;
 use async_trait::async_trait;
 use awaken_agent_channel::{AgentChannel, AgentTransport};
 use awaken_provisioning_contract as pc;
-use k8s_openapi::api::core::v1::{Container, EnvVar, Pod, PodSpec};
+use k8s_openapi::api::core::v1::{Container, EnvVar, Pod, PodSpec, ResourceRequirements};
+use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 use kube::api::{DeleteParams, ListParams, PostParams};
 use kube::{Api, Client};
+use std::collections::BTreeMap;
 
 use crate::net::TcpAgentTransport;
 use crate::{ContainerPlan, ContainerRuntime, ContainerState, RuntimeError};
 
 fn backend(e: impl std::fmt::Display) -> RuntimeError {
     RuntimeError::Backend(e.to_string())
+}
+
+/// The Pod container's `resources.limits` from a spec's caps, or `None` when unset —
+/// so the tier actually enforces the `resource_limits` it advertises. k8s expresses
+/// caps natively (CPU millicores, byte quantities), distinct from Docker's cgroup
+/// fields, so the mapping is per-backend. `pids` has no standard pod limit key.
+fn pod_resources(limits: &pc::ResourceLimits) -> Option<ResourceRequirements> {
+    if !limits.is_set() {
+        return None;
+    }
+    let mut m = BTreeMap::new();
+    if let Some(cpu) = limits.cpu_millis {
+        m.insert("cpu".to_string(), Quantity(format!("{cpu}m")));
+    }
+    if let Some(mem) = limits.memory_bytes {
+        m.insert("memory".to_string(), Quantity(mem.to_string()));
+    }
+    if let Some(disk) = limits.disk_bytes {
+        m.insert("ephemeral-storage".to_string(), Quantity(disk.to_string()));
+    }
+    if m.is_empty() {
+        return None; // only `pids` was set — nothing k8s expresses as a pod limit
+    }
+    Some(ResourceRequirements {
+        limits: Some(m),
+        ..Default::default()
+    })
 }
 
 /// A Kubernetes-backed [`ContainerRuntime`]. `agent_addr` is the Service endpoint the
@@ -95,6 +124,8 @@ impl K8sRuntime {
                     // process-as-container: the agent argv is the container command.
                     command: Some(plan.command.clone()),
                     env: Some(env),
+                    // Enforce the advertised resource caps as the container's limits.
+                    resources: pod_resources(&plan.limits),
                     ..Default::default()
                 }],
                 // a finished agent Pod is reaped, not looped.
@@ -212,5 +243,40 @@ impl ContainerRuntime for K8sRuntime {
             .await
             .map(|_| ())
             .map_err(backend)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pod_resources_maps_cpu_memory_and_disk() {
+        let r = pod_resources(&pc::ResourceLimits {
+            cpu_millis: Some(1500),
+            memory_bytes: Some(1_073_741_824),
+            pids: Some(256),
+            disk_bytes: Some(2048),
+        })
+        .expect("limits are set");
+        let limits = r.limits.expect("limits map present");
+        assert_eq!(limits.get("cpu").unwrap().0, "1500m");
+        assert_eq!(limits.get("memory").unwrap().0, "1073741824");
+        assert_eq!(limits.get("ephemeral-storage").unwrap().0, "2048");
+        // pids has no standard pod-level key.
+        assert!(!limits.contains_key("pids"));
+    }
+
+    #[test]
+    fn pod_resources_is_none_without_expressible_caps() {
+        assert!(pod_resources(&pc::ResourceLimits::default()).is_none());
+        // pids-only → nothing k8s expresses as a pod limit.
+        assert!(
+            pod_resources(&pc::ResourceLimits {
+                pids: Some(9),
+                ..Default::default()
+            })
+            .is_none()
+        );
     }
 }
