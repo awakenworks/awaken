@@ -33,6 +33,46 @@ use sqlx::types::Json;
 
 pub use awaken_store_schema::{COMMIT_BUNDLE_ID as BUNDLE_ID, commit_bundle};
 
+/// Bundle id for the Postgres-only commit-sequence object. Scoped so it never
+/// collides with the portable commit schema (`awaken.runtime_commit`) or the
+/// dispatch schema in a shared database.
+pub const COMMIT_PG_BUNDLE_ID: &str = "awaken.runtime_commit_pg";
+
+/// The Postgres-only migration for the commit-sequence object, embedded from its
+/// `.sql` file so the DDL lives beside the schema, not in a Rust string.
+const COMMIT_PG_FILES: &[(&str, &str)] = &[(
+    "V0001__commit_sequence.sql",
+    include_str!("migrations/V0001__commit_sequence.sql"),
+)];
+
+/// Build the Postgres-only commit-sequence bundle. Kept separate from the portable
+/// [`commit_bundle`] because a Postgres `SEQUENCE` has no SQLite analogue: the
+/// SQLite backend allocates the commit sequence in-process (single writer), so only
+/// the Postgres path needs a lock-free database-side allocator. Runs after the
+/// portable commit schema, so `{prefix}_commit` exists when the sequence is seeded.
+pub fn commit_pg_bundle()
+-> Result<awaken_scoped_migration::MigrationBundle, awaken_scoped_migration::MigrationError> {
+    let migrations = COMMIT_PG_FILES
+        .iter()
+        .map(|(name, contents)| {
+            let version = name
+                .trim_start_matches('V')
+                .split("__")
+                .next()
+                .and_then(|d| d.parse::<i64>().ok())
+                .unwrap_or(0);
+            let description = contents
+                .lines()
+                .map(str::trim)
+                .find_map(|line| line.strip_prefix("--").map(|rest| rest.trim().to_string()))
+                .filter(|desc| !desc.is_empty())
+                .unwrap_or_else(|| (*name).to_string());
+            awaken_scoped_migration::Migration::new(version, description, contents.trim())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    awaken_scoped_migration::MigrationBundle::new(COMMIT_PG_BUNDLE_ID, migrations)
+}
+
 /// Errors from constructing or migrating the store. Commit-time failures use the
 /// neutral [`Coordinator`] error.
 #[derive(Debug, thiserror::Error)]
@@ -111,9 +151,21 @@ impl PostgresCommitCoordinator {
     /// under the runtime namespace.
     pub async fn with_pool(pool: PgPool) -> Result<Self, StoreError> {
         let bundle = commit_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
-        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
-            .map_err(|err| StoreError::Migrate(err.to_string()))?
+        let runner = awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
+            pool.clone(),
+            NS,
+        )
+        .map_err(|err| StoreError::Migrate(err.to_string()))?;
+        runner
             .run_bundle(&bundle)
+            .await
+            .map_err(|err| StoreError::Migrate(err.to_string()))?;
+        // The Postgres-only commit-sequence object, applied after the portable
+        // schema so `{prefix}_commit` exists when the sequence is seeded past any
+        // pre-existing rows. Its own scoped bundle keeps it off the SQLite path.
+        let pg_bundle = commit_pg_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
+        runner
+            .run_bundle(&pg_bundle)
             .await
             .map_err(|err| StoreError::Migrate(err.to_string()))?;
 
@@ -172,24 +224,21 @@ impl CommitCoordinator for PostgresCommitCoordinator {
             .await
             .map_err(|err| Error::Rejected(err.to_string()))?;
 
-        // Allocate the commit sequence ATOMICALLY at the database, not from the
-        // in-process projection counter: that counter is per-process, so concurrent
-        // commits — parallel drives in one process AND a cross-process fleet — would
-        // read the same value and collide on `runtime_commit_pkey`, failing every
-        // committer but one. A transaction-scoped advisory lock keyed on the commit
-        // namespace serializes just the allocate+insert (released on commit/rollback),
-        // so `MAX(sequence)+1` is race-free across all committers.
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
-            .bind(format!("{p}_commit_sequence"))
-            .execute(&mut *tx)
+        // Allocate the commit sequence at the database, not from the in-process
+        // projection counter: that counter is per-process, so concurrent commits —
+        // parallel drives in one process AND a cross-process fleet — would read the
+        // same value and collide on `runtime_commit_pkey`, failing every committer
+        // but one. `nextval` on the dedicated sequence allocates the next value with
+        // a short internal latch that is NOT held to transaction end, so committers
+        // never convoy on one lock across the whole commit fsync (an earlier
+        // transaction-scoped advisory lock did exactly that, starving the pool under
+        // a fleet burst until leases expired and runs double-executed). A rolled-back
+        // allocation leaves a gap; the commit log's contract is strict monotonicity,
+        // not contiguity, so a gap is harmless.
+        let next: i64 = sqlx::query_scalar(&format!("SELECT nextval('{p}_commit_seq')"))
+            .fetch_one(&mut *tx)
             .await
             .map_err(reject)?;
-        let next: i64 = sqlx::query_scalar(&format!(
-            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM {p}_commit"
-        ))
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(reject)?;
         let next = next as u64;
 
         sqlx::query(&format!(
@@ -286,8 +335,12 @@ impl CommitCoordinator for PostgresCommitCoordinator {
         tx.commit().await.map_err(reject)?;
 
         // The transaction is durable; advance the in-memory projection to match.
+        // The fence only ever moves forward: with lock-free `nextval` allocation two
+        // commits can interleave (allocate 5, then 6, but 6 commits first), so take
+        // the max rather than clobbering with this commit's own (possibly lower)
+        // sequence. `commit_count` reads this fence and must never regress.
         let mut projection = lock(&self.projection)?;
-        projection.sequence = next;
+        projection.sequence = projection.sequence.max(next);
         for message in commit.messages {
             projection.messages.push((thread_id.clone(), message));
         }
