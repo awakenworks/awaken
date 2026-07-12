@@ -172,6 +172,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::Sec
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::SecurityScheme
 pub enum awaken_protocol_a2a::types::TaskState
 pub awaken_protocol_a2a::types::TaskState::AuthRequired
+pub awaken_protocol_a2a::types::TaskState::Canceled
 pub awaken_protocol_a2a::types::TaskState::Completed
 pub awaken_protocol_a2a::types::TaskState::Failed
 pub awaken_protocol_a2a::types::TaskState::InputRequired
@@ -703,6 +704,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::Sec
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::SecurityScheme
 pub enum awaken_protocol_a2a::TaskState
 pub awaken_protocol_a2a::TaskState::AuthRequired
+pub awaken_protocol_a2a::TaskState::Canceled
 pub awaken_protocol_a2a::TaskState::Completed
 pub awaken_protocol_a2a::TaskState::Failed
 pub awaken_protocol_a2a::TaskState::InputRequired

@@ -87,7 +87,6 @@ pub fn awaken_run_executor_acp::AcpRunExecutor::model_switch(&self) -> awaken_ru
 impl awaken_run_executor_acp::AcpRunExecutor
 pub fn awaken_run_executor_acp::AcpRunExecutor::new(alloc::sync::Arc<dyn awaken_run_executor_acp::AgentChannelSource>) -> Self
 pub fn awaken_run_executor_acp::AcpRunExecutor::with_launch_observer(self, alloc::sync::Arc<dyn awaken_protocol_acp::LaunchObserver>) -> Self
-pub fn awaken_run_executor_acp::AcpRunExecutor::with_policy(self, awaken_protocol_acp::SupervisePolicy) -> Self
 impl awaken_runtime_contract::execution::RunExecutor for awaken_run_executor_acp::AcpRunExecutor
 pub fn awaken_run_executor_acp::AcpRunExecutor::execute<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::Phase>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 impl core::marker::Freeze for awaken_run_executor_acp::AcpRunExecutor

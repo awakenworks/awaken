@@ -907,6 +907,9 @@ impl<'a> core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::me
 impl<'a> core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::metrics::InferenceMetric<'a>
 pub struct awaken_runtime_contract::metrics::NoopRecorder
 impl awaken_runtime_contract::metrics::MetricsRecorder for awaken_runtime_contract::metrics::NoopRecorder
+pub fn awaken_runtime_contract::metrics::NoopRecorder::record_dispatch_claimed(&self)
+pub fn awaken_runtime_contract::metrics::NoopRecorder::record_dispatch_drive(&self, core::time::Duration)
+pub fn awaken_runtime_contract::metrics::NoopRecorder::record_dispatch_settled(&self, &str)
 pub fn awaken_runtime_contract::metrics::NoopRecorder::record_inference(&self, awaken_runtime_contract::metrics::InferenceMetric<'_>)
 pub fn awaken_runtime_contract::metrics::NoopRecorder::record_tool(&self, &str, &str, core::time::Duration)
 impl core::clone::Clone for awaken_runtime_contract::metrics::NoopRecorder
@@ -923,9 +926,15 @@ impl core::marker::Unpin for awaken_runtime_contract::metrics::NoopRecorder
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::metrics::NoopRecorder
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::metrics::NoopRecorder
 pub trait awaken_runtime_contract::metrics::MetricsRecorder: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::metrics::MetricsRecorder::record_dispatch_claimed(&self)
+pub fn awaken_runtime_contract::metrics::MetricsRecorder::record_dispatch_drive(&self, core::time::Duration)
+pub fn awaken_runtime_contract::metrics::MetricsRecorder::record_dispatch_settled(&self, &str)
 pub fn awaken_runtime_contract::metrics::MetricsRecorder::record_inference(&self, awaken_runtime_contract::metrics::InferenceMetric<'_>)
 pub fn awaken_runtime_contract::metrics::MetricsRecorder::record_tool(&self, &str, &str, core::time::Duration)
 impl awaken_runtime_contract::metrics::MetricsRecorder for awaken_runtime_contract::metrics::NoopRecorder
+pub fn awaken_runtime_contract::metrics::NoopRecorder::record_dispatch_claimed(&self)
+pub fn awaken_runtime_contract::metrics::NoopRecorder::record_dispatch_drive(&self, core::time::Duration)
+pub fn awaken_runtime_contract::metrics::NoopRecorder::record_dispatch_settled(&self, &str)
 pub fn awaken_runtime_contract::metrics::NoopRecorder::record_inference(&self, awaken_runtime_contract::metrics::InferenceMetric<'_>)
 pub fn awaken_runtime_contract::metrics::NoopRecorder::record_tool(&self, &str, &str, core::time::Duration)
 pub mod awaken_runtime_contract::model_access
