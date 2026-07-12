@@ -29,7 +29,7 @@ use awaken_protocol_transport::{
 use crate::encoder::{encode_close, encode_history, encode_step};
 use crate::live::LiveTranscoder;
 use crate::request::{DecisionKind, process_request, result_text};
-use crate::types::{AiSdkChatRequest, HistoryResponse, UIStreamEvent};
+use crate::types::{AiSdkChatRequest, HistoryResponse, UIStreamEvent, attach_usage};
 
 type Runtime = Arc<dyn ProtocolRuntime>;
 
@@ -121,7 +121,11 @@ async fn run(rt: Runtime, payload: AiSdkChatRequest) -> Response {
         // Resume answers a parked tool decision — a single committed step, framed
         // whole (no in-flight model output to stream).
         match resume_step(&rt, &thread, &processed.decisions).await {
-            Ok(outcome) => sse_response(encode_step(&outcome)),
+            Ok(outcome) => {
+                let mut events = encode_step(&outcome);
+                attach_usage(&mut events, rt.usage(&thread).await);
+                sse_response(events)
+            }
             Err(response) => response,
         }
     } else {
@@ -143,6 +147,9 @@ fn stream_turn(
     messages: Vec<Message>,
 ) -> Response {
     let (out_tx, out_rx) = mpsc::unbounded_channel::<String>();
+    // Kept for the post-turn usage read (the turn future consumes `rt`/`thread`).
+    let rt_usage = Arc::clone(&rt);
+    let thread_usage = thread.clone();
     tokio::spawn(async move {
         let (live_tx, mut live_rx) = mpsc::unbounded_channel::<Kind>();
         let sink: Arc<dyn StreamSink> = Arc::new(ChannelStreamSink::new(live_tx));
@@ -161,12 +168,14 @@ fn stream_turn(
                 }
             }
         }
-        let close = match turn.await {
+        let mut close = match turn.await {
             Ok(Ok(outcome)) if transcoder.has_streamed() => encode_close(&outcome),
             Ok(Ok(outcome)) => encode_step(&outcome),
             Ok(Err(err)) => error_events(err),
             Err(_) => error_events(DriverError::Internal("turn task cancelled".into())),
         };
+        // The AI SDK `finish` part carries the run's token accounting.
+        attach_usage(&mut close, rt_usage.usage(&thread_usage).await);
         for event in close {
             if out_tx.send(sse_line(&event)).is_err() {
                 return;
@@ -304,4 +313,87 @@ fn error_events(err: DriverError) -> Vec<UIStreamEvent> {
 /// A single buffered SSE error stream (AI SDK errors use `errorText`).
 fn sse_error(err: DriverError) -> Response {
     sse_response(error_events(err))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pending(client_executed: bool) -> Pending {
+        Pending {
+            tool_use_id: "t1".into(),
+            name: "probe".into(),
+            input: serde_json::Value::Null,
+            client_executed,
+        }
+    }
+
+    // ── client-executed tool: the client runs it and returns the result ──
+
+    #[test]
+    fn client_output_delivers_a_non_error_result() {
+        let r = to_resume(
+            &DecisionKind::Output(serde_json::json!("42")),
+            &pending(true),
+        );
+        assert!(matches!(r, Resume::ClientResult { content, is_error: false } if content == "42"));
+    }
+
+    #[test]
+    fn client_error_delivers_an_error_result() {
+        let r = to_resume(&DecisionKind::Error("boom".into()), &pending(true));
+        assert!(matches!(r, Resume::ClientResult { content, is_error: true } if content == "boom"));
+    }
+
+    #[test]
+    fn client_denied_delivers_an_error_result() {
+        let r = to_resume(&DecisionKind::Denied, &pending(true));
+        assert!(matches!(r, Resume::ClientResult { is_error: true, .. }));
+    }
+
+    #[test]
+    fn client_approved_delivers_an_empty_result() {
+        let r = to_resume(&DecisionKind::Approved, &pending(true));
+        assert!(
+            matches!(r, Resume::ClientResult { content, is_error: false } if content.is_empty())
+        );
+    }
+
+    // ── built-in tool: a permission gate awaiting a decision ──
+
+    #[test]
+    fn builtin_approved_allows() {
+        assert!(matches!(
+            to_resume(&DecisionKind::Approved, &pending(false)),
+            Resume::Confirm { allow: true, .. }
+        ));
+    }
+
+    #[test]
+    fn builtin_output_is_treated_as_allow() {
+        assert!(matches!(
+            to_resume(
+                &DecisionKind::Output(serde_json::Value::Null),
+                &pending(false)
+            ),
+            Resume::Confirm { allow: true, .. }
+        ));
+    }
+
+    #[test]
+    fn builtin_denied_rejects() {
+        assert!(matches!(
+            to_resume(&DecisionKind::Denied, &pending(false)),
+            Resume::Confirm {
+                allow: false,
+                note: None
+            }
+        ));
+    }
+
+    #[test]
+    fn builtin_error_rejects_with_a_note() {
+        let r = to_resume(&DecisionKind::Error("bad args".into()), &pending(false));
+        assert!(matches!(r, Resume::Confirm { allow: false, note: Some(n) } if n == "bad args"));
+    }
 }

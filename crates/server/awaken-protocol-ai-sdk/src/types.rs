@@ -67,11 +67,34 @@ pub enum UIStreamEvent {
     Finish {
         #[serde(rename = "finishReason", skip_serializing_if = "Option::is_none")]
         finish_reason: Option<String>,
+        // The UI-message-stream `finish` chunk carries app-defined `messageMetadata`
+        // (usage is not a top-level field here — that is `streamText`'s TextStreamPart).
+        #[serde(rename = "messageMetadata", skip_serializing_if = "Option::is_none")]
+        message_metadata: Option<FinishMetadata>,
     },
     Error {
         #[serde(rename = "errorText")]
         error_text: String,
     },
+}
+
+/// The `messageMetadata` we attach to the `finish` chunk: the run's token
+/// accounting under `totalUsage`, the key the AI SDK client surfaces on the message.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FinishMetadata {
+    #[serde(rename = "totalUsage")]
+    pub total_usage: Usage,
+}
+
+/// Token accounting matching the AI SDK `LanguageModelUsage` shape.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Usage {
+    #[serde(rename = "inputTokens")]
+    pub input_tokens: u64,
+    #[serde(rename = "outputTokens")]
+    pub output_tokens: u64,
+    #[serde(rename = "totalTokens")]
+    pub total_tokens: u64,
 }
 
 impl UIStreamEvent {
@@ -84,6 +107,26 @@ impl UIStreamEvent {
     pub fn finish(reason: &str) -> Self {
         UIStreamEvent::Finish {
             finish_reason: Some(reason.to_string()),
+            message_metadata: None,
+        }
+    }
+}
+
+/// Attach `(input, output)` token usage to the terminal `finish` chunk's
+/// `messageMetadata.totalUsage` — the AI-SDK-standard slot for run usage.
+pub fn attach_usage(events: &mut [UIStreamEvent], usage: (u64, u64)) {
+    for event in events.iter_mut() {
+        if let UIStreamEvent::Finish {
+            message_metadata, ..
+        } = event
+        {
+            *message_metadata = Some(FinishMetadata {
+                total_usage: Usage {
+                    input_tokens: usage.0,
+                    output_tokens: usage.1,
+                    total_tokens: usage.0 + usage.1,
+                },
+            });
         }
     }
 }
@@ -167,6 +210,20 @@ pub fn history_message(id: &str, role: &str, parts: Vec<Value>) -> Value {
     serde_json::json!({ "id": id, "role": role, "parts": parts })
 }
 
+/// Convert neutral content blocks to UI text parts (only text survives; images
+/// and tool blocks are handled by the caller).
+pub fn text_parts(content: &[ContentBlock]) -> Vec<Value> {
+    content
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } => {
+                Some(serde_json::json!({ "type": "text", "text": text }))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod wire_tests {
     use super::*;
@@ -195,18 +252,71 @@ mod wire_tests {
             json!({ "type": "tool-input-delta", "toolCallId": "c1", "inputTextDelta": "{\"pa" })
         );
     }
-}
 
-/// Convert neutral content blocks to UI text parts (only text survives; images
-/// and tool blocks are handled by the caller).
-pub fn text_parts(content: &[ContentBlock]) -> Vec<Value> {
-    content
-        .iter()
-        .filter_map(|b| match b {
-            ContentBlock::Text { text } => {
-                Some(serde_json::json!({ "type": "text", "text": text }))
-            }
-            _ => None,
-        })
-        .collect()
+    #[test]
+    fn finish_with_usage_wire_shape() {
+        // Usage rides in `messageMetadata.totalUsage` on the UI-message-stream
+        // finish chunk (the AI-SDK-standard slot), not as a top-level field.
+        let ev = UIStreamEvent::Finish {
+            finish_reason: Some("stop".into()),
+            message_metadata: Some(FinishMetadata {
+                total_usage: Usage {
+                    input_tokens: 3,
+                    output_tokens: 5,
+                    total_tokens: 8,
+                },
+            }),
+        };
+        assert_eq!(
+            serde_json::to_value(&ev).unwrap(),
+            json!({
+                "type": "finish",
+                "finishReason": "stop",
+                "messageMetadata": {
+                    "totalUsage": { "inputTokens": 3, "outputTokens": 5, "totalTokens": 8 }
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn finish_without_usage_omits_the_field() {
+        let ev = UIStreamEvent::finish("stop");
+        assert_eq!(
+            serde_json::to_value(&ev).unwrap(),
+            json!({ "type": "finish", "finishReason": "stop" })
+        );
+    }
+
+    #[test]
+    fn tool_output_error_wire_shape() {
+        let ev = UIStreamEvent::ToolOutputError {
+            tool_call_id: "c1".into(),
+            error_text: "boom".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&ev).unwrap(),
+            json!({ "type": "tool-output-error", "toolCallId": "c1", "errorText": "boom" })
+        );
+    }
+
+    #[test]
+    fn error_wire_shape() {
+        let ev = UIStreamEvent::error("nope");
+        assert_eq!(
+            serde_json::to_value(&ev).unwrap(),
+            json!({ "type": "error", "errorText": "nope" })
+        );
+    }
+
+    #[test]
+    fn text_parts_keeps_only_text_blocks() {
+        use awaken_agent_contract::agent::content::ContentBlock;
+        let parts = text_parts(&[
+            ContentBlock::text("hi"),
+            ContentBlock::image_url("https://x/y.png"),
+        ]);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0], json!({ "type": "text", "text": "hi" }));
+    }
 }
