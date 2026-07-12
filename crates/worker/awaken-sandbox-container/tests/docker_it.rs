@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_container::docker::DockerRuntime;
-use awaken_sandbox_container::{ContainerPlan, ContainerRuntime, ContainerState, NetworkMode};
+use awaken_sandbox_container::{
+    ContainerPlan, ContainerRuntime, ContainerState, NetworkMode, RootfsPlan,
+};
 use tokio::io::AsyncWriteExt;
 
 const AGENT_PORT: u16 = 8080;
@@ -23,6 +25,7 @@ fn plan(cmd: &[&str]) -> ContainerPlan {
         network: NetworkMode::Open,
         limits: pc::ResourceLimits::default(),
         memory_mounts: Vec::new(),
+        rootfs: RootfsPlan::HostUserland,
     }
 }
 
