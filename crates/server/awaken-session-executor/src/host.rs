@@ -957,11 +957,11 @@ impl SharedHost {
         let concurrency = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4);
-        // On the Postgres backend with `AWAKEN_DISPATCH_WAKE=pg-notify`, spawn the
-        // pool with the cross-node `pg_notify` wake so a peer's enqueue nudges this
-        // pool without busy-poll; otherwise the in-process `LocalWakeSignal` suffices.
+        // On the Postgres backend with `AWAKEN_DISPATCH_WAKE=pg-notify` or `=nats`,
+        // spawn the pool with the cross-node wake so a peer's enqueue nudges this pool
+        // without busy-poll; otherwise the in-process `LocalWakeSignal` suffices.
         let completion = self.completion.clone() as Arc<dyn CompletionSink>;
-        let pool = match crate::dispatch_backend::shared_pg_wake() {
+        let pool = match crate::dispatch_backend::shared_dispatch_wake() {
             Some(wake) => DispatchPool::spawn_with_wake_and_completion(
                 store,
                 Arc::new(SystemClock),
