@@ -78,6 +78,7 @@ fn step_from_task(agent_id: &str, task: Task) -> Result<AgentStep, AgentError> {
             handle: json!({ "agent_id": agent_id, "task_id": task.id }),
         }),
         TaskState::Failed => Err(AgentError::new("remote A2A agent failed")),
+        TaskState::Canceled => Err(AgentError::new("remote A2A task was canceled")),
         TaskState::Working => Err(AgentError::new(
             "remote A2A task did not reach a terminal state in time",
         )),
