@@ -175,6 +175,31 @@ fn memory_store_mounts_are_pulled_out_of_binds_into_memory_mounts() {
     assert_eq!(plan.memory_mounts[0].mount_path, "/workspace/.mnt/notes");
 }
 
+#[tokio::test]
+async fn memory_store_realizes_as_copy_on_the_container_tier() {
+    let rt = Arc::new(FakeRuntime::default());
+    let mut s = spec("mem-real");
+    s.mounts.push(pc::MountRequirement {
+        mount_id: "notes".into(),
+        source: pc::MountSource::MemoryStore {
+            store_id: "store-7".into(),
+        },
+        mount_path: "/workspace/.mnt/notes".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Session,
+        required: true,
+    });
+    let sandbox = provider(rt).create(&s).await.unwrap();
+    let mem = sandbox
+        .realized()
+        .iter()
+        .find(|r| r.mount_id == "notes")
+        .expect("memory mount realized");
+    // No-FUSE portable default: the container tier reports Copy (the memoryd sidecar
+    // materializes + harvests), not a live Fuse mount.
+    assert_eq!(mem.realization, pc::Realization::Copy);
+}
+
 #[test]
 fn pod_plan_is_process_as_container_with_native_gc() {
     let cmd = pc::Command::new(["claude", "--acp"]);

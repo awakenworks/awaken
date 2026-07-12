@@ -74,6 +74,12 @@ pub struct K8sRuntime {
     /// address is injected into the agent as `AWAKEN_ACP_RENDEZVOUS`. When `None`,
     /// the host direct-dials `agent_addr` (a published Service) instead.
     rendezvous: Option<SocketAddr>,
+    /// Whether the memoryd sidecar FUSE-mounts the store (needs `SYS_ADMIN` +
+    /// `/dev/fuse` on the node). `false` (the default) runs the sidecar in **copy
+    /// mode** — unprivileged; it materializes the store into the shared volume and
+    /// harvests writes back on teardown (ADR-0053 D6) — so a cluster without FUSE
+    /// still works, just without live write-through.
+    memoryd_fuse: bool,
 }
 
 /// Default memoryd sidecar image (overridable via [`K8sRuntime::with_memoryd_image`]).
@@ -96,7 +102,17 @@ impl K8sRuntime {
             owner: None,
             memoryd_image: DEFAULT_MEMORYD_IMAGE.to_string(),
             rendezvous: None,
+            memoryd_fuse: false,
         })
+    }
+
+    /// Run the memoryd sidecar in FUSE mode (grants it `SYS_ADMIN`). Off by default:
+    /// the portable, unprivileged **copy** fallback is used unless the cluster is
+    /// known to support FUSE.
+    #[must_use]
+    pub fn with_memoryd_fuse(mut self, fuse: bool) -> Self {
+        self.memoryd_fuse = fuse;
+        self
     }
 
     /// Set the GC owner (e.g. a Lease/ConfigMap) whose deletion reaps orphan Pods.
@@ -142,6 +158,7 @@ impl K8sRuntime {
             &self.owner,
             &self.memoryd_image,
             rendezvous.as_deref(),
+            self.memoryd_fuse,
         )
     }
 }
@@ -156,6 +173,7 @@ fn build_pod(
     owner: &Option<OwnerReference>,
     memoryd_image: &str,
     rendezvous: Option<&str>,
+    memoryd_fuse: bool,
 ) -> Pod {
     {
         let mut agent_env: Vec<EnvVar> = plan
@@ -208,8 +226,17 @@ fn build_pod(
                         value: Some(mm.mount_path.clone()),
                         value_from: None,
                     },
+                    // The sidecar reads this to FUSE-mount or fall back to copy.
+                    EnvVar {
+                        name: "AWAKEN_MEMORY_MODE".into(),
+                        value: Some(if memoryd_fuse { "fuse" } else { "copy" }.into()),
+                        value_from: None,
+                    },
                 ]),
                 volume_mounts: Some(vec![mount]),
+                // FUSE needs SYS_ADMIN; copy mode stays unprivileged (portable, so a
+                // cluster without /dev/fuse still serves the store, via copy+harvest).
+                security_context: memoryd_fuse.then(fuse_sidecar_security_context),
                 ..Default::default()
             });
         }
@@ -282,6 +309,19 @@ async fn accept_reverse(addr: SocketAddr) -> Result<Box<dyn AgentChannel>, Runti
         .map_err(backend)?;
     let chan = listen.accept().await.map_err(backend)?;
     Ok(Box::new(chan))
+}
+
+/// The memoryd sidecar's `securityContext` in FUSE mode: it needs `SYS_ADMIN` to
+/// mount `/dev/fuse`. Only granted when FUSE is enabled — the copy fallback needs no
+/// privilege, so a locked-down (no-FUSE) cluster runs the sidecar unprivileged.
+fn fuse_sidecar_security_context() -> SecurityContext {
+    SecurityContext {
+        capabilities: Some(Capabilities {
+            add: Some(vec!["SYS_ADMIN".to_string()]),
+            drop: None,
+        }),
+        ..Default::default()
+    }
 }
 
 /// The hardened `securityContext` for the untrusted agent container: no privilege
@@ -472,7 +512,7 @@ mod tests {
                 mount_path: "/workspace/.mnt/b".into(),
             },
         ]);
-        let pod = build_pod("run-1", &plan, &None, "memoryd:9", None);
+        let pod = build_pod("run-1", &plan, &None, "memoryd:9", None, false);
         let spec = pod.spec.unwrap();
 
         // agent + one memoryd sidecar per memory store.
@@ -522,7 +562,7 @@ mod tests {
             ("AWAKEN_ACP_LEASE_TOKEN".into(), "lease-abc".into()),
             ("HTTPS_PROXY".into(), "http://gw.internal:8888".into()),
         ];
-        let spec = build_pod("r", &plan, &None, "m", None).spec.unwrap();
+        let spec = build_pod("r", &plan, &None, "m", None, false).spec.unwrap();
         let env = spec.containers[0].env.clone().unwrap();
         assert!(
             env.iter()
@@ -536,16 +576,68 @@ mod tests {
 
     #[test]
     fn build_pod_without_memory_mounts_is_a_single_container() {
-        let pod = build_pod("r", &plan_with_memory(Vec::new()), &None, "m", None);
+        let pod = build_pod("r", &plan_with_memory(Vec::new()), &None, "m", None, false);
         let spec = pod.spec.unwrap();
         assert_eq!(spec.containers.len(), 1);
         assert!(spec.volumes.is_none());
         assert!(spec.containers[0].volume_mounts.is_none());
     }
 
+    fn memoryd_sidecar(spec: &PodSpec) -> &Container {
+        spec.containers
+            .iter()
+            .find(|c| c.name == "memoryd-0")
+            .unwrap()
+    }
+
+    #[test]
+    fn memoryd_sidecar_copy_mode_is_the_unprivileged_default() {
+        // No-FUSE cluster: the sidecar runs copy mode with NO SYS_ADMIN, so a locked
+        // -down node still serves the store (materialize + harvest).
+        let plan = plan_with_memory(vec![crate::MemoryMount {
+            store_id: "s1".into(),
+            mount_path: "/workspace/.mnt/a".into(),
+        }]);
+        let spec = build_pod("r", &plan, &None, "m", None, false).spec.unwrap();
+        let sc = memoryd_sidecar(&spec);
+        let env = sc.env.as_ref().unwrap();
+        assert!(
+            env.iter()
+                .any(|e| e.name == "AWAKEN_MEMORY_MODE" && e.value.as_deref() == Some("copy"))
+        );
+        assert!(
+            sc.security_context.is_none(),
+            "copy-mode sidecar must be unprivileged (no /dev/fuse needed)"
+        );
+    }
+
+    #[test]
+    fn memoryd_sidecar_fuse_mode_grants_sys_admin() {
+        let plan = plan_with_memory(vec![crate::MemoryMount {
+            store_id: "s1".into(),
+            mount_path: "/workspace/.mnt/a".into(),
+        }]);
+        // FUSE opt-in: the sidecar is told fuse mode and granted SYS_ADMIN for /dev/fuse.
+        let spec = build_pod("r", &plan, &None, "m", None, true).spec.unwrap();
+        let sc = memoryd_sidecar(&spec);
+        let env = sc.env.as_ref().unwrap();
+        assert!(
+            env.iter()
+                .any(|e| e.name == "AWAKEN_MEMORY_MODE" && e.value.as_deref() == Some("fuse"))
+        );
+        let caps = sc
+            .security_context
+            .as_ref()
+            .unwrap()
+            .capabilities
+            .as_ref()
+            .unwrap();
+        assert_eq!(caps.add.as_deref(), Some(&["SYS_ADMIN".to_string()][..]));
+    }
+
     #[test]
     fn build_pod_hardens_the_untrusted_agent() {
-        let spec = build_pod("r", &plan_with_memory(Vec::new()), &None, "m", None)
+        let spec = build_pod("r", &plan_with_memory(Vec::new()), &None, "m", None, false)
             .spec
             .unwrap();
         // No SA token → the agent cannot reach the kube API.
@@ -562,11 +654,11 @@ mod tests {
     fn build_pod_injects_the_reverse_dial_rendezvous() {
         let plan = plan_with_memory(Vec::new());
         // Without a rendezvous, no such env.
-        let no_rv = build_pod("r", &plan, &None, "m", None);
+        let no_rv = build_pod("r", &plan, &None, "m", None, false);
         let env0 = no_rv.spec.unwrap().containers[0].env.clone().unwrap();
         assert!(env0.iter().all(|e| e.name != "AWAKEN_ACP_RENDEZVOUS"));
         // With one, the agent is told where to dial out.
-        let with_rv = build_pod("r", &plan, &None, "m", Some("10.0.0.5:9000"));
+        let with_rv = build_pod("r", &plan, &None, "m", Some("10.0.0.5:9000"), false);
         let env1 = with_rv.spec.unwrap().containers[0].env.clone().unwrap();
         assert!(
             env1.iter().any(|e| e.name == "AWAKEN_ACP_RENDEZVOUS"
@@ -604,7 +696,7 @@ mod tests {
         // Restricted egress → the pod is labeled so a platform NetworkPolicy fences it.
         let mut plan = plan_with_memory(Vec::new());
         plan.network = crate::NetworkMode::Allowlist(vec!["api.anthropic.com".into()]);
-        let pod = build_pod("r", &plan, &None, "m", None);
+        let pod = build_pod("r", &plan, &None, "m", None, false);
         let labels = pod.metadata.labels.unwrap();
         assert_eq!(
             labels.get("awaken-egress").map(String::as_str),
@@ -612,7 +704,7 @@ mod tests {
         );
 
         plan.network = crate::NetworkMode::Open;
-        let open = build_pod("r", &plan, &None, "m", None);
+        let open = build_pod("r", &plan, &None, "m", None, false);
         assert_eq!(
             open.metadata
                 .labels
