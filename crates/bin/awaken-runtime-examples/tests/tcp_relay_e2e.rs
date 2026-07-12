@@ -29,7 +29,11 @@ impl RawTool for CountingEcho {
     }
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
         self.runs.fetch_add(1, Ordering::SeqCst);
-        let text = call.arguments.get("text").and_then(|v| v.as_str()).unwrap_or("");
+        let text = call
+            .arguments
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         Ok(ToolOutput::ok(&call.call_id, text.to_string()))
     }
 }
@@ -62,7 +66,10 @@ async fn dial_brain(addr: &str) -> Box<dyn AgentChannel> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remote_tool_runs_over_real_tcp() {
     let runs = Arc::new(AtomicU32::new(0));
-    let tool = Arc::new(CountingEcho { id: "echo".into(), runs: runs.clone() });
+    let tool = Arc::new(CountingEcho {
+        id: "echo".into(),
+        runs: runs.clone(),
+    });
     let (addr, listener) = bind_loopback_hand().await;
 
     let hand = tokio::spawn(async move {
@@ -79,7 +86,11 @@ async fn remote_tool_runs_over_real_tcp() {
 
     assert_eq!(output.content, "over the wire");
     assert!(!output.is_error);
-    assert_eq!(runs.load(Ordering::SeqCst), 1, "the effect ran exactly once, on the hand");
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        1,
+        "the effect ran exactly once, on the hand"
+    );
     hand.abort();
 }
 
@@ -107,11 +118,15 @@ async fn catalog_fingerprint_mismatch_over_tcp_fails_closed() {
     // The hand pins catalog "hand-v1"; the brain stamps a run whose catalog is
     // "run-v2". The hand must reject BEFORE executing — no effect on a stale catalog.
     let runs = Arc::new(AtomicU32::new(0));
-    let tool = Arc::new(CountingEcho { id: "echo".into(), runs: runs.clone() });
+    let tool = Arc::new(CountingEcho {
+        id: "echo".into(),
+        runs: runs.clone(),
+    });
     let (addr, listener) = bind_loopback_hand().await;
     let hand = tokio::spawn(async move {
         let channel = listener.accept().await.expect("accept");
-        let session = HandSession::new([tool as Arc<dyn RawTool>]).with_catalog_fingerprint("hand-v1");
+        let session =
+            HandSession::new([tool as Arc<dyn RawTool>]).with_catalog_fingerprint("hand-v1");
         let _ = serve_hand(channel, session).await;
     });
 
@@ -121,8 +136,15 @@ async fn catalog_fingerprint_mismatch_over_tcp_fails_closed() {
         .invoke(&call("c1", "echo", "x"))
         .await
         .expect_err("a catalog fingerprint mismatch must fail closed");
-    assert!(err.to_string().to_lowercase().contains("fingerprint"), "got: {err}");
-    assert_eq!(runs.load(Ordering::SeqCst), 0, "the effect must NOT run on a mismatch");
+    assert!(
+        err.to_string().to_lowercase().contains("fingerprint"),
+        "got: {err}"
+    );
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        0,
+        "the effect must NOT run on a mismatch"
+    );
     hand.abort();
 }
 

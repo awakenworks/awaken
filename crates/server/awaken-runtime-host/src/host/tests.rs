@@ -759,7 +759,10 @@ async fn ctx_for_installs_a_catalog_so_any_node_can_resolve_a_claimed_run() {
     // NoActiveCatalog and the claimed run strands. Assert the session runtime carries
     // an active catalog (a non-empty fingerprint) straight out of `ctx_for`.
     let host = SharedHost::new(Arc::new(OkModel), "stub");
-    let ctx = host.ctx_for("t-catalog", None).await.expect("session builds");
+    let ctx = host
+        .ctx_for("t-catalog", None)
+        .await
+        .expect("session builds");
     let caps = ctx.runtime.runtime_capabilities();
     assert!(
         !caps.catalog_fingerprint.0.trim().is_empty(),
