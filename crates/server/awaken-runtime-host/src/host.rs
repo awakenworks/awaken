@@ -34,6 +34,7 @@ use awaken_run_ingress::{
 use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamCheckpointStore};
 use awaken_runtime::{DirectRunIngress, RunIngress, Runtime};
 use awaken_runtime_contract::CancellationToken;
+use awaken_runtime_contract::RuntimeCatalogInstaller;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::agent_resolver::AgentResolver;
 use awaken_runtime_contract::llm::LlmExecutor;
@@ -1269,6 +1270,16 @@ impl SharedHost {
                 context_policy,
             )
         });
+        // Install this session's catalog on its runtime NOW, so any node can resolve a
+        // run it drives — not only the node that submitted it. The in-process path
+        // installs via `prepare` on submit, but a durable run is driven by whichever
+        // pool node CLAIMS it (ADR-0019), and that node calls `execute` directly (no
+        // `prepare`); without a locally-installed catalog, `resolve` fails closed with
+        // `NoActiveCatalog` and the claimed run strands. Idempotent — a later `prepare`
+        // on the submitting node re-installs the same catalog harmlessly.
+        runtime
+            .install_catalog(config.install().clone())
+            .map_err(|e| HostError::internal(format!("install session catalog: {e}")))?;
         // Recover the session's position from committed truth: a durable store may
         // already hold this thread's history and a parked run (e.g. after a
         // restart). `consumed_rounds` starts past any prior outcome rounds so a new
