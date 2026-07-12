@@ -94,27 +94,6 @@ pub fn termination_from_stop_reason(reason: StopReason) -> TerminationReason {
     }
 }
 
-/// Reduce an official `agent-client-protocol` transport error to the neutral
-/// [`RawAcpError`](crate::RawAcpError) the classifier consumes: the rendered
-/// message, plus the structured `errorKind`/`error_kind` and JSON-RPC code when
-/// present. So [`classify_error`](crate::classify_error) works identically over
-/// the real codec and the newline-JSON stand-in.
-#[must_use]
-pub fn raw_error_from_acp(err: &agent_client_protocol::Error) -> crate::RawAcpError {
-    let kind = err.data.as_ref().and_then(|data| {
-        data.get("errorKind")
-            .or_else(|| data.get("error_kind"))
-            .and_then(|k| k.as_str())
-            .map(str::to_string)
-    });
-    crate::RawAcpError {
-        message: err.message.clone(),
-        kind,
-        code: Some(i32::from(err.code)),
-        retry_after_secs: None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,6 +164,29 @@ mod tests {
         let mut fields = ToolCallUpdateFields::new();
         fields.status = Some(ToolCallStatus::InProgress);
         let update = SessionUpdate::ToolCallUpdate(ToolCallUpdate::new("call-7", fields));
+        assert_eq!(project_update(&update), None);
+    }
+
+    #[test]
+    fn a_completed_update_without_content_yields_an_empty_result() {
+        let mut fields = ToolCallUpdateFields::new();
+        fields.status = Some(ToolCallStatus::Completed);
+        // No `content` field — the terminal result carries an empty string.
+        let update = SessionUpdate::ToolCallUpdate(ToolCallUpdate::new("call-1", fields));
+        assert_eq!(
+            project_update(&update),
+            Some(AgentEvent::ToolResult {
+                id: "call-1".into(),
+                content: String::new(),
+                is_error: false,
+            })
+        );
+    }
+
+    #[test]
+    fn a_tool_call_update_without_a_status_has_no_projection() {
+        let fields = ToolCallUpdateFields::new(); // status: None
+        let update = SessionUpdate::ToolCallUpdate(ToolCallUpdate::new("call-1", fields));
         assert_eq!(project_update(&update), None);
     }
 

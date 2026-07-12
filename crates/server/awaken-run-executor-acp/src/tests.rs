@@ -109,7 +109,7 @@ pub(crate) fn activation() -> RunActivation {
                 plugin_ids: Vec::new(),
                 plugin_config: Default::default(),
                 context_policy: Default::default(),
-                            tool_presentation: Default::default(),
+                tool_presentation: Default::default(),
             },
             fingerprint: CatalogFingerprint("fp".into()),
         },
@@ -376,6 +376,46 @@ async fn refusal_maps_to_stopped() {
         .await
         .unwrap();
     assert!(matches!(phase, Phase::Ended(EndCause::Stopped(_))));
+}
+
+#[tokio::test]
+async fn an_org_subscription_disabled_launch_fault_surfaces_a_credential_prompt() {
+    let e = AcpRunExecutor::new(Arc::new(ScriptedSource {
+        frames: vec![],
+        open_error: Some("Your organization has disabled Claude subscription access".into()),
+    }));
+    let coord = Arc::new(RecordingCoordinator::default());
+    let phase = e
+        .execute(
+            activation(),
+            RuntimeRunContext::new().with_commit(coord.clone()),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(phase, Phase::Ended(EndCause::Error(_))));
+    let prompt = coord.commits.lock().unwrap()[0].messages[0].text_content();
+    assert!(prompt.contains("credential"), "{prompt}");
+}
+
+#[tokio::test]
+async fn a_login_required_launch_fault_surfaces_a_login_prompt() {
+    let e = AcpRunExecutor::new(Arc::new(ScriptedSource {
+        frames: vec![],
+        open_error: Some("Please run /login to continue".into()),
+    }));
+    let coord = Arc::new(RecordingCoordinator::default());
+    let phase = e
+        .execute(
+            activation(),
+            RuntimeRunContext::new().with_commit(coord.clone()),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(phase, Phase::Ended(EndCause::Error(_))));
+    let prompt = coord.commits.lock().unwrap()[0].messages[0]
+        .text_content()
+        .to_lowercase();
+    assert!(prompt.contains("login"), "{prompt}");
 }
 
 // ── R3: DispatchRunExecutor routes by runtime_adapter ────────────────────────

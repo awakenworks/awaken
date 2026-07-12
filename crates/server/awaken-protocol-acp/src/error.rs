@@ -466,6 +466,121 @@ mod tests {
         assert!(streamed_hard_limit("Here is how to handle a weekly rate limit in code").is_none());
     }
 
+    fn err_kind(kind: &str) -> RawAcpError {
+        let mut e = err("an opaque provider error");
+        e.kind = Some(kind.to_string());
+        e
+    }
+
+    #[test]
+    fn transient_message_signatures_all_classify_transient() {
+        for sig in [
+            "overloaded",
+            "request timed out",
+            "connection reset by peer",
+            "connection closed",
+            "service unavailable",
+            "a network error occurred",
+            "stream error mid-turn",
+            "HTTP 502 bad gateway",
+            "503 service down",
+            "gateway 504",
+            "529 overloaded",
+        ] {
+            assert_eq!(
+                classify_error(Stage::Prompt, &err(sig)).class,
+                AcpFailureClass::Transient,
+                "message `{sig}` should be transient"
+            );
+        }
+    }
+
+    #[test]
+    fn transient_kind_signatures_all_classify_transient() {
+        // The kind-based branch of `is_transient` (never exercised before).
+        for kind in [
+            "overloaded_error",
+            "timeout",
+            "timeout_error",
+            "stream_error",
+            "network_error",
+            "service_unavailable",
+            "internal_server_error",
+            "api_error",
+            "too_many_requests",
+        ] {
+            assert_eq!(
+                classify_error(Stage::Prompt, &err_kind(kind)).class,
+                AcpFailureClass::Transient,
+                "kind `{kind}` should be transient"
+            );
+        }
+    }
+
+    #[test]
+    fn login_required_signatures_all_map_to_login() {
+        for sig in [
+            "invalid_grant",
+            "oauth_token_expired",
+            "please log in first",
+            "you must re-authenticate",
+            "login required to continue",
+        ] {
+            assert!(
+                matches!(
+                    classify_error(Stage::Prompt, &err(sig)).class,
+                    AcpFailureClass::CredentialRejected {
+                        kind: CredentialKind::LoginRequired
+                    }
+                ),
+                "`{sig}` should be login-required"
+            );
+        }
+    }
+
+    #[test]
+    fn authentication_error_signatures_all_map_to_auth_error() {
+        for sig in [
+            "403 forbidden",
+            "expired token",
+            "invalid x-api-key",
+            "unauthorized request",
+            "permission_error",
+        ] {
+            assert!(
+                matches!(
+                    classify_error(Stage::Prompt, &err(sig)).class,
+                    AcpFailureClass::CredentialRejected {
+                        kind: CredentialKind::AuthenticationError
+                    }
+                ),
+                "`{sig}` should be an authentication error"
+            );
+        }
+    }
+
+    #[test]
+    fn server_shut_down_at_prompt_is_rate_limited() {
+        assert_eq!(
+            classify_error(Stage::Prompt, &err("the server shut down")).class,
+            AcpFailureClass::RateLimited {
+                retry_after_secs: None
+            }
+        );
+    }
+
+    #[test]
+    fn session_limit_message_without_a_retry_is_rate_limited_with_none() {
+        // Message-only quota match (no `kind`, no `retry_after`).
+        let f = classify_error(Stage::Prompt, &err("session limit reached for this window"));
+        assert_eq!(
+            f.class,
+            AcpFailureClass::RateLimited {
+                retry_after_secs: None
+            }
+        );
+    }
+
     #[test]
     fn deadline_and_refusal_map_to_their_terminations() {
         assert_eq!(

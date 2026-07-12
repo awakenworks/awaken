@@ -107,12 +107,6 @@ impl AcpRunExecutor {
         }
     }
 
-    #[must_use]
-    pub fn with_policy(mut self, policy: SupervisePolicy) -> Self {
-        self.policy = policy;
-        self
-    }
-
     /// Observe this executor's agent bring-up (install → launch → initialize →
     /// ready → failed), so a host can publish progress to a UI. Without one, the
     /// lifecycle notifications are dropped (no behavior change).
