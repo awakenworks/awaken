@@ -50,6 +50,8 @@ awaken-ext-builtin-tools = { workspace = true }
 # (awaken-tool-relay) over a topology plan (awaken-connection-plan) — ADR-0044/0045.
 awaken-tool-relay = { workspace = true }
 awaken-connection-plan = { workspace = true }
+# `tcp_relay_e2e` names the neutral channel trait to hold a dialed brain channel.
+awaken-agent-channel = { workspace = true }
 
 [[example]]
 name = "coding_agent"
