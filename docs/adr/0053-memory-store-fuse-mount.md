@@ -292,8 +292,15 @@ is to make them realize it, and to fill the currently-stubbed `Sandbox::attach`
   lifecycle is refcounted against sandbox create/dispose.
 - **Boundary preserved.** Providers depend on an injected `MountCoordinator` port,
   never on `fuser` or the store directly, keeping `worker ⊥ resources` intact.
-- **Open questions carried:** the exact bucket of `awaken-sandbox-local`
-  (`runtime` vs `server`) must be confirmed before P3 wiring; whether the Workdir
-  tier can expose the shared mount unprivileged (bind needs `CAP_SYS_ADMIN`; a
-  symlink into the jail may be blocked by rooting) is a P3 spike; the distributed
-  `Invalidator`/version-oracle is deferred until a real cross-host mount exists.
+- **Delivered:** P0 (`MemoryFs` port + CAS store), P1 (the FUSE port, proven by a
+  real kernel-VFS integration test), P2/P2.5 (`MountCoordinator` + concurrency),
+  P3 (95% changed-code coverage), and P4 (the durable path-addressed store backs the
+  `/memories` HTTP endpoints, with a restart-durable TS e2e). `awaken-sandbox-local`
+  was moved to the **worker tier** (it now resolves mount bytes through an injected
+  `BlobSource` port and links no durable store), resolving the bucket question below.
+- **Open questions carried:** the contract-provider realization of
+  `MountSource::MemoryStore → Realization::Fuse` and the host route cutover from the
+  legacy copy path (D6) remain a follow-on slice; whether the Workdir tier can expose
+  the shared mount unprivileged (bind needs `CAP_SYS_ADMIN`; a symlink into the jail
+  may be blocked by rooting) is a P5 spike; the bwrap namespace splice (P5) and the
+  distributed `Invalidator`/version-oracle are deferred until they are needed.
