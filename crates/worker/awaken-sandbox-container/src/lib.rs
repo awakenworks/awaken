@@ -182,6 +182,61 @@ mod cgroup_caps_tests {
         };
         assert_eq!(egress_plan(&policy, None), Err(EgressError::ProxyRequired));
     }
+
+    #[test]
+    fn rootfs_plan_maps_image_and_isolated_roots() {
+        assert_eq!(
+            rootfs_plan(&pc::EnvironmentKind::Image {
+                reference: "ghcr.io/x:1".into()
+            })
+            .unwrap(),
+            RootfsPlan::Image("ghcr.io/x:1".into())
+        );
+        assert_eq!(
+            rootfs_plan(&pc::EnvironmentKind::Sandbox).unwrap(),
+            RootfsPlan::HostUserland
+        );
+        assert_eq!(
+            rootfs_plan(&pc::EnvironmentKind::IsolatedRoot {
+                base: pc::RootfsSource::Dir {
+                    path_template: "/roots/{scope}".into()
+                },
+                writable_base: true,
+            })
+            .unwrap(),
+            RootfsPlan::RootDir {
+                path_template: "/roots/{scope}".into(),
+                writable: true,
+            }
+        );
+        assert_eq!(
+            rootfs_plan(&pc::EnvironmentKind::IsolatedRoot {
+                base: pc::RootfsSource::Tarball {
+                    reference: "blob://root".into()
+                },
+                writable_base: false,
+            })
+            .unwrap(),
+            RootfsPlan::RootTarball {
+                reference: "blob://root".into(),
+                writable: false,
+            }
+        );
+    }
+
+    #[test]
+    fn rootfs_plan_rejects_non_container_tiers() {
+        assert_eq!(
+            rootfs_plan(&pc::EnvironmentKind::Scope),
+            Err(RootfsError::NotAContainerRootfs)
+        );
+        assert_eq!(
+            rootfs_plan(&pc::EnvironmentKind::LocalDir {
+                path_template: "/tmp/{scope}".into()
+            }),
+            Err(RootfsError::NotAContainerRootfs)
+        );
+    }
 }
 
 fn image_of(spec: &pc::SandboxSpec, default_image: &str) -> String {
@@ -198,6 +253,62 @@ fn network_of(policy: &pc::NetworkPolicy) -> NetworkMode {
         pc::NetworkPolicy::Unrestricted => NetworkMode::Open,
         pc::NetworkPolicy::Allowlist { hosts } => NetworkMode::Allowlist(hosts.clone()),
         pc::NetworkPolicy::None => NetworkMode::None,
+    }
+}
+
+/// The concrete rootfs a container/rootless-podman runtime must realize from a
+/// declared [`pc::EnvironmentKind`]. Pure, so the (fork-exec, daemonless) adapter
+/// only has to translate it into `podman run` flags.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RootfsPlan {
+    /// Borrow the default image's userland (no custom root).
+    HostUserland,
+    /// An OCI image reference.
+    Image(String),
+    /// A private root bound from a host directory template.
+    RootDir {
+        path_template: String,
+        /// A writable base forces single-active use of the environment.
+        writable: bool,
+    },
+    /// A private root unpacked from a tarball reference.
+    RootTarball { reference: String, writable: bool },
+}
+
+/// Why a declared environment has no container-tier rootfs realization.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum RootfsError {
+    /// `Scope`/`LocalDir` are non-container tiers — the container provider must not
+    /// silently run them as a borrowed-userland container.
+    #[error("environment kind has no container-tier rootfs realization")]
+    NotAContainerRootfs,
+}
+
+/// Map a declared environment kind onto its container-tier rootfs, fail-closed. A
+/// `Scope`/`LocalDir` kind is rejected (those belong to the workdir/namespace tiers),
+/// so the container provider never realizes an environment it was not asked for.
+pub fn rootfs_plan(kind: &pc::EnvironmentKind) -> Result<RootfsPlan, RootfsError> {
+    match kind {
+        // The namespace/bwrap tier borrows the host userland; on the container tier
+        // that means the default image supplies it.
+        pc::EnvironmentKind::Sandbox => Ok(RootfsPlan::HostUserland),
+        pc::EnvironmentKind::Image { reference } => Ok(RootfsPlan::Image(reference.clone())),
+        pc::EnvironmentKind::IsolatedRoot {
+            base,
+            writable_base,
+        } => Ok(match base {
+            pc::RootfsSource::Dir { path_template } => RootfsPlan::RootDir {
+                path_template: path_template.clone(),
+                writable: *writable_base,
+            },
+            pc::RootfsSource::Tarball { reference } => RootfsPlan::RootTarball {
+                reference: reference.clone(),
+                writable: *writable_base,
+            },
+        }),
+        pc::EnvironmentKind::Scope | pc::EnvironmentKind::LocalDir { .. } => {
+            Err(RootfsError::NotAContainerRootfs)
+        }
     }
 }
 

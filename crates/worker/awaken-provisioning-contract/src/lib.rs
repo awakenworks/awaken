@@ -30,7 +30,9 @@
 //! provider's own type behind [`Sandbox`].
 
 mod admission;
+mod approval;
 mod lease;
+mod poison;
 mod prepare;
 mod sandbox;
 mod shape;
@@ -38,10 +40,12 @@ mod spec;
 mod vocab;
 
 pub use admission::{AdmissionError, EnvironmentDecl, check_environment_soundness};
+pub use approval::{ApprovalDecision, ApprovalPolicy, SandboxAction, decide as approval_decide};
 pub use lease::{
     AdoptionPlan, LeaseGrant, LeaseLiveness, ReapCause, ReconcileOutcome, apply_adoption_plan,
     reconcile_adoption, reconcile_and_apply,
 };
+pub use poison::{AttemptSignal, PoisonVerdict, classify as classify_poison};
 pub use prepare::{EnvironmentPlan, PrepareError, prepare_environment};
 pub use sandbox::{
     BlobSource, ExitStatus, IsolationClass, MemoryMount, MemoryMounter, ProcessHandle, Sandbox,
