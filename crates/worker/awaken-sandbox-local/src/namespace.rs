@@ -285,13 +285,26 @@ impl pc::SandboxProvider for NamespaceProvider {
         Self::caps()
     }
 
-    /// A real readiness probe: bwrap must actually run an unprivileged user
-    /// namespace *here*. On a host that blocks userns this returns an error, so
+    /// A real readiness probe of the OS-native isolator: bwrap must run an
+    /// unprivileged user namespace here (Linux), or `sandbox-exec` must run a trivial
+    /// Seatbelt profile (macOS). On a host that can't, this returns an error so
     /// `select_provider` fails closed at selection instead of deferring the failure
     /// to `create` (or, worse, launching an unisolated process).
     async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
-        let ok = TokioCommand::new("bwrap")
-            .args(["--unshare-user", "--ro-bind", "/", "/", "--", "true"])
+        // `(program, args)` for a throwaway isolated `true`, per platform.
+        let (program, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
+            (
+                "sandbox-exec",
+                &["-p", "(version 1)(allow default)", "/usr/bin/true"],
+            )
+        } else {
+            (
+                "bwrap",
+                &["--unshare-user", "--ro-bind", "/", "/", "--", "true"],
+            )
+        };
+        let ok = TokioCommand::new(program)
+            .args(args)
             .stdin(ProcStdio::null())
             .stdout(ProcStdio::null())
             .stderr(ProcStdio::null())
@@ -303,7 +316,7 @@ impl pc::SandboxProvider for NamespaceProvider {
             Ok(())
         } else {
             Err(err(
-                "bwrap/unprivileged user namespaces unavailable on this host",
+                "OS-native sandbox (bwrap userns / macOS Seatbelt) unavailable on this host",
             ))
         }
     }
@@ -450,7 +463,15 @@ impl NamespaceSandbox {
             cwd: &command.cwd,
             argv: &command.argv,
         };
-        Ok(bubblewrap_argv(&input))
+        // OS-native launcher: bubblewrap on Linux, Seatbelt (`sandbox-exec`) on macOS.
+        // `cfg!` keeps both branches type-checked on every target; only the matching
+        // one is live. Both renderers take the same `RenderInput`.
+        let argv = if cfg!(target_os = "macos") {
+            sandbox_exec_argv(&input)
+        } else {
+            bubblewrap_argv(&input)
+        };
+        Ok(argv)
     }
 
     /// The tool-transparent agent launch (ADR-0041 amendment), namespace-tier twin

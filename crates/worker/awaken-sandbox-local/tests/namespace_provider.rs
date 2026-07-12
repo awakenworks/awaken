@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;
-use awaken_provisioning_contract::SandboxProvider;
+use awaken_provisioning_contract::{Sandbox, SandboxProvider};
 mod common;
 use awaken_file_store::{FileStore, FsFileStore};
 use awaken_sandbox_local::NamespaceProvider;
@@ -43,6 +43,27 @@ async fn bwrap_works() -> bool {
         .unwrap_or(false)
 }
 
+/// True only when macOS `sandbox-exec` (Seatbelt) can run a trivial profile.
+async fn seatbelt_works() -> bool {
+    tokio::process::Command::new("sandbox-exec")
+        .args(["-p", "(version 1)(allow default)", "/usr/bin/true"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Whether the OS-native isolator this platform uses actually runs here.
+async fn os_native_sandbox_works() -> bool {
+    if cfg!(target_os = "macos") {
+        seatbelt_works().await
+    } else {
+        bwrap_works().await
+    }
+}
+
 #[tokio::test]
 async fn capabilities_are_tool_transparent_namespace() {
     let tmp = tempfile::tempdir().unwrap();
@@ -54,13 +75,34 @@ async fn capabilities_are_tool_transparent_namespace() {
 }
 
 #[tokio::test]
-async fn probe_ready_reflects_real_bwrap_availability() {
-    // Ungated: the probe must return exactly whether a throwaway userns bwrap runs
-    // here — Ok on a capable host, Err where userns is blocked. This is the signal
-    // `select_provider` fails closed on.
+async fn probe_ready_reflects_the_os_native_sandbox_availability() {
+    // Ungated: the probe must return exactly whether the OS-native isolator runs here
+    // — bwrap userns on Linux, Seatbelt on macOS. This is the signal `select_provider`
+    // fails closed on.
     let tmp = tempfile::tempdir().unwrap();
     let provider = NamespaceProvider::new(tmp.path());
-    assert_eq!(provider.probe_ready().await.is_ok(), bwrap_works().await);
+    assert_eq!(
+        provider.probe_ready().await.is_ok(),
+        os_native_sandbox_works().await
+    );
+}
+
+#[tokio::test]
+async fn seatbelt_confines_a_real_spawn_on_macos() {
+    // Self-skips off macOS (no `sandbox-exec`). On macOS, `spawn` renders via
+    // `sandbox_exec_argv`, so a trivial command runs OS-confined under Seatbelt.
+    if !seatbelt_works().await {
+        eprintln!("skipping: Seatbelt/sandbox-exec unavailable (non-macOS)");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let sandbox = NamespaceProvider::new(tmp.path())
+        .create_sandbox(&spec("t-seatbelt"))
+        .await
+        .unwrap();
+    let proc = sandbox.spawn(sh("exit 0")).await.unwrap();
+    assert_eq!(proc.wait().await.unwrap().code, Some(0));
+    sandbox.dispose().await.unwrap();
 }
 
 #[tokio::test]
