@@ -539,6 +539,9 @@ fn err(e: RuntimeError) -> pc::SandboxError {
 pub struct ContainerProvider<R: ContainerRuntime> {
     runtime: Arc<R>,
     default_image: String,
+    /// The brokered egress chokepoint an `Allowlist` policy routes through. Without
+    /// one, an allowlist spec fails closed at `create` (never silently opened).
+    egress_proxy: Option<EgressProxy>,
 }
 
 impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
@@ -546,7 +549,16 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         Self {
             runtime,
             default_image: default_image.into(),
+            egress_proxy: None,
         }
+    }
+
+    /// Route `Allowlist` egress through the brokered `proxy` (the secretless-gateway
+    /// egress route). Without this, an allowlist spec is rejected at `create`.
+    #[must_use]
+    pub fn with_egress_proxy(mut self, proxy: EgressProxy) -> Self {
+        self.egress_proxy = Some(proxy);
+        self
     }
 }
 
@@ -572,7 +584,12 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
                 "container tier requires spec.extra.command (process-as-container)".into(),
             )));
         }
-        let plan = container_plan(spec, &self.default_image, &command);
+        let mut plan = container_plan(spec, &self.default_image, &command);
+        // Realize egress: an Allowlist policy is routed through the brokered proxy
+        // (its env is injected here); without a proxy an allowlist fails closed.
+        let egress = egress_plan(&spec.network, self.egress_proxy.as_ref())
+            .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
+        plan.env.extend(egress.proxy_env);
         let container_id = self.runtime.create(&spec.scope, &plan).await.map_err(err)?;
         let realized = plan
             .binds
