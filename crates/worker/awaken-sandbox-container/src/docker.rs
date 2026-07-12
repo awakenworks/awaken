@@ -48,9 +48,40 @@ fn cgroup_host_config(limits: &pc::ResourceLimits) -> HostConfig {
     }
 }
 
+/// The tmpfs map that keeps the writable app paths usable under a read-only rootfs
+/// (`{dir: "rw,noexec,nosuid,size=64m"}`). Pure/testable.
+fn tmpfs_for(plan: &ContainerPlan) -> HashMap<String, String> {
+    crate::writable_dirs(plan)
+        .into_iter()
+        .map(|d| (d, "rw,noexec,nosuid,size=64m".to_string()))
+        .collect()
+}
+
 #[cfg(test)]
 mod cgroup_host_config_tests {
     use super::*;
+
+    fn plan() -> ContainerPlan {
+        ContainerPlan {
+            image: "img:1".into(),
+            command: vec!["a".into()],
+            env: Vec::new(),
+            binds: Vec::new(),
+            outputs_volume: "/mnt/session/outputs".into(),
+            network: crate::NetworkMode::Open,
+            limits: pc::ResourceLimits::default(),
+            memory_mounts: Vec::new(),
+            rootfs: crate::RootfsPlan::HostUserland,
+        }
+    }
+
+    #[test]
+    fn tmpfs_keeps_outputs_and_tmp_writable_under_ro_rootfs() {
+        let t = tmpfs_for(&plan());
+        assert!(t.contains_key("/mnt/session/outputs"));
+        assert!(t.contains_key("/tmp"));
+        assert!(t["/tmp"].contains("noexec"));
+    }
 
     #[test]
     fn memory_limit_pins_swap_and_maps_disk() {
@@ -143,6 +174,9 @@ impl DockerRuntime {
         HostConfig {
             binds: (!binds.is_empty()).then_some(binds),
             port_bindings: Some(port_bindings),
+            // Harden the untrusted agent: read-only rootfs, writable app paths as tmpfs.
+            readonly_rootfs: Some(true),
+            tmpfs: Some(tmpfs_for(plan)),
             ..cgroup_host_config(&plan.limits)
         }
     }

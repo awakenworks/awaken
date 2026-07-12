@@ -241,6 +241,22 @@ fn build_pod(
             });
         }
 
+        // Under the read-only rootfs, the writable app paths (outputs + scratch /tmp)
+        // are backed by pod-scoped emptyDir volumes so the agent can still write.
+        for (i, dir) in crate::writable_dirs(plan).into_iter().enumerate() {
+            let vol = format!("rw-{i}");
+            volumes.push(Volume {
+                name: vol.clone(),
+                empty_dir: Some(EmptyDirVolumeSource::default()),
+                ..Default::default()
+            });
+            agent_mounts.push(VolumeMount {
+                name: vol,
+                mount_path: dir,
+                ..Default::default()
+            });
+        }
+
         let mut containers = vec![Container {
             name: "agent".into(),
             image: Some(plan.image.clone()),
@@ -329,6 +345,7 @@ fn fuse_sidecar_security_context() -> SecurityContext {
 fn hardened_security_context() -> SecurityContext {
     SecurityContext {
         allow_privilege_escalation: Some(false),
+        read_only_root_filesystem: Some(true),
         capabilities: Some(Capabilities {
             drop: Some(vec!["ALL".to_string()]),
             add: None,
@@ -526,13 +543,13 @@ mod tests {
                 .count(),
             2
         );
-        // one pod-scoped emptyDir per store.
+        // one pod-scoped emptyDir per store, PLUS the 2 writable-rootfs dirs (outputs+/tmp).
         let volumes = spec.volumes.as_ref().unwrap();
-        assert_eq!(volumes.len(), 2);
+        assert_eq!(volumes.len(), 2 + 2);
         assert!(volumes.iter().all(|v| v.empty_dir.is_some()));
-        // the agent mounts both shared volumes + carries its resource limits.
+        // the agent mounts both memory volumes + the writable dirs + carries limits.
         let agent = &spec.containers[0];
-        assert_eq!(agent.volume_mounts.as_ref().unwrap().len(), 2);
+        assert_eq!(agent.volume_mounts.as_ref().unwrap().len(), 2 + 2);
         assert!(agent.resources.is_some());
         // the sidecar names the store + mount path + image (the privilege lives here).
         let sc = spec
@@ -579,9 +596,10 @@ mod tests {
     fn build_pod_without_memory_mounts_is_a_single_container() {
         let pod = build_pod("r", &plan_with_memory(Vec::new()), &None, "m", None, false);
         let spec = pod.spec.unwrap();
+        // No memoryd sidecar, but the agent still gets the 2 writable-rootfs emptyDirs.
         assert_eq!(spec.containers.len(), 1);
-        assert!(spec.volumes.is_none());
-        assert!(spec.containers[0].volume_mounts.is_none());
+        assert_eq!(spec.volumes.as_ref().unwrap().len(), 2);
+        assert_eq!(spec.containers[0].volume_mounts.as_ref().unwrap().len(), 2);
     }
 
     fn memoryd_sidecar(spec: &PodSpec) -> &Container {
@@ -645,10 +663,17 @@ mod tests {
         assert_eq!(spec.automount_service_account_token, Some(false));
         let sc = spec.containers[0].security_context.as_ref().unwrap();
         assert_eq!(sc.allow_privilege_escalation, Some(false));
+        assert_eq!(sc.read_only_root_filesystem, Some(true));
         assert_eq!(
             sc.capabilities.as_ref().unwrap().drop.as_deref(),
             Some(&["ALL".to_string()][..])
         );
+        // The writable app paths (outputs + /tmp) are backed by emptyDir mounts so a
+        // read-only rootfs doesn't break the agent's writes.
+        let mounts = spec.containers[0].volume_mounts.as_ref().unwrap();
+        let paths: Vec<&str> = mounts.iter().map(|m| m.mount_path.as_str()).collect();
+        assert!(paths.contains(&"/mnt/session/outputs"));
+        assert!(paths.contains(&"/tmp"));
     }
 
     #[test]

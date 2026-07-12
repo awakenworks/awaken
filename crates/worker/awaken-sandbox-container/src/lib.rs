@@ -287,6 +287,32 @@ mod cgroup_caps_tests {
     }
 
     #[test]
+    fn podman_run_argv_hardens_with_readonly_rootfs_and_writable_tmpfs() {
+        let argv = podman_run_argv("r", &podman_plan(), &RootfsPlan::HostUserland);
+        assert!(
+            argv.iter().any(|a| a == "--read-only"),
+            "rootfs is read-only"
+        );
+        // outputs + /tmp are the writable set (as tmpfs); declared binds stay writable.
+        let tmpfs: Vec<&str> = argv
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| *a == "--tmpfs")
+            .filter_map(|(i, _)| argv.get(i + 1).map(String::as_str))
+            .collect();
+        assert!(tmpfs.contains(&"/mnt/session/outputs"));
+        assert!(tmpfs.contains(&"/tmp"));
+    }
+
+    #[test]
+    fn writable_dirs_are_outputs_and_tmp_deduped() {
+        let mut plan = podman_plan();
+        assert_eq!(writable_dirs(&plan), vec!["/mnt/session/outputs", "/tmp"]);
+        plan.outputs_volume = "/tmp".into();
+        assert_eq!(writable_dirs(&plan), vec!["/tmp"]); // deduped
+    }
+
+    #[test]
     fn podman_run_argv_maps_init_network_limits_env_binds_and_command() {
         let argv = podman_run_argv("run-1", &podman_plan(), &RootfsPlan::Image("img:2".into()));
         assert!(argv.starts_with(&["run".into(), "-d".into(), "--init".into()]));
@@ -359,6 +385,20 @@ fn network_of(policy: &pc::NetworkPolicy) -> NetworkMode {
         pc::NetworkPolicy::Allowlist { hosts } => NetworkMode::Allowlist(hosts.clone()),
         pc::NetworkPolicy::None => NetworkMode::None,
     }
+}
+
+/// The sandbox paths that must stay writable under a **read-only rootfs**: the
+/// outputs volume the agent writes artifacts to, and a scratch `/tmp`. Declared
+/// resource mounts are realized separately (as binds/volumes). Pure, so every
+/// adapter renders the same writable set atop the same hardening. Deduplicated in
+/// case `outputs_volume` is itself `/tmp`.
+#[must_use]
+pub fn writable_dirs(plan: &ContainerPlan) -> Vec<String> {
+    let mut dirs = vec![plan.outputs_volume.clone()];
+    if plan.outputs_volume != "/tmp" {
+        dirs.push("/tmp".to_string());
+    }
+    dirs
 }
 
 /// The concrete rootfs a container/rootless-podman runtime must realize from a
@@ -435,6 +475,14 @@ pub fn podman_run_argv(name: &str, plan: &ContainerPlan, rootfs: &RootfsPlan) ->
         .into_iter()
         .map(String::from)
         .collect();
+
+    // Harden the untrusted agent: a read-only rootfs, with the writable app paths
+    // (outputs + scratch `/tmp`) provided as tmpfs. Declared mounts stay writable via
+    // their own `-v` binds below.
+    a.push("--read-only".into());
+    for dir in writable_dirs(plan) {
+        a.extend(["--tmpfs".into(), dir]);
+    }
 
     match &plan.network {
         NetworkMode::Open => {}
