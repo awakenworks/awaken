@@ -8,6 +8,7 @@
 //! DispatchQueue aggregate free of run-outcome truth.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
@@ -164,6 +165,13 @@ impl<S: Dispatch> DispatchWorker<S> {
         claimed: Claimed,
         now_ms: u64,
     ) -> Result<Option<(RunId, Phase)>, Error> {
+        // Operational metrics (off the critical path): count this claim and time the
+        // whole drive on the SAME recorder the runtime meters model/tool calls with,
+        // so `awaken.dispatch.*` exports on the one OTLP pipeline. The timer records
+        // `drive.duration` on every exit path (including the early `?`/return arms).
+        self.runtime.metrics().record_dispatch_claimed();
+        let _drive_timer = DriveTimer::new(self.runtime.metrics());
+
         let run_id = claimed.request.run_id().clone();
         // Continue the admitting request's trace across the durable queue boundary:
         // this `wake.dispatch` span's remote parent is the persisted traceparent, so
@@ -225,8 +233,7 @@ impl<S: Dispatch> DispatchWorker<S> {
                     None => {
                         // No input answers the current ticket; drop stale input
                         // and leave the run parked for a later wake.
-                        self.store
-                            .settle(&run_id, DispatchOutcome::Parked, &all_pending)
+                        self.settle(&run_id, DispatchOutcome::Parked, &all_pending)
                             .await?;
                         return Ok(Some((run_id, Phase::Waiting)));
                     }
@@ -267,8 +274,7 @@ impl<S: Dispatch> DispatchWorker<S> {
                         })
                         .map(|input| input.message_id);
                     all_pending.extend(consumed_unbound);
-                    self.store
-                        .settle(&run_id, DispatchOutcome::Done, &all_pending)
+                    self.settle(&run_id, DispatchOutcome::Done, &all_pending)
                         .await?;
                     return Ok(Some((run_id, record.phase)));
                 }
@@ -344,8 +350,27 @@ impl<S: Dispatch> DispatchWorker<S> {
         }
 
         let outcome = settle_outcome(&phase)?;
-        self.store.settle(&run_id, outcome, &all_pending).await?;
+        self.settle(&run_id, outcome, &all_pending).await?;
         Ok(Some((run_id, phase)))
+    }
+
+    /// Settle a claimed dispatch and record the operational `runs.settled` counter
+    /// (labelled by outcome) on the runtime's metrics recorder. The single choke all
+    /// of `drive_claimed`'s settle arms route through, so every settle is metered
+    /// exactly once regardless of which branch reached it.
+    async fn settle(
+        &self,
+        run_id: &RunId,
+        outcome: DispatchOutcome,
+        consumed: &[String],
+    ) -> Result<(), Error> {
+        let label = match outcome {
+            DispatchOutcome::Done => "done",
+            DispatchOutcome::Parked => "parked",
+        };
+        self.runtime.metrics().record_dispatch_settled(label);
+        self.store.settle(run_id, outcome, consumed).await?;
+        Ok(())
     }
 
     /// Convert a runtime-drive failure into a benign already-done when committed
@@ -371,9 +396,7 @@ impl<S: Dispatch> DispatchWorker<S> {
     ) -> Result<Option<(RunId, Phase)>, Error> {
         match self.runs.get(run_id) {
             Some(record) if matches!(record.phase, Phase::Ended(_)) => {
-                self.store
-                    .settle(run_id, DispatchOutcome::Done, consumed)
-                    .await?;
+                self.settle(run_id, DispatchOutcome::Done, consumed).await?;
                 Ok(Some((run_id.clone(), record.phase)))
             }
             _ => Err(err.into()),
@@ -388,6 +411,30 @@ impl<S: Dispatch> DispatchWorker<S> {
             processed.push(result);
         }
         Ok(processed)
+    }
+}
+
+/// Records the `awaken.dispatch.drive.duration` histogram on drop, so the wall
+/// time of `drive_claimed` is metered on every exit path — the happy return, an
+/// early `?`, and each terminal-recovery arm — without threading a timer through
+/// them. Borrows the runtime's metrics recorder for the lifetime of one drive.
+struct DriveTimer<'a> {
+    start: Instant,
+    metrics: &'a dyn awaken_runtime_contract::metrics::MetricsRecorder,
+}
+
+impl<'a> DriveTimer<'a> {
+    fn new(metrics: &'a dyn awaken_runtime_contract::metrics::MetricsRecorder) -> Self {
+        Self {
+            start: Instant::now(),
+            metrics,
+        }
+    }
+}
+
+impl Drop for DriveTimer<'_> {
+    fn drop(&mut self) {
+        self.metrics.record_dispatch_drive(self.start.elapsed());
     }
 }
 

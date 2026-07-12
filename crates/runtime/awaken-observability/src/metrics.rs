@@ -28,6 +28,9 @@ pub struct OtelMetricsRecorder {
     output_tokens: Counter<u64>,
     tool_count: Counter<u64>,
     tool_duration: Histogram<f64>,
+    dispatch_claimed: Counter<u64>,
+    dispatch_settled: Counter<u64>,
+    dispatch_drive: Histogram<f64>,
 }
 
 impl OtelMetricsRecorder {
@@ -64,6 +67,19 @@ impl OtelMetricsRecorder {
                 .with_unit("s")
                 .with_description("Wall-clock duration of a tool execution.")
                 .build(),
+            dispatch_claimed: meter
+                .u64_counter("awaken.dispatch.runs.claimed")
+                .with_description("Durable dispatches claimed for execution by a worker.")
+                .build(),
+            dispatch_settled: meter
+                .u64_counter("awaken.dispatch.runs.settled")
+                .with_description("Durable dispatches settled by a worker, by outcome.")
+                .build(),
+            dispatch_drive: meter
+                .f64_histogram("awaken.dispatch.drive.duration")
+                .with_unit("s")
+                .with_description("Wall-clock time a worker spent driving one claimed dispatch.")
+                .build(),
         }
     }
 }
@@ -99,6 +115,20 @@ impl MetricsRecorder for OtelMetricsRecorder {
         ];
         self.tool_count.add(1, &labels);
         self.tool_duration.record(duration.as_secs_f64(), &labels);
+    }
+
+    fn record_dispatch_claimed(&self) {
+        self.dispatch_claimed.add(1, &[]);
+    }
+
+    fn record_dispatch_settled(&self, outcome: &str) {
+        // Structure-only label: the settle outcome class (`done`/`parked`).
+        let labels = [KeyValue::new("outcome", outcome.to_owned())];
+        self.dispatch_settled.add(1, &labels);
+    }
+
+    fn record_dispatch_drive(&self, duration: Duration) {
+        self.dispatch_drive.record(duration.as_secs_f64(), &[]);
     }
 }
 
