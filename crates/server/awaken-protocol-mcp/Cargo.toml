@@ -24,6 +24,8 @@ mcp = { package = "model-context-protocol", version = "0.2", default-features = 
 [dev-dependencies]
 awaken-ext-mcp.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "net", "time", "process"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
 
 [lints]
 workspace = true

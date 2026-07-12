@@ -203,6 +203,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_suspend_gate_fails_closed_over_stdio() {
+        use awaken_agent_contract::agent::state::Store;
+        use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
+
+        struct SuspendGate;
+        #[async_trait]
+        impl ToolGateHook for SuspendGate {
+            async fn gate(&self, _ctx: &PermissionContext, _state: &Store) -> GateOutcome {
+                GateOutcome::Suspend {
+                    ticket_id: "t".into(),
+                }
+            }
+        }
+
+        let source = StaticExports::new(vec![exported_echo()]);
+        let service = Arc::new(
+            McpToolService::new("stdio-test", "0.0.0", Arc::new(source))
+                .with_gate(Arc::new(SuspendGate)),
+        );
+        let (_server, client, _notifications) = served(service);
+        let timeout = Duration::from_secs(5);
+        client
+            .request(
+                "initialize",
+                json!({ "protocolVersion": "2025-06-18" }),
+                timeout,
+            )
+            .await
+            .expect("initialize");
+        let result = client
+            .request("tools/call", json!({ "name": "echo" }), timeout)
+            .await
+            .expect("tools/call returns a result, not a transport error");
+        assert_eq!(result["isError"], true);
+        assert!(
+            result["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("out-of-band approval")
+        );
+    }
+
+    #[tokio::test]
     async fn export_set_change_emits_tools_list_changed() {
         let source = Arc::new(SharedExports::new(vec![exported_echo()]));
         let service = Arc::new(McpToolService::new(
