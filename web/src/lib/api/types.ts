@@ -240,6 +240,26 @@ export interface Page<T> {
   next_page: string | null;
 }
 
+/** A resource mounted for a session (ADR-0038): the SDK-shaped item `/v1/sessions/:id/
+ * resources` returns — a memory store / file / repo attached to the session's sandbox. */
+export interface SessionResourceDto {
+  id: string;
+  type: string; // "file" | "memory_store" | "github_repository"
+  mount_path: string;
+  memory_store_id?: string;
+  file_id?: string;
+  url?: string;
+  instructions?: string;
+}
+/** An output artifact a session produced — a file the agent wrote under `outputs/`,
+ * harvested into the blob store (`GET /v1/files?scope_id=<session>`). */
+export interface FileArtifact {
+  id: string;
+  type: string;
+  filename: string;
+  downloadable?: boolean;
+}
+
 // ---- environments ----
 
 export type EnvNetworking =
@@ -406,6 +426,17 @@ export interface ToolOverride {
 export type AgentConfigItem = AgentConfig & { published?: boolean };
 export interface AgentConfigList {
   data: AgentConfigItem[];
+}
+/** One validation problem from `/validate`, field-routed by the config domain (compile).
+ * `path` is the config field the issue is about (`""` = whole config). */
+export interface ValidationIssue {
+  path: string;
+  message: string;
+  severity?: string;
+}
+export interface ValidationResult {
+  valid: boolean;
+  issues: ValidationIssue[];
 }
 export interface PublishResult {
   publication_id: string;

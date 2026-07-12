@@ -108,12 +108,31 @@ async function upload<T>(path: string, file: File, fields?: Record<string, strin
   return (await res.json()) as T;
 }
 
+/** Download a file's bytes and save them under `filename`. The content endpoint carries
+ * the bearer like any GET, so it goes through the auth path — not a bare `<a href>` that
+ * would omit the token. Symmetric with `upload`. */
+async function download(path: string, filename: string): Promise<void> {
+  const headers: Record<string, string> = {};
+  const token = getToken();
+  if (token) headers.authorization = `Bearer ${token}`;
+  const res = await fetch(path, { headers });
+  if (!res.ok) throw await toError(res);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export const api = {
   get: <T>(path: string) => request<T>("GET", path),
   post: <T>(path: string, body?: unknown) => request<T>("POST", path, body),
   put: <T>(path: string, body?: unknown) => request<T>("PUT", path, body),
   del: <T>(path: string) => request<T>("DELETE", path),
   upload,
+  download,
 };
 
 /** URL for EventSource consumers (sessions SSE; that face carries no bearer). */

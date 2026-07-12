@@ -10,9 +10,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import Drawer from "../components/ui/Drawer";
+import Modal from "../components/ui/Modal";
+import ConfigDiff from "../components/agent/ConfigDiff";
 import { useToast } from "../components/ui/Toast";
-import { Button, Card, CheckPicker, Pill, SchemaForm, TextAreaField, TextField } from "../components/ui";
+import { Button, Card, CheckPicker, Pill, Segmented, TextAreaField, TextField } from "../components/ui";
 import type { JsonSchema } from "../components/ui";
+import BehaviorCard from "../components/agent/BehaviorCard";
+import ToolOverridesEditor from "../components/agent/ToolOverridesEditor";
 import SandboxPane from "../components/session/SandboxPane";
 import PermissionEditor from "../components/agent/PermissionEditor";
 import ResourcesTab from "../components/agent/ResourcesTab";
@@ -23,15 +27,20 @@ import type {
   ContextPolicy,
   PermissionConfig,
   PublishResult,
-  ToolOverride,
+  ValidationIssue,
+  ValidationResult,
 } from "../lib/api/types";
+import { labelForPath, sectionForPath } from "../lib/config-diff";
 import { useApp } from "../lib/app-state";
 import { useCapabilities } from "../lib/useCapabilities";
 import { useModels } from "../lib/useModels";
 import { useUnsavedGuard } from "../lib/useUnsavedGuard";
 import ModelsSurface from "./models";
 
-type Tab = "basics" | "context" | "tools" | "plugins" | "resources" | "sandbox";
+// Editor sections, organized by user intent (not by mechanism): Behavior groups the
+// runtime behaviors (context window, auto-compaction, memory recall, tool ordering) as
+// named cards; Tools holds selection + presentation + permissions.
+type Tab = "overview" | "behavior" | "tools" | "resources";
 
 const BLANK: AgentConfig = {
   id: "",
@@ -98,57 +107,18 @@ function ListEditor({
   );
 }
 
-/// Per-tool presentation overrides (ADR-0053): a row per override — the target tool id,
-/// an alias (rename for the model), a description override, and a defer toggle. `target`
-/// is picked from the agent's selected tools (add an MCP id under Tools to override it).
-function ToolOverridesEditor({
-  tools,
-  value,
-  onChange,
-}: {
-  tools: string[];
-  value: ToolOverride[];
-  onChange: (next: ToolOverride[]) => void;
-}) {
-  const set = (i: number, patch: Partial<ToolOverride>) =>
-    onChange(value.map((r, j) => (j === i ? { ...r, ...patch } : r)));
-  const add = () =>
-    onChange([...value, { target: tools[0] ?? "", alias: "", description: "", defer: false }]);
-  return (
-    <>
-      {value.map((r, i) => (
-        <div className="row" key={i} style={{ alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          <select className="input mono" style={{ minWidth: 160 }} value={r.target} onChange={(e) => set(i, { target: e.target.value })}>
-            {!tools.includes(r.target) && <option value={r.target}>{r.target || "—"}</option>}
-            {tools.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
-          </select>
-          <input className="input mono" style={{ width: 120 }} placeholder="alias" value={r.alias ?? ""} onChange={(e) => set(i, { alias: e.target.value })} />
-          <input className="input" style={{ flex: 1, minWidth: 160 }} placeholder="description override" value={r.description ?? ""} onChange={(e) => set(i, { description: e.target.value })} />
-          <label className="mut" style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <input type="checkbox" checked={!!r.defer} onChange={(e) => set(i, { defer: e.target.checked })} />
-            defer
-          </label>
-          <Button variant="ghost" style={{ height: 24 }} onClick={() => onChange(value.filter((_, j) => j !== i))}>
-            ✕
-          </Button>
-        </div>
-      ))}
-      <Button onClick={add}>+ override a tool</Button>
-    </>
-  );
-}
-
 export default function AgentEditorSurface() {
   const app = useApp();
   const nav = useNavigate();
   const qc = useQueryClient();
   const { ws: wsId = "default", id = "new" } = useParams();
   const isNew = id === "new";
-  const [tab, setTab] = useState<Tab>("basics");
+  const [tab, setTab] = useState<Tab>("overview");
+  // "Try it" opens the sandbox as a slide-over from any section, so you can tweak → test
+  // without leaving your place.
+  const [showSandbox, setShowSandbox] = useState(false);
+  // Publish opens a confirm modal previewing the diff vs the config as loaded.
+  const [showPublish, setShowPublish] = useState(false);
   const [cfg, setCfg] = useState<AgentConfig>(BLANK);
   const [dirty, setDirty] = useState(false);
   const [manageModels, setManageModels] = useState(false);
@@ -181,20 +151,35 @@ export default function AgentEditorSurface() {
     () => (currentModel && !models.includes(currentModel) ? [currentModel, ...models] : models),
     [currentModel, models],
   );
+  // The config as loaded when the editor opened (the detail query is not refetched on
+  // save), so the publish preview diffs the outgoing config against the pre-session state.
+  const baseline = useMemo(() => {
+    if (!existing.data) return {};
+    const { published: _published, ...rest } = existing.data;
+    return rest;
+  }, [existing.data]);
 
   const patch = (p: Partial<AgentConfig>) => {
     setCfg((c) => ({ ...c, ...p }));
     setDirty(true);
+    if (issues.length) setIssues([]); // an edit invalidates the previous validation
+
   };
 
   const targetId = () => (isNew ? cfg.id.trim() : id);
   const canSave = targetId().length > 0 && (cfg.system ?? "").trim().length > 0;
   const body = () => ({ ...cfg, id: targetId() });
 
+  // Validation issues from the config domain (compile), field-routed. The UI only
+  // projects them — it never re-derives a rule (that truth lives in compile).
+  const [issues, setIssues] = useState<ValidationIssue[]>([]);
   const validate = useMutation({
-    mutationFn: () => api.post<{ valid: boolean; error?: string }>(`/v1/config/agents/${targetId()}/validate`, body()),
-    onSuccess: (r) =>
-      r.valid ? toast.ok(app.t("Config is valid.", "配置有效。")) : toast.err(r.error ?? "invalid"),
+    mutationFn: () => api.post<ValidationResult>(`/v1/config/agents/${targetId()}/validate`, body()),
+    onSuccess: (r) => {
+      setIssues(r.issues ?? []);
+      if (r.valid) toast.ok(app.t("Config is valid.", "配置有效。"));
+      else toast.err(app.t("Config has issues — see below.", "配置有问题 — 见下方。"));
+    },
     onError: (e) => toast.err(e instanceof Error ? e.message : "error"),
   });
   // After a new agent's first save, navigate to its id URL — but only once `dirty`
@@ -228,14 +213,15 @@ export default function AgentEditorSurface() {
     onError: (e) => toast.err(e instanceof Error ? e.message : "error"),
   });
 
-  const TABS: { key: Tab; label: string; zh: string }[] = [
-    { key: "basics", label: "Basics", zh: "基础" },
-    { key: "context", label: "Context", zh: "上下文" },
+  const SECTIONS: { key: Tab; label: string; zh: string }[] = [
+    { key: "overview", label: "Overview", zh: "概览" },
+    { key: "behavior", label: "Behavior", zh: "行为" },
     { key: "tools", label: "Tools", zh: "工具" },
-    { key: "plugins", label: "Plugins & policy", zh: "插件与策略" },
     { key: "resources", label: "Resources", zh: "资源" },
-    { key: "sandbox", label: "Sandbox", zh: "试运行" },
   ];
+  // The count shown as a rail badge, so each section's fill is visible at a glance.
+  const sectionBadge = (k: Tab) =>
+    k === "behavior" ? cfg.plugins.length : k === "tools" ? cfg.tools.length : 0;
 
   return (
     <>
@@ -258,24 +244,58 @@ export default function AgentEditorSurface() {
             variant="primary"
             disabled={!canSave || dirty || publish.isPending || isNew}
             title={dirty ? app.t("Save before publishing", "发布前请先保存") : ""}
-            onClick={() => publish.mutate()}
+            onClick={() => setShowPublish(true)}
           >
             {app.t("Publish", "发布")} ➤
           </Button>
         </span>
       </div>
-      <div className="row">
-        {TABS.map((t) => (
-          <Button
-            key={t.key}
-            variant={tab === t.key ? "primary" : "ghost"}
-            style={{ height: 26 }}
-            onClick={() => setTab(t.key)}
-          >
-            {app.t(t.label, t.zh)}
+      <div className="agent-editor">
+        {/* Left rail: sections by intent (Overview / Behavior / Tools / Resources). */}
+        <div className="editor-rail" role="tablist" aria-label={app.t("Agent config sections", "Agent 配置分区")}>
+          {SECTIONS.map((s) => {
+            const n = sectionBadge(s.key);
+            const hasIssue = issues.some((i) => sectionForPath(i.path) === s.key);
+            return (
+              <Button
+                key={s.key}
+                role="tab"
+                aria-selected={tab === s.key}
+                variant={tab === s.key ? "primary" : "ghost"}
+                onClick={() => setTab(s.key)}
+              >
+                <span>
+                  {app.t(s.label, s.zh)}
+                  {hasIssue && <span title={app.t("has a validation issue", "有校验问题")} style={{ color: "var(--danger)", marginLeft: 4 }}>●</span>}
+                </span>
+                {n > 0 && <span className="rail-badge">{n}</span>}
+              </Button>
+            );
+          })}
+          {/* Try it: opens the sandbox as a slide-over (available from any section). */}
+          <Button variant="ghost" style={{ marginTop: 8, justifyContent: "center" }} onClick={() => setShowSandbox(true)}>
+            ▷ {app.t("Try it", "试运行")}
           </Button>
-        ))}
-      </div>
+        </div>
+        {/* Content column: one section at a time. */}
+        <div className="editor-content">
+
+      {issues.length > 0 && (
+        <div className="banner warn" style={{ flexDirection: "column", alignItems: "stretch", gap: 6 }}>
+          {issues.map((iss, i) => (
+            <div key={i} className="row" style={{ justifyContent: "space-between", gap: 8 }}>
+              <span>
+                <strong>{labelForPath(iss.path) || app.t("Config", "配置")}</strong>
+                {" — "}
+                {iss.message}
+              </span>
+              <Button variant="ghost" style={{ height: 24 }} onClick={() => setTab(sectionForPath(iss.path))}>
+                {app.t("Go to section →", "前往该项 →")}
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {tab === "resources" && (
         <Card>
@@ -290,13 +310,9 @@ export default function AgentEditorSurface() {
         </Card>
       )}
 
-      {tab === "sandbox" && (
-        <SandboxPane agentId={id} ready={!isNew && !!existing.data?.published} dirty={dirty} />
-      )}
-
-      {tab !== "sandbox" && tab !== "resources" && (
+      {tab !== "resources" && (
       <Card>
-        {tab === "basics" && (
+        {tab === "overview" && (
           <>
             <div className="row">
               <div className="field" style={{ flex: 1 }}>
@@ -384,26 +400,22 @@ export default function AgentEditorSurface() {
           </>
         )}
 
-        {tab === "context" && (
+        {tab === "behavior" && (
           <>
             <div className="field">
               <label>{app.t("Context window policy", "上下文窗口策略")}</label>
-              <div className="row">
-                {(["keep_all", "keep_last"] as const).map((k) => (
-                  <Button
-                    key={k}
-                    variant={cfg.context_policy.kind === k ? "primary" : "ghost"}
-                    style={{ height: 26 }}
-                    onClick={() =>
-                      patch({
-                        context_policy: (k === "keep_all" ? { kind: "keep_all" } : { kind: "keep_last", keep_last: 20 }) as ContextPolicy,
-                      })
-                    }
-                  >
-                    {k === "keep_all" ? app.t("Keep all", "全保留") : app.t("Keep last N", "保留最近 N")}
-                  </Button>
-                ))}
-              </div>
+              <Segmented
+                options={[
+                  { value: "keep_all", label: app.t("Keep all", "全保留") },
+                  { value: "keep_last", label: app.t("Keep last N", "保留最近 N") },
+                ]}
+                value={cfg.context_policy.kind}
+                onChange={(k) =>
+                  patch({
+                    context_policy: (k === "keep_all" ? { kind: "keep_all" } : { kind: "keep_last", keep_last: 20 }) as ContextPolicy,
+                  })
+                }
+              />
             </div>
             {cfg.context_policy.kind === "keep_last" && (
               <TextField
@@ -422,6 +434,40 @@ export default function AgentEditorSurface() {
                 "只裁剪送模型的可见视图;已提交的历史保持完整。",
               )}
             </span>
+            <div className="field" style={{ marginTop: 16 }}>
+              <label>{app.t("Runtime behaviors", "运行时行为")}</label>
+              <span className="mut">
+                {app.t(
+                  "Each behavior runs automatically when enabled — toggle it on and tune it. Advanced fields are one click away.",
+                  "每个行为启用后自动生效——打开开关并微调。高级字段一键展开。",
+                )}
+              </span>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 8 }}>
+                {(caps.data?.plugins ?? []).map((p) => (
+                  <BehaviorCard
+                    key={p.id}
+                    id={p.id}
+                    schema={p.config_schema as JsonSchema | undefined}
+                    enabled={cfg.plugins.includes(p.id)}
+                    config={(cfg.plugin_config[p.id] as Record<string, unknown>) ?? {}}
+                    onToggle={(on) => {
+                      if (on) {
+                        patch({ plugins: [...cfg.plugins, p.id] });
+                      } else {
+                        // Disabling drops the plugin AND its config section, so the saved
+                        // config carries no orphaned `plugin_config` for an inactive plugin.
+                        const { [p.id]: _removed, ...rest } = cfg.plugin_config;
+                        patch({ plugins: cfg.plugins.filter((x) => x !== p.id), plugin_config: rest });
+                      }
+                    }}
+                    onConfig={(v) => patch({ plugin_config: { ...cfg.plugin_config, [p.id]: v } })}
+                  />
+                ))}
+                {(caps.data?.plugins ?? []).length === 0 && (
+                  <span className="mut">{caps.isLoading ? "…" : app.t("No behaviors available.", "无可用行为。")}</span>
+                )}
+              </div>
+            </div>
           </>
         )}
 
@@ -465,43 +511,9 @@ export default function AgentEditorSurface() {
                 onChange={(v) => patch({ tool_overrides: v })}
               />
             </div>
-          </div>
-        )}
-
-        {tab === "plugins" && (
-          <>
-            <div className="field">
-              <label>{app.t("Enabled plugins", "启用的插件")}</label>
-              <span className="mut">
-                {app.t("A runtime plugin contributes only when enabled here.", "运行时插件只有在此启用才生效。")}
-              </span>
-              <CheckPicker
-                options={(caps.data?.plugins ?? []).map((p) => ({ id: p.id }))}
-                selected={cfg.plugins}
-                onChange={(v) => patch({ plugins: v })}
-                empty={caps.isLoading ? "…" : app.t("No plugins available.", "无可用插件。")}
-              />
-            </div>
-            <div className="field">
-              <label>{app.t("Plugin config (policy sections)", "插件配置(策略段)")}</label>
-              <span className="mut">
-                {app.t(
-                  "Per-plugin JSON: permission policy, state machine, deferred-tools, generative-UI all live here.",
-                  "每插件 JSON:权限策略、状态机、deferred-tools、generative-UI 都在这里。",
-                )}
-              </span>
-              <PluginConfigEditor
-                pluginIds={cfg.plugins}
-                config={cfg.plugin_config}
-                schemas={Object.fromEntries(
-                  (caps.data?.plugins ?? []).map((p) => [p.id, p.config_schema as JsonSchema]),
-                )}
-                onChange={(next) => patch({ plugin_config: next })}
-              />
-            </div>
             {(caps.data?.policies ?? []).some((p) => p.id === "permission") && (
-              <div className="field">
-                <label>{app.t("Permission policy", "权限策略")}</label>
+              <div className="field" style={{ marginTop: 16 }}>
+                <label>{app.t("Permissions", "权限")}</label>
                 <span className="mut">
                   {app.t(
                     "Gate tool calls: a default decision plus ordered rules, enforced at runtime.",
@@ -514,76 +526,58 @@ export default function AgentEditorSurface() {
                 />
               </div>
             )}
-          </>
+          </div>
         )}
+
       </Card>
       )}
+        </div>
+      </div>
 
       {manageModels && (
         <Drawer title={app.t("Models", "模型")} onClose={() => setManageModels(false)}>
           <ModelsSurface />
         </Drawer>
       )}
+
+      {showSandbox && (
+        <Drawer title={app.t("Try it", "试运行")} onClose={() => setShowSandbox(false)}>
+          <SandboxPane agentId={id} ready={!isNew && !!existing.data?.published} dirty={dirty} />
+        </Drawer>
+      )}
+
+      {showPublish && (
+        <Modal
+          title={app.t("Publish changes?", "发布改动?")}
+          onClose={() => setShowPublish(false)}
+          footer={
+            <>
+              <button className="btn" onClick={() => setShowPublish(false)}>
+                {app.t("Cancel", "取消")}
+              </button>
+              <button
+                className="btn primary"
+                disabled={publish.isPending}
+                onClick={() => {
+                  publish.mutate();
+                  setShowPublish(false);
+                }}
+              >
+                {app.t("Publish", "发布")} ➤
+              </button>
+            </>
+          }
+        >
+          <p className="mut" style={{ marginTop: 0 }}>
+            {app.t(
+              "These changes will compile and go live for new runs of this agent:",
+              "以下改动将编译并对该 agent 的新运行生效:",
+            )}
+          </p>
+          <ConfigDiff before={baseline} after={body()} />
+        </Modal>
+      )}
     </>
   );
 }
 
-/** Per-plugin config editor: a schema-driven form when the plugin advertises a
- * `config_schema` (from /v1/capabilities), else a validated JSON textarea. */
-function PluginConfigEditor({
-  pluginIds,
-  config,
-  schemas,
-  onChange,
-}: {
-  pluginIds: string[];
-  config: Record<string, unknown>;
-  schemas: Record<string, JsonSchema>;
-  onChange: (next: Record<string, unknown>) => void;
-}) {
-  const app = useApp();
-  // Sections to show: every enabled plugin, plus any config key already present.
-  const keys = Array.from(new Set([...pluginIds, ...Object.keys(config)]));
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [errs, setErrs] = useState<Record<string, string>>({});
-
-  if (keys.length === 0) return <span className="mut">{app.t("No plugins enabled.", "未启用插件。")}</span>;
-
-  const textFor = (k: string) => drafts[k] ?? JSON.stringify(config[k] ?? {}, null, 2);
-  const commitJson = (k: string, raw: string) => {
-    setDrafts((d) => ({ ...d, [k]: raw }));
-    try {
-      const parsed = raw.trim() === "" ? {} : JSON.parse(raw);
-      setErrs((e) => ({ ...e, [k]: "" }));
-      onChange({ ...config, [k]: parsed });
-    } catch {
-      setErrs((e) => ({ ...e, [k]: app.t("invalid JSON — not saved", "JSON 非法 — 未保存") }));
-    }
-  };
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      {keys.map((k) => (
-        <Card key={k} style={{ padding: "10px 12px" }}>
-          <label className="row" style={{ justifyContent: "space-between", fontSize: 12, marginBottom: 6 }}>
-            <span className="mono">{k}</span>
-            {schemas[k] ? (
-              <span className="mut" style={{ fontSize: 10 }}>{app.t("schema-driven", "schema 驱动")}</span>
-            ) : (
-              errs[k] && <span className="err" style={{ fontSize: 11 }}>{errs[k]}</span>
-            )}
-          </label>
-          {schemas[k] ? (
-            <SchemaForm
-              schema={schemas[k]}
-              value={config[k] ?? {}}
-              onChange={(v) => onChange({ ...config, [k]: v })}
-            />
-          ) : (
-            <textarea className="input mono" rows={5} value={textFor(k)} onChange={(e) => commitJson(k, e.target.value)} />
-          )}
-        </Card>
-      ))}
-    </div>
-  );
-}

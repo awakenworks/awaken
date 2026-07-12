@@ -27,6 +27,21 @@ pub enum CompileError {
     InvalidToolOverride { agent: String, reason: String },
 }
 
+impl CompileError {
+    /// The config field this error is about — the domain saying which part failed, so the
+    /// validate surface can route the issue to the right section instead of re-deriving it
+    /// from the message string. `""` means the whole config.
+    #[must_use]
+    pub fn field_path(&self) -> &'static str {
+        match self {
+            CompileError::UnknownTool { .. } => "tools",
+            CompileError::UnresolvedModel { .. } => "model",
+            CompileError::InvalidToolOverride { .. } => "tool_overrides",
+            CompileError::Serialize(_) => "",
+        }
+    }
+}
+
 /// Compile an agent config against an available tool catalog into a
 /// content-addressed [`RunnableConfig`] the runtime can run. Each `tool_id` must
 /// resolve (unknown references are rejected, fail-closed). The fingerprint is the
