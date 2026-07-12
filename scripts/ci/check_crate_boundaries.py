@@ -750,6 +750,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "axum",
         "uuid",
         "mcp",
+        "tower",
+        "http-body-util",
     },
     # A2A protocol adapter: the anti-corruption boundary between the A2A HTTP+JSON
     # `message:send` wire and the neutral runtime. Request/response (returns a
