@@ -50,6 +50,7 @@ for f in *_e2e.mjs; do run "$f" default; done
 # Durable ingress paths (run-ingress durable branch).
 DUR="$(mktemp -d)"
 for f in managed_e2e managed_durable_e2e managed_durable_ops_e2e managed_supersede_e2e \
+         durable_worker_hitl_deny_e2e durable_worker_cancel_e2e durable_worker_supersede_e2e \
          managed_scheduled_e2e managed_daemon_e2e managed_crossthread_e2e \
          managed_livecontrol_e2e managed_restart_e2e; do
   run "$f.mjs" durable AWAKEN_STORAGE_DIR="$DUR"
