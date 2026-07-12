@@ -1,0 +1,104 @@
+# Cold-start migration-race harness (Oversight issue #24). Same fleet topology as
+# `scaling-postgres.yaml` — a brain Deployment behind one Service, all replicas
+# draining ONE shared Postgres dispatch queue — but the brain Deployment is born at
+# `replicas: 1` so the e2e can control cold-start ordering precisely:
+#
+#   PHASE 1 (workaround, the regression guard): apply postgres → wait ready →
+#     apply brain(1) → let the single pod run `ensure_ledger` + migrations with NO
+#     peer to race → scale 1→3 → submit concurrent durable runs → assert exactly-once.
+#
+#   PHASE 2 (naive repro, diagnostic): fresh DB, brain scaled 0→3 all at once against
+#     a ready-but-unmigrated Postgres → N replicas race scoped-migration's UNLOCKED
+#     `ensure_ledger` (`CREATE TABLE IF NOT EXISTS` outside the per-bundle advisory
+#     lock) → collide on `pg_type_typname_nsp_index` → a replica crash-loops.
+#
+# Loaded into a k3d cluster with `imagePullPolicy: Never`. See `cold_start_race_e2e.sh`.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels: { app: postgres }
+spec:
+  selector: { app: postgres }
+  ports:
+    - { name: pg, port: 5432, targetPort: 5432 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels: { app: postgres }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          imagePullPolicy: Never
+          env:
+            - { name: POSTGRES_PASSWORD, value: "test" }
+            - { name: POSTGRES_DB, value: "awaken" }
+            - { name: PGDATA, value: "/var/lib/postgresql/data/pgdata" }
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "awaken"]
+            initialDelaySeconds: 2
+            periodSeconds: 2
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: brain
+  labels: { app: brain }
+spec:
+  selector: { app: brain }
+  ports:
+    - { name: http, port: 3000, targetPort: 3000 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: brain
+  labels: { app: brain }
+spec:
+  # Born at ONE so phase 1 can seed a single migrating pod with no peer to race.
+  # Phase 1 then scales 1→3; phase 2 (fresh DB) scales 0→3 to force the race.
+  replicas: 1
+  selector:
+    matchLabels: { app: brain }
+  template:
+    metadata:
+      labels: { app: brain }
+    spec:
+      containers:
+        - name: brain
+          image: awaken-topology:latest
+          imagePullPolicy: Never
+          env:
+            - { name: AWAKEN_MODEL_MODE, value: echo }
+            - { name: AWAKEN_INGRESS, value: durable }
+            - { name: AWAKEN_DISPATCH_BACKEND, value: postgres }
+            - { name: AWAKEN_STORE, value: postgres }
+            - { name: AWAKEN_DATABASE_URL, value: "postgres://postgres:test@postgres:5432/awaken" }
+            - { name: AWAKEN_DISPATCH_WAKE, value: pg-notify }
+            - { name: AWAKEN_HTTP_ADDR, value: "0.0.0.0:3000" }
+            - { name: AWAKEN_STORAGE_DIR, value: "/tmp/awaken" }
+          ports:
+            - containerPort: 3000
+          readinessProbe:
+            tcpSocket: { port: 3000 }
+            initialDelaySeconds: 2
+            periodSeconds: 2
