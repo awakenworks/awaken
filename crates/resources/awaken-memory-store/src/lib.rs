@@ -35,7 +35,7 @@ mod schema;
 mod sqlite;
 
 #[cfg(feature = "postgres")]
-pub use postgres::{PgMemoryBlobStore, PgStoreError};
+pub use postgres::{PgMemoryBlobStore, PgMemoryFs, PgStoreError};
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub use schema::{BUNDLE_ID, memory_store_bundle};
 #[cfg(feature = "sqlite")]
