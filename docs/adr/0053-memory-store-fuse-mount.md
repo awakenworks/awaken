@@ -292,22 +292,54 @@ is to make them realize it, and to fill the currently-stubbed `Sandbox::attach`
   `awaken-next`'s tested implementation; the genuinely new work — and the new risk —
   is the store-model upgrade (D1) and the single-host concurrent wiring (D5), which
   are ordinary async-Rust and are unit-testable without a kernel.
-- **Cost / dependency footprint.** Adds a `fuser` dependency (a `server`-bucket
-  crate; boundary allowlist updated), needs `/dev/fuse` for the kernel path (all
-  kernel-level tests gated; the copy path remains the fallback where FUSE is
-  unavailable, e.g. CI/macOS), and introduces a per-`store_id` background mount whose
-  lifecycle is refcounted against sandbox create/dispose.
-- **Boundary preserved.** Providers depend on an injected `MountCoordinator` port,
-  never on `fuser` or the store directly, keeping `worker ⊥ resources` intact.
+- **Cost / dependency footprint.** Adds a `fuser` dependency (in the worker-tier
+  `awaken-sandbox-memoryd`; boundary allowlist updated), needs `/dev/fuse` for the
+  kernel path (all kernel-level tests gated; the copy path is the fallback where FUSE
+  is unavailable, e.g. CI/macOS/bwrap), and introduces a per-`store_id` background
+  mount whose lifecycle is tied to sandbox create/dispose.
+- **Boundary preserved.** The sandbox providers depend on injected ports —
+  `BlobSource` for file bytes and `MemoryMounter` for memory stores — never on `fuser`
+  or the store directly. The FUSE/copy realizer (`MemoryStoreMounter`) lives in
+  `awaken-sandbox-memoryd` (worker) and is the only crate that links `fuser`; the
+  composition root injects it.
 - **Delivered:** P0 (`MemoryFs` port + CAS store), P1 (the FUSE port, proven by a
   real kernel-VFS integration test), P2/P2.5 (`MountCoordinator` + concurrency),
-  P3 (95% changed-code coverage), and P4 (the durable path-addressed store backs the
-  `/memories` HTTP endpoints, with a restart-durable TS e2e). `awaken-sandbox-local`
-  was moved to the **worker tier** (it now resolves mount bytes through an injected
-  `BlobSource` port and links no durable store), resolving the bucket question below.
-- **Open questions carried:** the contract-provider realization of
-  `MountSource::MemoryStore → Realization::Fuse` and the host route cutover from the
-  legacy copy path (D6) remain a follow-on slice; whether the Workdir tier can expose
-  the shared mount unprivileged (bind needs `CAP_SYS_ADMIN`; a symlink into the jail
-  may be blocked by rooting) is a P5 spike; the bwrap namespace splice (P5) and the
-  distributed `Invalidator`/version-oracle are deferred until they are needed.
+  P3 (95% changed-code coverage), P4 (the durable path-addressed store backs the
+  `/memories` HTTP endpoints, with a restart-durable TS e2e), and P5 minus the bwrap
+  splice (see below). `awaken-sandbox-local` **and** `awaken-sandbox-memoryd` were
+  moved to the **worker tier**; the providers resolve mount bytes through an injected
+  `BlobSource` port and realize memory stores through an injected `MemoryMounter` port,
+  linking no durable **commit** store (`worker → resources` is allowed: resources is
+  the common foundation config defines and worker materializes; the A-G17 exclusion is
+  the commit-log tier only).
+- **Contract-provider realization — delivered (item 1).** `LocalProvider` (Workdir)
+  and `NamespaceProvider` (bwrap) realize `MountSource::MemoryStore` through the
+  `MemoryMounter` port (`awaken-sandbox-memoryd::MemoryStoreMounter`): **live FUSE**
+  where `/dev/fuse` is present, else a **materialized copy harvested back on dispose**
+  (D6). A provider with no mounter fails a memory mount loud. Proven end-to-end by an
+  integration test that exercises the real FUSE path on a `/dev/fuse` host (seed →
+  read-through → edit → write-through → durable) and a deterministic copy-harvest test
+  on the bwrap tier. The host's `/memories` HTTP route was already cut over to the
+  path-addressed store in P4.
+- **Workdir unprivileged exposure — resolved (item 3), no privileged bind needed.**
+  The Workdir tier runs in the host mount namespace, so the mounter FUSE-mounts each
+  store **directly at the sandbox's resolved path** — no bind (`CAP_SYS_ADMIN`) and no
+  jail-crossing symlink. Cross-sandbox coherence for the same store comes from the
+  per-mount invalidation listener (item 4) rather than a single shared mount, so the
+  D5 guarantee holds without the privileged splice the shared-mount model would need.
+- **Distributed coherence — delivered (item 4).** `Invalidator` + `LocalInvalidator`
+  (in-process broadcast) with an `InvalidatingMemoryFs` write-side decorator and a
+  FUSE-side listener that drops invalidated paths from the content cache; a
+  NATS/pg-notify transport swaps in behind the same trait. Unit-tested (publish→drop,
+  reads-don't-invalidate, matching-store-only).
+- **Backends — delivered (item 5).** `SqliteMemoryFs` (tested, restart-durable) and
+  `PgMemoryFs` (cross-node CAS via `SELECT … FOR UPDATE`) over one scoped-migration
+  bundle.
+- **Deferred — bwrap namespace splice (item 2).** Exposing a *live* FUSE mount inside
+  the bwrap namespace still needs host mount propagation (`rshared`), an extra
+  `--bind <fuse_dir>` in `bubblewrap_argv`, and `/dev/fuse` in the guest — an
+  integration that `awaken-next` also left unimplemented and that cannot be faked
+  without a real bwrap+kernel test. Until it lands, the bwrap tier uses the copy
+  fallback above (a complete realization, not a stub). The distributed
+  `Invalidator` **transport** (NATS/pg-notify) and a pull-based version oracle remain
+  future work behind the delivered in-process seam.
