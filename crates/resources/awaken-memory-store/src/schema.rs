@@ -13,10 +13,16 @@ use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 pub const BUNDLE_ID: &str = "awaken.memory_store";
 
 /// Embedded migration files, in apply order (`(name, contents)`).
-const FILES: &[(&str, &str)] = &[(
-    "V0001__blob.sql",
-    include_str!("migrations/V0001__blob.sql"),
-)];
+const FILES: &[(&str, &str)] = &[
+    (
+        "V0001__blob.sql",
+        include_str!("migrations/V0001__blob.sql"),
+    ),
+    (
+        "V0002__memories.sql",
+        include_str!("migrations/V0002__memories.sql"),
+    ),
+];
 
 /// Version from a `Vnnnn__slug.sql` file name (`V0001__…` ⇒ 1); a non-positive
 /// value is rejected by [`Migration::new`], so a mis-named file fails loudly.
