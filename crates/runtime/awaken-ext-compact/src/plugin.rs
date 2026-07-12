@@ -176,7 +176,11 @@ impl CompactHook {
         // prompt, through the shared aux-run port. A per-agent `instructions` override
         // (config) replaces the built-in prompt; otherwise the default is used.
         let mut seed = conversation[..fold_to].to_vec();
-        let prompt = self.config.instructions.as_deref().unwrap_or(SUMMARIZE_PROMPT);
+        let prompt = self
+            .config
+            .instructions
+            .as_deref()
+            .unwrap_or(SUMMARIZE_PROMPT);
         seed.push(Message::text(
             MessageId("compact-prompt".into()),
             Role::User,
@@ -320,8 +324,11 @@ mod tests {
     #[async_trait]
     impl SubagentRunner for PromptRecorder {
         async fn run(&self, request: SubagentRequest) -> Result<SubagentReply, SubagentError> {
-            *self.seen_prompt.lock().unwrap() =
-                request.seed.last().map(|m| m.text_content()).unwrap_or_default();
+            *self.seen_prompt.lock().unwrap() = request
+                .seed
+                .last()
+                .map(|m| m.text_content())
+                .unwrap_or_default();
             Ok(SubagentReply {
                 text: Some("s".to_string()),
             })

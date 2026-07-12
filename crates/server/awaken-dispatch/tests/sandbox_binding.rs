@@ -38,7 +38,7 @@ fn activation(run: &str, thread: &str) -> RunActivation {
                 plugin_ids: vec![],
                 plugin_config: Default::default(),
                 context_policy: ContextPolicy::default(),
-                            tool_presentation: Default::default(),
+                tool_presentation: Default::default(),
             },
             fingerprint: fp,
         },

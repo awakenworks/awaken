@@ -50,7 +50,7 @@ fn snapshot(fingerprint: &str) -> ExecutableAgentSnapshot {
             plugin_ids: Vec::new(),
             plugin_config: Default::default(),
             context_policy: ContextPolicy::KeepAll,
-                    tool_presentation: Default::default(),
+            tool_presentation: Default::default(),
         },
         fingerprint,
     }

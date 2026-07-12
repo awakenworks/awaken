@@ -9,10 +9,10 @@
 
 #![forbid(unsafe_code)]
 
-#[cfg(feature = "postgres")]
-pub mod postgres;
 #[cfg(feature = "schema")]
 pub mod openapi;
+#[cfg(feature = "postgres")]
+pub mod postgres;
 mod router;
 pub mod schema;
 #[cfg(feature = "sqlite")]
