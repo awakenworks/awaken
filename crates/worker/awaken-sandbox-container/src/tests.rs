@@ -153,6 +153,29 @@ fn mount_ref_covers_every_source_kind() {
 }
 
 #[test]
+fn memory_store_mounts_are_pulled_out_of_binds_into_memory_mounts() {
+    let mut s = spec("mem");
+    s.mounts.push(pc::MountRequirement {
+        mount_id: "notes".into(),
+        source: pc::MountSource::MemoryStore {
+            store_id: "store-42".into(),
+        },
+        mount_path: "/workspace/.mnt/notes".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Session,
+        required: true,
+    });
+    let plan = container_plan(&s, "img", &["x".to_string()]);
+    // The memory store is NOT a byte bind — binds stay the 2 file/resource mounts.
+    assert_eq!(plan.binds.len(), 2);
+    assert!(plan.binds.iter().all(|b| b.source_ref != "store-42"));
+    // It is realized as a memory mount (→ sidecar downstream).
+    assert_eq!(plan.memory_mounts.len(), 1);
+    assert_eq!(plan.memory_mounts[0].store_id, "store-42");
+    assert_eq!(plan.memory_mounts[0].mount_path, "/workspace/.mnt/notes");
+}
+
+#[test]
 fn pod_plan_is_process_as_container_with_native_gc() {
     let cmd = pc::Command::new(["claude", "--acp"]);
     let plan = pod_plan(&spec("run-7"), &cmd, "img:1", "owner-uid-123");
@@ -177,6 +200,7 @@ fn pod_plan_is_process_as_container_with_native_gc() {
 struct FakeState {
     alive: HashMap<String, bool>,
     created_command: HashMap<String, Vec<String>>,
+    created_env: HashMap<String, Vec<(String, String)>>,
     exits: HashMap<String, pc::ExitStatus>,
     signals: Vec<(String, pc::Signal)>,
     lease_touches: u32,
@@ -216,6 +240,7 @@ impl ContainerRuntime for FakeRuntime {
         let cid = format!("cid-{id}");
         st.alive.insert(cid.clone(), true);
         st.created_command.insert(cid.clone(), plan.command.clone());
+        st.created_env.insert(cid.clone(), plan.env.clone());
         st.exits.insert(
             cid.clone(),
             pc::ExitStatus {
@@ -294,7 +319,11 @@ impl ContainerRuntime for FakeRuntime {
 }
 
 fn provider(runtime: Arc<FakeRuntime>) -> ContainerProvider<FakeRuntime> {
-    ContainerProvider::new(runtime, "ghcr.io/awaken/agent:latest")
+    // The default `spec()` requests Allowlist egress, so the provider is configured
+    // with a brokered proxy (as a real allowlist deployment would be).
+    ContainerProvider::new(runtime, "ghcr.io/awaken/agent:latest").with_egress_proxy(EgressProxy {
+        url: "http://gw.internal:8888".into(),
+    })
 }
 
 #[tokio::test]
@@ -418,4 +447,52 @@ async fn create_fails_closed_on_bad_spec_missing_command_and_backend_error() {
 fn runtime_error_messages_render() {
     assert!(RuntimeError::NotFound("c".into()).to_string().contains('c'));
     assert!(RuntimeError::Backend("x".into()).to_string().contains('x'));
+}
+
+#[tokio::test]
+async fn allowlist_egress_injects_the_brokered_proxy_env_at_create() {
+    let rt = Arc::new(FakeRuntime::default());
+    // `provider()` carries a proxy; the Allowlist spec routes through it.
+    provider(rt.clone())
+        .create(&spec("run-egress"))
+        .await
+        .unwrap();
+
+    let st = rt.st.lock().unwrap();
+    let env = st
+        .created_env
+        .get("cid-run-egress")
+        .expect("container was created");
+    assert!(
+        env.contains(&("HTTPS_PROXY".into(), "http://gw.internal:8888".into())),
+        "the sandbox must route egress through the brokered proxy: {env:?}"
+    );
+    assert!(env.iter().any(|(k, _)| k == "NO_PROXY"));
+    // The spec's own inline env is preserved alongside the injected proxy vars.
+    assert!(env.contains(&("TZ".into(), "UTC".into())));
+}
+
+#[tokio::test]
+async fn allowlist_without_a_proxy_fails_create_closed() {
+    // A provider with no configured chokepoint cannot enforce an allowlist, so it
+    // rejects the spec rather than silently opening egress.
+    let rt = Arc::new(FakeRuntime::default());
+    let p = ContainerProvider::new(rt.clone(), "ghcr.io/awaken/agent:latest");
+    assert!(p.create(&spec("run-noproxy")).await.is_err());
+    // Fail-closed BEFORE the runtime is touched: nothing was created.
+    assert!(rt.st.lock().unwrap().created_env.is_empty());
+}
+
+#[tokio::test]
+async fn unrestricted_egress_injects_no_proxy_env() {
+    let rt = Arc::new(FakeRuntime::default());
+    let mut open = spec("run-open");
+    open.network = pc::NetworkPolicy::Unrestricted;
+    // No proxy needed for unrestricted egress.
+    let p = ContainerProvider::new(rt.clone(), "ghcr.io/awaken/agent:latest");
+    p.create(&open).await.unwrap();
+
+    let st = rt.st.lock().unwrap();
+    let env = st.created_env.get("cid-run-open").unwrap();
+    assert!(env.iter().all(|(k, _)| k != "HTTPS_PROXY"));
 }

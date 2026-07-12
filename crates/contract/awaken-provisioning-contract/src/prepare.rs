@@ -8,6 +8,7 @@ use crate::sandbox::SandboxCapabilities;
 use crate::spec::SandboxSpec;
 use crate::vocab::{
     EnvVar, EnvVisibility, MountAccess, MountRequirement, NetworkPolicy, RESERVED_ENV_KEYS,
+    ResourceLimits,
 };
 
 /// A validated, normalized plan ready to hand to [`crate::SandboxProvider::create`].
@@ -18,6 +19,9 @@ pub struct EnvironmentPlan {
     pub env: Vec<EnvVar>,
     pub network: NetworkPolicy,
     pub outputs_path: String,
+    /// The resource caps to enforce — carried forward so a provider realizes exactly
+    /// what was admitted (and never a silently-dropped cap).
+    pub limits: ResourceLimits,
 }
 
 /// Why a spec cannot be prepared against a backend.
@@ -31,6 +35,8 @@ pub enum PrepareError {
     EgressSecretUnsupported(String),
     #[error("network policy requested but backend has no network isolation")]
     NetworkIsolationUnsupported,
+    #[error("resource limits requested but backend cannot enforce them")]
+    ResourceLimitsUnsupported,
     #[error("env key {0:?} is reserved by the runtime")]
     ReservedEnvKey(String),
     #[error("outputs_path must be an absolute sandbox path")]
@@ -78,12 +84,19 @@ pub fn prepare_environment(
         return Err(PrepareError::NetworkIsolationUnsupported);
     }
 
+    // Resource caps must be enforceable — never silently ignored on a tier that
+    // can't cgroup them (bwrap reports `resource_limits = false`).
+    if spec.limits.is_set() && !caps.resource_limits {
+        return Err(PrepareError::ResourceLimitsUnsupported);
+    }
+
     Ok(EnvironmentPlan {
         scope: spec.scope.clone(),
         mounts: spec.mounts.clone(),
         env: spec.env.clone(),
         network: spec.network.clone(),
         outputs_path: spec.outputs_path.clone(),
+        limits: spec.limits.clone(),
     })
 }
 
@@ -180,5 +193,37 @@ mod tests {
             prepare_environment(&s, &caps(IsolationClass::Namespace)),
             Err(PrepareError::ReservedEnvKey("PATH".into()))
         );
+    }
+
+    #[test]
+    fn rejects_resource_limits_a_backend_cannot_enforce() {
+        let mut s = spec();
+        s.limits.memory_bytes = Some(512 * 1024 * 1024);
+        let mut c = caps(IsolationClass::Namespace);
+        c.resource_limits = false; // e.g. the bwrap tier
+        assert_eq!(
+            prepare_environment(&s, &c),
+            Err(PrepareError::ResourceLimitsUnsupported)
+        );
+    }
+
+    #[test]
+    fn empty_limits_pass_a_non_enforcing_backend() {
+        // Default (unset) limits must not trip the fail-closed check.
+        let mut s = spec();
+        s.limits = Default::default();
+        let mut c = caps(IsolationClass::Namespace);
+        c.resource_limits = false;
+        assert!(prepare_environment(&s, &c).is_ok());
+    }
+
+    #[test]
+    fn plan_carries_the_admitted_limits_forward() {
+        let mut s = spec();
+        s.limits.cpu_millis = Some(1500);
+        s.limits.pids = Some(128);
+        let plan = prepare_environment(&s, &caps(IsolationClass::Container)).unwrap();
+        assert_eq!(plan.limits.cpu_millis, Some(1500));
+        assert_eq!(plan.limits.pids, Some(128));
     }
 }

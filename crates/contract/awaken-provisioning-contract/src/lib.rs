@@ -30,19 +30,29 @@
 //! provider's own type behind [`Sandbox`].
 
 mod admission;
+mod approval;
 mod lease;
+mod poison;
 mod prepare;
 mod sandbox;
+mod shape;
 mod spec;
 mod vocab;
 
 pub use admission::{AdmissionError, EnvironmentDecl, check_environment_soundness};
-pub use lease::{AdoptionPlan, LeaseGrant, LeaseLiveness, ReapCause, reconcile_adoption};
+pub use approval::{ApprovalDecision, ApprovalPolicy, SandboxAction, decide as approval_decide};
+pub use lease::{
+    AdoptionPlan, LeaseGrant, LeaseLiveness, ReapCause, ReconcileOutcome, apply_adoption_plan,
+    reconcile_adoption, reconcile_and_apply,
+};
+pub use poison::{AttemptSignal, PoisonVerdict, classify as classify_poison};
 pub use prepare::{EnvironmentPlan, PrepareError, prepare_environment};
 pub use sandbox::{
     BlobSource, ExitStatus, IsolationClass, MemoryMount, MemoryMounter, ProcessHandle, Sandbox,
-    SandboxCapabilities, SandboxError, SandboxHandle, SandboxProvider, SandboxStatus, Signal,
+    SandboxCapabilities, SandboxError, SandboxHandle, SandboxProvider, SandboxStatus,
+    SelectionError, Signal, select_provider,
 };
+pub use shape::{ExecutionShape, plan_shape};
 pub use spec::{Command, EnvironmentKind, RootfsSource, SandboxSpec, Stdio};
 pub use vocab::{
     Artifact, EnvValue, EnvVar, EnvVisibility, MountAccess, MountLifetime, MountRequirement,

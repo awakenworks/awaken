@@ -57,6 +57,18 @@ pub struct BindPlan {
     pub read_only: bool,
 }
 
+/// A memory-store mount realized as a **memoryd sidecar** sharing an `emptyDir` with
+/// the agent container (the k8s/container form of ADR-0038 MemoryStore). A memory
+/// store is a keyed store, not a host byte path — binding `store_id` as a path (the
+/// prior behavior) was a meaningless no-op; the sidecar FUSE-serves it into a
+/// pod-scoped volume the agent reads, and harvests writes back on teardown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryMount {
+    pub store_id: String,
+    /// Sandbox-absolute path the agent sees the store at (the shared volume mount).
+    pub mount_path: String,
+}
+
 /// A neutral container plan rendered from a [`pc::SandboxSpec`] — the input a
 /// bollard `create_container` (or the k8s planner) consumes. Pure and testable.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +83,174 @@ pub struct ContainerPlan {
     pub outputs_volume: String,
     pub network: NetworkMode,
     pub limits: pc::ResourceLimits,
+    /// Memory-store mounts, realized as memoryd sidecars + shared volumes (NOT binds).
+    pub memory_mounts: Vec<MemoryMount>,
+}
+
+/// Neutral cgroup caps derived from [`pc::ResourceLimits`] — what a container
+/// runtime (Docker `HostConfig`, k8s `resources.limits`) must apply. Extracted as a
+/// pure value so the swap-escape pin and disk mapping are unit-testable without a
+/// live daemon (the daemon-backed adapters just translate the fields).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CgroupCaps {
+    /// Hard memory cap, bytes.
+    pub memory_bytes: Option<i64>,
+    /// Swap ceiling, **pinned equal to `memory_bytes`** so a memory-capped container
+    /// cannot escape the cap by swapping (awaken-next parity; in Docker's model
+    /// `memory_swap == memory` disables swap beyond the memory limit).
+    pub memory_swap_bytes: Option<i64>,
+    /// CPU quota expressed in nano-CPUs (`cpu_millis * 1e6`).
+    pub nano_cpus: Option<i64>,
+    /// Max process/thread count.
+    pub pids: Option<i64>,
+    /// Writable-layer size limit for `--storage-opt size=` (as the runtime expects it).
+    pub disk_size: Option<String>,
+}
+
+impl CgroupCaps {
+    /// Map neutral limits onto container-runtime cgroup fields, pinning swap to the
+    /// memory cap (the swap-escape close).
+    #[must_use]
+    pub fn from_limits(limits: &pc::ResourceLimits) -> Self {
+        let memory = limits.memory_bytes.map(|m| m as i64);
+        Self {
+            memory_bytes: memory,
+            memory_swap_bytes: memory,
+            nano_cpus: limits.cpu_millis.map(|c| i64::from(c) * 1_000_000),
+            pids: limits.pids.map(i64::from),
+            disk_size: limits.disk_bytes.map(|d| d.to_string()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod cgroup_caps_tests {
+    use super::*;
+
+    #[test]
+    fn pins_swap_to_the_memory_cap_and_maps_every_field() {
+        let limits = pc::ResourceLimits {
+            cpu_millis: Some(1500),
+            memory_bytes: Some(512 * 1024 * 1024),
+            pids: Some(256),
+            disk_bytes: Some(2 * 1024 * 1024 * 1024),
+        };
+        let caps = CgroupCaps::from_limits(&limits);
+        assert_eq!(caps.memory_bytes, Some(512 * 1024 * 1024));
+        // The swap-escape close: swap ceiling == memory cap.
+        assert_eq!(caps.memory_swap_bytes, caps.memory_bytes);
+        assert_eq!(caps.nano_cpus, Some(1_500_000_000));
+        assert_eq!(caps.pids, Some(256));
+        assert_eq!(caps.disk_size.as_deref(), Some("2147483648"));
+    }
+
+    #[test]
+    fn unset_limits_map_to_no_caps() {
+        let caps = CgroupCaps::from_limits(&pc::ResourceLimits::default());
+        assert_eq!(caps, CgroupCaps::default());
+        assert!(caps.memory_swap_bytes.is_none());
+    }
+
+    #[test]
+    fn unrestricted_egress_needs_no_proxy() {
+        let r = egress_plan(&pc::NetworkPolicy::Unrestricted, None).unwrap();
+        assert_eq!(r.network, NetworkMode::Open);
+        assert!(r.proxy_env.is_empty());
+    }
+
+    #[test]
+    fn no_egress_needs_no_proxy() {
+        let r = egress_plan(&pc::NetworkPolicy::None, None).unwrap();
+        assert_eq!(r.network, NetworkMode::None);
+        assert!(r.proxy_env.is_empty());
+    }
+
+    #[test]
+    fn allowlist_routes_through_the_brokered_proxy() {
+        let proxy = EgressProxy {
+            url: "http://gw.internal:8888".into(),
+        };
+        let policy = pc::NetworkPolicy::Allowlist {
+            hosts: vec!["api.anthropic.com".into()],
+        };
+        let r = egress_plan(&policy, Some(&proxy)).unwrap();
+        assert_eq!(
+            r.network,
+            NetworkMode::Allowlist(vec!["api.anthropic.com".into()])
+        );
+        assert!(
+            r.proxy_env
+                .contains(&("HTTPS_PROXY".into(), "http://gw.internal:8888".into()))
+        );
+        assert!(
+            r.proxy_env
+                .contains(&("HTTP_PROXY".into(), "http://gw.internal:8888".into()))
+        );
+        assert!(r.proxy_env.iter().any(|(k, _)| k == "NO_PROXY"));
+    }
+
+    #[test]
+    fn allowlist_without_a_proxy_fails_closed() {
+        let policy = pc::NetworkPolicy::Allowlist {
+            hosts: vec!["api.anthropic.com".into()],
+        };
+        assert_eq!(egress_plan(&policy, None), Err(EgressError::ProxyRequired));
+    }
+
+    #[test]
+    fn rootfs_plan_maps_image_and_isolated_roots() {
+        assert_eq!(
+            rootfs_plan(&pc::EnvironmentKind::Image {
+                reference: "ghcr.io/x:1".into()
+            })
+            .unwrap(),
+            RootfsPlan::Image("ghcr.io/x:1".into())
+        );
+        assert_eq!(
+            rootfs_plan(&pc::EnvironmentKind::Sandbox).unwrap(),
+            RootfsPlan::HostUserland
+        );
+        assert_eq!(
+            rootfs_plan(&pc::EnvironmentKind::IsolatedRoot {
+                base: pc::RootfsSource::Dir {
+                    path_template: "/roots/{scope}".into()
+                },
+                writable_base: true,
+            })
+            .unwrap(),
+            RootfsPlan::RootDir {
+                path_template: "/roots/{scope}".into(),
+                writable: true,
+            }
+        );
+        assert_eq!(
+            rootfs_plan(&pc::EnvironmentKind::IsolatedRoot {
+                base: pc::RootfsSource::Tarball {
+                    reference: "blob://root".into()
+                },
+                writable_base: false,
+            })
+            .unwrap(),
+            RootfsPlan::RootTarball {
+                reference: "blob://root".into(),
+                writable: false,
+            }
+        );
+    }
+
+    #[test]
+    fn rootfs_plan_rejects_non_container_tiers() {
+        assert_eq!(
+            rootfs_plan(&pc::EnvironmentKind::Scope),
+            Err(RootfsError::NotAContainerRootfs)
+        );
+        assert_eq!(
+            rootfs_plan(&pc::EnvironmentKind::LocalDir {
+                path_template: "/tmp/{scope}".into()
+            }),
+            Err(RootfsError::NotAContainerRootfs)
+        );
+    }
 }
 
 fn image_of(spec: &pc::SandboxSpec, default_image: &str) -> String {
@@ -90,13 +270,146 @@ fn network_of(policy: &pc::NetworkPolicy) -> NetworkMode {
     }
 }
 
+/// The concrete rootfs a container/rootless-podman runtime must realize from a
+/// declared [`pc::EnvironmentKind`]. Pure, so the (fork-exec, daemonless) adapter
+/// only has to translate it into `podman run` flags.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RootfsPlan {
+    /// Borrow the default image's userland (no custom root).
+    HostUserland,
+    /// An OCI image reference.
+    Image(String),
+    /// A private root bound from a host directory template.
+    RootDir {
+        path_template: String,
+        /// A writable base forces single-active use of the environment.
+        writable: bool,
+    },
+    /// A private root unpacked from a tarball reference.
+    RootTarball { reference: String, writable: bool },
+}
+
+/// Why a declared environment has no container-tier rootfs realization.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum RootfsError {
+    /// `Scope`/`LocalDir` are non-container tiers — the container provider must not
+    /// silently run them as a borrowed-userland container.
+    #[error("environment kind has no container-tier rootfs realization")]
+    NotAContainerRootfs,
+}
+
+/// Map a declared environment kind onto its container-tier rootfs, fail-closed. A
+/// `Scope`/`LocalDir` kind is rejected (those belong to the workdir/namespace tiers),
+/// so the container provider never realizes an environment it was not asked for.
+pub fn rootfs_plan(kind: &pc::EnvironmentKind) -> Result<RootfsPlan, RootfsError> {
+    match kind {
+        // The namespace/bwrap tier borrows the host userland; on the container tier
+        // that means the default image supplies it.
+        pc::EnvironmentKind::Sandbox => Ok(RootfsPlan::HostUserland),
+        pc::EnvironmentKind::Image { reference } => Ok(RootfsPlan::Image(reference.clone())),
+        pc::EnvironmentKind::IsolatedRoot {
+            base,
+            writable_base,
+        } => Ok(match base {
+            pc::RootfsSource::Dir { path_template } => RootfsPlan::RootDir {
+                path_template: path_template.clone(),
+                writable: *writable_base,
+            },
+            pc::RootfsSource::Tarball { reference } => RootfsPlan::RootTarball {
+                reference: reference.clone(),
+                writable: *writable_base,
+            },
+        }),
+        pc::EnvironmentKind::Scope | pc::EnvironmentKind::LocalDir { .. } => {
+            Err(RootfsError::NotAContainerRootfs)
+        }
+    }
+}
+
+/// A brokered egress chokepoint the sandbox routes through. The host allowlist is
+/// enforced **at the proxy**, out of the sandbox — the same secretless-gateway route
+/// used for model/MCP egress. The endpoint is supplied by the host's gateway; it is
+/// never chosen inside the sandbox tier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EgressProxy {
+    /// The forward-proxy URL the agent's HTTP client must use (e.g. `http://gw:8888`).
+    pub url: String,
+}
+
+/// How egress is realized for a container: the effective network mode plus any proxy
+/// env the agent process must export.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EgressRealization {
+    pub network: NetworkMode,
+    /// `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` pairs — empty for `Open`/`None`.
+    pub proxy_env: Vec<(String, String)>,
+}
+
+/// Why an egress policy cannot be realized on this tier.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum EgressError {
+    /// An allowlist policy needs a brokered chokepoint; none was supplied.
+    #[error("allowlist egress requires a brokered proxy endpoint, none supplied")]
+    ProxyRequired,
+}
+
+/// Realize an egress policy for the container tier, fail-closed. An `Allowlist` is
+/// realized as a route through the brokered `proxy` (direct egress denied; all
+/// traffic flows through the chokepoint that enforces the host allowlist). Without a
+/// proxy an allowlist **cannot** be enforced, so it is rejected rather than silently
+/// opened — the sandbox never runs believing egress is controlled when it is not.
+pub fn egress_plan(
+    policy: &pc::NetworkPolicy,
+    proxy: Option<&EgressProxy>,
+) -> Result<EgressRealization, EgressError> {
+    match policy {
+        pc::NetworkPolicy::Unrestricted => Ok(EgressRealization {
+            network: NetworkMode::Open,
+            proxy_env: Vec::new(),
+        }),
+        pc::NetworkPolicy::None => Ok(EgressRealization {
+            network: NetworkMode::None,
+            proxy_env: Vec::new(),
+        }),
+        pc::NetworkPolicy::Allowlist { hosts } => {
+            let proxy = proxy.ok_or(EgressError::ProxyRequired)?;
+            Ok(EgressRealization {
+                network: NetworkMode::Allowlist(hosts.clone()),
+                proxy_env: vec![
+                    ("HTTPS_PROXY".to_string(), proxy.url.clone()),
+                    ("HTTP_PROXY".to_string(), proxy.url.clone()),
+                    // Keep loopback (the agent's own sidecars) direct.
+                    ("NO_PROXY".to_string(), "localhost,127.0.0.1".to_string()),
+                ],
+            })
+        }
+    }
+}
+
 fn binds_of(spec: &pc::SandboxSpec) -> Vec<BindPlan> {
     spec.mounts
         .iter()
+        // MemoryStore is not a host byte path — it is realized as a sidecar, not a bind.
+        .filter(|m| !matches!(m.source, pc::MountSource::MemoryStore { .. }))
         .map(|m| BindPlan {
             source_ref: mount_ref(&m.source),
             mount_path: m.mount_path.clone(),
             read_only: m.access == pc::MountAccess::ReadOnly,
+        })
+        .collect()
+}
+
+/// The memory-store mounts a spec requests, pulled out of the byte-bind set so the
+/// container tier realizes each as a memoryd sidecar + shared volume.
+fn memory_mounts_of(spec: &pc::SandboxSpec) -> Vec<MemoryMount> {
+    spec.mounts
+        .iter()
+        .filter_map(|m| match &m.source {
+            pc::MountSource::MemoryStore { store_id } => Some(MemoryMount {
+                store_id: store_id.clone(),
+                mount_path: m.mount_path.clone(),
+            }),
+            _ => None,
         })
         .collect()
 }
@@ -154,6 +467,7 @@ pub fn container_plan(
         outputs_volume: spec.outputs_path.clone(),
         network: network_of(&spec.network),
         limits: spec.limits.clone(),
+        memory_mounts: memory_mounts_of(spec),
     }
 }
 
@@ -257,6 +571,9 @@ fn err(e: RuntimeError) -> pc::SandboxError {
 pub struct ContainerProvider<R: ContainerRuntime> {
     runtime: Arc<R>,
     default_image: String,
+    /// The brokered egress chokepoint an `Allowlist` policy routes through. Without
+    /// one, an allowlist spec fails closed at `create` (never silently opened).
+    egress_proxy: Option<EgressProxy>,
 }
 
 impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
@@ -264,7 +581,16 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         Self {
             runtime,
             default_image: default_image.into(),
+            egress_proxy: None,
         }
+    }
+
+    /// Route `Allowlist` egress through the brokered `proxy` (the secretless-gateway
+    /// egress route). Without this, an allowlist spec is rejected at `create`.
+    #[must_use]
+    pub fn with_egress_proxy(mut self, proxy: EgressProxy) -> Self {
+        self.egress_proxy = Some(proxy);
+        self
     }
 }
 
@@ -290,17 +616,27 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
                 "container tier requires spec.extra.command (process-as-container)".into(),
             )));
         }
-        let plan = container_plan(spec, &self.default_image, &command);
+        let mut plan = container_plan(spec, &self.default_image, &command);
+        // Realize egress: an Allowlist policy is routed through the brokered proxy
+        // (its env is injected here); without a proxy an allowlist fails closed.
+        let egress = egress_plan(&spec.network, self.egress_proxy.as_ref())
+            .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
+        plan.env.extend(egress.proxy_env);
         let container_id = self.runtime.create(&spec.scope, &plan).await.map_err(err)?;
-        let realized = plan
-            .binds
+        // Report each mount's realization: a byte mount is a Bind, a memory store is
+        // a sidecar-FUSE. Built from spec.mounts directly (binds no longer align 1:1
+        // now that memory stores are pulled out into sidecars).
+        let realized = spec
+            .mounts
             .iter()
-            .zip(&spec.mounts)
-            .map(|(b, m)| pc::RealizedMount {
+            .map(|m| pc::RealizedMount {
                 mount_id: m.mount_id.clone(),
-                mount_path: b.mount_path.clone(),
+                mount_path: m.mount_path.clone(),
                 access: m.access,
-                realization: pc::Realization::Bind,
+                realization: match m.source {
+                    pc::MountSource::MemoryStore { .. } => pc::Realization::Fuse,
+                    _ => pc::Realization::Bind,
+                },
                 content_hash: None,
             })
             .collect();

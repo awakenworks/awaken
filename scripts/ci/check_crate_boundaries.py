@@ -944,20 +944,6 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # kube's rustls client needs a CryptoProvider (ring) installed explicitly.
         "rustls",
     },
-    # Real Docker backend split out of the container planner: `docker run/exec`
-    # over the CLI. A provisioning leaf — names only the neutral sandbox contract.
-    "awaken-sandbox-docker": {
-        "awaken-provisioning-contract",
-        "async-trait",
-        "tokio",
-    },
-    # Real Kubernetes backend split out of the container planner: Pod-per-sandbox
-    # over `kubectl`. A provisioning leaf — names only the neutral sandbox contract.
-    "awaken-sandbox-k8s": {
-        "awaken-provisioning-contract",
-        "async-trait",
-        "tokio",
-    },
     # Fixture-driven eval harness (#4): replays recorded cases through the real
     # runtime (RunExecutor) and scores them. Depends on the kernel to run cases.
     "awaken-eval": {
