@@ -13,8 +13,9 @@ license.workspace = true
 
 [dependencies]
 awaken-memory-store = { workspace = true }
+async-trait.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync"] }
 tracing = "0.1"
 fuser = { version = "0.15", default-features = false, optional = true }
 libc = { version = "0.2", optional = true }
