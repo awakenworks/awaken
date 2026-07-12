@@ -392,6 +392,12 @@ pub struct SharedHost {
     /// survives a restart, so memory written in one process is visible to the next; an
     /// ephemeral per-process dir when the host has no storage dir (unit tests).
     pub(crate) memory_stores: Arc<dyn awaken_memory_store::MemoryBlobStore>,
+    /// Durable, **path-addressed** memory files (ADR-0053): a store holds many
+    /// memories, each at a path with a `content_sha256` + monotonic version, updated
+    /// under compare-and-swap. Backs the `/memories` HTTP endpoints as the durable
+    /// source of truth (survives a restart under the storage dir) and is the seam the
+    /// write-through FUSE mount projects.
+    pub(crate) memory_fs: Arc<dyn awaken_memory_store::MemoryFs>,
     /// An optional tool gate that replaces the default authorization gate on every
     /// thread's runtime. Used to exercise scheduled actions (ADR-0020, slice E): a
     /// gate that defers tool calls as `ScheduledAction`s so the durable dispatch
@@ -451,6 +457,16 @@ impl SharedHost {
             awaken_memory_store::FsMemoryBlobStore::open(&memory_store_root)
                 .expect("open durable memory-store root"),
         );
+        // ADR-0053 path-addressed memory files persist alongside, under the same
+        // durability rule.
+        let memory_fs_root = match &store_dir {
+            Some(dir) => dir.join("memory_fs"),
+            None => std::env::temp_dir().join(format!("awaken-memfs-{}", std::process::id())),
+        };
+        let memory_fs: Arc<dyn awaken_memory_store::MemoryFs> = Arc::new(
+            awaken_memory_store::FsMemoryFs::open(&memory_fs_root)
+                .expect("open durable memory-fs root"),
+        );
         Self {
             llm,
             model_ref: model_ref.into(),
@@ -480,6 +496,7 @@ impl SharedHost {
             thread_egress: crate::sandbox_source::ThreadEgress::new(),
             file_store: Arc::new(InMemoryFileStore::new()),
             memory_stores,
+            memory_fs,
             gate_override: None,
             dispatch_pool: std::sync::OnceLock::new(),
             completion: Arc::new(CompletionRegistry::default()),

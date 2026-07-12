@@ -26,6 +26,8 @@ use axum::{Json, Router};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use awaken_memory_store::MemErr;
+
 use crate::host::SharedHost;
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
@@ -71,51 +73,35 @@ impl MemoryVersion {
     }
 }
 
-/// A memory: a file at a `path` within a store, with a version history. The head
-/// (`versions.last`) carries the current content.
-#[derive(Clone)]
-struct Memory {
-    id: String,
-    path: String,
-    versions: Vec<MemoryVersion>,
+/// Project a durable [`awaken_memory_store::Memory`] (the path-addressed head, the
+/// source of truth) onto the SDK memory object.
+fn project_memory(mem: &awaken_memory_store::Memory, store_id: &str) -> Value {
+    let content = mem.content.clone().unwrap_or_default();
+    json!({
+        "id": mem.id,
+        "type": "memory",
+        "created_at": OBJECT_AT,
+        "updated_at": OBJECT_AT,
+        "memory_store_id": store_id,
+        // The monotonic per-path version → a version id that changes on every write.
+        "memory_version_id": format!("memver_{}_{}", mem.id, mem.version),
+        "path": mem.path,
+        "content": content,
+        "content_sha256": mem.content_sha256,
+        "content_size_bytes": mem.content_size,
+    })
 }
 
-impl Memory {
-    fn head(&self) -> &MemoryVersion {
-        self.versions
-            .last()
-            .expect("a memory always has >=1 version")
-    }
-
-    fn content(&self) -> String {
-        self.head().content.clone().unwrap_or_default()
-    }
-
-    fn project(&self, store_id: &str) -> Value {
-        let content = self.content();
-        json!({
-            "id": self.id,
-            "type": "memory",
-            "created_at": OBJECT_AT,
-            "updated_at": OBJECT_AT,
-            "memory_store_id": store_id,
-            "memory_version_id": self.head().id,
-            "path": self.path,
-            "content": content,
-            "content_sha256": sha256_hex(&content),
-            "content_size_bytes": content.len(),
-        })
-    }
-}
-
-/// The SDK-side metadata + memories for one store (the mount blob is separate).
+/// The SDK-side store metadata + an append-only version log. The current head of
+/// each memory lives in the durable [`awaken_memory_store::MemoryFs`]; this log keeps
+/// the version history the `/memory_versions` endpoints surface.
 #[derive(Clone, Default)]
 struct StoreMeta {
     name: String,
     description: String,
     metadata: BTreeMap<String, String>,
     archived_at: Option<String>,
-    memories: BTreeMap<String, Memory>,
+    versions: Vec<MemoryVersion>,
 }
 
 impl StoreMeta {
@@ -136,14 +122,10 @@ impl StoreMeta {
 struct MemoryStoreApi {
     host: Arc<SharedHost>,
     registry: Mutex<BTreeMap<String, StoreMeta>>,
-    mem_seq: AtomicU64,
     ver_seq: AtomicU64,
 }
 
 impl MemoryStoreApi {
-    fn next_memory_id(&self) -> String {
-        format!("mem_{:016}", self.mem_seq.fetch_add(1, Ordering::SeqCst))
-    }
     fn next_version_id(&self) -> String {
         format!("memver_{:016}", self.ver_seq.fetch_add(1, Ordering::SeqCst))
     }
@@ -154,7 +136,6 @@ pub fn memory_stores_router(host: Arc<SharedHost>) -> Router {
     let state = Arc::new(MemoryStoreApi {
         host,
         registry: Mutex::new(BTreeMap::new()),
-        mem_seq: AtomicU64::new(0),
         ver_seq: AtomicU64::new(0),
     });
     Router::new()
@@ -225,7 +206,7 @@ async fn create_store(State(state): State<Arc<MemoryStoreApi>>, body: Bytes) -> 
             })
             .unwrap_or_default(),
         archived_at: None,
-        memories: BTreeMap::new(),
+        versions: Vec::new(),
     };
     let projected = meta.project(&id);
     state.registry.lock().unwrap().insert(id, meta);
@@ -327,6 +308,56 @@ async fn archive_store(
 
 // ---- Memory routes ---------------------------------------------------------
 
+/// Find a memory's current path by its id in the durable store (path-addressed, so
+/// an id lookup scans the store's listing — memory stores are small).
+async fn path_of(state: &MemoryStoreApi, store: &str, mid: &str) -> Option<String> {
+    state
+        .host
+        .memory_fs
+        .list(store, "/")
+        .await
+        .ok()?
+        .into_iter()
+        .find(|e| e.id == mid)
+        .map(|e| e.path)
+}
+
+/// Append a version-history row for the `/memory_versions` endpoints.
+fn record_version(
+    state: &MemoryStoreApi,
+    store: &str,
+    memory_id: &str,
+    path: &str,
+    content: Option<String>,
+    operation: &'static str,
+) {
+    let ver = MemoryVersion {
+        id: state.next_version_id(),
+        memory_id: memory_id.to_string(),
+        operation,
+        content,
+        path: path.to_string(),
+        redacted_at: None,
+    };
+    if let Some(meta) = state.registry.lock().unwrap().get_mut(store) {
+        meta.versions.push(ver);
+    }
+}
+
+fn memory_conflict() -> axum::response::Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "type": "error",
+            "error": {
+                "type": "memory_precondition_failed_error",
+                "message": "content_sha256 precondition did not match",
+            }
+        })),
+    )
+        .into_response()
+}
+
 async fn create_memory(
     State(state): State<Arc<MemoryStoreApi>>,
     Path(id): Path<String>,
@@ -338,29 +369,31 @@ async fn create_memory(
     let content = body
         .get("content")
         .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let mem_id = state.next_memory_id();
-    let ver_id = state.next_version_id();
-    let memory = Memory {
-        id: mem_id.clone(),
-        path: path.to_string(),
-        versions: vec![MemoryVersion {
-            id: ver_id,
-            memory_id: mem_id.clone(),
-            operation: "created",
-            content: Some(content),
-            path: path.to_string(),
-            redacted_at: None,
-        }],
-    };
-    let mut registry = state.registry.lock().unwrap();
-    let Some(meta) = registry.get_mut(&id) else {
+        .unwrap_or_default();
+    // Store existence is checked against the DURABLE mount blob (survives a restart),
+    // not the in-memory registry — so a store created before a restart still accepts
+    // memories after it.
+    if state.host.memory_get(&id).await.is_none() {
         return not_found("memory_store");
-    };
-    let projected = memory.project(&id);
-    meta.memories.insert(mem_id, memory);
-    (StatusCode::OK, Json(projected)).into_response()
+    }
+    // The durable path-addressed store is the source of truth for the head.
+    match state.host.memory_fs.create(&id, path, content).await {
+        Ok(mem) => {
+            record_version(
+                &state,
+                &id,
+                &mem.id,
+                path,
+                Some(content.to_string()),
+                "created",
+            );
+            (StatusCode::OK, Json(project_memory(&mem, &id))).into_response()
+        }
+        Err(MemErr::PathConflict(_)) => memory_conflict(),
+        Err(MemErr::InvalidPath(_)) => err(StatusCode::BAD_REQUEST, "invalid memory path"),
+        Err(MemErr::TooLarge) => err(StatusCode::BAD_REQUEST, "memory content too large"),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
 }
 
 async fn list_memories(
@@ -368,26 +401,42 @@ async fn list_memories(
     Path(id): Path<String>,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
-    let registry = state.registry.lock().unwrap();
-    let Some(meta) = registry.get(&id) else {
-        return not_found("memory_store");
-    };
-    // `path_prefix` drills into a subtree; `view` gates whether `content` is
-    // populated (`full`, the default) or elided (`basic`) — SDK memory-list params.
-    let prefix = q.get("path_prefix").map(String::as_str);
+    // The durable store is the source of truth; no registry dependency, so a listing
+    // works after a restart even though the in-memory registry is empty.
+    let prefix = q.get("path_prefix").map(String::as_str).unwrap_or("/");
     let basic = q.get("view").map(String::as_str) == Some("basic");
-    let data: Vec<Value> = meta
-        .memories
-        .values()
-        .filter(|m| prefix.is_none_or(|p| m.path.starts_with(p)))
-        .map(|m| {
-            let mut projected = m.project(&id);
-            if basic {
-                projected["content"] = Value::Null;
-            }
-            projected
-        })
-        .collect();
+    let entries = match state.host.memory_fs.list(&id, prefix).await {
+        Ok(entries) => entries,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+    let mut data = Vec::with_capacity(entries.len());
+    for entry in entries {
+        // `basic` elides content (metadata only); `full` fetches the head content.
+        let content = if basic {
+            None
+        } else {
+            state
+                .host
+                .memory_fs
+                .get_by_path(&id, &entry.path)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|m| m.content)
+        };
+        data.push(json!({
+            "id": entry.id,
+            "type": "memory",
+            "created_at": OBJECT_AT,
+            "updated_at": OBJECT_AT,
+            "memory_store_id": id,
+            "memory_version_id": format!("memver_{}_{}", entry.id, entry.version),
+            "path": entry.path,
+            "content": content,
+            "content_sha256": entry.content_sha256,
+            "content_size_bytes": entry.content_size,
+        }));
+    }
     (
         StatusCode::OK,
         Json(json!({ "data": data, "has_more": false, "next_page": null })),
@@ -399,99 +448,104 @@ async fn get_memory(
     State(state): State<Arc<MemoryStoreApi>>,
     Path((id, mid)): Path<(String, String)>,
 ) -> axum::response::Response {
-    let registry = state.registry.lock().unwrap();
-    match registry.get(&id).and_then(|m| m.memories.get(&mid)) {
-        Some(memory) => (StatusCode::OK, Json(memory.project(&id))).into_response(),
-        None => not_found("memory"),
+    let Some(path) = path_of(&state, &id, &mid).await else {
+        return not_found("memory");
+    };
+    match state.host.memory_fs.get_by_path(&id, &path).await {
+        Ok(Some(mem)) => (StatusCode::OK, Json(project_memory(&mem, &id))).into_response(),
+        _ => not_found("memory"),
     }
 }
 
-/// `POST /v1/memory_stores/:id/memories/:mid` — update a memory's content and/or
-/// path. A `content_sha256` precondition that does not match the current head is
-/// a `412` (the SDK's `memory_precondition_failed_error`). Appends a `modified`
-/// version.
+/// `POST /v1/memory_stores/:id/memories/:mid` — update a memory's content (and/or
+/// path). A `content_sha256` precondition that does not match the durable head is a
+/// `409` (the SDK's `memory_precondition_failed_error`), enforced as a compare-and-
+/// swap in the store. Appends a `modified` version.
 async fn update_memory(
     State(state): State<Arc<MemoryStoreApi>>,
     Path((id, mid)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> axum::response::Response {
-    let mut registry = state.registry.lock().unwrap();
-    let Some(memory) = registry.get_mut(&id).and_then(|m| m.memories.get_mut(&mid)) else {
+    let Some(path) = path_of(&state, &id, &mid).await else {
         return not_found("memory");
     };
-    // Optimistic precondition on the current content hash.
-    if let Some(expected) = body
+    let Ok(Some(current)) = state.host.memory_fs.get_by_path(&id, &path).await else {
+        return not_found("memory");
+    };
+    // The CAS base: an explicit precondition (stale → conflict) else the live sha.
+    let base_sha = body
         .get("precondition")
         .and_then(|p| p.get("content_sha256"))
         .and_then(Value::as_str)
-    {
-        let current = sha256_hex(&memory.content());
-        if current != expected {
-            // The SDK documents a precondition mismatch as HTTP 409.
-            return (
-                StatusCode::CONFLICT,
-                Json(json!({
-                    "type": "error",
-                    "error": {
-                        "type": "memory_precondition_failed_error",
-                        "message": "content_sha256 precondition did not match",
-                    }
-                })),
-            )
-                .into_response();
-        }
-    }
+        .unwrap_or(&current.content_sha256)
+        .to_string();
     let new_content = body
         .get("content")
         .and_then(Value::as_str)
         .map(str::to_string)
-        .unwrap_or_else(|| memory.content());
-    let new_path = body
-        .get("path")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .unwrap_or_else(|| memory.path.clone());
-    let ver_id = state.next_version_id();
-    memory.path = new_path.clone();
-    memory.versions.push(MemoryVersion {
-        id: ver_id,
-        memory_id: mid.clone(),
-        operation: "modified",
-        content: Some(new_content),
-        path: new_path,
-        redacted_at: None,
-    });
-    (StatusCode::OK, Json(memory.project(&id))).into_response()
+        .unwrap_or_else(|| current.content.clone().unwrap_or_default());
+
+    let updated = match state
+        .host
+        .memory_fs
+        .update(&id, &mid, &new_content, &base_sha)
+        .await
+    {
+        Ok(updated) => updated,
+        Err(MemErr::Conflict { .. }) => return memory_conflict(),
+        Err(MemErr::TooLarge) => return err(StatusCode::BAD_REQUEST, "memory content too large"),
+        Err(_) => return not_found("memory"),
+    };
+    // An optional path change is a rename on the store (keeps the id + open fds).
+    let final_mem = match body.get("path").and_then(Value::as_str) {
+        Some(new_path) if new_path != path => {
+            match state.host.memory_fs.rename(&id, &path, new_path).await {
+                Ok(m) => m,
+                Err(e) => return err(StatusCode::BAD_REQUEST, e.to_string()),
+            }
+        }
+        _ => updated,
+    };
+    record_version(
+        &state,
+        &id,
+        &mid,
+        &final_mem.path,
+        Some(new_content),
+        "modified",
+    );
+    (StatusCode::OK, Json(project_memory(&final_mem, &id))).into_response()
 }
 
 async fn delete_memory(
     State(state): State<Arc<MemoryStoreApi>>,
     Path((id, mid)): Path<(String, String)>,
 ) -> axum::response::Response {
-    let mut registry = state.registry.lock().unwrap();
-    let Some(meta) = registry.get_mut(&id) else {
-        return not_found("memory_store");
+    let Some(path) = path_of(&state, &id, &mid).await else {
+        return not_found("memory");
     };
-    if meta.memories.remove(&mid).is_some() {
-        (
-            StatusCode::OK,
-            Json(json!({ "id": mid, "type": "memory_deleted" })),
-        )
-            .into_response()
-    } else {
-        not_found("memory")
+    if state
+        .host
+        .memory_fs
+        .delete_by_path(&id, &path)
+        .await
+        .is_err()
+    {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "delete failed");
     }
+    record_version(&state, &id, &mid, &path, None, "deleted");
+    (
+        StatusCode::OK,
+        Json(json!({ "id": mid, "type": "memory_deleted" })),
+    )
+        .into_response()
 }
 
 // ---- Version routes --------------------------------------------------------
 
-/// All versions across the store's memories (newest last), ascending id.
+/// The store's version log (ascending id).
 fn collect_versions(meta: &StoreMeta) -> Vec<&MemoryVersion> {
-    let mut versions: Vec<&MemoryVersion> = meta
-        .memories
-        .values()
-        .flat_map(|m| m.versions.iter())
-        .collect();
+    let mut versions: Vec<&MemoryVersion> = meta.versions.iter().collect();
     versions.sort_by(|a, b| a.id.cmp(&b.id));
     versions
 }
@@ -540,12 +594,10 @@ async fn redact_version(
     let Some(meta) = registry.get_mut(&id) else {
         return not_found("memory_store");
     };
-    for memory in meta.memories.values_mut() {
-        if let Some(version) = memory.versions.iter_mut().find(|v| v.id == vid) {
-            version.redacted_at = Some(OBJECT_AT.to_string());
-            version.content = None;
-            return (StatusCode::OK, Json(version.project(&id))).into_response();
-        }
+    if let Some(version) = meta.versions.iter_mut().find(|v| v.id == vid) {
+        version.redacted_at = Some(OBJECT_AT.to_string());
+        version.content = None;
+        return (StatusCode::OK, Json(version.project(&id))).into_response();
     }
     not_found("memory_version")
 }
