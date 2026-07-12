@@ -185,6 +185,36 @@ impl CommitCoordinator for SqliteCommitCoordinator {
         // Serialize commits: assign the fence and advance the projection without
         // a race, matching SQLite's single-writer model.
         let _writing = self.write_lock.lock().await;
+
+        // Terminal-is-final (exactly-once committed LOG under a stale reclaim):
+        // reject a post-terminal commit for a run whose committed phase is already
+        // `Ended`. A stale owner whose lease lapsed mid-flight and was superseded by
+        // a reclaimer that already drove the run to `Ended` would otherwise append a
+        // duplicate transcript and a second terminal fact. The first `Ended` commit
+        // lands (the run is not yet terminal); only a SUBSEQUENT commit is fenced.
+        // The phase is read from the same fact-derived projection that serves
+        // `run`/`latest_run`. (See the in-memory reference for the full rationale.)
+        //
+        // This read is process-LOCAL (the in-memory projection), which is correct
+        // here because the SQLite store is single-writer / single-process by
+        // construction (the write lock serializes all commits in one process; the
+        // fleet uses Postgres, whose guard is instead a durable in-transaction
+        // `SELECT ... FOR UPDATE` on the shared DB). Do not assume this SQLite fence
+        // holds across processes sharing a database file.
+        {
+            let projection = lock(&self.projection)?;
+            if projection
+                .run_records
+                .get(&commit.run_fact.run_id)
+                .is_some_and(|record| matches!(record.phase, Phase::Ended(_)))
+            {
+                return Err(Error::Rejected(format!(
+                    "run {} is already terminal; refusing post-terminal commit",
+                    commit.run_fact.run_id.0
+                )));
+            }
+        }
+
         let next = lock(&self.projection)?.sequence + 1;
 
         let conn = self.conn.clone();

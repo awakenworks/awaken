@@ -105,9 +105,13 @@ async fn commit_persists_facts_messages_and_serves_reads() {
 #[tokio::test]
 async fn fence_increments_monotonically() {
     let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    // A distinct run per commit: the fence increments across successive commits,
+    // which is what this pins. (Re-committing one terminal run would trip the
+    // terminal-is-final guard, which fences a stale owner's duplicate post-terminal
+    // commit; a run ends exactly once.)
     for expected in 1..=3u64 {
         let record = store
-            .commit(empty_commit("thread-1", ended("run-1"), None))
+            .commit(empty_commit("thread-1", ended(&format!("run-{expected}")), None))
             .await
             .expect("commit");
         assert_eq!(record.sequence, expected);

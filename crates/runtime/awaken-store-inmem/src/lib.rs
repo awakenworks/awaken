@@ -96,6 +96,30 @@ impl CommitCoordinator for MemoryCommitCoordinator {
         let run_id = commit.run_fact.run_id.clone();
         let phase = commit.run_fact.phase.clone();
 
+        // Terminal-is-final (exactly-once committed LOG under a stale reclaim):
+        // once a run's committed phase is terminal, reject any later commit for
+        // that run. A stale owner — slow-but-alive, its lease lapsed mid-flight and
+        // superseded by a reclaimer that already drove the run to `Ended` — would
+        // otherwise re-execute from the activation and append duplicate assistant
+        // messages and a second terminal fact. The FIRST `Ended` commit is allowed
+        // (the run is not yet terminal when it lands); only a SUBSEQUENT commit to
+        // an already-terminal run is fenced. This keeps the transcript exactly-once
+        // even though the external tool side effect may still have run twice (an
+        // at-least-once effect inherent to lease-based recovery, not fixable here).
+        if state
+            .thread
+            .run_facts
+            .iter()
+            .rev()
+            .find(|fact| fact.run_id == run_id)
+            .is_some_and(|fact| matches!(fact.phase, Phase::Ended(_)))
+        {
+            return Err(Error::Rejected(format!(
+                "run {} is already terminal; refusing post-terminal commit",
+                run_id.0
+            )));
+        }
+
         // Park or clear the waiting ticket atomically with the checkpoint: a
         // `Some` ticket parks the run; any ended phase clears it so a
         // resumed/terminal run can no longer be resumed (G5).

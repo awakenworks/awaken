@@ -84,6 +84,35 @@ impl FsCommitCoordinator {
 #[async_trait]
 impl Coordinator for FsCommitCoordinator {
     async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
+        // Terminal-is-final (exactly-once committed LOG under a stale reclaim):
+        // reject a post-terminal commit for a run whose committed phase is already
+        // `Ended`. The inner reference model enforces the same invariant, but it is
+        // checked HERE first — before the durable append below — so the append-only
+        // log never records a post-terminal line that would then be rejected when
+        // the read model is rebuilt on open. (See awaken-store-inmem for the full
+        // rationale on why a stale owner's duplicate commit must be fenced.)
+        //
+        // This read is process-LOCAL (the inner in-memory model), which is correct
+        // here because the fs store is single-writer / single-process by
+        // construction (one process owns the append-only log; the fleet uses
+        // Postgres, whose guard is instead a durable in-transaction
+        // `SELECT ... FOR UPDATE` on the shared DB). Do not assume this fs fence
+        // holds across processes sharing a log directory.
+        if self
+            .inner
+            .get(&commit.run_fact.run_id)
+            .is_some_and(|record| {
+                matches!(
+                    record.phase,
+                    awaken_agent_contract::agent::run::Phase::Ended(_)
+                )
+            })
+        {
+            return Err(Error::Rejected(format!(
+                "run {} is already terminal; refusing post-terminal commit",
+                commit.run_fact.run_id.0
+            )));
+        }
         // Durable first: append + fsync the record before it is acknowledged, so a
         // crash after ack cannot lose it and a crash before ack replays nothing.
         let line = serde_json::to_string(&commit)

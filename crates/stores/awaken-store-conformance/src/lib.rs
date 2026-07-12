@@ -16,12 +16,12 @@ use awaken_agent_contract::event::kind::Kind as EventKind;
 use awaken_agent_contract::fact::run::Fact as RunFact;
 use awaken_agent_contract::store::checkpoint::{CheckpointReader, EventScope};
 
-fn ended_checkpoint(thread: &ThreadId, run: &RunId, text: &str) -> ThreadCommit {
+fn checkpoint(thread: &ThreadId, run: &RunId, text: &str, phase: Phase) -> ThreadCommit {
     ThreadCommit {
         thread_id: thread.clone(),
         run_fact: RunFact {
             run_id: run.clone(),
-            phase: Phase::Ended(EndCause::NaturalEnd),
+            phase,
         },
         messages: vec![Message::text(
             MsgId(format!("m-{text}")),
@@ -36,6 +36,14 @@ fn ended_checkpoint(thread: &ThreadId, run: &RunId, text: &str) -> ThreadCommit 
         outbox: Vec::new(),
         waiting: None,
     }
+}
+
+fn ended_checkpoint(thread: &ThreadId, run: &RunId, text: &str) -> ThreadCommit {
+    checkpoint(thread, run, text, Phase::Ended(EndCause::NaturalEnd))
+}
+
+fn running_checkpoint(thread: &ThreadId, run: &RunId, text: &str) -> ThreadCommit {
+    checkpoint(thread, run, text, Phase::Running)
 }
 
 /// A committed checkpoint is readable as facts: transcript, run record, latest
@@ -70,8 +78,12 @@ pub async fn commit_then_read<S: Coordinator + CheckpointReader>(store: &S) {
 pub async fn events_ordered_and_paged<S: Coordinator + CheckpointReader>(store: &S) {
     let thread = ThreadId("conf-events".to_string());
     let run = RunId("conf-events-r".to_string());
+    // A run's two events come from a mid-flight `Running` step and then the
+    // terminal `Ended` commit — the order a real run produces them. (Committing
+    // two terminal facts for one run would trip the terminal-is-final guard, which
+    // fences a stale owner's duplicate post-terminal commit; a run ends once.)
     store
-        .commit(ended_checkpoint(&thread, &run, "one"))
+        .commit(running_checkpoint(&thread, &run, "one"))
         .await
         .expect("commit 1");
     store
