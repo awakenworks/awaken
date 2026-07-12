@@ -110,6 +110,8 @@ pub enum TaskState {
     Completed,
     #[serde(rename = "failed", alias = "TASK_STATE_FAILED")]
     Failed,
+    #[serde(rename = "canceled", alias = "TASK_STATE_CANCELED")]
+    Canceled,
 }
 
 /// A task status snapshot: the lifecycle state plus the agent's latest message.
@@ -501,6 +503,45 @@ mod tests {
         assert_eq!(value["status"]["state"], "completed");
         let parsed: Task = serde_json::from_value(value).unwrap();
         assert_eq!(parsed, task);
+    }
+
+    #[test]
+    fn task_state_canceled_uses_the_a2a_wire_token() {
+        assert_eq!(
+            serde_json::to_value(TaskState::Canceled).unwrap(),
+            serde_json::json!("canceled")
+        );
+        let back: TaskState = serde_json::from_value(serde_json::json!("canceled")).unwrap();
+        assert_eq!(back, TaskState::Canceled);
+        // The back-compat `TASK_STATE_*` alias is accepted on input.
+        let alias: TaskState =
+            serde_json::from_value(serde_json::json!("TASK_STATE_CANCELED")).unwrap();
+        assert_eq!(alias, TaskState::Canceled);
+    }
+
+    #[test]
+    fn part_serde_shapes_for_text_and_file() {
+        // A text part omits the absent `file`.
+        assert_eq!(
+            serde_json::to_value(Part::text("hi")).unwrap(),
+            serde_json::json!({ "kind": "text", "text": "hi" })
+        );
+        // A file part carries bytes + mimeType and round-trips.
+        let file = Part {
+            kind: Some("file".into()),
+            text: None,
+            file: Some(FilePart {
+                bytes: Some("AAAA".into()),
+                uri: None,
+                mime_type: Some("image/png".into()),
+            }),
+        };
+        let v = serde_json::to_value(&file).unwrap();
+        assert_eq!(v["kind"], "file");
+        assert_eq!(v["file"]["bytes"], "AAAA");
+        assert_eq!(v["file"]["mimeType"], "image/png");
+        let back: Part = serde_json::from_value(v).unwrap();
+        assert_eq!(back, file);
     }
 
     #[test]

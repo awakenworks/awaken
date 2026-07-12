@@ -142,4 +142,73 @@ mod tests {
                 .contains("submit_answer")
         );
     }
+
+    #[test]
+    fn exhausted_step_budget_projects_a_failed_task() {
+        // A run that hit its step ceiling (not parked) is a `failed` A2A task, and
+        // still carries the transcript + last agent status.
+        let history = [
+            msg("u1", Role::User, "do a lot"),
+            msg("a1", Role::Assistant, "partial progress"),
+        ];
+        let exhausted = StepOutcome {
+            new_messages: Vec::new(),
+            waiting: false,
+            exhausted: true,
+            pending: None,
+        };
+        let task = encode_task("t", &history, &exhausted);
+        assert_eq!(task.status.state, TaskState::Failed);
+        assert_eq!(task.status.message.unwrap().text(), "partial progress");
+    }
+
+    #[test]
+    fn completed_task_with_no_agent_message_has_no_status_message() {
+        // History holding only a user turn (agent produced nothing textual) → a
+        // completed task whose status message is absent, not a user message.
+        let history = [msg("u1", Role::User, "hi")];
+        let task = encode_task("t", &history, &outcome(false, None));
+        assert_eq!(task.status.state, TaskState::Completed);
+        assert!(task.status.message.is_none());
+    }
+
+    #[test]
+    fn history_projection_keeps_only_text_from_mixed_content() {
+        let history = [AgentMessage {
+            id: MessageId("a1".into()),
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::image_url("https://x/y.png"),
+                ContentBlock::text("described"),
+            ],
+        }];
+        let task = encode_task("t", &history, &outcome(false, None));
+        // The image is dropped from the A2A projection; the text survives.
+        assert_eq!(task.status.message.unwrap().text(), "described");
+        assert_eq!(task.history[0].parts.len(), 1);
+    }
+
+    #[test]
+    fn input_required_without_a_pending_falls_back_to_the_last_agent_message() {
+        // `waiting` with no `pending` (an edge the prompt branch can't cover): the
+        // task is input-required but the status message is the last agent turn.
+        let history = [
+            msg("u1", Role::User, "question"),
+            msg("a1", Role::Assistant, "still thinking"),
+        ];
+        let task = encode_task("t", &history, &outcome(true, None));
+        assert_eq!(task.status.state, TaskState::InputRequired);
+        assert_eq!(task.status.message.unwrap().text(), "still thinking");
+    }
+
+    #[test]
+    fn history_maps_user_and_assistant_to_a2a_roles() {
+        let history = [
+            msg("u1", Role::User, "hi"),
+            msg("a1", Role::Assistant, "hello"),
+        ];
+        let task = encode_task("t", &history, &outcome(false, None));
+        assert_eq!(task.history[0].role, MessageRole::User);
+        assert_eq!(task.history[1].role, MessageRole::Agent);
+    }
 }
