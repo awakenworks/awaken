@@ -1,0 +1,106 @@
+# Horizontal scaling + consistency (ADR-0019 distributed dispatch): a FLEET of brain
+# pods behind one Service, all draining ONE shared Postgres dispatch queue via
+# `FOR UPDATE SKIP LOCKED`. Concurrent durable submissions fan out across the fleet;
+# each run must be claimed and driven by EXACTLY ONE pod (no loss, no double-drive) —
+# verified authoritatively against Postgres, not a per-pod cached projection.
+#
+#   submit ×M ─→ [Service brain] ─┬─ pod-1 ┐
+#                                 ├─ pod-2 ┼── shared Postgres queue (SKIP LOCKED)
+#                                 └─ pod-3 ┘   each run drained once
+#
+# Loaded into a k3d cluster with `imagePullPolicy: Never`.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels: { app: postgres }
+spec:
+  selector: { app: postgres }
+  ports:
+    - { name: pg, port: 5432, targetPort: 5432 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels: { app: postgres }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          imagePullPolicy: Never
+          env:
+            - { name: POSTGRES_PASSWORD, value: "test" }
+            - { name: POSTGRES_DB, value: "awaken" }
+            - { name: PGDATA, value: "/var/lib/postgresql/data/pgdata" }
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "awaken"]
+            initialDelaySeconds: 2
+            periodSeconds: 2
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: brain
+  labels: { app: brain }
+spec:
+  selector: { app: brain }
+  ports:
+    - { name: http, port: 3000, targetPort: 3000 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: brain
+  labels: { app: brain }
+spec:
+  # A fleet: three pools competing for the one shared queue. Spread across nodes so
+  # the SKIP-LOCKED claim race is genuinely cross-node, not three pools on one box.
+  replicas: 3
+  selector:
+    matchLabels: { app: brain }
+  template:
+    metadata:
+      labels: { app: brain }
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: brain }
+      containers:
+        - name: brain
+          image: awaken-topology:latest
+          imagePullPolicy: Never
+          env:
+            - { name: AWAKEN_MODEL_MODE, value: echo }
+            - { name: AWAKEN_INGRESS, value: durable }
+            - { name: AWAKEN_DISPATCH_BACKEND, value: postgres }
+            - { name: AWAKEN_STORE, value: postgres }
+            - { name: AWAKEN_DATABASE_URL, value: "postgres://postgres:test@postgres:5432/awaken" }
+            - { name: AWAKEN_DISPATCH_WAKE, value: pg-notify }
+            - { name: AWAKEN_HTTP_ADDR, value: "0.0.0.0:3000" }
+            - { name: AWAKEN_STORAGE_DIR, value: "/tmp/awaken" }
+          ports:
+            - containerPort: 3000
+          readinessProbe:
+            tcpSocket: { port: 3000 }
+            initialDelaySeconds: 2
+            periodSeconds: 2
