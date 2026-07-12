@@ -15,6 +15,11 @@ license.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "fs"] }
+# ADR-0053 path-addressed MemoryFs: content-sha256 (Anthropic wire uses sha256) +
+# a durable JSON record per memory.
+sha2 = "0.10"
+serde = { workspace = true }
+serde_json = { workspace = true }
 # Feature `sqlite`: embedded durable MemoryBlobStore over the crate's own
 # `memory_store` migration scope.
 rusqlite = { version = "0.32", features = ["bundled"], optional = true }

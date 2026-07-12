@@ -13,7 +13,10 @@ use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 pub const BUNDLE_ID: &str = "awaken.memory_store";
 
 /// Embedded migration files, in apply order (`(name, contents)`).
-const FILES: &[(&str, &str)] = &[("V0001__blob.sql", include_str!("migrations/V0001__blob.sql"))];
+const FILES: &[(&str, &str)] = &[(
+    "V0001__blob.sql",
+    include_str!("migrations/V0001__blob.sql"),
+)];
 
 /// Version from a `Vnnnn__slug.sql` file name (`V0001__…` ⇒ 1); a non-positive
 /// value is rejected by [`Migration::new`], so a mis-named file fails loudly.
@@ -40,7 +43,11 @@ pub fn memory_store_bundle() -> Result<MigrationBundle, MigrationError> {
     let migrations = FILES
         .iter()
         .map(|(name, contents)| {
-            Migration::new(version_of(name), description_of(name, contents), contents.trim())
+            Migration::new(
+                version_of(name),
+                description_of(name, contents),
+                contents.trim(),
+            )
         })
         .collect::<Result<Vec<_>, _>>()?;
     MigrationBundle::new(BUNDLE_ID, migrations)
