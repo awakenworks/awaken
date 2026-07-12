@@ -153,6 +153,29 @@ fn mount_ref_covers_every_source_kind() {
 }
 
 #[test]
+fn memory_store_mounts_are_pulled_out_of_binds_into_memory_mounts() {
+    let mut s = spec("mem");
+    s.mounts.push(pc::MountRequirement {
+        mount_id: "notes".into(),
+        source: pc::MountSource::MemoryStore {
+            store_id: "store-42".into(),
+        },
+        mount_path: "/workspace/.mnt/notes".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Session,
+        required: true,
+    });
+    let plan = container_plan(&s, "img", &["x".to_string()]);
+    // The memory store is NOT a byte bind — binds stay the 2 file/resource mounts.
+    assert_eq!(plan.binds.len(), 2);
+    assert!(plan.binds.iter().all(|b| b.source_ref != "store-42"));
+    // It is realized as a memory mount (→ sidecar downstream).
+    assert_eq!(plan.memory_mounts.len(), 1);
+    assert_eq!(plan.memory_mounts[0].store_id, "store-42");
+    assert_eq!(plan.memory_mounts[0].mount_path, "/workspace/.mnt/notes");
+}
+
+#[test]
 fn pod_plan_is_process_as_container_with_native_gc() {
     let cmd = pc::Command::new(["claude", "--acp"]);
     let plan = pod_plan(&spec("run-7"), &cmd, "img:1", "owner-uid-123");

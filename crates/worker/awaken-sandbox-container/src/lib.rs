@@ -57,6 +57,18 @@ pub struct BindPlan {
     pub read_only: bool,
 }
 
+/// A memory-store mount realized as a **memoryd sidecar** sharing an `emptyDir` with
+/// the agent container (the k8s/container form of ADR-0038 MemoryStore). A memory
+/// store is a keyed store, not a host byte path — binding `store_id` as a path (the
+/// prior behavior) was a meaningless no-op; the sidecar FUSE-serves it into a
+/// pod-scoped volume the agent reads, and harvests writes back on teardown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryMount {
+    pub store_id: String,
+    /// Sandbox-absolute path the agent sees the store at (the shared volume mount).
+    pub mount_path: String,
+}
+
 /// A neutral container plan rendered from a [`pc::SandboxSpec`] — the input a
 /// bollard `create_container` (or the k8s planner) consumes. Pure and testable.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +83,8 @@ pub struct ContainerPlan {
     pub outputs_volume: String,
     pub network: NetworkMode,
     pub limits: pc::ResourceLimits,
+    /// Memory-store mounts, realized as memoryd sidecars + shared volumes (NOT binds).
+    pub memory_mounts: Vec<MemoryMount>,
 }
 
 /// Neutral cgroup caps derived from [`pc::ResourceLimits`] — what a container
@@ -375,10 +389,27 @@ pub fn egress_plan(
 fn binds_of(spec: &pc::SandboxSpec) -> Vec<BindPlan> {
     spec.mounts
         .iter()
+        // MemoryStore is not a host byte path — it is realized as a sidecar, not a bind.
+        .filter(|m| !matches!(m.source, pc::MountSource::MemoryStore { .. }))
         .map(|m| BindPlan {
             source_ref: mount_ref(&m.source),
             mount_path: m.mount_path.clone(),
             read_only: m.access == pc::MountAccess::ReadOnly,
+        })
+        .collect()
+}
+
+/// The memory-store mounts a spec requests, pulled out of the byte-bind set so the
+/// container tier realizes each as a memoryd sidecar + shared volume.
+fn memory_mounts_of(spec: &pc::SandboxSpec) -> Vec<MemoryMount> {
+    spec.mounts
+        .iter()
+        .filter_map(|m| match &m.source {
+            pc::MountSource::MemoryStore { store_id } => Some(MemoryMount {
+                store_id: store_id.clone(),
+                mount_path: m.mount_path.clone(),
+            }),
+            _ => None,
         })
         .collect()
 }
@@ -436,6 +467,7 @@ pub fn container_plan(
         outputs_volume: spec.outputs_path.clone(),
         network: network_of(&spec.network),
         limits: spec.limits.clone(),
+        memory_mounts: memory_mounts_of(spec),
     }
 }
 
@@ -591,15 +623,20 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
             .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
         plan.env.extend(egress.proxy_env);
         let container_id = self.runtime.create(&spec.scope, &plan).await.map_err(err)?;
-        let realized = plan
-            .binds
+        // Report each mount's realization: a byte mount is a Bind, a memory store is
+        // a sidecar-FUSE. Built from spec.mounts directly (binds no longer align 1:1
+        // now that memory stores are pulled out into sidecars).
+        let realized = spec
+            .mounts
             .iter()
-            .zip(&spec.mounts)
-            .map(|(b, m)| pc::RealizedMount {
+            .map(|m| pc::RealizedMount {
                 mount_id: m.mount_id.clone(),
-                mount_path: b.mount_path.clone(),
+                mount_path: m.mount_path.clone(),
                 access: m.access,
-                realization: pc::Realization::Bind,
+                realization: match m.source {
+                    pc::MountSource::MemoryStore { .. } => pc::Realization::Fuse,
+                    _ => pc::Realization::Bind,
+                },
                 content_hash: None,
             })
             .collect();
