@@ -251,6 +251,93 @@ mod cgroup_caps_tests {
             Err(RootfsError::NotAContainerRootfs)
         );
     }
+
+    fn podman_plan() -> ContainerPlan {
+        ContainerPlan {
+            image: "ghcr.io/awaken/agent:1".into(),
+            command: vec!["claude".into(), "--acp".into()],
+            env: vec![("TZ".into(), "UTC".into())],
+            binds: vec![BindPlan {
+                source_ref: "/host/data".into(),
+                mount_path: "/data".into(),
+                read_only: true,
+            }],
+            outputs_volume: "/mnt/session/outputs".into(),
+            network: NetworkMode::None,
+            limits: pc::ResourceLimits {
+                cpu_millis: Some(1500),
+                memory_bytes: Some(1 << 30),
+                pids: Some(256),
+                disk_bytes: None,
+            },
+            memory_mounts: Vec::new(),
+        }
+    }
+
+    // Find the value that follows `flag` in the argv (for order-independent asserts).
+    fn arg_after<'a>(argv: &'a [String], flag: &str) -> Option<&'a str> {
+        argv.iter()
+            .position(|a| a == flag)
+            .and_then(|i| argv.get(i + 1))
+            .map(String::as_str)
+    }
+
+    #[test]
+    fn podman_run_argv_maps_init_network_limits_env_binds_and_command() {
+        let argv = podman_run_argv("run-1", &podman_plan(), &RootfsPlan::Image("img:2".into()));
+        assert!(argv.starts_with(&["run".into(), "-d".into(), "--init".into()]));
+        assert_eq!(arg_after(&argv, "--name"), Some("run-1"));
+        // network None → --network none
+        assert_eq!(arg_after(&argv, "--network"), Some("none"));
+        // cgroup: swap pinned to memory, cpus decimal, pids
+        assert_eq!(arg_after(&argv, "--memory"), Some("1073741824"));
+        assert_eq!(arg_after(&argv, "--memory-swap"), Some("1073741824"));
+        assert_eq!(arg_after(&argv, "--cpus"), Some("1.500"));
+        assert_eq!(arg_after(&argv, "--pids-limit"), Some("256"));
+        // env + read-only bind
+        assert_eq!(arg_after(&argv, "-e"), Some("TZ=UTC"));
+        assert_eq!(arg_after(&argv, "-v"), Some("/host/data:/data:ro"));
+        // process-as-container: the image then the agent command are the tail
+        assert_eq!(&argv[argv.len() - 3..], &["img:2", "claude", "--acp"]);
+    }
+
+    #[test]
+    fn podman_run_argv_uses_rootfs_overlay_for_a_read_only_private_root() {
+        let mut plan = podman_plan();
+        plan.network = NetworkMode::Open; // no --network flag
+        let ro = podman_run_argv(
+            "r",
+            &plan,
+            &RootfsPlan::RootDir {
+                path_template: "/roots/base".into(),
+                writable: false,
+            },
+        );
+        // read-only base → `--rootfs <dir>:O` (overlay keeps the base untouched)
+        assert_eq!(arg_after(&ro, "--rootfs"), Some("/roots/base:O"));
+        assert!(
+            !ro.iter().any(|a| a == "--network"),
+            "Open egress adds no flag"
+        );
+
+        let rw = podman_run_argv(
+            "r",
+            &plan,
+            &RootfsPlan::RootDir {
+                path_template: "/roots/base".into(),
+                writable: true,
+            },
+        );
+        assert_eq!(arg_after(&rw, "--rootfs"), Some("/roots/base"));
+    }
+
+    #[test]
+    fn podman_run_argv_host_userland_runs_the_default_image() {
+        let argv = podman_run_argv("r", &podman_plan(), &RootfsPlan::HostUserland);
+        // HostUserland → the plan's image is the run target (no --rootfs).
+        assert!(!argv.iter().any(|a| a == "--rootfs"));
+        assert!(argv.contains(&"ghcr.io/awaken/agent:1".to_string()));
+    }
 }
 
 fn image_of(spec: &pc::SandboxSpec, default_image: &str) -> String {
@@ -324,6 +411,82 @@ pub fn rootfs_plan(kind: &pc::EnvironmentKind) -> Result<RootfsPlan, RootfsError
             Err(RootfsError::NotAContainerRootfs)
         }
     }
+}
+
+/// Render the argv for a **rootless podman** `run` of a process-as-container agent —
+/// the daemonless, worker-parented executor for the `Image`/`IsolatedRoot` tiers.
+/// Pure and deterministic (like [`crate::pod_plan`] / `bubblewrap_argv`), so the
+/// flag mapping is unit-testable without podman installed; the [`PodmanRuntime`]
+/// adapter only fork-execs the result.
+///
+/// - `--init` reaps the agent's children (PID 1); `-d` detaches so the worker owns it.
+/// - Resource caps reuse [`CgroupCaps`] (swap pinned to the memory cap).
+/// - `rootfs`: an `Image` runs the OCI reference; an `IsolatedRoot` runs `--rootfs`
+///   over a private directory (read-only bases use the `:O` overlay so the base is
+///   untouched). A `RootTarball` must be unpacked to a directory by the adapter
+///   first; the `reference` is then that path.
+#[must_use]
+pub fn podman_run_argv(name: &str, plan: &ContainerPlan, rootfs: &RootfsPlan) -> Vec<String> {
+    let mut a: Vec<String> = ["run", "-d", "--init", "--name", name]
+        .into_iter()
+        .map(String::from)
+        .collect();
+
+    match &plan.network {
+        NetworkMode::Open => {}
+        NetworkMode::None => a.extend(["--network".into(), "none".into()]),
+        // Allowlist is enforced at the brokered proxy (its env is in plan.env); the
+        // container itself keeps default bridge egress to reach that proxy.
+        NetworkMode::Allowlist(_) => a.extend(["--network".into(), "bridge".into()]),
+    }
+
+    let caps = CgroupCaps::from_limits(&plan.limits);
+    if let Some(m) = caps.memory_bytes {
+        a.extend(["--memory".into(), m.to_string()]);
+        // Pin swap to the memory cap (the swap-escape close).
+        a.extend(["--memory-swap".into(), m.to_string()]);
+    }
+    if let Some(c) = plan.limits.cpu_millis {
+        a.extend(["--cpus".into(), format!("{}.{:03}", c / 1000, c % 1000)]);
+    }
+    if let Some(p) = caps.pids {
+        a.extend(["--pids-limit".into(), p.to_string()]);
+    }
+    if let Some(size) = caps.disk_size {
+        a.extend(["--storage-opt".into(), format!("size={size}")]);
+    }
+
+    for (k, v) in &plan.env {
+        a.extend(["-e".into(), format!("{k}={v}")]);
+    }
+    for b in &plan.binds {
+        let ro = if b.read_only { ":ro" } else { "" };
+        a.extend([
+            "-v".into(),
+            format!("{}:{}{ro}", b.source_ref, b.mount_path),
+        ]);
+    }
+
+    // The rootfs / image the agent runs on.
+    match rootfs {
+        RootfsPlan::HostUserland => a.push(plan.image.clone()),
+        RootfsPlan::Image(image) => a.push(image.clone()),
+        RootfsPlan::RootDir {
+            path_template,
+            writable,
+        }
+        | RootfsPlan::RootTarball {
+            reference: path_template,
+            writable,
+        } => {
+            let overlay = if *writable { "" } else { ":O" };
+            a.extend(["--rootfs".into(), format!("{path_template}{overlay}")]);
+        }
+    }
+
+    // Process-as-container: the agent argv is the container's main command.
+    a.extend(plan.command.iter().cloned());
+    a
 }
 
 /// A brokered egress chokepoint the sandbox routes through. The host allowlist is
