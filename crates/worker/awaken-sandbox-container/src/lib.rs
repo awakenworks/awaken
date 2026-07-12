@@ -634,7 +634,10 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
                 mount_path: m.mount_path.clone(),
                 access: m.access,
                 realization: match m.source {
-                    pc::MountSource::MemoryStore { .. } => pc::Realization::Fuse,
+                    // The container tier's memoryd sidecar defaults to the portable
+                    // copy realization; a FUSE sidecar is an opt-in node optimization
+                    // the runtime-agnostic provider does not observe here.
+                    pc::MountSource::MemoryStore { .. } => pc::Realization::Copy,
                     _ => pc::Realization::Bind,
                 },
                 content_hash: None,
