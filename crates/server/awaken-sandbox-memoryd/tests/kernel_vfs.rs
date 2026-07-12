@@ -172,3 +172,101 @@ fn a_shared_mount_is_coherent_and_refcounted_across_acquirers() {
     std::fs::remove_dir_all(&store_root).ok();
     std::fs::remove_dir_all(&mnt_root).ok();
 }
+
+#[test]
+fn kernel_exercises_metadata_truncate_offsets_dirs_and_errors() {
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    if let Some(reason) = fuse_unavailable_reason() {
+        eprintln!("SKIP kernel_vfs edges: {reason}");
+        return;
+    }
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let store_root = unique("estore");
+    let mnt = unique("emnt");
+    let store = "memstore_1";
+
+    let backend = Arc::new(FsMemoryFs::open(&store_root).unwrap());
+    rt.block_on(backend.create(store, "/f.md", "0123456789"))
+        .unwrap();
+
+    let handle = spawn_mount(backend.clone(), store.into(), mnt.clone())
+        .expect("mount")
+        .with_drain_timeout(Duration::from_secs(2));
+    assert_eq!(handle.open_fd_count(), 0, "no fds open before any syscall");
+    std::thread::sleep(Duration::from_millis(100));
+
+    // stat via an OPEN handle (getattr with fh) reports the live size.
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(mnt.join("f.md"))
+        .unwrap();
+    assert_eq!(file.metadata().unwrap().len(), 10);
+
+    // read at an offset (seek + partial read).
+    file.seek(SeekFrom::Start(4)).unwrap();
+    let mut buf = [0u8; 3];
+    file.read_exact(&mut buf).unwrap();
+    assert_eq!(&buf, b"456");
+
+    // write at an offset, then ftruncate (setattr size on an open fd).
+    file.seek(SeekFrom::Start(2)).unwrap();
+    file.write_all(b"XY").unwrap();
+    file.set_len(4).unwrap();
+    file.sync_all().unwrap(); // fsync path
+    drop(file); // release → flush
+    assert_eq!(
+        rt.block_on(backend.get_by_path(store, "/f.md"))
+            .unwrap()
+            .unwrap()
+            .content
+            .as_deref(),
+        Some("01XY"),
+        "offset write + truncate flushed coherently"
+    );
+
+    // stat and read a nonexistent path → ENOENT (lookup error arm).
+    assert_eq!(
+        std::fs::metadata(mnt.join("ghost.md")).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    assert!(std::fs::read(mnt.join("ghost.md")).is_err());
+
+    // mkdir a synthetic dir, put a file under it, then rmdir fails (not empty),
+    // succeeds once emptied.
+    std::fs::create_dir(mnt.join("d")).unwrap();
+    std::fs::write(mnt.join("d/inner.md"), "in").unwrap();
+    assert!(
+        std::fs::remove_dir(mnt.join("d")).is_err(),
+        "rmdir a non-empty directory fails"
+    );
+    std::fs::remove_file(mnt.join("d/inner.md")).unwrap();
+    std::fs::remove_dir(mnt.join("d")).unwrap();
+
+    // rename over an EXISTING target atomically replaces it.
+    std::fs::write(mnt.join("a.md"), "aaa").unwrap();
+    std::fs::write(mnt.join("b.md"), "bbb").unwrap();
+    std::fs::rename(mnt.join("a.md"), mnt.join("b.md")).unwrap();
+    assert_eq!(std::fs::read_to_string(mnt.join("b.md")).unwrap(), "aaa");
+    assert!(std::fs::metadata(mnt.join("a.md")).is_err());
+
+    // renaming a nonexistent source errors.
+    assert!(std::fs::rename(mnt.join("nope.md"), mnt.join("x.md")).is_err());
+
+    // truncate BY PATH (no open fd) → setattr without a file handle.
+    truncate_path(&mnt.join("b.md"), 1);
+    assert_eq!(std::fs::read_to_string(mnt.join("b.md")).unwrap(), "a");
+    // chmod → setattr with size=None (metadata-only; returns the current attr).
+    let mut perms = std::fs::metadata(mnt.join("b.md")).unwrap().permissions();
+    perms.set_readonly(false);
+    std::fs::set_permissions(mnt.join("b.md"), perms).unwrap();
+
+    handle.unmount();
+    std::fs::remove_dir_all(&store_root).ok();
+    std::fs::remove_dir_all(&mnt).ok();
+}
+
+fn truncate_path(path: &Path, len: i64) {
+    nix::unistd::truncate(path, len).expect("truncate by path");
+}

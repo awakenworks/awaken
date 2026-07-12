@@ -19,6 +19,11 @@ tracing = "0.1"
 fuser = { version = "0.15", default-features = false, optional = true }
 libc = { version = "0.2", optional = true }
 
+[dev-dependencies]
+# Kernel-VFS integration tests issue a syscall std does not expose (`truncate` by
+# path → setattr without an fd); nix is a safe wrapper (no `unsafe` in tests).
+nix = { version = "0.29", features = ["fs"] }
+
 [features]
 default = ["fuse"]
 fuse = ["dep:fuser", "dep:libc"]

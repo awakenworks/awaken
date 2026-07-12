@@ -84,16 +84,6 @@ impl MemoryMountHandle {
     }
 }
 
-/// Mount `store` at `mountpoint`, blocking until it is unmounted externally.
-pub fn mount(
-    fs: Arc<dyn MemoryFs>,
-    store_id: String,
-    mountpoint: PathBuf,
-) -> Result<(), FuseError> {
-    spawn_mount(fs, store_id, mountpoint)?.unmount();
-    Ok(())
-}
-
 /// Spawn a background mount of `store` at `mountpoint`, returning its handle.
 pub fn spawn_mount(
     fs: Arc<dyn MemoryFs>,
@@ -522,6 +512,103 @@ impl MemoryFuse {
         Ok(true)
     }
 
+    /// The directory entries for `ino` (`.`, `..`, then each immediate child),
+    /// interning each child. `NotFound` if `ino` is unknown or not a directory.
+    fn readdir_entries(&self, ino: u64) -> Result<Vec<(u64, FileType, String)>, FuseError> {
+        let node = self
+            .node(ino)
+            .filter(|n| n.kind == FileType::Directory)
+            .ok_or_else(|| FuseError::NotFound(format!("dir inode {ino}")))?;
+        let list_prefix = if node.path == "/" {
+            "/".to_string()
+        } else {
+            format!("{}/", node.path.trim_end_matches('/'))
+        };
+        let memories = self
+            .runtime
+            .block_on(self.fs.list(&self.store_id, &list_prefix))?;
+        let mut entries = vec![
+            (ino, FileType::Directory, ".".to_string()),
+            (ROOT_INO, FileType::Directory, "..".to_string()),
+        ];
+        for (name, is_dir) in immediate_children(&memories, &node.path) {
+            let path = if node.path == "/" {
+                format!("/{name}")
+            } else {
+                format!("{}/{name}", node.path.trim_end_matches('/'))
+            };
+            let (child_ino, child) = if is_dir {
+                self.intern_dir(&path)
+            } else {
+                let mem = memories.iter().find(|m| m.path == path);
+                let size = mem.map(|m| m.content_size).unwrap_or(0);
+                let updated = mem.map(|m| m.updated_unix_nanos).unwrap_or(self.mount_time);
+                self.intern(path, FileType::RegularFile, size, updated, updated)
+            };
+            entries.push((child_ino, child.kind, name));
+        }
+        Ok(entries)
+    }
+
+    /// Apply a `setattr` (only `size` is honored — see ADR-0053 D4). `size == None`
+    /// is a metadata-only setattr (returns the current attr). With a size and an open
+    /// `fh`, the truncation resizes that fd's buffer (rides its flush). With a size and
+    /// no fh, it retargets any open writer, else updates the store directly. Returns
+    /// the resulting node for the reply.
+    fn apply_setattr(
+        &self,
+        ino: u64,
+        size: Option<usize>,
+        fh: Option<u64>,
+    ) -> Result<Node, FuseError> {
+        let node = self
+            .node(ino)
+            .ok_or_else(|| FuseError::NotFound(format!("inode {ino}")))?;
+        let Some(size) = size else {
+            return Ok(node);
+        };
+        if let Some(fh) = fh {
+            let mut table = self.inodes.lock().expect("inode table mutex poisoned");
+            Self::dirty_open_file_mut(&mut table, fh)?
+                .buffer
+                .resize(size, 0);
+            let mut node = table
+                .by_ino
+                .get(&ino)
+                .cloned()
+                .ok_or_else(|| FuseError::NotFound(format!("inode {ino}")))?;
+            node.size = size as u64;
+            return Ok(node);
+        }
+        // No fh (a `truncate(path)` syscall): if a writer is open, the truncation
+        // rides its buffer/flush; otherwise update the store directly.
+        if self.truncate_open_writers(&node.path, size)? {
+            let mut node = node;
+            node.size = size as u64;
+            return Ok(node);
+        }
+        let memory = self.runtime.block_on(async {
+            let current = self
+                .fs
+                .get_by_path(&self.store_id, &node.path)
+                .await?
+                .ok_or_else(|| MemErr::NotFound(node.path.clone()))?;
+            let mut bytes = current.content.clone().unwrap_or_default().into_bytes();
+            bytes.resize(size, 0);
+            let content = String::from_utf8(bytes).map_err(|e| MemErr::Storage(e.to_string()))?;
+            self.fs
+                .update(
+                    &self.store_id,
+                    &current.id,
+                    &content,
+                    &current.content_sha256,
+                )
+                .await
+        })?;
+        self.cache_put(memory.clone());
+        Ok(self.intern_memory(&memory).1)
+    }
+
     fn dirty_open_file_mut(table: &mut InodeTable, fh: u64) -> Result<&mut OpenFile, FuseError> {
         let already_dirty = table
             .open_files
@@ -689,81 +776,9 @@ impl Filesystem for MemoryFuse {
         _flags: Option<u32>,
         reply: ReplyAttr,
     ) {
-        let Some(size) = size else {
-            if let Some(node) = self.node(ino) {
-                reply.attr(&TTL, &Self::attr(ino, &node));
-            } else {
-                reply.error(ENOENT);
-            }
-            return;
-        };
-        let size = size as usize;
-        if let Some(fh) = fh {
-            let mut table = self.inodes.lock().expect("inode table mutex poisoned");
-            let open = match Self::dirty_open_file_mut(&mut table, fh) {
-                Ok(open) => open,
-                Err(error) => {
-                    reply.error(Self::errno(error));
-                    return;
-                }
-            };
-            open.buffer.resize(size, 0);
-            if let Some(node) = table.by_ino.get(&ino).cloned() {
-                let mut node = node;
-                node.size = size as u64;
-                reply.attr(&TTL, &Self::attr(ino, &node));
-            } else {
-                reply.error(ENOENT);
-            }
-            return;
-        }
-        let Some(node) = self.node(ino) else {
-            reply.error(ENOENT);
-            return;
-        };
-        // A non-`atomic_o_trunc` kernel splits `open(O_TRUNC)` into open +
-        // setattr(size=0). If a write fd is already open for this inode, the
-        // truncation belongs to that open (resize its buffer so the eventual flush
-        // is one coherent CAS write); an independent store update here would advance
-        // the sha out from under the fd and lose its real write.
-        match self.truncate_open_writers(&node.path, size) {
-            Ok(true) => {
-                let mut node = node;
-                node.size = size as u64;
-                reply.attr(&TTL, &Self::attr(ino, &node));
-                return;
-            }
-            Ok(false) => {}
-            Err(error) => {
-                reply.error(Self::errno(error));
-                return;
-            }
-        }
-        let result = self.runtime.block_on(async {
-            let current = self
-                .fs
-                .get_by_path(&self.store_id, &node.path)
-                .await?
-                .ok_or_else(|| MemErr::NotFound(node.path.clone()))?;
-            let mut bytes = current.content.clone().unwrap_or_default().into_bytes();
-            bytes.resize(size, 0);
-            let content = String::from_utf8(bytes).map_err(|e| MemErr::Storage(e.to_string()))?;
-            self.fs
-                .update(
-                    &self.store_id,
-                    &current.id,
-                    &content,
-                    &current.content_sha256,
-                )
-                .await
-        });
-        match result {
-            Ok(memory) => {
-                self.cache_put(memory.clone());
-                let (_, node) = self.intern_memory(&memory);
-                reply.attr(&TTL, &Self::attr(ino, &node));
-            }
-            Err(error) => reply.error(Self::errno(error.into())),
+        match self.apply_setattr(ino, size.map(|s| s as usize), fh) {
+            Ok(node) => reply.attr(&TTL, &Self::attr(ino, &node)),
+            Err(error) => reply.error(Self::errno(error)),
         }
     }
 
@@ -789,49 +804,13 @@ impl Filesystem for MemoryFuse {
         offset: i64,
         mut reply: ReplyDirectory,
     ) {
-        let Some(node) = self.node(ino) else {
-            reply.error(ENOENT);
-            return;
-        };
-        if node.kind != FileType::Directory {
-            reply.error(ENOENT);
-            return;
-        }
-        let list_prefix = if node.path == "/" {
-            "/".to_string()
-        } else {
-            format!("{}/", node.path.trim_end_matches('/'))
-        };
-        let memories = match self
-            .runtime
-            .block_on(self.fs.list(&self.store_id, &list_prefix))
-        {
-            Ok(memories) => memories,
+        let entries = match self.readdir_entries(ino) {
+            Ok(entries) => entries,
             Err(error) => {
-                reply.error(Self::errno(error.into()));
+                reply.error(Self::errno(error));
                 return;
             }
         };
-        let mut entries: Vec<(u64, FileType, String)> = vec![
-            (ino, FileType::Directory, ".".into()),
-            (ROOT_INO, FileType::Directory, "..".into()),
-        ];
-        for (name, is_dir) in immediate_children(&memories, &node.path) {
-            let path = if node.path == "/" {
-                format!("/{name}")
-            } else {
-                format!("{}/{name}", node.path.trim_end_matches('/'))
-            };
-            let (child_ino, child) = if is_dir {
-                self.intern_dir(&path)
-            } else {
-                let mem = memories.iter().find(|m| m.path == path);
-                let size = mem.map(|m| m.content_size).unwrap_or(0);
-                let updated = mem.map(|m| m.updated_unix_nanos).unwrap_or(self.mount_time);
-                self.intern(path, FileType::RegularFile, size, updated, updated)
-            };
-            entries.push((child_ino, child.kind, name));
-        }
         for (idx, (entry_ino, kind, name)) in
             entries.into_iter().enumerate().skip(offset.max(0) as usize)
         {
@@ -846,7 +825,7 @@ impl Filesystem for MemoryFuse {
     fn read(
         &mut self,
         _req: &Request<'_>,
-        ino: u64,
+        _ino: u64,
         fh: u64,
         offset: i64,
         size: u32,
@@ -854,43 +833,12 @@ impl Filesystem for MemoryFuse {
         _lock_owner: Option<u64>,
         reply: ReplyData,
     ) {
-        if fh != 0 {
-            match self.read_fh_bytes(fh, offset, size) {
-                Ok(bytes) => reply.data(&bytes),
-                Err(error) => reply.error(Self::errno(error)),
-            }
-            return;
+        // A read always follows an `open` that handed back a nonzero fh, so we serve
+        // from that fd's buffer; an unknown fh surfaces `ENOENT`.
+        match self.read_fh_bytes(fh, offset, size) {
+            Ok(bytes) => reply.data(&bytes),
+            Err(error) => reply.error(Self::errno(error)),
         }
-        let Some(node) = self.node(ino) else {
-            reply.error(ENOENT);
-            return;
-        };
-        let memory = match self.cache_get(&node.path) {
-            Some(memory) => memory,
-            None => match self
-                .runtime
-                .block_on(self.fs.get_by_path(&self.store_id, &node.path))
-            {
-                Ok(Some(memory)) => {
-                    self.cache_put(memory.clone());
-                    memory
-                }
-                Ok(None) => {
-                    reply.error(ENOENT);
-                    return;
-                }
-                Err(error) => {
-                    reply.error(Self::errno(error.into()));
-                    return;
-                }
-            },
-        };
-        let content = memory.content.clone().unwrap_or_default().into_bytes();
-        let start = usize::try_from(offset.max(0))
-            .unwrap_or(0)
-            .min(content.len());
-        let end = start.saturating_add(size as usize).min(content.len());
-        reply.data(&content[start..end]);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -922,7 +870,7 @@ impl Filesystem for MemoryFuse {
     fn write(
         &mut self,
         _req: &Request<'_>,
-        ino: u64,
+        _ino: u64,
         fh: u64,
         offset: i64,
         data: &[u8],
@@ -931,36 +879,11 @@ impl Filesystem for MemoryFuse {
         _lock_owner: Option<u64>,
         reply: ReplyWrite,
     ) {
-        if fh != 0 {
-            match self.write_fh_bytes(fh, offset, data) {
-                Ok(()) => reply.written(data.len() as u32),
-                Err(error) => reply.error(Self::errno(error)),
-            }
-            return;
-        }
-        let Some(node) = self.node(ino) else {
-            reply.error(ENOENT);
-            return;
-        };
-        let result = self.runtime.block_on(async {
-            let current = self
-                .fs
-                .get_by_path(&self.store_id, &node.path)
-                .await?
-                .ok_or_else(|| MemErr::NotFound(node.path.clone()))?;
-            let next = splice_bytes(current.content.as_deref().unwrap_or_default(), offset, data)
-                .map_err(|e| MemErr::Storage(e.to_string()))?;
-            self.fs
-                .update(&self.store_id, &current.id, &next, &current.content_sha256)
-                .await
-        });
-        match result {
-            Ok(memory) => {
-                self.cache_put(memory.clone());
-                self.intern_memory(&memory);
-                reply.written(data.len() as u32);
-            }
-            Err(error) => reply.error(Self::errno(error.into())),
+        // A write always follows an `open` that handed back a nonzero fh; it buffers
+        // into that fd (flushed as one CAS write on close). An unknown fh → `ENOENT`.
+        match self.write_fh_bytes(fh, offset, data) {
+            Ok(()) => reply.written(data.len() as u32),
+            Err(error) => reply.error(Self::errno(error)),
         }
     }
 
@@ -1271,6 +1194,205 @@ mod tests {
             Some("server-wins"),
             "the newer write survives; the stale fd did not clobber it"
         );
+    }
+
+    #[test]
+    fn errno_maps_every_fault_class() {
+        use awaken_memory_store::Memory;
+        let mem = || {
+            Box::new(Memory {
+                id: "i".into(),
+                path: "/p".into(),
+                content_sha256: String::new(),
+                content_size: 0,
+                version: 1,
+                created_unix_nanos: 0,
+                updated_unix_nanos: 0,
+                content: None,
+            })
+        };
+        assert_eq!(MemoryFuse::errno(FuseError::NotFound("x".into())), ENOENT);
+        assert_eq!(
+            MemoryFuse::errno(FuseError::Mem(MemErr::NotFound("x".into()))),
+            ENOENT
+        );
+        assert_eq!(
+            MemoryFuse::errno(FuseError::Mem(MemErr::PathConflict("x".into()))),
+            EEXIST
+        );
+        assert_eq!(
+            MemoryFuse::errno(FuseError::Mem(MemErr::InvalidPath("x".into()))),
+            EINVAL
+        );
+        assert_eq!(MemoryFuse::errno(FuseError::DirtyFileLimitExceeded), EAGAIN);
+        assert_eq!(
+            MemoryFuse::errno(FuseError::Mem(MemErr::Conflict { current: mem() })),
+            EAGAIN
+        );
+        assert_eq!(MemoryFuse::errno(FuseError::TooLarge), EIO);
+        assert_eq!(MemoryFuse::errno(FuseError::Internal("x".into())), EIO);
+        assert_eq!(
+            MemoryFuse::errno(FuseError::Mem(MemErr::Storage("x".into()))),
+            EIO
+        );
+    }
+
+    #[test]
+    fn lookup_path_resolves_files_synthetic_dirs_and_missing() {
+        let store = "s";
+        let backend = Arc::new(InMemoryFs::new());
+        let rt = setup_rt();
+        rt.block_on(backend.create(store, "/notes/a.md", "a"))
+            .unwrap();
+
+        let fuse = MemoryFuse::new(backend, store.into()).unwrap();
+        // root
+        let (ino, node) = fuse.lookup_path("/").unwrap();
+        assert_eq!(ino, ROOT_INO);
+        assert_eq!(node.kind, FileType::Directory);
+        // a real file
+        let (_, f) = fuse.lookup_path("/notes/a.md").unwrap();
+        assert_eq!(f.kind, FileType::RegularFile);
+        // a synthetic directory (something lives under it)
+        let (_, d) = fuse.lookup_path("/notes").unwrap();
+        assert_eq!(d.kind, FileType::Directory);
+        // nothing there
+        assert!(matches!(
+            fuse.lookup_path("/ghost"),
+            Err(FuseError::NotFound(_))
+        ));
+        assert!(matches!(
+            fuse.lookup_path("/notes/ghost"),
+            Err(FuseError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn open_create_flush_read_inner_branches() {
+        let store = "s";
+        let backend = Arc::new(InMemoryFs::new());
+        let rt = setup_rt();
+        rt.block_on(backend.create(store, "/f.md", "orig")).unwrap();
+        let fuse = MemoryFuse::new(backend.clone(), store.into()).unwrap();
+
+        // open a missing path → NotFound.
+        assert!(matches!(
+            fuse.open_file_for_path("/ghost", 0),
+            Err(FuseError::NotFound(_))
+        ));
+
+        // open with O_TRUNC clears the buffer and marks it dirty.
+        let fh = fuse.open_file_for_path("/f.md", O_TRUNC).unwrap();
+        assert_eq!(fuse.read_fh_bytes(fh, 0, 64).unwrap(), b"");
+
+        // read on an unknown fh → NotFound.
+        assert!(matches!(
+            fuse.read_fh_bytes(9999, 0, 1),
+            Err(FuseError::NotFound(_))
+        ));
+
+        // flush the truncated fd → the store now holds empty content.
+        fuse.flush_fh(fh).unwrap();
+        assert_eq!(
+            rt.block_on(backend.get_by_path(store, "/f.md"))
+                .unwrap()
+                .unwrap()
+                .content
+                .as_deref(),
+            Some(""),
+            "O_TRUNC open flushed empty"
+        );
+        // flushing a clean fd is a no-op (dirty was cleared on the prior flush).
+        fuse.flush_fh(fh).unwrap();
+
+        // create over an existing path → PathConflict (→ EEXIST).
+        assert!(matches!(
+            fuse.create_file_for_path("/f.md"),
+            Err(FuseError::Mem(MemErr::PathConflict(_)))
+        ));
+
+        // truncate_open_writers retargets an open writer (true), else no-op (false).
+        let w = fuse.open_file_for_path("/f.md", 0).unwrap();
+        assert!(fuse.truncate_open_writers("/f.md", 0).unwrap());
+        assert!(!fuse.truncate_open_writers("/absent", 0).unwrap());
+        fuse.remove_fh(w);
+    }
+
+    #[test]
+    fn readdir_entries_lists_children_and_rejects_non_directories() {
+        let store = "s";
+        let backend = Arc::new(InMemoryFs::new());
+        let rt = setup_rt();
+        rt.block_on(backend.create(store, "/a.md", "a")).unwrap();
+        rt.block_on(backend.create(store, "/sub/b.md", "b"))
+            .unwrap();
+        let fuse = MemoryFuse::new(backend, store.into()).unwrap();
+
+        let root: Vec<String> = fuse
+            .readdir_entries(ROOT_INO)
+            .unwrap()
+            .into_iter()
+            .map(|(_, _, n)| n)
+            .collect();
+        assert!(root.contains(&"a.md".to_string()) && root.contains(&"sub".to_string()));
+        assert!(root.contains(&".".to_string()) && root.contains(&"..".to_string()));
+
+        // an unknown inode and a FILE inode both reject as not-a-directory.
+        assert!(matches!(
+            fuse.readdir_entries(9999),
+            Err(FuseError::NotFound(_))
+        ));
+        let (file_ino, _) = fuse.lookup_path("/a.md").unwrap();
+        assert!(matches!(
+            fuse.readdir_entries(file_ino),
+            Err(FuseError::NotFound(_))
+        ));
+
+        // the synthetic subdirectory lists its child.
+        let (dir_ino, _) = fuse.lookup_path("/sub").unwrap();
+        let sub: Vec<String> = fuse
+            .readdir_entries(dir_ino)
+            .unwrap()
+            .into_iter()
+            .map(|(_, _, n)| n)
+            .collect();
+        assert!(sub.contains(&"b.md".to_string()));
+    }
+
+    #[test]
+    fn apply_setattr_handles_metadata_fd_and_store_truncation() {
+        let store = "s";
+        let backend = Arc::new(InMemoryFs::new());
+        let rt = setup_rt();
+        rt.block_on(backend.create(store, "/f.md", "hello"))
+            .unwrap();
+        let fuse = MemoryFuse::new(backend.clone(), store.into()).unwrap();
+        let (ino, _) = fuse.lookup_path("/f.md").unwrap();
+
+        // size = None → metadata-only, returns the current node unchanged.
+        assert_eq!(fuse.apply_setattr(ino, None, None).unwrap().size, 5);
+
+        // no fh, no open writer → truncate the store directly.
+        assert_eq!(fuse.apply_setattr(ino, Some(2), None).unwrap().size, 2);
+        assert_eq!(
+            rt.block_on(backend.get_by_path(store, "/f.md"))
+                .unwrap()
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("he")
+        );
+
+        // with an open fh → resize that fd's buffer.
+        let fh = fuse.open_file_for_path("/f.md", 0).unwrap();
+        assert_eq!(fuse.apply_setattr(ino, Some(1), Some(fh)).unwrap().size, 1);
+        fuse.remove_fh(fh);
+
+        // an unknown inode → NotFound.
+        assert!(matches!(
+            fuse.apply_setattr(9999, Some(0), None),
+            Err(FuseError::NotFound(_))
+        ));
     }
 
     #[test]

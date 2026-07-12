@@ -691,6 +691,44 @@ mod tests {
         ));
     }
 
+    /// The `NotFound` paths of `update`/`rename`, over any backend.
+    async fn not_found_paths(fs: &dyn MemoryFs) {
+        let store = "s";
+        // update on a store that does not exist yet → NotFound.
+        assert!(matches!(
+            fs.update(store, "no_id", "x", "sha").await,
+            Err(MemErr::NotFound(_))
+        ));
+        // update an unknown id in an existing store → NotFound.
+        fs.create(store, "/seed.md", "s").await.unwrap();
+        assert!(matches!(
+            fs.update(store, "no_such_id", "x", "sha").await,
+            Err(MemErr::NotFound(_))
+        ));
+        // rename a source that does not exist → NotFound (both the from==to and the
+        // from!=to shapes).
+        assert!(matches!(
+            fs.rename(store, "/gone.md", "/x.md").await,
+            Err(MemErr::NotFound(_))
+        ));
+        assert!(matches!(
+            fs.rename(store, "/gone.md", "/gone.md").await,
+            Err(MemErr::NotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn in_memory_not_found_paths() {
+        not_found_paths(&InMemoryFs::new()).await;
+    }
+
+    #[tokio::test]
+    async fn fs_not_found_paths() {
+        let root = temp_root("nf");
+        not_found_paths(&FsMemoryFs::open(&root).unwrap()).await;
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     #[tokio::test]
     async fn in_memory_backend_conforms() {
         conformance(&InMemoryFs::new()).await;
