@@ -6,6 +6,8 @@
 //! Postgres is reachable the test prints a skip notice and returns, so the suite
 //! still passes on a machine without a database.
 
+use std::sync::Arc;
+
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
@@ -333,4 +335,72 @@ async fn projection_rehydrates_from_postgres_after_reconnect() {
         ThreadReader::waiting_ticket(&restarted, &RunId("run-1".to_string())).is_some(),
         "active ticket rehydrated"
     );
+}
+
+/// Regression: concurrent commits must not collide on the commit sequence.
+///
+/// Two independent coordinators over one database model a two-node fleet — each has
+/// its own in-memory projection, so allocating the sequence from that counter would
+/// hand out the same value and every commit but one would fail on
+/// `runtime_commit_pkey`. The sequence is allocated atomically at the database
+/// (advisory-lock + `MAX(sequence)+1` inside the commit transaction), so a burst of
+/// concurrent commits — across processes AND parallel within one — all succeed with
+/// distinct, gapless sequences.
+#[tokio::test]
+async fn concurrent_commits_get_distinct_sequences_no_pk_collision() {
+    let Some(pool) = schema_pool("t_concurrent").await else {
+        return;
+    };
+    let a = Arc::new(
+        PostgresCommitCoordinator::with_pool(pool.clone())
+            .await
+            .expect("coordinator a"),
+    );
+    let b = Arc::new(
+        PostgresCommitCoordinator::with_pool(pool.clone())
+            .await
+            .expect("coordinator b"),
+    );
+
+    let n: u32 = 16;
+    let mut handles = Vec::new();
+    for i in 0..n {
+        // Alternate coordinators so half the burst commits through each independent
+        // projection — the cross-process race the fix must close.
+        let coord = if i % 2 == 0 { a.clone() } else { b.clone() };
+        handles.push(tokio::spawn(async move {
+            coord
+                .commit(ThreadCommit {
+                    thread_id: ThreadId(format!("thread-{i}")),
+                    run_fact: ended(&format!("run-{i}")),
+                    messages: vec![message(&format!("m{i}"), "x")],
+                    state: Vec::new(),
+                    events: Vec::new(),
+                    outbox: Vec::new(),
+                    waiting: None,
+                })
+                .await
+        }));
+    }
+
+    let mut sequences = Vec::new();
+    for h in handles {
+        let record = h
+            .await
+            .expect("task joins")
+            .expect("commit must not collide on the sequence primary key");
+        sequences.push(record.sequence);
+    }
+    sequences.sort_unstable();
+    assert_eq!(
+        sequences,
+        (1..=u64::from(n)).collect::<Vec<_>>(),
+        "every concurrent commit got a distinct, gapless sequence"
+    );
+
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtime_commit")
+        .fetch_one(&pool)
+        .await
+        .expect("count commits");
+    assert_eq!(rows, i64::from(n), "all {n} commits persisted");
 }

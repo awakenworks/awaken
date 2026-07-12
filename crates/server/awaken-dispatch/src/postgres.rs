@@ -40,6 +40,22 @@ pub enum StoreError {
 /// database. It is built in, not configured.
 const NS: &str = "runtime";
 
+/// Max Postgres connections for the dispatch pool: `AWAKEN_PG_MAX_CONNECTIONS` if
+/// set, else `available_parallelism() + 8` — the pool must cover the served pool's
+/// `available_parallelism()` concurrent claim/settle drives, above sqlx's default 10.
+fn pg_max_connections() -> u32 {
+    std::env::var("AWAKEN_PG_MAX_CONNECTIONS")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or_else(|| {
+            let cores = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4) as u32;
+            cores + 8
+        })
+}
+
 /// A Postgres-backed dispatch store.
 pub struct PostgresDispatchStore {
     pool: PgPool,
@@ -47,8 +63,15 @@ pub struct PostgresDispatchStore {
 
 impl PostgresDispatchStore {
     /// Connect and apply the dispatch-schema migrations.
+    ///
+    /// Sized to the process's drain concurrency, not sqlx's default of 10: the pool
+    /// spawns `available_parallelism()` drain tasks that each hold a connection to
+    /// claim/settle a run, so a default pool starves a concurrent burst and strands
+    /// the queue. Overridable via `AWAKEN_PG_MAX_CONNECTIONS`.
     pub async fn connect(url: &str) -> Result<Self, StoreError> {
-        let pool = PgPool::connect(url)
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(pg_max_connections())
+            .connect(url)
             .await
             .map_err(|err| StoreError::Connect(err.to_string()))?;
         Self::with_pool(pool).await

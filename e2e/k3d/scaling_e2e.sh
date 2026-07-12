@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
-# STATUS: written + correct, but currently EXPECTED TO FAIL — it surfaces a real
-# runtime bug: a durable fleet does NOT drain a concurrent burst. Submitting M
-# concurrent runs on distinct threads leaves M-1 stuck `status='running'` in
-# runtime_dispatch (claimed by the pool but drive_claimed never settles them; lease
-# stays renewed so recovery never fires), so only 1 commits. Root cause is in the
-# durable pool's concurrent drive path (suspect the shared session/sandbox lock in
-# SharedHost::ctx_for). Also: N pods booting against a fresh DB race in
-# scoped-migration's unlocked `ensure_ledger` (pg_type_typname_nsp_index) — this
-# script scales 1→N to serialize that. Keep as the regression test for both fixes.
-#
 # Horizontal scaling + consistency e2e (ADR-0019) on a real multi-node k3d cluster.
+#
+# NOTE: this test drove the fix for a real concurrency bug — a durable fleet used to
+# drain only 1 of a concurrent burst because `PostgresCommitCoordinator` allocated the
+# commit sequence from a per-process in-memory counter, so concurrent commits collided
+# on `runtime_commit_pkey`. Now the sequence is DB-atomic (advisory-lock + MAX+1), so
+# the fleet drains the whole burst exactly once. The script still scales the brain 1→N
+# to dodge a SEPARATE, still-open issue: scoped-migration's unlocked `ensure_ledger`
+# races on `pg_type_typname_nsp_index` when N pods cold-start a fresh DB together.
 # A fleet of brain pods behind one Service drains ONE shared Postgres dispatch queue.
 # We fire M concurrent durable submissions and then assert, AUTHORITATIVELY against
 # Postgres (not a per-pod cached projection), that every run was driven EXACTLY ONCE:
