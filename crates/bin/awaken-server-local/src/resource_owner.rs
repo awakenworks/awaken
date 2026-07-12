@@ -130,16 +130,16 @@ fn not_found() -> Response {
 // subresources) are id-addressed and, unlike the config resources above, minted
 // *server-side* (the id is in the create RESPONSE, not the request path). So this
 // sibling guard records the owning scope by reading the id out of a successful
-// `POST /v1/memory_stores` body, and fences any later cross-tenant access to that
-// store (or its memories/versions) with **404**. A single-tenant deployment resolves
+// `POST /v1/memory_stores` body, fences any later cross-tenant access to that store
+// (or its memories/versions) with **404**, and filters the store *list* to the caller's
+// own scope so ids do not leak across tenants. A single-tenant deployment resolves
 // every request to [`DEFAULT_SCOPE`], so it never fences itself. A store created
-// before the guard saw it (unrecorded) stays open — first-touch does not steal
-// ownership. NOTE: the `GET /v1/memory_stores` *list* is not scoped here (it needs a
-// scope-carrying store to filter, a follow-on); per-store access — the actual
-// read/write hole — is fenced.
+// before the guard saw it (unrecorded) stays reachable by direct id — first-touch does
+// not steal ownership — but an unrecorded store belongs to no scope, so it never
+// appears in a scoped list.
 
-/// Fence cross-tenant access to a memory store and record ownership of a freshly
-/// created one (from the minted id in the create response body).
+/// Fence cross-tenant access to a memory store, record ownership of a freshly created
+/// one (from the minted id in the create response body), and scope the store list.
 pub async fn memory_store_ownership_guard(
     State(owners): State<ResourceOwners>,
     request: Request,
@@ -150,12 +150,12 @@ pub async fn memory_store_ownership_guard(
         .get::<WorkspaceScope>()
         .map(|w| w.0.clone())
         .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
-    let path = request.uri().path();
+    let path = request.uri().path().to_string();
     let method = request.method().clone();
 
     // Access to an existing store (by id, including its subresources): fence a
     // known owner other than this scope.
-    if let Some(id) = memory_store_id(path) {
+    if let Some(id) = memory_store_id(&path) {
         let key = format!("memstore:{id}");
         if let Some(owner) = owners.owner(&key)
             && owner != scope
@@ -165,29 +165,66 @@ pub async fn memory_store_ownership_guard(
         return next.run(request).await;
     }
 
-    // Create (`POST /v1/memory_stores`, no id yet): run it, then record the minted id.
-    let is_create = method == Method::POST && is_memory_stores_collection(path);
-    if !is_create {
+    // Only the bare `/v1/memory_stores` collection route remains.
+    if !is_memory_stores_collection(&path) {
         return next.run(request).await;
     }
-    let response = next.run(request).await;
-    if !response.status().is_success() {
-        return response;
-    }
-    // Buffer the small JSON body to read the minted id, then rebuild the response.
-    let (parts, body) = response.into_parts();
-    let bytes = match axum::body::to_bytes(body, 1 << 20).await {
-        Ok(b) => b,
-        Err(_) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, "memory store response").into_response();
+
+    // List (`GET`): drop stores this scope does not own, so ids do not leak.
+    if method == Method::GET {
+        let response = next.run(request).await;
+        if !response.status().is_success() {
+            return response;
         }
-    };
-    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes)
-        && let Some(id) = v.get("id").and_then(|i| i.as_str())
-    {
-        owners.record(format!("memstore:{id}"), scope);
+        return filter_store_list(response, &owners, &scope).await;
     }
-    Response::from_parts(parts, Body::from(bytes))
+
+    // Create (`POST`): run it, then record the minted id's owning scope.
+    if method == Method::POST {
+        let response = next.run(request).await;
+        if !response.status().is_success() {
+            return response;
+        }
+        let (parts, body) = response.into_parts();
+        let bytes = match axum::body::to_bytes(body, 1 << 20).await {
+            Ok(b) => b,
+            Err(_) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, "memory store response")
+                    .into_response();
+            }
+        };
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes)
+            && let Some(id) = v.get("id").and_then(|i| i.as_str())
+        {
+            owners.record(format!("memstore:{id}"), scope);
+        }
+        return Response::from_parts(parts, Body::from(bytes));
+    }
+
+    next.run(request).await
+}
+
+/// Rewrite a store-list response, keeping only the stores `scope` owns. On an
+/// unparseable body (never, for our own shape) the response passes through unchanged.
+async fn filter_store_list(response: Response, owners: &ResourceOwners, scope: &str) -> Response {
+    let (parts, body) = response.into_parts();
+    let bytes = match axum::body::to_bytes(body, 8 << 20).await {
+        Ok(b) => b,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "memory store list").into_response(),
+    };
+    let Ok(mut page) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return Response::from_parts(parts, Body::from(bytes));
+    };
+    if let Some(data) = page.get_mut("data").and_then(|d| d.as_array_mut()) {
+        data.retain(|store| {
+            store
+                .get("id")
+                .and_then(|i| i.as_str())
+                .is_some_and(|id| owners.owner(&format!("memstore:{id}")).as_deref() == Some(scope))
+        });
+    }
+    // Rebuild with a fresh body/headers (the original content-length no longer holds).
+    Json(page).into_response()
 }
 
 /// The store id in a `/v1/memory_stores/{id}...` path (covers the bare store and all

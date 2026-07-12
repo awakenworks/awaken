@@ -56,6 +56,16 @@ async function main() {
     assert.equal(r.status, 404, 'cross-tenant write is 404');
     pass('tenant-b is fenced from the store, its memories, and writes (404)');
 
+    // The store list is scoped: tenant-a sees its store, tenant-b does not (no id leak).
+    const listIds = async (tenant) => {
+      const resp = await fetch(ws(tenant, '/memory_stores'), { headers: H });
+      assert.equal(resp.status, 200, `${tenant} list is 200`);
+      return (await resp.json()).data.map((s) => s.id);
+    };
+    assert.ok((await listIds('tenant-a')).includes(id), 'owner sees its store in the list');
+    assert.ok(!(await listIds('tenant-b')).includes(id), 'the list does not leak the store to tenant-b');
+    pass('the store list is scoped to the caller (no cross-tenant id leak)');
+
     // The owner still reads its own store.
     r = await fetch(ws('tenant-a', `/memory_stores/${id}`), { headers: H });
     assert.equal(r.status, 200, 'the owner still reads its store');
