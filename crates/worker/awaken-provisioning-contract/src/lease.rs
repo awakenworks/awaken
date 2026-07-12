@@ -386,4 +386,58 @@ mod actuator_tests {
         assert!(out.reaped.is_empty());
         assert_eq!(out.failed.len(), 2);
     }
+
+    #[tokio::test]
+    async fn fixtures_conform_to_the_sandbox_ports() {
+        // The actuator only drives adopt/dispose; assert the fake is otherwise a
+        // well-formed `Sandbox`/`SandboxProvider` so what it *does* drive is sound.
+        let provider = FakeProvider {
+            adopts: Arc::new(AtomicU32::new(0)),
+            disposes: Arc::new(AtomicU32::new(0)),
+            fail_adopt_ids: Vec::new(),
+            dispose_fails: false,
+        };
+        assert_eq!(provider.capabilities().isolation, IsolationClass::Container);
+        assert!(provider.create(&spec_min()).await.is_err());
+
+        let sb = provider.adopt(&h("s")).await.unwrap();
+        assert_eq!(sb.id(), "s");
+        assert_eq!(sb.handle().sandbox_id, "s");
+        assert!(matches!(sb.status().await.unwrap(), SandboxStatus::Ready));
+        assert!(sb.artifacts().await.unwrap().is_empty());
+        assert!(sb.read_artifact("a").await.unwrap().is_empty());
+        assert!(sb.realized().is_empty());
+        sb.renew_lease().await.unwrap();
+        assert!(sb.spawn(Command::new(["x"])).await.is_err());
+        assert!(sb.attach(a_mount()).await.is_err());
+        assert!(sb.process("p").await.is_err());
+    }
+
+    fn spec_min() -> SandboxSpec {
+        SandboxSpec {
+            scope: "s".into(),
+            isolation: IsolationClass::Container,
+            mounts: Vec::new(),
+            env: Vec::new(),
+            network: crate::vocab::NetworkPolicy::Unrestricted,
+            outputs_path: "/mnt/session/outputs".into(),
+            limits: Default::default(),
+            lease_ttl_secs: None,
+            extra: None,
+        }
+    }
+
+    fn a_mount() -> MountRequirement {
+        MountRequirement {
+            mount_id: "m".into(),
+            source: crate::vocab::MountSource::File {
+                file_id: "f".into(),
+                content_hash: None,
+            },
+            mount_path: "/workspace/x".into(),
+            access: crate::vocab::MountAccess::ReadOnly,
+            lifetime: crate::vocab::MountLifetime::PerRun,
+            required: false,
+        }
+    }
 }

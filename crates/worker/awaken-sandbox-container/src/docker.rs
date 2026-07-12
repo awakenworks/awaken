@@ -27,6 +27,64 @@ fn backend(e: impl std::fmt::Display) -> RuntimeError {
     RuntimeError::Backend(e.to_string())
 }
 
+/// Map neutral resource limits onto a bollard `HostConfig`'s cgroup fields (limits
+/// only — the caller merges binds/ports). Pure, so the swap-pin and disk mapping are
+/// unit-testable without a daemon.
+fn cgroup_host_config(limits: &pc::ResourceLimits) -> HostConfig {
+    let caps = crate::CgroupCaps::from_limits(limits);
+    HostConfig {
+        memory: caps.memory_bytes,
+        // Pin swap to the memory cap so a memory-limited agent cannot escape it by
+        // swapping (the swap-escape close).
+        memory_swap: caps.memory_swap_bytes,
+        nano_cpus: caps.nano_cpus,
+        pids_limit: caps.pids,
+        storage_opt: caps.disk_size.map(|size| {
+            let mut o = HashMap::new();
+            o.insert("size".to_string(), size);
+            o
+        }),
+        ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod cgroup_host_config_tests {
+    use super::*;
+
+    #[test]
+    fn memory_limit_pins_swap_and_maps_disk() {
+        let hc = cgroup_host_config(&pc::ResourceLimits {
+            cpu_millis: Some(2000),
+            memory_bytes: Some(256 * 1024 * 1024),
+            pids: Some(64),
+            disk_bytes: Some(1024),
+        });
+        assert_eq!(hc.memory, Some(256 * 1024 * 1024));
+        assert_eq!(
+            hc.memory_swap, hc.memory,
+            "swap is pinned to the memory cap"
+        );
+        assert_eq!(hc.nano_cpus, Some(2_000_000_000));
+        assert_eq!(hc.pids_limit, Some(64));
+        assert_eq!(
+            hc.storage_opt
+                .as_ref()
+                .and_then(|o| o.get("size"))
+                .map(String::as_str),
+            Some("1024")
+        );
+    }
+
+    #[test]
+    fn no_limits_leaves_the_cgroup_fields_empty() {
+        let hc = cgroup_host_config(&pc::ResourceLimits::default());
+        assert!(hc.memory.is_none());
+        assert!(hc.memory_swap.is_none());
+        assert!(hc.storage_opt.is_none());
+    }
+}
+
 fn signal_name(signal: pc::Signal) -> &'static str {
     match signal {
         pc::Signal::Term => "SIGTERM",
@@ -82,22 +140,10 @@ impl DockerRuntime {
                 host_port: Some(String::new()),
             }]),
         );
-        let caps = crate::CgroupCaps::from_limits(&plan.limits);
         HostConfig {
             binds: (!binds.is_empty()).then_some(binds),
             port_bindings: Some(port_bindings),
-            memory: caps.memory_bytes,
-            // Pin swap to the memory cap so a memory-limited agent cannot escape it by
-            // swapping (the swap-escape close).
-            memory_swap: caps.memory_swap_bytes,
-            nano_cpus: caps.nano_cpus,
-            pids_limit: caps.pids,
-            storage_opt: caps.disk_size.map(|size| {
-                let mut o = HashMap::new();
-                o.insert("size".to_string(), size);
-                o
-            }),
-            ..Default::default()
+            ..cgroup_host_config(&plan.limits)
         }
     }
 

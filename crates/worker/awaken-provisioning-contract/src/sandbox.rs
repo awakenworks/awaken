@@ -608,4 +608,56 @@ mod tests {
         assert_eq!(renews.load(Ordering::SeqCst), 1);
         sandbox.dispose().await.unwrap();
     }
+
+    #[tokio::test]
+    async fn fixtures_conform_to_the_ports() {
+        // The selection/lifecycle tests above don't drive every port method; assert
+        // the fakes are well-formed contract impls (a valid `Sandbox`/`ProcessHandle`/
+        // `SandboxProvider`) so the parts they *do* rely on rest on a sound fixture.
+        let sb = FakeSandbox {
+            id: "s".into(),
+            renews: Arc::new(AtomicU32::new(0)),
+        };
+        assert_eq!(sb.id(), "s");
+        assert!(sb.attach(a_mount()).await.is_err());
+        assert!(sb.artifacts().await.unwrap().is_empty());
+        assert!(sb.read_artifact("x").await.unwrap().is_empty());
+        assert!(sb.realized().is_empty());
+
+        let proc = FakeProcess { id: "p".into() };
+        assert_eq!(proc.id(), "p");
+        assert_eq!(proc.wait().await.unwrap().code, Some(0));
+        proc.signal(Signal::Term).await.unwrap();
+
+        // The Workdir fake provider (used by `default_probe_ready_is_ok`) and the
+        // toggleable ProbeProvider both realize the same ports.
+        let fp = FakeProvider {
+            renews: Arc::new(AtomicU32::new(0)),
+        };
+        assert_eq!(fp.capabilities().isolation, IsolationClass::Workdir);
+
+        let pp = ProbeProvider {
+            caps: caps(IsolationClass::Container, true),
+            ready: true,
+        };
+        assert!(pp.create(&spec()).await.is_ok());
+        assert_eq!(
+            pp.adopt(&SandboxHandle::new("k", "id")).await.unwrap().id(),
+            "id"
+        );
+    }
+
+    fn a_mount() -> MountRequirement {
+        MountRequirement {
+            mount_id: "m".into(),
+            source: crate::vocab::MountSource::File {
+                file_id: "f".into(),
+                content_hash: None,
+            },
+            mount_path: "/workspace/x".into(),
+            access: crate::vocab::MountAccess::ReadOnly,
+            lifetime: crate::vocab::MountLifetime::PerRun,
+            required: false,
+        }
+    }
 }
