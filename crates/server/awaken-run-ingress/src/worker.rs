@@ -237,6 +237,36 @@ impl<S: Dispatch> DispatchWorker<S> {
             // terminal run, and any orphan pending is dropped on settle.
             None => match self.runs.get(&run_id) {
                 Some(record) if matches!(record.phase, Phase::Ended(_)) => {
+                    // A recovered fresh run that already committed a terminal record:
+                    // its crashed prior attempt may have drained unbound idle-thread
+                    // input (ADR-0021) into this run's committed transcript but died
+                    // before recording that consumption in the settle. Consume exactly
+                    // those unbound inbox rows whose message id IS in the committed
+                    // transcript — committed truth is authority: their presence proves
+                    // the crashed attempt delivered them, so they must not be
+                    // re-delivered to a later run. An unbound row NOT in the transcript
+                    // arrived after the terminal commit and was never delivered, so it
+                    // is left for a future run (no loss). Without this, the run's own
+                    // bound pending is dropped but a delivered unbound row lingers and
+                    // is drained a SECOND time by the next fresh run (a duplicate).
+                    let thread = claimed.request.thread_id().clone();
+                    let delivered: std::collections::HashSet<String> = self
+                        .reader
+                        .committed_messages(&thread)
+                        .into_iter()
+                        .map(|message| message.id.0)
+                        .collect();
+                    let consumed_unbound = self
+                        .store
+                        .list(&thread)
+                        .await?
+                        .into_iter()
+                        .map(|record| record.input)
+                        .filter(|input| {
+                            input.run_id.0.is_empty() && delivered.contains(&input.message_id)
+                        })
+                        .map(|input| input.message_id);
+                    all_pending.extend(consumed_unbound);
                     self.store
                         .settle(&run_id, DispatchOutcome::Done, &all_pending)
                         .await?;
