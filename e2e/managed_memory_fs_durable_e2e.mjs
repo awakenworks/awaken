@@ -93,6 +93,43 @@ async function main() {
     );
     pass('path_prefix listing');
 
+    // -- error paths: invalid path 400, unknown memory 404, delete then 404 ---
+    await assert.rejects(
+      () =>
+        c.beta.memoryStores.memories.create(store.id, {
+          path: 'relative.md',
+          content: 'x',
+          betas: BETAS,
+        }),
+      (e) => e.status === 400,
+      'a non-absolute path is rejected 400',
+    );
+    await assert.rejects(
+      () =>
+        c.beta.memoryStores.memories.retrieve('mem_does_not_exist', {
+          memory_store_id: store.id,
+          betas: BETAS,
+        }),
+      (e) => e.status === 404,
+      'an unknown memory id is 404',
+    );
+    const tmp = await c.beta.memoryStores.memories.create(store.id, {
+      path: '/tmp.md',
+      content: 'ephemeral',
+      betas: BETAS,
+    });
+    await c.beta.memoryStores.memories.delete(tmp.id, { memory_store_id: store.id, betas: BETAS });
+    await assert.rejects(
+      () =>
+        c.beta.memoryStores.memories.retrieve(tmp.id, {
+          memory_store_id: store.id,
+          betas: BETAS,
+        }),
+      (e) => e.status === 404,
+      'a deleted memory is 404',
+    );
+    pass('error paths: 400 invalid path, 404 unknown, 404 after delete');
+
     // -- RESTART over the same storage dir ------------------------------------
     await stopServer(server);
     ({ server } = spawnServer('echo', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR }));
