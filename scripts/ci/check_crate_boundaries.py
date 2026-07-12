@@ -1346,7 +1346,12 @@ BUCKET_ALLOWED_DEPS = {
     "runtime": {"contract", "runtime"},
     "stores": {"contract", "runtime", "stores"},
     "resources": {"contract", "runtime", "resources"},
-    "worker": {"contract", "runtime", "worker"},
+    # `resources` is the common foundation config DEFINES and worker/sandbox
+    # MATERIALIZES (files, memory stores, skills). Worker may depend on it — its DB
+    # backends are feature-gated (default = inmem/fs only), so the isolated exec tier
+    # links no heavy store. Worker still may NOT depend on `stores` (the commit-log
+    # tier, G13 authority) — that is the store A-G17 keeps out of the exec tier.
+    "worker": {"contract", "runtime", "resources", "worker"},
     "control": {"contract", "runtime", "stores", "resources", "control"},
     "server": {"contract", "runtime", "stores", "resources", "worker", "control", "server"},
     "bin": {
