@@ -116,13 +116,6 @@ impl LiveTranscoder {
         self.started
     }
 
-    /// Whether a tool call was streamed live under `call_id` (so the committed
-    /// projection can transition the open `input-streaming` part instead of
-    /// re-opening one).
-    pub fn streamed_tool(&self, call_id: &str) -> bool {
-        self.tools.contains_key(call_id)
-    }
-
     fn close_text(&mut self) -> Vec<UIStreamEvent> {
         match self.open_text.take() {
             Some(id) => vec![UIStreamEvent::TextEnd { id }],
@@ -224,5 +217,110 @@ mod tests {
             tool_call_id: "c1".into(),
             tool_name: "read".into(),
         }));
+    }
+
+    #[test]
+    fn a_repeated_run_started_is_idempotent() {
+        let events = run(&[Kind::RunStarted, Kind::RunStarted]);
+        // Only the first RunStarted opens the stream.
+        assert_eq!(events, vec![UIStreamEvent::Start, UIStreamEvent::StartStep]);
+    }
+
+    #[test]
+    fn concurrent_tool_calls_stream_independently_by_call_id() {
+        let events = run(&[
+            Kind::RunStarted,
+            Kind::ToolCall {
+                call_id: "c1".into(),
+                tool_id: "read".into(),
+                arguments: json!(""),
+            },
+            Kind::ToolCall {
+                call_id: "c2".into(),
+                tool_id: "write".into(),
+                arguments: json!(""),
+            },
+            Kind::ToolCall {
+                call_id: "c1".into(),
+                tool_id: "read".into(),
+                arguments: json!("{\"a\":1}"),
+            },
+            Kind::ToolCall {
+                call_id: "c2".into(),
+                tool_id: "write".into(),
+                arguments: json!("{\"b\":2}"),
+            },
+        ]);
+        assert!(events.contains(&UIStreamEvent::ToolInputStart {
+            tool_call_id: "c1".into(),
+            tool_name: "read".into(),
+        }));
+        assert!(events.contains(&UIStreamEvent::ToolInputStart {
+            tool_call_id: "c2".into(),
+            tool_name: "write".into(),
+        }));
+        assert!(events.contains(&UIStreamEvent::ToolInputDelta {
+            tool_call_id: "c1".into(),
+            input_text_delta: "{\"a\":1}".into(),
+        }));
+        assert!(events.contains(&UIStreamEvent::ToolInputDelta {
+            tool_call_id: "c2".into(),
+            input_text_delta: "{\"b\":2}".into(),
+        }));
+    }
+
+    #[test]
+    fn text_reopens_with_a_fresh_id_after_a_tool_call() {
+        let events = run(&[
+            Kind::RunStarted,
+            Kind::OutputText { text: "hi".into() },
+            Kind::ToolCall {
+                call_id: "c1".into(),
+                tool_id: "read".into(),
+                arguments: json!(""),
+            },
+            Kind::OutputText {
+                text: "more".into(),
+            },
+        ]);
+        // The first run closes on the tool call; the second opens txt-1.
+        assert!(events.contains(&UIStreamEvent::TextEnd { id: "txt-0".into() }));
+        assert!(events.contains(&UIStreamEvent::TextStart { id: "txt-1".into() }));
+        assert!(events.contains(&UIStreamEvent::TextDelta {
+            id: "txt-1".into(),
+            delta: "more".into(),
+        }));
+    }
+
+    #[test]
+    fn a_snapshot_boundary_mid_codepoint_is_skipped_without_panicking() {
+        // Cumulative arg snapshots where the tracked byte offset falls inside a
+        // multibyte char must be skipped (the `is_char_boundary` guard), never
+        // sliced — otherwise `s[offset..]` would panic.
+        let events = run(&[
+            Kind::RunStarted,
+            Kind::ToolCall {
+                call_id: "c1".into(),
+                tool_id: "t".into(),
+                arguments: json!("a"),
+            },
+            Kind::ToolCall {
+                call_id: "c1".into(),
+                tool_id: "t".into(),
+                arguments: json!("é"),
+            },
+        ]);
+        let deltas: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                UIStreamEvent::ToolInputDelta {
+                    input_text_delta, ..
+                } => Some(input_text_delta.as_str()),
+                _ => None,
+            })
+            .collect();
+        // Only the first (boundary-safe) snapshot streamed; the mid-codepoint one
+        // emitted nothing and did not panic.
+        assert_eq!(deltas, vec!["a"]);
     }
 }

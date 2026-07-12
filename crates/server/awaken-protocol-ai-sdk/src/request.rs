@@ -297,4 +297,217 @@ mod tests {
         let p = process_request(req, &HashSet::new());
         assert!(p.decisions.is_empty());
     }
+
+    fn decision_part(state: &str, extra: Value) -> Value {
+        let mut part = json!({ "type": "tool-probe", "toolCallId": "c1", "state": state });
+        if let (Value::Object(dst), Value::Object(src)) = (&mut part, extra) {
+            dst.extend(src);
+        }
+        part
+    }
+
+    fn only_decision(state: &str, extra: Value) -> DecisionKind {
+        let req = AiSdkChatRequest {
+            messages: vec![ui("assistant", "a1", vec![decision_part(state, extra)])],
+            thread_id: Some("t".into()),
+            agent_id: None,
+        };
+        let p = process_request(req, &HashSet::new());
+        assert_eq!(
+            p.decisions.len(),
+            1,
+            "exactly one decision for state {state}"
+        );
+        p.decisions.into_iter().next().unwrap().kind
+    }
+
+    #[test]
+    fn decodes_output_error_decision() {
+        assert_eq!(
+            only_decision("output-error", json!({ "errorText": "boom" })),
+            DecisionKind::Error("boom".into())
+        );
+    }
+
+    #[test]
+    fn output_error_without_text_uses_the_default_message() {
+        assert_eq!(
+            only_decision("output-error", json!({})),
+            DecisionKind::Error("tool execution error".into())
+        );
+    }
+
+    #[test]
+    fn decodes_output_denied_decision() {
+        assert_eq!(
+            only_decision("output-denied", json!({})),
+            DecisionKind::Denied
+        );
+    }
+
+    #[test]
+    fn approval_responded_true_is_approved() {
+        assert_eq!(
+            only_decision(
+                "approval-responded",
+                json!({ "approval": { "approved": true } })
+            ),
+            DecisionKind::Approved
+        );
+    }
+
+    #[test]
+    fn approval_responded_false_is_denied() {
+        assert_eq!(
+            only_decision(
+                "approval-responded",
+                json!({ "approval": { "approved": false } })
+            ),
+            DecisionKind::Denied
+        );
+    }
+
+    #[test]
+    fn approval_responded_without_an_approval_field_is_denied() {
+        // Absent `approval` ⇒ `unwrap_or(false)` ⇒ fail closed to Denied.
+        assert_eq!(
+            only_decision("approval-responded", json!({})),
+            DecisionKind::Denied
+        );
+    }
+
+    #[test]
+    fn output_available_without_output_decodes_as_null() {
+        assert_eq!(
+            only_decision("output-available", json!({})),
+            DecisionKind::Output(Value::Null)
+        );
+    }
+
+    #[test]
+    fn unknown_decision_state_is_dropped() {
+        let req = AiSdkChatRequest {
+            messages: vec![ui(
+                "assistant",
+                "a1",
+                vec![decision_part("mystery", json!({}))],
+            )],
+            thread_id: Some("t".into()),
+            agent_id: None,
+        };
+        assert!(process_request(req, &HashSet::new()).decisions.is_empty());
+    }
+
+    #[test]
+    fn non_tool_assistant_part_yields_no_decision() {
+        let req = AiSdkChatRequest {
+            messages: vec![ui(
+                "assistant",
+                "a1",
+                vec![json!({ "type": "text", "text": "just prose" })],
+            )],
+            thread_id: Some("t".into()),
+            agent_id: None,
+        };
+        assert!(process_request(req, &HashSet::new()).decisions.is_empty());
+    }
+
+    #[test]
+    fn system_role_message_converts_to_system() {
+        let req = AiSdkChatRequest {
+            messages: vec![ui(
+                "system",
+                "s1",
+                vec![json!({"type":"text","text":"be terse"})],
+            )],
+            thread_id: Some("t".into()),
+            agent_id: None,
+        };
+        let p = process_request(req, &HashSet::new());
+        assert_eq!(p.messages.len(), 1);
+        assert_eq!(p.messages[0].role, Role::System);
+    }
+
+    #[test]
+    fn a_missing_thread_id_is_minted() {
+        let req = AiSdkChatRequest {
+            messages: vec![ui("user", "u1", vec![json!({"type":"text","text":"hi"})])],
+            thread_id: None,
+            agent_id: None,
+        };
+        let p = process_request(req, &HashSet::new());
+        assert!(p.thread_id.starts_with("thread-"));
+    }
+
+    fn user_parts(parts: Vec<Value>) -> ProcessedRequest {
+        let req = AiSdkChatRequest {
+            messages: vec![ui("user", "u1", parts)],
+            thread_id: Some("t".into()),
+            agent_id: None,
+        };
+        process_request(req, &HashSet::new())
+    }
+
+    #[test]
+    fn a_malformed_data_uri_falls_back_to_an_image_url() {
+        use awaken_agent_contract::agent::content::ImageSource;
+        let p = user_parts(vec![
+            json!({"type":"file","mediaType":"image/png","url":"data:garbage-no-comma"}),
+        ]);
+        assert!(matches!(
+            &p.messages[0].content[0],
+            ContentBlock::Image { source: ImageSource::Url { url } } if url == "data:garbage-no-comma"
+        ));
+    }
+
+    #[test]
+    fn a_remote_image_url_becomes_an_image_url_block() {
+        use awaken_agent_contract::agent::content::ImageSource;
+        let p = user_parts(vec![
+            json!({"type":"file","mediaType":"image/png","url":"https://x/y.png"}),
+        ]);
+        assert!(matches!(
+            &p.messages[0].content[0],
+            ContentBlock::Image { source: ImageSource::Url { url } } if url == "https://x/y.png"
+        ));
+    }
+
+    #[test]
+    fn an_empty_text_part_is_dropped() {
+        let p = user_parts(vec![
+            json!({"type":"text","text":""}),
+            json!({"type":"text","text":"keep"}),
+        ]);
+        assert_eq!(p.messages[0].content.len(), 1);
+        assert_eq!(blocks_text(&p.messages[0].content), "keep");
+    }
+
+    #[test]
+    fn a_non_image_file_part_is_dropped() {
+        let p = user_parts(vec![
+            json!({"type":"file","mediaType":"application/pdf","url":"data:application/pdf;base64,AAAA"}),
+            json!({"type":"text","text":"keep"}),
+        ]);
+        assert_eq!(p.messages[0].content.len(), 1);
+        assert_eq!(blocks_text(&p.messages[0].content), "keep");
+    }
+
+    #[test]
+    fn an_unknown_part_type_is_dropped_from_content() {
+        // A non-content part (e.g. reasoning/step-start) is not user input.
+        let p = user_parts(vec![
+            json!({ "type": "reasoning", "text": "thinking" }),
+            json!({ "type": "text", "text": "keep" }),
+        ]);
+        assert_eq!(p.messages[0].content.len(), 1);
+        assert_eq!(blocks_text(&p.messages[0].content), "keep");
+    }
+
+    #[test]
+    fn result_text_renders_the_three_value_shapes() {
+        // A string is unquoted; null is empty; anything else is its JSON form.
+        assert_eq!(result_text(&json!("hi")), "hi");
+        assert_eq!(result_text(&Value::Null), "");
+        assert_eq!(result_text(&json!({ "a": 1 })), "{\"a\":1}");
+    }
 }

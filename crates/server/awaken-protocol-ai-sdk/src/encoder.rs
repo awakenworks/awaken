@@ -333,4 +333,105 @@ mod tests {
         assert_eq!(part["state"], "output-available");
         assert_eq!(part["output"], json!("data"));
     }
+
+    #[test]
+    fn a_tool_result_with_no_matching_call_is_dropped_from_history() {
+        let messages = vec![
+            Message::text(Id("u1".into()), Role::User, "go"),
+            Message {
+                id: Id("t1".into()),
+                role: Role::Tool,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "orphan".into(),
+                    content: vec![ContentBlock::Text {
+                        text: "\"data\"".into(),
+                    }],
+                }],
+            },
+        ];
+        let encoded = encode_history(&messages);
+        // Only the user message survives; an orphan result has no call to merge into.
+        assert_eq!(encoded.len(), 1);
+        assert_eq!(encoded[0]["role"], "user");
+    }
+
+    #[test]
+    fn tool_result_error_maps_to_tool_output_error() {
+        let events = AiSdkEncoder.transcode(&AgentEvent::ToolResult {
+            id: "c1".into(),
+            content: vec![ContentBlock::text("it broke")],
+            is_error: true,
+        });
+        assert!(matches!(
+            events.as_slice(),
+            [UIStreamEvent::ToolOutputError { tool_call_id, error_text }]
+                if tool_call_id == "c1" && error_text == "it broke"
+        ));
+    }
+
+    #[test]
+    fn tool_result_success_maps_to_tool_output_available() {
+        let events = AiSdkEncoder.transcode(&AgentEvent::ToolResult {
+            id: "c1".into(),
+            content: vec![ContentBlock::text("ok")],
+            is_error: false,
+        });
+        assert!(matches!(
+            events.as_slice(),
+            [UIStreamEvent::ToolOutputAvailable { tool_call_id, .. }] if tool_call_id == "c1"
+        ));
+    }
+
+    #[test]
+    fn run_failed_maps_to_error_then_finish_error() {
+        let events = AiSdkEncoder.transcode(&AgentEvent::RunFailed {
+            code: "overloaded".into(),
+            message: "try later".into(),
+        });
+        assert_eq!(events.len(), 3);
+        assert!(matches!(
+            &events[0],
+            UIStreamEvent::Error { error_text }
+                if error_text.contains("overloaded") && error_text.contains("try later")
+        ));
+        assert!(matches!(events[1], UIStreamEvent::FinishStep));
+        assert!(matches!(&events[2], UIStreamEvent::Finish { .. }));
+    }
+
+    #[test]
+    fn run_started_transcodes_to_start_and_start_step() {
+        let events = AiSdkEncoder.transcode(&AgentEvent::RunStarted);
+        assert!(matches!(
+            events.as_slice(),
+            [UIStreamEvent::Start, UIStreamEvent::StartStep]
+        ));
+    }
+
+    #[test]
+    fn waiting_transcodes_to_finish_step_then_tool_calls_finish() {
+        let events = AiSdkEncoder.transcode(&AgentEvent::Waiting {
+            pending_tool_use_id: Some("c1".into()),
+        });
+        assert!(matches!(events[0], UIStreamEvent::FinishStep));
+        assert!(matches!(
+            &events[1],
+            UIStreamEvent::Finish { finish_reason: Some(r), .. } if r == "tool-calls"
+        ));
+    }
+
+    #[test]
+    fn a_tool_call_transcodes_to_tool_input_available() {
+        use awaken_agent_contract::project::ToolDisposition;
+        let events = AiSdkEncoder.transcode(&AgentEvent::ToolCall {
+            id: "c1".into(),
+            name: "read".into(),
+            input: json!({ "path": "x" }),
+            disposition: ToolDisposition::PendingBuiltin,
+        });
+        assert!(matches!(
+            &events[0],
+            UIStreamEvent::ToolInputAvailable { tool_call_id, provider_executed: false, .. }
+                if tool_call_id == "c1"
+        ));
+    }
 }
