@@ -342,10 +342,12 @@ async fn projection_rehydrates_from_postgres_after_reconnect() {
 /// Two independent coordinators over one database model a two-node fleet — each has
 /// its own in-memory projection, so allocating the sequence from that counter would
 /// hand out the same value and every commit but one would fail on
-/// `runtime_commit_pkey`. The sequence is allocated atomically at the database
-/// (advisory-lock + `MAX(sequence)+1` inside the commit transaction), so a burst of
-/// concurrent commits — across processes AND parallel within one — all succeed with
-/// distinct, gapless sequences.
+/// `runtime_commit_pkey`. The sequence is allocated lock-free at the database via
+/// `nextval` on a dedicated Postgres SEQUENCE, so a burst of concurrent commits —
+/// across processes AND parallel within one — all succeed with distinct sequences
+/// and never collide on the primary key. (The contract is distinctness, not
+/// contiguity: a rolled-back allocation may leave a gap. This happy-path burst has
+/// no rollbacks, so the distinct set is also contiguous 1..=n.)
 #[tokio::test]
 async fn concurrent_commits_get_distinct_sequences_no_pk_collision() {
     let Some(pool) = schema_pool("t_concurrent").await else {
@@ -392,10 +394,18 @@ async fn concurrent_commits_get_distinct_sequences_no_pk_collision() {
         sequences.push(record.sequence);
     }
     sequences.sort_unstable();
+    let distinct: std::collections::BTreeSet<u64> = sequences.iter().copied().collect();
+    assert_eq!(
+        distinct.len(),
+        sequences.len(),
+        "every concurrent commit got a DISTINCT sequence (no PK collision): {sequences:?}"
+    );
+    assert_eq!(sequences.len(), n as usize, "every commit succeeded");
+    // No rollbacks here, so the distinct set is also contiguous.
     assert_eq!(
         sequences,
         (1..=u64::from(n)).collect::<Vec<_>>(),
-        "every concurrent commit got a distinct, gapless sequence"
+        "a rollback-free burst allocates a contiguous 1..=n"
     );
 
     let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtime_commit")
