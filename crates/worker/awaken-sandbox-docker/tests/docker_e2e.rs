@@ -100,12 +100,19 @@ async fn collects_and_reads_artifacts_from_the_outputs_path() {
     // artifacts() content-addresses every file under outputs_path.
     let arts = sandbox.artifacts().await.expect("artifacts");
     assert_eq!(arts.len(), 1, "one produced artifact, got {arts:?}");
-    assert!(arts[0].path.ends_with("result.txt"), "path: {}", arts[0].path);
+    assert!(
+        arts[0].path.ends_with("result.txt"),
+        "path: {}",
+        arts[0].path
+    );
     assert_eq!(arts[0].size_bytes, 14, "\"hello-artifact\" is 14 bytes");
     assert_eq!(arts[0].id, arts[0].content_hash, "id is the content hash");
 
     // read_artifact() returns the exact bytes, addressed by the content-hash id.
-    let bytes = sandbox.read_artifact(&arts[0].id).await.expect("read_artifact");
+    let bytes = sandbox
+        .read_artifact(&arts[0].id)
+        .await
+        .expect("read_artifact");
     assert_eq!(bytes, b"hello-artifact");
 
     // An unknown id fails closed.
@@ -121,14 +128,28 @@ async fn reconcile_reaps_the_orphan_sandbox_over_real_docker() {
         return;
     }
     let provider = DockerSandboxProvider::new("alpine:3");
-    let keep = provider.create(&spec("recon-keep")).await.expect("create keep");
-    let orphan = provider.create(&spec("recon-orphan")).await.expect("create orphan");
+    let keep = provider
+        .create(&spec("recon-keep"))
+        .await
+        .expect("create keep");
+    let orphan = provider
+        .create(&spec("recon-orphan"))
+        .await
+        .expect("create orphan");
     let (h_keep, h_orphan) = (keep.handle(), orphan.handle());
 
     // Both live; only `keep` is still referenced by a run → reconcile reaps `orphan`.
     let plan = reconcile_adoption(&[h_keep.clone(), h_orphan.clone()], &[h_keep.clone()]);
-    assert_eq!(plan.adopt, vec![h_keep.clone()], "the referenced sandbox is adopted");
-    assert_eq!(plan.reap, vec![h_orphan.clone()], "the unreferenced sandbox is reaped");
+    assert_eq!(
+        plan.adopt,
+        vec![h_keep.clone()],
+        "the referenced sandbox is adopted"
+    );
+    assert_eq!(
+        plan.reap,
+        vec![h_orphan.clone()],
+        "the unreferenced sandbox is reaped"
+    );
     assert!(plan.orphan.is_empty());
 
     // Act on the plan: reap every unreferenced sandbox.
@@ -143,8 +164,14 @@ async fn reconcile_reaps_the_orphan_sandbox_over_real_docker() {
     }
 
     // The referenced sandbox survives; the reaped one is gone (adopt fails closed).
-    assert!(provider.adopt(&h_keep).await.is_ok(), "referenced sandbox survives");
-    assert!(provider.adopt(&h_orphan).await.is_err(), "orphan sandbox was reaped");
+    assert!(
+        provider.adopt(&h_keep).await.is_ok(),
+        "referenced sandbox survives"
+    );
+    assert!(
+        provider.adopt(&h_orphan).await.is_err(),
+        "orphan sandbox was reaped"
+    );
 
     provider.adopt(&h_keep).await.unwrap().dispose().await.ok();
 }

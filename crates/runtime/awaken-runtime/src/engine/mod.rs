@@ -851,107 +851,107 @@ async fn drive(
             let output = if call.tool_id == awaken_runtime_contract::resolved::TOOL_OPEN_ID {
                 open_deferred_tool(&resolved.spec.tool_presentation, &call, &mut opened)
             } else {
-            let outcome = gate_decision(runtime, &call, env, &store).await;
-            // Audit the decision of a real (policy-backed) gate (ADR-0030).
-            if runtime.gate().is_some() {
-                audit.push(permission_audit(&call, &outcome));
-            }
-            match outcome {
-                GateOutcome::Allow => match run_delegation(runtime, context, &call).await {
-                    Some(Ok(AgentStep::Done { text, usage })) => {
-                        // Fold the delegate's token spend into this thread's running
-                        // tally, so a session's usage counts delegated work (the
-                        // sub-run's own isolated store is already gone).
-                        merge_thread_usage(&mut store, &mut staged_state, &usage);
-                        ToolOutput::ok(&call.call_id, text)
+                let outcome = gate_decision(runtime, &call, env, &store).await;
+                // Audit the decision of a real (policy-backed) gate (ADR-0030).
+                if runtime.gate().is_some() {
+                    audit.push(permission_audit(&call, &outcome));
+                }
+                match outcome {
+                    GateOutcome::Allow => match run_delegation(runtime, context, &call).await {
+                        Some(Ok(AgentStep::Done { text, usage })) => {
+                            // Fold the delegate's token spend into this thread's running
+                            // tally, so a session's usage counts delegated work (the
+                            // sub-run's own isolated store is already gone).
+                            merge_thread_usage(&mut store, &mut staged_state, &usage);
+                            ToolOutput::ok(&call.call_id, text)
+                        }
+                        // The delegate parked needing input: park the parent on a
+                        // Delegation ticket carrying the opaque handle (durable), resumed
+                        // through the resolver.
+                        Some(Ok(AgentStep::Parked { handle })) => {
+                            let ticket = waiting_ticket(
+                                resolved,
+                                run_id,
+                                &call.call_id,
+                                &call,
+                                WaitingReason::Delegation,
+                                Some(handle),
+                            );
+                            end = Some(End::Parked(Box::new(ticket)));
+                            emit(
+                                context,
+                                run_id,
+                                StreamKind::Waiting {
+                                    reason: "delegation".to_string(),
+                                },
+                            )
+                            .await;
+                            break;
+                        }
+                        Some(Err(err)) => ToolOutput::error(&call.call_id, err.to_string()),
+                        None => execute_tool(runtime, Some(env), &call, context).await,
+                    },
+                    GateOutcome::Block { reason } => {
+                        ToolOutput::error(&call.call_id, format!("blocked: {reason}"))
                     }
-                    // The delegate parked needing input: park the parent on a
-                    // Delegation ticket carrying the opaque handle (durable), resumed
-                    // through the resolver.
-                    Some(Ok(AgentStep::Parked { handle })) => {
+                    GateOutcome::SetResult(output) => output,
+                    GateOutcome::Suspend { ticket_id } => {
+                        // Park the run on a structured ticket carrying the pending
+                        // call so an allow decision can run it later.
                         let ticket = waiting_ticket(
                             resolved,
                             run_id,
-                            &call.call_id,
+                            &ticket_id,
                             &call,
-                            WaitingReason::Delegation,
-                            Some(handle),
+                            WaitingReason::ToolPermission,
+                            None,
                         );
                         end = Some(End::Parked(Box::new(ticket)));
                         emit(
                             context,
                             run_id,
                             StreamKind::Waiting {
-                                reason: "delegation".to_string(),
+                                reason: "tool_permission".to_string(),
                             },
                         )
                         .await;
                         break;
                     }
-                    Some(Err(err)) => ToolOutput::error(&call.call_id, err.to_string()),
-                    None => execute_tool(runtime, Some(env), &call, context).await,
-                },
-                GateOutcome::Block { reason } => {
-                    ToolOutput::error(&call.call_id, format!("blocked: {reason}"))
-                }
-                GateOutcome::SetResult(output) => output,
-                GateOutcome::Suspend { ticket_id } => {
-                    // Park the run on a structured ticket carrying the pending
-                    // call so an allow decision can run it later.
-                    let ticket = waiting_ticket(
-                        resolved,
-                        run_id,
-                        &ticket_id,
-                        &call,
-                        WaitingReason::ToolPermission,
-                        None,
-                    );
-                    end = Some(End::Parked(Box::new(ticket)));
-                    emit(
-                        context,
-                        run_id,
-                        StreamKind::Waiting {
-                            reason: "tool_permission".to_string(),
-                        },
-                    )
-                    .await;
-                    break;
-                }
-                GateOutcome::Schedule {
-                    correlation_id,
-                    action_kind,
-                } => {
-                    // A plugin-owned scheduled-action kind must be in the resolved
-                    // environment; an absent kind (its plugin not selected) fails
-                    // the run closed (RS-SCH-005, ADR-0027).
-                    if let Some(kind) = &action_kind
-                        && !env.permits_action_kind(kind)
-                    {
-                        end = Some(End::Ended(EndCause::Error(Failure::CapabilityBound)));
+                    GateOutcome::Schedule {
+                        correlation_id,
+                        action_kind,
+                    } => {
+                        // A plugin-owned scheduled-action kind must be in the resolved
+                        // environment; an absent kind (its plugin not selected) fails
+                        // the run closed (RS-SCH-005, ADR-0027).
+                        if let Some(kind) = &action_kind
+                            && !env.permits_action_kind(kind)
+                        {
+                            end = Some(End::Ended(EndCause::Error(Failure::CapabilityBound)));
+                            break;
+                        }
+                        // Commit a ScheduledAction (ADR-0020): the call is deferred and
+                        // performed later from the committed request, not decided.
+                        let ticket = waiting_ticket(
+                            resolved,
+                            run_id,
+                            &correlation_id,
+                            &call,
+                            WaitingReason::ScheduledAction,
+                            None,
+                        );
+                        end = Some(End::Parked(Box::new(ticket)));
+                        emit(
+                            context,
+                            run_id,
+                            StreamKind::Waiting {
+                                reason: "scheduled_action".to_string(),
+                            },
+                        )
+                        .await;
                         break;
                     }
-                    // Commit a ScheduledAction (ADR-0020): the call is deferred and
-                    // performed later from the committed request, not decided.
-                    let ticket = waiting_ticket(
-                        resolved,
-                        run_id,
-                        &correlation_id,
-                        &call,
-                        WaitingReason::ScheduledAction,
-                        None,
-                    );
-                    end = Some(End::Parked(Box::new(ticket)));
-                    emit(
-                        context,
-                        run_id,
-                        StreamKind::Waiting {
-                            reason: "scheduled_action".to_string(),
-                        },
-                    )
-                    .await;
-                    break;
                 }
-            }
             };
             staged_state.extend(output.state.clone());
             let message = tool_result_message(&call, &output);

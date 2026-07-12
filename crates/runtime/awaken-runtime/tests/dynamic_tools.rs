@@ -165,7 +165,7 @@ fn activation() -> RunActivation {
                 plugin_ids: vec!["mcp:srv".to_string()],
                 plugin_config: Default::default(),
                 context_policy: ContextPolicy::KeepAll,
-                            tool_presentation: Default::default(),
+                tool_presentation: Default::default(),
             },
             fingerprint,
         },

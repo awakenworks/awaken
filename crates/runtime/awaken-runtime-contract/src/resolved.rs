@@ -303,9 +303,7 @@ impl ToolPresentation {
     pub fn from_facets(facets: impl IntoIterator<Item = (String, ToolFacet)>) -> Self {
         let facets = facets
             .into_iter()
-            .filter(|(_, f)| {
-                f.alias.is_some() || f.description.is_some() || f.defer
-            })
+            .filter(|(_, f)| f.alias.is_some() || f.description.is_some() || f.defer)
             .collect();
         Self { facets }
     }
@@ -443,14 +441,32 @@ mod tests {
     fn present_renames_redescribes_and_defers_by_canonical_id() {
         // Works identically for a static id and an MCP id.
         let p = ToolPresentation::from_facets([
-            ("a".to_string(), ToolFacet { alias: Some("say".into()), description: Some("Speak.".into()), defer: false }),
-            ("mcp__x__y".to_string(), ToolFacet { alias: Some("y".into()), description: None, defer: true }),
+            (
+                "a".to_string(),
+                ToolFacet {
+                    alias: Some("say".into()),
+                    description: Some("Speak.".into()),
+                    defer: false,
+                },
+            ),
+            (
+                "mcp__x__y".to_string(),
+                ToolFacet {
+                    alias: Some("y".into()),
+                    description: None,
+                    defer: true,
+                },
+            ),
             ("noop".to_string(), ToolFacet::default()), // all-default ⇒ dropped
         ]);
         assert!(!p.is_empty());
         let out = p.present(&[td("a"), td("mcp__x__y"), td("keep")]);
         // `a` renamed + redescribed and stays in the face; `keep` passes through.
-        assert!(out.face.iter().any(|d| d.id == "say" && d.description == "Speak."));
+        assert!(
+            out.face
+                .iter()
+                .any(|d| d.id == "say" && d.description == "Speak.")
+        );
         assert!(out.face.iter().any(|d| d.id == "keep"));
         // The MCP tool is deferred (renamed) — withheld from the face.
         assert!(out.face.iter().all(|d| d.id != "y"));
@@ -462,7 +478,11 @@ mod tests {
         use super::TOOL_OPEN_ID;
         let p = ToolPresentation::from_facets([(
             "mcp__srv__a".to_string(),
-            ToolFacet { alias: Some("create_issue".into()), description: None, defer: true },
+            ToolFacet {
+                alias: Some("create_issue".into()),
+                description: None,
+                defer: true,
+            },
         )]);
         let tools = [td("mcp__srv__a"), td("keep")];
 
@@ -476,16 +496,27 @@ mod tests {
 
         // Opened (by canonical id): the tool appears, and tool_open is gone.
         let opened: std::collections::BTreeSet<String> = ["mcp__srv__a".to_string()].into();
-        let ids2: Vec<String> = p.model_tools(&tools, &opened).iter().map(|d| d.id.clone()).collect();
+        let ids2: Vec<String> = p
+            .model_tools(&tools, &opened)
+            .iter()
+            .map(|d| d.id.clone())
+            .collect();
         assert!(ids2.contains(&"create_issue".to_string()));
-        assert!(!ids2.iter().any(|i| i == TOOL_OPEN_ID), "no deferred left ⇒ no tool_open");
+        assert!(
+            !ids2.iter().any(|i| i == TOOL_OPEN_ID),
+            "no deferred left ⇒ no tool_open"
+        );
     }
 
     #[test]
     fn resolve_reverses_an_alias_to_its_canonical_id() {
-        let p = ToolPresentation::from_facets([
-            ("mcp__x__y".to_string(), ToolFacet { alias: Some("y".into()), ..Default::default() }),
-        ]);
+        let p = ToolPresentation::from_facets([(
+            "mcp__x__y".to_string(),
+            ToolFacet {
+                alias: Some("y".into()),
+                ..Default::default()
+            },
+        )]);
         // The single choke: a model call by alias reverses to the canonical id; a
         // non-alias (e.g. an un-renamed tool) passes through untouched.
         assert_eq!(p.resolve("y"), "mcp__x__y");

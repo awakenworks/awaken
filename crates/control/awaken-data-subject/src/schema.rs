@@ -53,7 +53,11 @@ pub fn data_subject_bundle() -> Result<MigrationBundle, MigrationError> {
     let migrations = FILES
         .iter()
         .map(|(name, contents)| {
-            Migration::new(version_of(name), description_of(name, contents), contents.trim())
+            Migration::new(
+                version_of(name),
+                description_of(name, contents),
+                contents.trim(),
+            )
         })
         .collect::<Result<Vec<_>, _>>()?;
     MigrationBundle::new(BUNDLE_ID, migrations)

@@ -184,8 +184,7 @@ impl Sandbox for DockerSandbox {
         let mut artifacts = Vec::new();
         for line in listing.lines() {
             let mut parts = line.splitn(3, ' ');
-            let (Some(hash), Some(size), Some(rel)) =
-                (parts.next(), parts.next(), parts.next())
+            let (Some(hash), Some(size), Some(rel)) = (parts.next(), parts.next(), parts.next())
             else {
                 continue;
             };

@@ -18,7 +18,7 @@ fn spec(instructions: &str) -> ResolvedSpec {
         plugin_ids: Vec::new(),
         plugin_config: Default::default(),
         context_policy: ContextPolicy::KeepAll,
-            tool_presentation: Default::default(),
+        tool_presentation: Default::default(),
     }
 }
 
@@ -28,7 +28,13 @@ fn user_message() -> Message {
 
 #[test]
 fn instructions_lead_the_request_as_a_system_message() {
-    let request = build_chat_request(&spec("be helpful"), &[], &[user_message()], &[], &Default::default());
+    let request = build_chat_request(
+        &spec("be helpful"),
+        &[],
+        &[user_message()],
+        &[],
+        &Default::default(),
+    );
     assert_eq!(request.messages.len(), 2);
     assert!(matches!(request.messages[0].role, ChatRole::System));
     assert_eq!(
@@ -77,7 +83,13 @@ fn user_texts(request: &ChatRequest) -> Vec<String> {
 #[test]
 fn keep_all_sends_the_whole_transcript() {
     let transcript: Vec<Message> = (0..5).map(numbered).collect();
-    let request = build_chat_request(&spec_with(ContextPolicy::KeepAll), &[], &transcript, &[], &Default::default());
+    let request = build_chat_request(
+        &spec_with(ContextPolicy::KeepAll),
+        &[],
+        &transcript,
+        &[],
+        &Default::default(),
+    );
     // 1 system + 5 users
     assert_eq!(request.messages.len(), 6);
 }
@@ -132,7 +144,13 @@ fn prelude_is_injected_after_instructions_before_the_transcript() {
         "recalled context",
     )];
     let transcript = vec![user_message()];
-    let request = build_chat_request(&spec("be helpful"), &prelude, &transcript, &[], &Default::default());
+    let request = build_chat_request(
+        &spec("be helpful"),
+        &prelude,
+        &transcript,
+        &[],
+        &Default::default(),
+    );
     assert_eq!(request.messages.len(), 3);
     assert!(matches!(request.messages[0].role, ChatRole::System));
     assert_eq!(

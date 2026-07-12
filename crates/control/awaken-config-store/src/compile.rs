@@ -118,7 +118,10 @@ pub fn compile_with_resource_prompts(
     // else its id) — that would show the model two tools under one name.
     let mut facing: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     for d in &descriptors {
-        let facing_id = alias_of.get(d.id.as_str()).copied().unwrap_or(d.id.as_str());
+        let facing_id = alias_of
+            .get(d.id.as_str())
+            .copied()
+            .unwrap_or(d.id.as_str());
         if !facing.insert(facing_id) {
             return Err(CompileError::InvalidToolOverride {
                 agent: config.id.clone(),
@@ -270,8 +273,18 @@ mod tests {
 
         let mut cfg = config(&["echo", "mcp__gh__create_issue"]);
         cfg.tool_overrides = vec![
-            ToolOverride { target: "echo".into(), alias: Some("say".into()), description: Some("Speak.".into()), defer: false },
-            ToolOverride { target: "mcp__gh__create_issue".into(), alias: None, description: None, defer: true },
+            ToolOverride {
+                target: "echo".into(),
+                alias: Some("say".into()),
+                description: Some("Speak.".into()),
+                defer: false,
+            },
+            ToolOverride {
+                target: "mcp__gh__create_issue".into(),
+                alias: None,
+                description: None,
+                defer: true,
+            },
         ];
         let compiled = compile(&cfg, &tools).unwrap();
         let pres = &compiled.snapshot().resolved_spec.tool_presentation;
@@ -279,12 +292,25 @@ mod tests {
         // The alias reverse-maps back to the canonical id; the model face renames + defers.
         assert_eq!(pres.resolve("say"), "echo");
         let presented = pres.present(&tools);
-        assert!(presented.face.iter().any(|d| d.id == "say" && d.description == "Speak."));
-        assert!(presented.deferred.iter().any(|d| d.id == "mcp__gh__create_issue"));
+        assert!(
+            presented
+                .face
+                .iter()
+                .any(|d| d.id == "say" && d.description == "Speak.")
+        );
+        assert!(
+            presented
+                .deferred
+                .iter()
+                .any(|d| d.id == "mcp__gh__create_issue")
+        );
 
         // Overrides enter the content address; no overrides ⇒ byte-identical fingerprint.
         let bare = compile(&config(&["echo", "mcp__gh__create_issue"]), &tools).unwrap();
-        assert_ne!(compiled.snapshot().fingerprint.0, bare.snapshot().fingerprint.0);
+        assert_ne!(
+            compiled.snapshot().fingerprint.0,
+            bare.snapshot().fingerprint.0
+        );
         assert!(bare.snapshot().resolved_spec.tool_presentation.is_empty());
     }
 
@@ -293,18 +319,36 @@ mod tests {
         use crate::config::ToolOverride;
         let tools = vec![tool("echo")];
         let mut cfg = config(&["echo"]);
-        cfg.tool_overrides = vec![ToolOverride { target: "ghost".into(), alias: Some("g".into()), ..Default::default() }];
-        assert!(matches!(compile(&cfg, &tools), Err(CompileError::InvalidToolOverride { .. })));
+        cfg.tool_overrides = vec![ToolOverride {
+            target: "ghost".into(),
+            alias: Some("g".into()),
+            ..Default::default()
+        }];
+        assert!(matches!(
+            compile(&cfg, &tools),
+            Err(CompileError::InvalidToolOverride { .. })
+        ));
 
         // An MCP target that isn't in the compile catalog is allowed (resolved at runtime).
         let mut mcp = config(&["echo"]);
-        mcp.tool_overrides = vec![ToolOverride { target: "mcp__x__y".into(), alias: Some("y".into()), ..Default::default() }];
+        mcp.tool_overrides = vec![ToolOverride {
+            target: "mcp__x__y".into(),
+            alias: Some("y".into()),
+            ..Default::default()
+        }];
         assert!(compile(&mcp, &tools).is_ok());
 
         // An alias colliding with another selected tool's id is rejected.
         let mut clash = config(&["echo", "read"]);
-        clash.tool_overrides = vec![ToolOverride { target: "echo".into(), alias: Some("read".into()), ..Default::default() }];
-        assert!(matches!(compile(&clash, &[tool("echo"), tool("read")]), Err(CompileError::InvalidToolOverride { .. })));
+        clash.tool_overrides = vec![ToolOverride {
+            target: "echo".into(),
+            alias: Some("read".into()),
+            ..Default::default()
+        }];
+        assert!(matches!(
+            compile(&clash, &[tool("echo"), tool("read")]),
+            Err(CompileError::InvalidToolOverride { .. })
+        ));
     }
 
     #[test]
