@@ -11,8 +11,10 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import Drawer from "../components/ui/Drawer";
 import { useToast } from "../components/ui/Toast";
-import { Button, Card, CheckPicker, Pill, SchemaForm, Segmented, SelectField, Switch, TextAreaField, TextField } from "../components/ui";
+import { Button, Card, CheckPicker, Pill, Segmented, TextAreaField, TextField } from "../components/ui";
 import type { JsonSchema } from "../components/ui";
+import BehaviorCard from "../components/agent/BehaviorCard";
+import ToolOverridesEditor from "../components/agent/ToolOverridesEditor";
 import SandboxPane from "../components/session/SandboxPane";
 import PermissionEditor from "../components/agent/PermissionEditor";
 import ResourcesTab from "../components/agent/ResourcesTab";
@@ -23,7 +25,6 @@ import type {
   ContextPolicy,
   PermissionConfig,
   PublishResult,
-  ToolOverride,
 } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import { useCapabilities } from "../lib/useCapabilities";
@@ -35,30 +36,6 @@ import ModelsSurface from "./models";
 // runtime behaviors (context window, auto-compaction, memory recall, tool ordering) as
 // named cards; Tools holds selection + presentation + permissions.
 type Tab = "overview" | "behavior" | "tools" | "resources";
-
-/// Friendly title + one-line description for a runtime plugin, so the Behavior section
-/// shows a named behavior card instead of a raw plugin id. Unknown plugins fall back to
-/// their id; their config still renders (schema-driven or JSON), so nothing is lost.
-const BEHAVIORS: Record<string, { title: string; zh: string; desc: string; descZh: string }> = {
-  compact: {
-    title: "Auto-compaction",
-    zh: "自动压缩",
-    desc: "When the conversation gets long, summarize the older turns in the background so the model keeps the essentials without the full history.",
-    descZh: "对话变长时,在后台把较早的轮次总结压缩,让模型保留要点而不必带上全部历史。",
-  },
-  memory: {
-    title: "Memory recall",
-    zh: "记忆召回",
-    desc: "Recall relevant long-term memories into context on demand.",
-    descZh: "按需把相关的长期记忆召回到上下文。",
-  },
-  state_machine: {
-    title: "Tool-call ordering",
-    zh: "工具调用顺序",
-    desc: "Constrain the order tools may be called in (e.g. read a file before writing it).",
-    descZh: "约束工具调用的顺序(例如先读文件再写)。",
-  },
-};
 
 const BLANK: AgentConfig = {
   id: "",
@@ -122,59 +99,6 @@ function ListEditor({
         </Button>
       </div>
     </div>
-  );
-}
-
-/// Per-tool presentation overrides (ADR-0053): a row per override — the target tool id,
-/// an alias (rename for the model), a description override, and a defer toggle. `target`
-/// is picked from the agent's selected tools (add an MCP id under Tools to override it).
-function ToolOverridesEditor({
-  tools,
-  value,
-  onChange,
-}: {
-  tools: string[];
-  value: ToolOverride[];
-  onChange: (next: ToolOverride[]) => void;
-}) {
-  const app = useApp();
-  const set = (i: number, patch: Partial<ToolOverride>) =>
-    onChange(value.map((r, j) => (j === i ? { ...r, ...patch } : r)));
-  const add = () =>
-    onChange([...value, { target: tools[0] ?? "", alias: "", description: "", defer: false }]);
-  return (
-    <>
-      {value.map((r, i) => (
-        <div className="row" key={i} style={{ alignItems: "flex-end", gap: 8 }}>
-          <SelectField
-            label={app.t("Tool", "工具")}
-            mono
-            style={{ minWidth: 160 }}
-            value={r.target}
-            onChange={(e) => set(i, { target: e.target.value })}
-          >
-            {!tools.includes(r.target) && <option value={r.target}>{r.target || "—"}</option>}
-            {tools.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
-          </SelectField>
-          <TextField label={app.t("Alias", "别名")} mono style={{ width: 130 }} placeholder="rename" value={r.alias ?? ""} onChange={(e) => set(i, { alias: e.target.value })} />
-          <TextField label={app.t("Description", "描述")} style={{ flex: 1, minWidth: 160 }} placeholder="override description" value={r.description ?? ""} onChange={(e) => set(i, { description: e.target.value })} />
-          <div className="field">
-            <label>{app.t("Defer", "延迟")}</label>
-            <div style={{ height: 30, display: "flex", alignItems: "center" }}>
-              <Switch aria-label={app.t("Defer this tool", "延迟此工具")} checked={!!r.defer} onChange={(e) => set(i, { defer: e.target.checked })} />
-            </div>
-          </div>
-          <Button variant="ghost" style={{ height: 30 }} onClick={() => onChange(value.filter((_, j) => j !== i))}>
-            ✕
-          </Button>
-        </div>
-      ))}
-      <Button onClick={add}>+ {app.t("override a tool", "覆盖一个工具")}</Button>
-    </>
   );
 }
 
@@ -582,78 +506,3 @@ export default function AgentEditorSurface() {
   );
 }
 
-/** One runtime behavior as a named card (ADR IA): a title + description + enable toggle,
- * and — when enabled — its config as a friendly schema-driven form (reusing `SchemaForm`)
- * with an "Advanced (raw JSON)" escape hatch so no field is ever unreachable. A plugin
- * with no schema falls back to the JSON box directly. Enabling adds the plugin id to the
- * agent's `plugins`; the form writes its `plugin_config[id]` section. */
-function BehaviorCard({
-  id,
-  schema,
-  enabled,
-  config,
-  onToggle,
-  onConfig,
-}: {
-  id: string;
-  schema?: JsonSchema;
-  enabled: boolean;
-  config: Record<string, unknown>;
-  onToggle: (on: boolean) => void;
-  onConfig: (next: unknown) => void;
-}) {
-  const app = useApp();
-  const meta = BEHAVIORS[id];
-  const title = meta ? app.t(meta.title, meta.zh) : id;
-  const desc = meta ? app.t(meta.desc, meta.descZh) : app.t("Runtime plugin.", "运行时插件。");
-  const [draft, setDraft] = useState<string | null>(null);
-  const [err, setErr] = useState("");
-  const commitJson = (raw: string) => {
-    setDraft(raw);
-    try {
-      onConfig(raw.trim() === "" ? {} : JSON.parse(raw));
-      setErr("");
-    } catch {
-      setErr(app.t("invalid JSON — not saved", "JSON 非法 — 未保存"));
-    }
-  };
-  const jsonBox = (
-    <>
-      <textarea
-        className="input mono"
-        rows={5}
-        value={draft ?? JSON.stringify(config ?? {}, null, 2)}
-        onChange={(e) => commitJson(e.target.value)}
-      />
-      {err && <span className="err" style={{ fontSize: 11 }}>{err}</span>}
-    </>
-  );
-  return (
-    <Card className="behavior-card">
-      <label className="behavior-head">
-        <span>
-          <div className="behavior-title">{title}</div>
-          <div className="behavior-desc">{desc}</div>
-        </span>
-        <Switch aria-label={title} checked={enabled} onChange={(e) => onToggle(e.target.checked)} />
-      </label>
-      {enabled && (
-        <div style={{ marginTop: 10 }}>
-          {schema ? (
-            <>
-              <SchemaForm schema={schema} value={config} onChange={onConfig} />
-              <details style={{ marginTop: 8 }}>
-                <summary className="mut" style={{ fontSize: 12, cursor: "pointer" }}>
-                  {app.t("Advanced (raw JSON)", "高级(原始 JSON)")}
-                </summary>
-                <div style={{ marginTop: 6 }}>{jsonBox}</div>
-              </details>
-            </>
-          ) : (
-            jsonBox
-          )}
-        </div>
-      )}
-    </Card>
-  );
-}

@@ -7,6 +7,10 @@ import { join, relative } from "node:path";
 
 const ROOT = new URL("../src", import.meta.url).pathname;
 const FETCH_ALLOWED = new Set(["lib/api/client.ts"]);
+// Secret entry must go through the write-only SecretField seam (ADR-0038 invariant:
+// a stored secret is never read back into the UI). Only SecretField itself may host a
+// raw password input.
+const SECRET_ALLOWED = new Set(["components/ui/SecretField.tsx"]);
 const MAX_LINES = 600;
 
 let failed = false;
@@ -23,6 +27,10 @@ function walk(dir) {
     const text = readFileSync(path, "utf8");
     if (!FETCH_ALLOWED.has(rel) && /\bfetch\s*\(/.test(text)) {
       console.error(`no-raw-fetch: ${rel} calls fetch() — go through lib/api/client.ts`);
+      failed = true;
+    }
+    if (!SECRET_ALLOWED.has(rel) && /type=["']password["']/.test(text)) {
+      console.error(`no-raw-secret-input: ${rel} hosts a raw password input — use <SecretField>`);
       failed = true;
     }
     const lines = text.split("\n").length;

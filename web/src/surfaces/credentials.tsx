@@ -8,7 +8,7 @@ import { useState } from "react";
 import { api } from "../lib/api/client";
 import type { CredentialSource, CredentialValidation } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
-import { Button, Card, Pill, TextField } from "../components/ui";
+import { Button, Card, Pill, SecretField, TextField } from "../components/ui";
 
 const WORKSPACE = "wrkspc_default";
 
@@ -168,10 +168,14 @@ export default function CredentialsSurface() {
             {form.kind === "env" ? (
               <TextField label="env_key" mono placeholder="ANTHROPIC_API_KEY" value={form.envKey} onChange={(e) => setForm({ ...form, envKey: e.target.value })} />
             ) : (
-              <div className="field">
-                <label>secret ({app.t("write-only, sealed", "只写,密封")})</label>
-                <input className="input mono" type="password" value={form.secret} onChange={(e) => setForm({ ...form, secret: e.target.value })} />
-              </div>
+              // The single secret-entry seam (ADR-0038 invariant: a stored secret is
+              // never read back into the UI — write-only). For a new credential nothing
+              // is stored yet, so it renders as a masked "replace" input.
+              <SecretField
+                label={app.t("secret (write-only, sealed)", "秘密(只写,密封)")}
+                hasStored={false}
+                onChange={(intent) => setForm({ ...form, secret: intent.value ?? "" })}
+              />
             )}
             {enter.error instanceof Error && <div className="err">{enter.error.message}</div>}
             <div className="row" style={{ justifyContent: "flex-end" }}>
