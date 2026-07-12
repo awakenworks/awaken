@@ -23,4 +23,9 @@ tempfile = "3"
 # Tests wire a real content-addressed store behind the `BlobSource` port via a small
 # adapter — the store stays a dev-only dependency (dev-deps are boundary-exempt).
 awaken-file-store.workspace = true
+# The memory-store realizer (FUSE / copy) is injected via the `MemoryMounter` port;
+# tests wire the real worker-tier mounter over an in-memory store to prove item 1
+# end-to-end. Dev-only.
+awaken-sandbox-memoryd.workspace = true
+awaken-memory-store.workspace = true
 async-trait.workspace = true

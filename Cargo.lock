@@ -1059,8 +1059,10 @@ dependencies = [
  "awaken-agent-channel",
  "awaken-ext-builtin-tools",
  "awaken-file-store",
+ "awaken-memory-store",
  "awaken-provisioning-contract",
  "awaken-runtime-contract",
+ "awaken-sandbox-memoryd",
  "blake3",
  "serde_json",
  "tempfile",
@@ -1074,6 +1076,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-memory-store",
+ "awaken-provisioning-contract",
  "fuser",
  "libc",
  "nix",

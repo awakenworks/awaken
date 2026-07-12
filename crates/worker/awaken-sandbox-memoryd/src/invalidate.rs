@@ -128,20 +128,37 @@ mod tests {
         // create → the inner store holds it AND an invalidation is broadcast.
         let m = fs.create("s", "/a.md", "one").await.unwrap();
         assert_eq!(m.content.as_deref(), Some("one"));
-        assert_eq!(rx.recv().await.unwrap(), ("s".to_string(), "/a.md".to_string()));
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            ("s".to_string(), "/a.md".to_string())
+        );
 
         // update → invalidation for the memory's path.
-        fs.update("s", &m.id, "two", &m.content_sha256).await.unwrap();
-        assert_eq!(rx.recv().await.unwrap(), ("s".to_string(), "/a.md".to_string()));
+        fs.update("s", &m.id, "two", &m.content_sha256)
+            .await
+            .unwrap();
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            ("s".to_string(), "/a.md".to_string())
+        );
 
         // rename → both the source and destination paths are invalidated.
         fs.rename("s", "/a.md", "/b.md").await.unwrap();
-        assert_eq!(rx.recv().await.unwrap(), ("s".to_string(), "/a.md".to_string()));
-        assert_eq!(rx.recv().await.unwrap(), ("s".to_string(), "/b.md".to_string()));
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            ("s".to_string(), "/a.md".to_string())
+        );
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            ("s".to_string(), "/b.md".to_string())
+        );
 
         // delete → invalidation for the removed path.
         fs.delete_by_path("s", "/b.md").await.unwrap();
-        assert_eq!(rx.recv().await.unwrap(), ("s".to_string(), "/b.md".to_string()));
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            ("s".to_string(), "/b.md".to_string())
+        );
     }
 
     #[tokio::test]

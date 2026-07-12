@@ -16,9 +16,10 @@ use awaken_memory_store::{MAX_MEMORY_BYTES, MemErr, MemoryEntry};
 
 pub mod coordinator;
 pub mod copy;
-pub mod invalidate;
 #[cfg(feature = "fuse")]
 pub mod fuse;
+pub mod invalidate;
+pub mod mounter;
 
 #[cfg(feature = "fuse")]
 pub use coordinator::FuseMountFactory;
@@ -26,7 +27,8 @@ pub use coordinator::{Mount, MountCoordinator, MountFactory};
 pub use copy::{fuse_available, harvest, materialize};
 #[cfg(feature = "fuse")]
 pub use fuse::{spawn_mount, spawn_mount_with_invalidations};
-pub use invalidate::{Invalidation, InvalidatingMemoryFs, Invalidator, LocalInvalidator};
+pub use invalidate::{InvalidatingMemoryFs, Invalidation, Invalidator, LocalInvalidator};
+pub use mounter::MemoryStoreMounter;
 
 /// A memoryd operation failure — the store's [`MemErr`] plus FUSE-local faults
 /// (a full dirty-fd budget, a missing handle, or an internal encoding fault).
