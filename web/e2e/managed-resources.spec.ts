@@ -36,7 +36,7 @@ test("Agent Resources: bind a memory store to an agent and persist it", async ({
   await request.put(`/v1/config/agents/${agent}`, { data: { id: agent, system: "hi", tools: [], plugins: [], plugin_config: {}, context_policy: { kind: "keep_all" }, max_steps: 8 } });
 
   await page.goto(`/w/default/agents/${agent}`);
-  await page.getByRole("button", { name: "Resources", exact: true }).click();
+  await page.getByRole("tab", { name: "Resources" }).click();
   await page.getByRole("button", { name: /bind a store/ }).click();
   // A memory row has three selects (kind, store, access); the store is the 2nd, and the
   // mount path is the only field carrying the `/mnt/…` placeholder.
@@ -48,7 +48,7 @@ test("Agent Resources: bind a memory store to an agent and persist it", async ({
 
   // Reload → the binding rehydrates from the stored resource config.
   await page.reload();
-  await page.getByRole("button", { name: "Resources", exact: true }).click();
+  await page.getByRole("tab", { name: "Resources" }).click();
   await expect(page.getByPlaceholder("/mnt/…")).toHaveValue(path);
 });
 
@@ -59,7 +59,7 @@ test("Agent Resources: attach a file to an agent and persist it", async ({ page,
   await request.put(`/v1/config/agents/${agent}`, { data: { id: agent, ...MIN_AGENT } });
 
   await page.goto(`/w/default/agents/${agent}`);
-  await page.getByRole("button", { name: "Resources", exact: true }).click();
+  await page.getByRole("tab", { name: "Resources" }).click();
   await page.getByRole("button", { name: /attach a file/ }).click();
   // Uploading is a two-step: the row's button opens a file chooser; feeding it POSTs the
   // bytes to the Files API and stamps the returned blob id (+ filename) onto the row.
@@ -72,7 +72,7 @@ test("Agent Resources: attach a file to an agent and persist it", async ({ page,
 
   // Reload → the file binding rehydrates (label is client-only; the mount path persists).
   await page.reload();
-  await page.getByRole("button", { name: "Resources", exact: true }).click();
+  await page.getByRole("tab", { name: "Resources" }).click();
   await expect(page.getByPlaceholder("/mnt/…")).toHaveValue("/mnt/files/notes.txt");
 });
 
@@ -82,14 +82,14 @@ test("Agent Resources: connect a GitHub repo to an agent and persist it", async 
   const url = "https://github.com/awaken/example.git";
 
   await page.goto(`/w/default/agents/${agent}`);
-  await page.getByRole("button", { name: "Resources", exact: true }).click();
+  await page.getByRole("tab", { name: "Resources" }).click();
   await page.getByRole("button", { name: /connect a repo/ }).click();
   await page.getByPlaceholder("https://github.com/owner/repo.git").fill(url);
   await page.getByRole("button", { name: /Save resources/ }).click();
   await expect(page.locator(".toast").filter({ hasText: /Resources saved|资源已保存/ })).toBeVisible();
 
   await page.reload();
-  await page.getByRole("button", { name: "Resources", exact: true }).click();
+  await page.getByRole("tab", { name: "Resources" }).click();
   await expect(page.getByPlaceholder("https://github.com/owner/repo.git")).toHaveValue(url);
 });
 
@@ -103,7 +103,7 @@ test("Agent Resources: add a skill to an agent and persist it", async ({ page, r
   });
 
   await page.goto(`/w/default/agents/${agent}`);
-  await page.getByRole("button", { name: "Resources", exact: true }).click();
+  await page.getByRole("tab", { name: "Resources" }).click();
   await page.getByRole("button", { name: /add a skill/ }).click();
   // A skill row: [kind][skill][mount][access] — pick the seeded skill (2nd select).
   await page.locator("select").nth(1).selectOption({ index: 0 });
@@ -111,7 +111,7 @@ test("Agent Resources: add a skill to an agent and persist it", async ({ page, r
   await expect(page.locator(".toast").filter({ hasText: /Resources saved|资源已保存/ })).toBeVisible();
 
   await page.reload();
-  await page.getByRole("button", { name: "Resources", exact: true }).click();
+  await page.getByRole("tab", { name: "Resources" }).click();
   await expect(page.getByPlaceholder("/mnt/…")).toHaveValue(/skills/);
 });
 
@@ -121,19 +121,19 @@ test("Tool presentation: alias a tool in the editor and persist it", async ({ pa
   await request.put(`/v1/config/agents/${agent}`, { data: { id: agent, system: "hi", tools: ["read"], plugins: [], plugin_config: {}, context_policy: { kind: "keep_all" }, max_steps: 8 } });
 
   await page.goto(`/w/default/agents/${agent}`);
-  await page.getByRole("button", { name: "Tools", exact: true }).click();
+  await page.getByRole("tab", { name: "Tools" }).click();
   await page.getByRole("button", { name: /override a tool/ }).click();
   // The override row: target <select> (defaults to "read"), then an "alias" input.
-  await page.getByPlaceholder("alias").fill("open_file");
-  await page.getByPlaceholder("description override").fill("Read a file.");
+  await page.getByPlaceholder("rename").fill("open_file");
+  await page.getByPlaceholder("override description").fill("Read a file.");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.locator(".toast").filter({ hasText: /Saved|已保存/ })).toBeVisible();
 
   // Reload → the override rehydrates from the stored config.
   await page.reload();
-  await page.getByRole("button", { name: "Tools", exact: true }).click();
-  await expect(page.getByPlaceholder("alias")).toHaveValue("open_file");
-  await expect(page.getByPlaceholder("description override")).toHaveValue("Read a file.");
+  await page.getByRole("tab", { name: "Tools" }).click();
+  await expect(page.getByPlaceholder("rename")).toHaveValue("open_file");
+  await expect(page.getByPlaceholder("override description")).toHaveValue("Read a file.");
 });
 
 test("Deployment: create in the UI (agent + environment) and see it listed", async ({ page, request }) => {

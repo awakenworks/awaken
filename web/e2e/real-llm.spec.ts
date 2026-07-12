@@ -69,7 +69,7 @@ test("Sandbox answers for real via config-plane credential (no env)", async ({ p
 
   // Sandbox: the runtime resolves the model to a REAL Gemini executor from the
   // configured credential (no env), and a real reply lands on screen.
-  await page.getByRole("button", { name: "Try it", exact: true }).click();
+  await page.getByRole("button", { name: /Try it/ }).click();
   await page.getByRole("button", { name: /Start session/ }).click();
   const ask = page.getByPlaceholder("Ask the agent…");
   await expect(ask).toBeVisible();
@@ -115,7 +115,7 @@ test("Agent reads/writes its bound memory store across sessions (real model)", a
 
   // Bind the store to the agent through the SAME console tab a user would use.
   await page.goto(`/w/default/agents/${agent}`);
-  await page.getByRole("button", { name: "Resources", exact: true }).click();
+  await page.getByRole("tab", { name: "Resources" }).click();
   await page.getByRole("button", { name: /bind a store/ }).click();
   await page.locator("select").nth(1).selectOption({ label: store.name }); // 0=kind, 1=store
   await page.getByRole("button", { name: /Save resources/ }).click();

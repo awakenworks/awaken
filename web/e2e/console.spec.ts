@@ -28,14 +28,14 @@ test("workspace switcher opens the roster dropdown with an add-workspace input",
 test("agent editor Tools/Behavior are data-driven from /v1/capabilities", async ({ page }) => {
   await page.goto("/w/default/agents/new");
   // Tools tab → CheckPicker fed by capabilities.tools (a hand tool like bash/write).
-  await page.getByRole("button", { name: "Tools", exact: true }).click();
+  await page.getByRole("tab", { name: "Tools" }).click();
   const picker = page.locator(".check-picker").first();
   await expect(picker).toBeVisible();
   await expect(picker.locator(".check-row").first()).toBeVisible();
 
   // Behavior tab → the schema-carrying plugins from capabilities.plugins, rendered as
   // named behavior cards (not raw ids).
-  await page.getByRole("button", { name: "Behavior", exact: true }).click();
+  await page.getByRole("tab", { name: "Behavior" }).click();
   for (const title of ["Auto-compaction", "Memory recall", "Tool-call ordering"]) {
     await expect(page.locator(".behavior-card", { hasText: title })).toBeVisible();
   }
@@ -43,7 +43,7 @@ test("agent editor Tools/Behavior are data-driven from /v1/capabilities", async 
 
 test("Tools tab renders the Permissions editor (data-driven from capabilities.policies)", async ({ page }) => {
   await page.goto("/w/default/agents/new");
-  await page.getByRole("button", { name: "Tools", exact: true }).click();
+  await page.getByRole("tab", { name: "Tools" }).click();
   await expect(page.getByText("Permissions", { exact: true })).toBeVisible();
   await expect(page.getByText("Default decision", { exact: true })).toBeVisible();
   // Add a rule → an editable glob-pattern row appears.
@@ -56,7 +56,7 @@ test("PermissionEditor authors a rule and persists it through save + reload", as
   await page.goto("/w/default/agents/new");
   await page.getByPlaceholder("coding-agent").fill(id);
   await page.locator("textarea").first().fill("You gate your tools.");
-  await page.getByRole("button", { name: "Tools", exact: true }).click();
+  await page.getByRole("tab", { name: "Tools" }).click();
 
   const editor = page.locator(".permission-editor");
   // Default decision → Deny (only the default-decision Segmented exists yet).
@@ -70,15 +70,15 @@ test("PermissionEditor authors a rule and persists it through save + reload", as
 
   // Reload → the authored policy rehydrates from the stored config (round-trips).
   await page.reload();
-  await page.getByRole("button", { name: "Tools", exact: true }).click();
+  await page.getByRole("tab", { name: "Tools" }).click();
   await expect(editor.getByPlaceholder("Bash(*rm*)")).toHaveValue("Bash(*rm*)");
 });
 
 test("enabling a behavior renders a schema-driven form (not raw JSON)", async ({ page }) => {
   await page.goto("/w/default/agents/new");
-  await page.getByRole("button", { name: "Behavior", exact: true }).click();
+  await page.getByRole("tab", { name: "Behavior" }).click();
   // Toggle the Auto-compaction behavior on → its config_schema renders as a form.
-  await page.locator(".behavior-card", { hasText: "Auto-compaction" }).getByRole("checkbox").check();
+  await page.locator(".behavior-card", { hasText: "Auto-compaction" }).getByRole("switch").check();
   // The schema-driven form exposes compact's fields (e.g. keep_last).
   await expect(page.getByText("keep_last")).toBeVisible();
 });
@@ -124,7 +124,7 @@ test("Admin Assistant is live: the seeded assistant opens a session composer", a
 
 test("Sandbox tab gates an unpublished draft (nothing live to talk to yet)", async ({ page }) => {
   await page.goto("/w/default/agents/new");
-  await page.getByRole("button", { name: "Try it", exact: true }).click();
+  await page.getByRole("button", { name: /Try it/ }).click();
   await expect(page.getByText(/Publish to test in the Sandbox|发布后即可在 Sandbox 试运行/)).toBeVisible();
 });
 
@@ -169,7 +169,7 @@ test("author → publish a config agent, and see it in the list", async ({ page 
   // (the same transcript engine the session detail uses). No provider key in CI, so
   // we assert the session + composer come up, not a model reply.
   await page.goto(`/w/default/agents/${id}`);
-  await page.getByRole("button", { name: "Try it", exact: true }).click();
+  await page.getByRole("button", { name: /Try it/ }).click();
   await page.getByRole("button", { name: /Start session/ }).click();
   await expect(page.getByPlaceholder("Ask the agent…")).toBeVisible();
 });

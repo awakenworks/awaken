@@ -11,7 +11,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import Drawer from "../components/ui/Drawer";
 import { useToast } from "../components/ui/Toast";
-import { Button, Card, CheckPicker, Pill, SchemaForm, TextAreaField, TextField } from "../components/ui";
+import { Button, Card, CheckPicker, Pill, SchemaForm, Segmented, SelectField, Switch, TextAreaField, TextField } from "../components/ui";
 import type { JsonSchema } from "../components/ui";
 import SandboxPane from "../components/session/SandboxPane";
 import PermissionEditor from "../components/agent/PermissionEditor";
@@ -34,7 +34,7 @@ import ModelsSurface from "./models";
 // Editor sections, organized by user intent (not by mechanism): Behavior groups the
 // runtime behaviors (context window, auto-compaction, memory recall, tool ordering) as
 // named cards; Tools holds selection + presentation + permissions.
-type Tab = "overview" | "behavior" | "tools" | "resources" | "sandbox";
+type Tab = "overview" | "behavior" | "tools" | "resources";
 
 /// Friendly title + one-line description for a runtime plugin, so the Behavior section
 /// shows a named behavior card instead of a raw plugin id. Unknown plugins fall back to
@@ -137,6 +137,7 @@ function ToolOverridesEditor({
   value: ToolOverride[];
   onChange: (next: ToolOverride[]) => void;
 }) {
+  const app = useApp();
   const set = (i: number, patch: Partial<ToolOverride>) =>
     onChange(value.map((r, j) => (j === i ? { ...r, ...patch } : r)));
   const add = () =>
@@ -144,27 +145,35 @@ function ToolOverridesEditor({
   return (
     <>
       {value.map((r, i) => (
-        <div className="row" key={i} style={{ alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          <select className="input mono" style={{ minWidth: 160 }} value={r.target} onChange={(e) => set(i, { target: e.target.value })}>
+        <div className="row" key={i} style={{ alignItems: "flex-end", gap: 8 }}>
+          <SelectField
+            label={app.t("Tool", "工具")}
+            mono
+            style={{ minWidth: 160 }}
+            value={r.target}
+            onChange={(e) => set(i, { target: e.target.value })}
+          >
             {!tools.includes(r.target) && <option value={r.target}>{r.target || "—"}</option>}
             {tools.map((t) => (
               <option key={t} value={t}>
                 {t}
               </option>
             ))}
-          </select>
-          <input className="input mono" style={{ width: 120 }} placeholder="alias" value={r.alias ?? ""} onChange={(e) => set(i, { alias: e.target.value })} />
-          <input className="input" style={{ flex: 1, minWidth: 160 }} placeholder="description override" value={r.description ?? ""} onChange={(e) => set(i, { description: e.target.value })} />
-          <label className="mut" style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <input type="checkbox" checked={!!r.defer} onChange={(e) => set(i, { defer: e.target.checked })} />
-            defer
-          </label>
-          <Button variant="ghost" style={{ height: 24 }} onClick={() => onChange(value.filter((_, j) => j !== i))}>
+          </SelectField>
+          <TextField label={app.t("Alias", "别名")} mono style={{ width: 130 }} placeholder="rename" value={r.alias ?? ""} onChange={(e) => set(i, { alias: e.target.value })} />
+          <TextField label={app.t("Description", "描述")} style={{ flex: 1, minWidth: 160 }} placeholder="override description" value={r.description ?? ""} onChange={(e) => set(i, { description: e.target.value })} />
+          <div className="field">
+            <label>{app.t("Defer", "延迟")}</label>
+            <div style={{ height: 30, display: "flex", alignItems: "center" }}>
+              <Switch aria-label={app.t("Defer this tool", "延迟此工具")} checked={!!r.defer} onChange={(e) => set(i, { defer: e.target.checked })} />
+            </div>
+          </div>
+          <Button variant="ghost" style={{ height: 30 }} onClick={() => onChange(value.filter((_, j) => j !== i))}>
             ✕
           </Button>
         </div>
       ))}
-      <Button onClick={add}>+ override a tool</Button>
+      <Button onClick={add}>+ {app.t("override a tool", "覆盖一个工具")}</Button>
     </>
   );
 }
@@ -176,6 +185,9 @@ export default function AgentEditorSurface() {
   const { ws: wsId = "default", id = "new" } = useParams();
   const isNew = id === "new";
   const [tab, setTab] = useState<Tab>("overview");
+  // "Try it" opens the sandbox as a slide-over from any section, so you can tweak → test
+  // without leaving your place.
+  const [showSandbox, setShowSandbox] = useState(false);
   const [cfg, setCfg] = useState<AgentConfig>(BLANK);
   const [dirty, setDirty] = useState(false);
   const [manageModels, setManageModels] = useState(false);
@@ -260,8 +272,10 @@ export default function AgentEditorSurface() {
     { key: "behavior", label: "Behavior", zh: "行为" },
     { key: "tools", label: "Tools", zh: "工具" },
     { key: "resources", label: "Resources", zh: "资源" },
-    { key: "sandbox", label: "Try it", zh: "试运行" },
   ];
+  // The count shown as a rail badge, so each section's fill is visible at a glance.
+  const sectionBadge = (k: Tab) =>
+    k === "behavior" ? cfg.plugins.length : k === "tools" ? cfg.tools.length : 0;
 
   return (
     <>
@@ -290,22 +304,31 @@ export default function AgentEditorSurface() {
           </Button>
         </span>
       </div>
-      <div className="row" style={{ alignItems: "flex-start", gap: 16 }}>
-        {/* Left rail: sections by intent (Overview / Behavior / Tools / Resources / Try it). */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 148 }}>
-          {SECTIONS.map((s) => (
-            <Button
-              key={s.key}
-              variant={tab === s.key ? "primary" : "ghost"}
-              style={{ height: 30, justifyContent: "flex-start" }}
-              onClick={() => setTab(s.key)}
-            >
-              {app.t(s.label, s.zh)}
-            </Button>
-          ))}
+      <div className="agent-editor">
+        {/* Left rail: sections by intent (Overview / Behavior / Tools / Resources). */}
+        <div className="editor-rail" role="tablist" aria-label={app.t("Agent config sections", "Agent 配置分区")}>
+          {SECTIONS.map((s) => {
+            const n = sectionBadge(s.key);
+            return (
+              <Button
+                key={s.key}
+                role="tab"
+                aria-selected={tab === s.key}
+                variant={tab === s.key ? "primary" : "ghost"}
+                onClick={() => setTab(s.key)}
+              >
+                <span>{app.t(s.label, s.zh)}</span>
+                {n > 0 && <span className="rail-badge">{n}</span>}
+              </Button>
+            );
+          })}
+          {/* Try it: opens the sandbox as a slide-over (available from any section). */}
+          <Button variant="ghost" style={{ marginTop: 8, justifyContent: "center" }} onClick={() => setShowSandbox(true)}>
+            ▷ {app.t("Try it", "试运行")}
+          </Button>
         </div>
         {/* Content column: one section at a time. */}
-        <div style={{ flex: 1, minWidth: 0 }}>
+        <div className="editor-content">
 
       {tab === "resources" && (
         <Card>
@@ -320,11 +343,7 @@ export default function AgentEditorSurface() {
         </Card>
       )}
 
-      {tab === "sandbox" && (
-        <SandboxPane agentId={id} ready={!isNew && !!existing.data?.published} dirty={dirty} />
-      )}
-
-      {tab !== "sandbox" && tab !== "resources" && (
+      {tab !== "resources" && (
       <Card>
         {tab === "overview" && (
           <>
@@ -418,22 +437,18 @@ export default function AgentEditorSurface() {
           <>
             <div className="field">
               <label>{app.t("Context window policy", "上下文窗口策略")}</label>
-              <div className="row">
-                {(["keep_all", "keep_last"] as const).map((k) => (
-                  <Button
-                    key={k}
-                    variant={cfg.context_policy.kind === k ? "primary" : "ghost"}
-                    style={{ height: 26 }}
-                    onClick={() =>
-                      patch({
-                        context_policy: (k === "keep_all" ? { kind: "keep_all" } : { kind: "keep_last", keep_last: 20 }) as ContextPolicy,
-                      })
-                    }
-                  >
-                    {k === "keep_all" ? app.t("Keep all", "全保留") : app.t("Keep last N", "保留最近 N")}
-                  </Button>
-                ))}
-              </div>
+              <Segmented
+                options={[
+                  { value: "keep_all", label: app.t("Keep all", "全保留") },
+                  { value: "keep_last", label: app.t("Keep last N", "保留最近 N") },
+                ]}
+                value={cfg.context_policy.kind}
+                onChange={(k) =>
+                  patch({
+                    context_policy: (k === "keep_all" ? { kind: "keep_all" } : { kind: "keep_last", keep_last: 20 }) as ContextPolicy,
+                  })
+                }
+              />
             </div>
             {cfg.context_policy.kind === "keep_last" && (
               <TextField
@@ -468,9 +483,16 @@ export default function AgentEditorSurface() {
                     schema={p.config_schema as JsonSchema | undefined}
                     enabled={cfg.plugins.includes(p.id)}
                     config={(cfg.plugin_config[p.id] as Record<string, unknown>) ?? {}}
-                    onToggle={(on) =>
-                      patch({ plugins: on ? [...cfg.plugins, p.id] : cfg.plugins.filter((x) => x !== p.id) })
-                    }
+                    onToggle={(on) => {
+                      if (on) {
+                        patch({ plugins: [...cfg.plugins, p.id] });
+                      } else {
+                        // Disabling drops the plugin AND its config section, so the saved
+                        // config carries no orphaned `plugin_config` for an inactive plugin.
+                        const { [p.id]: _removed, ...rest } = cfg.plugin_config;
+                        patch({ plugins: cfg.plugins.filter((x) => x !== p.id), plugin_config: rest });
+                      }
+                    }}
                     onConfig={(v) => patch({ plugin_config: { ...cfg.plugin_config, [p.id]: v } })}
                   />
                 ))}
@@ -550,6 +572,12 @@ export default function AgentEditorSurface() {
           <ModelsSurface />
         </Drawer>
       )}
+
+      {showSandbox && (
+        <Drawer title={app.t("Try it", "试运行")} onClose={() => setShowSandbox(false)}>
+          <SandboxPane agentId={id} ready={!isNew && !!existing.data?.published} dirty={dirty} />
+        </Drawer>
+      )}
     </>
   );
 }
@@ -601,18 +629,13 @@ function BehaviorCard({
     </>
   );
   return (
-    <Card className="behavior-card" style={{ padding: "12px 14px" }}>
-      <label className="row" style={{ justifyContent: "space-between", alignItems: "flex-start", cursor: "pointer", gap: 12 }}>
-        <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          <strong>{title}</strong>
-          <span className="mut" style={{ fontSize: 12 }}>{desc}</span>
+    <Card className="behavior-card">
+      <label className="behavior-head">
+        <span>
+          <div className="behavior-title">{title}</div>
+          <div className="behavior-desc">{desc}</div>
         </span>
-        <input
-          type="checkbox"
-          checked={enabled}
-          onChange={(e) => onToggle(e.target.checked)}
-          style={{ accentColor: "var(--accent)", width: 18, height: 18, flexShrink: 0 }}
-        />
+        <Switch aria-label={title} checked={enabled} onChange={(e) => onToggle(e.target.checked)} />
       </label>
       {enabled && (
         <div style={{ marginTop: 10 }}>
