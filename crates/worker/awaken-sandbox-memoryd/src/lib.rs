@@ -15,12 +15,14 @@ use std::collections::BTreeMap;
 use awaken_memory_store::{MAX_MEMORY_BYTES, MemErr, MemoryEntry};
 
 pub mod coordinator;
+pub mod copy;
 #[cfg(feature = "fuse")]
 pub mod fuse;
 
 #[cfg(feature = "fuse")]
 pub use coordinator::FuseMountFactory;
 pub use coordinator::{Mount, MountCoordinator, MountFactory};
+pub use copy::{fuse_available, harvest, materialize};
 
 /// A memoryd operation failure — the store's [`MemErr`] plus FUSE-local faults
 /// (a full dirty-fd budget, a missing handle, or an internal encoding fault).
