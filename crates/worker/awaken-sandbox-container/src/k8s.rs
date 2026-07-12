@@ -4,8 +4,11 @@
 //! never `kubectl`. Faithful to awaken-next's `K3sHandWorker` + this crate's
 //! [`crate::pod_plan`]: **process-as-container** (the Pod's container command is the
 //! agent, `restartPolicy: Never`), **native GC** (an `ownerReference` reaps orphans),
-//! and the stdio channel reached by a **network dial** to the Service (via
-//! [`crate::net`]). Compile-verified here; running requires a cluster.
+//! memory stores realized as **memoryd sidecars + emptyDir**, the untrusted agent
+//! **hardened** (no SA token, dropped caps) + labeled for a NetworkPolicy, and the
+//! stdio channel reached either by a direct **network dial** to the Service or, when
+//! a rendezvous is set, by **reverse dial** (the egress-fenced Pod dials the host
+//! out) — all via [`crate::net`]. Compile-verified here; running requires a cluster.
 
 use std::net::SocketAddr;
 
@@ -66,6 +69,11 @@ pub struct K8sRuntime {
     /// The image of the memoryd sidecar that FUSE-serves a memory store into the
     /// shared volume the agent reads (ADR-0038 MemoryStore, in-pod realization).
     memoryd_image: String,
+    /// When set, the host binds this address as a **reverse-dial rendezvous**: the
+    /// Pod dials *out* to it (no inbound, no Service, fully egress-fenced) and the
+    /// address is injected into the agent as `AWAKEN_ACP_RENDEZVOUS`. When `None`,
+    /// the host direct-dials `agent_addr` (a published Service) instead.
+    rendezvous: Option<SocketAddr>,
 }
 
 /// Default memoryd sidecar image (overridable via [`K8sRuntime::with_memoryd_image`]).
@@ -87,6 +95,7 @@ impl K8sRuntime {
             agent_addr,
             owner: None,
             memoryd_image: DEFAULT_MEMORYD_IMAGE.to_string(),
+            rendezvous: None,
         })
     }
 
@@ -94,6 +103,14 @@ impl K8sRuntime {
     #[must_use]
     pub fn with_owner(mut self, owner: OwnerReference) -> Self {
         self.owner = Some(owner);
+        self
+    }
+
+    /// Use a reverse-dial rendezvous at `addr` instead of direct-dialing the Service:
+    /// the Pod dials out to it (egress-only, no inbound) and the host accepts.
+    #[must_use]
+    pub fn with_rendezvous(mut self, addr: SocketAddr) -> Self {
+        self.rendezvous = Some(addr);
         self
     }
 
@@ -118,20 +135,30 @@ impl K8sRuntime {
     }
 
     fn pod(&self, id: &str, plan: &ContainerPlan) -> Pod {
-        build_pod(id, plan, &self.owner, &self.memoryd_image)
+        let rendezvous = self.rendezvous.map(|a| a.to_string());
+        build_pod(
+            id,
+            plan,
+            &self.owner,
+            &self.memoryd_image,
+            rendezvous.as_deref(),
+        )
     }
 }
 
 /// Build the Pod object from a plan (pure — no client/cluster), so the multi-container
 /// sidecar/volume shape and resource limits are unit-testable without a cluster.
+/// `rendezvous`, when set, is injected as `AWAKEN_ACP_RENDEZVOUS` so the in-pod agent
+/// dials the host out (reverse-dial) instead of listening for an inbound connection.
 fn build_pod(
     id: &str,
     plan: &ContainerPlan,
     owner: &Option<OwnerReference>,
     memoryd_image: &str,
+    rendezvous: Option<&str>,
 ) -> Pod {
     {
-        let agent_env = plan
+        let mut agent_env: Vec<EnvVar> = plan
             .env
             .iter()
             .map(|(k, v)| EnvVar {
@@ -140,6 +167,13 @@ fn build_pod(
                 value_from: None,
             })
             .collect();
+        if let Some(addr) = rendezvous {
+            agent_env.push(EnvVar {
+                name: "AWAKEN_ACP_RENDEZVOUS".into(),
+                value: Some(addr.to_string()),
+                value_from: None,
+            });
+        }
 
         // Each memory store → a pod-scoped emptyDir + a memoryd sidecar that serves
         // the store into it; the agent container mounts the same volume and reads it
@@ -238,6 +272,18 @@ fn egress_label(network: &crate::NetworkMode) -> &'static str {
     }
 }
 
+/// Host side of the reverse-dial: bind the rendezvous and accept the Pod's outbound
+/// connection, returning it as the agent channel. Extracted so it is testable with a
+/// stand-in dialer (no cluster).
+async fn accept_reverse(addr: SocketAddr) -> Result<Box<dyn AgentChannel>, RuntimeError> {
+    use awaken_connection::ListenSide;
+    let listen = crate::net::ReverseListen::bind(addr)
+        .await
+        .map_err(backend)?;
+    let chan = listen.accept().await.map_err(backend)?;
+    Ok(Box::new(chan))
+}
+
 /// The hardened `securityContext` for the untrusted agent container: no privilege
 /// escalation, every Linux capability dropped.
 fn hardened_security_context() -> SecurityContext {
@@ -270,11 +316,15 @@ impl ContainerRuntime for K8sRuntime {
         &self,
         _container_id: &str,
     ) -> Result<Box<dyn AgentChannel>, RuntimeError> {
-        // Reach the agent's stdio over its Service (dial; not `kubectl exec`).
-        TcpAgentTransport::new(self.agent_addr)
-            .open_channel()
-            .await
-            .map_err(backend)
+        match self.rendezvous {
+            // Reverse-dial: the host listens, the egress-fenced Pod dials out to us.
+            Some(addr) => accept_reverse(addr).await,
+            // Direct-dial the agent's stdio over its published Service.
+            None => TcpAgentTransport::new(self.agent_addr)
+                .open_channel()
+                .await
+                .map_err(backend),
+        }
     }
 
     async fn inspect(&self, container_id: &str) -> Result<ContainerState, RuntimeError> {
@@ -422,7 +472,7 @@ mod tests {
                 mount_path: "/workspace/.mnt/b".into(),
             },
         ]);
-        let pod = build_pod("run-1", &plan, &None, "memoryd:9");
+        let pod = build_pod("run-1", &plan, &None, "memoryd:9", None);
         let spec = pod.spec.unwrap();
 
         // agent + one memoryd sidecar per memory store.
@@ -463,7 +513,7 @@ mod tests {
 
     #[test]
     fn build_pod_without_memory_mounts_is_a_single_container() {
-        let pod = build_pod("r", &plan_with_memory(Vec::new()), &None, "m");
+        let pod = build_pod("r", &plan_with_memory(Vec::new()), &None, "m", None);
         let spec = pod.spec.unwrap();
         assert_eq!(spec.containers.len(), 1);
         assert!(spec.volumes.is_none());
@@ -472,7 +522,7 @@ mod tests {
 
     #[test]
     fn build_pod_hardens_the_untrusted_agent() {
-        let spec = build_pod("r", &plan_with_memory(Vec::new()), &None, "m")
+        let spec = build_pod("r", &plan_with_memory(Vec::new()), &None, "m", None)
             .spec
             .unwrap();
         // No SA token → the agent cannot reach the kube API.
@@ -486,11 +536,52 @@ mod tests {
     }
 
     #[test]
+    fn build_pod_injects_the_reverse_dial_rendezvous() {
+        let plan = plan_with_memory(Vec::new());
+        // Without a rendezvous, no such env.
+        let no_rv = build_pod("r", &plan, &None, "m", None);
+        let env0 = no_rv.spec.unwrap().containers[0].env.clone().unwrap();
+        assert!(env0.iter().all(|e| e.name != "AWAKEN_ACP_RENDEZVOUS"));
+        // With one, the agent is told where to dial out.
+        let with_rv = build_pod("r", &plan, &None, "m", Some("10.0.0.5:9000"));
+        let env1 = with_rv.spec.unwrap().containers[0].env.clone().unwrap();
+        assert!(
+            env1.iter().any(|e| e.name == "AWAKEN_ACP_RENDEZVOUS"
+                && e.value.as_deref() == Some("10.0.0.5:9000"))
+        );
+    }
+
+    #[tokio::test]
+    async fn accept_reverse_receives_the_pods_outbound_dial() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // Bind an ephemeral rendezvous; a stand-in "pod" dials it and the host accepts.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener); // free the port for accept_reverse to bind
+
+        let host = tokio::spawn(async move { accept_reverse(addr).await });
+        // Give the host a moment to bind, then dial like an egress-fenced pod would.
+        let mut pod = loop {
+            match tokio::net::TcpStream::connect(addr).await {
+                Ok(s) => break s,
+                Err(_) => tokio::task::yield_now().await,
+            }
+        };
+        pod.write_all(b"ping\n").await.unwrap();
+        pod.flush().await.unwrap();
+
+        let mut chan = host.await.unwrap().unwrap();
+        let mut buf = [0u8; 5];
+        chan.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"ping\n");
+    }
+
+    #[test]
     fn build_pod_labels_the_egress_posture_for_a_networkpolicy() {
         // Restricted egress → the pod is labeled so a platform NetworkPolicy fences it.
         let mut plan = plan_with_memory(Vec::new());
         plan.network = crate::NetworkMode::Allowlist(vec!["api.anthropic.com".into()]);
-        let pod = build_pod("r", &plan, &None, "m");
+        let pod = build_pod("r", &plan, &None, "m", None);
         let labels = pod.metadata.labels.unwrap();
         assert_eq!(
             labels.get("awaken-egress").map(String::as_str),
@@ -498,7 +589,7 @@ mod tests {
         );
 
         plan.network = crate::NetworkMode::Open;
-        let open = build_pod("r", &plan, &None, "m");
+        let open = build_pod("r", &plan, &None, "m", None);
         assert_eq!(
             open.metadata
                 .labels
