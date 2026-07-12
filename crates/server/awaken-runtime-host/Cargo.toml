@@ -76,6 +76,13 @@ regex = "1"
 # binary installs; this crate emits spans, never wires an exporter.
 tracing = "0.1"
 
+[features]
+# Cross-node dispatch wake over NATS: passes through to awaken-run-ingress so the
+# host's wake selector can build a `NatsWakeSignal` when AWAKEN_DISPATCH_WAKE=nats.
+# Off by default — the durable store stays Postgres either way; this only swaps the
+# best-effort wake hint channel. Separate from any NATS the bin uses for the hand relay.
+nats = ["awaken-run-ingress/nats"]
+
 [dev-dependencies]
 # The durable session-store round-trip test opens a real sessions.db under a temp dir.
 tempfile = "3"

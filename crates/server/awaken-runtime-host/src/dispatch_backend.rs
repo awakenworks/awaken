@@ -44,6 +44,14 @@ static SHARED_POSTGRES_DISPATCH: std::sync::OnceLock<Arc<AnyDispatchStore>> =
 /// selects it, so SQLite and single-node Postgres are unaffected.
 static SHARED_PG_WAKE: std::sync::OnceLock<Arc<dyn WakeSignal>> = std::sync::OnceLock::new();
 
+/// The process-wide cross-node wake over NATS, built once at startup beside the
+/// Postgres store when `AWAKEN_DISPATCH_WAKE=nats` (NATS url via `AWAKEN_NATS_URL`,
+/// subject via `AWAKEN_DISPATCH_WAKE_CHANNEL`). The durable STORE stays Postgres —
+/// only the best-effort wake fan-out moves to the NATS broker, for a fleet that runs
+/// one already (ADR-0019/0028). Mirrors [`SHARED_PG_WAKE`]; absent unless the env
+/// selects nats. Only ever set when the binary is built with `--features nats`.
+static SHARED_NATS_WAKE: std::sync::OnceLock<Arc<dyn WakeSignal>> = std::sync::OnceLock::new();
+
 /// The process-wide shared SQLite dispatch store: ONE queue file for the whole
 /// process (or one in-memory queue when no store dir), not one per thread. The
 /// process-level [`DispatchPool`](awaken_run_ingress::DispatchPool) is the sole
@@ -71,21 +79,52 @@ pub async fn init_shared_postgres_dispatch(url: &str) -> Result<(), String> {
     if SHARED_POSTGRES_DISPATCH.get().is_some() {
         return Ok(());
     }
-    // Opt into the cross-node `pg_notify` wake with `AWAKEN_DISPATCH_WAKE=pg-notify`
-    // (channel via `AWAKEN_DISPATCH_WAKE_CHANNEL`, default `awaken_dispatch_wake`).
-    // When on, build the wake beside the store sharing one pool; otherwise connect
-    // the store alone and leave the pool on its in-process `LocalWakeSignal` + poll.
-    let store = if pg_notify_wake_enabled() {
-        let channel = std::env::var("AWAKEN_DISPATCH_WAKE_CHANNEL")
-            .unwrap_or_else(|_| "awaken_dispatch_wake".to_string());
-        let (store, wake) = AnyDispatchStore::connect_postgres_with_wake(url, &channel).await?;
-        let _ = SHARED_PG_WAKE.set(wake);
-        Arc::new(store)
-    } else {
-        Arc::new(AnyDispatchStore::connect_postgres(url).await?)
+    // Opt into a cross-node wake with `AWAKEN_DISPATCH_WAKE` (channel/subject via
+    // `AWAKEN_DISPATCH_WAKE_CHANNEL`, default `awaken_dispatch_wake`):
+    //  - `pg-notify`: fire `pg_notify` on the store's own database — no extra infra.
+    //  - `nats`: fan the hint over a NATS broker at `AWAKEN_NATS_URL` (feature `nats`).
+    // Either way the durable STORE stays Postgres; the wake is a best-effort hint and
+    // the poll fallback stays authoritative. With no selection the pool keeps its
+    // in-process `LocalWakeSignal` + poll, so SQLite/single-node Postgres are unaffected.
+    let store = match dispatch_wake_kind() {
+        DispatchWake::PgNotify => {
+            let (store, wake) =
+                AnyDispatchStore::connect_postgres_with_wake(url, &dispatch_wake_channel()).await?;
+            let _ = SHARED_PG_WAKE.set(wake);
+            Arc::new(store)
+        }
+        DispatchWake::Nats => connect_postgres_with_nats_wake(url).await?,
+        DispatchWake::None => Arc::new(AnyDispatchStore::connect_postgres(url).await?),
     };
     let _ = SHARED_POSTGRES_DISPATCH.set(store);
     Ok(())
+}
+
+/// Build the Postgres store paired with a NATS wake (feature `nats`). Reads the NATS
+/// url from `AWAKEN_NATS_URL` and the subject from `AWAKEN_DISPATCH_WAKE_CHANNEL`,
+/// then publishes the ready wake into [`SHARED_NATS_WAKE`].
+#[cfg(feature = "nats")]
+async fn connect_postgres_with_nats_wake(url: &str) -> Result<Arc<AnyDispatchStore>, String> {
+    let nats_url = std::env::var("AWAKEN_NATS_URL")
+        .map_err(|_| "AWAKEN_DISPATCH_WAKE=nats requires AWAKEN_NATS_URL".to_string())?;
+    let (store, wake) = AnyDispatchStore::connect_postgres_with_nats_wake(
+        url,
+        &nats_url,
+        &dispatch_wake_channel(),
+    )
+    .await?;
+    let _ = SHARED_NATS_WAKE.set(wake);
+    Ok(Arc::new(store))
+}
+
+/// When the binary is built WITHOUT `--features nats`, selecting `AWAKEN_DISPATCH_WAKE=nats`
+/// is a hard configuration error: fail loudly at startup rather than silently degrade to
+/// poll-only (which would look identical to a working wake but never nudge a peer).
+#[cfg(not(feature = "nats"))]
+async fn connect_postgres_with_nats_wake(_url: &str) -> Result<Arc<AnyDispatchStore>, String> {
+    Err("AWAKEN_DISPATCH_WAKE=nats requested but binary built without --features nats \
+         (rebuild awaken-server-local with --features nats to enable the NATS wake)"
+        .to_string())
 }
 
 /// Inject a pre-assembled dispatch store as THE process backend, outranking the
@@ -97,9 +136,30 @@ pub fn init_shared_dispatch_store(store: Arc<AnyDispatchStore>) {
     let _ = SHARED_INJECTED_DISPATCH.set(store);
 }
 
-/// Whether the cross-node `pg_notify` wake is selected for the served pool.
-fn pg_notify_wake_enabled() -> bool {
-    std::env::var("AWAKEN_DISPATCH_WAKE").as_deref() == Ok("pg-notify")
+/// The cross-node wake channel/subject for the served pool. Shared by both the
+/// `pg_notify` channel and the NATS subject (default `awaken_dispatch_wake`).
+fn dispatch_wake_channel() -> String {
+    std::env::var("AWAKEN_DISPATCH_WAKE_CHANNEL")
+        .unwrap_or_else(|_| "awaken_dispatch_wake".to_string())
+}
+
+/// The cross-node wake backend selected by `AWAKEN_DISPATCH_WAKE`, if any.
+enum DispatchWake {
+    /// No cross-node wake: the pool keeps its in-process `LocalWakeSignal` + poll.
+    None,
+    /// `pg_notify` on the store's own database (no extra infrastructure).
+    PgNotify,
+    /// A NATS broker at `AWAKEN_NATS_URL` (requires `--features nats`).
+    Nats,
+}
+
+/// Which cross-node wake, if any, `AWAKEN_DISPATCH_WAKE` selects for the served pool.
+fn dispatch_wake_kind() -> DispatchWake {
+    match std::env::var("AWAKEN_DISPATCH_WAKE").as_deref() {
+        Ok("pg-notify") => DispatchWake::PgNotify,
+        Ok("nats") => DispatchWake::Nats,
+        _ => DispatchWake::None,
+    }
 }
 
 /// Composition-root guard: a **durable** ingress must be backed by a **persistent**
@@ -154,10 +214,14 @@ pub fn ensure_durable_backend() -> Result<(), String> {
 }
 
 /// The cross-node wake to spawn the served pool with, if one was built at startup
-/// (`AWAKEN_DISPATCH_WAKE=pg-notify` on the Postgres backend). `None` keeps the pool
-/// on its default in-process `LocalWakeSignal`.
-pub(crate) fn shared_pg_wake() -> Option<Arc<dyn WakeSignal>> {
-    SHARED_PG_WAKE.get().cloned()
+/// (`AWAKEN_DISPATCH_WAKE=pg-notify` or `=nats` on the Postgres backend). `None` keeps
+/// the pool on its default in-process `LocalWakeSignal`. At most one is ever set —
+/// `AWAKEN_DISPATCH_WAKE` picks a single backend — so prefer whichever was built.
+pub(crate) fn shared_dispatch_wake() -> Option<Arc<dyn WakeSignal>> {
+    SHARED_PG_WAKE
+        .get()
+        .or_else(|| SHARED_NATS_WAKE.get())
+        .cloned()
 }
 
 /// Open the ONE process-shared durable-dispatch store, selected by

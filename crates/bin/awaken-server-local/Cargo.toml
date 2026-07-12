@@ -88,6 +88,13 @@ axum = { version = "0.8", features = ["multipart"] }
 # (also used by the integration tests).
 tower = { version = "0.5", features = ["util"] }
 
+[features]
+# Cross-node dispatch wake over NATS (AWAKEN_DISPATCH_WAKE=nats). Passes through to
+# awaken-runtime-host → awaken-run-ingress so the built binary carries a NATS-capable
+# wake selector. This is the *wake* channel only and is independent of the crate's
+# non-optional `async-nats` used for the ADR-0045 hand relay — do not conflate them.
+nats = ["awaken-runtime-host/nats"]
+
 [dev-dependencies]
 http-body-util = "0.1"
 awaken-agent-contract = { workspace = true }
