@@ -1,0 +1,155 @@
+# Full-microservices deployment (ADR-0019 durable dispatch × ADR-0044/0045 手腦分離):
+# brain, hand, and Postgres as THREE SEPARATE k8s Deployments/pods. The brain owns
+# the durable HTTP ingress and commits thread history to Postgres, AND routes every
+# tool call over the cluster network to a SEPARATE hand pod (Direct topology). One
+# durable run therefore crosses all three services:
+#
+#   submit ─→ [brain pod] ──durable ingress──→ [postgres pod] (dispatch queue + commit log)
+#                  │
+#                  └── tool call ──TCP:9000 (Service "hand")──→ [hand pod: bash] ──result──┘
+#
+# The run's `bash echo REMOTE-HAND-OK-9f31` executes IN the hand pod; the marker
+# round-trips back and is committed to Postgres — proving the 3-way split end to end.
+#
+# Loaded into a k3d cluster with `imagePullPolicy: Never` (never pulled).
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels: { app: postgres }
+spec:
+  selector: { app: postgres }
+  ports:
+    - { name: pg, port: 5432, targetPort: 5432 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels: { app: postgres }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          imagePullPolicy: Never
+          env:
+            - { name: POSTGRES_PASSWORD, value: "test" }
+            - { name: POSTGRES_DB, value: "awaken" }
+            - { name: PGDATA, value: "/var/lib/postgresql/data/pgdata" }
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "awaken"]
+            initialDelaySeconds: 2
+            periodSeconds: 2
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hand
+  labels: { app: hand }
+spec:
+  selector: { app: hand }
+  ports:
+    - { name: exec, port: 9000, targetPort: 9000 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hand
+  labels: { app: hand }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: hand }
+  template:
+    metadata:
+      labels: { app: hand }
+    spec:
+      containers:
+        - name: hand
+          image: awaken-topology:latest
+          imagePullPolicy: Never
+          env:
+            # Hand role: bind the executor channel on all interfaces so the brain
+            # pod can reach it via the `hand` Service. Runs the built-in hand tools
+            # (incl. `bash`); it never starts the HTTP surface.
+            - { name: AWAKEN_HAND_LISTEN, value: "0.0.0.0:9000" }
+          ports:
+            - containerPort: 9000
+          readinessProbe:
+            tcpSocket: { port: 9000 }
+            initialDelaySeconds: 1
+            periodSeconds: 2
+          livenessProbe:
+            tcpSocket: { port: 9000 }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: brain
+  labels: { app: brain }
+spec:
+  selector: { app: brain }
+  ports:
+    - { name: http, port: 3000, targetPort: 3000 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: brain
+  labels: { app: brain }
+spec:
+  # A single brain is enough — the point is the 3-way service split, not horizontal
+  # scale. One replica also sidesteps the scoped-migration cold-start ledger race a
+  # fleet hits on a fresh DB.
+  replicas: 1
+  selector:
+    matchLabels: { app: brain }
+  template:
+    metadata:
+      labels: { app: brain }
+    spec:
+      containers:
+        - name: brain
+          image: awaken-topology:latest
+          imagePullPolicy: Never
+          env:
+            # Brain role: durable Postgres ingress (submit → shared dispatch queue,
+            # thread history committed to Postgres) AND remote-hand tool routing —
+            # main.rs runs the Postgres store/dispatch init BEFORE the model-mode
+            # match, so durable ingress and Direct remote-hand coexist unchanged.
+            - { name: AWAKEN_MODEL_MODE, value: remote-hand }
+            - { name: AWAKEN_REMOTE_HAND, value: "hand:9000" }
+            - { name: AWAKEN_INGRESS, value: durable }
+            - { name: AWAKEN_STORE, value: postgres }
+            - { name: AWAKEN_DISPATCH_BACKEND, value: postgres }
+            - { name: AWAKEN_DATABASE_URL, value: "postgres://postgres:test@postgres:5432/awaken" }
+            - { name: AWAKEN_DISPATCH_WAKE, value: pg-notify }
+            - { name: AWAKEN_HTTP_ADDR, value: "0.0.0.0:3000" }
+            - { name: AWAKEN_STORAGE_DIR, value: "/tmp/awaken" }
+          ports:
+            - containerPort: 3000
+          readinessProbe:
+            # Ready only once the HTTP surface binds — which happens AFTER the brain
+            # connected to Postgres (store + dispatch init) and dialed the hand pod
+            # (Direct topology). So readiness proves all three links are up.
+            tcpSocket: { port: 3000 }
+            initialDelaySeconds: 2
+            periodSeconds: 2
