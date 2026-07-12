@@ -38,6 +38,26 @@ pub trait MetricsRecorder: Send + Sync {
     /// One completed tool execution: `tool` id, `outcome` (`"ok"` or an error
     /// class), and the wall-clock `duration`.
     fn record_tool(&self, tool: &str, outcome: &str, duration: Duration);
+
+    /// One durable dispatch claimed for execution by a worker (the
+    /// `enqueue → claim → drive` seam). Default no-op so an impl that only cares
+    /// about model/tool metrics needs no change; the durable dispatch worker
+    /// consults the same injected recorder, so its counters export on the one
+    /// OTLP pipeline with no new wiring.
+    fn record_dispatch_claimed(&self) {}
+
+    /// One durable dispatch settled by a worker: `outcome` is `"done"` (the run
+    /// reached a terminus) or `"parked"` (it parked on a waiting ticket). Default
+    /// no-op.
+    fn record_dispatch_settled(&self, outcome: &str) {
+        let _ = outcome;
+    }
+
+    /// Wall-clock `duration` a worker spent driving one claimed dispatch to a
+    /// settled outcome. Default no-op.
+    fn record_dispatch_drive(&self, duration: Duration) {
+        let _ = duration;
+    }
 }
 
 /// Null-object recorder: records nothing. The default for the single-machine /
