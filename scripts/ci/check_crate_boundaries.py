@@ -367,6 +367,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # provisioning-contract `MountSource::MemoryStore` → `Realization::Fuse`.
     "awaken-sandbox-memoryd": {
         "awaken-memory-store",
+        "awaken-provisioning-contract",
         "async-trait",
         "thiserror",
         "tokio",
@@ -905,9 +906,13 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "thiserror",
         "tokio",
-        # dev-only: temp dirs + a real content store behind a BlobSource test adapter.
+        # dev-only: temp dirs + a real content store behind a BlobSource test adapter,
+        # plus the worker-tier memory mounter (FUSE/copy) wired via the MemoryMounter
+        # port to prove memory-store realization end-to-end (ADR-0053 item 1).
         "tempfile",
         "awaken-file-store",
+        "awaken-sandbox-memoryd",
+        "awaken-memory-store",
     },
     # Container/K8s provider (ADR-0041 Slice 5): realizes the neutral sandbox ports
     # over a dependency-inverted ContainerRuntime port + pure plan renderers. The

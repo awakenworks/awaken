@@ -3,12 +3,14 @@
 //! backends (lexical / bubblewrap / container) implement these in their own
 //! crates and are selected by [`SandboxCapabilities`].
 
+use std::path::Path;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::spec::{Command, SandboxSpec};
-use crate::vocab::{Artifact, MountRequirement, RealizedMount};
+use crate::vocab::{Artifact, MountAccess, MountRequirement, Realization, RealizedMount};
 
 /// Provisioning failure. String-carried at the boundary (like the runtime's other
 /// neutral errors); a backend maps its own error into this.
@@ -31,6 +33,38 @@ pub trait BlobSource: Send + Sync {
     /// The bytes for content id `id`, or `None` if absent (errors are folded to
     /// `None`; a required mount that resolves to nothing fails closed downstream).
     async fn get(&self, id: &str) -> Option<Vec<u8>>;
+}
+
+/// Realizes a [`MountSource::MemoryStore`](crate::vocab::MountSource::MemoryStore)
+/// into a sandbox at a provider-resolved host path — the path-addressed counterpart
+/// of [`BlobSource`] (a store is a keyed filesystem, not one blob). The FUSE / copy
+/// impl lives in the worker tier (`awaken-sandbox-memoryd`); the composition root
+/// injects it, so the providers stay free of the store and FUSE deps (A-G17). A
+/// provider with no mounter fails a `MemoryStore` mount loud rather than fake it.
+#[async_trait]
+pub trait MemoryMounter: Send + Sync {
+    /// Expose `store_id` at `host_path` with `access`, returning a live handle whose
+    /// [`realization`](MemoryMount::realization) the provider records. The handle is
+    /// held for the sandbox's life; dropping it (via [`teardown`](MemoryMount::teardown))
+    /// unmounts a FUSE mount or harvests a writable copy back to the store.
+    async fn mount(
+        &self,
+        store_id: &str,
+        host_path: &Path,
+        access: MountAccess,
+    ) -> Result<Box<dyn MemoryMount>, SandboxError>;
+}
+
+/// A live memory-store mount, held for the sandbox's lifetime.
+#[async_trait]
+pub trait MemoryMount: Send + Sync {
+    /// How the store was exposed (`Fuse` where the kernel supports it, else `Copy`).
+    fn realization(&self) -> Realization;
+
+    /// Tear down: unmount the FUSE, or (for a writable copy) harvest edits back to
+    /// the durable store. Idempotent and best-effort — a teardown fault is logged,
+    /// not surfaced, since the sandbox is already being disposed.
+    async fn teardown(self: Box<Self>);
 }
 
 /// A serializable, **durable** reference to a realized sandbox. Persist it the

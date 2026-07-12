@@ -143,6 +143,11 @@ pub struct NamespaceProvider {
     base: PathBuf,
     blobs: std::collections::HashMap<String, Vec<u8>>,
     file_store: Option<Arc<dyn pc::BlobSource>>,
+    /// Optional memory-store realizer. On this tier it should be a copy-only mounter
+    /// ([`MemoryStoreMounter::copy_only`]): a host FUSE mount cannot yet be spliced
+    /// into the bwrap namespace (ADR-0053 item 2), so the store is materialized to
+    /// files that bind in, and harvested back on dispose.
+    memory_mounter: Option<Arc<dyn pc::MemoryMounter>>,
 }
 
 impl NamespaceProvider {
@@ -151,6 +156,7 @@ impl NamespaceProvider {
             base: base.into(),
             blobs: std::collections::HashMap::new(),
             file_store: None,
+            memory_mounter: None,
         }
     }
 
@@ -164,6 +170,14 @@ impl NamespaceProvider {
     #[must_use]
     pub fn with_blob_source(mut self, store: Arc<dyn pc::BlobSource>) -> Self {
         self.file_store = Some(store);
+        self
+    }
+
+    /// Realize `MemoryStore` mounts via an injected mounter (copy-only on this tier).
+    /// Without one, a `MemoryStore` mount fails loud.
+    #[must_use]
+    pub fn with_memory_mounter(mut self, mounter: Arc<dyn pc::MemoryMounter>) -> Self {
+        self.memory_mounter = Some(mounter);
         self
     }
 
@@ -181,22 +195,50 @@ impl NamespaceProvider {
     }
 
     /// Realize the mounts under `root`, all-or-nothing: any failure reaps the tree.
+    /// Returns the bind layout, the realized refs, and any live memory-store guards
+    /// (torn down / harvested at dispose).
     async fn realize_layout(
         &self,
         root: &IsolatedRoot,
         spec: &pc::SandboxSpec,
-    ) -> Result<(Vec<RenderMount>, Vec<pc::RealizedMount>), pc::SandboxError> {
+    ) -> Result<
+        (
+            Vec<RenderMount>,
+            Vec<pc::RealizedMount>,
+            Vec<Box<dyn pc::MemoryMount>>,
+        ),
+        pc::SandboxError,
+    > {
         let mut layout = Vec::new();
         let mut realized = Vec::new();
+        let mut memory_mounts: Vec<Box<dyn pc::MemoryMount>> = Vec::new();
         for req in &spec.mounts {
             let host = root.resolve(&req.mount_path).map_err(err)?;
-            // memory_store is a keyed store, not a byte blob (ADR-0038); no memory
-            // backend is wired here, so fail loud rather than fake it with a file.
-            if matches!(req.source, pc::MountSource::MemoryStore { .. }) {
-                return Err(err(format!(
-                    "mount {:?}: memory_store is not realizable on this provider (no memory backend wired)",
-                    req.mount_id
-                )));
+            // memory_store is a keyed store, not a byte blob (ADR-0038/0053): realize
+            // it as a directory of materialized files that bind into the namespace,
+            // harvested back on dispose (copy-only tier; live FUSE-in-bwrap is item 2).
+            if let pc::MountSource::MemoryStore { store_id } = &req.source {
+                let Some(mounter) = &self.memory_mounter else {
+                    return Err(err(format!(
+                        "mount {:?}: memory_store is not realizable on this provider (no memory mounter wired)",
+                        req.mount_id
+                    )));
+                };
+                let guard = mounter.mount(store_id, &host, req.access).await?;
+                layout.push(RenderMount {
+                    host: host.clone(),
+                    dest: req.mount_path.clone(),
+                    read_only: req.access == pc::MountAccess::ReadOnly,
+                });
+                realized.push(pc::RealizedMount {
+                    mount_id: req.mount_id.clone(),
+                    mount_path: req.mount_path.clone(),
+                    access: req.access,
+                    realization: guard.realization(),
+                    content_hash: None,
+                });
+                memory_mounts.push(guard);
+                continue;
             }
             let bytes = resolve_source(&req.source, &self.blobs, &self.file_store).await;
             match &bytes {
@@ -233,7 +275,7 @@ impl NamespaceProvider {
                 content_hash: bytes.as_ref().map(|b| content_fingerprint(b)),
             });
         }
-        Ok((layout, realized))
+        Ok((layout, realized, memory_mounts))
     }
 }
 
@@ -274,6 +316,7 @@ impl pc::SandboxProvider for NamespaceProvider {
             network: pc::NetworkPolicy::Unrestricted,
             layout: Vec::new(),
             realized: Vec::new(),
+            memory_mounts: std::sync::Mutex::new(Vec::new()),
         }))
     }
 }
@@ -309,9 +352,13 @@ impl NamespaceProvider {
             }
         }
 
-        let (layout, realized) = match self.realize_layout(&root, spec).await {
+        let (layout, realized, memory_mounts) = match self.realize_layout(&root, spec).await {
             Ok(v) => v,
             Err(e) => {
+                // On a failed layout, `realize_layout`'s already-realized guards drop
+                // as it returns: a FUSE mount unmounts via its handle's Drop, and a
+                // copy's files are reaped with the directory below (no harvest — the
+                // durable store is left untouched on an aborted create).
                 let _ = std::fs::remove_dir_all(root.root());
                 return Err(e);
             }
@@ -327,6 +374,7 @@ impl NamespaceProvider {
             network: spec.network.clone(),
             layout,
             realized,
+            memory_mounts: std::sync::Mutex::new(memory_mounts),
         })
     }
 }
@@ -342,9 +390,22 @@ pub struct NamespaceSandbox {
     network: pc::NetworkPolicy,
     layout: Vec<RenderMount>,
     realized: Vec<pc::RealizedMount>,
+    /// Live memory-store mounts, harvested / unmounted at dispose before the tree is
+    /// reaped. Empty after an `adopt` (a reconnected sandbox owns no fresh guards).
+    memory_mounts: std::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>>,
 }
 
 impl NamespaceSandbox {
+    /// Tear down every live memory mount (harvest a copy / unmount a FUSE), draining
+    /// the guard list so a later dispose is a no-op.
+    async fn teardown_memory_mounts(&self) {
+        let mounts: Vec<Box<dyn pc::MemoryMount>> =
+            std::mem::take(&mut self.memory_mounts.lock().unwrap());
+        for mount in mounts {
+            mount.teardown().await;
+        }
+    }
+
     /// The rendered launcher argv for `command` (bwrap wrapping the program).
     fn render_argv(&self, command: &pc::Command) -> Result<Vec<String>, pc::SandboxError> {
         if command.argv.is_empty() {
@@ -482,6 +543,9 @@ impl pc::Sandbox for NamespaceSandbox {
     }
 
     async fn dispose(&self) -> Result<(), pc::SandboxError> {
+        // Harvest / unmount memory stores BEFORE the tree is reaped (a copy harvest
+        // reads the edited files back).
+        self.teardown_memory_mounts().await;
         let root = self.root.root();
         if root.exists() {
             std::fs::remove_dir_all(root).map_err(err)?;

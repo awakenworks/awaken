@@ -265,3 +265,50 @@ fn spec2_missing_required() -> pc::SandboxSpec {
     });
     s
 }
+
+#[tokio::test]
+async fn memory_store_realizes_as_copy_and_harvests_on_dispose() {
+    use awaken_memory_store::{InMemoryFs, MemoryFs};
+    use awaken_sandbox_memoryd::MemoryStoreMounter;
+
+    let fs = Arc::new(InMemoryFs::new());
+    fs.create("s", "/note.md", "v1").await.unwrap();
+    // The bwrap tier cannot splice a host FUSE into its namespace yet (ADR-0053
+    // item 2), so it uses a copy-only mounter: materialize on create, harvest on
+    // dispose. This is deterministic regardless of /dev/fuse on the host.
+    let mounter = Arc::new(MemoryStoreMounter::copy_only(fs.clone()));
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = NamespaceProvider::new(tmp.path()).with_memory_mounter(mounter);
+
+    let mut s = spec("t-nsmem");
+    s.mounts.push(pc::MountRequirement {
+        mount_id: "mem".into(),
+        source: pc::MountSource::MemoryStore {
+            store_id: "s".into(),
+        },
+        mount_path: "/workspace/memory".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Durable,
+        required: true,
+    });
+
+    let sandbox = provider.create(&s).await.unwrap();
+    assert_eq!(sandbox.realized()[0].realization, pc::Realization::Copy);
+
+    // The materialized file is present and binds into the namespace layout.
+    let note = tmp.path().join("t-nsmem/workspace/memory/note.md");
+    assert_eq!(std::fs::read_to_string(&note).unwrap(), "v1");
+
+    // Edit + dispose → harvested back to the durable store.
+    std::fs::write(&note, "v2").unwrap();
+    sandbox.dispose().await.unwrap();
+    assert_eq!(
+        fs.get_by_path("s", "/note.md")
+            .await
+            .unwrap()
+            .unwrap()
+            .content
+            .as_deref(),
+        Some("v2"),
+    );
+}
