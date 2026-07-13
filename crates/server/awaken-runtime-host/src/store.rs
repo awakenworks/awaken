@@ -214,15 +214,17 @@ pub(crate) fn sanitize_thread(thread: &str) -> String {
 /// candidate id is never materialized as a side effect (a prematurely built
 /// session context would lack the session's agent config and MCP tools).
 pub(crate) fn durable_thread_exists(store_dir: Option<&std::path::Path>, thread: &str) -> bool {
+    use crate::deployment_config::{DeploymentConfig, StoreKind};
+    let store = DeploymentConfig::from_env().store;
     // Shared Postgres backend: the coordinator is keyed by thread, so a committed
     // run for the thread means it durably exists (no per-thread file to stat).
-    if std::env::var("AWAKEN_STORE").as_deref() == Ok("postgres") {
+    if store == StoreKind::Postgres {
         return durable_thread_exists_postgres(&ThreadId(thread.to_string()));
     }
     let Some(dir) = store_dir else {
         return false;
     };
-    let fs_backend = std::env::var("AWAKEN_STORE").is_ok_and(|value| value == "fs");
+    let fs_backend = store == StoreKind::Fs;
     if fs_backend {
         dir.join(sanitize_thread(thread)).exists()
     } else {
