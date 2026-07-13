@@ -18,7 +18,9 @@ use awaken_agent_contract::agent::run::{EndCause, Failure, Phase};
 use awaken_protocol_a2a::client::send_message;
 use awaken_protocol_a2a::{HttpTransport, Task, Transport};
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
+use awaken_runtime_contract::execution::{
+    Cancellation, Error, ExecutorCapabilities, Result, RunExecutor, Wait,
+};
 use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
@@ -79,6 +81,15 @@ fn task_reply(task: &Task) -> String {
 
 #[async_trait]
 impl RunExecutor for A2aRunExecutor {
+    fn capabilities(&self) -> ExecutorCapabilities {
+        // A single request/await against the remote endpoint: no in-flight abort
+        // and no park-and-resume are wired, so both axes are fail-closed off.
+        ExecutorCapabilities {
+            cancellation: Cancellation::None,
+            wait: Wait::None,
+        }
+    }
+
     async fn execute(
         &self,
         activation: RunActivation,
@@ -255,5 +266,14 @@ mod tests {
         assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
         let commits = rec.0.lock().unwrap();
         assert_eq!(commits[0].messages[0].text_content(), "real remote reply");
+    }
+
+    #[test]
+    fn advertises_no_in_flight_control() {
+        // A single request/await backend: neither cancellation nor park-and-resume
+        // is wired, so the host must not offer them for an A2A run (ADR-0055).
+        let caps = A2aRunExecutor::over_http().capabilities();
+        assert_eq!(caps.cancellation, Cancellation::None);
+        assert_eq!(caps.wait, Wait::None);
     }
 }

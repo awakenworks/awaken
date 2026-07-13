@@ -36,7 +36,7 @@ pub use data_subject::{
     CaptureSink, ContentEraser, DataSubjectId, DataSubjectResolver, ErasureReceipt, NullResolver,
     Purpose,
 };
-pub use execution::RunExecutor;
+pub use execution::{Cancellation, ExecutorCapabilities, RunExecutor, Wait};
 pub use live_inbox::{LiveInbox, LiveInboxMessage, LiveInboxMessageId};
 pub use llm::{ChatRequest, ChatResponse, LlmExecutor};
 pub use pause::PauseSignal;
