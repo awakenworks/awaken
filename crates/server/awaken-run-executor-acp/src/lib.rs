@@ -26,7 +26,7 @@ use awaken_agent_contract::agent::waiting::{WaitingReason, WaitingTicket};
 use awaken_protocol_acp::{
     AcpError, AcpFailure, AgentEvent, AllowAll, AppendError, Injection, LaunchSink, PermissionAsk,
     PermissionResolver, PermissionVerdict, RawAcpError, RunFactAppender, Stage, SupervisePolicy,
-    Supervisor, TerminationReason, classify_error,
+    Supervisor, TerminationReason, TurnConfig, classify_error,
 };
 // Re-exported (not just `use`d) so a host composition root selects the wire and
 // observes agent bring-up without a direct dependency on the protocol crate. The
@@ -246,6 +246,11 @@ impl RunExecutor for AcpRunExecutor {
         let run_id = activation.run_id.clone();
         let mut prompt = prompt_of(&activation.input);
         let mut committed: Vec<Message> = Vec::new();
+        // The ACP session id, carried across the per-turn relaunches so a resumed
+        // turn reloads the CLI's own session (`session/load`) instead of starting
+        // fresh — context survives the relaunch (the newline stand-in leaves it
+        // `None`, so it always starts fresh, unchanged from before).
+        let mut acp_session_id: Option<String> = None;
 
         loop {
             let mut appender = CollectingAppender::default();
@@ -258,7 +263,9 @@ impl RunExecutor for AcpRunExecutor {
             };
 
             let process = session.process.clone();
-            let outcome = Supervisor::supervise_with_permission(
+            let mut config = TurnConfig::new(self.permission.as_ref());
+            config.session_id = acp_session_id.take();
+            let outcome = Supervisor::supervise_with_config(
                 session.channel.as_mut(),
                 process.as_ref(),
                 &prompt,
@@ -267,10 +274,12 @@ impl RunExecutor for AcpRunExecutor {
                 &mut injections,
                 self.policy,
                 session.codec,
-                self.permission.as_ref(),
+                &mut config,
                 launch_sink,
             )
             .await;
+            // Keep the negotiated session id for the next relaunched turn.
+            acp_session_id = config.session_id.take();
 
             let reason = match outcome {
                 Ok(reason) => reason,

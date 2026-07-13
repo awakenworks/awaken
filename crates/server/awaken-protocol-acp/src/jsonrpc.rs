@@ -19,9 +19,10 @@
 
 use agent_client_protocol::{
     AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES, ClientCapabilities, ContentBlock, InitializeRequest,
-    NewSessionRequest, NewSessionResponse, PermissionOptionKind, PromptRequest, PromptResponse,
-    ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionNotification,
+    InitializeResponse, LoadSessionRequest, NewSessionRequest, NewSessionResponse,
+    PermissionOptionKind, PromptRequest, PromptResponse, ProtocolVersion, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
+    SessionNotification,
 };
 use awaken_agent_channel::AgentChannel;
 use serde::Serialize;
@@ -30,7 +31,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use crate::real_acp::{project_update, termination_from_stop_reason};
 use crate::{
     AcpError, AcpLaunchEvent, AcpLaunchStage, AgentEvent, AllowAll, LaunchSink, PermissionAsk,
-    PermissionResolver, PermissionVerdict, RunFactAppender, TerminationReason, notify_launch,
+    PermissionResolver, PermissionVerdict, RunFactAppender, TerminationReason, TurnConfig,
+    notify_launch,
 };
 
 const JSONRPC: &str = "2.0";
@@ -164,24 +166,29 @@ pub async fn run_turn(
     sink: &mut dyn RunFactAppender,
     launch_sink: Option<LaunchSink<'_>>,
 ) -> Result<TerminationReason, AcpError> {
-    run_turn_with_permission(channel, prompt, sink, &AllowAll, launch_sink).await
+    let mut config = TurnConfig::new(&AllowAll);
+    run_turn_with_config(channel, prompt, sink, &mut config, launch_sink).await
 }
 
-/// [`run_turn`], authorizing the agent's mid-turn `session/request_permission`
-/// requests through `resolver` (the neutral `PermissionPolicy` behind an executor
-/// adapter). `fs`/`terminal` requests are still refused `method_not_found` — tool
-/// execution is the hand's job, never proxied back over ACP.
-pub async fn run_turn_with_permission(
+/// [`run_turn`] driven by a [`TurnConfig`]: authorize the agent's mid-turn
+/// `session/request_permission` through `config.resolver`, and — when
+/// `config.session_id` is set and the agent advertises `loadSession` — resume that
+/// session via `session/load` instead of `session/new` (so context survives the
+/// per-turn relaunch); otherwise open a fresh session and record its id back into
+/// `config.session_id` for the next turn. `fs`/`terminal` requests are still
+/// refused `method_not_found` — tool execution is the hand's job.
+pub async fn run_turn_with_config(
     channel: &mut dyn AgentChannel,
     prompt: &str,
     sink: &mut dyn RunFactAppender,
-    resolver: &dyn PermissionResolver,
+    config: &mut TurnConfig<'_>,
     launch_sink: Option<LaunchSink<'_>>,
 ) -> Result<TerminationReason, AcpError> {
+    let resolver = config.resolver;
     let mut wire = Wire::new(channel);
     let mut seq = 0u64;
 
-    // The process is up; the ACP handshake (initialize + session/new) begins now.
+    // The process is up; the ACP handshake (initialize + session/new|load) begins.
     notify_launch(
         launch_sink,
         AcpLaunchEvent::stage(AcpLaunchStage::Initializing),
@@ -189,27 +196,49 @@ pub async fn run_turn_with_permission(
 
     // 1. initialize — advertise the latest protocol version and no fs/terminal
     //    capabilities (default `ClientCapabilities`), so those agent requests are
-    //    refused fail-closed later.
+    //    refused fail-closed later. Read back the agent's capabilities to gate a
+    //    session resume fail-closed (only load when the agent advertises it).
     wire.send_request(
         ID_INITIALIZE,
         AGENT_METHOD_NAMES.initialize,
-        // Default `ClientCapabilities` = no fs/terminal, so those agent requests are
-        // refused fail-closed later.
         InitializeRequest::new(ProtocolVersion::LATEST)
             .client_capabilities(ClientCapabilities::default()),
     )
     .await?;
-    pump_to_response(&mut wire, ID_INITIALIZE, sink, &mut seq, resolver).await?;
+    let init: InitializeResponse =
+        parse(pump_to_response(&mut wire, ID_INITIALIZE, sink, &mut seq, resolver).await?)?;
+    let can_load = init.agent_capabilities.load_session;
 
-    // 2. session/new — a fresh session rooted at the sandbox cwd, no MCP servers.
-    wire.send_request(
-        ID_NEW_SESSION,
-        AGENT_METHOD_NAMES.session_new,
-        NewSessionRequest::new("/"),
-    )
-    .await?;
-    let new_session: NewSessionResponse =
-        parse(pump_to_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver).await?)?;
+    // 2. session/load (resume the CLI's own session across the relaunch) when we
+    //    hold a prior id and the agent supports it; else session/new. Fail-safe:
+    //    an agent that does not advertise `loadSession` falls back to a fresh
+    //    session (the neutral thread history is the authority — never lost).
+    let session_id: SessionId = match config.session_id.clone() {
+        Some(prior) if can_load => {
+            wire.send_request(
+                ID_NEW_SESSION,
+                AGENT_METHOD_NAMES.session_load,
+                LoadSessionRequest::new(SessionId::new(prior.as_str()), "/"),
+            )
+            .await?;
+            pump_to_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver).await?;
+            SessionId::new(prior.as_str())
+        }
+        _ => {
+            wire.send_request(
+                ID_NEW_SESSION,
+                AGENT_METHOD_NAMES.session_new,
+                NewSessionRequest::new("/"),
+            )
+            .await?;
+            let new_session: NewSessionResponse = parse(
+                pump_to_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver).await?,
+            )?;
+            new_session.session_id
+        }
+    };
+    // Record the negotiated id so the caller resumes this session next turn.
+    config.session_id = Some(session_id.to_string());
 
     // Handshake complete — the agent is live and about to accept the prompt.
     notify_launch(launch_sink, AcpLaunchEvent::stage(AcpLaunchStage::Ready));
@@ -218,7 +247,7 @@ pub async fn run_turn_with_permission(
     wire.send_request(
         ID_PROMPT,
         AGENT_METHOD_NAMES.session_prompt,
-        PromptRequest::new(new_session.session_id, vec![ContentBlock::from(prompt)]),
+        PromptRequest::new(session_id, vec![ContentBlock::from(prompt)]),
     )
     .await?;
     let prompt_result = pump_to_response(&mut wire, ID_PROMPT, sink, &mut seq, resolver).await?;
@@ -655,7 +684,8 @@ mod tests {
         });
 
         let mut sink = RecordingSink::default();
-        let reason = run_turn_with_permission(ours.as_mut(), "p", &mut sink, resolver, None)
+        let mut config = TurnConfig::new(resolver);
+        let reason = run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
             .await
             .unwrap();
         assert_eq!(reason, TerminationReason::NaturalEnd);
@@ -689,6 +719,88 @@ mod tests {
         assert_eq!(seen[0].tool, "bash");
         assert_eq!(seen[0].call_id, "t1");
         assert_eq!(seen[0].arguments["cmd"], "ls");
+    }
+
+    #[tokio::test]
+    async fn a_prior_session_is_resumed_via_session_load_when_the_agent_supports_it() {
+        // Holding a session id and facing an agent that advertises loadSession, the
+        // driver resumes via session/load (not new) and reports the same id back.
+        let (mut ours, theirs) = channel();
+        let saw_load = Arc::new(Mutex::new(false));
+        let saw_load2 = saw_load.clone();
+        let agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            io.read().await; // initialize
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}"#,
+            )
+            .await;
+            let req2 = io.read().await.unwrap(); // session/load
+            *saw_load2.lock().unwrap() = req2.get("method").and_then(|m| m.as_str())
+                == Some(AGENT_METHOD_NAMES.session_load);
+            io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{}}"#)
+                .await;
+            io.read().await; // prompt
+            io.write_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#)
+                .await;
+        });
+
+        let mut sink = RecordingSink::default();
+        let mut config = TurnConfig::new(&AllowAll);
+        config.session_id = Some("sess-resume".into());
+        let reason = run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
+            .await
+            .unwrap();
+        assert_eq!(reason, TerminationReason::NaturalEnd);
+        assert!(*saw_load.lock().unwrap(), "the driver sent session/load");
+        assert_eq!(
+            config.session_id.as_deref(),
+            Some("sess-resume"),
+            "the resumed id is reported back for the next turn"
+        );
+        agent.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_prior_session_falls_back_to_new_when_the_agent_lacks_load() {
+        // The agent does not advertise loadSession, so even with a prior id we open
+        // a fresh session (fail-safe — the neutral thread history is the authority).
+        let (mut ours, theirs) = channel();
+        let method2 = Arc::new(Mutex::new(String::new()));
+        let m2 = method2.clone();
+        let agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            io.read().await;
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#,
+            )
+            .await;
+            let req2 = io.read().await.unwrap();
+            *m2.lock().unwrap() = req2
+                .get("method")
+                .and_then(|m| m.as_str())
+                .unwrap_or("")
+                .to_string();
+            io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"fresh"}}"#)
+                .await;
+            io.read().await;
+            io.write_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#)
+                .await;
+        });
+
+        let mut sink = RecordingSink::default();
+        let mut config = TurnConfig::new(&AllowAll);
+        config.session_id = Some("stale".into());
+        run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
+            .await
+            .unwrap();
+        assert_eq!(*method2.lock().unwrap(), AGENT_METHOD_NAMES.session_new);
+        assert_eq!(
+            config.session_id.as_deref(),
+            Some("fresh"),
+            "the fresh id replaced the stale one"
+        );
+        agent.await.unwrap();
     }
 
     #[tokio::test]
