@@ -349,6 +349,11 @@ pub struct SharedHost {
     /// `store_dir/<thread>.db`, so a parked run survives a process restart. When
     /// `None`, sessions use an in-memory coordinator (ephemeral).
     pub(crate) store_dir: Option<PathBuf>,
+    /// When set, an ACP CLI's session is harvested/restored under this durable root
+    /// (keyed by thread+adapter) so it survives a move to another directory or
+    /// worker. Point it at a **shared** location for cross-machine recovery; leave
+    /// `None` on a single machine (the per-thread config home is already stable).
+    pub(crate) session_blob_root: Option<PathBuf>,
     /// Delegate agents fulfilled over A2A (agent id → transport) instead of a local
     /// sub-run. `run_delegate` routes to these first.
     pub(crate) remote_agents: HashMap<String, Arc<dyn Transport>>,
@@ -491,6 +496,12 @@ impl SharedHost {
             hub: Arc::new(ThreadEventHub::new()),
             // `with_store_dir` still overrides this environment-derived default.
             store_dir,
+            // A shared root (e.g. a networked mount) enables cross-machine ACP
+            // session recovery; unset means single-machine (stable config home).
+            session_blob_root: std::env::var("AWAKEN_ACP_SESSION_BLOBS")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from),
             remote_agents: HashMap::new(),
             memory: None,
             memory_selector: None,
@@ -721,6 +732,16 @@ impl SharedHost {
     /// resume it. Without this, sessions are in-memory and lost on restart.
     pub fn with_store_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.store_dir = Some(dir.into());
+        self
+    }
+
+    /// Harvest/restore each ACP CLI's session under `dir` (keyed by thread+adapter)
+    /// so it recovers across directories and — when `dir` is a shared location —
+    /// across workers/machines. Consumed by [`Self::with_projected_acp`]. Leave unset
+    /// on a single machine, where the per-thread config home is already stable.
+    #[must_use]
+    pub fn with_session_blob_root(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.session_blob_root = Some(dir.into());
         self
     }
 
