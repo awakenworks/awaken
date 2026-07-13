@@ -38,6 +38,46 @@ fn request_exposes_run_and_thread_ids() {
     assert_eq!(request.thread_id().0, THREAD);
 }
 
+/// The submitter's W3C `traceparent` SURVIVES the durable queue hop: it is persisted
+/// on enqueue and handed back on the `Claimed` request, so the worker can rebuild the
+/// `wake.dispatch` span with the submitter's trace as its remote parent (the plumbing
+/// the `durable_trace_propagation` e2e asserts nests end-to-end). A run enqueued with
+/// no context stays `None` — a fresh, un-parented span.
+#[tokio::test]
+async fn the_admitting_traceparent_survives_the_enqueue_claim_queue_hop() {
+    let store = MemoryDispatchStore::new();
+    let traceparent = "00-aa11bb22cc33dd44ee55ff6677889900-1122334455667788-01";
+
+    store
+        .enqueue(RunExecutionRequest::new(activation("traced")).with_traceparent(Some(
+            traceparent.to_string(),
+        )))
+        .await
+        .unwrap();
+    // A second run with no captured context — proves the queue does not fabricate one.
+    store
+        .enqueue(RunExecutionRequest::new(harness::activation_on(
+            "untraced", "thread-2",
+        )))
+        .await
+        .unwrap();
+
+    let traced = store.claim("w", 1_000, 0).await.unwrap().expect("traced");
+    assert_eq!(traced.request.run_id().0, "traced");
+    assert_eq!(
+        traced.request.traceparent.as_deref(),
+        Some(traceparent),
+        "the admitting traceparent is persisted and returned on the claimed request"
+    );
+
+    let untraced = store.claim("w", 1_000, 0).await.unwrap().expect("untraced");
+    assert_eq!(untraced.request.run_id().0, "untraced");
+    assert_eq!(
+        untraced.request.traceparent, None,
+        "a run admitted with no trace context carries no traceparent"
+    );
+}
+
 #[test]
 fn execution_context_keeps_its_commit_handle() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
