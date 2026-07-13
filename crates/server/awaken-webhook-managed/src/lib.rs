@@ -234,6 +234,17 @@ async fn put_subscription(
             ),
         );
     };
+    // Fail closed on an SSRF-shaped endpoint: the dispatcher fetches this URL
+    // server-side, so a non-https scheme or a private/loopback/metadata host is
+    // rejected at admission (never stored, never fetched).
+    if let Err(rejected) = awaken_webhook::validate_endpoint_url(&url) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": { "type": "invalid_request_error", "message": rejected.to_string() }
+            })),
+        );
+    }
     let event_types: Vec<String> = body
         .get("event_types")
         .and_then(Value::as_array)
@@ -359,9 +370,11 @@ pub fn assemble(
         store.clone(),
         secrets.clone(),
     ));
+    // The production sender enforces the delivery-time SSRF / DNS-rebinding guard:
+    // it resolves-and-pins each endpoint to globally-routable addresses only.
     let dispatcher = Arc::new(WebhookDispatcher::new(
         source,
-        Arc::new(ReqwestSender::default()),
+        Arc::new(ReqwestSender::guarded()),
     ));
     let sink = Arc::new(WebhookLifecycleSink::new(dispatcher, org_id));
     (sink, webhook_config_router(store, secrets))

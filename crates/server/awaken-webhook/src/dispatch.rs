@@ -5,6 +5,7 @@
 //! uses the reqwest impl against a real receiver.
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -48,8 +49,16 @@ pub trait WebhookSender: Send + Sync {
 }
 
 /// A reqwest-backed sender (production).
+///
+/// In `guarded` mode (`ReqwestSender::guarded`, what the production assembly wires)
+/// each delivery resolves the endpoint host itself, keeps only globally-routable
+/// addresses, and pins the connection to exactly those — so a subscription whose
+/// hostname passed admission but later resolves to an internal IP (DNS rebinding)
+/// cannot reach loopback / metadata / private targets. `default` is permissive
+/// (used by the e2e, which delivers to a loopback receiver).
 pub struct ReqwestSender {
     client: reqwest::Client,
+    guard: bool,
 }
 
 impl Default for ReqwestSender {
@@ -59,8 +68,70 @@ impl Default for ReqwestSender {
                 .redirect(reqwest::redirect::Policy::none()) // never follow redirects
                 .build()
                 .expect("reqwest client builds"),
+            guard: false,
         }
     }
+}
+
+impl ReqwestSender {
+    /// A sender that enforces the delivery-time SSRF / DNS-rebinding guard: every
+    /// POST resolves-and-pins to globally-routable addresses only. This is what the
+    /// production webhook assembly uses.
+    #[must_use]
+    pub fn guarded() -> Self {
+        Self {
+            guard: true,
+            ..Self::default()
+        }
+    }
+
+    /// Build a client whose DNS for `url`'s host is pinned to the pre-validated,
+    /// globally-routable addresses — reqwest then connects only to those, closing
+    /// the rebinding window between our check and the actual connect.
+    async fn pinned_client(&self, url: &str) -> Result<reqwest::Client, String> {
+        let parsed = reqwest::Url::parse(url).map_err(|e| e.to_string())?;
+        if parsed.scheme() != "https" {
+            return Err("webhook endpoint must use https".to_string());
+        }
+        let host = parsed
+            .host_str()
+            .ok_or_else(|| "webhook endpoint has no host".to_string())?
+            .to_string();
+        let port = parsed.port_or_known_default().unwrap_or(443);
+        let addrs = resolve_global(&host, port).await?;
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve_to_addrs(&host, &addrs)
+            .build()
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Resolve `host:port` to only its globally-routable socket addresses, rejecting an
+/// endpoint that is (or resolves solely to) a private / loopback / link-local /
+/// metadata target. An IP-literal host is validated directly; a DNS name is
+/// resolved via the system resolver and every returned address is filtered.
+pub(crate) async fn resolve_global(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
+    use std::net::IpAddr;
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        if !crate::url_guard::ip_is_global(&ip) {
+            return Err(format!(
+                "webhook endpoint {host} is a private/loopback address"
+            ));
+        }
+        return Ok(vec![SocketAddr::new(ip, port)]);
+    }
+    let safe: Vec<SocketAddr> = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|e| e.to_string())?
+        .filter(|sa| crate::url_guard::ip_is_global(&sa.ip()))
+        .collect();
+    if safe.is_empty() {
+        return Err(format!(
+            "webhook endpoint {host} resolves only to private/loopback addresses"
+        ));
+    }
+    Ok(safe)
 }
 
 #[async_trait]
@@ -71,7 +142,14 @@ impl WebhookSender for ReqwestSender {
         headers: Vec<(String, String)>,
         body: String,
     ) -> Result<u16, String> {
-        let mut req = self.client.post(url).body(body);
+        // In guarded mode, resolve-and-pin to validated addresses; otherwise use the
+        // shared permissive client (cheap Arc clone).
+        let client = if self.guard {
+            self.pinned_client(url).await?
+        } else {
+            self.client.clone()
+        };
+        let mut req = client.post(url).body(body);
         for (k, v) in headers {
             req = req.header(k, v);
         }
@@ -562,5 +640,48 @@ mod tests {
                 .all(|(_, h, _)| webhook_id(h).as_deref() == Some("event_1")),
             "the dedupe key is stable across all retry attempts"
         );
+    }
+
+    // ── Delivery-time SSRF / DNS-rebinding guard (ReqwestSender::guarded) ──────
+
+    #[tokio::test]
+    async fn resolve_global_accepts_a_public_ip_and_rejects_internal_ones() {
+        // An IP-literal endpoint is validated directly: a public address pins to
+        // itself; loopback and private addresses are refused before any connect.
+        assert_eq!(
+            super::resolve_global("1.1.1.1", 443).await.unwrap(),
+            vec!["1.1.1.1:443".parse::<SocketAddr>().unwrap()]
+        );
+        for internal in ["127.0.0.1", "169.254.169.254", "10.0.0.5", "192.168.1.1"] {
+            assert!(
+                super::resolve_global(internal, 443).await.is_err(),
+                "{internal} must be refused"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_global_refuses_a_name_that_resolves_to_loopback() {
+        // `localhost` always resolves to 127.0.0.1/::1, so the resolve-and-filter
+        // path yields no globally-routable address and fails closed — this is the
+        // DNS-rebinding defense in miniature (a name pointing at an internal IP).
+        assert!(super::resolve_global("localhost", 443).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_guarded_sender_refuses_a_loopback_or_non_https_endpoint() {
+        let sender = ReqwestSender::guarded();
+        // A loopback https endpoint is refused at resolve-and-pin (no connection made).
+        let err = sender
+            .post("https://127.0.0.1:9/hook", vec![], "{}".into())
+            .await
+            .expect_err("loopback must be refused");
+        assert!(err.contains("private") || err.contains("loopback"), "{err}");
+        // A non-https endpoint is refused by the guard's scheme check.
+        let err = sender
+            .post("http://example.com/hook", vec![], "{}".into())
+            .await
+            .expect_err("non-https must be refused");
+        assert!(err.contains("https"), "{err}");
     }
 }

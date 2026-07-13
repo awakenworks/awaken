@@ -75,6 +75,10 @@ pub fn signature_header(
 /// Constant-time verification of a `webhook-signature` header (space-separated
 /// `v1,<sig>` list): true iff any listed `v1` signature matches. This is what a
 /// receiver runs; the e2e uses it to prove the delivered signature is authentic.
+///
+/// A valid signature never expires on its own — pair this with
+/// [`timestamp_within_tolerance`] (or use [`verify_fresh`]) to reject replays of a
+/// captured, correctly-signed past delivery.
 pub fn verify(
     secret: &str,
     msg_id: &str,
@@ -90,6 +94,41 @@ pub fn verify(
             .unwrap_or(false)
     });
     Ok(matched)
+}
+
+/// Standard Webhooks' recommended replay-tolerance window, in seconds (±5 minutes).
+/// A `webhook-timestamp` outside `[now - TOLERANCE, now + TOLERANCE]` is rejected
+/// even when the signature verifies.
+pub const DEFAULT_TOLERANCE_SECS: i64 = 300;
+
+/// True iff `timestamp` (the `webhook-timestamp` header value) is within
+/// `tolerance_secs` of `now` — both unix seconds, in *either* direction (a
+/// too-future timestamp is clock skew or a forged-ahead replay). The staleness
+/// bound a receiver enforces so a captured, authentic past delivery cannot be
+/// replayed later; the HMAC signature alone carries no expiry.
+#[must_use]
+pub fn timestamp_within_tolerance(timestamp: i64, now: i64, tolerance_secs: i64) -> bool {
+    now.saturating_sub(timestamp).saturating_abs() <= tolerance_secs
+}
+
+/// The full receiver-side check: the timestamp is fresh AND the signature verifies.
+/// Returns `Ok(false)` for a stale timestamp *or* a bad signature (both mean
+/// "reject", and staying indistinguishable gives a replayer no oracle); `Err` only
+/// for a malformed secret. Checking freshness first also avoids signing work for an
+/// obviously-stale replay.
+pub fn verify_fresh(
+    secret: &str,
+    msg_id: &str,
+    timestamp: i64,
+    payload: &str,
+    header: &str,
+    now: i64,
+    tolerance_secs: i64,
+) -> Result<bool, SignError> {
+    if !timestamp_within_tolerance(timestamp, now, tolerance_secs) {
+        return Ok(false);
+    }
+    verify(secret, msg_id, timestamp, payload, header)
 }
 
 #[cfg(test)]
@@ -171,5 +210,81 @@ mod tests {
                 "degenerate header {header:?} is a clean false"
             );
         }
+    }
+
+    #[test]
+    fn timestamp_tolerance_bounds_both_directions() {
+        let now = 1_700_000_000;
+        // Inside the window (past and future skew) is fresh; exactly at the bound is
+        // inclusive; just outside — in either direction — is stale.
+        assert!(timestamp_within_tolerance(now, now, DEFAULT_TOLERANCE_SECS));
+        assert!(timestamp_within_tolerance(
+            now - DEFAULT_TOLERANCE_SECS,
+            now,
+            DEFAULT_TOLERANCE_SECS
+        ));
+        assert!(timestamp_within_tolerance(
+            now + DEFAULT_TOLERANCE_SECS,
+            now,
+            DEFAULT_TOLERANCE_SECS
+        ));
+        assert!(!timestamp_within_tolerance(
+            now - DEFAULT_TOLERANCE_SECS - 1,
+            now,
+            DEFAULT_TOLERANCE_SECS
+        ));
+        assert!(!timestamp_within_tolerance(
+            now + DEFAULT_TOLERANCE_SECS + 1,
+            now,
+            DEFAULT_TOLERANCE_SECS
+        ));
+    }
+
+    #[test]
+    fn verify_fresh_rejects_a_replay_of_an_authentic_delivery() {
+        // A delivery signed at t0 is authentic and verifies fresh at t0…
+        let t0 = 1_700_000_000;
+        let header = signature_header(SECRET, "event_1", t0, "{\"a\":1}").unwrap();
+        assert!(
+            verify_fresh(
+                SECRET,
+                "event_1",
+                t0,
+                "{\"a\":1}",
+                &header,
+                t0,
+                DEFAULT_TOLERANCE_SECS
+            )
+            .unwrap()
+        );
+        // …but a byte-identical re-POST replayed an hour later is rejected even though
+        // the signature is still valid — the timestamp is now stale.
+        let much_later = t0 + 3_600;
+        assert!(
+            !verify_fresh(
+                SECRET,
+                "event_1",
+                t0,
+                "{\"a\":1}",
+                &header,
+                much_later,
+                DEFAULT_TOLERANCE_SECS
+            )
+            .unwrap(),
+            "a stale but correctly-signed replay is rejected"
+        );
+        // A stale timestamp with a bad signature is likewise Ok(false), indistinguishable.
+        assert!(
+            !verify_fresh(
+                SECRET,
+                "event_1",
+                t0,
+                "{\"a\":2}",
+                &header,
+                t0,
+                DEFAULT_TOLERANCE_SECS
+            )
+            .unwrap()
+        );
     }
 }

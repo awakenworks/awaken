@@ -179,6 +179,36 @@ async fn create_without_url_is_400() {
 }
 
 #[tokio::test]
+async fn an_ssrf_shaped_url_is_rejected_and_seals_no_secret() {
+    // The dispatcher fetches the endpoint server-side, so a private/metadata/non-https
+    // URL is rejected at admission: 400, no row stored, and (critically) no secret
+    // minted or sealed for it.
+    for bad in [
+        "https://169.254.169.254/latest/meta-data/", // cloud metadata (link-local)
+        "https://127.0.0.1/admin",                    // loopback
+        "http://hooks.example.com/x",                 // non-https
+    ] {
+        let store = Arc::new(MemStore::default());
+        let secrets = Arc::new(MemSecrets::ok());
+        let (status, _) = call(
+            store.clone(),
+            secrets.clone(),
+            "PUT",
+            "/v1/config/webhook-subscriptions/wh_ssrf",
+            Some("ws_a"),
+            Some(json!({ "url": bad, "event_types": ["run.completed"] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad} must be rejected");
+        assert!(store.get("wh_ssrf").is_none(), "no row stored for {bad}");
+        assert!(
+            secrets.map.lock().unwrap().is_empty(),
+            "no secret sealed for a rejected url {bad}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn seal_failure_is_500_and_stores_no_row() {
     let store = Arc::new(MemStore::default());
     let secrets = Arc::new(MemSecrets::failing());

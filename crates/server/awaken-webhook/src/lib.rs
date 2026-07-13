@@ -14,6 +14,7 @@
 mod dispatch;
 mod event;
 mod signing;
+mod url_guard;
 
 pub use dispatch::{
     DispatchReport, ReqwestSender, ResolvedSubscription, SubscriptionSource, WebhookDispatcher,
@@ -21,5 +22,7 @@ pub use dispatch::{
 };
 pub use event::{WebhookEvent, WebhookEventData};
 pub use signing::{
-    SECRET_PREFIX, SignError, generate_secret, sign_bytes, signature_header, verify,
+    DEFAULT_TOLERANCE_SECS, SECRET_PREFIX, SignError, generate_secret, sign_bytes,
+    signature_header, timestamp_within_tolerance, verify, verify_fresh,
 };
+pub use url_guard::{UrlRejected, validate_endpoint_url};
