@@ -531,6 +531,95 @@ impl Event {
     }
 }
 
+/// A stream-only *live preview* frame (`event_start` / `event_delta`), emitted on
+/// the SSE stream **only** while a turn is in flight and **never** persisted in
+/// the event log — the buffered `agent.message` stays the authoritative record.
+/// Mirrors the official Managed Agents live-preview wire: an `event_start`
+/// announces the upcoming buffered event's `type` + `id`, then `event_delta`
+/// frames carry incremental `content_delta` text. The delta type is
+/// `content_delta` (NOT the Messages-API `content_block_delta`), so the SDK's
+/// live-preview accumulator — not its Messages-API accumulator — reconciles it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type")]
+pub enum PreviewFrame {
+    #[serde(rename = "event_start")]
+    EventStart { event: PreviewTarget },
+    #[serde(rename = "event_delta")]
+    EventDelta {
+        event_id: String,
+        delta: PreviewDelta,
+    },
+}
+
+impl PreviewFrame {
+    pub fn type_str(&self) -> &'static str {
+        match self {
+            PreviewFrame::EventStart { .. } => "event_start",
+            PreviewFrame::EventDelta { .. } => "event_delta",
+        }
+    }
+}
+
+/// The `event` on an `event_start`: the `type` + `id` of the buffered event this
+/// preview announces. Its `id` equals the buffered event's `id`, so a client
+/// reconciles the accumulated preview against the committed event by id.
+#[derive(Debug, Clone, Serialize)]
+pub struct PreviewTarget {
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub id: String,
+}
+
+/// The `delta` on an `event_delta` — always `content_delta` with an `index` and a
+/// text `content` block: the incremental slice of the previewed message.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type")]
+pub enum PreviewDelta {
+    #[serde(rename = "content_delta")]
+    ContentDelta {
+        index: usize,
+        content: PreviewContent,
+    },
+}
+
+/// The incremental content on a `content_delta`. Text only — awaken's live stream
+/// carries text deltas; tool use and thinking are never previewed (matching the
+/// official wire: "tool use, tool results … are never previewed").
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type")]
+pub enum PreviewContent {
+    #[serde(rename = "text")]
+    Text { text: String },
+}
+
+/// A frame on the live SSE stream: either a committed [`Event`] (also in the
+/// persisted log) or a stream-only [`PreviewFrame`]. The per-session broadcast
+/// carries both; each SSE connection forwards previews only if it opted in via
+/// `event_deltas[]`.
+#[derive(Debug, Clone)]
+pub enum StreamFrame {
+    Committed(Event),
+    Preview(PreviewFrame),
+}
+
+impl StreamFrame {
+    /// The SSE `event:` name for this frame.
+    pub fn type_str(&self) -> &'static str {
+        match self {
+            StreamFrame::Committed(e) => e.type_str(),
+            StreamFrame::Preview(p) => p.type_str(),
+        }
+    }
+
+    /// The JSON body for the SSE `data:` line.
+    pub fn data(&self) -> String {
+        match self {
+            StreamFrame::Committed(e) => serde_json::to_string(e).expect("event serializes"),
+            StreamFrame::Preview(p) => serde_json::to_string(p).expect("preview serializes"),
+        }
+    }
+}
+
 /// `GET .../events` response.
 #[derive(Debug, Clone, Serialize)]
 pub struct ListEventsResponse {

@@ -40,6 +40,7 @@ mod provisioning;
 mod redact;
 mod run_exec;
 mod sandbox_source;
+pub mod session_home;
 mod session_store;
 mod skills;
 mod skills_api;
@@ -447,6 +448,23 @@ impl SessionRuntime for ManagedHost {
         let result = self
             .host
             .run(Some(agent), thread, vec![user_message(content)])
+            .await
+            .map_err(to_run_error)?;
+        Ok(to_turn_outcome(result))
+    }
+
+    async fn run_streaming(
+        &self,
+        agent: &str,
+        thread: &str,
+        content: Vec<ContentBlock>,
+        sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
+    ) -> Result<TurnOutcome, RunError> {
+        // Same committed turn as `run`; `sink` mirrors in-flight `stream::Kind` so
+        // the Managed adapter can project live `agent.message` previews.
+        let result = self
+            .host
+            .run_streaming(Some(agent), thread, vec![user_message(content)], sink)
             .await
             .map_err(to_run_error)?;
         Ok(to_turn_outcome(result))

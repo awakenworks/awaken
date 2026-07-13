@@ -22,9 +22,16 @@ serde.workspace = true
 serde_json.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+# `sync` for the per-session live-SSE broadcast the preview sink and committed
+# events publish to; `rt`/`macros` come from the workspace default.
+tokio = { workspace = true, features = ["sync"] }
 axum = "0.8"
 tokio-stream = "0.1"
+# The live-SSE endpoint yields a snapshot backfill then live broadcast frames from
+# one `async` generator (`stream!`).
+async-stream = "0.3"
+# Decode the `event_deltas[]` query param (keys/values may be percent-encoded).
+form_urlencoded = "1"
 # Managed operation span (`#[instrument]`) exported through the global subscriber the
 # service binary installs; this crate emits spans, never wires an exporter.
 tracing = "0.1"

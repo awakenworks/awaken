@@ -36,6 +36,7 @@ mod routes;
 /// from neutral domain state lives in [`project`] and [`state`].
 pub mod types;
 
+mod preview;
 mod session_repo;
 mod state;
 
