@@ -102,8 +102,9 @@ pub async fn init_shared_postgres_dispatch(url: &str) -> Result<(), String> {
 /// then publishes the ready wake into [`SHARED_NATS_WAKE`].
 #[cfg(feature = "nats")]
 async fn connect_postgres_with_nats_wake(url: &str) -> Result<Arc<AnyDispatchStore>, String> {
-    let nats_url = std::env::var("AWAKEN_NATS_URL")
-        .map_err(|_| "AWAKEN_DISPATCH_WAKE=nats requires AWAKEN_NATS_URL".to_string())?;
+    let nats_url = crate::deployment_config::DeploymentConfig::from_env()
+        .nats_url
+        .ok_or_else(|| "AWAKEN_DISPATCH_WAKE=nats requires AWAKEN_NATS_URL".to_string())?;
     let (store, wake) =
         AnyDispatchStore::connect_postgres_with_nats_wake(url, &nats_url, &dispatch_wake_channel())
             .await?;
@@ -150,10 +151,11 @@ enum DispatchWake {
 
 /// Which cross-node wake, if any, `AWAKEN_DISPATCH_WAKE` selects for the served pool.
 fn dispatch_wake_kind() -> DispatchWake {
-    match std::env::var("AWAKEN_DISPATCH_WAKE").as_deref() {
-        Ok("pg-notify") => DispatchWake::PgNotify,
-        Ok("nats") => DispatchWake::Nats,
-        _ => DispatchWake::None,
+    use crate::deployment_config::Wake;
+    match crate::deployment_config::DeploymentConfig::from_env().wake {
+        Wake::PgNotify => DispatchWake::PgNotify,
+        Wake::Nats => DispatchWake::Nats,
+        Wake::None => DispatchWake::None,
     }
 }
 
@@ -204,14 +206,16 @@ pub(crate) fn shared_durable_store(
     if let Some(store) = SHARED_INJECTED_DISPATCH.get() {
         return Ok(store.clone());
     }
-    match std::env::var("AWAKEN_DISPATCH_BACKEND").as_deref() {
-        Ok("postgres") => SHARED_POSTGRES_DISPATCH.get().cloned().ok_or_else(|| {
-            HostError::internal(
-                "AWAKEN_DISPATCH_BACKEND=postgres requires init_shared_postgres_dispatch() \
-                 at process startup (with AWAKEN_DATABASE_URL)",
-            )
-        }),
-        _ => {
+    match crate::deployment_config::DeploymentConfig::from_env().dispatch_backend {
+        crate::deployment_config::DispatchBackend::Postgres => {
+            SHARED_POSTGRES_DISPATCH.get().cloned().ok_or_else(|| {
+                HostError::internal(
+                    "AWAKEN_DISPATCH_BACKEND=postgres requires init_shared_postgres_dispatch() \
+                     at process startup (with AWAKEN_DATABASE_URL)",
+                )
+            })
+        }
+        crate::deployment_config::DispatchBackend::Sqlite => {
             if let Some(store) = SHARED_SQLITE_DISPATCH.get() {
                 return Ok(store.clone());
             }
