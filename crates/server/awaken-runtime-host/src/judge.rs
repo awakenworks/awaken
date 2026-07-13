@@ -59,9 +59,9 @@ impl SubagentRunner for HostSubagentRunner {
         // The sub-agent sees only its seed (a fresh window); its cancellation is the
         // parent run's, so cancelling the parent cancels the sub-run too.
         let name = format!("{}-sub-{n}", request.agent_id);
-        // The judge is an out-of-band evaluation sub-run (not part of the doer's
-        // turn); its usage stays on its own sub-thread rather than folding into the
-        // graded thread's tally.
+        // Every sub-run behind this port is out-of-band housekeeping (judge,
+        // compaction, memory selection), not the doer's turn — its usage stays
+        // isolated on its own sub-thread rather than folding into the parent tally.
         let (text, _usage) = crate::subagent::run_configured_subrun(
             &self.catalog,
             &self.provider,
@@ -71,6 +71,7 @@ impl SubagentRunner for HostSubagentRunner {
             request.seed,
             Vec::new(),
             request.cancellation,
+            crate::subagent::UsageRollup::Isolated,
         )
         .await
         .map_err(SubagentError)?;

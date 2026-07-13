@@ -8,7 +8,7 @@
 //! the host after a turn, and reads memories back for recall.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -21,23 +21,25 @@ use awaken_ext_memory::{
     select_input,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
+use awaken_runtime_contract::subagent_runner::{SubagentRequest, SubagentRunner};
 use awaken_sandbox_local::LocalSandboxProvider;
 
 use crate::agent_catalog::AgentCatalog;
 use crate::background::BackgroundRuns;
-use crate::subagent::run_configured_subrun;
+use crate::judge::HostSubagentRunner;
+use crate::subagent::{UsageRollup, run_configured_subrun};
 
 // The config pieces the host wires (registering the default extractor agent).
 pub use awaken_ext_memory::{DEFAULT_MEMORY_INSTRUCTIONS, default_memory_agent};
 
 /// A [`RecallSelector`] backed by the `memory-selector` sub-agent: a single-step,
-/// tool-free, plugin-free agent run through the shared aux-agent substrate. Because
-/// it activates no plugins, it cannot recurse into memory recall.
+/// tool-free, plugin-free run driven through the shared aux-run port
+/// ([`SubagentRunner`] — the same one the judge and compactor use) rather than the
+/// sub-run substrate directly. Because it activates no plugins, it cannot recurse
+/// into memory recall; the port keeps its usage isolated (housekeeping, not turn
+/// work).
 pub(crate) struct AgentSelector {
-    llm: Arc<dyn LlmExecutor>,
-    provider: Arc<LocalSandboxProvider>,
-    catalog: Arc<AgentCatalog>,
-    seq: AtomicU64,
+    runner: Arc<dyn SubagentRunner>,
 }
 
 impl AgentSelector {
@@ -50,10 +52,12 @@ impl AgentSelector {
             .join("awaken-server-local")
             .join(format!("{}-mem-select", std::process::id()));
         Self {
-            llm,
-            provider: Arc::new(LocalSandboxProvider::new(base)),
-            catalog,
-            seq: AtomicU64::new(0),
+            runner: Arc::new(HostSubagentRunner {
+                llm,
+                provider: LocalSandboxProvider::new(base),
+                catalog,
+                seq: AtomicU64::new(0),
+            }),
         }
     }
 }
@@ -61,22 +65,25 @@ impl AgentSelector {
 #[async_trait]
 impl RecallSelector for AgentSelector {
     async fn select(&self, query: &str, manifest: &[(usize, String)], max: usize) -> Vec<usize> {
-        let n = self.seq.fetch_add(1, Ordering::SeqCst);
         let input = select_input(query, manifest, max);
-        // Recall selection is auxiliary (BeforeInference housekeeping), not turn
-        // work — its usage is not folded into the session tally.
-        let (reply, _usage) = run_configured_subrun(
-            &self.catalog,
-            &self.provider,
-            self.llm.clone(),
-            SELECTOR_AGENT_ID,
-            &format!("mem-select-{n}"),
-            input,
-            Vec::new(),
-            None,
-        )
-        .await
-        .unwrap_or_default();
+        // Fire the selector through the shared port; a runner error degrades to
+        // "select nothing" (recall falls back to no memories rather than failing the
+        // turn). The port surfaces only the reply text, its usage stays isolated.
+        let reply = self
+            .runner
+            .run(SubagentRequest {
+                agent_id: SELECTOR_AGENT_ID.to_string(),
+                seed: vec![Message {
+                    id: MessageId("mem-select".into()),
+                    role: Role::User,
+                    content: vec![ContentBlock::text(input)],
+                }],
+                cancellation: None,
+            })
+            .await
+            .ok()
+            .and_then(|reply| reply.text)
+            .unwrap_or_default();
         parse_indices(&reply, manifest.len(), max)
     }
 }
@@ -144,6 +151,10 @@ impl MemoryExtraction {
         self.background
             .spawn(async move {
                 let tool = erase(WriteMemoryTool::new(store));
+                // The extractor injects a per-run `write_memory` tool scoped to this
+                // store, which the thin `SubagentRunner` port deliberately does not
+                // carry — so it runs on the substrate directly. Fire-and-forget, and
+                // its usage stays isolated (background housekeeping, not turn work).
                 let _ = run_configured_subrun(
                     &catalog,
                     &provider,
@@ -153,6 +164,7 @@ impl MemoryExtraction {
                     seed,
                     vec![tool],
                     None,
+                    UsageRollup::Isolated,
                 )
                 .await;
             })

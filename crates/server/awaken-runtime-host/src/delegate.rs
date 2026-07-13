@@ -171,7 +171,8 @@ impl DelegationResolver {
         let n = BASE_SEQ.fetch_add(1, Ordering::SeqCst);
         let name = format!("{agent_id}-sub-{n}");
         // The sub-run's usage rides back on the step so the kernel folds it into the
-        // parent thread's tally (its own isolated store is dropped here).
+        // parent thread's tally (its own isolated store is dropped here) — turn work,
+        // so it counts against the session.
         let (text, usage) = crate::subagent::run_subagent(
             self.llm.clone(),
             &self.model_ref,
@@ -179,6 +180,7 @@ impl DelegationResolver {
             &name,
             input,
             cancellation.cloned(),
+            crate::subagent::UsageRollup::FoldIntoParent,
         )
         .await
         .map_err(AgentError::new)?;
