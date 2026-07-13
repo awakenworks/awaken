@@ -81,8 +81,9 @@ struct ForkRunner {
 #[async_trait::async_trait]
 impl SubagentRunner for ForkRunner {
     async fn run(&self, request: SubagentRequest) -> Result<SubagentReply, SubagentError> {
-        // The skill id names the sub-run; the seed is the resolved skill body. The
-        // sub-thread's usage stays there (this port surfaces only the reply text).
+        // The skill id names the sub-run; the seed is the resolved skill body. Skill
+        // activation is out-of-band housekeeping, so its usage stays isolated (this
+        // port surfaces only the reply text).
         let name = format!("skill-{}", request.agent_id);
         crate::subagent::run_subagent(
             self.llm.clone(),
@@ -91,6 +92,7 @@ impl SubagentRunner for ForkRunner {
             &name,
             request.seed,
             request.cancellation,
+            crate::subagent::UsageRollup::Isolated,
         )
         .await
         .map(|(text, _usage)| SubagentReply { text: Some(text) })
