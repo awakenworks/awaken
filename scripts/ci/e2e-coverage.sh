@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# E2E line coverage of the served Rust binary (`awaken-server-local`).
+# E2E line coverage of the served Rust binary (`awaken-server`).
 #
 # Instruments the workspace with cargo-llvm-cov (continuous mode, so profiles
 # survive SIGINT/SIGKILL of spawned servers), drives every DETERMINISTIC e2e
@@ -23,11 +23,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-# Denominator = code the SERVED binary (awaken-server-local) can actually reach
+# Denominator = code the SERVED binary (awaken-server) can actually reach
 # from an e2e run. Two exclusion classes, each principled:
 #
 # (1) Workspace crates NOT linked into the binary — no e2e can execute them
-#     (verified with `cargo tree -p awaken-server-local -i <crate>`):
+#     (verified with `cargo tree -p awaken-server -i <crate>`):
 #       protocol-mcp   the MCP *server* surface (awaken exposing its tools);
 #                      the binary is an MCP *client* only.
 #       store-postgres / run-ingress postgres paths — need a live PostgreSQL.
@@ -73,7 +73,7 @@ cd "$(dirname "$0")/../.."
 #     and the tool-call pattern DSL; both carry comprehensive crate-level unit
 #     tests (like awaken-store-conformance), and the e2e exercises only their
 #     common paths, not every parser/validator branch.
-IGNORE='(awaken-protocol-mcp|awaken-store-postgres|awaken-store-conformance|awaken-runtime-examples|awaken-sandbox-container|awaken-file-store|awaken-scope|awaken-tool-pattern)/|awaken-run-ingress/src/(memory|postgres)\.rs|awaken-ext-mcp/src/(stdio|plugin|sensitive)\.rs|awaken-mcp-wire/src/jsonrpc\.rs|awaken-sandbox-local/src/(namespace|provider)\.rs|awaken-protocol-acp/src/(error|jsonrpc|real_acp)\.rs|awaken-(admin-config-api|config-store|credential-vault|model-catalog)/src/postgres\.rs|awaken-credential-vault/src/oauth\.rs|awaken-ext-builtin-tools/src/web\.rs|awaken-connection-plan/src/plan\.rs|awaken-server-local/src/models\.rs'
+IGNORE='(awaken-protocol-mcp|awaken-store-postgres|awaken-store-conformance|awaken-runtime-examples|awaken-sandbox-container|awaken-file-store|awaken-scope|awaken-tool-pattern)/|awaken-run-ingress/src/(memory|postgres)\.rs|awaken-ext-mcp/src/(stdio|plugin|sensitive)\.rs|awaken-mcp-wire/src/jsonrpc\.rs|awaken-sandbox-local/src/(namespace|provider)\.rs|awaken-protocol-acp/src/(error|jsonrpc|real_acp)\.rs|awaken-(admin-config-api|config-store|credential-vault|model-catalog)/src/postgres\.rs|awaken-credential-vault/src/oauth\.rs|awaken-ext-builtin-tools/src/web\.rs|awaken-connection-plan/src/plan\.rs|awaken-server/src/models\.rs'
 
 eval "$(cargo llvm-cov show-env --export-prefix)"
 export RUSTFLAGS="${RUSTFLAGS:-} -C llvm-args=-runtime-counter-relocation"

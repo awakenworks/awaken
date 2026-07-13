@@ -1,4 +1,4 @@
-// All-in-one frontdoors e2e: proves that ONE `awaken-server-local` process exposes
+// All-in-one frontdoors e2e: proves that ONE `awaken-server` process exposes
 // FOUR wire protocols at once. The harness boots a single server (`withRealServer`,
 // so every door's turn runs through the real provider path against a fake Anthropic
 // upstream reproducing the `echo` scenario), then we smoke each frontdoor against
@@ -121,7 +121,7 @@ async function checkA2a(base) {
 
 async function main() {
   await withRealServer('echo', PORT, async (base) => {
-    console.log(`one awaken-server-local process at ${base} — smoking four frontdoors:`);
+    console.log(`one awaken-server process at ${base} — smoking four frontdoors:`);
     await checkManaged(base);
     await checkAiSdk(base);
     await checkAgUi(base);
@@ -129,7 +129,7 @@ async function main() {
   });
   pass('all-in-one frontdoors smoke');
   console.log(
-    'E2E PASS: one awaken-server-local process serves managed + ai-sdk + ag-ui + a2a frontdoors.',
+    'E2E PASS: one awaken-server process serves managed + ai-sdk + ag-ui + a2a frontdoors.',
   );
 }
 

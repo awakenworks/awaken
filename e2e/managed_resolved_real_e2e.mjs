@@ -1,5 +1,5 @@
 // Resolver-backed real-model e2e (ADR-0043): drives a Managed Agents session
-// through the official Anthropic TypeScript SDK against awaken-server-local in
+// through the official Anthropic TypeScript SDK against awaken-server in
 // `real-resolved` mode, whose executor is built **through the resolver**
 // (`resolve_inference` + `executor_from_resolved`) rather than directly. This
 // exercises the config → resolve → run path — model-catalog + credential +

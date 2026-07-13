@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_server_local::{HttpTransport, Response, SharedHost, Transport};
+use awaken_server::{HttpTransport, Response, SharedHost, Transport};
 use awaken_scenario_host::{DelegatingModel, EchoModel, build_router};
 use axum::Router;
 use axum::body::Body;
@@ -348,7 +348,7 @@ async fn a_remote_input_required_parks_the_parent_then_resumes() {
     host.resume(
         "t",
         &pending.tool_use_id,
-        awaken_server_local::HostResume::ClientResult {
+        awaken_server::HostResume::ClientResult {
             content: "the missing detail".into(),
             is_error: false,
         },

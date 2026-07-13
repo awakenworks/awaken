@@ -3,7 +3,7 @@
 //! the flat handler AND fences cross-tenant access through the resource's
 //! ownership guard. Driven over the real assembled management router.
 
-use awaken_server_local::build_management_router;
+use awaken_server::build_management_router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;

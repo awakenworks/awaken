@@ -1,5 +1,5 @@
 // High-concurrency stress over the session state machine, via the official Anthropic
-// TS SDK against awaken-server-local (echo model).
+// TS SDK against awaken-server (echo model).
 //
 // Runs many independent sessions in parallel — each its own running<->idle state
 // machine — and asserts strict ISOLATION and completeness under contention: every

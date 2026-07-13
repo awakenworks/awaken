@@ -1,5 +1,5 @@
 // Embedded-IAM e2e for the management plane (ADR-0042/0043 P1): spawn
-// awaken-server-local in `management` mode with AWAKEN_MGMT_DIR +
+// awaken-server in `management` mode with AWAKEN_MGMT_DIR +
 // AWAKEN_MGMT_SEAL_KEY + AWAKEN_MGMT_IAM=embedded, read the bootstrap admin
 // token the server wrote to `<dir>/admin-token` (mode 0600), and assert the
 // gate end to end over real HTTP:

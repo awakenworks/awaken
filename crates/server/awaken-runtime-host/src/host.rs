@@ -74,7 +74,7 @@ fn sub_base(kind: &str) -> PathBuf {
     } else {
         format!("{pid}-{kind}-{n}")
     };
-    std::env::temp_dir().join("awaken-server-local").join(name)
+    std::env::temp_dir().join("awaken-server").join(name)
 }
 
 pub(crate) use crate::store::sanitize_thread;

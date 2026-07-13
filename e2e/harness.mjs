@@ -1,4 +1,4 @@
-// Shared e2e harness: spawn awaken-server-local in a chosen model mode, wait for
+// Shared e2e harness: spawn awaken-server in a chosen model mode, wait for
 // it to listen, run a body, and always shut it down. Model modes are the
 // deterministic stub models (no API key): `echo` (replies with the user's text),
 // `vision` (reports the media it received), `probe` (writes/reads a file so the
@@ -33,7 +33,7 @@ function ensureBuilt() {
     }
     if (msg.executable && msg.target?.name === 'awaken-scenario-host') serverBin = msg.executable;
   }
-  if (!serverBin) throw new Error('could not resolve the awaken-server-local binary path');
+  if (!serverBin) throw new Error('could not resolve the awaken-server binary path');
   return serverBin;
 }
 

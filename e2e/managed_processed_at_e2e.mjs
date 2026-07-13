@@ -1,5 +1,5 @@
 // §6.2 — the processed_at queued→committed gate, via the official Anthropic TS SDK
-// against awaken-server-local (echo model).
+// against awaken-server (echo model).
 //
 // A client drives "pending -> acknowledged" UI off processed_at. In this server the
 // distinction is observable across two surfaces: the POST .../events RECEIPT carries

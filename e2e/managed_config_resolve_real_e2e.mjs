@@ -1,5 +1,5 @@
 // Config-plane (system config) authoring → resolve → LIVE validate, end-to-end
-// over HTTP against awaken-server-local in `management` mode (which wires the
+// over HTTP against awaken-server in `management` mode (which wires the
 // admin config plane `/v1/config/*` AND the live GenaiProbe).
 //
 // The distinction from managed_reconnect_real / managed_real: the model + credential

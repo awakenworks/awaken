@@ -1,6 +1,6 @@
 // Management-plane vault/credential e2e driven by the **official** Anthropic
 // TypeScript SDK (`@anthropic-ai/sdk` `beta.vaults.*`). It spawns
-// awaken-server-local in `management` mode and exercises the vault/credential
+// awaken-server in `management` mode and exercises the vault/credential
 // front door through the SDK client, so any wire-shape drift from the official
 // `BetaManagedAgentsVault` / `BetaManagedAgentsCredential` types surfaces as an
 // SDK deserialization error here.

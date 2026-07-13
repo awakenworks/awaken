@@ -6,7 +6,7 @@
 //! Gated with `#[ignore]` because it needs network + credentials. Run explicitly:
 //!
 //! ```sh
-//! KIMI_API_KEY=sk-... cargo test -p awaken-server-local --test real_model -- --ignored
+//! KIMI_API_KEY=sk-... cargo test -p awaken-server --test real_model -- --ignored
 //! ```
 //!
 //! Env: `KIMI_API_KEY` (required), `KIMI_BASE_URL` (default the Kimi coding

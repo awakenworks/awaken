@@ -10,7 +10,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor,
 };
-use awaken_server_local::SharedHost;
+use awaken_server::SharedHost;
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::timeout;
 

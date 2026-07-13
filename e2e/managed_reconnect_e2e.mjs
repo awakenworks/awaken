@@ -1,5 +1,5 @@
 // Reconnect / stream-consolidation conformance for Managed Agents, driven by the
-// official Anthropic TypeScript SDK against awaken-server-local (echo model).
+// official Anthropic TypeScript SDK against awaken-server (echo model).
 //
 // A real SSE client has no replay: on a dropped stream it must reopen AND fetch
 // events.list() to fill the gap, deduping by event id (the pattern in the SDK's

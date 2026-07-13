@@ -1,5 +1,5 @@
 // §6.3 — the post-idle settle-before-cleanup gate, via the official Anthropic TS
-// SDK against awaken-server-local (echo model).
+// SDK against awaken-server (echo model).
 //
 // A live-push stream emits session.status_idle slightly before the session's
 // queryable status settles, so a client that cleans up the instant it sees idle can

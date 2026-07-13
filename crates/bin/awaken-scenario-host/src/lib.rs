@@ -1,8 +1,8 @@
 //! Test-only scenario host: the deterministic mock models and the `build_*_router`
 //! scenario assemblies the e2e harness + integration tests drive. Extracted from
-//! `awaken-server-local` so the product crate carries zero mocks. It reuses the
+//! `awaken-server` so the product crate carries zero mocks. It reuses the
 //! product crate's now-`pub` data-plane assembly helpers (`mount` / `mount_with_managed`
-//! / `data_subject_plane`) and production executors via `awaken_server_local::`.
+//! / `data_subject_plane`) and production executors via `awaken_server::`.
 
 mod models;
 pub use crate::models::*;
@@ -21,7 +21,7 @@ use axum::Router;
 
 // Embedded management-plane IAM (ADR-0042/0043 P1): the authorizer, its boot
 // fn, the mint spec (tests / operator embeddings), and the bootstrap constants.
-pub use awaken_server_local::{
+pub use awaken_server::{
     ADMIN_TOKEN_FILE, BOOTSTRAP_PRINCIPAL, BOOTSTRAP_WORKSPACE, ManagementAuthz, TokenSpec,
     embedded_iam,
 };
@@ -39,10 +39,10 @@ pub use awaken_runtime_host::{
 /// An [`ExecutorProvider`] mapping a model ref to a labeled executor, so a
 /// session bound to `fast`/`slow` resolves a distinct model — the R1/R2/R5 demo
 /// surface.
-use awaken_server_local::{
+use awaken_server::{
     ResolvedExecutorError, executor_from_resolved, mount, mount_with_managed,
 };
-use awaken_server_local::placement;
+use awaken_server::placement;
 struct RouteProvider;
 
 impl ExecutorProvider for RouteProvider {
@@ -1128,24 +1128,24 @@ pub async fn build_config_router() -> Router {
     // The service is scope-free (ADR-0051); `ConfigPlane` is the scope edge that binds
     // the request scope (a `ScopedConfig` registry + the scope's tool catalog) onto it.
     let service = Arc::new(ConfigService::new().with_model_resolver(Arc::new(
-        awaken_server_local::model_resolver::CatalogModelResolver::new(catalog.clone()),
+        awaken_server::model_resolver::CatalogModelResolver::new(catalog.clone()),
     )));
     let plane = awaken_runtime_host::ConfigPlane::new(service.clone(), store, tools);
     // Seed the management assistant as an ordinary published agent in the reserved
     // scope (ADR-0052 D1/D2): it becomes a compiled RunnableConfig via the same path
     // as any agent, projectable on `/v1/agents`.
-    awaken_server_local::admin_assistant::seed_admin_assistant(&plane)
+    awaken_server::admin_assistant::seed_admin_assistant(&plane)
         .await
         .expect("seed admin assistant");
     // The management tool executables, backed by real ports (D3/D4): the capability
     // reader reads the shared catalog + advertised tools; the validator runs the same
     // compile check as `/v1/config/agents/validate` on drafts (in the tenant scope).
-    let reader = Arc::new(awaken_server_local::admin_assistant::CatalogCapabilityReader::new(
+    let reader = Arc::new(awaken_server::admin_assistant::CatalogCapabilityReader::new(
         &catalog,
         &global,
         &[],
     ));
-    let validator = Arc::new(awaken_server_local::admin_assistant::ConfigServiceDraftValidator::new(
+    let validator = Arc::new(awaken_server::admin_assistant::ConfigServiceDraftValidator::new(
         plane.clone(),
         awaken_config_store::DEFAULT_SCOPE,
     ));
@@ -1171,7 +1171,7 @@ pub async fn build_config_router() -> Router {
     let flat = mount(Arc::new(host))
         .merge(config_router(plane))
         .merge(agents);
-    awaken_server_local::workspace_path::with_workspace_path_addressing(flat)
+    awaken_server::workspace_path::with_workspace_path_addressing(flat)
 }
 struct AllowAllGate;
 

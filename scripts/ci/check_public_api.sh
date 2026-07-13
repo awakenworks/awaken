@@ -39,7 +39,7 @@ crates=$(cargo metadata --no-deps --format-version 1 \
 # small and reviewed in code. Re-enable when the nightly toolchain reaches 1.96.
 #
 # The protocol adapters (awaken-protocol-managed / -ai-sdk / -ag-ui) and
-# awaken-server-local are product adapters and the single-machine assembly binary;
+# awaken-server are product adapters and the single-machine assembly binary;
 # their surface is a product concern that evolves with each public wire, not a
 # stable neutral contract, so they are gated by their own tests and the e2e
 # harness rather than an API snapshot.
@@ -48,7 +48,7 @@ crates=$(cargo metadata --no-deps --format-version 1 \
 # migration bundles, so they pull awaken-scoped-migration non-optionally; the
 # resolver/bridge/admin-api that build on them inherit it). All five are excluded
 # for the same nightly-toolchain reason and reviewed in code (ADR-0043).
-excluded="awaken-store-postgres awaken-store-schema awaken-store-sqlite awaken-run-ingress awaken-config-store awaken-protocol-managed awaken-protocol-ai-sdk awaken-protocol-ag-ui awaken-protocol-acp awaken-server-local awaken-model-catalog awaken-credential-vault awaken-config-resolver awaken-managed-bridge awaken-admin-config-api awaken-authz-enforce awaken-standalone awaken-webhook-managed"
+excluded="awaken-store-postgres awaken-store-schema awaken-store-sqlite awaken-run-ingress awaken-config-store awaken-protocol-managed awaken-protocol-ai-sdk awaken-protocol-ag-ui awaken-protocol-acp awaken-server awaken-model-catalog awaken-credential-vault awaken-config-resolver awaken-managed-bridge awaken-admin-config-api awaken-authz-enforce awaken-webhook-managed"
 
 fail=0
 drifted=()      # crates whose surface changed

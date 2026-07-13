@@ -11,7 +11,7 @@
 //! tokens hydrate across a restart over the same directory; and WITHOUT the
 //! guard the plane stays exactly as open as before (regression pin).
 
-use awaken_server_local::{
+use awaken_server::{
     ADMIN_TOKEN_FILE, BOOTSTRAP_PRINCIPAL, BOOTSTRAP_WORKSPACE, TokenSpec,
     build_durable_management_router, build_secured_management_router,
 };

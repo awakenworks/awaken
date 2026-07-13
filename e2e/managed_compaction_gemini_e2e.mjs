@@ -1,5 +1,5 @@
 // Real-LLM token-aware compaction e2e (Gemini). Drives a managed session through
-// the official @anthropic-ai/sdk against awaken-server-local in `compaction` mode
+// the official @anthropic-ai/sdk against awaken-server in `compaction` mode
 // backed by a REAL model (Gemini AI Studio via AWAKEN_MODEL_SOURCE=gemini), with a
 // small *configured* context window (AWAKEN_COMPACT_MAX_TOKENS) so a handful of
 // large turns crosses the trigger ratio and the compactor sub-agent — itself a

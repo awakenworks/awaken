@@ -319,7 +319,7 @@ version = "1.0.0-dev"
 dependencies = [
  "awaken-observability",
  "awaken-runtime-host",
- "awaken-server-local",
+ "awaken-server",
  "axum",
  "tokio",
 ]
@@ -1156,7 +1156,7 @@ dependencies = [
  "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-runtime-host",
- "awaken-server-local",
+ "awaken-server",
  "awaken-tenancy",
  "awaken-tool-relay",
  "awaken-webhook",
@@ -1191,7 +1191,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "awaken-server-local"
+name = "awaken-server"
 version = "1.0.0-dev"
 dependencies = [
  "async-nats",

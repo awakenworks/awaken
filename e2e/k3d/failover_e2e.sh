@@ -33,7 +33,7 @@ cleanup() {
   [ -n "$CORDONED" ] && kubectl uncordon "$CORDONED" >/dev/null 2>&1 || true
   log "teardown: deleting k3d cluster $CLUSTER"
   k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || true
-  rm -f "$DEPLOY_DIR/awaken-server-local"
+  rm -f "$DEPLOY_DIR/awaken-server"
 }
 trap cleanup EXIT
 
@@ -69,16 +69,16 @@ drive() {
 }
 
 log "1/5 build the server binary on the host (rustc 1.96)"
-RUSTUP_TOOLCHAIN=1.96.0 cargo build -q -p awaken-server-local --bin awaken-server-local
-BIN=$(RUSTUP_TOOLCHAIN=1.96.0 cargo build -p awaken-server-local --bin awaken-server-local --message-format=json 2>/dev/null \
+RUSTUP_TOOLCHAIN=1.96.0 cargo build -q -p awaken-scenario-host --bin awaken-scenario-host
+BIN=$(RUSTUP_TOOLCHAIN=1.96.0 cargo build -p awaken-scenario-host --bin awaken-scenario-host --message-format=json 2>/dev/null \
   | python3 -c "import sys,json
 for l in sys.stdin:
  try:
   m=json.loads(l)
-  if m.get('executable') and m.get('target',{}).get('name')=='awaken-server-local': print(m['executable'])
+  if m.get('executable') and m.get('target',{}).get('name')=='awaken-server': print(m['executable'])
  except Exception: pass" | tail -1)
 [ -n "$BIN" ] || { echo 'could not resolve binary'; exit 1; }
-cp "$BIN" "$DEPLOY_DIR/awaken-server-local"
+cp "$BIN" "$DEPLOY_DIR/awaken-server"
 
 log "2/5 build the topology image (copy-in, no in-container rust build)"
 docker build --load -q -t "$IMAGE" -f "$DEPLOY_DIR/Dockerfile" "$DEPLOY_DIR" >/dev/null

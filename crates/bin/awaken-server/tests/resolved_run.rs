@@ -23,7 +23,7 @@ use awaken_model_catalog::{
     ApiDialect, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderCatalog,
     ProviderId,
 };
-use awaken_server_local::{ResolvedExecutorError, executor_from_resolved};
+use awaken_server::{ResolvedExecutorError, executor_from_resolved};
 use awaken_scenario_host::{build_resolved_router};
 
 /// Register provider + endpoint + offering through the real admin repo.

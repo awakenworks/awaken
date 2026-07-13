@@ -43,7 +43,7 @@ pub(crate) fn compact_runner(
         DEFAULT_COMPACT_INSTRUCTIONS,
     )));
     let base = std::env::temp_dir()
-        .join("awaken-server-local")
+        .join("awaken-server")
         .join(format!("{}-compact", std::process::id()));
     Arc::new(HostSubagentRunner {
         llm,

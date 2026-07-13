@@ -1,5 +1,5 @@
 // Real-model Managed Agents RESOURCE e2e (ADR-0038): drive a session through the
-// official Anthropic TypeScript SDK against awaken-server-local in `real` mode, and
+// official Anthropic TypeScript SDK against awaken-server in `real` mode, and
 // prove the resource plane end-to-end with a live model across all three families:
 //   - File (stateful, read): `client.beta.files.upload` stores bytes; a session
 //     `resources[{type:"file"}]` realizes them into the sandbox; the model reads it.

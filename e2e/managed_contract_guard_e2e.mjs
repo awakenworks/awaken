@@ -1,5 +1,5 @@
 // Negative / contract-guard conformance for Managed Agents, driven by the official
-// Anthropic TypeScript SDK against awaken-server-local (echo model).
+// Anthropic TypeScript SDK against awaken-server (echo model).
 //
 // The SDK's happy path never sends a malformed request, so the error contract is
 // easy to leave undertested. This locks the shapes an SDK client relies on when

@@ -559,7 +559,7 @@ fn import_legacy_layout(db_path: &Path) {
         RoleBindingRepo::add(&store, binding).expect("import legacy binding row");
     }
     eprintln!(
-        "awaken-server-local: embedded IAM imported {imported} legacy token row(s) into the iam-server store"
+        "awaken-server: embedded IAM imported {imported} legacy token row(s) into the iam-server store"
     );
 }
 
@@ -580,7 +580,7 @@ fn bootstrap_admin_token(authz: &ManagementAuthz, dir: &Path) {
     let path = dir.join(ADMIN_TOKEN_FILE);
     write_owner_only(&path, &secret).expect("write the bootstrap admin-token file");
     eprintln!(
-        "awaken-server-local: EMBEDDED IAM BOOTSTRAP — minted the admin API token \
+        "awaken-server: EMBEDDED IAM BOOTSTRAP — minted the admin API token \
          for principal `{BOOTSTRAP_PRINCIPAL}` in workspace `{BOOTSTRAP_WORKSPACE}`.\n\
          It is printed ONCE and written to {} (mode 0600).\n\
          ROTATE IT: anyone holding this token has full management authority.\n\

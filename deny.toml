@@ -64,7 +64,7 @@ wrappers = [
     "awaken-protocol-ag-ui",
     "awaken-protocol-a2a",
     "awaken-protocol-mcp",
-    "awaken-server-local",
+    "awaken-server",
     "awaken-credential-vault",
     "awaken-data-subject",
     "awaken-config-resolver",
@@ -99,7 +99,7 @@ wrappers = [
     "awaken-run-ingress",
     "awaken-sandbox-local",
     "awaken-protocol-mcp",
-    "awaken-server-local",
+    "awaken-server",
     "awaken-config-resolver",
     "awaken-data-subject",
     "awaken-run-executor-acp",
@@ -128,7 +128,7 @@ wrappers = [
     "awaken-run-ingress",
     "awaken-ext-mcp",
     "awaken-ext-state-machine",
-    "awaken-server-local",
+    "awaken-server",
     # #4: the eval harness runs recorded cases on the real kernel.
     "awaken-eval",
 ]
@@ -144,6 +144,6 @@ wrappers = [
     "awaken-runtime-examples",
     "awaken-sandbox-local",
     # ADR-0044 remote-hand mode: server-local builds the hand's toolset directly.
-    "awaken-server-local",
+    "awaken-server",
 ]
 reason = "extensions sit on top; the runtime core must stay extension-agnostic (G2)"

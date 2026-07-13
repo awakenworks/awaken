@@ -15,12 +15,12 @@ STORE_DIR="$(mktemp -d)"
 export RUSTUP_TOOLCHAIN=1.96.0
 
 echo "== build the server binary (rustc 1.96) =="
-BIN=$(cargo build -q -p awaken-server-local --bin awaken-server-local --message-format=json 2>/dev/null \
+BIN=$(cargo build -q -p awaken-scenario-host --bin awaken-scenario-host --message-format=json 2>/dev/null \
   | python3 -c "import sys,json
 for l in sys.stdin:
  try:
   m=json.loads(l)
-  if m.get('executable') and m.get('target',{}).get('name')=='awaken-server-local': print(m['executable'])
+  if m.get('executable') and m.get('target',{}).get('name')=='awaken-server': print(m['executable'])
  except Exception: pass" | tail -1)
 [ -n "$BIN" ] || { echo 'could not resolve server binary'; exit 1; }
 

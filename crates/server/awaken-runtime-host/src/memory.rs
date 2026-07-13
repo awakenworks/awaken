@@ -49,7 +49,7 @@ impl AgentSelector {
             DEFAULT_SELECTOR_INSTRUCTIONS,
         )));
         let base = std::env::temp_dir()
-            .join("awaken-server-local")
+            .join("awaken-server")
             .join(format!("{}-mem-select", std::process::id()));
         Self {
             runner: Arc::new(HostSubagentRunner {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Graceful shutdown / drain-on-SIGTERM for the durable server (awaken-server-local).
+# Graceful shutdown / drain-on-SIGTERM for the durable server (awaken-server).
 #
 # Pins the shutdown contract of the durable ingress under a *real* SIGTERM — the
 # signal an orchestrator (Kubernetes, systemd, `docker stop`) sends before the hard
@@ -45,12 +45,12 @@ trap cleanup EXIT
 fail() { echo "GRACEFUL DRAIN E2E FAIL: $*" >&2; exit 1; }
 pass() { echo "  ok: $*"; }
 
-echo "==> building awaken-server-local (toolchain $RUSTUP_TOOLCHAIN)"
-cargo build --quiet -p awaken-server-local --bin awaken-server-local \
+echo "==> building awaken-server (toolchain $RUSTUP_TOOLCHAIN)"
+cargo build --quiet -p awaken-scenario-host --bin awaken-scenario-host \
   || fail "build failed"
 TARGET_DIR="$(cargo metadata --format-version=1 --no-deps 2>/dev/null \
   | jq -r '.target_directory')"
-BIN="${TARGET_DIR}/debug/awaken-server-local"
+BIN="${TARGET_DIR}/debug/awaken-scenario-host"
 [ -x "$BIN" ] || fail "binary not found at $BIN"
 
 start_server() {

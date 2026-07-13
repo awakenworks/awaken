@@ -1,4 +1,4 @@
-//! `awaken-server-local` binary: serve the Managed Agents runtime surface on one
+//! `awaken-server` binary: serve the Managed Agents runtime surface on one
 //! machine. Binds `AWAKEN_HTTP_ADDR` (default `127.0.0.1:38080`). The model is
 //! deterministic so it runs without an API key: `AWAKEN_MODEL_MODE=echo` (default)
 //! replies with the user's text; `=probe` writes/reads a file so the HITL
@@ -18,13 +18,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // the historic `AWAKEN_HAND_*` / `AWAKEN_UPSTREAM_URL`). Hand and Worker are
     // execution endpoints that never start the HTTP surface; Serve is the default —
     // single-machine all-in-one, or a coordinator when the local pool is disabled.
-    match awaken_server_local::deployment_role() {
-        awaken_server_local::Role::Hand => return awaken_server_local::run_hand_role().await,
-        awaken_server_local::Role::Worker => {
+    match awaken_server::deployment_role() {
+        awaken_server::Role::Hand => return awaken_server::run_hand_role().await,
+        awaken_server::Role::Worker => {
             let upstream = std::env::var("AWAKEN_UPSTREAM_URL").unwrap_or_default();
-            return awaken_server_local::run_worker(&upstream).await;
+            return awaken_server::run_worker(&upstream).await;
         }
-        awaken_server_local::Role::Serve => {}
+        awaken_server::Role::Serve => {}
     }
     let addr = std::env::var("AWAKEN_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:38080".to_string());
     // Durability guard: refuse to boot a `AWAKEN_INGRESS=durable` ingress that would
@@ -63,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("statemachine") => awaken_scenario_host::build_statemachine_router(),
         Ok("statemachine-rich") => awaken_scenario_host::build_statemachine_rich_router(),
         Ok("config") => awaken_scenario_host::build_config_router().await,
-        Ok("management") => awaken_server_local::build_management_router().await,
+        Ok("management") => awaken_server::build_management_router().await,
         Ok("real") => awaken_scenario_host::build_real_router(),
         Ok("real-gemini") => awaken_scenario_host::build_real_gemini_router().await,
         Ok("real-resolved") => awaken_scenario_host::build_resolved_real_router().await,
@@ -92,12 +92,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // autoscales on, plus /admin/drain + /readyz for graceful, stream-preserving
     // scale-in. Wraps the served router so the in-flight counter sees every request.
     let app =
-        awaken_server_local::with_brain_admin(app, awaken_server_local::DrainController::new());
+        awaken_server::with_brain_admin(app, awaken_server::DrainController::new());
     // Root every request span in the ingress middleware (extracts the inbound
     // `traceparent`); the whole direct request→inference path nests under it.
     let app = app.layer(axum::middleware::from_fn(awaken_observability::trace_http));
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    eprintln!("awaken-server-local listening on http://{addr}");
+    eprintln!("awaken-server listening on http://{addr}");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;

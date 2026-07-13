@@ -27,7 +27,7 @@ echo "[1/3] Rust workspace tests (instrumented)"
 cargo test --workspace --quiet 2>/dev/null || true
 
 echo "[2/3] build the server binary and drive the TS e2e suite"
-cargo build --quiet -p awaken-server-local --bin awaken-server-local
+cargo build --quiet -p awaken-scenario-host --bin awaken-scenario-host
 cd e2e
 run() { timeout 150 node "$1" >/dev/null 2>&1 && echo "  pass $1" || echo "  miss $1"; }
 for f in *_e2e.mjs; do run "$f"; done

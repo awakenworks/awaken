@@ -1024,7 +1024,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # protocol facades + the management plane (admin/vault/IAM) into router
     # modes; it names no runtime/ext/store crate directly. Nothing depends on it.
     # Test-only scenario host (Stage A): the mock models + build_*_router scenario
-    # assemblies extracted from awaken-server-local. Depends on the product crate
+    # assemblies extracted from awaken-server. Depends on the product crate
     # for its now-pub assembly helpers + production executors.
     "awaken-scenario-host": {
         "async-nats",
@@ -1058,7 +1058,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-runtime",
         "awaken-runtime-contract",
         "awaken-runtime-host",
-        "awaken-server-local",
+        "awaken-server",
         "awaken-tenancy",
         "awaken-tool-relay",
         "awaken-webhook",
@@ -1075,7 +1075,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tokio",
         "tower",
     },
-    "awaken-server-local": {
+    "awaken-server": {
         "awaken-scenario-host",
         "awaken-runtime-host",
         # ADR-0052: the management assistant's descriptors seed the scope-keyed tool

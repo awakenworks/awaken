@@ -1,5 +1,5 @@
 // Real-model Managed Agents e2e: drive a session through the official Anthropic
-// TypeScript SDK against awaken-server-local in `real` mode, which is backed by a
+// TypeScript SDK against awaken-server in `real` mode, which is backed by a
 // live Anthropic-compatible model (GenaiExecutor) configured from the environment
 // (ANTHROPIC_API_KEY/BASE_URL/MODEL or the KIMI_* aliases). This exercises the full
 // managed session path — create → user.message → agent.message → status_idle —

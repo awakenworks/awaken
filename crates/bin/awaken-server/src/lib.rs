@@ -1,4 +1,4 @@
-//! `awaken-server-local` — the single-machine assembly.
+//! `awaken-server` — the single-machine assembly.
 //!
 //! It composes one protocol-neutral [`SharedHost`] (from `awaken-runtime-host`,
 //! the thread-keyed session substrate) and mounts public protocol adapters over
@@ -229,7 +229,7 @@ pub async fn run_worker(upstream: &str) -> Result<(), Box<dyn std::error::Error>
             .with_upstream(upstream),
     );
     host.ensure_dispatch_pool();
-    eprintln!("awaken-server-local worker draining from {upstream}");
+    eprintln!("awaken-server worker draining from {upstream}");
     // Drain in the background; block until stopped.
     #[cfg(unix)]
     {

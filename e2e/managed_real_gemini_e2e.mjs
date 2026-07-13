@@ -1,5 +1,5 @@
 // Real-model Gemini e2e via OAuth (ADR-0043 Phase 3). Drives a Managed Agents
-// session through the official Anthropic TypeScript SDK against awaken-server-local
+// session through the official Anthropic TypeScript SDK against awaken-server
 // in `real-gemini` mode, which is backed by **Gemini on Vertex AI** authenticated
 // by a Google OAuth2 Bearer token. The server refreshes the token through the
 // credential domain's OAuth helper (`GEMINI_ACCESS_TOKEN` or `gcloud auth

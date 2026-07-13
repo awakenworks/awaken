@@ -1,5 +1,5 @@
 // Deterministic (no API key) resource-plane HTTP e2e (ADR-0038): exercises the
-// Files API and memory-store API surfaces of awaken-server-local directly through
+// Files API and memory-store API surfaces of awaken-server directly through
 // the official Anthropic TypeScript SDK, with no model in the loop. This complements
 // the live-model `managed_resources_e2e.mjs` (which proves mount/read/write/harvest
 // with a real model) by covering the pure request/response paths — metadata, raw

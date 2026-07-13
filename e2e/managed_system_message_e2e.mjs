@@ -1,5 +1,5 @@
 // §4 — the mid-session system.message inbound event, via the official Anthropic TS
-// SDK against awaken-server-local (echo model).
+// SDK against awaken-server (echo model).
 //
 // system.message is the operator channel for changing the system prompt between
 // turns. This locks the inbound path: it is accepted (a receipt with processed_at:

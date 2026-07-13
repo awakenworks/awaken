@@ -119,7 +119,7 @@ async fn connect_postgres_with_nats_wake(url: &str) -> Result<Arc<AnyDispatchSto
 async fn connect_postgres_with_nats_wake(_url: &str) -> Result<Arc<AnyDispatchStore>, String> {
     Err(
         "AWAKEN_DISPATCH_WAKE=nats requested but binary built without --features nats \
-         (rebuild awaken-server-local with --features nats to enable the NATS wake)"
+         (rebuild awaken-server with --features nats to enable the NATS wake)"
             .to_string(),
     )
 }
@@ -161,7 +161,7 @@ fn dispatch_wake_kind() -> DispatchWake {
 
 /// Fail fast at startup when `AWAKEN_INGRESS=durable` would resolve to a volatile
 /// in-memory queue (see [`durable_backend_persisted`]). Call this in the composition
-/// root before serving — every open boot path (`awaken` / `awaken-server-local`)
+/// root before serving — every open boot path (`awaken` / `awaken-server`)
 /// does. A no-op unless durable ingress is enabled.
 pub fn ensure_durable_backend() -> Result<(), String> {
     // The deployment axes now come from one typed config (parsed from the historic

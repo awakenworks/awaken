@@ -7,7 +7,7 @@
 //! the same `Arc<SharedHost>`, so a turn started through one protocol can be
 //! resumed or observed through another on the *same thread*.
 //!
-//! The composition root (`awaken-server-local`) assembles these into routers;
+//! The composition root (`awaken-server`) assembles these into routers;
 //! this crate carries no wire assembly of its own beyond the per-plane routers
 //! it exposes (config / files / memory-stores / durable-ops).
 

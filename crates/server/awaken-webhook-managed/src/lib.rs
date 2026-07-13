@@ -9,7 +9,7 @@
 //!
 //! All open crates (config-resolver / credential-vault / agent-contract are the
 //! read-side + vault ports, never the durable admin backend — that is injected by
-//! the assembly), so the `awaken` / `awaken-server-local` management plane uses it.
+//! the assembly), so the `awaken` / `awaken-server` management plane uses it.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

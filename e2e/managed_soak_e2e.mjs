@@ -1,5 +1,5 @@
 // Long-stability (soak) over the session state machine, via the official Anthropic
-// TS SDK against awaken-server-local (echo model).
+// TS SDK against awaken-server (echo model).
 //
 // Drives one session through many running<->idle cycles and asserts the machine
 // stays well-formed for the whole run: every turn appends exactly one agent.message

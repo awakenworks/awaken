@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use awaken_server_local::{SkillSpec};
+use awaken_server::{SkillSpec};
 use awaken_scenario_host::{EchoModel, build_custom_router, build_delegation_router, build_router_with_skills};
 use axum::Router;
 use axum::body::Body;

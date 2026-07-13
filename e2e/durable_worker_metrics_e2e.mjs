@@ -7,7 +7,7 @@
 // dispatch pool or run-ingress crates. The ONLY metrics a server exports are:
 //
 //   1. Prometheus text at `GET /metrics` (mounted by `with_brain_admin`,
-//      crates/bin/awaken-server-local/src/brain_admin.rs) — two CONNECTION/lifecycle
+//      crates/bin/awaken-server/src/brain_admin.rs) — two CONNECTION/lifecycle
 //      gauges, not dispatch counters:
 //        - `awaken_brain_active_streams`  (gauge) in-flight requests; a foreground
 //          durable run holds its HTTP handler open while the dispatch worker drives

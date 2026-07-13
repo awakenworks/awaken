@@ -92,7 +92,13 @@ axum = { version = "0.8", features = ["multipart"] }
 tower = { version = "0.5", features = ["util"] }
 
 # Depends on the product crate for the now-pub assembly helpers + production executors.
-awaken-server-local = { workspace = true }
+awaken-server = { workspace = true }
+
+[features]
+# Cross-node dispatch wake over NATS (AWAKEN_DISPATCH_WAKE=nats), passed through to
+# the served binary via awaken-server → awaken-runtime-host. Used by the k3d
+# nats_wake e2e, which builds the scenario-host bin with `--features nats`.
+nats = ["awaken-server/nats"]
 
 [lints]
 workspace = true

@@ -1,5 +1,5 @@
 // §3 — the terminal transition of the session state machine, via the official
-// Anthropic TS SDK against awaken-server-local (echo model).
+// Anthropic TS SDK against awaken-server (echo model).
 //
 // This server models archive as termination: POST /v1/sessions/:id/archive stamps
 // archived_at, moves status to "terminated", and commits a session.status_terminated

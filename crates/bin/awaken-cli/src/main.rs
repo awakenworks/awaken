@@ -16,8 +16,8 @@
 //!   - **Hand** (`AWAKEN_HAND_*`) — a remote ACP executor endpoint.
 //!
 //! The Serve role reuses the production management assembly from
-//! `awaken-server-local` (the single-machine composition root); the Worker / Hand
-//! roles reuse its role helpers. This subsumes the separate `awaken-server-local`
+//! `awaken-server` (the single-machine composition root); the Worker / Hand
+//! roles reuse its role helpers. This subsumes the separate `awaken-server`
 //! binary, which remains only as the e2e-scenario host.
 
 #[tokio::main]
@@ -27,13 +27,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // The single role axis. Hand and Worker are execution endpoints that never serve
     // HTTP; Serve is the default single-machine / coordinator command.
-    match awaken_server_local::deployment_role() {
-        awaken_server_local::Role::Hand => return awaken_server_local::run_hand_role().await,
-        awaken_server_local::Role::Worker => {
+    match awaken_server::deployment_role() {
+        awaken_server::Role::Hand => return awaken_server::run_hand_role().await,
+        awaken_server::Role::Worker => {
             let upstream = std::env::var("AWAKEN_UPSTREAM_URL").unwrap_or_default();
-            return awaken_server_local::run_worker(&upstream).await;
+            return awaken_server::run_worker(&upstream).await;
         }
-        awaken_server_local::Role::Serve => {}
+        awaken_server::Role::Serve => {}
     }
 
     // Serve role. Refuse a durable ingress on a volatile queue (no-data-loss guard).
@@ -56,11 +56,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ExecutorProvider resolves each session's model from the DB-configured catalog +
     // credential vault (ConfigExecutorProvider). Configure a provider/model/credential
     // through /v1/config/* + /v1/vaults/* and sessions run that real model.
-    let app = awaken_server_local::build_management_router().await;
+    let app = awaken_server::build_management_router().await;
     // The brain admin surface (connection-count metric + /admin/drain + /readyz) so a
     // graceful, stream-preserving scale-in works; wraps the served router.
     let app =
-        awaken_server_local::with_brain_admin(app, awaken_server_local::DrainController::new());
+        awaken_server::with_brain_admin(app, awaken_server::DrainController::new());
     // Root every request span in the ingress middleware (extracts the inbound
     // traceparent); the whole request→inference path nests under it.
     let app = app.layer(axum::middleware::from_fn(awaken_observability::trace_http));

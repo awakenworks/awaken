@@ -4,7 +4,7 @@
 // `mcp_server_url`), and the deterministic MCP model (`add <a> <b>` →
 // `mcp__calc__add` → `result: <sum>`) converses across THREE turns on one
 // session. The Node fixture mirrors the in-process Rust mock from
-// crates/agents/awaken-server-local/tests/mcp_sessions.rs and records the
+// crates/agents/awaken-server/tests/mcp_sessions.rs and records the
 // Authorization header, so this proves the vault-materialized bearer actually
 // crossed the wire to the MCP server.
 //

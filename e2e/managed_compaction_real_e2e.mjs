@@ -1,5 +1,5 @@
 // Real-model token-aware compaction e2e. Drives a session through the official
-// Anthropic TS SDK against awaken-server-local in `compaction` mode backed by a
+// Anthropic TS SDK against awaken-server in `compaction` mode backed by a
 // REAL Anthropic-compatible model (KIMI via AWAKEN_MODEL_SOURCE=http), with a
 // small *configured* context window (AWAKEN_COMPACT_MAX_TOKENS) so a handful of
 // large turns crosses the trigger ratio and the compactor sub-agent — itself a

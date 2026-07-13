@@ -7,7 +7,7 @@
 //! Gated with `#[ignore]` — needs network + credentials. Run explicitly:
 //!
 //! ```sh
-//! KIMI_API_KEY=sk-... cargo test -p awaken-server-local --test real_model_aux -- --ignored --nocapture
+//! KIMI_API_KEY=sk-... cargo test -p awaken-server --test real_model_aux -- --ignored --nocapture
 //! ```
 //!
 //! Env: `KIMI_API_KEY` (required), `KIMI_BASE_URL` (default the Kimi coding
@@ -19,7 +19,7 @@ use std::time::Duration;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Phase;
 use awaken_provider_genai::GenaiExecutor;
-use awaken_server_local::SharedHost;
+use awaken_server::SharedHost;
 
 fn live_host() -> Option<(SharedHost, String)> {
     let key = std::env::var("KIMI_API_KEY").ok()?;

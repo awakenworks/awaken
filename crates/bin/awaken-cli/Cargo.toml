@@ -15,7 +15,7 @@ path = "src/main.rs"
 # The single-machine composition root: the Serve-role management assembly (models
 # resolved from the DB-configured catalog + credential vault) and the role axis +
 # Worker / Hand execution endpoints.
-awaken-server-local.workspace = true
+awaken-server.workspace = true
 awaken-runtime-host.workspace = true
 awaken-observability.workspace = true
 axum = "0.8"

@@ -1,4 +1,4 @@
-// Real-model AI SDK e2e: drive awaken-server-local's ai-sdk adapter with the
+// Real-model AI SDK e2e: drive awaken-server's ai-sdk adapter with the
 // official Vercel AI SDK client (`Chat` over `DefaultChatTransport`) against the
 // `real` server mode, which is backed by a live Anthropic-compatible model. Proves
 // the ai-sdk protocol path carries a real model turn end to end (not the echo stub).

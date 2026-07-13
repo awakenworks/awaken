@@ -16,7 +16,7 @@
 // the RFC 6749 §2.3.1 `Authorization: Basic
 // base64(urlencode(client_id):urlencode(client_secret))` header with NO
 // client_id in the form body. Mirrors the in-process Rust tests in
-// crates/agents/awaken-server-local/tests/mcp_sessions.rs.
+// crates/agents/awaken-server/tests/mcp_sessions.rs.
 //
 // Run: (from e2e/)  npm install && node managed_mcp_refresh_e2e.mjs
 

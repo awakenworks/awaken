@@ -1,5 +1,5 @@
 // Mock `calc` MCP server fixture for the MCP e2e scenarios. Mirrors the
-// in-process Rust mocks in crates/agents/awaken-server-local/tests/mcp_sessions.rs
+// in-process Rust mocks in crates/agents/awaken-server/tests/mcp_sessions.rs
 // exactly: JSON-RPC 2.0 over POST on 127.0.0.1, `initialize` → a standard
 // result, `notifications/initialized` (no id) → 202 with no body,
 // `tools/list` → one `add` tool, `tools/call`(add) → the sum as a text block.

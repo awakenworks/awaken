@@ -3,7 +3,7 @@
 //! runs a judge sub-agent through the kernel). Gated with `#[ignore]`; run:
 //!
 //! ```sh
-//! KIMI_API_KEY=sk-... cargo test -p awaken-server-local \
+//! KIMI_API_KEY=sk-... cargo test -p awaken-server \
 //!   --test real_model_protocols -- --ignored --nocapture
 //! ```
 //!

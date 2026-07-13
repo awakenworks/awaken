@@ -1,5 +1,5 @@
 // Full Managed-Agents lifecycle e2e, driven end-to-end by the official Anthropic
-// TypeScript SDK against awaken-server-local in `management` mode — the one build
+// TypeScript SDK against awaken-server in `management` mode — the one build
 // that wires the whole control plane (environments, the /v1/agents registry,
 // vaults + MCP, memory stores, files, sessions + resources) over a deterministic
 // executor (`McpToolModel`: "add a b" -> real ext-mcp calc.add, else echo).

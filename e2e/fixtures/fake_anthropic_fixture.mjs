@@ -11,7 +11,7 @@
 // `messages` with user/assistant roles, tool results as `tool_result` blocks
 // inside user messages, `tools` list), which is what GenaiExecutor emits from the
 // neutral `ChatRequest` — so each behavior is a faithful port of the matching
-// `awaken-server-local` model reading the neutral request.
+// `awaken-server` model reading the neutral request.
 
 import http from 'node:http';
 
@@ -91,7 +91,7 @@ function hasTool(parsed, name) {
 }
 
 // A reply is either `{ text }` (end_turn) or `{ tool: { id, name, input } }`
-// (tool_use). The named behaviors below each port one `awaken-server-local` model.
+// (tool_use). The named behaviors below each port one `awaken-server` model.
 const text = (t) => ({ text: t });
 const tool = (id, name, input) => ({ tool: { id, name, input } });
 

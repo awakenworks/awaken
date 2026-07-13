@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TS e2e coverage: instruments the Rust server (awaken-server-local), drives it
+# TS e2e coverage: instruments the Rust server (awaken-server), drives it
 # through the full Node e2e suite (deterministic + durable + fs + live-model
 # variants), and reports Rust line/region coverage attributable to the e2e.
 #
@@ -28,7 +28,7 @@ export CARGO_TARGET_DIR="${COV_DIR:-/tmp/acp-cov}"
 rm -rf "$CARGO_TARGET_DIR"
 eval "$(cargo llvm-cov show-env --sh)"
 
-echo "[build] instrumented awaken-server-local into $CARGO_TARGET_DIR"
+echo "[build] instrumented awaken-server into $CARGO_TARGET_DIR"
 cargo build --quiet -p awaken-scenario-host --bin awaken-scenario-host
 # The aggregated `awaken` binary the awaken_*_e2e drive (each spawns its own
 # process); build it instrumented into the same target dir so its coverage is

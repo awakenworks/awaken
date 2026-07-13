@@ -7,7 +7,7 @@
 //! Gated with `#[ignore]` (needs network + credentials). Run explicitly:
 //!
 //! ```sh
-//! KIMI_API_KEY=sk-... cargo test -p awaken-server-local --test real_model_skill -- --ignored --nocapture
+//! KIMI_API_KEY=sk-... cargo test -p awaken-server --test real_model_skill -- --ignored --nocapture
 //! ```
 //!
 //! Env: `KIMI_API_KEY` (required), `KIMI_BASE_URL` (default the Kimi coding
@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use awaken_provider_genai::GenaiExecutor;
-use awaken_server_local::{SkillSpec};
+use awaken_server::{SkillSpec};
 use awaken_scenario_host::{build_router_with_skills};
 use axum::Router;
 use axum::body::Body;

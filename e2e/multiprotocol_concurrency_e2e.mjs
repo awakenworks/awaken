@@ -1,4 +1,4 @@
-// Multi-protocol concurrency + isolation e2e: ONE `awaken-server-local` process,
+// Multi-protocol concurrency + isolation e2e: ONE `awaken-server` process,
 // FOUR wire frontdoors, ~40 requests IN FLIGHT AT ONCE spread across all four,
 // interleaved in a single `Promise.all`. Every request carries a UNIQUE sentinel
 // marker in its input; with the `echo` model each reply is `Echo: <input>`, so a
@@ -184,7 +184,7 @@ async function main() {
     });
 
     console.log(
-      'E2E PASS: one awaken-server-local process fanned ~40 concurrent requests across managed + ai-sdk + ag-ui + a2a with full isolation.',
+      'E2E PASS: one awaken-server process fanned ~40 concurrent requests across managed + ai-sdk + ag-ui + a2a with full isolation.',
     );
     process.exitCode = 0;
   } catch (err) {

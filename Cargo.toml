@@ -68,7 +68,7 @@ awaken-admin-config-api = { path = "crates/control/awaken-admin-config-api" }
 awaken-api-contract = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9" }
 # Embedded IAM for the management plane (ADR-0042/0043 P1): bearer ApiToken
 # authn (argon2id at rest) + grant-based authz gating /v1/config/* and
-# /v1/vaults/* in awaken-server-local, opt-in via AWAKEN_MGMT_IAM=embedded.
+# /v1/vaults/* in awaken-server, opt-in via AWAKEN_MGMT_IAM=embedded.
 # All four crates pin ONE rev so the contract types line up. awaken-iam-server
 # became consumable once iam adopted foundation ADR-0005 (rusqlite as a
 # links-safe *range*, >=0.32 <0.41), so its SqlStore/migrations now back the
@@ -102,7 +102,7 @@ awaken-run-ingress-contract = { path = "crates/server/awaken-run-ingress-contrac
 awaken-run-ingress = { path = "crates/server/awaken-run-ingress" }
 awaken-runtime-host = { path = "crates/server/awaken-runtime-host" }
 awaken-admin-assistant = { path = "crates/control/awaken-admin-assistant" }
-awaken-server-local = { path = "crates/bin/awaken-server-local" }
+awaken-server = { path = "crates/bin/awaken-server" }
 awaken-scenario-host = { path = "crates/bin/awaken-scenario-host" }
 awaken-authz-enforce = { path = "crates/control/awaken-authz-enforce" }
 awaken-webhook = { path = "crates/server/awaken-webhook" }

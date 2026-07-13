@@ -1,5 +1,5 @@
 // Real-model reconnect conformance for Managed Agents, driven by the official
-// Anthropic TypeScript SDK against awaken-server-local in `real` mode (backed by a
+// Anthropic TypeScript SDK against awaken-server in `real` mode (backed by a
 // live Anthropic-compatible model — the KIMI_*/ANTHROPIC_* env config).
 //
 // The point echo mode can't make: with a real model a turn takes time, so we can

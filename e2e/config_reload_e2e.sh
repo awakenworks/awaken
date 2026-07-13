@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Config-reload & rolling-upgrade contract for the durable server (awaken-server-local).
+# Config-reload & rolling-upgrade contract for the durable server (awaken-server).
 #
 # This is the §9 operational sliver: how does a durable server pick up a config
 # change, and what happens to durable work across the process swap that a rolling
@@ -8,7 +8,7 @@
 # Rust test cannot.
 #
 # FINDING (pinned below, PART 1 & 2): there is NO live config reload.
-#   * awaken-server-local reads ALL runtime config from environment variables ONCE,
+#   * awaken-server reads ALL runtime config from environment variables ONCE,
 #     in `main()`, before it binds the socket (model mode, ingress, storage dir,
 #     dispatch/commit backends, listen address). It registers handlers for exactly
 #     two signals — SIGINT and SIGTERM — and both mean the same thing: begin a
@@ -72,7 +72,7 @@ pass() { echo "  ok: $*"; }
 # PART 1 — STATIC: the server carries no live-reload wiring.
 # ---------------------------------------------------------------------------
 echo "==> PART 1: source carries no live config-reload wiring (config is startup-fixed)"
-SRC="crates/bin/awaken-server-local/src"
+SRC="crates/bin/awaken-scenario-host/src"
 # SIGHUP is the conventional reload signal; a config watcher would use notify/inotify
 # or a file watch; a reload endpoint would route /reload. None must exist.
 if grep -rniE "sighup|hangup|config.?reload|reload.?config|notify::recommended|inotify|/reload" "$SRC" >/dev/null 2>&1; then
@@ -85,11 +85,11 @@ grep -qE "SignalKind::terminate" "$SRC/main.rs" || fail "expected SIGTERM handle
 grep -qE "ctrl_c" "$SRC/main.rs"                 || fail "expected SIGINT (ctrl_c) handler in main.rs"
 pass "the only wired signals are SIGINT + SIGTERM, both meaning graceful shutdown"
 
-echo "==> building awaken-server-local (toolchain $RUSTUP_TOOLCHAIN)"
-cargo build --quiet -p awaken-server-local --bin awaken-server-local \
+echo "==> building awaken-server (toolchain $RUSTUP_TOOLCHAIN)"
+cargo build --quiet -p awaken-scenario-host --bin awaken-scenario-host \
   || fail "build failed"
 TARGET_DIR="$(cargo metadata --format-version=1 --no-deps 2>/dev/null | jq -r '.target_directory')"
-BIN="${TARGET_DIR}/debug/awaken-server-local"
+BIN="${TARGET_DIR}/debug/awaken-scenario-host"
 [ -x "$BIN" ] || fail "binary not found at $BIN"
 
 # start_server <port>
@@ -230,7 +230,7 @@ pass "upgraded server keeps draining fresh submissions"
 sigterm_expect_graceful 10
 
 echo
-echo "FINDING: awaken-server-local has NO live config reload — config is read from env"
+echo "FINDING: awaken-server has NO live config reload — config is read from env"
 echo "once at startup; the only signals are SIGINT/SIGTERM (graceful stop); SIGHUP is"
 echo "not a reload signal. A config change requires a full process restart."
 echo "CONTRACT: that restart — the unit of a rolling upgrade — is safe: over the durable"

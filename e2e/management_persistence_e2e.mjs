@@ -1,5 +1,5 @@
 // Restart-persistence e2e for the durable management plane (ADR-0043): spawn
-// awaken-server-local in `management` mode with AWAKEN_MGMT_DIR + a fixed
+// awaken-server in `management` mode with AWAKEN_MGMT_DIR + a fixed
 // AWAKEN_MGMT_SEAL_KEY, author config through `/v1/config/*` AND enter an
 // `mcp_oauth` credential through the official Anthropic SDK's vault front door
 // (`beta.vaults.*`), kill the process, respawn it over the same dir/key, and

@@ -17,7 +17,7 @@ use std::sync::Arc;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
 };
-use awaken_server_local::{SkillSpec};
+use awaken_server::{SkillSpec};
 use awaken_scenario_host::{build_router, build_router_with_skills};
 use axum::Router;
 use axum::body::Body;

@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use awaken_config_resolver::InMemoryWebhookStore;
 use awaken_credential_vault::InMemorySecretStore;
 use awaken_protocol_managed::WorkspaceScope;
-use awaken_server_local::webhooks;
+use awaken_server::webhooks;
 use awaken_webhook::verify;
 use axum::Router;
 use axum::body::Body;
