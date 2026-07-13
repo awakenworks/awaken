@@ -21,7 +21,7 @@ use tokio::process::Command as TokioCommand;
 
 use std::sync::Arc;
 
-use crate::provider::{LocalProcess, resolve_source, verify};
+use crate::provider::{LocalProcess, resolve_source, restrict_to_owner, verify};
 use crate::{IsolatedRoot, content_fingerprint};
 
 fn err(e: impl ToString) -> pc::SandboxError {
@@ -280,6 +280,11 @@ impl NamespaceProvider {
                         std::fs::create_dir_all(parent).map_err(err)?;
                     }
                     std::fs::write(&host, bytes).map_err(err)?;
+                    // A realized secret is owner-only on disk (0600) before it is
+                    // bind-mounted; still shredded on dispose via `secret_paths`.
+                    if matches!(req.source, pc::MountSource::Secret { .. }) {
+                        restrict_to_owner(&host)?;
+                    }
                 }
                 None if req.required => {
                     return Err(err(format!(
