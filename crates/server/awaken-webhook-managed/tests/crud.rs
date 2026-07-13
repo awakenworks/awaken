@@ -10,8 +10,13 @@ use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
 use awaken_config_resolver::{WebhookEndpointDef, WebhookStore};
 use awaken_credential_vault::{CredentialError, SecretRef, SecretStore};
-use awaken_protocol_managed::WorkspaceScope;
-use awaken_webhook_managed::webhook_config_router;
+use awaken_protocol_managed::{SessionLifecycleSink, WorkspaceScope};
+use awaken_webhook::{
+    ResolvedSubscription, SubscriptionSource, WebhookDispatcher, WebhookSender,
+};
+use awaken_webhook_managed::{
+    ConfigPlaneSubscriptionSource, WebhookLifecycleSink, webhook_config_router,
+};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -311,4 +316,107 @@ async fn list_is_scoped_to_the_tenant() {
     let data = body["data"].as_array().unwrap();
     assert_eq!(data.len(), 1, "only the tenant's own subscriptions");
     assert_eq!(data[0]["id"], "wh_a");
+}
+
+// --- ConfigPlaneSubscriptionSource: the dispatcher's read port ---
+
+/// Seed an enabled row AND seal its secret, so `matching` can resolve it.
+async fn seed_resolvable(store: &MemStore, secrets: &MemSecrets, id: &str, ws: &str, types: &[&str]) {
+    let secret_ref = SecretRef(format!("whsec:{id}"));
+    secrets
+        .put(&secret_ref, RedactedString::new("whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"))
+        .await
+        .unwrap();
+    store.put(WebhookEndpointDef {
+        id: id.into(),
+        workspace_id: ws.into(),
+        url: "https://x.example/hook".into(),
+        event_types: types.iter().map(|s| s.to_string()).collect(),
+        disabled: false,
+        secret_ref,
+    });
+}
+
+fn source(store: Arc<MemStore>, secrets: Arc<MemSecrets>) -> ConfigPlaneSubscriptionSource {
+    ConfigPlaneSubscriptionSource::new(store as Arc<dyn WebhookStore>, secrets as Arc<dyn SecretStore>)
+}
+
+#[tokio::test]
+async fn matching_resolves_an_enabled_subscription_with_its_secret() {
+    let store = Arc::new(MemStore::default());
+    let secrets = Arc::new(MemSecrets::ok());
+    seed_resolvable(&store, &secrets, "wh1", "ws_a", &["run.completed"]).await;
+    let out = source(store, secrets).matching("ws_a", "run.completed").await;
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].id, "wh1");
+    assert!(!out[0].secret.is_empty(), "the secret is materialized at delivery");
+}
+
+#[tokio::test]
+async fn matching_skips_a_subscription_whose_secret_is_unresolvable() {
+    let store = Arc::new(MemStore::default());
+    let secrets = Arc::new(MemSecrets::ok());
+    // Row present, but its secret was never sealed → unsignable → skipped.
+    seed(&store, "wh1", "ws_a");
+    let out = source(store, secrets).matching("ws_a", "run.completed").await;
+    assert!(out.is_empty(), "an endpoint that can never sign is not delivered to");
+}
+
+#[tokio::test]
+async fn matching_skips_disabled_and_type_mismatched_subscriptions() {
+    let store = Arc::new(MemStore::default());
+    let secrets = Arc::new(MemSecrets::ok());
+    seed_resolvable(&store, &secrets, "wh_ok", "ws_a", &["run.completed"]).await;
+    seed_resolvable(&store, &secrets, "wh_other", "ws_a", &["run.failed"]).await; // type mismatch
+    seed_resolvable(&store, &secrets, "wh_dis", "ws_a", &["run.completed"]).await;
+    let mut disabled = store.get("wh_dis").unwrap();
+    disabled.disabled = true;
+    store.put(disabled);
+
+    let out = source(store, secrets).matching("ws_a", "run.completed").await;
+    let ids: Vec<&str> = out.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, vec!["wh_ok"], "only the enabled, type-matching endpoint");
+}
+
+#[tokio::test]
+async fn disable_flips_the_row_in_the_store() {
+    let store = Arc::new(MemStore::default());
+    let secrets = Arc::new(MemSecrets::ok());
+    seed_resolvable(&store, &secrets, "wh1", "ws_a", &[]).await;
+    source(store.clone(), secrets).disable("wh1").await;
+    assert!(store.get("wh1").unwrap().disabled, "auto-disable is a config-plane write");
+}
+
+// --- WebhookLifecycleSink: the no-owner early return ---
+
+struct CountingSource(Arc<Mutex<u32>>);
+#[async_trait]
+impl SubscriptionSource for CountingSource {
+    async fn matching(&self, _ws: &str, _event: &str) -> Vec<ResolvedSubscription> {
+        *self.0.lock().unwrap() += 1;
+        Vec::new()
+    }
+    async fn disable(&self, _id: &str) {}
+}
+
+struct NoopSender;
+#[async_trait]
+impl WebhookSender for NoopSender {
+    async fn post(&self, _u: &str, _h: Vec<(String, String)>, _b: String) -> Result<u16, String> {
+        Ok(200)
+    }
+}
+
+#[tokio::test]
+async fn emit_without_a_workspace_owner_does_not_fan_out() {
+    let calls = Arc::new(Mutex::new(0u32));
+    let dispatcher = Arc::new(WebhookDispatcher::new(
+        Arc::new(CountingSource(calls.clone())),
+        Arc::new(NoopSender),
+    ));
+    let sink = WebhookLifecycleSink::new(dispatcher, None);
+    // No owner → the sink returns before spawning any dispatch (deterministic:
+    // no owner means no spawn, so the source is never consulted).
+    sink.emit("sesn_1", None, "session.created").await;
+    assert_eq!(*calls.lock().unwrap(), 0, "no owner → no fan-out");
 }
