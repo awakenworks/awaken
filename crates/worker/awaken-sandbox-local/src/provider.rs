@@ -160,6 +160,13 @@ impl LocalProvider {
         for req in &spec.mounts {
             match self.realize_mount(&sandbox.root, req).await {
                 Ok((m, guard)) => {
+                    // Track a realized secret's host path so it can be shredded on
+                    // teardown (the credential bytes are materialized in the sandbox FS).
+                    if matches!(req.source, pc::MountSource::Secret { .. })
+                        && let Ok(path) = sandbox.root.resolve(&req.mount_path)
+                    {
+                        sandbox.secret_paths.push(path);
+                    }
                     sandbox.realized.push(m);
                     if let Some(guard) = guard {
                         sandbox.memory_mounts.lock().unwrap().push(guard);
@@ -264,6 +271,7 @@ impl LocalProvider {
             outputs_path: outputs_path.to_string(),
             base_env: Vec::new(),
             realized: Vec::new(),
+            secret_paths: Vec::new(),
             memory_mounts: std::sync::Mutex::new(Vec::new()),
         }
     }
@@ -304,6 +312,10 @@ pub struct LocalSandbox {
     outputs_path: String,
     base_env: Vec<(String, String)>,
     realized: Vec<pc::RealizedMount>,
+    /// Host paths of realized `Secret` mounts, **shredded** (overwritten) at
+    /// [`dispose`](pc::Sandbox::dispose) before the directory is reaped so a
+    /// materialized credential does not linger in freed disk blocks (ADR-0023).
+    secret_paths: Vec<PathBuf>,
     /// Live memory-store mounts (FUSE / copy), torn down (unmount / harvest) at
     /// [`dispose`](pc::Sandbox::dispose) before the sandbox directory is reaped.
     memory_mounts: std::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>>,
@@ -473,15 +485,29 @@ impl pc::Sandbox for LocalSandbox {
     }
 
     async fn dispose(&self) -> Result<(), pc::SandboxError> {
-        // Harvest / unmount memory stores BEFORE the directory is reaped — a copy
-        // harvest reads the edited files back, and a FUSE mount must be unmounted
-        // before its mountpoint directory can be removed.
+        // Order: harvest memory (reads edits back, unmounts FUSE) → shred secrets
+        // (overwrite credential bytes) → reap the directory. Memory harvest must run
+        // before shred so a promised write-back is never lost; both run before reap.
         self.teardown_memory_mounts().await;
+        self.shred_secrets();
         let root = self.root.root();
         if root.exists() {
             std::fs::remove_dir_all(root).map_err(err)?;
         }
         Ok(())
+    }
+}
+
+impl LocalSandbox {
+    /// Overwrite each realized secret file's bytes with zeros before the directory is
+    /// reaped, so a materialized credential does not survive in freed disk blocks
+    /// (ADR-0023 shred-on-teardown). Best-effort: a missing/short file is skipped.
+    fn shred_secrets(&self) {
+        for path in &self.secret_paths {
+            if let Ok(meta) = std::fs::metadata(path) {
+                let _ = std::fs::write(path, vec![0u8; meta.len() as usize]);
+            }
+        }
     }
 }
 
@@ -530,5 +556,78 @@ impl pc::ProcessHandle for LocalProcess {
         // std/tokio only expose SIGKILL portably; all variants terminate.
         let mut child = self.child.lock().await;
         child.start_kill().map_err(err)
+    }
+}
+
+#[cfg(test)]
+mod shred_tests {
+    use super::*;
+    use awaken_provisioning_contract::{
+        IsolationClass, MountAccess, MountLifetime, MountRequirement, MountSource, NetworkPolicy,
+        ResourceLimits, Sandbox, SandboxSpec,
+    };
+
+    fn secret_spec(scope: &str) -> SandboxSpec {
+        SandboxSpec {
+            scope: scope.into(),
+            isolation: IsolationClass::Workdir,
+            mounts: vec![MountRequirement {
+                mount_id: "auth".into(),
+                source: MountSource::Secret {
+                    reference: "broker://k".into(),
+                    content_hash: None,
+                },
+                mount_path: "/workspace/.auth".into(),
+                access: MountAccess::ReadWrite,
+                lifetime: MountLifetime::PerRun,
+                required: true,
+            }],
+            env: Vec::new(),
+            network: NetworkPolicy::Unrestricted,
+            outputs_path: "/mnt/session/outputs".into(),
+            limits: ResourceLimits::default(),
+            lease_ttl_secs: None,
+            extra: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn dispose_shreds_a_materialized_secret_before_reaping() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider =
+            LocalProvider::new(tmp.path()).with_blob("broker://k", b"sk-secret".to_vec());
+        let sandbox = provider
+            .create_sandbox(&secret_spec("t-shred"))
+            .await
+            .unwrap();
+
+        // The credential is materialized in the sandbox FS and tracked for shredding.
+        assert_eq!(sandbox.secret_paths.len(), 1);
+        let path = sandbox.secret_paths[0].clone();
+        assert_eq!(std::fs::read(&path).unwrap(), b"sk-secret");
+
+        // Shred overwrites the bytes with zeros (runs before the directory is reaped).
+        sandbox.shred_secrets();
+        assert_eq!(std::fs::read(&path).unwrap(), vec![0u8; 9]);
+
+        // A non-secret mount is NOT tracked (only credentials are shredded).
+        sandbox.dispose().await.unwrap();
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn a_non_secret_mount_is_not_tracked_for_shredding() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = LocalProvider::new(tmp.path()).with_blob("file-x", b"data".to_vec());
+        let mut spec = secret_spec("t-nosecret");
+        spec.mounts[0].source = MountSource::File {
+            file_id: "file-x".into(),
+            content_hash: None,
+        };
+        let sandbox = provider.create_sandbox(&spec).await.unwrap();
+        assert!(
+            sandbox.secret_paths.is_empty(),
+            "only Secret mounts are shredded"
+        );
     }
 }
