@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
+use awaken_agent_contract::page::paginate_by_id;
 use awaken_credential_vault::CredentialSourceId;
 
 use crate::ext::AwakenModelSelection;
@@ -567,6 +568,7 @@ pub struct RunError {
     pub message: String,
     pub kind: RunErrorKind,
 }
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunErrorKind {
@@ -1860,14 +1862,24 @@ impl ManagedState {
         Ok(SendEventsResponse { data: receipts })
     }
 
-    /// `GET /v1/sessions/{id}/events`.
-    pub fn list_events(&self, session_id: &str) -> Result<ListEventsResponse, StateError> {
+    /// `GET /v1/sessions/{id}/events` — the session's events, oldest-first, paged
+    /// by cursor via the kernel's shared [`paginate_by_id`]. `cursor` is the id of
+    /// the last event on the previous page; an absent/empty cursor starts at the
+    /// beginning; an unknown cursor is a caller error (400).
+    pub fn list_events(
+        &self,
+        session_id: &str,
+        cursor: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<ListEventsResponse, StateError> {
         let sessions = self.sessions.lock().unwrap();
         let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
+        let page = paginate_by_id(&record.events, cursor, limit, |e| e.id.as_str())
+            .map_err(|_| RunError::bad_request("unknown pagination cursor"))?;
         Ok(ListEventsResponse {
-            data: record.events.clone(),
-            next_page: None,
-            has_more: false,
+            data: page.items.to_vec(),
+            next_page: page.next_page,
+            has_more: page.has_more,
         })
     }
 
