@@ -73,6 +73,52 @@ pub trait AgentChannelSource: Send + Sync {
 #[error("agent channel open failed: {0}")]
 pub struct OpenError(pub String);
 
+/// Identifies a CLI's portable session-home: which conversation (thread) on which
+/// adapter. The on-disk format is adapter-specific, so a Claude and a Codex blob on
+/// the same thread never collide. The tenant / data-subject scope is applied by the
+/// injected [`SessionHomeProvider`] (it is constructed knowing the scope), so this
+/// key stays free of tenancy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionHomeKey {
+    pub thread_id: String,
+    pub adapter: String,
+}
+
+/// What a [`SessionHomeProvider`] harvests/restores for one run: the config-home env
+/// the CLI reads, the portable session subtree under it, the paths to exclude
+/// (credentials / local config), and whether the CLI keys sessions by cwd (so
+/// recovery needs a stable interior working directory).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionHomePlan {
+    pub config_home_env: String,
+    pub session_subpath: String,
+    pub exclude: Vec<String>,
+    pub keyed_by_cwd: bool,
+}
+
+/// Recovers a local-dir CLI's session across directories and machines: restore the
+/// thread's portable session into the config home before launch, harvest it back to
+/// durable (content-addressed, cross-machine) storage after the run. Injected like
+/// [`AgentChannelSource`]; a host wires a `ContentStore`-backed, tenant-scoped,
+/// credential-excluding implementation. Gateway / stateless adapters never reach
+/// this seam (their [`SessionPersistence`] is not `LocalDir`).
+#[async_trait]
+pub trait SessionHomeProvider: Send + Sync {
+    async fn restore(&self, key: &SessionHomeKey, plan: &SessionHomePlan);
+    async fn harvest(&self, key: &SessionHomeKey, plan: &SessionHomePlan);
+}
+
+/// The default: no cross-machine session-home. The CLI's local config home is used
+/// as-is and recovery falls back to the neutral thread history — unchanged behaviour
+/// until a host wires a real provider.
+pub struct NoSessionHome;
+
+#[async_trait]
+impl SessionHomeProvider for NoSessionHome {
+    async fn restore(&self, _key: &SessionHomeKey, _plan: &SessionHomePlan) {}
+    async fn harvest(&self, _key: &SessionHomeKey, _plan: &SessionHomePlan) {}
+}
+
 /// How a backend handles a mid-conversation model switch (R7). Reported so the
 /// host can gate an override fail-closed against a backend that cannot honor it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,6 +150,9 @@ pub struct AcpRunExecutor {
     /// The ACP session mode to pin (adapter-local; `None` leaves the agent's
     /// default). Validated fail-closed against the agent's advertised modes.
     session_mode: Option<String>,
+    /// Recovers a local-dir CLI's session across directories/machines. Defaults to
+    /// no-op (local config home as-is); a host wires a durable, cross-machine one.
+    session_home: Arc<dyn SessionHomeProvider>,
 }
 
 impl AcpRunExecutor {
@@ -122,7 +171,17 @@ impl AcpRunExecutor {
             observer: None,
             permission: Arc::new(AllowAll),
             session_mode: None,
+            session_home: Arc::new(NoSessionHome),
         }
+    }
+
+    /// Recover a local-dir CLI's session across directories/machines: the host wires
+    /// a durable, content-addressed, tenant-scoped, credential-excluding provider.
+    /// Only `LocalDir` adapters reach it; Gateway/stateless ones are untouched.
+    #[must_use]
+    pub fn with_session_home(mut self, provider: Arc<dyn SessionHomeProvider>) -> Self {
+        self.session_home = provider;
+        self
     }
 
     /// Authorize the external CLI's tool requests through the single neutral
@@ -222,6 +281,62 @@ impl RunExecutor for AcpRunExecutor {
         activation: RunActivation,
         context: RuntimeRunContext,
     ) -> Result<Phase> {
+        // Restore the CLI's portable session-home before launch and harvest it after,
+        // so a local-dir CLI's session recovers across directories/machines. A
+        // Gateway (server-side) or stateless adapter has no local session-home → the
+        // resolution returns `None` and this is a no-op (as is the default provider).
+        let home = self.session_home_binding(&activation);
+        if let Some((key, plan)) = &home {
+            self.session_home.restore(key, plan).await;
+        }
+        let result = self.drive(activation, context).await;
+        if let Some((key, plan)) = &home {
+            self.session_home.harvest(key, plan).await;
+        }
+        result
+    }
+}
+
+impl AcpRunExecutor {
+    /// Resolve this run's portable session-home binding from the ACP CLI catalog:
+    /// the thread+adapter key and the harvest plan, or `None` when the backend is
+    /// not an ACP CLI or the CLI's session is server-side / absent (not `LocalDir`).
+    fn session_home_binding(
+        &self,
+        activation: &RunActivation,
+    ) -> Option<(SessionHomeKey, SessionHomePlan)> {
+        let Backend::Acp { cli } =
+            Backend::from_ref(&activation.snapshot.resolved_spec.model_binding.backend_ref)
+        else {
+            return None;
+        };
+        let row = acp_cli(&cli)?;
+        let SessionPersistence::LocalDir {
+            session_subpath,
+            keyed_by,
+        } = row.session_persistence
+        else {
+            return None;
+        };
+        Some((
+            SessionHomeKey {
+                thread_id: activation.thread_id.0.clone(),
+                adapter: cli,
+            },
+            SessionHomePlan {
+                config_home_env: row.config_home_env.to_string(),
+                session_subpath: session_subpath.to_string(),
+                exclude: row
+                    .retained_paths
+                    .iter()
+                    .map(|p| (*p).to_string())
+                    .collect(),
+                keyed_by_cwd: matches!(keyed_by, SessionKey::Cwd),
+            },
+        ))
+    }
+
+    async fn drive(&self, activation: RunActivation, context: RuntimeRunContext) -> Result<Phase> {
         // Lifecycle bring-up (observed for UI progress): an npx-wrapped adapter may
         // dynamically install on a cold cache (the slow step) before it launches.
         // Scope events to the thread so a per-session UI channel routes them.
@@ -677,7 +792,8 @@ impl RunExecutor for DispatchRunExecutor {
 mod acp_cli;
 mod subprocess;
 pub use acp_cli::{
-    AcpCli, McpInterface, ModelDelivery, ResolvedModel, acp_cli, is_dynamic_install, known_acp_clis,
+    AcpCli, McpInterface, ModelDelivery, ResolvedModel, SessionKey, SessionPersistence, acp_cli,
+    is_dynamic_install, known_acp_clis,
 };
 pub use subprocess::{AcpLaunch, LaunchResolver, ProjectingChannelSource, SubprocessChannelSource};
 

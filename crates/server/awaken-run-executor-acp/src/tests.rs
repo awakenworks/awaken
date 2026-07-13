@@ -414,6 +414,75 @@ async fn a_usage_event_is_committed_as_thread_state() {
     );
 }
 
+#[derive(Default)]
+struct RecordingSessionHome {
+    calls: Mutex<Vec<(String, SessionHomeKey, SessionHomePlan)>>,
+}
+
+#[async_trait]
+impl SessionHomeProvider for RecordingSessionHome {
+    async fn restore(&self, key: &SessionHomeKey, plan: &SessionHomePlan) {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(("restore".into(), key.clone(), plan.clone()));
+    }
+    async fn harvest(&self, key: &SessionHomeKey, plan: &SessionHomePlan) {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(("harvest".into(), key.clone(), plan.clone()));
+    }
+}
+
+#[tokio::test]
+async fn a_local_dir_session_home_is_restored_before_and_harvested_after() {
+    // A LocalDir CLI (the fixture's backend is `acp:claude`) restores its portable
+    // session before the run and harvests it after, keyed by (thread, adapter), with
+    // the harvest plan drawn from the catalog row (subpath, cwd-keying, exclusions).
+    let recorder = Arc::new(RecordingSessionHome::default());
+    let e = AcpRunExecutor::new(Arc::new(ScriptedSource {
+        frames: vec![
+            r#"{"type":"message","text":"hi"}"#.into(),
+            r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
+        ],
+        open_error: None,
+    }))
+    .with_session_home(recorder.clone());
+
+    e.execute(activation(), RuntimeRunContext::new())
+        .await
+        .unwrap();
+
+    let calls = recorder.calls.lock().unwrap();
+    let seq: Vec<&str> = calls.iter().map(|(c, _, _)| c.as_str()).collect();
+    assert_eq!(
+        seq,
+        vec!["restore", "harvest"],
+        "restore before the run, harvest after"
+    );
+    let (_, key, plan) = &calls[0];
+    assert_eq!(key.adapter, "claude");
+    assert_eq!(key.thread_id, "thread-1");
+    assert_eq!(plan.config_home_env, "CLAUDE_CONFIG_DIR");
+    assert_eq!(plan.session_subpath, "projects");
+    assert!(plan.keyed_by_cwd, "Claude keys sessions by cwd");
+    assert!(
+        plan.exclude.contains(&".credentials.json".to_string()),
+        "credentials are excluded from the harvest"
+    );
+}
+
+#[test]
+fn session_home_binding_is_none_for_a_non_acp_backend() {
+    // A native (non-ACP) backend has no CLI session-home — the binding is absent, so
+    // the provider is never engaged (Gateway/stateless adapters skip the same way).
+    let mut act = activation();
+    act.snapshot.resolved_spec.model_binding = ModelBinding::new("prov", "model", "native");
+    let e = exec(vec![]);
+    assert!(e.session_home_binding(&act).is_none());
+}
+
 #[tokio::test]
 async fn neutral_permission_resolver_projects_the_policy_decision() {
     // The ACP permission port is decided by the single neutral `PermissionPolicy`:
