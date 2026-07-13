@@ -115,6 +115,15 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", 
 tokio-util = "0.7"
 genai = "0.6.0-beta.17"
 axum = "0.8"
+# rusqlite carries the native `links = "sqlite3"` crate libsqlite3-sys, of which a
+# binary graph may contain exactly one. Declared as a *range* (not a hard `^0.x`
+# pin) so an embedding graph — e.g. awaken-cloud, which resolves rusqlite 0.40 —
+# floats every sqlite store here up to the single version it already selected,
+# instead of colliding on two `sqlite3`-linking packages. The stores use only API
+# stable across the whole range; the `rusqlite-floor` CI job guards the floor.
+# Mirrors awaken-foundation ADR-0005 (awaken-scoped-migration-sqlite); move both
+# together.
+rusqlite = { version = ">=0.32, <0.41", features = ["bundled"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

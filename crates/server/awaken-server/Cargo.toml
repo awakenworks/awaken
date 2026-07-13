@@ -70,7 +70,7 @@ awaken-iam-core = { workspace = true }
 awaken-iam-preset = { workspace = true }
 # The embedded IAM token/binding rows persist under AWAKEN_MGMT_DIR/iam.sqlite;
 # same rusqlite generation as every other sqlite store in the workspace.
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { workspace = true }
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 # Webhook plane (ADR-0048 / S10): the WebhookLifecycleSink bridges the managed

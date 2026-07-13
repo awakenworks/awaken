@@ -25,7 +25,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 # Feature `sqlite`: embedded durable MemoryBlobStore over the crate's own
 # `memory_store` migration scope.
-rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+rusqlite = { workspace = true, optional = true }
 # Feature `postgres`: network-DB MemoryBlobStore over the same scope (multi-node).
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"], optional = true }
 awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9", features = ["postgres"], optional = true }
