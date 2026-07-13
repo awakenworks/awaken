@@ -60,8 +60,8 @@ impl MemoryPlugin {
     /// and configured resolve paths).
     fn contribute(&self, bounds: RecallBounds) -> Contributions {
         let mut contributions = Contributions::new(MEMORY_PLUGIN_ID);
-        contributions.state_keys = vec![RecallContext::KEY.to_string()];
-        contributions.phase_hooks.push(Arc::new(RecallHook {
+        contributions.declare_state_key(RecallContext::KEY);
+        contributions.register_hook(Arc::new(RecallHook {
             store: self.store.clone(),
             bounds,
             selector: self.selector.clone(),
@@ -255,6 +255,18 @@ mod tests {
             point: PhaseHookPoint::BeforeInference,
             after_tool: None,
         }
+    }
+
+    #[test]
+    fn recall_context_key_folds_and_reads_back() {
+        let block = vec![Message::text(
+            MessageId("m".into()),
+            Role::System,
+            "recalled",
+        )];
+        let mut store = Store::new();
+        store.apply(&RecallContext::commit(&store, block.clone()).unwrap());
+        assert_eq!(RecallContext::load_or_default(&store), Some(block));
     }
 
     #[test]

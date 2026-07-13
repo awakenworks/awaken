@@ -100,8 +100,8 @@ impl CompactPlugin {
 
     fn contribute(&self, config: CompactConfig) -> Contributions {
         let mut contributions = Contributions::new(COMPACT_PLUGIN_ID);
-        contributions.state_keys = vec![CompactionContext::KEY.to_string()];
-        contributions.phase_hooks.push(Arc::new(CompactHook {
+        contributions.declare_state_key(CompactionContext::KEY);
+        contributions.register_hook(Arc::new(CompactHook {
             config,
             runner: self.runner.clone(),
         }));
@@ -272,6 +272,18 @@ mod tests {
         (0..n)
             .map(|i| Message::text(MessageId(format!("m{i}")), Role::User, format!("turn {i}")))
             .collect()
+    }
+
+    #[test]
+    fn compaction_context_key_folds_and_reads_back() {
+        let block = vec![Message::text(
+            MessageId("s".into()),
+            Role::System,
+            "summary",
+        )];
+        let mut store = Store::new();
+        store.apply(&CompactionContext::commit(&store, block.clone()).unwrap());
+        assert_eq!(CompactionContext::load_or_default(&store), Some(block));
     }
 
     fn phase_ctx() -> PhaseContext {

@@ -190,7 +190,7 @@ impl Plugin for McpPlugin {
                 mcp_tool_descriptor(&self.server_name, def),
                 McpRawTool::new(&self.server_name, &def.name, Arc::clone(&self.transport)),
             ) {
-                contributions.dynamic_tools.push(DynamicTool {
+                contributions.register_dynamic_tool(DynamicTool {
                     descriptor,
                     tool: Arc::new(tool),
                 });
