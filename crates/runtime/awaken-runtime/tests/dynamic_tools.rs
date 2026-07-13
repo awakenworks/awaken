@@ -20,7 +20,7 @@ use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
 use awaken_runtime_contract::plugin::{
-    CapabilityBound, Contributions, DynamicTool, Plugin, PluginManifest,
+    CapabilityBound, Contributions, DynamicTool, IdBound, Plugin, PluginManifest,
 };
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor, ToolFacet,
@@ -59,7 +59,7 @@ impl Plugin for DynPlugin {
             requires: Vec::new(),
             config_sections: Vec::new(),
             bound: CapabilityBound {
-                tool_namespaces: vec!["mcp__srv__".to_string()],
+                tools: IdBound::Namespace("mcp__srv__".to_string()),
                 ..Default::default()
             },
         }

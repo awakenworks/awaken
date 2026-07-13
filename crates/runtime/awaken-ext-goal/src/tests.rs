@@ -5,7 +5,7 @@
 //! `forced_continuations` (no thread-scoped `GoalState` or `set_goal` tool here).
 
 use super::*;
-use awaken_runtime_contract::plugin::{ResolvedExecutionEnv, enforce_bound};
+use awaken_runtime_contract::plugin::{IdBound, ResolvedExecutionEnv, enforce_bound};
 use awaken_runtime_contract::{
     MessageId, RunId, SubagentError, SubagentReply, SubagentRequest, SubagentRunner,
 };
@@ -328,11 +328,15 @@ fn guard_id_is_the_plugin_name() {
 fn plugin_manifest_declares_only_the_run_end_guard() {
     let plugin = GoalPlugin::new(spec(3), Arc::new(FixedGrader(met("ok"))));
     let bound = plugin.manifest().bound;
-    assert_eq!(bound.run_end_guards, vec!["goal".to_string()]);
-    assert!(bound.tool_ids.is_empty());
-    assert!(bound.state_keys.is_empty());
+    assert_eq!(
+        bound.run_end_guards,
+        IdBound::Exact(vec!["goal".to_string()])
+    );
+    // Every other axis is the deny-all default — the guard is all it declares.
+    assert_eq!(bound.tools, IdBound::default());
+    assert_eq!(bound.state_keys, IdBound::default());
     assert!(bound.phase_hooks.is_empty());
-    assert!(bound.action_kinds.is_empty());
+    assert_eq!(bound.action_kinds, IdBound::default());
 }
 
 #[test]

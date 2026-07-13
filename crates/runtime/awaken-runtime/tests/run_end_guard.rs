@@ -22,7 +22,7 @@ use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInst
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::plugin::{
-    CapabilityBound, Contributions, Plugin, PluginManifest, RunEndContext, RunEndDecision,
+    CapabilityBound, Contributions, IdBound, Plugin, PluginManifest, RunEndContext, RunEndDecision,
     RunEndGuard,
 };
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
@@ -103,7 +103,7 @@ impl Plugin for ScriptedGuardPlugin {
             requires: Vec::new(),
             config_sections: Vec::new(),
             bound: CapabilityBound {
-                run_end_guards: vec!["scripted".to_string()],
+                run_end_guards: IdBound::Exact(vec!["scripted".to_string()]),
                 ..Default::default()
             },
         }
@@ -412,7 +412,7 @@ impl Plugin for ProgrammableGuardPlugin {
             requires: Vec::new(),
             config_sections: Vec::new(),
             bound: CapabilityBound {
-                run_end_guards: vec![self.id.to_string()],
+                run_end_guards: IdBound::Exact(vec![self.id.to_string()]),
                 ..Default::default()
             },
         }
