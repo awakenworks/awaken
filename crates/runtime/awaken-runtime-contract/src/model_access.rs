@@ -16,9 +16,7 @@
 //! ([`FieldMaterializer`]) maps both variants by field; a host injects a richer
 //! materializer (e.g. external-agent adapter profiles) for gateway grants.
 
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 /// How a run reaches its model — a neutral, secret-free grant in the manifest.
 ///
@@ -117,43 +115,6 @@ pub struct ResolvedModelEndpoint {
     pub surface: Option<String>,
 }
 
-/// Why materializing a grant failed.
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum MaterializeError {
-    /// This materializer does not handle the grant's shape (e.g. an open default
-    /// asked to render a profile it does not know).
-    #[error("unsupported grant: {0}")]
-    Unsupported(String),
-}
-
-/// Renders a [`ModelAccessGrant`] into a [`ResolvedModelEndpoint`] (open Gap E).
-/// Injected so a host can add external-agent adapter profiles for gateway grants;
-/// the open default handles the runtime-inference case by field mapping.
-#[async_trait]
-pub trait ModelAccessMaterializer: Send + Sync {
-    async fn materialize(
-        &self,
-        grant: &ModelAccessGrant,
-    ) -> Result<ResolvedModelEndpoint, MaterializeError>;
-}
-
-/// The open default materializer: a thin `ModelAccessMaterializer` shim over the
-/// pure [`ModelAccessGrant::materialize`] projection. The field-mapping logic lives
-/// once, on the value object; this exists only for consumers that program against
-/// the injectable `dyn ModelAccessMaterializer` port. New in-process callers should
-/// prefer `grant.materialize()` directly.
-pub struct FieldMaterializer;
-
-#[async_trait]
-impl ModelAccessMaterializer for FieldMaterializer {
-    async fn materialize(
-        &self,
-        grant: &ModelAccessGrant,
-    ) -> Result<ResolvedModelEndpoint, MaterializeError> {
-        Ok(grant.materialize())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,31 +144,27 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn local_grant_materializes_to_use_local_config() {
-        let ep = FieldMaterializer
-            .materialize(&ModelAccessGrant::LocalSelfCredentialed {
-                model_ref: Some("m".into()),
-                provider_ref: Some("p".into()),
-            })
-            .await
-            .unwrap();
+    #[test]
+    fn local_grant_materializes_to_use_local_config() {
+        let ep = ModelAccessGrant::LocalSelfCredentialed {
+            model_ref: Some("m".into()),
+            provider_ref: Some("p".into()),
+        }
+        .materialize();
         assert_eq!(ep.base_url, None); // fall back to local provider config
         assert_eq!(ep.bearer, None); // no cloud lease; local creds apply
         assert_eq!(ep.model_ref.as_deref(), Some("m"));
     }
 
-    #[tokio::test]
-    async fn gateway_grant_materializes_to_gateway_url_and_lease_bearer() {
-        let ep = FieldMaterializer
-            .materialize(&ModelAccessGrant::CloudManagedGateway {
-                gateway_base_url: "https://gw.internal".into(),
-                surface: "AnthropicMessages".into(),
-                model_ref: "claude".into(),
-                lease_token: "lease-abc".into(), // awaken-allow: secret
-            })
-            .await
-            .unwrap();
+    #[test]
+    fn gateway_grant_materializes_to_gateway_url_and_lease_bearer() {
+        let ep = ModelAccessGrant::CloudManagedGateway {
+            gateway_base_url: "https://gw.internal".into(),
+            surface: "AnthropicMessages".into(),
+            model_ref: "claude".into(),
+            lease_token: "lease-abc".into(), // awaken-allow: secret
+        }
+        .materialize();
         assert_eq!(ep.base_url.as_deref(), Some("https://gw.internal"));
         assert_eq!(ep.bearer.as_deref(), Some("lease-abc")); // lease, not a key
         assert_eq!(ep.surface.as_deref(), Some("AnthropicMessages"));
