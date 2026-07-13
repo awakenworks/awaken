@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -22,7 +22,7 @@ use crate::routes::ManagedJson;
 use crate::types::user_profile::{
     EnrollmentUrl, Relationship, UserProfile, UserProfileCreateParams, UserProfileUpdateParams,
 };
-use crate::types::{ErrorResponse, Page};
+use crate::types::{ErrorResponse, Page, PageQuery, paginate};
 
 /// Deterministic timestamps, matching the vault surface's convention.
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
@@ -140,12 +140,15 @@ async fn retrieve_profile(
 }
 
 /// `GET /v1/user_profiles` — one full page, ascending id order.
-async fn list_profiles(State(state): State<Arc<UserProfileState>>) -> Json<Page<UserProfile>> {
+async fn list_profiles(
+    State(state): State<Arc<UserProfileState>>,
+    Query(page): Query<PageQuery>,
+) -> Json<Page<UserProfile>> {
     let store = state.inner.lock().unwrap();
     // BTreeMap iterates in ascending-key order — deterministic + creation order
     // (`uprof_` is zero-padded).
-    let data = store.iter().map(|(id, r)| r.project(id)).collect();
-    Json(Page::single(data))
+    let data: Vec<UserProfile> = store.iter().map(|(id, r)| r.project(id)).collect();
+    Json(paginate(data, &page, |p| p.id.as_str()))
 }
 
 async fn update_profile(

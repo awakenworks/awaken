@@ -18,8 +18,8 @@ use tokio_stream::Stream;
 
 use crate::state::{LiveInboxError, ManagedState, RunErrorKind, StateError};
 use crate::types::{
-    ErrorResponse, ListEventsResponse, SendEventsRequest, SendEventsResponse, Session,
-    SessionCreateParams,
+    ErrorResponse, ListEventsResponse, Page, PageQuery, SendEventsRequest, SendEventsResponse,
+    Session, SessionCreateParams, paginate,
 };
 
 /// A JSON body extractor scoped to the Managed Agents routes. On a decode failure
@@ -233,25 +233,25 @@ async fn retrieve_session(
 
 type WireErr = (StatusCode, Json<ErrorResponse>);
 
+/// A single (bounded) page for the thread/resource sub-lists the state layer
+/// projects as `Value`. These are bounded per session, so they are not cursor-
+/// paginated (unlike the top-level typed lists, which use `paginate`).
 fn page(data: Vec<serde_json::Value>) -> Json<serde_json::Value> {
     Json(serde_json::json!({ "data": data, "has_more": false, "next_page": null }))
 }
 
-/// `GET /v1/sessions` — one full page of the request scope's sessions (ADR-0051:
+/// `GET /v1/sessions` — a cursor page of the request scope's sessions (ADR-0051:
 /// tenancy-fenced, so a workspace never lists another's).
 async fn list_sessions(
     State(state): State<Arc<ManagedState>>,
     workspace: Option<axum::Extension<WorkspaceScope>>,
-) -> Json<serde_json::Value> {
+    Query(page): Query<PageQuery>,
+) -> Json<Page<Session>> {
     let scope = workspace
         .map(|w| w.0.0)
         .unwrap_or_else(|| crate::state::DEFAULT_SCOPE.to_string());
-    let data = state
-        .list_sessions_scoped(&scope)
-        .into_iter()
-        .map(|s| serde_json::to_value(s).expect("session serializes"))
-        .collect();
-    page(data)
+    let data = state.list_sessions_scoped(&scope);
+    Json(paginate(data, &page, |s| s.id.as_str()))
 }
 
 /// `POST /v1/sessions/:id` — update `title` (null clears) + patch `metadata`.

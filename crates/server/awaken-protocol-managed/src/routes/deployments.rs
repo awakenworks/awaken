@@ -24,7 +24,7 @@ use crate::types::deployment::{
     Deployment, DeploymentCreateParams, DeploymentRun, DeploymentUpdateParams, PausedReason,
     TriggerContext,
 };
-use crate::types::{ErrorResponse, Page};
+use crate::types::{ErrorResponse, Page, PageQuery, paginate};
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 
@@ -171,10 +171,13 @@ async fn retrieve_deployment(
     Ok(Json(record.project(&id)))
 }
 
-async fn list_deployments(State(state): State<Arc<DeploymentState>>) -> Json<Page<Deployment>> {
+async fn list_deployments(
+    State(state): State<Arc<DeploymentState>>,
+    Query(page): Query<PageQuery>,
+) -> Json<Page<Deployment>> {
     let store = state.deployments.lock().unwrap();
-    let data = store.iter().map(|(id, r)| r.project(id)).collect();
-    Json(Page::single(data))
+    let data: Vec<Deployment> = store.iter().map(|(id, r)| r.project(id)).collect();
+    Json(paginate(data, &page, |d| d.id.as_str()))
 }
 
 async fn update_deployment(
@@ -282,13 +285,14 @@ async fn retrieve_run(
 async fn list_runs(
     State(state): State<Arc<DeploymentState>>,
     Query(q): Query<std::collections::HashMap<String, String>>,
+    Query(page): Query<PageQuery>,
 ) -> Json<Page<DeploymentRun>> {
     let filter = q.get("deployment_id");
     let store = state.runs.lock().unwrap();
-    let data = store
+    let data: Vec<DeploymentRun> = store
         .iter()
         .filter(|(_, r)| filter.is_none_or(|d| &r.deployment_id == d))
         .map(|(id, r)| r.project(id))
         .collect();
-    Json(Page::single(data))
+    Json(paginate(data, &page, |r| r.id.as_str()))
 }
