@@ -122,13 +122,41 @@ pub struct PluginManifest {
     pub bound: CapabilityBound,
 }
 
-/// The executed tool call and its output, carried on [`PhaseContext`] at
-/// [`PhaseHookPoint::AfterTool`] so a phase hook can react to a tool result (the
-/// data the former `ToolOutcomeHook` received directly).
+/// The executed tool call and its output, carried by [`PhaseKind::AfterTool`] so a
+/// phase hook can react to a tool result (the data the former `ToolOutcomeHook`
+/// received directly).
 #[derive(Debug, Clone, PartialEq)]
 pub struct AfterToolContext {
     pub call: ToolCall,
     pub output: ToolOutput,
+}
+
+/// Which phase a hook is being invoked at, carrying exactly the data valid at that
+/// phase. Only [`PhaseKind::AfterTool`] carries a call/output, so a StepStart hook
+/// cannot be handed a tool result — the illegal combination is unrepresentable
+/// (ADR-0055), replacing the former `point` + `Option<after_tool>` pair.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PhaseKind {
+    StepStart,
+    BeforeInference,
+    AfterInference,
+    AfterTool(AfterToolContext),
+    StepEnd,
+}
+
+impl PhaseKind {
+    /// The lightweight subscription discriminant for this phase (the axis a
+    /// `CapabilityBound` and `hooks_for` key on).
+    #[must_use]
+    pub fn point(&self) -> PhaseHookPoint {
+        match self {
+            PhaseKind::StepStart => PhaseHookPoint::StepStart,
+            PhaseKind::BeforeInference => PhaseHookPoint::BeforeInference,
+            PhaseKind::AfterInference => PhaseHookPoint::AfterInference,
+            PhaseKind::AfterTool(_) => PhaseHookPoint::AfterTool,
+            PhaseKind::StepEnd => PhaseHookPoint::StepEnd,
+        }
+    }
 }
 
 /// Context passed to a phase hook. Immutable data; a hook returns state commands
@@ -137,10 +165,7 @@ pub struct AfterToolContext {
 pub struct PhaseContext {
     pub run_id: RunId,
     pub step: usize,
-    pub point: PhaseHookPoint,
-    /// Present only at [`PhaseHookPoint::AfterTool`]: the executed call and its
-    /// output. `None` at every other point.
-    pub after_tool: Option<AfterToolContext>,
+    pub kind: PhaseKind,
 }
 
 /// What a hook stages back into the loop: durable state commands plus messages.

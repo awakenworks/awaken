@@ -65,7 +65,7 @@ impl PhaseHook for MarkHook {
             Scope::Run,
             MergePolicy::Disjoint,
             "phase",
-            serde_json::json!(format!("{:?}@{}", ctx.point, ctx.step)),
+            serde_json::json!(format!("{:?}@{}", ctx.kind.point(), ctx.step)),
         )])
     }
 }

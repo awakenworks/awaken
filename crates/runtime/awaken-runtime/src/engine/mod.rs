@@ -34,7 +34,7 @@ use awaken_runtime_contract::llm::{
 };
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
 use awaken_runtime_contract::plugin::{
-    AfterToolContext, PhaseContext, PhaseHookPoint, ResolvedExecutionEnv, RunEndContext,
+    AfterToolContext, PhaseContext, PhaseHookPoint, PhaseKind, ResolvedExecutionEnv, RunEndContext,
     RunEndDecision,
 };
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ResolvedRun, ToolPresentation};
@@ -1210,13 +1210,23 @@ async fn run_phase_hooks(
     store: &mut Store,
     staged_state: &mut Vec<StateCommand>,
 ) -> Vec<Message> {
+    // The tool-result phase carries per-call data and runs via
+    // `collect_tool_reactions`, never here.
+    let kind = match point {
+        PhaseHookPoint::StepStart => PhaseKind::StepStart,
+        PhaseHookPoint::BeforeInference => PhaseKind::BeforeInference,
+        PhaseHookPoint::AfterInference => PhaseKind::AfterInference,
+        PhaseHookPoint::StepEnd => PhaseKind::StepEnd,
+        PhaseHookPoint::AfterTool => {
+            unreachable!("AfterTool phase hooks run via collect_tool_reactions")
+        }
+    };
     let mut context = Vec::new();
     for hook in env.hooks_for(point) {
         let ctx = PhaseContext {
             run_id: run_id.clone(),
             step,
-            point,
-            after_tool: None,
+            kind: kind.clone(),
         };
         let reaction = hook.on_phase(&ctx, conversation, store).await;
         // Apply the reaction's state to the live store before the next hook, so a
@@ -1575,8 +1585,7 @@ async fn collect_tool_reactions(
     let ctx = PhaseContext {
         run_id: run_id.clone(),
         step,
-        point: PhaseHookPoint::AfterTool,
-        after_tool: Some(AfterToolContext {
+        kind: PhaseKind::AfterTool(AfterToolContext {
             call: call.clone(),
             output: output.clone(),
         }),

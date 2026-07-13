@@ -16,7 +16,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::state::{Action, Command, MergePolicy, Scope, StateKey, Store};
 use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, HookReaction, IdBound, PhaseContext, PhaseHook, PhaseHookPoint,
-    Plugin, PluginConfigError, PluginManifest,
+    PhaseKind, Plugin, PluginConfigError, PluginManifest,
 };
 use awaken_runtime_contract::subagent_runner::{SubagentRequest, SubagentRunner};
 
@@ -288,8 +288,7 @@ mod tests {
         PhaseContext {
             run_id: RunId("r".into()),
             step: 0,
-            point: PhaseHookPoint::BeforeInference,
-            after_tool: None,
+            kind: PhaseKind::BeforeInference,
         }
     }
 
