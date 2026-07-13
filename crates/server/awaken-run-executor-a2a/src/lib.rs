@@ -277,4 +277,127 @@ mod tests {
         assert_eq!(caps.cancellation, Cancellation::None);
         assert_eq!(caps.wait, Wait::None);
     }
+
+    #[derive(Default)]
+    struct FailingRec;
+    #[async_trait]
+    impl Coordinator for FailingRec {
+        async fn commit(&self, _c: ThreadCommit) -> std::result::Result<CommitRecord, CommitError> {
+            Err(CommitError::Rejected("boom".into()))
+        }
+    }
+
+    /// A real A2A HTTP server answering every `message:send` with `reply`; returns
+    /// the `a2a:` backend ref that dials it.
+    async fn serve(reply: &'static str) -> String {
+        let app = axum::Router::new().fallback(move || async move { reply });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("a2a:http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn a_non_remote_backend_fails_closed() {
+        // Reached without a remote endpoint is a wiring fault → fail closed, no dial.
+        let rec = Arc::new(Rec::default());
+        let phase = A2aRunExecutor::over_http()
+            .execute(
+                activation("native"),
+                RuntimeRunContext::new().with_commit(rec.clone()),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            phase,
+            Phase::Ended(EndCause::Error(Failure::Inference { ref code, .. })) if code == "a2a_config"
+        ));
+        assert_eq!(
+            rec.0.lock().unwrap()[0].messages[0].text_content(),
+            "backend is not an A2A endpoint"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_commit_error_propagates() {
+        let err = A2aRunExecutor::over_http()
+            .execute(
+                activation("native"),
+                RuntimeRunContext::new().with_commit(Arc::new(FailingRec)),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::Commit(_)),
+            "a rejected commit surfaces as Error::Commit"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn artifacts_are_preferred_over_status_and_history() {
+        let backend = serve(
+            r#"{"task":{"kind":"task","id":"t","contextId":"c","status":{"state":"completed","message":{"messageId":"m","role":"agent","parts":[{"text":"status msg"}]}},"artifacts":[{"parts":[{"text":"artifact body"}]}]}}"#,
+        )
+        .await;
+        let rec = Arc::new(Rec::default());
+        let phase = A2aRunExecutor::over_http()
+            .execute(
+                activation(&backend),
+                RuntimeRunContext::new().with_commit(rec.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+        assert_eq!(
+            rec.0.lock().unwrap()[0].messages[0].text_content(),
+            "artifact body"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn history_last_is_the_final_reply_fallback() {
+        let backend = serve(
+            r#"{"task":{"kind":"task","id":"t","contextId":"c","status":{"state":"completed"},"history":[{"messageId":"h0","role":"agent","parts":[{"text":"first"}]},{"messageId":"h1","role":"agent","parts":[{"text":"last history"}]}]}}"#,
+        )
+        .await;
+        let rec = Arc::new(Rec::default());
+        let phase = A2aRunExecutor::over_http()
+            .execute(
+                activation(&backend),
+                RuntimeRunContext::new().with_commit(rec.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+        assert_eq!(
+            rec.0.lock().unwrap()[0].messages[0].text_content(),
+            "last history"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_transport_error_ends_with_a2a_error() {
+        // Bind then drop the listener: the port now refuses connections, so the dial
+        // fails and the executor ends on a classified a2a_error (not a panic).
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let rec = Arc::new(Rec::default());
+        let phase = A2aRunExecutor::over_http()
+            .execute(
+                activation(&format!("a2a:http://{addr}")),
+                RuntimeRunContext::new().with_commit(rec.clone()),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            phase,
+            Phase::Ended(EndCause::Error(Failure::Inference { ref code, .. })) if code == "a2a_error"
+        ));
+        assert!(
+            rec.0.lock().unwrap()[0].messages[0]
+                .text_content()
+                .contains("remote agent error")
+        );
+    }
 }
