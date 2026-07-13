@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 /// Where one control-plane store lives: a local SQLite file, or a shared Postgres.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum StoreBackend {
+pub enum StoreBackend {
     Sqlite(PathBuf),
     Postgres(String),
 }
@@ -29,7 +29,7 @@ impl StoreBackend {
     /// Resolve an override value against a bundle default. A `postgres(ql)://` value is
     /// a Postgres URL; any other value is a SQLite path; `None` falls back to the
     /// bundle file (`<dir>/<name>`).
-    pub(crate) fn resolve(override_value: Option<String>, default_path: PathBuf) -> Self {
+    pub fn resolve(override_value: Option<String>, default_path: PathBuf) -> Self {
         match override_value {
             Some(value) if is_postgres_url(&value) => StoreBackend::Postgres(value),
             Some(value) => StoreBackend::Sqlite(PathBuf::from(value)),
@@ -45,26 +45,26 @@ fn is_postgres_url(value: &str) -> bool {
 /// The database backing each control-plane store. Built from the environment against a
 /// bundle directory (`AWAKEN_MGMT_DIR`), with per-component `AWAKEN_*_DB` overrides.
 #[derive(Debug, Clone)]
-pub(crate) struct ControlStoreConfig {
-    pub(crate) catalog: StoreBackend,
+pub struct ControlStoreConfig {
+    pub catalog: StoreBackend,
     /// The credential repo AND its sealed-secret blobs share this one backend (they
     /// are the same `credential.db` today; the same Postgres database when shared).
-    pub(crate) credential: StoreBackend,
-    pub(crate) config: StoreBackend,
+    pub credential: StoreBackend,
+    pub config: StoreBackend,
     /// The admin aggregate: inference profiles, MCP server defs, webhook subscriptions.
-    pub(crate) admin: StoreBackend,
-    pub(crate) sessions: StoreBackend,
+    pub admin: StoreBackend,
+    pub sessions: StoreBackend,
 }
 
 impl ControlStoreConfig {
     /// Read the per-component config against the bundle `dir`. Each component defaults
     /// to `<dir>/<name>.db` (SQLite) unless its `AWAKEN_*_DB` override is set.
-    pub(crate) fn from_env(dir: &Path) -> Self {
+    pub fn from_env(dir: &Path) -> Self {
         Self::resolve(dir, |k| std::env::var(k).ok().filter(|v| !v.is_empty()))
     }
 
     /// Pure resolution, testable without touching the process environment.
-    pub(crate) fn resolve(dir: &Path, env: impl Fn(&str) -> Option<String>) -> Self {
+    pub fn resolve(dir: &Path, env: impl Fn(&str) -> Option<String>) -> Self {
         let bundle = |name: &str| dir.join(name);
         Self {
             catalog: StoreBackend::resolve(env("AWAKEN_CATALOG_DB"), bundle("catalog.db")),

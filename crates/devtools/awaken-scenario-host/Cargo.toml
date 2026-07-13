@@ -93,6 +93,13 @@ tower = { version = "0.5", features = ["util"] }
 
 # Depends on the product crate for the now-pub assembly helpers + production executors.
 awaken-server = { workspace = true }
+# The composition root: the `management` scenario mode + the brain-admin surface moved
+# to awaken-cli's library (Stage B2). Dev-dep cycle-free: awaken-cli dev-depends back
+# on this crate for the mock models its moved integration tests drive.
+awaken-cli = { workspace = true }
+# The authoring plane (Stage B2): the config-router scenario mode seeds the admin
+# assistant + builds its tool executables through awaken-control's ports.
+awaken-control = { workspace = true }
 
 [features]
 # Cross-node dispatch wake over NATS (AWAKEN_DISPATCH_WAKE=nats), passed through to

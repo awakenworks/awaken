@@ -63,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("statemachine") => awaken_scenario_host::build_statemachine_router(),
         Ok("statemachine-rich") => awaken_scenario_host::build_statemachine_rich_router(),
         Ok("config") => awaken_scenario_host::build_config_router().await,
-        Ok("management") => awaken_server::build_management_router().await,
+        Ok("management") => awaken_cli::build_management_router().await,
         Ok("real") => awaken_scenario_host::build_real_router(),
         Ok("real-gemini") => awaken_scenario_host::build_real_gemini_router().await,
         Ok("real-resolved") => awaken_scenario_host::build_resolved_real_router().await,
@@ -91,8 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Brain admin surface (ADR-0022 D7): the connection-count metric that KEDA
     // autoscales on, plus /admin/drain + /readyz for graceful, stream-preserving
     // scale-in. Wraps the served router so the in-flight counter sees every request.
-    let app =
-        awaken_server::with_brain_admin(app, awaken_server::DrainController::new());
+    let app = awaken_cli::with_brain_admin(app, awaken_cli::DrainController::new());
     // Root every request span in the ingress middleware (extracts the inbound
     // `traceparent`); the whole direct request→inference path nests under it.
     let app = app.layer(axum::middleware::from_fn(awaken_observability::trace_http));

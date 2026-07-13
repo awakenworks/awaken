@@ -8,7 +8,7 @@
 //! readable. Uses `build_durable_management_router` (explicit dir + key), not
 //! env vars, so the test cannot race other tests on process-global state.
 
-use awaken_server::build_durable_management_router;
+use awaken_cli::build_durable_management_router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
