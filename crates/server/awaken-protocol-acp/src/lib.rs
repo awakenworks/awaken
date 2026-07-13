@@ -211,16 +211,21 @@ pub struct TurnConfig<'a> {
     /// turn used — `session/new`'s fresh id when none was given — so the caller can
     /// resume it next turn. Left `None` by the newline stand-in.
     pub session_id: Option<String>,
+    /// In: a session mode to pin via `session/set_mode` after the handshake (an
+    /// adapter-local datum — `None` leaves the agent's default). Validated
+    /// fail-closed against the modes the agent advertised for the session.
+    pub session_mode: Option<String>,
 }
 
 impl<'a> TurnConfig<'a> {
-    /// A config that only authorizes (no session resume) — the default a plain
-    /// `run_turn`/`supervise` builds for fixtures.
+    /// A config that only authorizes (no session resume, no mode pin) — the default
+    /// a plain `run_turn`/`supervise` builds for fixtures.
     #[must_use]
     pub fn new(resolver: &'a dyn PermissionResolver) -> Self {
         Self {
             resolver,
             session_id: None,
+            session_mode: None,
         }
     }
 }
@@ -327,6 +332,10 @@ pub enum AcpError {
     /// The agent stream ended before emitting a `TurnEnd`.
     #[error("agent stream ended before turn end")]
     Truncated,
+    /// A requested session mode is not among those the agent advertised — pinned
+    /// fail-closed rather than silently ignored.
+    #[error("session mode not supported by the agent: {0}")]
+    UnsupportedSessionMode(String),
 }
 
 /// The bridge: drive one turn of an opaque agent over a duplex channel.

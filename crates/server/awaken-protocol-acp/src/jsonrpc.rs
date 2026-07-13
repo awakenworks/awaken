@@ -19,10 +19,11 @@
 
 use agent_client_protocol::{
     AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES, ClientCapabilities, ContentBlock, InitializeRequest,
-    InitializeResponse, LoadSessionRequest, NewSessionRequest, NewSessionResponse,
-    PermissionOptionKind, PromptRequest, PromptResponse, ProtocolVersion, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
-    SessionNotification,
+    InitializeResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
+    NewSessionResponse, PermissionOptionKind, PromptRequest, PromptResponse, ProtocolVersion,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionId, SessionModeId, SessionModeState, SessionNotification,
+    SetSessionModeRequest,
 };
 use awaken_agent_channel::AgentChannel;
 use serde::Serialize;
@@ -39,6 +40,9 @@ const JSONRPC: &str = "2.0";
 const ID_INITIALIZE: u64 = 1;
 const ID_NEW_SESSION: u64 = 2;
 const ID_PROMPT: u64 = 3;
+/// `session/set_mode` (only sent when a mode is pinned) — a distinct correlation
+/// id; JSON-RPC ids need only be unique, not ordered.
+const ID_SET_MODE: u64 = 4;
 /// JSON-RPC "method not found" (the reply to any capability we do not advertise).
 const METHOD_NOT_FOUND: i64 = -32601;
 
@@ -213,7 +217,7 @@ pub async fn run_turn_with_config(
     //    hold a prior id and the agent supports it; else session/new. Fail-safe:
     //    an agent that does not advertise `loadSession` falls back to a fresh
     //    session (the neutral thread history is the authority — never lost).
-    let session_id: SessionId = match config.session_id.clone() {
+    let (session_id, available_modes): (SessionId, Vec<String>) = match config.session_id.clone() {
         Some(prior) if can_load => {
             wire.send_request(
                 ID_NEW_SESSION,
@@ -221,8 +225,10 @@ pub async fn run_turn_with_config(
                 LoadSessionRequest::new(SessionId::new(prior.as_str()), "/"),
             )
             .await?;
-            pump_to_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver).await?;
-            SessionId::new(prior.as_str())
+            let resp: LoadSessionResponse = parse(
+                pump_to_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver).await?,
+            )?;
+            (SessionId::new(prior.as_str()), mode_ids(resp.modes))
         }
         _ => {
             wire.send_request(
@@ -234,11 +240,28 @@ pub async fn run_turn_with_config(
             let new_session: NewSessionResponse = parse(
                 pump_to_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver).await?,
             )?;
-            new_session.session_id
+            let modes = mode_ids(new_session.modes);
+            (new_session.session_id, modes)
         }
     };
     // Record the negotiated id so the caller resumes this session next turn.
     config.session_id = Some(session_id.to_string());
+
+    // 2b. session/set_mode — pin the adapter's mode, fail-closed against the modes
+    //     the agent advertised for the session (an unsupported pin never silently
+    //     no-ops; it ends the turn with a classified fault).
+    if let Some(mode) = config.session_mode.clone() {
+        if !available_modes.iter().any(|m| *m == mode) {
+            return Err(AcpError::UnsupportedSessionMode(mode));
+        }
+        wire.send_request(
+            ID_SET_MODE,
+            AGENT_METHOD_NAMES.session_set_mode,
+            SetSessionModeRequest::new(session_id.clone(), SessionModeId::new(mode.as_str())),
+        )
+        .await?;
+        pump_to_response(&mut wire, ID_SET_MODE, sink, &mut seq, resolver).await?;
+    }
 
     // Handshake complete — the agent is live and about to accept the prompt.
     notify_launch(launch_sink, AcpLaunchEvent::stage(AcpLaunchStage::Ready));
@@ -419,6 +442,20 @@ fn select_outcome(
 
 fn parse<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, AcpError> {
     serde_json::from_value(value).map_err(|e| AcpError::Frame(e.to_string()))
+}
+
+/// The ids of the modes an agent advertised for a session (empty when it declares
+/// none), used to validate a mode pin fail-closed.
+fn mode_ids(modes: Option<SessionModeState>) -> Vec<String> {
+    modes
+        .map(|state| {
+            state
+                .available_modes
+                .into_iter()
+                .map(|mode| mode.id.0.to_string())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -800,6 +837,82 @@ mod tests {
             Some("fresh"),
             "the fresh id replaced the stale one"
         );
+        agent.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_pinned_session_mode_is_set_when_the_agent_advertises_it() {
+        // With a mode pinned and the agent advertising it, the driver sends
+        // session/set_mode with that mode id before prompting.
+        let (mut ours, theirs) = channel();
+        let saw = Arc::new(Mutex::new(None));
+        let saw2 = saw.clone();
+        let agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            io.read().await; // initialize
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#,
+            )
+            .await;
+            io.read().await; // session/new
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1","modes":{"currentModeId":"default","availableModes":[{"id":"default","name":"Default"},{"id":"plan","name":"Plan"}]}}}"#,
+            )
+            .await;
+            let set = io.read().await.unwrap(); // session/set_mode (id 4)
+            if set.get("method").and_then(|m| m.as_str())
+                == Some(AGENT_METHOD_NAMES.session_set_mode)
+            {
+                *saw2.lock().unwrap() = set
+                    .get("params")
+                    .and_then(|p| p.get("modeId"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+            }
+            io.write_line(r#"{"jsonrpc":"2.0","id":4,"result":{}}"#)
+                .await;
+            io.read().await; // prompt (id 3)
+            io.write_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#)
+                .await;
+        });
+
+        let mut sink = RecordingSink::default();
+        let mut config = TurnConfig::new(&AllowAll);
+        config.session_mode = Some("plan".into());
+        let reason = run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
+            .await
+            .unwrap();
+        assert_eq!(reason, TerminationReason::NaturalEnd);
+        assert_eq!(saw.lock().unwrap().as_deref(), Some("plan"));
+        agent.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unadvertised_session_mode_fails_closed() {
+        // The pinned mode is not among those the agent advertised → the turn ends
+        // with a fail-closed error, not a silently ignored pin.
+        let (mut ours, theirs) = channel();
+        let agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            io.read().await;
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#,
+            )
+            .await;
+            io.read().await; // session/new
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1","modes":{"currentModeId":"default","availableModes":[{"id":"default","name":"Default"}]}}}"#,
+            )
+            .await;
+        });
+
+        let mut sink = RecordingSink::default();
+        let mut config = TurnConfig::new(&AllowAll);
+        config.session_mode = Some("plan".into());
+        let err = run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AcpError::UnsupportedSessionMode(m) if m == "plan"));
         agent.await.unwrap();
     }
 

@@ -99,6 +99,9 @@ pub struct AcpRunExecutor {
     /// via [`with_permission_policy`](Self::with_permission_policy) to apply org
     /// policy / HITL uniformly across native and ACP runs.
     permission: Arc<dyn PermissionResolver>,
+    /// The ACP session mode to pin (adapter-local; `None` leaves the agent's
+    /// default). Validated fail-closed against the agent's advertised modes.
+    session_mode: Option<String>,
 }
 
 impl AcpRunExecutor {
@@ -116,6 +119,7 @@ impl AcpRunExecutor {
             policy: SupervisePolicy::default(),
             observer: None,
             permission: Arc::new(AllowAll),
+            session_mode: None,
         }
     }
 
@@ -127,6 +131,14 @@ impl AcpRunExecutor {
     #[must_use]
     pub fn with_permission_policy(mut self, policy: Arc<dyn PermissionPolicy>) -> Self {
         self.permission = Arc::new(NeutralPermissionResolver { policy });
+        self
+    }
+
+    /// Pin the ACP session mode (e.g. `plan`), applied via `session/set_mode` after
+    /// the handshake and validated fail-closed against the agent's advertised modes.
+    #[must_use]
+    pub fn with_session_mode(mut self, mode: impl Into<String>) -> Self {
+        self.session_mode = Some(mode.into());
         self
     }
 
@@ -265,6 +277,7 @@ impl RunExecutor for AcpRunExecutor {
             let process = session.process.clone();
             let mut config = TurnConfig::new(self.permission.as_ref());
             config.session_id = acp_session_id.take();
+            config.session_mode = self.session_mode.clone();
             let outcome = Supervisor::supervise_with_config(
                 session.channel.as_mut(),
                 process.as_ref(),
