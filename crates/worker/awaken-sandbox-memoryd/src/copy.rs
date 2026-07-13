@@ -189,4 +189,30 @@ mod tests {
         assert_eq!(rt.block_on(harvest(&*fs, "s", &dir)).unwrap(), 0);
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    #[test]
+    fn harvest_skips_a_non_utf8_file_rather_than_failing() {
+        let rt = rt();
+        let fs = Arc::new(InMemoryFs::new());
+        let dir = temp("harv-bin");
+        std::fs::write(dir.join("ok.md"), "text").unwrap();
+        std::fs::write(dir.join("blob.bin"), [0xFF, 0xFE, 0x00]).unwrap();
+
+        // The UTF-8 file is folded in; the binary one is skipped, not fatal.
+        assert_eq!(rt.block_on(harvest(&*fs, "s", &dir)).unwrap(), 1);
+        assert!(
+            rt.block_on(fs.get_by_path("s", "/blob.bin"))
+                .unwrap()
+                .is_none()
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn harvest_on_a_missing_root_is_empty() {
+        let rt = rt();
+        let fs = Arc::new(InMemoryFs::new());
+        let missing = std::env::temp_dir().join("awaken-memcopy-does-not-exist-xyz");
+        assert_eq!(rt.block_on(harvest(&*fs, "s", &missing)).unwrap(), 0);
+    }
 }
