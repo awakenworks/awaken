@@ -153,6 +153,10 @@ impl AgentChannelSource for SandboxChannelSource {
             channel,
             process: Arc::from(process),
             codec: self.codec,
+            // Pinned to the sandbox's stable interior workspace path once the
+            // session-home resource wires it (cross-machine recovery); until then the
+            // CLI runs at the default cwd.
+            workspace_cwd: None,
         })
     }
 }

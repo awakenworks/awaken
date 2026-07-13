@@ -189,6 +189,12 @@ pub async fn run_turn_with_config(
     launch_sink: Option<LaunchSink<'_>>,
 ) -> Result<TerminationReason, AcpError> {
     let resolver = config.resolver;
+    // The interior cwd the session runs under — stable per thread so a cwd-keyed CLI
+    // finds its session on `session/load` across directories (default `/`).
+    let cwd = config
+        .session_cwd
+        .clone()
+        .unwrap_or_else(|| "/".to_string());
     let mut wire = Wire::new(channel);
     let mut seq = 0u64;
 
@@ -222,7 +228,7 @@ pub async fn run_turn_with_config(
             wire.send_request(
                 ID_NEW_SESSION,
                 AGENT_METHOD_NAMES.session_load,
-                LoadSessionRequest::new(SessionId::new(prior.as_str()), "/"),
+                LoadSessionRequest::new(SessionId::new(prior.as_str()), cwd.as_str()),
             )
             .await?;
             let resp: LoadSessionResponse = parse(
@@ -234,7 +240,7 @@ pub async fn run_turn_with_config(
             wire.send_request(
                 ID_NEW_SESSION,
                 AGENT_METHOD_NAMES.session_new,
-                NewSessionRequest::new("/"),
+                NewSessionRequest::new(cwd.as_str()),
             )
             .await?;
             let new_session: NewSessionResponse = parse(
@@ -813,6 +819,47 @@ mod tests {
             Some("sess-resume"),
             "the resumed id is reported back for the next turn"
         );
+        agent.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_interior_cwd_is_sent_on_session_new_and_load() {
+        // The configured interior cwd (the sandbox's stable workspace path) is the
+        // `cwd` on session/new and session/load — so a cwd-keyed CLI finds its
+        // session across directories.
+        let (mut ours, theirs) = channel();
+        let cwds = Arc::new(Mutex::new(Vec::<String>::new()));
+        let c2 = cwds.clone();
+        let agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            io.read().await; // initialize
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}"#,
+            )
+            .await;
+            let sess = io.read().await.unwrap(); // session/load (we pass a prior id)
+            if let Some(cwd) = sess
+                .get("params")
+                .and_then(|p| p.get("cwd"))
+                .and_then(|v| v.as_str())
+            {
+                c2.lock().unwrap().push(cwd.to_string());
+            }
+            io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{}}"#)
+                .await;
+            io.read().await; // prompt
+            io.write_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#)
+                .await;
+        });
+
+        let mut sink = RecordingSink::default();
+        let mut config = TurnConfig::new(&AllowAll);
+        config.session_id = Some("s1".into());
+        config.session_cwd = Some("/workspace".into());
+        run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
+            .await
+            .unwrap();
+        assert_eq!(cwds.lock().unwrap().as_slice(), &["/workspace".to_string()]);
         agent.await.unwrap();
     }
 
