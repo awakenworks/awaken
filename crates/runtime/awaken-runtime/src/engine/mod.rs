@@ -436,6 +436,229 @@ fn open_deferred_tool(
     }
 }
 
+/// The attempt's durable-progress accumulator. It owns the step-commit watermark
+/// invariant: everything below a watermark is already durable, so a step commit
+/// advances the watermark atomically with the delta it made durable, and the
+/// returned checkpoint is only the tail beyond it. The model-facing `transcript`
+/// (seeded with committed history) and the durable `new_messages` (only this
+/// attempt's turns) grow together but stay distinct.
+struct StepLedger {
+    transcript: Vec<Message>,
+    new_messages: Vec<Message>,
+    staged_state: Vec<StateCommand>,
+    /// Permission-audit drafts accumulated across the attempt's gate decisions.
+    audit: Vec<EventDraft>,
+    committed_messages: usize,
+    committed_state: usize,
+    committed_audit: usize,
+    running_committed: bool,
+}
+
+impl StepLedger {
+    fn new(
+        transcript: Vec<Message>,
+        new_messages: Vec<Message>,
+        seed_state: Vec<StateCommand>,
+    ) -> Self {
+        Self {
+            transcript,
+            new_messages,
+            staged_state: seed_state,
+            audit: Vec::new(),
+            committed_messages: 0,
+            committed_state: 0,
+            committed_audit: 0,
+            running_committed: false,
+        }
+    }
+
+    /// Append one message to both the model-facing transcript and the durable
+    /// new-message accumulation — the two always grow in lock-step.
+    fn push_turn(&mut self, message: Message) {
+        self.transcript.push(message.clone());
+        self.new_messages.push(message);
+    }
+
+    /// Whether any completed step staged messages/state/audit not yet made durable.
+    fn has_uncommitted(&self) -> bool {
+        self.new_messages.len() > self.committed_messages
+            || self.staged_state.len() > self.committed_state
+            || self.audit.len() > self.committed_audit
+    }
+
+    /// Drop staged state back to the committed watermark: a batch that fails
+    /// cumulative validation must not ride the final commit, but steps committed
+    /// while the batch was still valid stay committed.
+    fn rollback_state(&mut self) {
+        self.staged_state.truncate(self.committed_state);
+    }
+
+    /// Commit the tail beyond every watermark under a `Running` fact, then advance
+    /// the watermarks. `first` (the first delta) announces the phase change.
+    async fn commit_delta(
+        &mut self,
+        context: &RuntimeRunContext,
+        thread_id: &ThreadId,
+        run_id: &RunId,
+    ) -> Result<()> {
+        commit_step_delta(
+            context,
+            thread_id,
+            run_id,
+            self.new_messages[self.committed_messages..].to_vec(),
+            self.staged_state[self.committed_state..].to_vec(),
+            self.audit[self.committed_audit..].to_vec(),
+            !self.running_committed,
+        )
+        .await?;
+        self.committed_messages = self.new_messages.len();
+        self.committed_state = self.staged_state.len();
+        self.committed_audit = self.audit.len();
+        self.running_committed = true;
+        Ok(())
+    }
+
+    /// The tail beyond the watermarks, ready for the final commit: the checkpoint
+    /// must never re-append what step commits already made durable.
+    fn into_checkpoint(mut self, end: End) -> Checkpoint {
+        Checkpoint {
+            new_messages: self.new_messages.split_off(self.committed_messages),
+            staged_state: self.staged_state.split_off(self.committed_state),
+            audit: self.audit.split_off(self.committed_audit),
+            end,
+        }
+    }
+}
+
+/// Tracks the active plugins' live tool-face version and lazily re-resolves the
+/// execution environment when it changes (e.g. an MCP server firing
+/// `tools/list_changed`). A static run keeps `last_version` fixed and never
+/// re-resolves, so it is zero-overhead; a failed re-resolution keeps the prior
+/// environment rather than aborting the run.
+struct LiveEnv {
+    resolved: Option<ResolvedExecutionEnv>,
+    last_version: Option<u64>,
+}
+
+impl LiveEnv {
+    fn new(initial_version: Option<u64>) -> Self {
+        Self {
+            resolved: None,
+            last_version: initial_version,
+        }
+    }
+
+    /// The environment to use this step: the freshly re-resolved one if the live
+    /// version advanced (best-effort), else `base`.
+    fn current<'a>(
+        &'a mut self,
+        runtime: &Runtime,
+        resolved: &ResolvedRun,
+        base: &'a ResolvedExecutionEnv,
+    ) -> &'a ResolvedExecutionEnv {
+        let version = runtime.active_live_version(&resolved.spec.plugin_ids);
+        if version != self.last_version {
+            if let Ok(refreshed) = runtime.resolve_plugin_env(&resolved.spec) {
+                self.resolved = Some(refreshed);
+            }
+            self.last_version = version;
+        }
+        self.resolved.as_ref().unwrap_or(base)
+    }
+}
+
+/// Run one step's inference to a final response, applying two in-place recoveries
+/// before yielding. A `MaxTokens`-truncated text-only turn is continued in place:
+/// the partial is committed as its own assistant message, a continuation prompt
+/// follows it, and inference reruns on the grown transcript — up to a per-step
+/// budget, after which the truncated turn stands. A truncated turn still carrying
+/// tool calls skips recovery: those calls must be answered by tool results, not
+/// another assistant turn. On a clean pre-commit failure (no partial committed
+/// this step) with a candidate remaining, it fails over to the next pool model;
+/// the breaker inside `infer_with_retry` keys on `request.model_binding`, so a
+/// failed-over model tracks its own circuit and usage. A failure after a committed
+/// partial is terminal here — mid-stream recovery is the StreamCheckpoint/resume
+/// path, not a switch to a different model (which would double-generate).
+#[allow(clippy::too_many_arguments)]
+async fn infer_step_turn(
+    llm: &std::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
+    runtime: &Runtime,
+    resolved: &ResolvedRun,
+    env: &ResolvedExecutionEnv,
+    run_id: &RunId,
+    step_base: usize,
+    step: usize,
+    ledger: &mut StepLedger,
+    prelude: &[Message],
+    opened: &std::collections::BTreeSet<String>,
+    delta_sink: &StreamDeltaSink<'_>,
+    checkpoint_ref: Option<&CheckpointCtx<'_>>,
+    step_resume: Option<StreamCheckpoint>,
+    context: &RuntimeRunContext,
+) -> std::result::Result<ChatResponse, awaken_runtime_contract::llm::Error> {
+    let mut truncation_retries = 0;
+    // Model-pool failover: the ordered candidate bindings (primary first, then
+    // any pool fallbacks). Single-model agents yield exactly one, so this is a
+    // no-op for them. `cand_idx` advances only on a clean pre-commit failure.
+    let candidates = resolved.spec.candidate_bindings();
+    let mut cand_idx = 0usize;
+    let mut pending_resume = step_resume;
+    loop {
+        let mut request = build_chat_request(
+            &resolved.spec,
+            prelude,
+            &ledger.transcript,
+            &env.dynamic_descriptors(),
+            opened,
+        );
+        request.model_binding = candidates[cand_idx].clone();
+        match infer_with_retry(
+            llm,
+            request,
+            runtime.retry_policy(),
+            runtime.circuit_breaker(),
+            delta_sink,
+            checkpoint_ref,
+            pending_resume.take(),
+            &context.capture.decision,
+            context.content_sink(),
+            runtime.metrics(),
+        )
+        .await
+        {
+            Ok(response) => {
+                let truncated_text_only = response.stop_reason == Some(StopReason::MaxTokens)
+                    && response.output.tool_calls().is_empty()
+                    && !response.output.text_content().is_empty();
+                if truncated_text_only && truncation_retries < runtime.max_continuation_retries() {
+                    let partial = truncated_assistant_message(
+                        run_id,
+                        step_base + step,
+                        truncation_retries,
+                        response.output.blocks,
+                    );
+                    ledger.push_turn(partial);
+                    let prompt = continuation_message(run_id, step_base + step, truncation_retries);
+                    ledger.push_turn(prompt);
+                    truncation_retries += 1;
+                    continue;
+                }
+                break Ok(response);
+            }
+            Err(err) => {
+                if truncation_retries == 0 && cand_idx + 1 < candidates.len() {
+                    cand_idx += 1;
+                    // A resume checkpoint belongs to the prior model's stream;
+                    // a fresh candidate starts clean.
+                    pending_resume = None;
+                    continue;
+                }
+                break Err(err);
+            }
+        }
+    }
+}
+
 /// Run the model/tool loop over a prepared transcript. Shared by fresh execution
 /// and resume; the caller seeds the transcript, the already-produced messages,
 /// and any state the resume itself staged (`seed_state`).
@@ -464,8 +687,8 @@ async fn drive(
     run_id: &RunId,
     thread_id: &ThreadId,
     context: &RuntimeRunContext,
-    mut transcript: Vec<Message>,
-    mut new_messages: Vec<Message>,
+    transcript: Vec<Message>,
+    new_messages: Vec<Message>,
     step_base: usize,
     mut store: Store,
     seed_state: Vec<StateCommand>,
@@ -474,15 +697,10 @@ async fn drive(
         Error::Execution("no model provider configured for this runtime".to_string())
     })?;
 
-    let mut staged_state: Vec<StateCommand> = seed_state;
-    // Permission-audit drafts accumulated across the attempt's gate decisions.
-    let mut audit: Vec<EventDraft> = Vec::new();
-    // Watermarks for step-boundary incremental commits: everything below a
-    // watermark is already durable; the checkpoint returns only the tail.
-    let mut committed_messages = 0usize;
-    let mut committed_state = 0usize;
-    let mut committed_audit = 0usize;
-    let mut running_committed = false;
+    // The attempt's durable-progress accumulator; it owns the step-commit
+    // watermark invariant, so only the tail beyond a watermark is ever returned
+    // or re-committed.
+    let mut ledger = StepLedger::new(transcript, new_messages, seed_state);
     // The loop's terminal decision. It stays `None` only if the loop runs to its
     // step ceiling, which is itself a terminus (`MaxSteps`).
     let mut end: Option<End> = None;
@@ -514,21 +732,18 @@ async fn drive(
     // feedback messages, so the count (and thus the guard's budget) survives a
     // park/resume mid-loop rather than restarting at zero.
     let steer_prefix = steer_id_prefix(run_id);
-    let mut forced_continuations = transcript
+    let mut forced_continuations = ledger
+        .transcript
         .iter()
         .filter(|message| message.id.0.starts_with(&steer_prefix))
         .count();
 
     // The agent's configured ceiling guards against a non-terminating tool cycle;
-    // a natural-end text turn ends the loop earlier.
-    //
-    // A plugin whose tool set is dynamic (e.g. an MCP server firing
-    // `tools/list_changed`) advances its `live_version`; when it changes, the
-    // execution environment is re-resolved at this step boundary so the model
-    // sees the current tool face. Static runs never re-resolve (version stays
-    // `None`), so this is zero-overhead for them.
-    let mut live_env: Option<ResolvedExecutionEnv> = None;
-    let mut last_live_version = runtime.active_live_version(&resolved.spec.plugin_ids);
+    // a natural-end text turn ends the loop earlier. A plugin whose tool set is
+    // dynamic (e.g. an MCP server firing `tools/list_changed`) advances its
+    // `live_version`; `live_env` re-resolves the environment at the step boundary
+    // when it changes, and is zero-overhead for static runs.
+    let mut live_env = LiveEnv::new(runtime.active_live_version(&resolved.spec.plugin_ids));
     // Failed inference steps in a row (post-retry). The runtime's tolerance
     // decides when the streak is terminal; a success resets it.
     let mut consecutive_inference_failures = 0usize;
@@ -545,30 +760,13 @@ async fn drive(
         // ends the run as `finalize` would, except steps committed while the
         // batch was still valid stay committed. Without a coordinator the
         // block is inert and the whole batch rides `finalize`, as before.
-        if context.commit.is_some()
-            && (new_messages.len() > committed_messages
-                || staged_state.len() > committed_state
-                || audit.len() > committed_audit)
-        {
-            if validate_batch(&staged_state).is_err() {
-                staged_state.truncate(committed_state);
+        if context.commit.is_some() && ledger.has_uncommitted() {
+            if validate_batch(&ledger.staged_state).is_err() {
+                ledger.rollback_state();
                 end = Some(End::Ended(EndCause::Error(Failure::StateConflict)));
                 break;
             }
-            commit_step_delta(
-                context,
-                thread_id,
-                run_id,
-                new_messages[committed_messages..].to_vec(),
-                staged_state[committed_state..].to_vec(),
-                audit[committed_audit..].to_vec(),
-                !running_committed,
-            )
-            .await?;
-            committed_messages = new_messages.len();
-            committed_state = staged_state.len();
-            committed_audit = audit.len();
-            running_committed = true;
+            ledger.commit_delta(context, thread_id, run_id).await?;
         }
 
         if context.is_cancelled() {
@@ -576,16 +774,9 @@ async fn drive(
             break;
         }
 
-        let current_live_version = runtime.active_live_version(&resolved.spec.plugin_ids);
-        if current_live_version != last_live_version {
-            // Best-effort: a failed re-resolution keeps the prior environment
-            // rather than aborting the run.
-            if let Ok(refreshed) = runtime.resolve_plugin_env(&resolved.spec) {
-                live_env = Some(refreshed);
-            }
-            last_live_version = current_live_version;
-        }
-        let env: &ResolvedExecutionEnv = live_env.as_ref().unwrap_or(env);
+        // The environment to drive this step: the live-refreshed one when a
+        // dynamic plugin's tool face changed, else the resolved base.
+        let env = live_env.current(runtime, resolved, env);
 
         // Phase hooks stage state (G9/G30). A BeforeInference hook may also inject
         // request-only context (e.g. recalled memories), prepended to this
@@ -595,9 +786,9 @@ async fn drive(
             run_id,
             step,
             PhaseHookPoint::StepStart,
-            &transcript,
+            &ledger.transcript,
             &mut store,
-            &mut staged_state,
+            &mut ledger.staged_state,
         )
         .await;
         run_phase_hooks(
@@ -605,9 +796,9 @@ async fn drive(
             run_id,
             step,
             PhaseHookPoint::BeforeInference,
-            &transcript,
+            &ledger.transcript,
             &mut store,
-            &mut staged_state,
+            &mut ledger.staged_state,
         )
         .await;
         // Request-only context the `BeforeInference` hooks wrote to state: the
@@ -618,17 +809,6 @@ async fn drive(
             .flatten()
             .collect();
 
-        // A `MaxTokens`-truncated text-only turn is continued in place: the
-        // partial text is committed as its own assistant message, a continuation
-        // prompt follows it, and inference reruns on the grown transcript — up
-        // to a per-step budget. A truncated turn that still carries tool calls
-        // skips recovery: those calls must be answered by tool results, not
-        // another assistant turn. An exhausted budget lets the truncated turn
-        // stand as the step's output. A retryable inference failure retries with
-        // backoff inside `infer_with_retry`; a permanent failure (or exhausted
-        // retries) commits a typed terminal reason carrying the error's
-        // classification code (G26).
-        let mut truncation_retries = 0;
         // A persisted partial resumes only this drive's first step (see above);
         // it is consumed on the first inference call of that step.
         let step_resume = if step == 0 {
@@ -637,83 +817,22 @@ async fn drive(
             None
         };
         let checkpoint_ref = checkpoint_ctx.as_ref();
-        // Model-pool failover: the ordered candidate bindings (primary first, then
-        // any pool fallbacks). Single-model agents yield exactly one, so this is a
-        // no-op for them. `cand_idx` advances only on a clean pre-commit failure.
-        let candidates = resolved.spec.candidate_bindings();
-        let mut cand_idx = 0usize;
-        let infer_turn = async {
-            let mut pending_resume = step_resume;
-            loop {
-                let mut request = build_chat_request(
-                    &resolved.spec,
-                    &prelude,
-                    &transcript,
-                    &env.dynamic_descriptors(),
-                    &opened,
-                );
-                // Route this attempt to the current candidate. The breaker inside
-                // `infer_with_retry` keys on `request.model_binding`, so a failed-over
-                // model tracks its own circuit and usage records under its own id.
-                request.model_binding = candidates[cand_idx].clone();
-                match infer_with_retry(
-                    llm,
-                    request,
-                    runtime.retry_policy(),
-                    runtime.circuit_breaker(),
-                    &delta_sink,
-                    checkpoint_ref,
-                    pending_resume.take(),
-                    &context.capture.decision,
-                    context.content_sink(),
-                    runtime.metrics(),
-                )
-                .await
-                {
-                    Ok(response) => {
-                        let truncated_text_only = response.stop_reason
-                            == Some(StopReason::MaxTokens)
-                            && response.output.tool_calls().is_empty()
-                            && !response.output.text_content().is_empty();
-                        if truncated_text_only
-                            && truncation_retries < runtime.max_continuation_retries()
-                        {
-                            let partial = truncated_assistant_message(
-                                run_id,
-                                step_base + step,
-                                truncation_retries,
-                                response.output.blocks,
-                            );
-                            transcript.push(partial.clone());
-                            new_messages.push(partial);
-                            let prompt =
-                                continuation_message(run_id, step_base + step, truncation_retries);
-                            transcript.push(prompt.clone());
-                            new_messages.push(prompt);
-                            truncation_retries += 1;
-                            continue;
-                        }
-                        break Ok(response);
-                    }
-                    Err(err) => {
-                        // Pool failover: advance to the next candidate model only on
-                        // a clean pre-commit failure — no partial committed this step
-                        // (`truncation_retries == 0`) and a not-yet-tried candidate
-                        // remains. A failure after a committed partial is terminal here;
-                        // mid-stream recovery is the StreamCheckpoint/resume path, not
-                        // a switch to a different model (which would double-generate).
-                        if truncation_retries == 0 && cand_idx + 1 < candidates.len() {
-                            cand_idx += 1;
-                            // A resume checkpoint belongs to the prior model's stream;
-                            // a fresh candidate starts clean.
-                            pending_resume = None;
-                            continue;
-                        }
-                        break Err(err);
-                    }
-                }
-            }
-        };
+        let infer_turn = infer_step_turn(
+            llm,
+            runtime,
+            resolved,
+            env,
+            run_id,
+            step_base,
+            step,
+            &mut ledger,
+            &prelude,
+            &opened,
+            &delta_sink,
+            checkpoint_ref,
+            step_resume,
+            context,
+        );
         // A cancel aborts a hung or long inference in flight rather than
         // waiting for the step boundary. Dropping the inference future may
         // abandon a half-open breaker probe; recording that reopens the
@@ -770,7 +889,7 @@ async fn drive(
                     usage.record(&resolved.spec.model_binding.model_ref, step_usage);
                     let usage_cmd = ThreadUsageKey::write(&usage);
                     store.apply(&usage_cmd);
-                    staged_state.push(usage_cmd);
+                    ledger.staged_state.push(usage_cmd);
                 }
                 Err(error) => {
                     tracing::error!(%error, "thread usage state drifted; skipping record");
@@ -783,9 +902,9 @@ async fn drive(
             run_id,
             step,
             PhaseHookPoint::AfterInference,
-            &transcript,
+            &ledger.transcript,
             &mut store,
-            &mut staged_state,
+            &mut ledger.staged_state,
         )
         .await;
 
@@ -817,8 +936,7 @@ async fn drive(
             })
             .collect();
         let assistant = assistant_message(run_id, step_base + step, response.output.blocks);
-        transcript.push(assistant.clone());
-        new_messages.push(assistant);
+        ledger.push_turn(assistant);
 
         // A text-only turn (no tool requests) is a natural end — unless queued
         // live input or a run-end guard keeps the loop going. Queued input is
@@ -829,11 +947,10 @@ async fn drive(
             // The safe loop boundary (ADR-0054): drain queued live input, honour an
             // operator pause, else fall through to the run-end guard. Shared with
             // every executor via the kernel `evaluate_boundary`.
-            match evaluate_boundary(context, run_id, &transcript) {
+            match evaluate_boundary(context, run_id, &ledger.transcript) {
                 BoundaryOutcome::Continue { fold } => {
                     for message in fold {
-                        transcript.push(message.clone());
-                        new_messages.push(message);
+                        ledger.push_turn(message);
                     }
                     continue;
                 }
@@ -842,8 +959,7 @@ async fn drive(
                     // lost), then park on a no-tool ticket — an operator pause,
                     // resumed by an explicit resume, not a tool result.
                     for message in fold {
-                        transcript.push(message.clone());
-                        new_messages.push(message);
+                        ledger.push_turn(message);
                     }
                     end = Some(End::Parked(Box::new(pause_ticket(
                         resolved, run_id, reason,
@@ -866,7 +982,7 @@ async fn drive(
             match consult_run_end(
                 env,
                 run_id,
-                &transcript,
+                &ledger.transcript,
                 forced_continuations,
                 context.cancellation.as_ref(),
                 &store,
@@ -877,7 +993,7 @@ async fn drive(
                     // Live progress (best-effort) and durable truth (committed with
                     // the run): the round is both streamed and recorded, so the
                     // round history survives a crash/resume (G1/G13).
-                    audit.push(continuation_event(&detail));
+                    ledger.audit.push(continuation_event(&detail));
                     emit(
                         context,
                         run_id,
@@ -888,13 +1004,12 @@ async fn drive(
                     )
                     .await;
                     let message = feedback_message(run_id, forced_continuations, feedback);
-                    transcript.push(message.clone());
-                    new_messages.push(message);
+                    ledger.push_turn(message);
                     forced_continuations += 1;
                     continue;
                 }
                 RunEndOutcome::Complete { detail } => {
-                    audit.push(continuation_event(&detail));
+                    ledger.audit.push(continuation_event(&detail));
                     emit(
                         context,
                         run_id,
@@ -925,10 +1040,10 @@ async fn drive(
             run_id,
             step,
             calls,
-            &mut transcript,
-            &mut new_messages,
-            &mut staged_state,
-            &mut audit,
+            &mut ledger.transcript,
+            &mut ledger.new_messages,
+            &mut ledger.staged_state,
+            &mut ledger.audit,
             &mut store,
             &mut opened,
         )
@@ -944,23 +1059,16 @@ async fn drive(
             run_id,
             step,
             PhaseHookPoint::StepEnd,
-            &transcript,
+            &ledger.transcript,
             &mut store,
-            &mut staged_state,
+            &mut ledger.staged_state,
         )
         .await;
     }
 
     // No early terminus means the loop exhausted its step ceiling.
     let end = end.unwrap_or(End::Ended(EndCause::MaxSteps));
-    // Return only the tail beyond the step-commit watermarks: the final
-    // commit must not re-append what step commits already made durable.
-    Ok(Checkpoint {
-        new_messages: new_messages.split_off(committed_messages),
-        staged_state: staged_state.split_off(committed_state),
-        audit: audit.split_off(committed_audit),
-        end,
-    })
+    Ok(ledger.into_checkpoint(end))
 }
 
 /// Commit one step's staged delta under a `Running` fact — the durable record
