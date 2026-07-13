@@ -40,10 +40,10 @@ pub struct awaken_ext_memory::plugin::MemoryPlugin
 impl awaken_ext_memory::plugin::MemoryPlugin
 pub fn awaken_ext_memory::plugin::MemoryPlugin::new(awaken_ext_memory::localfs::MemoryDir, awaken_ext_memory::recall::RecallBounds) -> Self
 pub fn awaken_ext_memory::plugin::MemoryPlugin::with_selector(self, alloc::sync::Arc<dyn awaken_ext_memory::select::RecallSelector>) -> Self
-impl awaken_runtime_contract::plugin::Plugin for awaken_ext_memory::plugin::MemoryPlugin
-pub fn awaken_ext_memory::plugin::MemoryPlugin::manifest(&self) -> awaken_runtime_contract::plugin::PluginManifest
-pub fn awaken_ext_memory::plugin::MemoryPlugin::resolve(&self) -> awaken_runtime_contract::plugin::Contributions
-pub fn awaken_ext_memory::plugin::MemoryPlugin::resolve_configured(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<awaken_runtime_contract::plugin::Contributions, awaken_runtime_contract::plugin::PluginConfigError>
+impl awaken_runtime_contract::plugin::contributions::Plugin for awaken_ext_memory::plugin::MemoryPlugin
+pub fn awaken_ext_memory::plugin::MemoryPlugin::manifest(&self) -> awaken_runtime_contract::plugin::capability::PluginManifest
+pub fn awaken_ext_memory::plugin::MemoryPlugin::resolve(&self) -> awaken_runtime_contract::plugin::contributions::Contributions
+pub fn awaken_ext_memory::plugin::MemoryPlugin::resolve_configured(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<awaken_runtime_contract::plugin::contributions::Contributions, awaken_runtime_contract::plugin::contributions::PluginConfigError>
 impl core::marker::Freeze for awaken_ext_memory::plugin::MemoryPlugin
 impl core::marker::Send for awaken_ext_memory::plugin::MemoryPlugin
 impl core::marker::Sync for awaken_ext_memory::plugin::MemoryPlugin
@@ -123,10 +123,10 @@ pub struct awaken_ext_memory::MemoryPlugin
 impl awaken_ext_memory::plugin::MemoryPlugin
 pub fn awaken_ext_memory::plugin::MemoryPlugin::new(awaken_ext_memory::localfs::MemoryDir, awaken_ext_memory::recall::RecallBounds) -> Self
 pub fn awaken_ext_memory::plugin::MemoryPlugin::with_selector(self, alloc::sync::Arc<dyn awaken_ext_memory::select::RecallSelector>) -> Self
-impl awaken_runtime_contract::plugin::Plugin for awaken_ext_memory::plugin::MemoryPlugin
-pub fn awaken_ext_memory::plugin::MemoryPlugin::manifest(&self) -> awaken_runtime_contract::plugin::PluginManifest
-pub fn awaken_ext_memory::plugin::MemoryPlugin::resolve(&self) -> awaken_runtime_contract::plugin::Contributions
-pub fn awaken_ext_memory::plugin::MemoryPlugin::resolve_configured(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<awaken_runtime_contract::plugin::Contributions, awaken_runtime_contract::plugin::PluginConfigError>
+impl awaken_runtime_contract::plugin::contributions::Plugin for awaken_ext_memory::plugin::MemoryPlugin
+pub fn awaken_ext_memory::plugin::MemoryPlugin::manifest(&self) -> awaken_runtime_contract::plugin::capability::PluginManifest
+pub fn awaken_ext_memory::plugin::MemoryPlugin::resolve(&self) -> awaken_runtime_contract::plugin::contributions::Contributions
+pub fn awaken_ext_memory::plugin::MemoryPlugin::resolve_configured(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<awaken_runtime_contract::plugin::contributions::Contributions, awaken_runtime_contract::plugin::contributions::PluginConfigError>
 impl core::marker::Freeze for awaken_ext_memory::plugin::MemoryPlugin
 impl core::marker::Send for awaken_ext_memory::plugin::MemoryPlugin
 impl core::marker::Sync for awaken_ext_memory::plugin::MemoryPlugin

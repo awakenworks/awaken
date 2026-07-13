@@ -19,8 +19,8 @@ pub fn awaken_protocol_mcp::export::McpExportedTool::plain(awaken_runtime_contra
 pub fn awaken_protocol_mcp::export::McpExportedTool::with_progress(awaken_runtime_contract::resolved::ToolDescriptor, alloc::sync::Arc<dyn awaken_protocol_mcp::export::ProgressRawTool>) -> Self
 impl core::clone::Clone for awaken_protocol_mcp::export::McpExportedTool
 pub fn awaken_protocol_mcp::export::McpExportedTool::clone(&self) -> awaken_protocol_mcp::export::McpExportedTool
-impl core::convert::From<awaken_runtime_contract::plugin::DynamicTool> for awaken_protocol_mcp::export::McpExportedTool
-pub fn awaken_protocol_mcp::export::McpExportedTool::from(awaken_runtime_contract::plugin::DynamicTool) -> Self
+impl core::convert::From<awaken_runtime_contract::plugin::contributions::DynamicTool> for awaken_protocol_mcp::export::McpExportedTool
+pub fn awaken_protocol_mcp::export::McpExportedTool::from(awaken_runtime_contract::plugin::contributions::DynamicTool) -> Self
 impl core::marker::Freeze for awaken_protocol_mcp::export::McpExportedTool
 impl core::marker::Send for awaken_protocol_mcp::export::McpExportedTool
 impl core::marker::Sync for awaken_protocol_mcp::export::McpExportedTool
@@ -141,8 +141,8 @@ pub fn awaken_protocol_mcp::export::McpExportedTool::plain(awaken_runtime_contra
 pub fn awaken_protocol_mcp::export::McpExportedTool::with_progress(awaken_runtime_contract::resolved::ToolDescriptor, alloc::sync::Arc<dyn awaken_protocol_mcp::export::ProgressRawTool>) -> Self
 impl core::clone::Clone for awaken_protocol_mcp::export::McpExportedTool
 pub fn awaken_protocol_mcp::export::McpExportedTool::clone(&self) -> awaken_protocol_mcp::export::McpExportedTool
-impl core::convert::From<awaken_runtime_contract::plugin::DynamicTool> for awaken_protocol_mcp::export::McpExportedTool
-pub fn awaken_protocol_mcp::export::McpExportedTool::from(awaken_runtime_contract::plugin::DynamicTool) -> Self
+impl core::convert::From<awaken_runtime_contract::plugin::contributions::DynamicTool> for awaken_protocol_mcp::export::McpExportedTool
+pub fn awaken_protocol_mcp::export::McpExportedTool::from(awaken_runtime_contract::plugin::contributions::DynamicTool) -> Self
 impl core::marker::Freeze for awaken_protocol_mcp::export::McpExportedTool
 impl core::marker::Send for awaken_protocol_mcp::export::McpExportedTool
 impl core::marker::Sync for awaken_protocol_mcp::export::McpExportedTool

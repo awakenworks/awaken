@@ -1,0 +1,193 @@
+pub mod awaken_eval
+pub mod awaken_eval::record
+pub fn awaken_eval::record::case_from_run(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, &[awaken_agent_contract::agent::message::Message]) -> awaken_eval::Case
+pub mod awaken_eval::replay
+pub struct awaken_eval::replay::Evaluator
+impl awaken_eval::replay::Evaluator
+pub fn awaken_eval::replay::Evaluator::new() -> Self
+pub async fn awaken_eval::replay::Evaluator::run_case(&self, &awaken_eval::Case) -> awaken_eval::CaseScore
+pub async fn awaken_eval::replay::Evaluator::run_dataset(&self, &awaken_eval::Dataset) -> awaken_eval::Report
+pub fn awaken_eval::replay::Evaluator::with_judge(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>) -> Self
+impl core::default::Default for awaken_eval::replay::Evaluator
+pub fn awaken_eval::replay::Evaluator::default() -> awaken_eval::replay::Evaluator
+impl core::marker::Freeze for awaken_eval::replay::Evaluator
+impl core::marker::Send for awaken_eval::replay::Evaluator
+impl core::marker::Sync for awaken_eval::replay::Evaluator
+impl core::marker::Unpin for awaken_eval::replay::Evaluator
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_eval::replay::Evaluator
+impl !core::panic::unwind_safe::UnwindSafe for awaken_eval::replay::Evaluator
+pub async fn awaken_eval::replay::run_case(&awaken_eval::Case) -> awaken_eval::CaseScore
+pub async fn awaken_eval::replay::run_dataset(&awaken_eval::Dataset) -> awaken_eval::Report
+pub mod awaken_eval::store
+pub fn awaken_eval::store::load_dataset(&std::path::Path) -> std::io::error::Result<awaken_eval::Dataset>
+pub fn awaken_eval::store::save_dataset(&std::path::Path, &awaken_eval::Dataset) -> std::io::error::Result<()>
+pub enum awaken_eval::Expectation
+pub awaken_eval::Expectation::JudgeScore
+pub awaken_eval::Expectation::JudgeScore::min_score: u8
+pub awaken_eval::Expectation::JudgeScore::rubric: alloc::string::String
+pub awaken_eval::Expectation::OutputContains
+pub awaken_eval::Expectation::OutputContains::substring: alloc::string::String
+pub awaken_eval::Expectation::OutputEquals
+pub awaken_eval::Expectation::OutputEquals::text: alloc::string::String
+pub awaken_eval::Expectation::OutputNotContains
+pub awaken_eval::Expectation::OutputNotContains::substring: alloc::string::String
+pub awaken_eval::Expectation::Succeeded
+pub awaken_eval::Expectation::ToolCalled
+pub awaken_eval::Expectation::ToolCalled::tool_id: alloc::string::String
+impl awaken_eval::Expectation
+pub fn awaken_eval::Expectation::judge_spec(&self) -> core::option::Option<(&str, u8)>
+pub fn awaken_eval::Expectation::kind(&self) -> &'static str
+impl core::clone::Clone for awaken_eval::Expectation
+pub fn awaken_eval::Expectation::clone(&self) -> awaken_eval::Expectation
+impl core::cmp::Eq for awaken_eval::Expectation
+impl core::cmp::PartialEq for awaken_eval::Expectation
+pub fn awaken_eval::Expectation::eq(&self, &awaken_eval::Expectation) -> bool
+impl core::fmt::Debug for awaken_eval::Expectation
+pub fn awaken_eval::Expectation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_eval::Expectation
+impl serde_core::ser::Serialize for awaken_eval::Expectation
+pub fn awaken_eval::Expectation::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_eval::Expectation
+pub fn awaken_eval::Expectation::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_eval::Expectation
+impl core::marker::Send for awaken_eval::Expectation
+impl core::marker::Sync for awaken_eval::Expectation
+impl core::marker::Unpin for awaken_eval::Expectation
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_eval::Expectation
+impl core::panic::unwind_safe::UnwindSafe for awaken_eval::Expectation
+pub struct awaken_eval::Case
+pub awaken_eval::Case::expectations: alloc::vec::Vec<awaken_eval::Expectation>
+pub awaken_eval::Case::id: alloc::string::String
+pub awaken_eval::Case::input: alloc::string::String
+pub awaken_eval::Case::instructions: alloc::string::String
+pub awaken_eval::Case::script: alloc::vec::Vec<awaken_eval::ScriptedTurn>
+impl core::clone::Clone for awaken_eval::Case
+pub fn awaken_eval::Case::clone(&self) -> awaken_eval::Case
+impl core::fmt::Debug for awaken_eval::Case
+pub fn awaken_eval::Case::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl serde_core::ser::Serialize for awaken_eval::Case
+pub fn awaken_eval::Case::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_eval::Case
+pub fn awaken_eval::Case::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_eval::Case
+impl core::marker::Send for awaken_eval::Case
+impl core::marker::Sync for awaken_eval::Case
+impl core::marker::Unpin for awaken_eval::Case
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_eval::Case
+impl core::panic::unwind_safe::UnwindSafe for awaken_eval::Case
+pub struct awaken_eval::CaseScore
+pub awaken_eval::CaseScore::case_id: alloc::string::String
+pub awaken_eval::CaseScore::results: alloc::vec::Vec<awaken_eval::ExpectationResult>
+impl awaken_eval::CaseScore
+pub fn awaken_eval::CaseScore::passed(&self) -> bool
+impl core::clone::Clone for awaken_eval::CaseScore
+pub fn awaken_eval::CaseScore::clone(&self) -> awaken_eval::CaseScore
+impl core::fmt::Debug for awaken_eval::CaseScore
+pub fn awaken_eval::CaseScore::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl serde_core::ser::Serialize for awaken_eval::CaseScore
+pub fn awaken_eval::CaseScore::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_eval::CaseScore
+pub fn awaken_eval::CaseScore::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_eval::CaseScore
+impl core::marker::Send for awaken_eval::CaseScore
+impl core::marker::Sync for awaken_eval::CaseScore
+impl core::marker::Unpin for awaken_eval::CaseScore
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_eval::CaseScore
+impl core::panic::unwind_safe::UnwindSafe for awaken_eval::CaseScore
+pub struct awaken_eval::Dataset
+pub awaken_eval::Dataset::cases: alloc::vec::Vec<awaken_eval::Case>
+pub awaken_eval::Dataset::name: alloc::string::String
+impl core::clone::Clone for awaken_eval::Dataset
+pub fn awaken_eval::Dataset::clone(&self) -> awaken_eval::Dataset
+impl core::fmt::Debug for awaken_eval::Dataset
+pub fn awaken_eval::Dataset::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl serde_core::ser::Serialize for awaken_eval::Dataset
+pub fn awaken_eval::Dataset::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_eval::Dataset
+pub fn awaken_eval::Dataset::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_eval::Dataset
+impl core::marker::Send for awaken_eval::Dataset
+impl core::marker::Sync for awaken_eval::Dataset
+impl core::marker::Unpin for awaken_eval::Dataset
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_eval::Dataset
+impl core::panic::unwind_safe::UnwindSafe for awaken_eval::Dataset
+pub struct awaken_eval::ExpectationResult
+pub awaken_eval::ExpectationResult::detail: alloc::string::String
+pub awaken_eval::ExpectationResult::expectation_kind: alloc::string::String
+pub awaken_eval::ExpectationResult::passed: bool
+impl core::clone::Clone for awaken_eval::ExpectationResult
+pub fn awaken_eval::ExpectationResult::clone(&self) -> awaken_eval::ExpectationResult
+impl core::cmp::Eq for awaken_eval::ExpectationResult
+impl core::cmp::PartialEq for awaken_eval::ExpectationResult
+pub fn awaken_eval::ExpectationResult::eq(&self, &awaken_eval::ExpectationResult) -> bool
+impl core::fmt::Debug for awaken_eval::ExpectationResult
+pub fn awaken_eval::ExpectationResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_eval::ExpectationResult
+impl serde_core::ser::Serialize for awaken_eval::ExpectationResult
+pub fn awaken_eval::ExpectationResult::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_eval::ExpectationResult
+pub fn awaken_eval::ExpectationResult::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_eval::ExpectationResult
+impl core::marker::Send for awaken_eval::ExpectationResult
+impl core::marker::Sync for awaken_eval::ExpectationResult
+impl core::marker::Unpin for awaken_eval::ExpectationResult
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_eval::ExpectationResult
+impl core::panic::unwind_safe::UnwindSafe for awaken_eval::ExpectationResult
+pub struct awaken_eval::Report
+pub awaken_eval::Report::dataset: alloc::string::String
+pub awaken_eval::Report::scores: alloc::vec::Vec<awaken_eval::CaseScore>
+impl awaken_eval::Report
+pub fn awaken_eval::Report::all_passed(&self) -> bool
+pub fn awaken_eval::Report::passed(&self) -> usize
+pub fn awaken_eval::Report::total(&self) -> usize
+impl core::clone::Clone for awaken_eval::Report
+pub fn awaken_eval::Report::clone(&self) -> awaken_eval::Report
+impl core::fmt::Debug for awaken_eval::Report
+pub fn awaken_eval::Report::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl serde_core::ser::Serialize for awaken_eval::Report
+pub fn awaken_eval::Report::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_eval::Report
+pub fn awaken_eval::Report::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_eval::Report
+impl core::marker::Send for awaken_eval::Report
+impl core::marker::Sync for awaken_eval::Report
+impl core::marker::Unpin for awaken_eval::Report
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_eval::Report
+impl core::panic::unwind_safe::UnwindSafe for awaken_eval::Report
+pub struct awaken_eval::ScriptedToolCall
+pub awaken_eval::ScriptedToolCall::arguments: serde_json::value::Value
+pub awaken_eval::ScriptedToolCall::tool_id: alloc::string::String
+impl core::clone::Clone for awaken_eval::ScriptedToolCall
+pub fn awaken_eval::ScriptedToolCall::clone(&self) -> awaken_eval::ScriptedToolCall
+impl core::fmt::Debug for awaken_eval::ScriptedToolCall
+pub fn awaken_eval::ScriptedToolCall::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl serde_core::ser::Serialize for awaken_eval::ScriptedToolCall
+pub fn awaken_eval::ScriptedToolCall::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_eval::ScriptedToolCall
+pub fn awaken_eval::ScriptedToolCall::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_eval::ScriptedToolCall
+impl core::marker::Send for awaken_eval::ScriptedToolCall
+impl core::marker::Sync for awaken_eval::ScriptedToolCall
+impl core::marker::Unpin for awaken_eval::ScriptedToolCall
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_eval::ScriptedToolCall
+impl core::panic::unwind_safe::UnwindSafe for awaken_eval::ScriptedToolCall
+pub struct awaken_eval::ScriptedTurn
+pub awaken_eval::ScriptedTurn::text: alloc::string::String
+pub awaken_eval::ScriptedTurn::tool_calls: alloc::vec::Vec<awaken_eval::ScriptedToolCall>
+impl core::clone::Clone for awaken_eval::ScriptedTurn
+pub fn awaken_eval::ScriptedTurn::clone(&self) -> awaken_eval::ScriptedTurn
+impl core::default::Default for awaken_eval::ScriptedTurn
+pub fn awaken_eval::ScriptedTurn::default() -> awaken_eval::ScriptedTurn
+impl core::fmt::Debug for awaken_eval::ScriptedTurn
+pub fn awaken_eval::ScriptedTurn::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl serde_core::ser::Serialize for awaken_eval::ScriptedTurn
+pub fn awaken_eval::ScriptedTurn::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_eval::ScriptedTurn
+pub fn awaken_eval::ScriptedTurn::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_eval::ScriptedTurn
+impl core::marker::Send for awaken_eval::ScriptedTurn
+impl core::marker::Sync for awaken_eval::ScriptedTurn
+impl core::marker::Unpin for awaken_eval::ScriptedTurn
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_eval::ScriptedTurn
+impl core::panic::unwind_safe::UnwindSafe for awaken_eval::ScriptedTurn
+pub fn awaken_eval::score_case(&awaken_eval::Case, &str, bool, &[alloc::string::String]) -> awaken_eval::CaseScore

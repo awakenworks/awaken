@@ -1,0 +1,260 @@
+pub mod awaken_data_subject
+pub use awaken_data_subject::ContentCapture
+pub use awaken_data_subject::DataSubjectId
+pub use awaken_data_subject::ErasureReceipt
+pub use awaken_data_subject::Purpose
+pub enum awaken_data_subject::ConsentStatus
+pub awaken_data_subject::ConsentStatus::Granted
+pub awaken_data_subject::ConsentStatus::Pending
+pub awaken_data_subject::ConsentStatus::Withdrawn
+impl core::clone::Clone for awaken_data_subject::ConsentStatus
+pub fn awaken_data_subject::ConsentStatus::clone(&self) -> awaken_data_subject::ConsentStatus
+impl core::cmp::Eq for awaken_data_subject::ConsentStatus
+impl core::cmp::PartialEq for awaken_data_subject::ConsentStatus
+pub fn awaken_data_subject::ConsentStatus::eq(&self, &awaken_data_subject::ConsentStatus) -> bool
+impl core::fmt::Debug for awaken_data_subject::ConsentStatus
+pub fn awaken_data_subject::ConsentStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_data_subject::ConsentStatus
+impl core::marker::StructuralPartialEq for awaken_data_subject::ConsentStatus
+impl serde_core::ser::Serialize for awaken_data_subject::ConsentStatus
+pub fn awaken_data_subject::ConsentStatus::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_data_subject::ConsentStatus
+pub fn awaken_data_subject::ConsentStatus::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_data_subject::ConsentStatus
+impl core::marker::Send for awaken_data_subject::ConsentStatus
+impl core::marker::Sync for awaken_data_subject::ConsentStatus
+impl core::marker::Unpin for awaken_data_subject::ConsentStatus
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_data_subject::ConsentStatus
+impl core::panic::unwind_safe::UnwindSafe for awaken_data_subject::ConsentStatus
+pub enum awaken_data_subject::DataSubjectError
+pub awaken_data_subject::DataSubjectError::NotFound(alloc::string::String)
+pub awaken_data_subject::DataSubjectError::Storage(alloc::string::String)
+impl core::error::Error for awaken_data_subject::DataSubjectError
+impl core::fmt::Debug for awaken_data_subject::DataSubjectError
+pub fn awaken_data_subject::DataSubjectError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_data_subject::DataSubjectError
+pub fn awaken_data_subject::DataSubjectError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_data_subject::DataSubjectError
+impl core::marker::Send for awaken_data_subject::DataSubjectError
+impl core::marker::Sync for awaken_data_subject::DataSubjectError
+impl core::marker::Unpin for awaken_data_subject::DataSubjectError
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_data_subject::DataSubjectError
+impl core::panic::unwind_safe::UnwindSafe for awaken_data_subject::DataSubjectError
+pub enum awaken_data_subject::LawfulBasis
+pub awaken_data_subject::LawfulBasis::Consent
+pub awaken_data_subject::LawfulBasis::Contract
+pub awaken_data_subject::LawfulBasis::LegitimateInterest
+impl core::clone::Clone for awaken_data_subject::LawfulBasis
+pub fn awaken_data_subject::LawfulBasis::clone(&self) -> awaken_data_subject::LawfulBasis
+impl core::cmp::Eq for awaken_data_subject::LawfulBasis
+impl core::cmp::PartialEq for awaken_data_subject::LawfulBasis
+pub fn awaken_data_subject::LawfulBasis::eq(&self, &awaken_data_subject::LawfulBasis) -> bool
+impl core::default::Default for awaken_data_subject::LawfulBasis
+pub fn awaken_data_subject::LawfulBasis::default() -> awaken_data_subject::LawfulBasis
+impl core::fmt::Debug for awaken_data_subject::LawfulBasis
+pub fn awaken_data_subject::LawfulBasis::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_data_subject::LawfulBasis
+impl core::marker::StructuralPartialEq for awaken_data_subject::LawfulBasis
+impl serde_core::ser::Serialize for awaken_data_subject::LawfulBasis
+pub fn awaken_data_subject::LawfulBasis::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_data_subject::LawfulBasis
+pub fn awaken_data_subject::LawfulBasis::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_data_subject::LawfulBasis
+impl core::marker::Send for awaken_data_subject::LawfulBasis
+impl core::marker::Sync for awaken_data_subject::LawfulBasis
+impl core::marker::Unpin for awaken_data_subject::LawfulBasis
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_data_subject::LawfulBasis
+impl core::panic::unwind_safe::UnwindSafe for awaken_data_subject::LawfulBasis
+pub enum awaken_data_subject::StoreError
+pub awaken_data_subject::StoreError::Migrate(alloc::string::String)
+pub awaken_data_subject::StoreError::Open(alloc::string::String)
+impl core::error::Error for awaken_data_subject::StoreError
+impl core::fmt::Debug for awaken_data_subject::StoreError
+pub fn awaken_data_subject::StoreError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_data_subject::StoreError
+pub fn awaken_data_subject::StoreError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_data_subject::StoreError
+impl core::marker::Send for awaken_data_subject::StoreError
+impl core::marker::Sync for awaken_data_subject::StoreError
+impl core::marker::Unpin for awaken_data_subject::StoreError
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_data_subject::StoreError
+impl core::panic::unwind_safe::UnwindSafe for awaken_data_subject::StoreError
+pub struct awaken_data_subject::CapturedRecord
+pub awaken_data_subject::CapturedRecord::content: alloc::string::String
+pub awaken_data_subject::CapturedRecord::id: alloc::string::String
+pub awaken_data_subject::CapturedRecord::purpose: awaken_runtime_contract::data_subject::Purpose
+pub awaken_data_subject::CapturedRecord::recorded_at: i64
+pub awaken_data_subject::CapturedRecord::subject: awaken_runtime_contract::data_subject::DataSubjectId
+impl core::clone::Clone for awaken_data_subject::CapturedRecord
+pub fn awaken_data_subject::CapturedRecord::clone(&self) -> awaken_data_subject::CapturedRecord
+impl core::cmp::Eq for awaken_data_subject::CapturedRecord
+impl core::cmp::PartialEq for awaken_data_subject::CapturedRecord
+pub fn awaken_data_subject::CapturedRecord::eq(&self, &awaken_data_subject::CapturedRecord) -> bool
+impl core::fmt::Debug for awaken_data_subject::CapturedRecord
+pub fn awaken_data_subject::CapturedRecord::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_data_subject::CapturedRecord
+impl core::marker::Freeze for awaken_data_subject::CapturedRecord
+impl core::marker::Send for awaken_data_subject::CapturedRecord
+impl core::marker::Sync for awaken_data_subject::CapturedRecord
+impl core::marker::Unpin for awaken_data_subject::CapturedRecord
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_data_subject::CapturedRecord
+impl core::panic::unwind_safe::UnwindSafe for awaken_data_subject::CapturedRecord
+pub struct awaken_data_subject::ConsentGrant
+pub awaken_data_subject::ConsentGrant::basis: awaken_data_subject::LawfulBasis
+pub awaken_data_subject::ConsentGrant::granted_at: i64
+pub awaken_data_subject::ConsentGrant::purpose: awaken_runtime_contract::data_subject::Purpose
+pub awaken_data_subject::ConsentGrant::status: awaken_data_subject::ConsentStatus
+pub awaken_data_subject::ConsentGrant::version: alloc::string::String
+impl core::clone::Clone for awaken_data_subject::ConsentGrant
+pub fn awaken_data_subject::ConsentGrant::clone(&self) -> awaken_data_subject::ConsentGrant
+impl core::cmp::Eq for awaken_data_subject::ConsentGrant
+impl core::cmp::PartialEq for awaken_data_subject::ConsentGrant
+pub fn awaken_data_subject::ConsentGrant::eq(&self, &awaken_data_subject::ConsentGrant) -> bool
+impl core::fmt::Debug for awaken_data_subject::ConsentGrant
+pub fn awaken_data_subject::ConsentGrant::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_data_subject::ConsentGrant
+impl serde_core::ser::Serialize for awaken_data_subject::ConsentGrant
+pub fn awaken_data_subject::ConsentGrant::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_data_subject::ConsentGrant
+pub fn awaken_data_subject::ConsentGrant::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_data_subject::ConsentGrant
+impl core::marker::Send for awaken_data_subject::ConsentGrant
+impl core::marker::Sync for awaken_data_subject::ConsentGrant
+impl core::marker::Unpin for awaken_data_subject::ConsentGrant
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_data_subject::ConsentGrant
+impl core::panic::unwind_safe::UnwindSafe for awaken_data_subject::ConsentGrant
+pub struct awaken_data_subject::DataSubject
+pub awaken_data_subject::DataSubject::consents: alloc::vec::Vec<awaken_data_subject::ConsentGrant>
+pub awaken_data_subject::DataSubject::created_at: i64
+pub awaken_data_subject::DataSubject::erased_at: core::option::Option<i64>
+pub awaken_data_subject::DataSubject::external_id: core::option::Option<alloc::string::String>
+pub awaken_data_subject::DataSubject::id: awaken_runtime_contract::data_subject::DataSubjectId
+pub awaken_data_subject::DataSubject::org: alloc::string::String
+pub awaken_data_subject::DataSubject::updated_at: i64
+impl awaken_data_subject::DataSubject
+pub fn awaken_data_subject::DataSubject::consent_ceiling(&self, awaken_runtime_contract::data_subject::Purpose) -> awaken_runtime_contract::capture::ContentCapture
+pub fn awaken_data_subject::DataSubject::mark_erased(&mut self, i64)
+pub fn awaken_data_subject::DataSubject::new(awaken_runtime_contract::data_subject::DataSubjectId, impl core::convert::Into<alloc::string::String>, i64) -> Self
+pub fn awaken_data_subject::DataSubject::upsert_consent(&mut self, awaken_data_subject::ConsentGrant)
+impl core::clone::Clone for awaken_data_subject::DataSubject
+pub fn awaken_data_subject::DataSubject::clone(&self) -> awaken_data_subject::DataSubject
+impl core::cmp::Eq for awaken_data_subject::DataSubject
+impl core::cmp::PartialEq for awaken_data_subject::DataSubject
+pub fn awaken_data_subject::DataSubject::eq(&self, &awaken_data_subject::DataSubject) -> bool
+impl core::fmt::Debug for awaken_data_subject::DataSubject
+pub fn awaken_data_subject::DataSubject::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_data_subject::DataSubject
+impl serde_core::ser::Serialize for awaken_data_subject::DataSubject
+pub fn awaken_data_subject::DataSubject::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_data_subject::DataSubject
+pub fn awaken_data_subject::DataSubject::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_data_subject::DataSubject
+impl core::marker::Send for awaken_data_subject::DataSubject
+impl core::marker::Sync for awaken_data_subject::DataSubject
+impl core::marker::Unpin for awaken_data_subject::DataSubject
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_data_subject::DataSubject
+impl core::panic::unwind_safe::UnwindSafe for awaken_data_subject::DataSubject
+pub struct awaken_data_subject::InMemoryCapturedContentStore
+impl awaken_data_subject::InMemoryCapturedContentStore
+pub fn awaken_data_subject::InMemoryCapturedContentStore::insert(&self, awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose, impl core::convert::Into<alloc::string::String>, i64) -> alloc::string::String
+pub fn awaken_data_subject::InMemoryCapturedContentStore::is_empty(&self) -> bool
+pub fn awaken_data_subject::InMemoryCapturedContentStore::len(&self) -> usize
+pub fn awaken_data_subject::InMemoryCapturedContentStore::new() -> Self
+pub fn awaken_data_subject::InMemoryCapturedContentStore::release(&self, &awaken_runtime_contract::data_subject::DataSubjectId) -> usize
+pub fn awaken_data_subject::InMemoryCapturedContentStore::restrict(&self, &awaken_runtime_contract::data_subject::DataSubjectId) -> usize
+pub fn awaken_data_subject::InMemoryCapturedContentStore::sweep_expired(&self, i64, i64) -> usize
+impl awaken_runtime_contract::data_subject::CaptureSink for awaken_data_subject::InMemoryCapturedContentStore
+pub fn awaken_data_subject::InMemoryCapturedContentStore::record<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose, awaken_runtime_contract::capture::ContentKind, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+impl awaken_runtime_contract::data_subject::ContentEraser for awaken_data_subject::InMemoryCapturedContentStore
+pub fn awaken_data_subject::InMemoryCapturedContentStore::erase_subject<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = usize> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl core::default::Default for awaken_data_subject::InMemoryCapturedContentStore
+pub fn awaken_data_subject::InMemoryCapturedContentStore::default() -> awaken_data_subject::InMemoryCapturedContentStore
+impl !core::marker::Freeze for awaken_data_subject::InMemoryCapturedContentStore
+impl core::marker::Send for awaken_data_subject::InMemoryCapturedContentStore
+impl core::marker::Sync for awaken_data_subject::InMemoryCapturedContentStore
+impl core::marker::Unpin for awaken_data_subject::InMemoryCapturedContentStore
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_data_subject::InMemoryCapturedContentStore
+impl core::panic::unwind_safe::UnwindSafe for awaken_data_subject::InMemoryCapturedContentStore
+pub struct awaken_data_subject::InMemoryDataSubjectRepo
+impl awaken_data_subject::InMemoryDataSubjectRepo
+pub fn awaken_data_subject::InMemoryDataSubjectRepo::new() -> Self
+impl awaken_data_subject::DataSubjectRepo for awaken_data_subject::InMemoryDataSubjectRepo
+pub fn awaken_data_subject::InMemoryDataSubjectRepo::delete<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_data_subject::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_data_subject::InMemoryDataSubjectRepo::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_data_subject::DataSubject, awaken_data_subject::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_data_subject::InMemoryDataSubjectRepo::list<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_data_subject::DataSubject>, awaken_data_subject::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_data_subject::InMemoryDataSubjectRepo::put<'life0, 'async_trait>(&'life0 self, awaken_data_subject::DataSubject) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_data_subject::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl core::default::Default for awaken_data_subject::InMemoryDataSubjectRepo
+pub fn awaken_data_subject::InMemoryDataSubjectRepo::default() -> awaken_data_subject::InMemoryDataSubjectRepo
+impl !core::marker::Freeze for awaken_data_subject::InMemoryDataSubjectRepo
+impl core::marker::Send for awaken_data_subject::InMemoryDataSubjectRepo
+impl core::marker::Sync for awaken_data_subject::InMemoryDataSubjectRepo
+impl core::marker::Unpin for awaken_data_subject::InMemoryDataSubjectRepo
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_data_subject::InMemoryDataSubjectRepo
+impl core::panic::unwind_safe::UnwindSafe for awaken_data_subject::InMemoryDataSubjectRepo
+pub struct awaken_data_subject::RepoDataSubjectResolver
+impl awaken_data_subject::RepoDataSubjectResolver
+pub fn awaken_data_subject::RepoDataSubjectResolver::new(alloc::sync::Arc<dyn awaken_data_subject::DataSubjectRepo>) -> Self
+pub fn awaken_data_subject::RepoDataSubjectResolver::with_eraser(self, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::ContentEraser>) -> Self
+impl awaken_runtime_contract::data_subject::DataSubjectResolver for awaken_data_subject::RepoDataSubjectResolver
+pub fn awaken_data_subject::RepoDataSubjectResolver::consent_ceiling<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::capture::ContentCapture> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_data_subject::RepoDataSubjectResolver::erase<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::data_subject::ErasureReceipt> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl core::marker::Freeze for awaken_data_subject::RepoDataSubjectResolver
+impl core::marker::Send for awaken_data_subject::RepoDataSubjectResolver
+impl core::marker::Sync for awaken_data_subject::RepoDataSubjectResolver
+impl core::marker::Unpin for awaken_data_subject::RepoDataSubjectResolver
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_data_subject::RepoDataSubjectResolver
+impl !core::panic::unwind_safe::UnwindSafe for awaken_data_subject::RepoDataSubjectResolver
+pub struct awaken_data_subject::SqliteCapturedContentStore
+impl awaken_data_subject::SqliteCapturedContentStore
+pub fn awaken_data_subject::SqliteCapturedContentStore::insert(&self, &awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose, &str, i64) -> alloc::string::String
+pub fn awaken_data_subject::SqliteCapturedContentStore::is_empty(&self) -> bool
+pub fn awaken_data_subject::SqliteCapturedContentStore::len(&self) -> usize
+pub fn awaken_data_subject::SqliteCapturedContentStore::open(&str) -> core::result::Result<Self, awaken_data_subject::StoreError>
+pub fn awaken_data_subject::SqliteCapturedContentStore::open_in_memory() -> core::result::Result<Self, awaken_data_subject::StoreError>
+pub fn awaken_data_subject::SqliteCapturedContentStore::release(&self, &awaken_runtime_contract::data_subject::DataSubjectId) -> usize
+pub fn awaken_data_subject::SqliteCapturedContentStore::restrict(&self, &awaken_runtime_contract::data_subject::DataSubjectId) -> usize
+pub fn awaken_data_subject::SqliteCapturedContentStore::sweep_expired(&self, i64, i64) -> usize
+impl awaken_runtime_contract::data_subject::CaptureSink for awaken_data_subject::SqliteCapturedContentStore
+pub fn awaken_data_subject::SqliteCapturedContentStore::record<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose, awaken_runtime_contract::capture::ContentKind, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+impl awaken_runtime_contract::data_subject::ContentEraser for awaken_data_subject::SqliteCapturedContentStore
+pub fn awaken_data_subject::SqliteCapturedContentStore::erase_subject<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = usize> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl !core::marker::Freeze for awaken_data_subject::SqliteCapturedContentStore
+impl core::marker::Send for awaken_data_subject::SqliteCapturedContentStore
+impl core::marker::Sync for awaken_data_subject::SqliteCapturedContentStore
+impl core::marker::Unpin for awaken_data_subject::SqliteCapturedContentStore
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_data_subject::SqliteCapturedContentStore
+impl core::panic::unwind_safe::UnwindSafe for awaken_data_subject::SqliteCapturedContentStore
+pub struct awaken_data_subject::SqliteDataSubjectRepo
+impl awaken_data_subject::SqliteDataSubjectRepo
+pub fn awaken_data_subject::SqliteDataSubjectRepo::ensure_schema(&self) -> core::result::Result<(), awaken_data_subject::StoreError>
+pub fn awaken_data_subject::SqliteDataSubjectRepo::open(&str) -> core::result::Result<Self, awaken_data_subject::StoreError>
+pub fn awaken_data_subject::SqliteDataSubjectRepo::open_in_memory() -> core::result::Result<Self, awaken_data_subject::StoreError>
+pub fn awaken_data_subject::SqliteDataSubjectRepo::over(rusqlite::Connection) -> Self
+impl awaken_data_subject::DataSubjectRepo for awaken_data_subject::SqliteDataSubjectRepo
+pub fn awaken_data_subject::SqliteDataSubjectRepo::delete<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_data_subject::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_data_subject::SqliteDataSubjectRepo::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_data_subject::DataSubject, awaken_data_subject::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_data_subject::SqliteDataSubjectRepo::list<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_data_subject::DataSubject>, awaken_data_subject::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_data_subject::SqliteDataSubjectRepo::put<'life0, 'async_trait>(&'life0 self, awaken_data_subject::DataSubject) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_data_subject::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl core::marker::Freeze for awaken_data_subject::SqliteDataSubjectRepo
+impl core::marker::Send for awaken_data_subject::SqliteDataSubjectRepo
+impl core::marker::Sync for awaken_data_subject::SqliteDataSubjectRepo
+impl core::marker::Unpin for awaken_data_subject::SqliteDataSubjectRepo
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_data_subject::SqliteDataSubjectRepo
+impl core::panic::unwind_safe::UnwindSafe for awaken_data_subject::SqliteDataSubjectRepo
+pub const awaken_data_subject::BUNDLE_ID: &str
+pub trait awaken_data_subject::DataSubjectRepo: core::marker::Send + core::marker::Sync
+pub fn awaken_data_subject::DataSubjectRepo::delete<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_data_subject::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_data_subject::DataSubjectRepo::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_data_subject::DataSubject, awaken_data_subject::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_data_subject::DataSubjectRepo::list<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_data_subject::DataSubject>, awaken_data_subject::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_data_subject::DataSubjectRepo::put<'life0, 'async_trait>(&'life0 self, awaken_data_subject::DataSubject) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_data_subject::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl awaken_data_subject::DataSubjectRepo for awaken_data_subject::InMemoryDataSubjectRepo
+pub fn awaken_data_subject::InMemoryDataSubjectRepo::delete<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_data_subject::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_data_subject::InMemoryDataSubjectRepo::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_data_subject::DataSubject, awaken_data_subject::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_data_subject::InMemoryDataSubjectRepo::list<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_data_subject::DataSubject>, awaken_data_subject::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_data_subject::InMemoryDataSubjectRepo::put<'life0, 'async_trait>(&'life0 self, awaken_data_subject::DataSubject) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_data_subject::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl awaken_data_subject::DataSubjectRepo for awaken_data_subject::SqliteDataSubjectRepo
+pub fn awaken_data_subject::SqliteDataSubjectRepo::delete<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_data_subject::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_data_subject::SqliteDataSubjectRepo::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_data_subject::DataSubject, awaken_data_subject::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_data_subject::SqliteDataSubjectRepo::list<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_data_subject::DataSubject>, awaken_data_subject::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_data_subject::SqliteDataSubjectRepo::put<'life0, 'async_trait>(&'life0 self, awaken_data_subject::DataSubject) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_data_subject::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_data_subject::data_subject_bundle() -> core::result::Result<awaken_scoped_migration::MigrationBundle, awaken_scoped_migration::MigrationError>

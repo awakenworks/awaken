@@ -1,0 +1,236 @@
+pub mod awaken_sandbox_memoryd
+pub mod awaken_sandbox_memoryd::coordinator
+pub struct awaken_sandbox_memoryd::coordinator::FuseMountFactory
+impl awaken_sandbox_memoryd::coordinator::FuseMountFactory
+pub fn awaken_sandbox_memoryd::coordinator::FuseMountFactory::new(alloc::sync::Arc<dyn awaken_resource_contract::MemoryFs>, impl core::convert::Into<std::path::PathBuf>) -> Self
+impl awaken_sandbox_memoryd::coordinator::MountFactory for awaken_sandbox_memoryd::coordinator::FuseMountFactory
+pub fn awaken_sandbox_memoryd::coordinator::FuseMountFactory::mount(&self, &str) -> core::result::Result<(std::path::PathBuf, alloc::boxed::Box<dyn awaken_sandbox_memoryd::coordinator::Mount>), awaken_sandbox_memoryd::FuseError>
+impl core::marker::Freeze for awaken_sandbox_memoryd::coordinator::FuseMountFactory
+impl core::marker::Send for awaken_sandbox_memoryd::coordinator::FuseMountFactory
+impl core::marker::Sync for awaken_sandbox_memoryd::coordinator::FuseMountFactory
+impl core::marker::Unpin for awaken_sandbox_memoryd::coordinator::FuseMountFactory
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_memoryd::coordinator::FuseMountFactory
+impl !core::panic::unwind_safe::UnwindSafe for awaken_sandbox_memoryd::coordinator::FuseMountFactory
+pub struct awaken_sandbox_memoryd::coordinator::MountCoordinator
+impl awaken_sandbox_memoryd::coordinator::MountCoordinator
+pub fn awaken_sandbox_memoryd::coordinator::MountCoordinator::acquire(&self, &str) -> core::result::Result<std::path::PathBuf, awaken_sandbox_memoryd::FuseError>
+pub fn awaken_sandbox_memoryd::coordinator::MountCoordinator::active_mounts(&self) -> usize
+pub fn awaken_sandbox_memoryd::coordinator::MountCoordinator::new(alloc::boxed::Box<dyn awaken_sandbox_memoryd::coordinator::MountFactory>) -> Self
+pub fn awaken_sandbox_memoryd::coordinator::MountCoordinator::refcount(&self, &str) -> usize
+pub fn awaken_sandbox_memoryd::coordinator::MountCoordinator::release(&self, &str)
+impl !core::marker::Freeze for awaken_sandbox_memoryd::coordinator::MountCoordinator
+impl core::marker::Send for awaken_sandbox_memoryd::coordinator::MountCoordinator
+impl core::marker::Sync for awaken_sandbox_memoryd::coordinator::MountCoordinator
+impl core::marker::Unpin for awaken_sandbox_memoryd::coordinator::MountCoordinator
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_memoryd::coordinator::MountCoordinator
+impl !core::panic::unwind_safe::UnwindSafe for awaken_sandbox_memoryd::coordinator::MountCoordinator
+pub trait awaken_sandbox_memoryd::coordinator::Mount: core::marker::Send
+pub fn awaken_sandbox_memoryd::coordinator::Mount::unmount(alloc::boxed::Box<Self>)
+impl awaken_sandbox_memoryd::coordinator::Mount for awaken_sandbox_memoryd::fuse::MemoryMountHandle
+pub fn awaken_sandbox_memoryd::fuse::MemoryMountHandle::unmount(alloc::boxed::Box<Self>)
+pub trait awaken_sandbox_memoryd::coordinator::MountFactory: core::marker::Send + core::marker::Sync
+pub fn awaken_sandbox_memoryd::coordinator::MountFactory::mount(&self, &str) -> core::result::Result<(std::path::PathBuf, alloc::boxed::Box<dyn awaken_sandbox_memoryd::coordinator::Mount>), awaken_sandbox_memoryd::FuseError>
+impl awaken_sandbox_memoryd::coordinator::MountFactory for awaken_sandbox_memoryd::coordinator::FuseMountFactory
+pub fn awaken_sandbox_memoryd::coordinator::FuseMountFactory::mount(&self, &str) -> core::result::Result<(std::path::PathBuf, alloc::boxed::Box<dyn awaken_sandbox_memoryd::coordinator::Mount>), awaken_sandbox_memoryd::FuseError>
+pub mod awaken_sandbox_memoryd::copy
+pub fn awaken_sandbox_memoryd::copy::fuse_available() -> bool
+pub async fn awaken_sandbox_memoryd::copy::harvest(&dyn awaken_resource_contract::MemoryFs, &str, &std::path::Path) -> core::result::Result<usize, awaken_sandbox_memoryd::FuseError>
+pub async fn awaken_sandbox_memoryd::copy::materialize(&dyn awaken_resource_contract::MemoryFs, &str, &std::path::Path) -> core::result::Result<usize, awaken_sandbox_memoryd::FuseError>
+pub mod awaken_sandbox_memoryd::fuse
+pub struct awaken_sandbox_memoryd::fuse::MemoryFuse
+impl awaken_sandbox_memoryd::fuse::MemoryFuse
+pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::new(alloc::sync::Arc<dyn awaken_resource_contract::MemoryFs>, alloc::string::String) -> core::result::Result<Self, awaken_sandbox_memoryd::FuseError>
+impl fuser::Filesystem for awaken_sandbox_memoryd::fuse::MemoryFuse
+pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::create(&mut self, &fuser::request::Request<'_>, u64, &std::ffi::os_str::OsStr, u32, u32, i32, fuser::reply::ReplyCreate)
+pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::flush(&mut self, &fuser::request::Request<'_>, u64, u64, u64, fuser::reply::ReplyEmpty)
+pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::fsync(&mut self, &fuser::request::Request<'_>, u64, u64, bool, fuser::reply::ReplyEmpty)
+pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::getattr(&mut self, &fuser::request::Request<'_>, u64, core::option::Option<u64>, fuser::reply::ReplyAttr)
+pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::lookup(&mut self, &fuser::request::Request<'_>, u64, &std::ffi::os_str::OsStr, fuser::reply::ReplyEntry)
+pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::mkdir(&mut self, &fuser::request::Request<'_>, u64, &std::ffi::os_str::OsStr, u32, u32, fuser::reply::ReplyEntry)
+pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::open(&mut self, &fuser::request::Request<'_>, u64, i32, fuser::reply::ReplyOpen)
+pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::read(&mut self, &fuser::request::Request<'_>, u64, u64, i64, u32, i32, core::option::Option<u64>, fuser::reply::ReplyData)
+pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::readdir(&mut self, &fuser::request::Request<'_>, u64, u64, i64, fuser::reply::ReplyDirectory)
+pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::release(&mut self, &fuser::request::Request<'_>, u64, u64, i32, core::option::Option<u64>, bool, fuser::reply::ReplyEmpty)
+pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::rename(&mut self, &fuser::request::Request<'_>, u64, &std::ffi::os_str::OsStr, u64, &std::ffi::os_str::OsStr, u32, fuser::reply::ReplyEmpty)
+pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::rmdir(&mut self, &fuser::request::Request<'_>, u64, &std::ffi::os_str::OsStr, fuser::reply::ReplyEmpty)
+pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::setattr(&mut self, &fuser::request::Request<'_>, u64, core::option::Option<u32>, core::option::Option<u32>, core::option::Option<u32>, core::option::Option<u64>, core::option::Option<fuser::ll::TimeOrNow>, core::option::Option<fuser::ll::TimeOrNow>, core::option::Option<std::time::SystemTime>, core::option::Option<u64>, core::option::Option<std::time::SystemTime>, core::option::Option<std::time::SystemTime>, core::option::Option<std::time::SystemTime>, core::option::Option<u32>, fuser::reply::ReplyAttr)
+pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::unlink(&mut self, &fuser::request::Request<'_>, u64, &std::ffi::os_str::OsStr, fuser::reply::ReplyEmpty)
+pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::write(&mut self, &fuser::request::Request<'_>, u64, u64, i64, &[u8], u32, i32, core::option::Option<u64>, fuser::reply::ReplyWrite)
+impl !core::marker::Freeze for awaken_sandbox_memoryd::fuse::MemoryFuse
+impl core::marker::Send for awaken_sandbox_memoryd::fuse::MemoryFuse
+impl core::marker::Sync for awaken_sandbox_memoryd::fuse::MemoryFuse
+impl core::marker::Unpin for awaken_sandbox_memoryd::fuse::MemoryFuse
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_memoryd::fuse::MemoryFuse
+impl !core::panic::unwind_safe::UnwindSafe for awaken_sandbox_memoryd::fuse::MemoryFuse
+pub struct awaken_sandbox_memoryd::fuse::MemoryMountHandle
+impl awaken_sandbox_memoryd::fuse::MemoryMountHandle
+pub fn awaken_sandbox_memoryd::fuse::MemoryMountHandle::open_fd_count(&self) -> usize
+pub fn awaken_sandbox_memoryd::fuse::MemoryMountHandle::unmount(self)
+pub fn awaken_sandbox_memoryd::fuse::MemoryMountHandle::with_drain_timeout(self, core::time::Duration) -> Self
+impl awaken_sandbox_memoryd::coordinator::Mount for awaken_sandbox_memoryd::fuse::MemoryMountHandle
+pub fn awaken_sandbox_memoryd::fuse::MemoryMountHandle::unmount(alloc::boxed::Box<Self>)
+impl core::ops::drop::Drop for awaken_sandbox_memoryd::fuse::MemoryMountHandle
+pub fn awaken_sandbox_memoryd::fuse::MemoryMountHandle::drop(&mut self)
+impl core::marker::Freeze for awaken_sandbox_memoryd::fuse::MemoryMountHandle
+impl core::marker::Send for awaken_sandbox_memoryd::fuse::MemoryMountHandle
+impl core::marker::Sync for awaken_sandbox_memoryd::fuse::MemoryMountHandle
+impl core::marker::Unpin for awaken_sandbox_memoryd::fuse::MemoryMountHandle
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_memoryd::fuse::MemoryMountHandle
+impl !core::panic::unwind_safe::UnwindSafe for awaken_sandbox_memoryd::fuse::MemoryMountHandle
+pub fn awaken_sandbox_memoryd::fuse::spawn_mount(alloc::sync::Arc<dyn awaken_resource_contract::MemoryFs>, alloc::string::String, std::path::PathBuf) -> core::result::Result<awaken_sandbox_memoryd::fuse::MemoryMountHandle, awaken_sandbox_memoryd::FuseError>
+pub fn awaken_sandbox_memoryd::fuse::spawn_mount_with_invalidations(alloc::sync::Arc<dyn awaken_resource_contract::MemoryFs>, alloc::string::String, std::path::PathBuf, tokio::sync::broadcast::Receiver<awaken_sandbox_memoryd::invalidate::Invalidation>) -> core::result::Result<awaken_sandbox_memoryd::fuse::MemoryMountHandle, awaken_sandbox_memoryd::FuseError>
+pub mod awaken_sandbox_memoryd::invalidate
+pub struct awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs
+impl awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs
+pub fn awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs::new(alloc::sync::Arc<dyn awaken_resource_contract::MemoryFs>, alloc::sync::Arc<dyn awaken_sandbox_memoryd::invalidate::Invalidator>) -> Self
+impl awaken_resource_contract::MemoryFs for awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs
+pub fn awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs::create<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs::delete_by_path<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs::get_by_path<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_resource_contract::Memory>, awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs::list<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_resource_contract::MemoryEntry>, awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs::rename<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs::update<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str, &'life4 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait
+impl core::marker::Freeze for awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs
+impl core::marker::Send for awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs
+impl core::marker::Sync for awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs
+impl core::marker::Unpin for awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs
+impl !core::panic::unwind_safe::UnwindSafe for awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs
+pub struct awaken_sandbox_memoryd::invalidate::LocalInvalidator
+impl awaken_sandbox_memoryd::invalidate::LocalInvalidator
+pub fn awaken_sandbox_memoryd::invalidate::LocalInvalidator::new(usize) -> Self
+pub fn awaken_sandbox_memoryd::invalidate::LocalInvalidator::subscribe(&self) -> tokio::sync::broadcast::Receiver<awaken_sandbox_memoryd::invalidate::Invalidation>
+impl awaken_sandbox_memoryd::invalidate::Invalidator for awaken_sandbox_memoryd::invalidate::LocalInvalidator
+pub fn awaken_sandbox_memoryd::invalidate::LocalInvalidator::publish(&self, &str, &str)
+impl core::default::Default for awaken_sandbox_memoryd::invalidate::LocalInvalidator
+pub fn awaken_sandbox_memoryd::invalidate::LocalInvalidator::default() -> Self
+impl core::marker::Freeze for awaken_sandbox_memoryd::invalidate::LocalInvalidator
+impl core::marker::Send for awaken_sandbox_memoryd::invalidate::LocalInvalidator
+impl core::marker::Sync for awaken_sandbox_memoryd::invalidate::LocalInvalidator
+impl core::marker::Unpin for awaken_sandbox_memoryd::invalidate::LocalInvalidator
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_memoryd::invalidate::LocalInvalidator
+impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_memoryd::invalidate::LocalInvalidator
+pub trait awaken_sandbox_memoryd::invalidate::Invalidator: core::marker::Send + core::marker::Sync
+pub fn awaken_sandbox_memoryd::invalidate::Invalidator::publish(&self, &str, &str)
+impl awaken_sandbox_memoryd::invalidate::Invalidator for awaken_sandbox_memoryd::invalidate::LocalInvalidator
+pub fn awaken_sandbox_memoryd::invalidate::LocalInvalidator::publish(&self, &str, &str)
+pub type awaken_sandbox_memoryd::invalidate::Invalidation = (alloc::string::String, alloc::string::String)
+pub mod awaken_sandbox_memoryd::mounter
+pub struct awaken_sandbox_memoryd::mounter::MemoryStoreMounter
+impl awaken_sandbox_memoryd::mounter::MemoryStoreMounter
+pub fn awaken_sandbox_memoryd::mounter::MemoryStoreMounter::copy_only(alloc::sync::Arc<dyn awaken_resource_contract::MemoryFs>) -> Self
+pub fn awaken_sandbox_memoryd::mounter::MemoryStoreMounter::new(alloc::sync::Arc<dyn awaken_resource_contract::MemoryFs>) -> Self
+impl awaken_provisioning_contract::sandbox::MemoryMounter for awaken_sandbox_memoryd::mounter::MemoryStoreMounter
+pub fn awaken_sandbox_memoryd::mounter::MemoryStoreMounter::mount<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 std::path::Path, awaken_provisioning_contract::vocab::MountAccess) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_provisioning_contract::sandbox::MemoryMount>, awaken_provisioning_contract::sandbox::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+impl core::marker::Freeze for awaken_sandbox_memoryd::mounter::MemoryStoreMounter
+impl core::marker::Send for awaken_sandbox_memoryd::mounter::MemoryStoreMounter
+impl core::marker::Sync for awaken_sandbox_memoryd::mounter::MemoryStoreMounter
+impl core::marker::Unpin for awaken_sandbox_memoryd::mounter::MemoryStoreMounter
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_memoryd::mounter::MemoryStoreMounter
+impl !core::panic::unwind_safe::UnwindSafe for awaken_sandbox_memoryd::mounter::MemoryStoreMounter
+pub enum awaken_sandbox_memoryd::FuseError
+pub awaken_sandbox_memoryd::FuseError::DirtyFileLimitExceeded
+pub awaken_sandbox_memoryd::FuseError::Internal(alloc::string::String)
+pub awaken_sandbox_memoryd::FuseError::Mem(awaken_resource_contract::MemErr)
+pub awaken_sandbox_memoryd::FuseError::NotFound(alloc::string::String)
+pub awaken_sandbox_memoryd::FuseError::TooLarge
+impl core::convert::From<awaken_resource_contract::MemErr> for awaken_sandbox_memoryd::FuseError
+pub fn awaken_sandbox_memoryd::FuseError::from(awaken_resource_contract::MemErr) -> Self
+impl core::error::Error for awaken_sandbox_memoryd::FuseError
+pub fn awaken_sandbox_memoryd::FuseError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for awaken_sandbox_memoryd::FuseError
+pub fn awaken_sandbox_memoryd::FuseError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_sandbox_memoryd::FuseError
+pub fn awaken_sandbox_memoryd::FuseError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_sandbox_memoryd::FuseError
+impl core::marker::Send for awaken_sandbox_memoryd::FuseError
+impl core::marker::Sync for awaken_sandbox_memoryd::FuseError
+impl core::marker::Unpin for awaken_sandbox_memoryd::FuseError
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_memoryd::FuseError
+impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_memoryd::FuseError
+pub struct awaken_sandbox_memoryd::FuseMountFactory
+impl awaken_sandbox_memoryd::coordinator::FuseMountFactory
+pub fn awaken_sandbox_memoryd::coordinator::FuseMountFactory::new(alloc::sync::Arc<dyn awaken_resource_contract::MemoryFs>, impl core::convert::Into<std::path::PathBuf>) -> Self
+impl awaken_sandbox_memoryd::coordinator::MountFactory for awaken_sandbox_memoryd::coordinator::FuseMountFactory
+pub fn awaken_sandbox_memoryd::coordinator::FuseMountFactory::mount(&self, &str) -> core::result::Result<(std::path::PathBuf, alloc::boxed::Box<dyn awaken_sandbox_memoryd::coordinator::Mount>), awaken_sandbox_memoryd::FuseError>
+impl core::marker::Freeze for awaken_sandbox_memoryd::coordinator::FuseMountFactory
+impl core::marker::Send for awaken_sandbox_memoryd::coordinator::FuseMountFactory
+impl core::marker::Sync for awaken_sandbox_memoryd::coordinator::FuseMountFactory
+impl core::marker::Unpin for awaken_sandbox_memoryd::coordinator::FuseMountFactory
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_memoryd::coordinator::FuseMountFactory
+impl !core::panic::unwind_safe::UnwindSafe for awaken_sandbox_memoryd::coordinator::FuseMountFactory
+pub struct awaken_sandbox_memoryd::InvalidatingMemoryFs
+impl awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs
+pub fn awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs::new(alloc::sync::Arc<dyn awaken_resource_contract::MemoryFs>, alloc::sync::Arc<dyn awaken_sandbox_memoryd::invalidate::Invalidator>) -> Self
+impl awaken_resource_contract::MemoryFs for awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs
+pub fn awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs::create<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs::delete_by_path<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs::get_by_path<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_resource_contract::Memory>, awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs::list<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_resource_contract::MemoryEntry>, awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs::rename<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs::update<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str, &'life4 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait
+impl core::marker::Freeze for awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs
+impl core::marker::Send for awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs
+impl core::marker::Sync for awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs
+impl core::marker::Unpin for awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs
+impl !core::panic::unwind_safe::UnwindSafe for awaken_sandbox_memoryd::invalidate::InvalidatingMemoryFs
+pub struct awaken_sandbox_memoryd::LocalInvalidator
+impl awaken_sandbox_memoryd::invalidate::LocalInvalidator
+pub fn awaken_sandbox_memoryd::invalidate::LocalInvalidator::new(usize) -> Self
+pub fn awaken_sandbox_memoryd::invalidate::LocalInvalidator::subscribe(&self) -> tokio::sync::broadcast::Receiver<awaken_sandbox_memoryd::invalidate::Invalidation>
+impl awaken_sandbox_memoryd::invalidate::Invalidator for awaken_sandbox_memoryd::invalidate::LocalInvalidator
+pub fn awaken_sandbox_memoryd::invalidate::LocalInvalidator::publish(&self, &str, &str)
+impl core::default::Default for awaken_sandbox_memoryd::invalidate::LocalInvalidator
+pub fn awaken_sandbox_memoryd::invalidate::LocalInvalidator::default() -> Self
+impl core::marker::Freeze for awaken_sandbox_memoryd::invalidate::LocalInvalidator
+impl core::marker::Send for awaken_sandbox_memoryd::invalidate::LocalInvalidator
+impl core::marker::Sync for awaken_sandbox_memoryd::invalidate::LocalInvalidator
+impl core::marker::Unpin for awaken_sandbox_memoryd::invalidate::LocalInvalidator
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_memoryd::invalidate::LocalInvalidator
+impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_memoryd::invalidate::LocalInvalidator
+pub struct awaken_sandbox_memoryd::MemoryStoreMounter
+impl awaken_sandbox_memoryd::mounter::MemoryStoreMounter
+pub fn awaken_sandbox_memoryd::mounter::MemoryStoreMounter::copy_only(alloc::sync::Arc<dyn awaken_resource_contract::MemoryFs>) -> Self
+pub fn awaken_sandbox_memoryd::mounter::MemoryStoreMounter::new(alloc::sync::Arc<dyn awaken_resource_contract::MemoryFs>) -> Self
+impl awaken_provisioning_contract::sandbox::MemoryMounter for awaken_sandbox_memoryd::mounter::MemoryStoreMounter
+pub fn awaken_sandbox_memoryd::mounter::MemoryStoreMounter::mount<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 std::path::Path, awaken_provisioning_contract::vocab::MountAccess) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_provisioning_contract::sandbox::MemoryMount>, awaken_provisioning_contract::sandbox::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+impl core::marker::Freeze for awaken_sandbox_memoryd::mounter::MemoryStoreMounter
+impl core::marker::Send for awaken_sandbox_memoryd::mounter::MemoryStoreMounter
+impl core::marker::Sync for awaken_sandbox_memoryd::mounter::MemoryStoreMounter
+impl core::marker::Unpin for awaken_sandbox_memoryd::mounter::MemoryStoreMounter
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_memoryd::mounter::MemoryStoreMounter
+impl !core::panic::unwind_safe::UnwindSafe for awaken_sandbox_memoryd::mounter::MemoryStoreMounter
+pub struct awaken_sandbox_memoryd::MountCoordinator
+impl awaken_sandbox_memoryd::coordinator::MountCoordinator
+pub fn awaken_sandbox_memoryd::coordinator::MountCoordinator::acquire(&self, &str) -> core::result::Result<std::path::PathBuf, awaken_sandbox_memoryd::FuseError>
+pub fn awaken_sandbox_memoryd::coordinator::MountCoordinator::active_mounts(&self) -> usize
+pub fn awaken_sandbox_memoryd::coordinator::MountCoordinator::new(alloc::boxed::Box<dyn awaken_sandbox_memoryd::coordinator::MountFactory>) -> Self
+pub fn awaken_sandbox_memoryd::coordinator::MountCoordinator::refcount(&self, &str) -> usize
+pub fn awaken_sandbox_memoryd::coordinator::MountCoordinator::release(&self, &str)
+impl !core::marker::Freeze for awaken_sandbox_memoryd::coordinator::MountCoordinator
+impl core::marker::Send for awaken_sandbox_memoryd::coordinator::MountCoordinator
+impl core::marker::Sync for awaken_sandbox_memoryd::coordinator::MountCoordinator
+impl core::marker::Unpin for awaken_sandbox_memoryd::coordinator::MountCoordinator
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_memoryd::coordinator::MountCoordinator
+impl !core::panic::unwind_safe::UnwindSafe for awaken_sandbox_memoryd::coordinator::MountCoordinator
+pub trait awaken_sandbox_memoryd::Invalidator: core::marker::Send + core::marker::Sync
+pub fn awaken_sandbox_memoryd::Invalidator::publish(&self, &str, &str)
+impl awaken_sandbox_memoryd::invalidate::Invalidator for awaken_sandbox_memoryd::invalidate::LocalInvalidator
+pub fn awaken_sandbox_memoryd::invalidate::LocalInvalidator::publish(&self, &str, &str)
+pub trait awaken_sandbox_memoryd::Mount: core::marker::Send
+pub fn awaken_sandbox_memoryd::Mount::unmount(alloc::boxed::Box<Self>)
+impl awaken_sandbox_memoryd::coordinator::Mount for awaken_sandbox_memoryd::fuse::MemoryMountHandle
+pub fn awaken_sandbox_memoryd::fuse::MemoryMountHandle::unmount(alloc::boxed::Box<Self>)
+pub trait awaken_sandbox_memoryd::MountFactory: core::marker::Send + core::marker::Sync
+pub fn awaken_sandbox_memoryd::MountFactory::mount(&self, &str) -> core::result::Result<(std::path::PathBuf, alloc::boxed::Box<dyn awaken_sandbox_memoryd::coordinator::Mount>), awaken_sandbox_memoryd::FuseError>
+impl awaken_sandbox_memoryd::coordinator::MountFactory for awaken_sandbox_memoryd::coordinator::FuseMountFactory
+pub fn awaken_sandbox_memoryd::coordinator::FuseMountFactory::mount(&self, &str) -> core::result::Result<(std::path::PathBuf, alloc::boxed::Box<dyn awaken_sandbox_memoryd::coordinator::Mount>), awaken_sandbox_memoryd::FuseError>
+pub fn awaken_sandbox_memoryd::fuse_available() -> bool
+pub async fn awaken_sandbox_memoryd::harvest(&dyn awaken_resource_contract::MemoryFs, &str, &std::path::Path) -> core::result::Result<usize, awaken_sandbox_memoryd::FuseError>
+pub fn awaken_sandbox_memoryd::immediate_children(&[awaken_resource_contract::MemoryEntry], &str) -> alloc::collections::btree::map::BTreeMap<alloc::string::String, bool>
+pub async fn awaken_sandbox_memoryd::materialize(&dyn awaken_resource_contract::MemoryFs, &str, &std::path::Path) -> core::result::Result<usize, awaken_sandbox_memoryd::FuseError>
+pub fn awaken_sandbox_memoryd::spawn_mount(alloc::sync::Arc<dyn awaken_resource_contract::MemoryFs>, alloc::string::String, std::path::PathBuf) -> core::result::Result<awaken_sandbox_memoryd::fuse::MemoryMountHandle, awaken_sandbox_memoryd::FuseError>
+pub fn awaken_sandbox_memoryd::spawn_mount_with_invalidations(alloc::sync::Arc<dyn awaken_resource_contract::MemoryFs>, alloc::string::String, std::path::PathBuf, tokio::sync::broadcast::Receiver<awaken_sandbox_memoryd::invalidate::Invalidation>) -> core::result::Result<awaken_sandbox_memoryd::fuse::MemoryMountHandle, awaken_sandbox_memoryd::FuseError>
+pub fn awaken_sandbox_memoryd::splice_bytes(&str, i64, &[u8]) -> core::result::Result<alloc::string::String, awaken_sandbox_memoryd::FuseError>
+pub type awaken_sandbox_memoryd::Invalidation = (alloc::string::String, alloc::string::String)

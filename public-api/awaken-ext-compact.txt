@@ -39,10 +39,10 @@ pub struct awaken_ext_compact::plugin::CompactPlugin
 impl awaken_ext_compact::plugin::CompactPlugin
 pub fn awaken_ext_compact::plugin::CompactPlugin::new(awaken_ext_compact::config::CompactConfig) -> Self
 pub fn awaken_ext_compact::plugin::CompactPlugin::with_runner(self, alloc::sync::Arc<dyn awaken_runtime_contract::subagent_runner::SubagentRunner>) -> Self
-impl awaken_runtime_contract::plugin::Plugin for awaken_ext_compact::plugin::CompactPlugin
-pub fn awaken_ext_compact::plugin::CompactPlugin::manifest(&self) -> awaken_runtime_contract::plugin::PluginManifest
-pub fn awaken_ext_compact::plugin::CompactPlugin::resolve(&self) -> awaken_runtime_contract::plugin::Contributions
-pub fn awaken_ext_compact::plugin::CompactPlugin::resolve_configured(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<awaken_runtime_contract::plugin::Contributions, awaken_runtime_contract::plugin::PluginConfigError>
+impl awaken_runtime_contract::plugin::contributions::Plugin for awaken_ext_compact::plugin::CompactPlugin
+pub fn awaken_ext_compact::plugin::CompactPlugin::manifest(&self) -> awaken_runtime_contract::plugin::capability::PluginManifest
+pub fn awaken_ext_compact::plugin::CompactPlugin::resolve(&self) -> awaken_runtime_contract::plugin::contributions::Contributions
+pub fn awaken_ext_compact::plugin::CompactPlugin::resolve_configured(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<awaken_runtime_contract::plugin::contributions::Contributions, awaken_runtime_contract::plugin::contributions::PluginConfigError>
 impl core::marker::Freeze for awaken_ext_compact::plugin::CompactPlugin
 impl core::marker::Send for awaken_ext_compact::plugin::CompactPlugin
 impl core::marker::Sync for awaken_ext_compact::plugin::CompactPlugin
@@ -81,10 +81,10 @@ pub struct awaken_ext_compact::CompactPlugin
 impl awaken_ext_compact::plugin::CompactPlugin
 pub fn awaken_ext_compact::plugin::CompactPlugin::new(awaken_ext_compact::config::CompactConfig) -> Self
 pub fn awaken_ext_compact::plugin::CompactPlugin::with_runner(self, alloc::sync::Arc<dyn awaken_runtime_contract::subagent_runner::SubagentRunner>) -> Self
-impl awaken_runtime_contract::plugin::Plugin for awaken_ext_compact::plugin::CompactPlugin
-pub fn awaken_ext_compact::plugin::CompactPlugin::manifest(&self) -> awaken_runtime_contract::plugin::PluginManifest
-pub fn awaken_ext_compact::plugin::CompactPlugin::resolve(&self) -> awaken_runtime_contract::plugin::Contributions
-pub fn awaken_ext_compact::plugin::CompactPlugin::resolve_configured(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<awaken_runtime_contract::plugin::Contributions, awaken_runtime_contract::plugin::PluginConfigError>
+impl awaken_runtime_contract::plugin::contributions::Plugin for awaken_ext_compact::plugin::CompactPlugin
+pub fn awaken_ext_compact::plugin::CompactPlugin::manifest(&self) -> awaken_runtime_contract::plugin::capability::PluginManifest
+pub fn awaken_ext_compact::plugin::CompactPlugin::resolve(&self) -> awaken_runtime_contract::plugin::contributions::Contributions
+pub fn awaken_ext_compact::plugin::CompactPlugin::resolve_configured(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<awaken_runtime_contract::plugin::contributions::Contributions, awaken_runtime_contract::plugin::contributions::PluginConfigError>
 impl core::marker::Freeze for awaken_ext_compact::plugin::CompactPlugin
 impl core::marker::Send for awaken_ext_compact::plugin::CompactPlugin
 impl core::marker::Sync for awaken_ext_compact::plugin::CompactPlugin

@@ -1,0 +1,222 @@
+pub mod awaken_connection_plan
+pub enum awaken_connection_plan::ConnectError
+pub awaken_connection_plan::ConnectError::Io(alloc::string::String)
+pub awaken_connection_plan::ConnectError::Policy(alloc::string::String)
+pub awaken_connection_plan::ConnectError::Unsupported(alloc::string::String)
+impl core::error::Error for awaken_connection_plan::ConnectError
+impl core::fmt::Debug for awaken_connection_plan::ConnectError
+pub fn awaken_connection_plan::ConnectError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_connection_plan::ConnectError
+pub fn awaken_connection_plan::ConnectError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_connection_plan::ConnectError
+impl core::marker::Send for awaken_connection_plan::ConnectError
+impl core::marker::Sync for awaken_connection_plan::ConnectError
+impl core::marker::Unpin for awaken_connection_plan::ConnectError
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_connection_plan::ConnectError
+impl core::panic::unwind_safe::UnwindSafe for awaken_connection_plan::ConnectError
+pub enum awaken_connection_plan::CredentialError
+pub awaken_connection_plan::CredentialError::Failed(alloc::string::String)
+pub awaken_connection_plan::CredentialError::Unknown(alloc::string::String)
+impl core::error::Error for awaken_connection_plan::CredentialError
+impl core::fmt::Debug for awaken_connection_plan::CredentialError
+pub fn awaken_connection_plan::CredentialError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_connection_plan::CredentialError
+pub fn awaken_connection_plan::CredentialError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_connection_plan::CredentialError
+impl core::marker::Send for awaken_connection_plan::CredentialError
+impl core::marker::Sync for awaken_connection_plan::CredentialError
+impl core::marker::Unpin for awaken_connection_plan::CredentialError
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_connection_plan::CredentialError
+impl core::panic::unwind_safe::UnwindSafe for awaken_connection_plan::CredentialError
+pub enum awaken_connection_plan::DialAddr
+pub awaken_connection_plan::DialAddr::Http(alloc::string::String)
+pub awaken_connection_plan::DialAddr::InProcess
+pub awaken_connection_plan::DialAddr::Nats
+pub awaken_connection_plan::DialAddr::Nats::inbox: alloc::string::String
+pub awaken_connection_plan::DialAddr::Nats::outbox: alloc::string::String
+pub awaken_connection_plan::DialAddr::Nats::url: alloc::string::String
+pub awaken_connection_plan::DialAddr::Tcp(alloc::string::String)
+pub awaken_connection_plan::DialAddr::Unix(alloc::string::String)
+impl core::clone::Clone for awaken_connection_plan::DialAddr
+pub fn awaken_connection_plan::DialAddr::clone(&self) -> awaken_connection_plan::DialAddr
+impl core::cmp::Eq for awaken_connection_plan::DialAddr
+impl core::cmp::PartialEq for awaken_connection_plan::DialAddr
+pub fn awaken_connection_plan::DialAddr::eq(&self, &awaken_connection_plan::DialAddr) -> bool
+impl core::fmt::Debug for awaken_connection_plan::DialAddr
+pub fn awaken_connection_plan::DialAddr::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_connection_plan::DialAddr
+impl serde_core::ser::Serialize for awaken_connection_plan::DialAddr
+pub fn awaken_connection_plan::DialAddr::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_connection_plan::DialAddr
+pub fn awaken_connection_plan::DialAddr::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_connection_plan::DialAddr
+impl core::marker::Send for awaken_connection_plan::DialAddr
+impl core::marker::Sync for awaken_connection_plan::DialAddr
+impl core::marker::Unpin for awaken_connection_plan::DialAddr
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_connection_plan::DialAddr
+impl core::panic::unwind_safe::UnwindSafe for awaken_connection_plan::DialAddr
+pub enum awaken_connection_plan::DialPolicy
+pub awaken_connection_plan::DialPolicy::Dial
+pub awaken_connection_plan::DialPolicy::Listen
+pub awaken_connection_plan::DialPolicy::ViaBroker
+impl core::clone::Clone for awaken_connection_plan::DialPolicy
+pub fn awaken_connection_plan::DialPolicy::clone(&self) -> awaken_connection_plan::DialPolicy
+impl core::cmp::Eq for awaken_connection_plan::DialPolicy
+impl core::cmp::PartialEq for awaken_connection_plan::DialPolicy
+pub fn awaken_connection_plan::DialPolicy::eq(&self, &awaken_connection_plan::DialPolicy) -> bool
+impl core::fmt::Debug for awaken_connection_plan::DialPolicy
+pub fn awaken_connection_plan::DialPolicy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_connection_plan::DialPolicy
+impl core::marker::StructuralPartialEq for awaken_connection_plan::DialPolicy
+impl serde_core::ser::Serialize for awaken_connection_plan::DialPolicy
+pub fn awaken_connection_plan::DialPolicy::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_connection_plan::DialPolicy
+pub fn awaken_connection_plan::DialPolicy::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_connection_plan::DialPolicy
+impl core::marker::Send for awaken_connection_plan::DialPolicy
+impl core::marker::Sync for awaken_connection_plan::DialPolicy
+impl core::marker::Unpin for awaken_connection_plan::DialPolicy
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_connection_plan::DialPolicy
+impl core::panic::unwind_safe::UnwindSafe for awaken_connection_plan::DialPolicy
+pub enum awaken_connection_plan::Wiring
+pub awaken_connection_plan::Wiring::Direct
+pub awaken_connection_plan::Wiring::Relay
+pub awaken_connection_plan::Wiring::Relay::broker: alloc::string::String
+impl core::clone::Clone for awaken_connection_plan::Wiring
+pub fn awaken_connection_plan::Wiring::clone(&self) -> awaken_connection_plan::Wiring
+impl core::cmp::Eq for awaken_connection_plan::Wiring
+impl core::cmp::PartialEq for awaken_connection_plan::Wiring
+pub fn awaken_connection_plan::Wiring::eq(&self, &awaken_connection_plan::Wiring) -> bool
+impl core::fmt::Debug for awaken_connection_plan::Wiring
+pub fn awaken_connection_plan::Wiring::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_connection_plan::Wiring
+impl serde_core::ser::Serialize for awaken_connection_plan::Wiring
+pub fn awaken_connection_plan::Wiring::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_connection_plan::Wiring
+pub fn awaken_connection_plan::Wiring::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_connection_plan::Wiring
+impl core::marker::Send for awaken_connection_plan::Wiring
+impl core::marker::Sync for awaken_connection_plan::Wiring
+impl core::marker::Unpin for awaken_connection_plan::Wiring
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_connection_plan::Wiring
+impl core::panic::unwind_safe::UnwindSafe for awaken_connection_plan::Wiring
+pub struct awaken_connection_plan::AppliedAuth
+impl awaken_connection_plan::AppliedAuth
+pub fn awaken_connection_plan::AppliedAuth::bearer(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_connection_plan::AppliedAuth::headers(&self) -> &[(alloc::string::String, alloc::string::String)]
+pub fn awaken_connection_plan::AppliedAuth::is_empty(&self) -> bool
+pub fn awaken_connection_plan::AppliedAuth::none() -> Self
+impl core::clone::Clone for awaken_connection_plan::AppliedAuth
+pub fn awaken_connection_plan::AppliedAuth::clone(&self) -> awaken_connection_plan::AppliedAuth
+impl core::cmp::Eq for awaken_connection_plan::AppliedAuth
+impl core::cmp::PartialEq for awaken_connection_plan::AppliedAuth
+pub fn awaken_connection_plan::AppliedAuth::eq(&self, &awaken_connection_plan::AppliedAuth) -> bool
+impl core::default::Default for awaken_connection_plan::AppliedAuth
+pub fn awaken_connection_plan::AppliedAuth::default() -> awaken_connection_plan::AppliedAuth
+impl core::fmt::Debug for awaken_connection_plan::AppliedAuth
+pub fn awaken_connection_plan::AppliedAuth::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_connection_plan::AppliedAuth
+impl core::marker::Freeze for awaken_connection_plan::AppliedAuth
+impl core::marker::Send for awaken_connection_plan::AppliedAuth
+impl core::marker::Sync for awaken_connection_plan::AppliedAuth
+impl core::marker::Unpin for awaken_connection_plan::AppliedAuth
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_connection_plan::AppliedAuth
+impl core::panic::unwind_safe::UnwindSafe for awaken_connection_plan::AppliedAuth
+pub struct awaken_connection_plan::ConnectionPlan
+pub awaken_connection_plan::ConnectionPlan::credential: core::option::Option<awaken_connection_plan::CredentialRef>
+pub awaken_connection_plan::ConnectionPlan::dial: awaken_connection_plan::DialPolicy
+pub awaken_connection_plan::ConnectionPlan::transport: awaken_connection_plan::DialAddr
+pub awaken_connection_plan::ConnectionPlan::wiring: awaken_connection_plan::Wiring
+impl awaken_connection_plan::ConnectionPlan
+pub fn awaken_connection_plan::ConnectionPlan::in_process() -> Self
+pub fn awaken_connection_plan::ConnectionPlan::tcp_dial(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_connection_plan::ConnectionPlan::tcp_listen(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_connection_plan::ConnectionPlan::unix_dial(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_connection_plan::ConnectionPlan::unix_listen(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_connection_plan::ConnectionPlan::with_credential(self, awaken_connection_plan::CredentialRef) -> Self
+impl core::clone::Clone for awaken_connection_plan::ConnectionPlan
+pub fn awaken_connection_plan::ConnectionPlan::clone(&self) -> awaken_connection_plan::ConnectionPlan
+impl core::cmp::Eq for awaken_connection_plan::ConnectionPlan
+impl core::cmp::PartialEq for awaken_connection_plan::ConnectionPlan
+pub fn awaken_connection_plan::ConnectionPlan::eq(&self, &awaken_connection_plan::ConnectionPlan) -> bool
+impl core::fmt::Debug for awaken_connection_plan::ConnectionPlan
+pub fn awaken_connection_plan::ConnectionPlan::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_connection_plan::ConnectionPlan
+impl serde_core::ser::Serialize for awaken_connection_plan::ConnectionPlan
+pub fn awaken_connection_plan::ConnectionPlan::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_connection_plan::ConnectionPlan
+pub fn awaken_connection_plan::ConnectionPlan::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_connection_plan::ConnectionPlan
+impl core::marker::Send for awaken_connection_plan::ConnectionPlan
+impl core::marker::Sync for awaken_connection_plan::ConnectionPlan
+impl core::marker::Unpin for awaken_connection_plan::ConnectionPlan
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_connection_plan::ConnectionPlan
+impl core::panic::unwind_safe::UnwindSafe for awaken_connection_plan::ConnectionPlan
+pub struct awaken_connection_plan::CredentialRef(pub alloc::string::String)
+impl core::clone::Clone for awaken_connection_plan::CredentialRef
+pub fn awaken_connection_plan::CredentialRef::clone(&self) -> awaken_connection_plan::CredentialRef
+impl core::cmp::Eq for awaken_connection_plan::CredentialRef
+impl core::cmp::PartialEq for awaken_connection_plan::CredentialRef
+pub fn awaken_connection_plan::CredentialRef::eq(&self, &awaken_connection_plan::CredentialRef) -> bool
+impl core::fmt::Debug for awaken_connection_plan::CredentialRef
+pub fn awaken_connection_plan::CredentialRef::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_connection_plan::CredentialRef
+impl serde_core::ser::Serialize for awaken_connection_plan::CredentialRef
+pub fn awaken_connection_plan::CredentialRef::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_connection_plan::CredentialRef
+pub fn awaken_connection_plan::CredentialRef::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_connection_plan::CredentialRef
+impl core::marker::Send for awaken_connection_plan::CredentialRef
+impl core::marker::Sync for awaken_connection_plan::CredentialRef
+impl core::marker::Unpin for awaken_connection_plan::CredentialRef
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_connection_plan::CredentialRef
+impl core::panic::unwind_safe::UnwindSafe for awaken_connection_plan::CredentialRef
+pub struct awaken_connection_plan::NoAuth
+impl awaken_connection_plan::CredentialResolver for awaken_connection_plan::NoAuth
+pub fn awaken_connection_plan::NoAuth::resolve<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_connection_plan::CredentialRef) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_connection_plan::AppliedAuth, awaken_connection_plan::CredentialError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl core::marker::Freeze for awaken_connection_plan::NoAuth
+impl core::marker::Send for awaken_connection_plan::NoAuth
+impl core::marker::Sync for awaken_connection_plan::NoAuth
+impl core::marker::Unpin for awaken_connection_plan::NoAuth
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_connection_plan::NoAuth
+impl core::panic::unwind_safe::UnwindSafe for awaken_connection_plan::NoAuth
+pub struct awaken_connection_plan::TcpHandListener
+impl awaken_connection_plan::TcpHandListener
+pub async fn awaken_connection_plan::TcpHandListener::accept(&self) -> core::result::Result<alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>, awaken_connection_plan::ConnectError>
+pub fn awaken_connection_plan::TcpHandListener::local_addr(&self) -> core::result::Result<core::net::socket_addr::SocketAddr, awaken_connection_plan::ConnectError>
+impl !core::marker::Freeze for awaken_connection_plan::TcpHandListener
+impl core::marker::Send for awaken_connection_plan::TcpHandListener
+impl core::marker::Sync for awaken_connection_plan::TcpHandListener
+impl core::marker::Unpin for awaken_connection_plan::TcpHandListener
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_connection_plan::TcpHandListener
+impl core::panic::unwind_safe::UnwindSafe for awaken_connection_plan::TcpHandListener
+pub struct awaken_connection_plan::TokioChannelFactory
+impl awaken_connection_plan::ChannelFactory for awaken_connection_plan::TokioChannelFactory
+pub fn awaken_connection_plan::TokioChannelFactory::connect<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_connection_plan::ConnectionPlan) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>, awaken_connection_plan::ConnectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl core::marker::Freeze for awaken_connection_plan::TokioChannelFactory
+impl core::marker::Send for awaken_connection_plan::TokioChannelFactory
+impl core::marker::Sync for awaken_connection_plan::TokioChannelFactory
+impl core::marker::Unpin for awaken_connection_plan::TokioChannelFactory
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_connection_plan::TokioChannelFactory
+impl core::panic::unwind_safe::UnwindSafe for awaken_connection_plan::TokioChannelFactory
+pub struct awaken_connection_plan::UnixHandListener
+impl awaken_connection_plan::UnixHandListener
+pub async fn awaken_connection_plan::UnixHandListener::accept(&self) -> core::result::Result<alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>, awaken_connection_plan::ConnectError>
+impl !core::marker::Freeze for awaken_connection_plan::UnixHandListener
+impl core::marker::Send for awaken_connection_plan::UnixHandListener
+impl core::marker::Sync for awaken_connection_plan::UnixHandListener
+impl core::marker::Unpin for awaken_connection_plan::UnixHandListener
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_connection_plan::UnixHandListener
+impl core::panic::unwind_safe::UnwindSafe for awaken_connection_plan::UnixHandListener
+pub trait awaken_connection_plan::ChannelFactory: core::marker::Send + core::marker::Sync
+pub fn awaken_connection_plan::ChannelFactory::connect<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_connection_plan::ConnectionPlan) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>, awaken_connection_plan::ConnectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_connection_plan::ChannelFactory for awaken_connection_plan::TokioChannelFactory
+pub fn awaken_connection_plan::TokioChannelFactory::connect<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_connection_plan::ConnectionPlan) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>, awaken_connection_plan::ConnectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_connection_plan::CredentialResolver: core::marker::Send + core::marker::Sync
+pub fn awaken_connection_plan::CredentialResolver::resolve<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_connection_plan::CredentialRef) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_connection_plan::AppliedAuth, awaken_connection_plan::CredentialError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_connection_plan::CredentialResolver for awaken_connection_plan::NoAuth
+pub fn awaken_connection_plan::NoAuth::resolve<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_connection_plan::CredentialRef) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_connection_plan::AppliedAuth, awaken_connection_plan::CredentialError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub async fn awaken_connection_plan::bind_tcp(&awaken_connection_plan::ConnectionPlan) -> core::result::Result<awaken_connection_plan::TcpHandListener, awaken_connection_plan::ConnectError>
+pub fn awaken_connection_plan::bind_unix(&awaken_connection_plan::ConnectionPlan) -> core::result::Result<awaken_connection_plan::UnixHandListener, awaken_connection_plan::ConnectError>
+pub async fn awaken_connection_plan::connect_with_retry(&awaken_connection_plan::TokioChannelFactory, &awaken_connection_plan::ConnectionPlan, u32, core::time::Duration) -> core::result::Result<alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>, awaken_connection_plan::ConnectError>
+pub fn awaken_connection_plan::in_process_pair() -> (alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>, alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>)

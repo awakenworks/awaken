@@ -189,7 +189,7 @@ pub struct awaken_ext_skills::SkillTool
 impl awaken_ext_skills::SkillTool
 pub fn awaken_ext_skills::SkillTool::descriptor(&self) -> awaken_runtime_contract::resolved::ToolDescriptor
 pub fn awaken_ext_skills::SkillTool::new(alloc::sync::Arc<dyn awaken_ext_skills::SkillRegistry>) -> Self
-pub fn awaken_ext_skills::SkillTool::with_fork_runner(self, alloc::sync::Arc<dyn awaken_ext_skills::SubAgentRunner>) -> Self
+pub fn awaken_ext_skills::SkillTool::with_fork_runner(self, alloc::sync::Arc<dyn awaken_runtime_contract::subagent_runner::SubagentRunner>) -> Self
 pub fn awaken_ext_skills::SkillTool::with_session_id(self, impl core::convert::Into<alloc::string::String>) -> Self
 impl awaken_runtime_contract::tool::RawTool for awaken_ext_skills::SkillTool
 pub fn awaken_ext_skills::SkillTool::id(&self) -> &str
@@ -230,8 +230,6 @@ pub fn awaken_ext_skills::SourceSkillRegistry::get(&self, &str) -> core::option:
 pub fn awaken_ext_skills::SourceSkillRegistry::list(&self) -> alloc::vec::Vec<awaken_ext_skills::SkillSpec>
 pub trait awaken_ext_skills::SkillSource: core::marker::Send + core::marker::Sync
 pub fn awaken_ext_skills::SkillSource::scan(&self) -> alloc::vec::Vec<awaken_ext_skills::SkillFile>
-pub trait awaken_ext_skills::SubAgentRunner: core::marker::Send + core::marker::Sync
-pub fn awaken_ext_skills::SubAgentRunner::run<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_ext_skills::expand_slash_commands(&dyn awaken_ext_skills::SkillRegistry, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub fn awaken_ext_skills::list_skills_tool_descriptor() -> awaken_runtime_contract::resolved::ToolDescriptor
 pub fn awaken_ext_skills::parse_skill_md(impl core::convert::Into<alloc::string::String>, &str) -> awaken_ext_skills::SkillSpec
