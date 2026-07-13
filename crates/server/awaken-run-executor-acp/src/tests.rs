@@ -75,6 +75,7 @@ impl AgentChannelSource for ScriptedSource {
             channel: Box::new(ours),
             process: Arc::new(FakeProcess),
             codec: awaken_protocol_acp::Codec::Newline,
+            workspace_cwd: None,
         })
     }
 }
@@ -797,6 +798,7 @@ async fn acp_relaunches_the_cli_every_turn_so_a_model_switch_takes_effect() {
                 channel: Box::new(ours),
                 process: Arc::new(FakeProcess),
                 codec: awaken_protocol_acp::Codec::Newline,
+                workspace_cwd: None,
             })
         }
     }

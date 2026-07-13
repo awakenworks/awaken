@@ -152,6 +152,9 @@ fn spawn(
         channel,
         process,
         codec,
+        // Unsandboxed local launch runs in the process cwd; the sandboxed source is
+        // what pins a stable interior workspace path for cross-directory recovery.
+        workspace_cwd: None,
     })
 }
 

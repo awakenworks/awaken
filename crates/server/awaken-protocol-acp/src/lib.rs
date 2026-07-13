@@ -228,6 +228,11 @@ pub struct TurnConfig<'a> {
     /// adapter-local datum — `None` leaves the agent's default). Validated
     /// fail-closed against the modes the agent advertised for the session.
     pub session_mode: Option<String>,
+    /// In: the interior working directory the CLI runs the session under (the
+    /// sandbox's fixed workspace path). For a CLI that keys sessions by cwd (Claude
+    /// Code), holding this stable across relaunches/machines is what lets
+    /// `session/load` find the session cross-directory. `None` → `/` (the default).
+    pub session_cwd: Option<String>,
 }
 
 impl<'a> TurnConfig<'a> {
@@ -239,6 +244,7 @@ impl<'a> TurnConfig<'a> {
             resolver,
             session_id: None,
             session_mode: None,
+            session_cwd: None,
         }
     }
 }

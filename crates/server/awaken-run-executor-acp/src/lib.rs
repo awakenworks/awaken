@@ -55,6 +55,10 @@ pub struct AgentSession {
     /// agent speaks the newline stand-in ([`Codec::Newline`], the default); a real
     /// CLI opened by [`ProjectingChannelSource`] speaks official ACP JSON-RPC.
     pub codec: Codec,
+    /// The interior working directory the sandbox launched the CLI in — held stable
+    /// per thread so a cwd-keyed CLI's session is found on `session/load` across
+    /// directories/machines. `None` → the CLI runs at `/` (the default).
+    pub workspace_cwd: Option<String>,
 }
 
 /// Opens an [`AgentSession`] for a run. The one seam the host wires: local =
@@ -404,6 +408,7 @@ impl AcpRunExecutor {
             let mut config = TurnConfig::new(self.permission.as_ref());
             config.session_id = acp_session_id.take();
             config.session_mode = self.session_mode.clone();
+            config.session_cwd = session.workspace_cwd.clone();
             let outcome = Supervisor::supervise_with_config(
                 session.channel.as_mut(),
                 process.as_ref(),
