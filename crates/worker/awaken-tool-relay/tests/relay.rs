@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use async_trait::async_trait;
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolExecutor, ToolOutput};
-use awaken_tool_relay::wire::{HandErrorKind, HandRequest, HandResult};
+use awaken_tool_relay::wire::{HandErrorKind, HandReply, HandRequest, HandResult};
 use awaken_tool_relay::{HandSession, RemoteToolExecutor, serve_hand};
 
 /// A tool that echoes its `text` argument and counts how many times it ran, so a
@@ -179,5 +179,136 @@ async fn catalog_fingerprint_mismatch_fails_closed() {
             assert_eq!(error.kind, HandErrorKind::FingerprintMismatch)
         }
         other => panic!("expected fingerprint mismatch, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_write_that_fails_before_dispatch_is_a_definite_error_not_indeterminate() {
+    // The hand's read half is already gone, so the very first send fails: the call
+    // never left, so it is a definite Execution error, never Indeterminate.
+    let (brain_end, hand_end) = tokio::io::duplex(64);
+    drop(hand_end);
+    let executor = RemoteToolExecutor::new(brain_end);
+    match executor.call_hand(&call("c1", "echo", "x")).await {
+        HandResult::Err { error } => {
+            assert_eq!(error.kind, HandErrorKind::Execution);
+            assert!(
+                error.message.contains("closed before dispatch"),
+                "got: {}",
+                error.message
+            );
+        }
+        other => panic!("expected a definite pre-dispatch error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_reply_with_a_mismatched_correlation_id_is_indeterminate() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_util::codec::{Framed, LengthDelimitedCodec};
+
+    let (brain_end, hand_end) = tokio::io::duplex(64 * 1024);
+    tokio::spawn(async move {
+        let mut framed = Framed::new(hand_end, LengthDelimitedCodec::new());
+        if let Some(Ok(frame)) = framed.next().await {
+            let req: HandRequest = serde_json::from_slice(&frame).unwrap();
+            // A well-formed reply, but for the wrong correlation id → the brain
+            // cannot match it and must treat the call as indeterminate.
+            let reply = HandReply {
+                correlation_id: req.correlation_id.wrapping_add(999),
+                result: HandResult::ok(ToolOutput::ok("c1", "stale")),
+            };
+            let _ = framed.send(serde_json::to_vec(&reply).unwrap().into()).await;
+        }
+    });
+    let executor = RemoteToolExecutor::new(brain_end);
+    assert_eq!(
+        executor.call_hand(&call("c1", "echo", "x")).await,
+        HandResult::Indeterminate
+    );
+}
+
+#[tokio::test]
+async fn a_reply_frame_that_is_not_a_hand_reply_is_indeterminate() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_util::codec::{Framed, LengthDelimitedCodec};
+
+    let (brain_end, hand_end) = tokio::io::duplex(64 * 1024);
+    tokio::spawn(async move {
+        let mut framed = Framed::new(hand_end, LengthDelimitedCodec::new());
+        if framed.next().await.is_some() {
+            // Garbage that does not decode to a HandReply → indeterminate.
+            let _ = framed.send(b"not-a-hand-reply".to_vec().into()).await;
+        }
+    });
+    let executor = RemoteToolExecutor::new(brain_end);
+    assert_eq!(
+        executor.call_hand(&call("c1", "echo", "x")).await,
+        HandResult::Indeterminate
+    );
+}
+
+#[tokio::test]
+async fn the_brain_stamps_its_catalog_fingerprint_and_a_matching_hand_accepts() {
+    let session = HandSession::new([Arc::new(CountingEcho {
+        id: "echo".into(),
+        runs: Arc::new(AtomicU32::new(0)),
+    }) as Arc<dyn RawTool>])
+    .with_catalog_fingerprint("v1");
+    let (brain_end, hand_end) = tokio::io::duplex(64 * 1024);
+    let hand = tokio::spawn(serve_hand(hand_end, session));
+
+    let executor = RemoteToolExecutor::new(brain_end).with_catalog_fingerprint("v1");
+    let out = executor
+        .invoke(&call("c1", "echo", "ok"))
+        .await
+        .expect("a matching fingerprint is accepted");
+    assert_eq!(out.content, "ok");
+    drop(executor);
+    let _ = hand.await;
+}
+
+#[tokio::test]
+async fn a_brain_fingerprint_drift_is_rejected_end_to_end() {
+    let session = HandSession::new([Arc::new(CountingEcho {
+        id: "echo".into(),
+        runs: Arc::new(AtomicU32::new(0)),
+    }) as Arc<dyn RawTool>])
+    .with_catalog_fingerprint("hand-v1");
+    let (brain_end, hand_end) = tokio::io::duplex(64 * 1024);
+    let hand = tokio::spawn(serve_hand(hand_end, session));
+
+    let executor = RemoteToolExecutor::new(brain_end).with_catalog_fingerprint("run-v2");
+    let err = executor
+        .invoke(&call("c1", "echo", "x"))
+        .await
+        .expect_err("a drifted fingerprint is rejected");
+    assert!(
+        err.to_string().contains("fingerprint mismatch"),
+        "got: {err}"
+    );
+    drop(executor);
+    let _ = hand.await;
+}
+
+#[tokio::test]
+async fn serve_hand_fails_closed_on_a_frame_that_is_not_a_request() {
+    use futures_util::SinkExt;
+    use tokio_util::codec::{Framed, LengthDelimitedCodec};
+
+    let session = HandSession::new(std::iter::empty::<Arc<dyn RawTool>>());
+    let (brain_end, hand_end) = tokio::io::duplex(64 * 1024);
+    let hand = tokio::spawn(serve_hand(hand_end, session));
+
+    // A well-framed byte blob that does not decode to a HandRequest.
+    let mut framed = Framed::new(brain_end, LengthDelimitedCodec::new());
+    framed.send(b"garbage-frame".to_vec().into()).await.unwrap();
+
+    match hand.await.unwrap() {
+        Err(e) => assert!(
+            e.to_string().contains("not a HandRequest"),
+            "got: {e}"
+        ),
+        Ok(()) => panic!("expected the hand to fail closed on a non-request frame"),
     }
 }
