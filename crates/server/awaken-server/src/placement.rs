@@ -124,6 +124,7 @@ mod tests {
             },
             input: vec![Message::text(MessageId("u".into()), Role::User, "go")],
             trace: Default::default(),
+            model_access: Default::default(),
         }
     }
 

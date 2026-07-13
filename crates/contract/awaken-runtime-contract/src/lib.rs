@@ -39,6 +39,7 @@ pub use data_subject::{
 pub use execution::{Cancellation, ExecutorCapabilities, RunExecutor, Wait};
 pub use live_inbox::{LiveInbox, LiveInboxMessage, LiveInboxMessageId};
 pub use llm::{ChatRequest, ChatResponse, LlmExecutor};
+pub use model_access::{ModelAccessGrant, ResolvedModelEndpoint};
 pub use pause::PauseSignal;
 pub use permission::{GateOutcome, PermissionDecision, PermissionPolicy, ToolGateHook};
 pub use plugin::{

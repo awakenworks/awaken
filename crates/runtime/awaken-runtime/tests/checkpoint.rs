@@ -155,6 +155,7 @@ async fn drive(
             content: vec![ContentBlock::text("hi")],
         }],
         trace: Default::default(),
+        model_access: Default::default(),
     };
     let phase = runtime.execute(activation, context).await.expect("runs");
     (phase, Arc::try_unwrap(commit).unwrap_or_default())

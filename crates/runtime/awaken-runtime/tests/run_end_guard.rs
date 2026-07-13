@@ -205,6 +205,7 @@ fn activation(plugin_ids: Vec<String>, max_steps: usize) -> RunActivation {
             content: vec![ContentBlock::text("go")],
         }],
         trace: Default::default(),
+        model_access: Default::default(),
     }
 }
 

@@ -127,6 +127,7 @@ fn activation() -> RunActivation {
             content: vec![ContentBlock::text("hello secret-token")],
         }],
         trace: Default::default(),
+        model_access: Default::default(),
     }
 }
 

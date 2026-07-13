@@ -162,6 +162,7 @@ async fn replay(case: &Case) -> (String, bool, Vec<String>) {
             content: vec![ContentBlock::text(case.input.clone())],
         }],
         trace: Default::default(),
+        model_access: Default::default(),
     };
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
