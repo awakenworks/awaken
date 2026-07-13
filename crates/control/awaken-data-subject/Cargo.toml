@@ -15,7 +15,7 @@ async-trait.workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { workspace = true }
 # `spawn_blocking` for the sqlite adapter's off-thread connection work.
 tokio = { workspace = true, features = ["rt"] }
 # Feature `postgres`: network-DB DataSubjectRepo + CapturedContentStore backends

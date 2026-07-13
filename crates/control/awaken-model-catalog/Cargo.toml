@@ -12,7 +12,7 @@ async-trait.workspace = true
 schemars = { version = "1", optional = true }
 # Feature `sqlite`: embedded durable CatalogRepo backend over the crate's own
 # `catalog` migration scope (ADR-0043).
-rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+rusqlite = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 # Feature `postgres`: network-DB CatalogRepo backend over the same `catalog`
 # migration scope (ADR-0043).
