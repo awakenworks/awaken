@@ -329,4 +329,88 @@ mod tests {
         let r3 = dispatcher.dispatch(&event(), 3).await;
         assert!(r3.delivered.is_empty() && r3.failed.is_empty() && r3.disabled.is_empty());
     }
+
+    /// A sender that always returns a fixed HTTP status, counting its calls — for
+    /// the non-2xx arm the scripted (Err-or-200) sender cannot express.
+    struct CodeSender {
+        code: u16,
+        calls: Mutex<u32>,
+    }
+    impl CodeSender {
+        fn new(code: u16) -> Arc<Self> {
+            Arc::new(Self {
+                code,
+                calls: Mutex::new(0),
+            })
+        }
+        fn calls(&self) -> u32 {
+            *self.calls.lock().unwrap()
+        }
+    }
+    #[async_trait]
+    impl WebhookSender for CodeSender {
+        async fn post(
+            &self,
+            _url: &str,
+            _headers: Vec<(String, String)>,
+            _body: String,
+        ) -> Result<u16, String> {
+            *self.calls.lock().unwrap() += 1;
+            Ok(self.code)
+        }
+    }
+
+    fn resolved_with_secret(id: &str, secret: &str) -> ResolvedSubscription {
+        ResolvedSubscription {
+            id: id.to_string(),
+            url: "https://example/hook".to_string(),
+            secret: secret.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_non_2xx_response_is_retried_then_failed() {
+        let source = TestSource::with(resolved("wh_1"));
+        let sender = CodeSender::new(500);
+        let dispatcher = WebhookDispatcher::new(source, sender.clone()).with_thresholds(3, 20);
+
+        let report = dispatcher.dispatch(&event(), 1).await;
+        assert_eq!(report.failed, vec!["wh_1".to_string()]);
+        assert!(report.delivered.is_empty());
+        assert_eq!(
+            sender.calls(),
+            3,
+            "a non-2xx status is retried up to max_attempts, then fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_malformed_secret_fails_without_reaching_the_wire() {
+        let source = TestSource::with(resolved_with_secret("wh_1", "whsec_!!!not-base64!!!"));
+        let sender = CodeSender::new(200);
+        let dispatcher = WebhookDispatcher::new(source, sender.clone()).with_thresholds(3, 20);
+
+        let report = dispatcher.dispatch(&event(), 1).await;
+        assert_eq!(report.failed, vec!["wh_1".to_string()]);
+        assert_eq!(
+            sender.calls(),
+            0,
+            "a secret that can never sign is a hard failure — no POST is attempted"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_attempt_failing_exhausts_the_retries_then_fails() {
+        let source = TestSource::with(resolved("wh_1"));
+        let sender = ScriptedSender::new(u32::MAX); // every attempt errors
+        let dispatcher = WebhookDispatcher::new(source, sender.clone()).with_thresholds(3, 20);
+
+        let report = dispatcher.dispatch(&event(), 1).await;
+        assert_eq!(report.failed, vec!["wh_1".to_string()]);
+        assert_eq!(
+            sender.captured.lock().unwrap().len(),
+            3,
+            "all three attempts run before the delivery is given up"
+        );
+    }
 }
