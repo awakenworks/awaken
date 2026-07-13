@@ -11,10 +11,8 @@ use std::sync::Mutex;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_provider_genai::GenaiExecutor;
-use awaken_runtime_contract::llm::{
-    ChatMessage, ChatRequest, ChatRole, DeltaSink, LlmExecutor, ToolSchema,
-};
-use awaken_runtime_contract::resolved::ModelBinding;
+use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, ChatRole, DeltaSink, LlmExecutor};
+use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 use genai::adapter::AdapterKind;
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
@@ -150,18 +148,19 @@ async fn minimax_multimodal_image() {
 
 /// A weather tool the model is steered into calling. Its single required string
 /// argument lets us assert the streamed arguments accumulated into valid JSON.
-fn weather_tool() -> ToolSchema {
-    ToolSchema {
-        id: "get_weather".to_string(),
-        description: "Get the current weather for a city.".to_string(),
-        parameters: serde_json::json!({
+fn weather_tool() -> ToolDescriptor {
+    ToolDescriptor::pinned(
+        "test",
+        "get_weather",
+        "Get the current weather for a city.",
+        serde_json::json!({
             "type": "object",
             "properties": {
                 "city": { "type": "string", "description": "City name" }
             },
             "required": ["city"]
         }),
-    }
+    )
 }
 
 #[tokio::test]

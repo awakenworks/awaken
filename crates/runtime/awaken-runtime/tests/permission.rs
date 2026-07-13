@@ -238,8 +238,8 @@ async fn ask_parks_then_a_resumed_allow_runs_the_tool() {
         correlation_id: TICKET.to_string(),
         run_id: RunId("run-1".to_string()),
         thread_id: ThreadId("thread-1".to_string()),
-        snapshot_id: SNAP.to_string(),
-        catalog_fingerprint: FP.to_string(),
+        snapshot_id: awaken_runtime_contract::ExecutableAgentSnapshotId(SNAP.to_string()),
+        catalog_fingerprint: awaken_runtime_contract::CatalogFingerprint(FP.to_string()),
         result: ResumeResult::Decision {
             allow: true,
             note: None,

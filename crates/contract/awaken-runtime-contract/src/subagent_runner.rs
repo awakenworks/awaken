@@ -29,7 +29,8 @@ pub struct SubagentReply {
 }
 
 /// A sub-run failed to execute (unknown agent, sandbox/runtime/transport error).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{0}")]
 pub struct SubagentError(pub String);
 
 /// Runs an auxiliary catalog sub-agent to completion. Declared by an extension

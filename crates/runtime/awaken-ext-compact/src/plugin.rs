@@ -15,7 +15,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::state::{Action, Command, MergePolicy, Scope};
 use awaken_runtime_contract::plugin::{
-    CapabilityBound, Contributions, PhaseContext, PhaseHook, PhaseHookPoint, PhaseReaction, Plugin,
+    CapabilityBound, Contributions, HookReaction, PhaseContext, PhaseHook, PhaseHookPoint, Plugin,
     PluginConfigError, PluginManifest,
 };
 use awaken_runtime_contract::subagent_runner::{SubagentRequest, SubagentRunner};
@@ -212,11 +212,11 @@ impl PhaseHook for CompactHook {
         PhaseHookPoint::BeforeInference
     }
 
-    async fn on_phase(&self, ctx: &PhaseContext, conversation: &[Message]) -> PhaseReaction {
+    async fn on_phase(&self, ctx: &PhaseContext, conversation: &[Message]) -> HookReaction {
         if let Some(hit) = self.cache.lock().unwrap().get(&ctx.run_id) {
             // A later step of the same run: replay the summary, but do not re-stage
             // the fact — it was committed on the folding step (emit-once per run).
-            return PhaseReaction::context(hit.clone());
+            return HookReaction::messages(hit.clone());
         }
         let summary = self.compute(conversation).await;
         self.cache
@@ -226,11 +226,11 @@ impl PhaseHook for CompactHook {
         match summary {
             // A fold happened: inject the summary request-only *and* stage the
             // durable, protocol-neutral marker the adapter projects into the event.
-            Some(block) => PhaseReaction {
+            Some(block) => HookReaction {
                 state: vec![compaction_marker(&ctx.run_id.0)],
-                context: block,
+                messages: block,
             },
-            None => PhaseReaction::default(),
+            None => HookReaction::default(),
         }
     }
 }
@@ -290,7 +290,7 @@ mod tests {
         }));
         let hook = &plugin.resolve().phase_hooks[0];
         let reaction = hook.on_phase(&phase_ctx(), &convo(5)).await;
-        assert!(reaction.context.is_empty());
+        assert!(reaction.messages.is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -308,9 +308,9 @@ mod tests {
         // 10 messages, keep_last 2 → summarize the first 8.
         let reaction = hook.on_phase(&phase_ctx(), &convo(10)).await;
         assert_eq!(*summarizer.seen_len.lock().unwrap(), 9); // 8 folded + summarize prompt
-        assert_eq!(reaction.context.len(), 1);
+        assert_eq!(reaction.messages.len(), 1);
         assert!(
-            reaction.context[0]
+            reaction.messages[0]
                 .text_content()
                 .contains("Summary of earlier conversation: earlier: X")
         );
@@ -417,7 +417,7 @@ mod tests {
         // A later step of the same run replays the summary but stages no new fact.
         let second = hook.on_phase(&phase_ctx(), &convo(10)).await;
         assert!(second.state.is_empty(), "emit-once per run");
-        assert_eq!(second.context.len(), 1, "the summary still replays");
+        assert_eq!(second.messages.len(), 1, "the summary still replays");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -436,7 +436,7 @@ mod tests {
         // 10 short messages (~15 est. tokens) exceed the 8-token budget.
         let reaction = hook.on_phase(&phase_ctx(), &convo(10)).await;
         assert_eq!(
-            reaction.context.len(),
+            reaction.messages.len(),
             1,
             "the token budget folded the older slice"
         );
@@ -457,7 +457,7 @@ mod tests {
         }));
         let hook = &plugin.resolve().phase_hooks[0];
         let reaction = hook.on_phase(&phase_ctx(), &convo(10)).await;
-        assert!(reaction.context.is_empty());
+        assert!(reaction.messages.is_empty());
         assert_eq!(compaction_count(&reaction.state), 0);
     }
 

@@ -8,10 +8,8 @@ use awaken_provider_genai::{
     GenaiExecutor, classify_error, from_genai_tool_call, map_assistant_output, map_usage,
     to_genai_request,
 };
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatMessage, ChatRequest, ChatRole, ToolSchema,
-};
-use awaken_runtime_contract::resolved::ModelBinding;
+use awaken_runtime_contract::llm::{AssistantOutput, ChatMessage, ChatRequest, ChatRole};
+use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 use genai::chat::{ChatRole as GenaiRole, MessageContent, ToolCall as GenaiToolCall, Usage};
 
 fn binding(model: &str) -> ModelBinding {
@@ -40,11 +38,12 @@ fn maps_roles_and_tools_onto_genai_request() {
                 content: vec![ContentBlock::text("ok")],
             },
         ],
-        tools: vec![ToolSchema {
-            id: "search".to_string(),
-            description: "search the web".to_string(),
-            parameters: serde_json::json!({"type": "object"}),
-        }],
+        tools: vec![ToolDescriptor::pinned(
+            "test",
+            "search",
+            "search the web",
+            serde_json::json!({"type": "object"}),
+        )],
     };
 
     let genai = to_genai_request(&request);
