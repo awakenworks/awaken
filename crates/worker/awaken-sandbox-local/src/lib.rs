@@ -31,11 +31,13 @@ use serde_json::Value;
 /// The `awaken-provisioning-contract` seam realized locally (ADR-0041). Additive:
 /// the pre-contract `Environment`/`SandboxProvider` surface below is unchanged.
 mod artifacts;
+mod blob_cache;
 mod namespace;
 mod provider;
 // The provider resolves mount bytes from an injected [`pc::BlobSource`] port
 // (ADR-0038 D6, dependency-inverted) — this worker-tier crate links no durable
 // store; the composition root adapts the content-addressed store to the port.
+pub use blob_cache::{BlobLru, WorkspaceBlobCache};
 pub use namespace::{NamespaceProvider, NamespaceSandbox, bubblewrap_argv, sandbox_exec_argv};
 pub use provider::{LocalProcess, LocalProvider, LocalSandbox};
 
