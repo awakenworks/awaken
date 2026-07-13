@@ -22,7 +22,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         awaken_server::Role::Hand => return awaken_server::run_hand_role().await,
         awaken_server::Role::Worker => {
             let upstream = std::env::var("AWAKEN_UPSTREAM_URL").unwrap_or_default();
-            return awaken_server::run_worker(&upstream).await;
+            // Test-only echo-draining worker (the worker-pool e2e). The production
+            // worker with real per-run model resolution lives in `awaken-worker`.
+            return awaken_scenario_host::run_echo_worker(&upstream).await;
         }
         awaken_server::Role::Serve => {}
     }

@@ -31,7 +31,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         awaken_server::Role::Hand => return awaken_server::run_hand_role().await,
         awaken_server::Role::Worker => {
             let upstream = std::env::var("AWAKEN_UPSTREAM_URL").unwrap_or_default();
-            return awaken_server::run_worker(&upstream).await;
+            // The PRODUCTION worker (Stage C): drains runs and resolves EACH run's
+            // model from the DB-configured catalog + vault via ConfigExecutorProvider.
+            return awaken_worker::run(&upstream).await;
         }
         awaken_server::Role::Serve => {}
     }
