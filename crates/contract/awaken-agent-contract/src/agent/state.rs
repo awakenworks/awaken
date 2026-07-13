@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// Typed state address.
@@ -188,6 +189,98 @@ impl Store {
     }
 }
 
+/// A typed read failed because a present value did not match the key's declared
+/// shape (schema drift on a persisted run). An *absent* key is never an error —
+/// it is the key's `Default`. Surfaced instead of silently resetting to the
+/// default, so a shape drift fails closed rather than discarding committed truth.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateError {
+    pub key: String,
+    pub scope: Scope,
+    pub detail: String,
+}
+
+impl std::fmt::Display for StateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "state key {:?} in scope {:?} did not match its declared shape: {}",
+            self.key, self.scope, self.detail
+        )
+    }
+}
+
+impl std::error::Error for StateError {}
+
+/// A typed view over one `(scope, key)` cell of the untyped store: a key declares
+/// its address, scope, merge policy, value type, and how a typed update folds
+/// into the value (`apply`). Reads are typed and fail closed on a shape drift;
+/// writes serialize the whole value into one `Command`. Promoted into the
+/// contract (ADR-0055) from the state-machine extension's original façade so the
+/// engine and every extension share one typed-state discipline.
+///
+/// `apply` must stay total and deterministic: `Store::rebuild` replays committed
+/// updates without re-validating, so an illegal update is recorded (e.g. a
+/// bounded violation log), never a panic.
+pub trait StateKey {
+    /// Stable string address. Part of the persisted wire — never rename without
+    /// a migration.
+    const KEY: &'static str;
+    const SCOPE: Scope;
+    const MERGE: MergePolicy = MergePolicy::Disjoint;
+    type Value: Serialize + DeserializeOwned + Default;
+    type Update;
+
+    /// Fold one typed update into the value.
+    fn apply(value: &mut Self::Value, update: Self::Update);
+
+    /// This key's untyped address.
+    fn address() -> Key {
+        Key(Self::KEY.to_string())
+    }
+
+    /// Fail-closed typed read. An absent key yields the `Default` (a valid
+    /// initial state); a present value that does not deserialize is a drift
+    /// error, never a silent reset.
+    fn load(store: &Store) -> Result<Self::Value, StateError> {
+        match store.get(Self::SCOPE, &Self::address()) {
+            None => Ok(Self::Value::default()),
+            Some(value) => serde_json::from_value(value.clone()).map_err(|error| StateError {
+                key: Self::KEY.to_string(),
+                scope: Self::SCOPE,
+                detail: error.to_string(),
+            }),
+        }
+    }
+
+    /// Lenient read: an absent key *or* a drift both yield the `Default`. Prefer
+    /// [`StateKey::load`]; use this only where a consumer deliberately tolerates
+    /// a shape drift by resetting to the default (naming the leniency at the call
+    /// site instead of hiding it inside `load`).
+    fn load_or_default(store: &Store) -> Self::Value {
+        Self::load(store).unwrap_or_default()
+    }
+
+    /// Load (fail-closed), fold the update, and produce a whole-value `Command`.
+    fn commit(store: &Store, update: Self::Update) -> Result<Command, StateError> {
+        let mut value = Self::load(store)?;
+        Self::apply(&mut value, update);
+        Ok(Self::write(&value))
+    }
+
+    /// Produce a whole-value `Command` from an already-folded value. Use this to
+    /// emit one command per key when a single reaction folds many updates into a
+    /// local value (avoids read-modify-write aliasing within one batch).
+    fn write(value: &Self::Value) -> Command {
+        Command::set(
+            Self::SCOPE,
+            Self::MERGE,
+            Self::KEY,
+            serde_json::to_value(value).unwrap_or(serde_json::Value::Null),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,5 +440,48 @@ mod tests {
     #[test]
     fn empty_store_is_empty() {
         assert!(Store::new().is_empty());
+    }
+
+    struct Counter;
+    impl StateKey for Counter {
+        const KEY: &'static str = "counter";
+        const SCOPE: Scope = Scope::Run;
+        const MERGE: MergePolicy = MergePolicy::Disjoint;
+        type Value = u64;
+        type Update = u64;
+        fn apply(value: &mut u64, update: u64) {
+            *value += update;
+        }
+    }
+
+    #[test]
+    fn typed_load_absent_is_default_not_error() {
+        assert_eq!(Counter::load(&Store::new()), Ok(0));
+    }
+
+    #[test]
+    fn typed_commit_round_trips_and_folds() {
+        let mut store = Store::new();
+        store.apply(&Counter::commit(&store, 2).unwrap());
+        store.apply(&Counter::commit(&store, 3).unwrap());
+        assert_eq!(Counter::load(&store), Ok(5));
+    }
+
+    #[test]
+    fn typed_load_fails_closed_on_shape_drift() {
+        // A persisted value of the wrong shape must fail closed, never silently
+        // reset to the default (ADR-0055).
+        let mut store = Store::new();
+        store.apply(&Command::set(
+            Scope::Run,
+            MergePolicy::Disjoint,
+            "counter",
+            serde_json::json!("not a number"),
+        ));
+        let err = Counter::load(&store).expect_err("shape drift must fail closed");
+        assert_eq!(err.key, "counter");
+        assert_eq!(err.scope, Scope::Run);
+        // The lenient reader deliberately tolerates the drift by defaulting.
+        assert_eq!(Counter::load_or_default(&store), 0);
     }
 }
