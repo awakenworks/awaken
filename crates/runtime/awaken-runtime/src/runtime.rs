@@ -459,10 +459,23 @@ impl LiveRunControl for Runtime {
                     .request();
                 Ok(())
             }
-            // Wake is a live nudge for an in-flight run. Durable resume of a
-            // parked run goes through `Runtime::resume` with a validated
-            // `ResumeCommand`, not this live channel, so wake stays a no-op.
-            LiveCommand::Wake { .. } => Ok(()),
+            // Wake is a live nudge for an in-flight run: verify a live subscriber
+            // (the run is registered active) accepts it, then it is a no-op — durable
+            // resume of a PARKED run goes through `Runtime::resume` with a validated
+            // `ResumeCommand`, not this live channel. Fail closed when no live run
+            // accepts it (G5: a wake with no subscriber is a hard error, not a silent
+            // success), so the durable live-control seam surfaces `NoSubscriber`
+            // rather than reporting a phantom wake.
+            LiveCommand::Wake { run_id, .. } => {
+                let active = self.active_runs.lock().map_err(|_| {
+                    ControlError::Rejected("active run registry poisoned".to_string())
+                })?;
+                if active.contains_key(&run_id) {
+                    Ok(())
+                } else {
+                    Err(ControlError::NotActive)
+                }
+            }
         }
     }
 }
