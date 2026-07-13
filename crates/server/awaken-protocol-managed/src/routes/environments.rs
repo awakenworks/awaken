@@ -17,7 +17,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_provisioning_contract::NetworkPolicy;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -28,7 +28,7 @@ use crate::types::environment::{
     DeletedEnvironment, Environment, EnvironmentCreateParams, EnvironmentUpdateParams, Work,
     WorkData, WorkHeartbeat, WorkQueueStats, WorkUpdateParams,
 };
-use crate::types::{ErrorResponse, Page};
+use crate::types::{ErrorResponse, Page, PageQuery, paginate};
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 const HEARTBEAT_TTL_SECONDS: u64 = 60;
@@ -282,14 +282,17 @@ async fn retrieve_env(
     Ok(Json(record.project(&id)))
 }
 
-async fn list_envs(State(state): State<Arc<EnvironmentState>>) -> Json<Page<Environment>> {
+async fn list_envs(
+    State(state): State<Arc<EnvironmentState>>,
+    Query(page): Query<PageQuery>,
+) -> Json<Page<Environment>> {
     let envs = state.envs.lock().unwrap();
-    let data = envs
+    let data: Vec<Environment> = envs
         .iter()
         .filter(|(_, e)| e.archived_at.is_none())
         .map(|(id, e)| e.project(id))
         .collect();
-    Json(Page::single(data))
+    Json(paginate(data, &page, |e| e.id.as_str()))
 }
 
 async fn update_env(
@@ -366,15 +369,16 @@ fn require_env(state: &EnvironmentState, id: &str) -> Result<(), WireError> {
 async fn list_work(
     State(state): State<Arc<EnvironmentState>>,
     Path(id): Path<String>,
+    Query(page): Query<PageQuery>,
 ) -> Result<Json<Page<Work>>, WireError> {
     require_env(&state, &id)?;
     let works = state.works.lock().unwrap();
-    let data = works
+    let data: Vec<Work> = works
         .iter()
         .filter(|(_, w)| w.environment_id == id)
         .map(|(wid, w)| w.project(wid))
         .collect();
-    Ok(Json(Page::single(data)))
+    Ok(Json(paginate(data, &page, |w| w.id.as_str())))
 }
 
 /// `GET /v1/environments/:id/work/poll` — lease the next queued item to the

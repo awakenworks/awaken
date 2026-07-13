@@ -54,7 +54,7 @@ use crate::types::vault::{
     TokenEndpointAuthResponse, TokenEndpointAuthUpdate, Vault, VaultCreateParams,
     VaultUpdateParams,
 };
-use crate::types::{ErrorResponse, Page};
+use crate::types::{ErrorResponse, Page, PageQuery, paginate};
 
 /// Deterministic timestamp stamped on every vault/credential object, matching the
 /// session surface's `PROCESSED_AT` convention (no wall-clock/uuid dependency, so
@@ -457,6 +457,7 @@ async fn retrieve_vault(
 async fn list_vaults(
     State(state): State<Arc<VaultState>>,
     Query(query): Query<ListQuery>,
+    Query(page): Query<PageQuery>,
 ) -> Json<Page<Vault>> {
     let store = state.inner.lock().unwrap();
     let mut ids: Vec<&String> = store
@@ -466,11 +467,11 @@ async fn list_vaults(
         .map(|(id, _)| id)
         .collect();
     ids.sort();
-    let data = ids
+    let data: Vec<Vault> = ids
         .into_iter()
         .map(|id| VaultState::project_vault(id, &store.vaults[id]))
         .collect();
-    Json(Page::single(data))
+    Json(paginate(data, &page, |v| v.id.as_str()))
 }
 
 async fn delete_vault(
@@ -744,6 +745,7 @@ async fn list_credentials(
     State(state): State<Arc<VaultState>>,
     Path(vault_id): Path<String>,
     Query(query): Query<ListQuery>,
+    Query(page): Query<PageQuery>,
 ) -> Result<Json<Page<Credential>>, WireError> {
     let store = state.inner.lock().unwrap();
     if !store.vaults.contains_key(&vault_id) {
@@ -757,11 +759,11 @@ async fn list_credentials(
         .map(|(id, _)| id)
         .collect();
     ids.sort();
-    let data = ids
+    let data: Vec<Credential> = ids
         .into_iter()
         .map(|id| VaultState::project_credential(id, &store.credentials[id]))
         .collect();
-    Ok(Json(Page::single(data)))
+    Ok(Json(paginate(data, &page, |c| c.id.as_str())))
 }
 
 async fn retrieve_credential(
