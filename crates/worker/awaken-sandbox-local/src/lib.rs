@@ -1169,3 +1169,57 @@ mod tests {
         provider.teardown("u").await.unwrap();
     }
 }
+
+#[cfg(test)]
+mod env_scan_tests {
+    use super::*;
+
+    #[test]
+    fn scan_and_list_on_a_rootless_environment_are_empty() {
+        let env = Environment::new("e", Vec::new());
+        assert!(env.scan_skill_dir("skills").is_empty());
+        assert!(env.list_files("outputs").is_empty());
+    }
+
+    #[test]
+    fn scan_skill_dir_reads_skill_md_dirs_sorted_and_skips_non_dirs_and_dirs_without_md() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("skills/beta")).unwrap();
+        std::fs::create_dir_all(root.join("skills/alpha")).unwrap();
+        std::fs::create_dir_all(root.join("skills/no-md")).unwrap(); // no SKILL.md → skipped
+        std::fs::write(root.join("skills/beta/SKILL.md"), "B").unwrap();
+        std::fs::write(root.join("skills/alpha/SKILL.md"), "A").unwrap();
+        std::fs::write(root.join("skills/loose.txt"), "x").unwrap(); // not a dir → skipped
+
+        let env = Environment::new("e", Vec::new()).with_root(root);
+        let skills = env.scan_skill_dir("skills");
+        assert_eq!(
+            skills.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            ["alpha", "beta"]
+        );
+        assert_eq!(skills[0].content, "A");
+        assert_eq!(skills[0].dir, "skills/alpha");
+        // A missing subdir scans to empty (read_dir err → early return).
+        assert!(env.scan_skill_dir("nope").is_empty());
+    }
+
+    #[test]
+    fn list_files_recurses_subdirs_and_sorts_by_relative_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("outputs/sub")).unwrap();
+        std::fs::write(root.join("outputs/b.txt"), b"bb").unwrap();
+        std::fs::write(root.join("outputs/sub/a.txt"), b"a").unwrap();
+
+        let env = Environment::new("e", Vec::new()).with_root(root);
+        let files = env.list_files("outputs");
+        assert_eq!(
+            files.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(),
+            ["b.txt", "sub/a.txt"]
+        );
+        assert_eq!(files[0].1, b"bb");
+        // A missing subdir lists to empty.
+        assert!(env.list_files("absent").is_empty());
+    }
+}

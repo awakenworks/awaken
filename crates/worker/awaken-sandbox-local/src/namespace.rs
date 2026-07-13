@@ -652,6 +652,103 @@ mod tests {
         }
     }
 
+    fn ns_spec(scope: &str, mounts: Vec<pc::MountRequirement>) -> pc::SandboxSpec {
+        pc::SandboxSpec {
+            scope: scope.into(),
+            isolation: pc::IsolationClass::Namespace,
+            mounts,
+            env: Vec::new(),
+            network: pc::NetworkPolicy::Unrestricted,
+            outputs_path: "/mnt/session/outputs".into(),
+            limits: Default::default(),
+            lease_ttl_secs: None,
+            extra: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn create_sandbox_realizes_a_resolvable_and_an_optional_unresolvable_mount() {
+        use pc::Sandbox;
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = NamespaceProvider::new(tmp.path()).with_blob("blob-x", b"payload".to_vec());
+        let spec = ns_spec(
+            "t-ns-mounts",
+            vec![
+                pc::MountRequirement {
+                    mount_id: "data".into(),
+                    source: pc::MountSource::File {
+                        file_id: "blob-x".into(),
+                        content_hash: None,
+                    },
+                    mount_path: "/workspace/deep/data.bin".into(),
+                    access: pc::MountAccess::ReadOnly,
+                    lifetime: pc::MountLifetime::PerRun,
+                    required: true,
+                },
+                pc::MountRequirement {
+                    mount_id: "opt".into(),
+                    source: pc::MountSource::File {
+                        file_id: "absent".into(),
+                        content_hash: None,
+                    },
+                    mount_path: "/workspace/deep2/opt.bin".into(),
+                    access: pc::MountAccess::ReadOnly,
+                    lifetime: pc::MountLifetime::PerRun,
+                    required: false,
+                },
+            ],
+        );
+        let sandbox = provider.create_sandbox(&spec).await.unwrap();
+        assert_eq!(sandbox.realized().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_memory_store_mount_without_a_mounter_fails_loud() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = NamespaceProvider::new(tmp.path());
+        let spec = ns_spec(
+            "t-ns-mem",
+            vec![pc::MountRequirement {
+                mount_id: "mem".into(),
+                source: pc::MountSource::MemoryStore {
+                    store_id: "s1".into(),
+                },
+                mount_path: "/workspace/mem".into(),
+                access: pc::MountAccess::ReadWrite,
+                lifetime: pc::MountLifetime::PerRun,
+                required: true,
+            }],
+        );
+        assert!(provider.create_sandbox(&spec).await.is_err());
+    }
+
+    async fn bwrap_usable() -> bool {
+        tokio::process::Command::new("bwrap")
+            .args(["--ro-bind", "/", "/", "true"])
+            .output()
+            .await
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_launches_an_opaque_process_confined_by_bwrap() {
+        if !bwrap_usable().await {
+            eprintln!("skipping: no usable bwrap / user namespaces");
+            return;
+        }
+        use pc::ProcessHandle;
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = NamespaceProvider::new(tmp.path());
+        let sandbox = provider
+            .create_sandbox(&ns_spec("t-ns-spawn", Vec::new()))
+            .await
+            .unwrap();
+        let (proc, _channel) = sandbox.spawn_agent(pc::Command::new(["true"])).await.unwrap();
+        assert!(!proc.id().is_empty());
+        assert_eq!(proc.wait().await.unwrap().code, Some(0));
+    }
+
     #[test]
     fn bubblewrap_binds_workspace_outputs_and_ends_with_argv() {
         let ws = PathBuf::from("/host/ws");
