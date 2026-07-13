@@ -357,6 +357,10 @@ pub struct SharedHost {
     /// the server's commit ingest — the worker holds no store. Set via
     /// [`with_upstream`](Self::with_upstream); `None` is a store-owning server/host.
     pub(crate) upstream: Option<String>,
+    /// The deployment axes (store/dispatch backend, durable ingress, wake), parsed
+    /// once from the environment at construction. The runtime reads this typed
+    /// config instead of reaching into process env at each call site.
+    pub(crate) deployment: crate::deployment_config::DeploymentConfig,
     /// When set, an ACP CLI's session is harvested/restored under this durable root
     /// (keyed by thread+adapter) so it survives a move to another directory or
     /// worker. Point it at a **shared** location for cross-machine recovery; leave
@@ -511,6 +515,7 @@ impl SharedHost {
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from),
             upstream: None,
+            deployment: crate::deployment_config::DeploymentConfig::from_env(),
             remote_agents: HashMap::new(),
             memory: None,
             memory_selector: None,
@@ -887,14 +892,15 @@ impl SharedHost {
         // thread, so any node serves any thread's history. Connected once at startup
         // (the non-Send sqlx connect stays out of the run loop), independent of a
         // per-thread store dir.
-        if std::env::var("AWAKEN_STORE").as_deref() == Ok("postgres") {
+        use crate::deployment_config::StoreKind;
+        if self.deployment.store == StoreKind::Postgres {
             return crate::store::postgres_commit_or_err();
         }
         let Some(dir) = &self.store_dir else {
             return Ok(HostCommit::Memory(MemoryCommitCoordinator::new()));
         };
         std::fs::create_dir_all(dir).map_err(|e| HostError::internal(e.to_string()))?;
-        let fs_backend = std::env::var("AWAKEN_STORE").is_ok_and(|value| value == "fs");
+        let fs_backend = self.deployment.store == StoreKind::Fs;
         if fs_backend {
             let thread_dir = dir.join(sanitize_thread(thread));
             let fs = FsCommitCoordinator::open(&thread_dir)
@@ -984,8 +990,7 @@ impl SharedHost {
     /// routing it to the worker that owns its thread (recovering crashed runs and
     /// draining background submissions without a foreground request). Idempotent.
     pub fn ensure_dispatch_pool(self: &Arc<Self>) {
-        let durable = std::env::var("AWAKEN_INGRESS").is_ok_and(|v| v == "durable");
-        if !durable || self.dispatch_pool.get().is_some() {
+        if !self.deployment.durable || self.dispatch_pool.get().is_some() {
             return;
         }
         let Ok(store) = crate::dispatch_backend::shared_durable_store(self.store_dir.as_deref())
