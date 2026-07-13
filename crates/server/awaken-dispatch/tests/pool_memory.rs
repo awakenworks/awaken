@@ -40,7 +40,11 @@ struct MapResolver {
 
 #[async_trait]
 impl WorkerResolver<MemoryDispatchStore> for MapResolver {
-    async fn worker_for(&self, thread_id: &ThreadId) -> Result<Arc<MemWorker>, Error> {
+    async fn worker_for(
+        &self,
+        thread_id: &ThreadId,
+        _model_ref: Option<&str>,
+    ) -> Result<Arc<MemWorker>, Error> {
         self.workers.get(&thread_id.0).cloned().ok_or_else(|| {
             Error::Execution(awaken_runtime_contract::execution::Error::Execution(
                 format!("no worker for thread {}", thread_id.0),
@@ -66,6 +70,67 @@ async fn wait_for(cond: impl Fn() -> bool) -> bool {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     cond()
+}
+
+/// A resolver that delegates to a real worker map but RECORDS the `model_ref` the
+/// pool forwarded for each claimed run — the seam a cold worker needs so it resolves
+/// the run's own configured model rather than the host default.
+struct RecordingResolver {
+    inner: MapResolver,
+    seen: Arc<std::sync::Mutex<Vec<Option<String>>>>,
+}
+
+#[async_trait]
+impl WorkerResolver<MemoryDispatchStore> for RecordingResolver {
+    async fn worker_for(
+        &self,
+        thread_id: &ThreadId,
+        model_ref: Option<&str>,
+    ) -> Result<Arc<MemWorker>, Error> {
+        self.seen.lock().unwrap().push(model_ref.map(str::to_string));
+        self.inner.worker_for(thread_id, model_ref).await
+    }
+}
+
+/// The pool must hand a claimed run's OWN model binding (from its activation
+/// snapshot) to `worker_for`, so a cold worker resolves that run's configured model
+/// through its executor provider instead of falling back to the host default. The
+/// harness snapshot binds `model_ref = "m"`.
+#[tokio::test]
+async fn the_pool_forwards_a_claimed_runs_model_ref_to_the_resolver() {
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = worker_over(text_runtime(), store.clone(), commit.clone());
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let resolver = Arc::new(RecordingResolver {
+        inner: MapResolver {
+            workers: HashMap::from([("thread-m".to_string(), worker)]),
+        },
+        seen: seen.clone(),
+    });
+    let pool = DispatchPool::spawn(
+        store.clone(),
+        Arc::new(SystemClock),
+        "pool",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig::default(),
+        resolver,
+        2,
+    );
+
+    pool.submit(activation_on("run-m", "thread-m")).await.unwrap();
+    assert!(
+        wait_for(|| commit.commit_count() >= 1).await,
+        "the run drained"
+    );
+    pool.shutdown().await;
+
+    // The pool extracted the activation snapshot's model_ref ("m") and forwarded it.
+    let seen = seen.lock().unwrap();
+    assert!(
+        seen.iter().any(|m| m.as_deref() == Some("m")),
+        "worker_for received the run's model_ref; got {seen:?}"
+    );
 }
 
 /// Routing: two threads, each with its own runtime and commit boundary, share one

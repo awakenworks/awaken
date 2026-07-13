@@ -68,6 +68,9 @@ wrappers = [
     # Stage B2: the authoring plane + the composition root.
     "awaken-control",
     "awaken-cli",
+    # Stage C: the production database-less worker dev-depends on the contract for the
+    # RedactedString its offline model-resolution test authors a credential with.
+    "awaken-worker",
     "awaken-credential-vault",
     "awaken-data-subject",
     "awaken-config-resolver",
