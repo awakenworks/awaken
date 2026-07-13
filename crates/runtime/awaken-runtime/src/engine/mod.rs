@@ -69,8 +69,12 @@ impl RunExecutor for Runtime {
         if let Some(token) = &context.cancellation {
             self.register_run(&run_id, token.clone());
         }
+        if let Some(pause) = &context.pause {
+            self.register_pause(&run_id, pause.clone());
+        }
         let result = run_agent_loop(self, activation, context).await;
         self.deregister_run(&run_id);
+        self.deregister_pause(&run_id);
         result
     }
 }
@@ -801,7 +805,9 @@ async fn drive(
                         transcript.push(message.clone());
                         new_messages.push(message);
                     }
-                    end = Some(End::Parked(Box::new(pause_ticket(resolved, run_id, reason))));
+                    end = Some(End::Parked(Box::new(pause_ticket(
+                        resolved, run_id, reason,
+                    ))));
                     emit(
                         context,
                         run_id,

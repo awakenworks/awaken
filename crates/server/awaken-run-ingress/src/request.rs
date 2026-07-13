@@ -14,6 +14,7 @@ use awaken_agent_contract::store::stream_checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_runtime_contract::live_inbox::LiveInbox;
+use awaken_runtime_contract::pause::PauseSignal;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use tokio_util::sync::CancellationToken;
 
@@ -93,7 +94,10 @@ impl RunExecutionContext {
     pub(crate) fn runtime_context(&self, cancel: CancellationToken) -> RuntimeRunContext {
         let mut context = RuntimeRunContext::new()
             .with_commit(self.commit.clone())
-            .with_cancellation(cancel);
+            .with_cancellation(cancel)
+            // A fresh pause signal per attempt, registered by the executor so live
+            // control can park this run at its next safe boundary (ADR-0054).
+            .with_pause(PauseSignal::new());
         if let Some(reader) = &self.reader {
             context = context.with_reader(reader.clone());
         }

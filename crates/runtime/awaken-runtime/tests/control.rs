@@ -164,6 +164,36 @@ async fn live_cancel_steers_an_in_flight_run() {
     assert_eq!(outcome, Phase::Ended(EndCause::Cancelled));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_pause_parks_an_in_flight_run_at_the_next_boundary() {
+    use awaken_runtime_contract::pause::PauseSignal;
+
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let runtime = Arc::new(Runtime::new().with_llm(Arc::new(GatedLlm {
+        started: started.clone(),
+        release: release.clone(),
+    })));
+    install(&runtime);
+
+    let context = RuntimeRunContext::new().with_pause(PauseSignal::new());
+    let runtime_for_run = runtime.clone();
+    let handle = tokio::spawn(async move { runtime_for_run.execute(activation(), context).await });
+
+    // Once the first inference is in-flight (so the run is registered), pause it via
+    // live control; it parks at the boundary after the step completes.
+    started.notified().await;
+    runtime
+        .deliver(LiveCommand::Pause {
+            run_id: RunId("run-1".to_string()),
+        })
+        .expect("pause delivered");
+    release.notify_one();
+
+    let outcome = handle.await.expect("join").expect("runs");
+    assert_eq!(outcome, Phase::Waiting, "a paused run parks, not ends");
+}
+
 /// Signals when inference starts, then never returns — a provider that hangs.
 struct HangingLlm {
     started: Arc<Notify>,
