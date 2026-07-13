@@ -42,7 +42,7 @@ pub use llm::{ChatRequest, ChatResponse, LlmExecutor};
 pub use pause::PauseSignal;
 pub use permission::{GateOutcome, PermissionDecision, PermissionPolicy, ToolGateHook};
 pub use plugin::{
-    CapabilityBound, Contributions, PhaseHook, PhaseHookPoint, Plugin, PluginManifest,
+    CapabilityBound, Contributions, IdBound, PhaseHook, PhaseHookPoint, Plugin, PluginManifest,
     ResolvedExecutionEnv, RunEndContext, RunEndDecision, RunEndGuard,
 };
 // The conversation/id types surfaced through this crate's own ports (e.g.

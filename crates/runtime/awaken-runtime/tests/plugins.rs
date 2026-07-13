@@ -18,8 +18,8 @@ use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInst
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::plugin::{
-    CapabilityBound, Contributions, HookReaction, PhaseContext, PhaseHook, PhaseHookPoint, Plugin,
-    PluginManifest,
+    CapabilityBound, Contributions, HookReaction, IdBound, PhaseContext, PhaseHook, PhaseHookPoint,
+    Plugin, PluginManifest,
 };
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -74,10 +74,8 @@ impl Plugin for MarkPlugin {
             requires: Vec::new(),
             config_sections: Vec::new(),
             bound: CapabilityBound {
-                tool_ids: Vec::new(),
-                state_keys: vec!["phase".to_string()],
+                state_keys: IdBound::Exact(vec!["phase".to_string()]),
                 phase_hooks: vec![PhaseHookPoint::StepStart],
-                action_kinds: Vec::new(),
                 ..Default::default()
             },
         }

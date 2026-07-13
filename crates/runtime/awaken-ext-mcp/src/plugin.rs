@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use awaken_runtime_contract::plugin::{
-    CapabilityBound, Contributions, DynamicTool, Plugin, PluginManifest,
+    CapabilityBound, Contributions, DynamicTool, IdBound, Plugin, PluginManifest,
 };
 use mcp::McpToolDefinition;
 use tokio::sync::broadcast;
@@ -174,7 +174,7 @@ impl Plugin for McpPlugin {
             requires: Vec::new(),
             config_sections: Vec::new(),
             bound: CapabilityBound {
-                tool_namespaces: vec![self.namespace.clone()],
+                tools: IdBound::Namespace(self.namespace.clone()),
                 ..Default::default()
             },
         }
@@ -264,7 +264,10 @@ mod tests {
         let plugin = server.plugin();
 
         // Manifest declares the server's namespace bound.
-        assert_eq!(plugin.manifest().bound.tool_namespaces, vec!["mcp__srv__"]);
+        assert_eq!(
+            plugin.manifest().bound.tools,
+            IdBound::Namespace("mcp__srv__".to_string())
+        );
         assert_eq!(plugin.live_version(), Some(1));
 
         let contributions = plugin.resolve();

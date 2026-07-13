@@ -8,8 +8,8 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::state::Store;
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
 use awaken_runtime_contract::plugin::{
-    CapabilityBound, Contributions, HookReaction, Plugin, PluginConfigError, PluginManifest,
-    RunEndContext, RunEndDecision, RunEndGuard, ToolOutcomeHook,
+    CapabilityBound, Contributions, HookReaction, IdBound, Plugin, PluginConfigError,
+    PluginManifest, RunEndContext, RunEndDecision, RunEndGuard, ToolOutcomeHook,
 };
 use awaken_runtime_contract::tool::{ToolCall, ToolOutput};
 use serde_json::{Value, json};
@@ -100,10 +100,10 @@ impl Plugin for StateMachinePlugin {
             requires: Vec::new(),
             config_sections: vec![STATE_MACHINE_PLUGIN_ID.into()],
             bound: CapabilityBound {
-                state_keys: STATE_KEYS.iter().map(|k| (*k).to_string()).collect(),
-                tool_gates: vec![STATE_MACHINE_PLUGIN_ID.into()],
-                tool_observers: vec![STATE_MACHINE_PLUGIN_ID.into()],
-                run_end_guards: vec![STATE_MACHINE_PLUGIN_ID.into()],
+                state_keys: IdBound::Exact(STATE_KEYS.iter().map(|k| (*k).to_string()).collect()),
+                tool_gates: IdBound::Exact(vec![STATE_MACHINE_PLUGIN_ID.into()]),
+                tool_observers: IdBound::Exact(vec![STATE_MACHINE_PLUGIN_ID.into()]),
+                run_end_guards: IdBound::Exact(vec![STATE_MACHINE_PLUGIN_ID.into()]),
                 ..Default::default()
             },
         }
