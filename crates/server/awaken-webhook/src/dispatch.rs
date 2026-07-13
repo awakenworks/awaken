@@ -413,4 +413,154 @@ mod tests {
             "all three attempts run before the delivery is given up"
         );
     }
+
+    /// A sender driven by a scripted sequence of outcomes (one popped per POST),
+    /// so a test can interleave failures and successes across dispatch calls.
+    struct SeqSender {
+        outcomes: Mutex<std::collections::VecDeque<Result<u16, String>>>,
+    }
+    impl SeqSender {
+        fn new(seq: Vec<Result<u16, String>>) -> Arc<Self> {
+            Arc::new(Self {
+                outcomes: Mutex::new(seq.into()),
+            })
+        }
+    }
+    #[async_trait]
+    impl WebhookSender for SeqSender {
+        async fn post(
+            &self,
+            _url: &str,
+            _headers: Vec<(String, String)>,
+            _body: String,
+        ) -> Result<u16, String> {
+            self.outcomes.lock().unwrap().pop_front().unwrap_or(Ok(200))
+        }
+    }
+
+    /// A sender that fails whenever the target url contains `fail_substr`, so a
+    /// multi-subscription fan-out can succeed for one endpoint and fail another.
+    struct UrlFailSender {
+        fail_substr: String,
+    }
+    #[async_trait]
+    impl WebhookSender for UrlFailSender {
+        async fn post(
+            &self,
+            url: &str,
+            _headers: Vec<(String, String)>,
+            _body: String,
+        ) -> Result<u16, String> {
+            if url.contains(&self.fail_substr) {
+                Err("unreachable endpoint".into())
+            } else {
+                Ok(200)
+            }
+        }
+    }
+
+    /// A mid-stream success must RESET the consecutive-failure counter, so a later
+    /// isolated failure cannot inherit stale counts and trip the auto-disable. With
+    /// threshold 2 and 1 attempt: fail, then succeed (reset), then fail again must
+    /// leave the endpoint enabled (count back to 1, not 2).
+    #[tokio::test]
+    async fn a_success_resets_the_failure_counter() {
+        let source = TestSource::with(resolved("wh_1"));
+        let sender = SeqSender::new(vec![Err("boom".into()), Ok(200), Err("boom".into())]);
+        let dispatcher = WebhookDispatcher::new(source.clone(), sender).with_thresholds(1, 2);
+
+        assert_eq!(
+            dispatcher.dispatch(&event(), 1).await.failed,
+            vec!["wh_1".to_string()]
+        );
+        assert!(dispatcher.dispatch(&event(), 2).await.delivered == vec!["wh_1".to_string()]);
+        let r3 = dispatcher.dispatch(&event(), 3).await;
+        assert_eq!(r3.failed, vec!["wh_1".to_string()]);
+        assert!(
+            r3.disabled.is_empty() && !source.is_disabled("wh_1"),
+            "the intervening success reset the count, so one later failure does not disable"
+        );
+    }
+
+    /// Fan-out is partitioned and isolated: with two matching subscriptions where one
+    /// endpoint is unreachable, the healthy one is still delivered and the report
+    /// splits delivered/failed correctly — one subscription's failure never suppresses
+    /// another's delivery.
+    #[tokio::test]
+    async fn fan_out_partitions_and_isolates_subscriptions() {
+        let source = Arc::new(TestSource {
+            subs: vec![
+                ResolvedSubscription {
+                    id: "ok".into(),
+                    url: "https://good/hook".into(),
+                    secret: SECRET.into(),
+                },
+                ResolvedSubscription {
+                    id: "bad".into(),
+                    url: "https://bad/hook".into(),
+                    secret: SECRET.into(),
+                },
+            ],
+            disabled: Mutex::new(HashSet::new()),
+        });
+        let sender = Arc::new(UrlFailSender {
+            fail_substr: "bad".into(),
+        });
+        let dispatcher = WebhookDispatcher::new(source, sender).with_thresholds(1, 20);
+
+        let report = dispatcher.dispatch(&event(), 1).await;
+        assert_eq!(report.delivered, vec!["ok".to_string()]);
+        assert_eq!(report.failed, vec!["bad".to_string()]);
+    }
+
+    /// A `204 No Content` is a valid webhook ack (a very common receiver response):
+    /// it is accepted on the first attempt, not retried as a failure.
+    #[tokio::test]
+    async fn a_204_no_content_is_accepted() {
+        let source = TestSource::with(resolved("wh_1"));
+        let sender = CodeSender::new(204);
+        let dispatcher = WebhookDispatcher::new(source, sender.clone()).with_thresholds(3, 20);
+
+        let report = dispatcher.dispatch(&event(), 1).await;
+        assert_eq!(report.delivered, vec!["wh_1".to_string()]);
+        assert_eq!(sender.calls(), 1, "a 2xx accepts on the first attempt");
+    }
+
+    /// No matching subscriptions is a clean empty report — no panic, no POST.
+    #[tokio::test]
+    async fn no_matching_subscriptions_is_an_empty_report() {
+        let source = Arc::new(TestSource::default());
+        let sender = CodeSender::new(200);
+        let dispatcher = WebhookDispatcher::new(source, sender.clone()).with_thresholds(3, 20);
+
+        let report = dispatcher.dispatch(&event(), 1).await;
+        assert_eq!(report, DispatchReport::default());
+        assert_eq!(sender.calls(), 0, "nothing to deliver → nothing sent");
+    }
+
+    /// Every retry attempt carries the SAME `webhook-id` — the at-least-once dedupe
+    /// key a receiver uses to drop duplicate retries. If it ever varied per attempt,
+    /// a flaky-but-eventually-2xx delivery would be processed more than once.
+    #[tokio::test]
+    async fn every_retry_attempt_carries_the_same_webhook_id() {
+        let source = TestSource::with(resolved("wh_1"));
+        let sender = ScriptedSender::new(2); // fail twice, succeed on the third
+        let dispatcher = WebhookDispatcher::new(source, sender.clone()).with_thresholds(3, 20);
+
+        dispatcher.dispatch(&event(), 1).await;
+        let calls = sender.captured.lock().unwrap();
+        assert_eq!(calls.len(), 3, "two retries after the first failure");
+        let webhook_id = |headers: &[(String, String)]| {
+            headers
+                .iter()
+                .find(|(n, _)| n == "webhook-id")
+                .map(|(_, v)| v.clone())
+        };
+        assert!(
+            calls
+                .iter()
+                .all(|(_, h, _)| webhook_id(h).as_deref() == Some("event_1")),
+            "the dedupe key is stable across all retry attempts"
+        );
+    }
 }

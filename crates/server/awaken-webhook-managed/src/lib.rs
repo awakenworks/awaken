@@ -366,3 +366,31 @@ pub fn assemble(
     let sink = Arc::new(WebhookLifecycleSink::new(dispatcher, org_id));
     (sink, webhook_config_router(store, secrets))
 }
+
+#[cfg(test)]
+mod rfc3339_tests {
+    use super::rfc3339;
+
+    /// The hand-rolled `civil_from_days` date math stamps `created_at` on every
+    /// delivered event, so pin it against authoritative unix→RFC-3339 UTC vectors
+    /// covering the boundaries that break naive implementations: day rollovers,
+    /// a leap day, a century-leap year (2000), a non-leap century (2100), and a
+    /// negative (pre-epoch) instant (the `div_euclid`/`rem_euclid` path).
+    #[test]
+    fn matches_known_unix_to_rfc3339_vectors() {
+        let cases = [
+            (0_i64, "1970-01-01T00:00:00Z"),
+            (86_399, "1970-01-01T23:59:59Z"),
+            (86_400, "1970-01-02T00:00:00Z"),
+            (1_700_000_000, "2023-11-14T22:13:20Z"),
+            (1_709_208_000, "2024-02-29T12:00:00Z"), // leap day
+            (1_583_020_800, "2020-03-01T00:00:00Z"), // day after the 2020 leap day
+            (951_825_600, "2000-02-29T12:00:00Z"),   // 2000 is a leap year (÷400)
+            (4_102_444_800, "2100-01-01T00:00:00Z"), // 2100 is NOT a leap year (÷100)
+            (-1, "1969-12-31T23:59:59Z"),            // pre-epoch, negative seconds
+        ];
+        for (secs, expected) in cases {
+            assert_eq!(rfc3339(secs), expected, "rfc3339({secs})");
+        }
+    }
+}

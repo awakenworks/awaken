@@ -130,4 +130,46 @@ mod tests {
             sign_bytes(bare, "m", 1, "{}"),
         );
     }
+
+    #[test]
+    fn a_minted_secret_is_prefixed_decodable_and_usable() {
+        let secret = generate_secret();
+        assert!(
+            secret.starts_with(SECRET_PREFIX),
+            "carries the whsec_ prefix"
+        );
+        let body = secret.strip_prefix(SECRET_PREFIX).expect("prefix present");
+        assert_eq!(
+            B64.decode(body).expect("body is base64").len(),
+            24,
+            "24 bytes of OS entropy"
+        );
+        // The minted secret signs and verifies end-to-end.
+        let header = signature_header(&secret, "m", 1, "{}").unwrap();
+        assert!(verify(&secret, "m", 1, "{}", &header).unwrap());
+    }
+
+    #[test]
+    fn verify_accepts_a_valid_signature_among_other_versions() {
+        // Standard Webhooks headers are a space-separated multi-version list; a valid
+        // `v1` entry must still verify when other (unknown/newer) versions precede it.
+        let good = sign_bytes(SECRET, "m", 1, "{}").unwrap();
+        let header = format!("v2,someothersig v1,{good}");
+        assert!(
+            verify(SECRET, "m", 1, "{}", &header).unwrap(),
+            "a good v1 among other versions verifies"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_degenerate_headers_without_panic() {
+        // Empty, no `v1,` prefix at all, and a wrong-length signature (the unequal-
+        // length ct_eq branch) must each return Ok(false) — never panic.
+        for header in ["", "v2,nope", "v1,short", "garbage"] {
+            assert!(
+                !verify(SECRET, "m", 1, "{}", header).unwrap(),
+                "degenerate header {header:?} is a clean false"
+            );
+        }
+    }
 }
