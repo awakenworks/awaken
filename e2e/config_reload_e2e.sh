@@ -72,7 +72,7 @@ pass() { echo "  ok: $*"; }
 # PART 1 — STATIC: the server carries no live-reload wiring.
 # ---------------------------------------------------------------------------
 echo "==> PART 1: source carries no live config-reload wiring (config is startup-fixed)"
-SRC="crates/server/awaken-server/src"
+SRC="crates/devtools/awaken-scenario-host/src"
 # SIGHUP is the conventional reload signal; a config watcher would use notify/inotify
 # or a file watch; a reload endpoint would route /reload. None must exist.
 if grep -rniE "sighup|hangup|config.?reload|reload.?config|notify::recommended|inotify|/reload" "$SRC" >/dev/null 2>&1; then
@@ -86,10 +86,10 @@ grep -qE "ctrl_c" "$SRC/main.rs"                 || fail "expected SIGINT (ctrl_
 pass "the only wired signals are SIGINT + SIGTERM, both meaning graceful shutdown"
 
 echo "==> building awaken-server (toolchain $RUSTUP_TOOLCHAIN)"
-cargo build --quiet -p awaken-server --bin awaken-server \
+cargo build --quiet -p awaken-scenario-host --bin awaken-scenario-host \
   || fail "build failed"
 TARGET_DIR="$(cargo metadata --format-version=1 --no-deps 2>/dev/null | jq -r '.target_directory')"
-BIN="${TARGET_DIR}/debug/awaken-server"
+BIN="${TARGET_DIR}/debug/awaken-scenario-host"
 [ -x "$BIN" ] || fail "binary not found at $BIN"
 
 # start_server <port>

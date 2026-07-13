@@ -65,7 +65,7 @@ Two facts about the current code make the mechanism concrete:
   name that is absent (`compile.rs:56`, fail-closed). There is **no per-scope
   visibility fence today**.
 - The model catalog is **org/deployment-shared and readable from any scope**
-  (ADR-0051's settled decision; `awaken-server/src/resource_owner.rs:14-15`).
+  (ADR-0051's settled decision; `awaken-server-local/src/resource_owner.rs:14-15`).
   `compile` requires `model_binding` to be already filled (`compile.rs:82`, a plain
   clone with no default). There is **no auto-selection of a model today**.
 

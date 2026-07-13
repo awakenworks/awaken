@@ -1,4 +1,4 @@
-// Cross-protocol thread continuity e2e (scenario #1/#2): ONE `awaken-server`
+// Cross-protocol thread continuity e2e (scenario #1/#2): ONE `awaken-server-local`
 // process, ONE thread id, driven and read back across DIFFERENT protocol front
 // doors. Every adapter projects the same `rt.history(thread_id)` over the same
 // `SharedHost`, keyed by thread id — so a turn committed through one wire must be
