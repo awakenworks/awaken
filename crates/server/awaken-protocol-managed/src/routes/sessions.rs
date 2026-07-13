@@ -7,20 +7,24 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
+use std::collections::HashSet;
+
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{FromRequest, Path, Query, Request, State};
+use axum::extract::{FromRequest, Path, Query, RawQuery, Request, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use tokio::sync::broadcast;
 use tokio_stream::Stream;
 
-use crate::state::{LiveInboxError, ManagedState, RunErrorKind, StateError};
+use crate::state::{LiveInboxError, ManagedState, RunError, RunErrorKind, StateError};
 use crate::types::{
     ErrorResponse, ListEventsResponse, Page, PageQuery, SendEventsRequest, SendEventsResponse,
     Session, SessionCreateParams, paginate,
 };
+use crate::types::{Event, StreamFrame};
 
 /// A JSON body extractor scoped to the Managed Agents routes. On a decode failure
 /// (malformed JSON, missing/mistyped field, wrong content-type, or an unknown
@@ -338,18 +342,120 @@ async fn list_thread_events(
         .map_err(error_response)
 }
 
+/// Parse the SDK's `event_deltas[]` live-preview opt-in. Repeated `event_deltas[]`
+/// (or `event_deltas`) values select which buffered events to preview; only
+/// `agent.message` and `agent.thinking` are accepted (any other value is a 400,
+/// matching the official wire). Returns whether any preview was requested — awaken
+/// previews `agent.message` text; `agent.thinking` is accepted but never emitted
+/// (awaken's live stream carries no thinking channel).
+fn parse_event_deltas(raw: Option<&str>) -> Result<bool, WireErr> {
+    let mut requested = false;
+    if let Some(q) = raw {
+        for (k, v) in form_urlencoded::parse(q.as_bytes()) {
+            if k == "event_deltas[]" || k == "event_deltas" {
+                match v.as_ref() {
+                    "agent.message" | "agent.thinking" => requested = true,
+                    other => {
+                        return Err(error_response(
+                            RunError::bad_request(format!(
+                                "event_deltas: unsupported value `{other}` \
+                                 (only agent.message, agent.thinking)"
+                            ))
+                            .into(),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(requested)
+}
+
+/// The terminal committed events that close a turn's SSE stream.
+fn is_terminal(frame: &StreamFrame) -> bool {
+    matches!(
+        frame,
+        StreamFrame::Committed(e)
+            if matches!(e.type_str(), "session.status_idle" | "session.status_terminated")
+    )
+}
+
+fn sse_frame(frame: &StreamFrame) -> SseEvent {
+    // The SDK dispatches on the SSE `event:` name; the JSON body carries the same
+    // `type` plus the fields (committed event, or a stream-only preview).
+    SseEvent::default()
+        .event(frame.type_str())
+        .data(frame.data())
+}
+
+/// The live SSE body: the committed snapshot (backfill, deduped against the live
+/// tail by id), then live broadcast frames until a terminal committed event or the
+/// session's sender drops. Preview frames are forwarded only if `previews` is set.
+fn live_sse_stream(
+    snapshot: Vec<Event>,
+    mut rx: broadcast::Receiver<StreamFrame>,
+    previews: bool,
+) -> impl Stream<Item = Result<SseEvent, Infallible>> {
+    async_stream::stream! {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut backfill_terminal = false;
+        for event in snapshot {
+            seen.insert(event.id.clone());
+            let frame = StreamFrame::Committed(event);
+            backfill_terminal = is_terminal(&frame);
+            yield Ok(sse_frame(&frame));
+        }
+        // A snapshot that already reached idle/terminated is a completed turn
+        // (send-then-stream): deliver the backfill and end, preserving
+        // request/response semantics. Otherwise tail the live broadcast.
+        if !backfill_terminal {
+            loop {
+                match rx.recv().await {
+                    Ok(StreamFrame::Committed(event)) => {
+                        // Dedupe the snapshot/live overlap by id; only end on a
+                        // committed terminal.
+                        if !seen.insert(event.id.clone()) {
+                            continue;
+                        }
+                        let frame = StreamFrame::Committed(event);
+                        let terminal = is_terminal(&frame);
+                        yield Ok(sse_frame(&frame));
+                        if terminal {
+                            break;
+                        }
+                    }
+                    Ok(frame @ StreamFrame::Preview(_)) => {
+                        if previews {
+                            yield Ok(sse_frame(&frame));
+                        }
+                    }
+                    // Best-effort: a lagging subscriber skips the dropped frames
+                    // (the buffered agent.message still arrives); a closed sender ends.
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }
+    }
+}
+
 async fn stream_thread_events(
     State(state): State<Arc<ManagedState>>,
     Path((id, tid)): Path<(String, String)>,
+    RawQuery(raw): RawQuery,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, WireErr> {
+    // Per-thread streams reject the preview opt-in entirely (only the session-level
+    // stream supports it) — before resolving the thread, matching the official wire:
+    // the parameter is unsupported on this endpoint regardless of the thread.
+    if parse_event_deltas(raw.as_deref())? {
+        return Err(error_response(
+            RunError::bad_request("event_deltas is only supported on the session event stream")
+                .into(),
+        ));
+    }
     state.get_thread(&id, &tid).map_err(error_response)?;
-    let events = state.stream_events(&id).map_err(error_response)?;
-    let frames = events.into_iter().map(|event| {
-        let name = event.type_str();
-        let data = serde_json::to_string(&event).expect("event serializes");
-        Ok(SseEvent::default().event(name).data(data))
-    });
-    Ok(Sse::new(tokio_stream::iter(frames)).keep_alive(KeepAlive::default()))
+    let (snapshot, rx) = state.stream_subscribe(&id).map_err(error_response)?;
+    Ok(Sse::new(live_sse_stream(snapshot, rx, false)).keep_alive(KeepAlive::default()))
 }
 
 // -- Resources --
@@ -433,15 +539,10 @@ async fn list_events(
 async fn stream_events(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, (StatusCode, Json<ErrorResponse>)>
-{
-    let events = state.stream_events(&id).map_err(error_response)?;
-    let frames = events.into_iter().map(|event| {
-        // The SDK's Stream dispatches on the SSE `event:` name, so set it to the
-        // event type; the JSON body carries the same `type` plus the fields.
-        let name = event.type_str();
-        let data = serde_json::to_string(&event).expect("event serializes");
-        Ok(SseEvent::default().event(name).data(data))
-    });
-    Ok(Sse::new(tokio_stream::iter(frames)).keep_alive(KeepAlive::default()))
+    RawQuery(raw): RawQuery,
+) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, WireErr> {
+    // Opt in to live previews (`event_start`/`event_delta`) via `event_deltas[]`.
+    let previews = parse_event_deltas(raw.as_deref())?;
+    let (snapshot, rx) = state.stream_subscribe(&id).map_err(error_response)?;
+    Ok(Sse::new(live_sse_stream(snapshot, rx, previews)).keep_alive(KeepAlive::default()))
 }

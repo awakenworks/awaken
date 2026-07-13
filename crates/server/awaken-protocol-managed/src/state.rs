@@ -10,19 +10,22 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use tokio::sync::broadcast;
+
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::page::paginate_by_id;
 use awaken_credential_vault::CredentialSourceId;
 
 use crate::ext::AwakenModelSelection;
+use crate::preview::PreviewSink;
 use crate::project::{self, project_messages, project_turn};
 use crate::routes::vaults::{McpRefreshBinding, VaultState};
 use crate::session_repo::{InMemorySessionRepository, ManagedSessionRepository, PersistedSession};
 use crate::types::{
     ConfirmResult, Event, EventReceipt, InboundEvent, ListEventsResponse, ModelConfig,
     OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent,
-    SessionCreateParams, SessionError, SessionStats, StopReason, Usage,
+    SessionCreateParams, SessionError, SessionStats, StopReason, StreamFrame, Usage,
 };
 
 /// The seeded owner scope a bare/self-hosted session is created under when the
@@ -402,6 +405,22 @@ pub trait SessionRuntime: Send + Sync {
         content: Vec<ContentBlock>,
     ) -> Result<TurnOutcome, RunError>;
 
+    /// Run one user turn, installing `sink` as the run's best-effort live-progress
+    /// channel so the adapter can project in-flight `stream::Kind` into
+    /// `event_start`/`event_delta` previews. The committed [`TurnOutcome`] is
+    /// identical to [`run`](Self::run) — the sink only mirrors in-flight events. The
+    /// default ignores the sink and delegates to `run`, so a host without a
+    /// streaming path (or a test double) is unaffected.
+    async fn run_streaming(
+        &self,
+        agent: &str,
+        thread: &str,
+        content: Vec<ContentBlock>,
+        _sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
+    ) -> Result<TurnOutcome, RunError> {
+        self.run(agent, thread, content).await
+    }
+
     /// Answer a built-in tool the run parked on (allow/deny) and continue.
     /// `tool_use_id` is the client's asserted target; implementations must fail
     /// closed when it does not name the run's pending built-in tool.
@@ -635,7 +654,15 @@ pub struct ManagedState {
     /// it only knows this narrow port.
     lifecycle_sink: Option<Arc<dyn SessionLifecycleSink>>,
     session_seq: AtomicU64,
-    event_seq: AtomicU64,
+    /// Shared with each turn's [`PreviewSink`] so a preview's minted `agent.message`
+    /// id is drawn from the same `evt_N` sequence the committed event carries.
+    event_seq: Arc<AtomicU64>,
+    /// Per-session live SSE broadcast: `append_turn`/`append_outcome` publish
+    /// committed [`Event`]s here (Phase 1) and each turn's `PreviewSink` publishes
+    /// `event_start`/`event_delta` previews (Phase 2). A `stream_events` connection
+    /// subscribes; senders are created lazily on first publish/subscribe and never
+    /// removed (a dropped session's channel is just an idle allocation).
+    live: Mutex<HashMap<String, broadcast::Sender<StreamFrame>>>,
 }
 
 /// A sink for committed session lifecycle facts, projected to external consumers
@@ -710,7 +737,8 @@ impl ManagedState {
             sessions_repo: Arc::new(InMemorySessionRepository::default()),
             lifecycle_sink: None,
             session_seq: AtomicU64::new(0),
-            event_seq: AtomicU64::new(0),
+            event_seq: Arc::new(AtomicU64::new(0)),
+            live: Mutex::new(HashMap::new()),
         }
     }
 
@@ -756,6 +784,45 @@ impl ManagedState {
 
     fn next_event_id(&self) -> String {
         format!("evt_{}", self.event_seq.fetch_add(1, Ordering::SeqCst))
+    }
+
+    /// The session's live SSE broadcast sender, created on first use. Capacity is
+    /// generous so a fast turn's preview burst doesn't lag a slow subscriber into
+    /// `Lagged` (which the stream tolerates by skipping). Never removed.
+    fn live_sender(&self, session_id: &str) -> broadcast::Sender<StreamFrame> {
+        let mut live = self.live.lock().unwrap();
+        live.entry(session_id.to_string())
+            .or_insert_with(|| broadcast::channel(1024).0)
+            .clone()
+    }
+
+    /// Open a live SSE subscription for `session_id`: the current committed-event
+    /// snapshot (backfill) plus a receiver for frames published after this call.
+    /// Subscribing *before* cloning the snapshot means no committed event can slip
+    /// through the gap — an event that lands mid-call is on the receiver, and the
+    /// caller dedupes it against the snapshot by id.
+    pub fn stream_subscribe(
+        &self,
+        session_id: &str,
+    ) -> Result<(Vec<Event>, broadcast::Receiver<StreamFrame>), StateError> {
+        let rx = self.live_sender(session_id).subscribe();
+        let sessions = self.sessions.lock().unwrap();
+        let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
+        Ok((record.events.clone(), rx))
+    }
+
+    /// Publish each committed `Event` appended to `session_id` since `from` on the
+    /// live broadcast, so an open SSE connection receives it without a reconnect.
+    /// Best-effort: no subscriber (or a lagging one) is not an error.
+    fn broadcast_committed_from(&self, session_id: &str, record: &SessionRecord, from: usize) {
+        if from >= record.events.len() {
+            return;
+        }
+        if let Some(tx) = self.live.lock().unwrap().get(session_id) {
+            for event in &record.events[from..] {
+                let _ = tx.send(StreamFrame::Committed(event.clone()));
+            }
+        }
     }
 
     /// `POST /v1/sessions`.
@@ -1469,7 +1536,17 @@ impl ManagedState {
 
     /// Append one step's projected events to the session, minting ids where the
     /// projection did not supply one.
-    fn append_turn(&self, session_id: &str, outcome: TurnOutcome) -> Result<(), StateError> {
+    /// Project a committed turn into events and append them. `preview_ids` are the
+    /// ids the turn's [`PreviewSink`] minted for each previewed `agent.message`, in
+    /// order — the buffered `agent.message` events reuse them so a client reconciles
+    /// preview → committed by id (empty for resume/non-streamed paths). Every newly
+    /// appended event is republished on the live broadcast.
+    fn append_turn(
+        &self,
+        session_id: &str,
+        outcome: TurnOutcome,
+        preview_ids: Vec<String>,
+    ) -> Result<(), StateError> {
         let pending = outcome
             .pending
             .as_ref()
@@ -1523,6 +1600,9 @@ impl ManagedState {
         }
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
+        // Everything appended from here is republished on the live broadcast at the end.
+        let start = record.events.len();
+        let mut preview_ids = preview_ids.into_iter();
         // Each processing segment is bracketed `running` … `idle`; the running
         // marker leads before any fold or message.
         record.events.push(Event {
@@ -1553,7 +1633,17 @@ impl ManagedState {
             });
         }
         for event in projected {
-            let id = event.id.unwrap_or_else(|| self.next_event_id());
+            // An `agent.message` (minted with no id) reuses the id its live preview
+            // announced, so `event_start.event.id == agent.message.id` and the SDK
+            // discards the accumulated preview on the buffered event. Other events, and
+            // any message beyond the previewed count, mint a fresh id as before.
+            let id = event.id.unwrap_or_else(|| {
+                if matches!(event.kind, OutboundKind::AgentMessage { .. }) {
+                    preview_ids.next().unwrap_or_else(|| self.next_event_id())
+                } else {
+                    self.next_event_id()
+                }
+            });
             record.events.push(Event {
                 id,
                 kind: event.kind,
@@ -1604,6 +1694,7 @@ impl ManagedState {
                 });
             }
         }
+        self.broadcast_committed_from(session_id, record, start);
         Ok(())
     }
 
@@ -1615,6 +1706,7 @@ impl ManagedState {
         // Each round's durable evaluation record, collected as we project its events
         // and folded into the session object after the event-pushing borrow releases.
         let mut evaluations: Vec<serde_json::Value> = Vec::new();
+        let start = record.events.len();
         {
             let mut push = |id: Option<String>, kind: OutboundKind| {
                 record.events.push(Event {
@@ -1665,6 +1757,7 @@ impl ManagedState {
         // The session object carries the running list of evaluations that have graded
         // it, so a `GET /v1/sessions/{id}` reflects the outcomes that ran, not [].
         record.session.outcome_evaluations.extend(evaluations);
+        self.broadcast_committed_from(session_id, record, start);
         Ok(())
     }
 
@@ -1772,11 +1865,20 @@ impl ManagedState {
                     if let Some(model) = model {
                         self.runtime.rebind_model(session_id, model).await?;
                     }
+                    // Install a preview sink so a concurrently-open SSE stream (opted
+                    // in via `event_deltas[]`) sees this turn's `agent.message` text as
+                    // live `event_start`/`event_delta` frames. The committed outcome is
+                    // identical; the sink only mirrors in-flight text and hands back the
+                    // ids it minted so the buffered messages reuse them.
+                    let sink = Arc::new(PreviewSink::new(
+                        self.live_sender(session_id),
+                        self.event_seq.clone(),
+                    ));
                     let outcome = self
                         .runtime
-                        .run(&agent_id, session_id, content.clone())
+                        .run_streaming(&agent_id, session_id, content.clone(), sink.clone())
                         .await?;
-                    self.append_turn(session_id, outcome)?;
+                    self.append_turn(session_id, outcome, sink.take_allocated_ids())?;
                 }
                 InboundEvent::UserToolConfirmation {
                     tool_use_id,
@@ -1791,7 +1893,7 @@ impl ManagedState {
                         .runtime
                         .resume(session_id, tool_use_id, decision)
                         .await?;
-                    self.append_turn(session_id, outcome)?;
+                    self.append_turn(session_id, outcome, Vec::new())?;
                 }
                 InboundEvent::UserCustomToolResult {
                     custom_tool_use_id,
@@ -1803,7 +1905,7 @@ impl ManagedState {
                         .runtime
                         .resume_custom(session_id, custom_tool_use_id, &text, *is_error)
                         .await?;
-                    self.append_turn(session_id, outcome)?;
+                    self.append_turn(session_id, outcome, Vec::new())?;
                 }
                 // The generic `user.tool_result`: a client-provided result for a
                 // parked tool, keyed by `tool_use_id`. Same delivery as a custom
@@ -1818,7 +1920,7 @@ impl ManagedState {
                         .runtime
                         .resume_custom(session_id, tool_use_id, &text, *is_error)
                         .await?;
-                    self.append_turn(session_id, outcome)?;
+                    self.append_turn(session_id, outcome, Vec::new())?;
                 }
                 InboundEvent::UserDefineOutcome {
                     description,
@@ -1876,13 +1978,6 @@ impl ManagedState {
             next_page: page.next_page,
             has_more: page.has_more,
         })
-    }
-
-    /// `GET /v1/sessions/{id}/events/stream` — the events to replay as SSE.
-    pub fn stream_events(&self, session_id: &str) -> Result<Vec<Event>, StateError> {
-        let sessions = self.sessions.lock().unwrap();
-        let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
-        Ok(record.events.clone())
     }
 }
 
