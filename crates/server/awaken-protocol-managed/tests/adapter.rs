@@ -1131,7 +1131,7 @@ async fn the_collection_route_is_never_fenced() {
     );
 }
 
-/// The event list is paged by cursor (`?cursor=<event_id>&limit=<n>`): the pages
+/// The event list is paged by cursor (`?page=<event_id>`?cursor=<event_id>&limit=<n>`limit=<n>`): the pages
 /// walk the session's events oldest-first with no gap or overlap, `has_more` and
 /// `next_page` bracket the walk, and a fabricated cursor is a 400.
 #[tokio::test]
@@ -1187,7 +1187,7 @@ async fn events_are_paged_by_cursor() {
     let p2 = json_call(
         &app,
         "GET",
-        &format!("/v1/sessions/{id}/events?cursor={cursor}&limit=50"),
+        &format!("/v1/sessions/{id}/events?page={cursor}&limit=50"),
         serde_json::Value::Null,
     )
     .await;
@@ -1205,7 +1205,7 @@ async fn events_are_paged_by_cursor() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/v1/sessions/{id}/events?cursor=evt_nope"))
+                .uri(format!("/v1/sessions/{id}/events?page=evt_nope"))
                 .body(Body::empty())
                 .unwrap(),
         )

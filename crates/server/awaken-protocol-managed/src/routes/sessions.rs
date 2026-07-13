@@ -329,11 +329,11 @@ async fn archive_thread(
 async fn list_thread_events(
     State(state): State<Arc<ManagedState>>,
     Path((id, tid)): Path<(String, String)>,
-    Query(query): Query<EventsQuery>,
+    Query(query): Query<PageQuery>,
 ) -> Result<Json<ListEventsResponse>, WireErr> {
     state.get_thread(&id, &tid).map_err(error_response)?;
     state
-        .list_events(&id, query.cursor.as_deref(), query.limit)
+        .list_events(&id, query.page.as_deref(), query.limit)
         .map(Json)
         .map_err(error_response)
 }
@@ -419,25 +419,13 @@ async fn send_events(
         .map_err(error_response)
 }
 
-/// Cursor-pagination query for the events list. This surface mirrors the Anthropic
-/// Managed Agents wire (`limit` + `data`/`has_more`), a deliberate bounded-context
-/// boundary distinct from the house `awaken-api-contract` cursor shape the AG-UI /
-/// AI SDK message endpoints use; only the pagination *engine* is shared.
-#[derive(Debug, Default, serde::Deserialize)]
-struct EventsQuery {
-    #[serde(default)]
-    cursor: Option<String>,
-    #[serde(default)]
-    limit: Option<usize>,
-}
-
 async fn list_events(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-    Query(query): Query<EventsQuery>,
+    Query(query): Query<PageQuery>,
 ) -> Result<Json<ListEventsResponse>, (StatusCode, Json<ErrorResponse>)> {
     state
-        .list_events(&id, query.cursor.as_deref(), query.limit)
+        .list_events(&id, query.page.as_deref(), query.limit)
         .map(Json)
         .map_err(error_response)
 }
