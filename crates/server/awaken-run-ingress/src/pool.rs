@@ -48,7 +48,16 @@ use crate::worker::DispatchWorker;
 #[async_trait]
 pub trait WorkerResolver<S>: Send + Sync {
     /// The worker whose runtime owns `thread_id`, opening the session if needed.
-    async fn worker_for(&self, thread_id: &ThreadId) -> Result<Arc<DispatchWorker<S>>, Error>;
+    /// `model_ref` is the claimed run's own model binding (from its activation
+    /// snapshot), so a cold worker — which has no in-process config service or
+    /// per-session model binding — can resolve the run's configured model through
+    /// its executor provider before the session's runtime is built. `None`/empty
+    /// leaves the host default (the pre-existing behavior).
+    async fn worker_for(
+        &self,
+        thread_id: &ThreadId,
+        model_ref: Option<&str>,
+    ) -> Result<Arc<DispatchWorker<S>>, Error>;
 }
 
 /// Notified the instant the pool settles a run, so a foreground submitter can await
@@ -344,7 +353,20 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     // The resolved worker shares this store and owner, so the settle it performs
     // acts on the same row this task just claimed.
     let thread_id = claimed.request.thread_id().clone();
-    let worker = resolver.worker_for(&thread_id).await?;
+    // The claimed run carries its own compiled model binding; hand it to the resolver
+    // so a cold worker resolves THIS run's configured model (not the host default).
+    let run_model_ref = claimed
+        .request
+        .activation
+        .snapshot
+        .resolved_spec
+        .model_binding
+        .model_ref
+        .clone();
+    let model_ref = Some(run_model_ref).filter(|m| !m.is_empty());
+    let worker = resolver
+        .worker_for(&thread_id, model_ref.as_deref())
+        .await?;
     if let Some((run_id, phase)) = worker.drive_claimed(claimed, now).await?
         && let Some(sink) = completion
     {
