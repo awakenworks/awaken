@@ -31,29 +31,75 @@ pub enum PhaseHookPoint {
     StepEnd,
 }
 
+/// The set of contribution ids one id-bearing axis of a [`CapabilityBound`]
+/// admits (G30). This value object owns the single "is this id permitted?"
+/// decision for every id axis — tools, state keys, action kinds, guards, gates,
+/// observers — so [`enforce_bound`] checks each axis the same way, `bound.allows(id)`,
+/// instead of open-coding a per-axis loop (and it folds the former separate
+/// `tool_namespaces` axis into the `tools` bound). The default is the empty
+/// allow-list, i.e. deny-all: an axis left unset admits nothing (fail-closed).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IdBound {
+    /// Any id is admitted. Use only where the axis is genuinely unbounded by design.
+    Any,
+    /// Only these exact ids.
+    Exact(Vec<String>),
+    /// Any id under this namespace prefix — the ceiling for a plugin whose tool
+    /// ids are not known at composition time (e.g. an MCP server's live set).
+    Namespace(String),
+    /// A namespace prefix **plus** an explicit per-id allow-list: an id is admitted
+    /// only if it both starts with `prefix` and appears in `ids`. Tightens a
+    /// dynamically discovered family (MCP/skills tools) to exactly the ids its
+    /// source resolved, so a stray id under the prefix still fails closed.
+    NamespacedExact { prefix: String, ids: Vec<String> },
+}
+
+impl Default for IdBound {
+    /// Deny-all — an unset axis admits nothing (fail-closed), matching the former
+    /// empty-`Vec` semantics.
+    fn default() -> Self {
+        IdBound::Exact(Vec::new())
+    }
+}
+
+impl IdBound {
+    /// Whether `id` is admitted by this bound.
+    #[must_use]
+    pub fn allows(&self, id: &str) -> bool {
+        match self {
+            IdBound::Any => true,
+            IdBound::Exact(ids) => ids.iter().any(|allowed| allowed == id),
+            IdBound::Namespace(prefix) => id.starts_with(prefix.as_str()),
+            IdBound::NamespacedExact { prefix, ids } => {
+                id.starts_with(prefix.as_str()) && ids.iter().any(|allowed| allowed == id)
+            }
+        }
+    }
+}
+
 /// The upper bound of what a plugin may contribute. Actual contributions must be
-/// a subset of this (G30); anything outside is a fail-closed violation.
+/// a subset of this (G30); anything outside is a fail-closed violation. Each
+/// id-bearing axis is an [`IdBound`]; `phase_hooks` is an enum-membership axis
+/// (which phase points, not ids), so it stays an explicit list.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct CapabilityBound {
-    pub tool_ids: Vec<String>,
-    pub state_keys: Vec<String>,
+    /// Tool ids this plugin may contribute — static (catalog) and dynamic
+    /// (MCP/skills) tools alike. `Exact` pins a fixed set; `Namespace` /
+    /// `NamespacedExact` admit a composition-time-unknown live set. (Folds the
+    /// former separate `tool_ids` + `tool_namespaces` axes into one.)
+    pub tools: IdBound,
+    pub state_keys: IdBound,
     pub phase_hooks: Vec<PhaseHookPoint>,
-    /// Scheduled-action kinds this plugin may contribute (ADR-0027) — the
-    /// id-bearing axis G30 names alongside tools and state keys.
-    pub action_kinds: Vec<String>,
+    /// Scheduled-action kinds this plugin may contribute (ADR-0027).
+    pub action_kinds: IdBound,
     /// Run-end continuation guard ids this plugin may contribute.
-    pub run_end_guards: Vec<String>,
+    pub run_end_guards: IdBound,
     /// Tool-gate ids this plugin may contribute (a pre-execution decision that
     /// can only restrict, never grant — permission stays the sole grant, G21).
-    pub tool_gates: Vec<String>,
+    pub tool_gates: IdBound,
     /// Tool-outcome hook ids this plugin may contribute (a post-execution
     /// reaction staging state and reminder messages).
-    pub tool_observers: Vec<String>,
-    /// Id *prefixes* a plugin may contribute dynamic tools under. A dynamic
-    /// tool's id must start with one of these — the namespace bound that keeps a
-    /// plugin whose tool ids are not known at composition time (e.g. an MCP
-    /// server's `tools/list_changed` set) honest under G30.
-    pub tool_namespaces: Vec<String>,
+    pub tool_observers: IdBound,
 }
 
 /// Declared plugin identity and bound. One `validate`-able home for config.
@@ -303,83 +349,75 @@ pub fn enforce_bound(
     manifest: &PluginManifest,
     contributions: &Contributions,
 ) -> Result<(), BoundViolation> {
+    let bound = &manifest.bound;
+    let id = &manifest.id;
+
+    // Static tools and dynamic (MCP/skills) tools share one `tools` bound: a
+    // static tool is admitted by its id, a dynamic tool by its (namespaced) id.
     for tool in &contributions.tools {
-        if !manifest.bound.tool_ids.contains(tool) {
+        if !bound.tools.allows(tool) {
             return Err(BoundViolation::Tool {
-                plugin: manifest.id.clone(),
+                plugin: id.clone(),
                 id: tool.clone(),
             });
         }
     }
+    for dynamic in &contributions.dynamic_tools {
+        let tool_id = dynamic.tool.id();
+        if !bound.tools.allows(tool_id) {
+            return Err(BoundViolation::Tool {
+                plugin: id.clone(),
+                id: tool_id.to_string(),
+            });
+        }
+    }
     for key in &contributions.state_keys {
-        if !manifest.bound.state_keys.contains(key) {
+        if !bound.state_keys.allows(key) {
             return Err(BoundViolation::StateKey {
-                plugin: manifest.id.clone(),
+                plugin: id.clone(),
                 id: key.clone(),
             });
         }
     }
+    // Phase hooks are bounded by which phase points a plugin may hook (an enum
+    // axis, not ids), so this stays a membership check.
     for hook in &contributions.phase_hooks {
-        if !manifest.bound.phase_hooks.contains(&hook.point()) {
+        if !bound.phase_hooks.contains(&hook.point()) {
             return Err(BoundViolation::Hook {
-                plugin: manifest.id.clone(),
+                plugin: id.clone(),
                 point: hook.point(),
             });
         }
     }
     for kind in &contributions.action_kinds {
-        if !manifest.bound.action_kinds.contains(kind) {
+        if !bound.action_kinds.allows(kind) {
             return Err(BoundViolation::ActionKind {
-                plugin: manifest.id.clone(),
+                plugin: id.clone(),
                 id: kind.clone(),
             });
         }
     }
     for guard in &contributions.run_end_guards {
-        if !manifest
-            .bound
-            .run_end_guards
-            .iter()
-            .any(|id| id == guard.id())
-        {
+        if !bound.run_end_guards.allows(guard.id()) {
             return Err(BoundViolation::RunEndGuard {
-                plugin: manifest.id.clone(),
+                plugin: id.clone(),
                 id: guard.id().to_string(),
             });
         }
     }
     for gate in &contributions.tool_gates {
-        if !manifest.bound.tool_gates.iter().any(|id| id == gate.id()) {
+        if !bound.tool_gates.allows(gate.id()) {
             return Err(BoundViolation::ToolGate {
-                plugin: manifest.id.clone(),
+                plugin: id.clone(),
                 id: gate.id().to_string(),
             });
         }
     }
     for observer in &contributions.tool_observers {
-        if !manifest
-            .bound
-            .tool_observers
-            .iter()
-            .any(|id| id == observer.id())
-        {
+        if !bound.tool_observers.allows(observer.id()) {
             return Err(BoundViolation::ToolObserver {
-                plugin: manifest.id.clone(),
+                plugin: id.clone(),
                 id: observer.id().to_string(),
-            });
-        }
-    }
-    for dynamic in &contributions.dynamic_tools {
-        let id = dynamic.tool.id();
-        let permitted = manifest
-            .bound
-            .tool_namespaces
-            .iter()
-            .any(|ns| id.starts_with(ns.as_str()));
-        if !permitted {
-            return Err(BoundViolation::Tool {
-                plugin: manifest.id.clone(),
-                id: id.to_string(),
             });
         }
     }
@@ -626,6 +664,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn id_bound_admits_by_variant() {
+        // Any admits everything.
+        assert!(IdBound::Any.allows("anything"));
+        // Exact admits only listed ids.
+        let exact = IdBound::Exact(vec!["a".into(), "b".into()]);
+        assert!(exact.allows("a"));
+        assert!(!exact.allows("z"));
+        // Namespace admits any id under the prefix.
+        let ns = IdBound::Namespace("mcp__srv__".into());
+        assert!(ns.allows("mcp__srv__echo"));
+        assert!(!ns.allows("other__echo"));
+        // NamespacedExact requires BOTH the prefix AND the explicit id — a stray id
+        // under the prefix that was not discovered fails closed.
+        let nse = IdBound::NamespacedExact {
+            prefix: "mcp__srv__".into(),
+            ids: vec!["mcp__srv__echo".into()],
+        };
+        assert!(nse.allows("mcp__srv__echo"));
+        assert!(!nse.allows("mcp__srv__backdoor")); // prefix ok, not discovered
+        assert!(!nse.allows("other__echo")); // discovered-shaped but wrong prefix
+    }
+
+    #[test]
+    fn id_bound_default_is_deny_all() {
+        // An unset axis admits nothing (fail-closed) — the former empty-Vec semantics.
+        assert_eq!(IdBound::default(), IdBound::Exact(Vec::new()));
+        assert!(!IdBound::default().allows("anything"));
+    }
+
     fn manifest(id: &str, bound: CapabilityBound) -> PluginManifest {
         PluginManifest {
             id: id.to_string(),
@@ -640,10 +708,10 @@ mod tests {
         let m = manifest(
             "p",
             CapabilityBound {
-                tool_ids: vec!["t".into()],
-                state_keys: vec!["k".into()],
+                tools: IdBound::Exact(vec!["t".into()]),
+                state_keys: IdBound::Exact(vec!["k".into()]),
                 phase_hooks: vec![PhaseHookPoint::StepStart],
-                action_kinds: vec!["a".into()],
+                action_kinds: IdBound::Exact(vec!["a".into()]),
                 ..Default::default()
             },
         );
@@ -694,7 +762,7 @@ mod tests {
         let m = manifest(
             id,
             CapabilityBound {
-                action_kinds: vec![kind.into()],
+                action_kinds: IdBound::Exact(vec![kind.into()]),
                 ..Default::default()
             },
         );
@@ -723,7 +791,7 @@ mod tests {
         let m = manifest(
             id,
             CapabilityBound {
-                tool_ids: vec![tool.into()],
+                tools: IdBound::Exact(vec![tool.into()]),
                 ..Default::default()
             },
         );
@@ -828,7 +896,7 @@ mod tests {
         let m = manifest(
             "p",
             CapabilityBound {
-                tool_namespaces: vec!["mcp__srv__".into()],
+                tools: IdBound::Namespace("mcp__srv__".into()),
                 ..Default::default()
             },
         );
@@ -842,7 +910,7 @@ mod tests {
         let m = manifest(
             "p",
             CapabilityBound {
-                tool_namespaces: vec!["mcp__srv__".into()],
+                tools: IdBound::Namespace("mcp__srv__".into()),
                 ..Default::default()
             },
         );
@@ -859,7 +927,7 @@ mod tests {
         let m = manifest(
             "p",
             CapabilityBound {
-                tool_namespaces: vec!["mcp__srv__".into()],
+                tools: IdBound::Namespace("mcp__srv__".into()),
                 ..Default::default()
             },
         );

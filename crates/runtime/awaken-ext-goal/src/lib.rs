@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_runtime_contract::plugin::{
-    CapabilityBound, Contributions, Plugin, PluginConfigError, PluginManifest, RunEndContext,
-    RunEndDecision, RunEndGuard,
+    CapabilityBound, Contributions, IdBound, Plugin, PluginConfigError, PluginManifest,
+    RunEndContext, RunEndDecision, RunEndGuard,
 };
 use awaken_runtime_contract::{
     CancellationToken, Message, MessageId, Role, SubagentError, SubagentReply, SubagentRequest,
@@ -424,7 +424,7 @@ impl Plugin for GoalPlugin {
             requires: Vec::new(),
             config_sections: vec![GOAL_PLUGIN_ID.into()],
             bound: CapabilityBound {
-                run_end_guards: vec![GOAL_PLUGIN_ID.into()],
+                run_end_guards: IdBound::Exact(vec![GOAL_PLUGIN_ID.into()]),
                 ..Default::default()
             },
         }
