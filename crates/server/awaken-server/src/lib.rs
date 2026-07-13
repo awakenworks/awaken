@@ -440,6 +440,91 @@ fn mount(host: Arc<SharedHost>) -> Router {
     mount_with_managed(host, Arc::new(state))
 }
 
+/// The deployment role this process runs as — the single role axis, selected by
+/// `AWAKEN_ROLE` with backward-compatible inference from the historic per-role env
+/// (`AWAKEN_HAND_*`, `AWAKEN_UPSTREAM_URL`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    /// Serve the HTTP surface: single-machine all-in-one, or a coordinator when
+    /// `AWAKEN_DISABLE_LOCAL_POOL=1`. The default.
+    Serve,
+    /// A database-less worker of a cell server (claims/commits over HTTP).
+    Worker,
+    /// A remote ACP executor endpoint (the hand role, ADR-0044/0045).
+    Hand,
+}
+
+/// Pure role selection: an explicit `AWAKEN_ROLE` wins; otherwise infer from
+/// whether the historic hand / worker env is configured. Unit-tested without env.
+fn role_from(explicit: Option<&str>, hand_configured: bool, worker_configured: bool) -> Role {
+    match explicit {
+        Some("worker") => Role::Worker,
+        Some("hand") => Role::Hand,
+        Some("serve") | Some("server") | Some("coordinator") | Some("all-in-one") => Role::Serve,
+        _ if hand_configured => Role::Hand,
+        _ if worker_configured => Role::Worker,
+        _ => Role::Serve,
+    }
+}
+
+/// The deployment role from the environment.
+pub fn deployment_role() -> Role {
+    let set = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty()).is_some();
+    let explicit = std::env::var("AWAKEN_ROLE").ok();
+    role_from(
+        explicit.as_deref(),
+        set("AWAKEN_HAND_NATS") || set("AWAKEN_HAND_DIAL") || set("AWAKEN_HAND_LISTEN"),
+        set("AWAKEN_UPSTREAM_URL"),
+    )
+}
+
+/// Run the hand role: a remote ACP executor endpoint over the transport selected by
+/// `AWAKEN_HAND_*` (NATS relay / dial-out / listen).
+pub async fn run_hand_role() -> Result<(), Box<dyn std::error::Error>> {
+    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    if let Some(nats_url) = env("AWAKEN_HAND_NATS") {
+        let subject =
+            std::env::var("AWAKEN_HAND_SUBJECT").unwrap_or_else(|_| "awaken.hand.exec".to_string());
+        return run_hand_server_nats(&nats_url, &subject).await;
+    }
+    if let Some(dial_addr) = env("AWAKEN_HAND_DIAL") {
+        return run_hand_server(&dial_addr, true).await;
+    }
+    if let Some(hand_addr) = env("AWAKEN_HAND_LISTEN") {
+        return run_hand_server(&hand_addr, false).await;
+    }
+    Err("AWAKEN_ROLE=hand requires one of AWAKEN_HAND_NATS / AWAKEN_HAND_DIAL / AWAKEN_HAND_LISTEN".into())
+}
+
+#[cfg(test)]
+mod role_tests {
+    use super::{Role, role_from};
+
+    #[test]
+    fn explicit_role_wins() {
+        assert_eq!(role_from(Some("worker"), false, false), Role::Worker);
+        assert_eq!(role_from(Some("hand"), false, false), Role::Hand);
+        assert_eq!(role_from(Some("coordinator"), true, true), Role::Serve);
+        assert_eq!(role_from(Some("all-in-one"), true, true), Role::Serve);
+    }
+
+    #[test]
+    fn inference_from_historic_env_when_role_unset() {
+        // Hand env → Hand; upstream → Worker; neither → Serve (the default).
+        assert_eq!(role_from(None, true, false), Role::Hand);
+        assert_eq!(role_from(None, false, true), Role::Worker);
+        assert_eq!(role_from(None, false, false), Role::Serve);
+        // Hand takes precedence over worker when both are somehow set.
+        assert_eq!(role_from(None, true, true), Role::Hand);
+    }
+
+    #[test]
+    fn an_unknown_explicit_role_falls_back_to_inference() {
+        assert_eq!(role_from(Some("bogus"), false, true), Role::Worker);
+        assert_eq!(role_from(Some("bogus"), false, false), Role::Serve);
+    }
+}
+
 /// Run this process as a database-less **worker** of the cell server at `upstream`:
 /// its dispatch pool claims and settles runs over the server's dispatch transport,
 /// and its commit boundary posts facts to the server's commit ingest
