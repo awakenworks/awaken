@@ -11,7 +11,7 @@ use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::resolved::ModelBinding;
+use crate::resolved::{ModelBinding, ToolDescriptor};
 
 /// One model invocation request. Pure data so it can be logged, replayed, and
 /// snapshotted without holding a live provider handle (G3).
@@ -21,8 +21,10 @@ pub struct ChatRequest {
     /// does not pick a different model (G22).
     pub model_binding: ModelBinding,
     pub messages: Vec<ChatMessage>,
-    /// Model-visible tool schemas resolved for this run. Empty means no tools.
-    pub tools: Vec<ToolSchema>,
+    /// Model-visible tool descriptors resolved for this run — the same
+    /// [`ToolDescriptor`] the resolved spec carries (its `content_hash` rides
+    /// along, ignored by the provider mapping). Empty means no tools.
+    pub tools: Vec<ToolDescriptor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -48,15 +50,6 @@ pub struct ToolCall {
     pub call_id: String,
     pub tool_id: String,
     pub arguments: serde_json::Value,
-}
-
-/// Model-visible tool descriptor projected for inference. Carries no executable
-/// handle — execution authority lives behind `ToolExecutor` and the gate.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ToolSchema {
-    pub id: String,
-    pub description: String,
-    pub parameters: serde_json::Value,
 }
 
 /// One model response: the assistant turn plus optional usage.
