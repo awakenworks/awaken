@@ -144,6 +144,97 @@ pub fn project_messages(
     out
 }
 
+/// A tool call the assistant made, borrowed from the committed message during a
+/// [`project_history`] walk. Adapters shape it into their own tool-part vocabulary.
+pub struct ToolUseRef<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+    pub input: &'a Value,
+}
+
+/// The static-history counterpart to [`Transcoder`]: a sink that receives the
+/// committed messages of a thread, oldest-first, already walked and correlated.
+/// The fold ([`project_history`]) owns the shared logic — skip-empty, tool-call
+/// extraction, and per-message tool-result indexing; each adapter implements this
+/// to shape a message into its own wire form. This is why two adapters that
+/// project tool results differently (AI SDK folds a result into the assistant's
+/// tool part; AG-UI emits a standalone `tool` message) still share one fold.
+pub trait HistorySink {
+    /// A user or system message; `content` is its blocks (never all-empty — an
+    /// empty message is skipped by the fold). The adapter extracts text/parts.
+    fn user_or_system(&mut self, id: &str, role: Role, content: &[ContentBlock]);
+    /// An assistant turn: its `content` blocks (text; tool-use blocks live here
+    /// too) and the tool calls pre-extracted. Skipped by the fold only when the
+    /// text is empty *and* there are no tool calls.
+    fn assistant(&mut self, id: &str, content: &[ContentBlock], tools: &[ToolUseRef<'_>]);
+    /// A tool result answering `tool_use_id`, its `content` blocks. `message_id`+
+    /// `sub` locate it inside the neutral tool message (`sub` 0 = first result);
+    /// an adapter emitting a standalone message keys on these, one folding it into
+    /// the assistant part keys on `tool_use_id`.
+    fn tool_result(
+        &mut self,
+        message_id: &str,
+        sub: usize,
+        tool_use_id: &str,
+        content: &[ContentBlock],
+    );
+}
+
+/// True when a block list carries no text (text blocks only) — the fold's
+/// skip-empty test, matching the streaming projection.
+fn text_is_empty(content: &[ContentBlock]) -> bool {
+    !content
+        .iter()
+        .any(|b| matches!(b, ContentBlock::Text { text } if !text.is_empty()))
+}
+
+/// Walk a thread's committed messages (oldest-first) into `sink`, owning the
+/// shared read-model logic so each adapter only shapes each message. An empty
+/// user/system/assistant message is dropped, as the streaming projection drops it.
+pub fn project_history(messages: &[Message], sink: &mut impl HistorySink) {
+    for message in messages {
+        match message.role {
+            Role::User | Role::System => {
+                if text_is_empty(&message.content) {
+                    continue;
+                }
+                sink.user_or_system(&message.id.0, message.role.clone(), &message.content);
+            }
+            Role::Assistant => {
+                let tools: Vec<ToolUseRef<'_>> = message
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::ToolUse { id, name, input } => Some(ToolUseRef {
+                            id: id.as_str(),
+                            name: name.as_str(),
+                            input,
+                        }),
+                        _ => None,
+                    })
+                    .collect();
+                if text_is_empty(&message.content) && tools.is_empty() {
+                    continue;
+                }
+                sink.assistant(&message.id.0, &message.content, &tools);
+            }
+            Role::Tool => {
+                let mut sub = 0usize;
+                for block in &message.content {
+                    if let ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                    } = block
+                    {
+                        sink.tool_result(&message.id.0, sub, tool_use_id, content);
+                        sub += 1;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Fold a full committed step (with boundaries): `RunStarted`, the message
 /// events, then a terminal event derived from `phase`.
 pub fn project_step(
