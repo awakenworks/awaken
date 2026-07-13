@@ -29,9 +29,9 @@ Run the server pointed at the collector, then drive any traffic:
 ```bash
 OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces \
 OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf \
-OTEL_SERVICE_NAME=awaken-server \
+OTEL_SERVICE_NAME=awaken-server-local \
 AWAKEN_MODEL_MODE=echo AWAKEN_HTTP_ADDR=127.0.0.1:38080 \
-  cargo run -p awaken-server
+  cargo run -p awaken-server-local
 
 # in another shell, drive a turn (or run an e2e against port 38080), then open:
 #   Phoenix  http://localhost:6006     (GenAI-native: invoke_agent / chat / execute_tool)

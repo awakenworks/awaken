@@ -49,8 +49,8 @@ psql_scalar() { kubectl -n "$NS" exec deploy/postgres -- env PGPASSWORD=test psq
 export CARGO_CACHE_AUTOCLEAN=0
 
 log "1/5 build the server binary on the host (rustc 1.96, --features nats)"
-RUSTUP_TOOLCHAIN=1.96.0 cargo build -q -p awaken-server --bin awaken-server --features nats
-BIN=$(RUSTUP_TOOLCHAIN=1.96.0 cargo build -p awaken-server --bin awaken-server --features nats --message-format=json 2>/dev/null \
+RUSTUP_TOOLCHAIN=1.96.0 cargo build -q -p awaken-scenario-host --bin awaken-scenario-host --features nats
+BIN=$(RUSTUP_TOOLCHAIN=1.96.0 cargo build -p awaken-scenario-host --bin awaken-scenario-host --features nats --message-format=json 2>/dev/null \
   | python3 -c "import sys,json
 for l in sys.stdin:
  try:

@@ -13,11 +13,11 @@ PROFILE="${1:-smoke}"
 PORT="${PORT:-38200}"
 MODE="${MODE:-management}"
 
-cargo build --quiet -p awaken-server --bin awaken-server
+cargo build --quiet -p awaken-scenario-host --bin awaken-scenario-host
 # Resolve the target dir (a global cargo config may override `target/`).
 TARGET_DIR="$(cargo metadata --no-deps --format-version 1 \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
-BIN="${TARGET_DIR}/debug/awaken-server"
+BIN="${TARGET_DIR}/debug/awaken-scenario-host"
 [ -x "$BIN" ] || { echo "server binary not found at $BIN"; exit 1; }
 
 AWAKEN_HTTP_ADDR="127.0.0.1:${PORT}" AWAKEN_MODEL_MODE="${MODE}" "$BIN" &

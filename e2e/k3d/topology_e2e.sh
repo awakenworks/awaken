@@ -101,8 +101,8 @@ run_topology() {
 }
 
 log "1/5 build the server binary on the host (rustc 1.96)"
-RUSTUP_TOOLCHAIN=1.96.0 cargo build -q -p awaken-server --bin awaken-server
-BIN=$(RUSTUP_TOOLCHAIN=1.96.0 cargo build -p awaken-server --bin awaken-server --message-format=json 2>/dev/null \
+RUSTUP_TOOLCHAIN=1.96.0 cargo build -q -p awaken-scenario-host --bin awaken-scenario-host
+BIN=$(RUSTUP_TOOLCHAIN=1.96.0 cargo build -p awaken-scenario-host --bin awaken-scenario-host --message-format=json 2>/dev/null \
   | python3 -c "import sys,json
 for l in sys.stdin:
  try:

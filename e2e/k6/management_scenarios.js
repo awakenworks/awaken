@@ -1,4 +1,4 @@
-// k6 scenario validation for the awaken-server management plane (ADR-0043).
+// k6 scenario validation for the awaken-server-local management plane (ADR-0043).
 //
 // It drives the HTTP surfaces directly (not the SDK): the admin config plane
 // (`/v1/config/*`), the Managed vault/credential front door (`/v1/vaults/*`), and a
