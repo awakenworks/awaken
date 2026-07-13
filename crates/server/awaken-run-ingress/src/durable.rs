@@ -33,6 +33,10 @@ use crate::worker::DispatchWorker;
 /// autonomous [`DispatchService`] can drain the same queue.
 pub struct DurableRunIngress<S> {
     worker: Arc<DispatchWorker<S>>,
+    /// The per-session live inbox shared by the worker's drive (drained at safe
+    /// loop boundaries) and the offer side (ADR-0054 P2). Neutral `Message`s only;
+    /// this is why durable steer needs no protocol type in the worker.
+    live_inbox: awaken_runtime_contract::live_inbox::LiveInbox,
 }
 
 impl<S: Dispatch + 'static> DurableRunIngress<S> {
@@ -63,13 +67,22 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
     where
         C: CommitCoordinator + ThreadReader + RunStore + Send + Sync + 'static,
     {
-        let mut worker = DispatchWorker::new(runtime, store, commit, owner);
+        let live_inbox = awaken_runtime_contract::live_inbox::LiveInbox::new();
+        let mut worker =
+            DispatchWorker::new(runtime, store, commit, owner).with_live_inbox(live_inbox.clone());
         if let Some(store) = stream_checkpoint {
             worker = worker.with_stream_checkpoint(store);
         }
         Self {
             worker: Arc::new(worker),
+            live_inbox,
         }
+    }
+
+    /// The per-session live inbox the worker drains at boundaries — the offer side
+    /// queues External steer here so it reaches a worker-driven run (ADR-0054 P2).
+    pub fn live_inbox(&self) -> &awaken_runtime_contract::live_inbox::LiveInbox {
+        &self.live_inbox
     }
 
     /// The durable guarantees this ingress reports (G5): durable, recoverable,

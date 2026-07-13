@@ -83,6 +83,41 @@ async fn durable_submit_persists_then_runs_to_completion() {
 }
 
 #[tokio::test]
+async fn durable_run_drains_live_inbox_steer_at_the_boundary() {
+    // ADR-0054 P2: a steer message offered into the durable ingress's per-session
+    // inbox is drained by the worker-driven run at its safe loop boundary — steer
+    // reaches a durable (worker-driven) run, not only the direct native path.
+    use awaken_agent_contract::agent::message::{Id as MessageId, Message};
+    use awaken_runtime_contract::live_inbox::MessageOrigin;
+
+    let runtime = text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store, commit.clone());
+
+    // Queue a steer before the run is driven; the worker drains the *same* inbox.
+    let _ = ingress.live_inbox().offer_as(
+        MessageOrigin::External,
+        Message::text(MessageId("client-id".into()), Role::User, "steer me"),
+    );
+
+    let phase = ingress
+        .submit_background(activation("run-1"))
+        .await
+        .expect("durable submit");
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+
+    let messages = commit.committed().messages;
+    let steer = messages
+        .iter()
+        .find(|m| m.id.0 == "run-1-inbox-0")
+        .expect("steer drained + re-identified into the durable transcript");
+    assert_eq!(steer.text_content(), "steer me");
+    // The caller-supplied id never reaches the committed transcript.
+    assert!(messages.iter().all(|m| m.id.0 != "client-id"));
+}
+
+#[tokio::test]
 async fn direct_ingress_fails_durable_submit_closed_while_durable_does_not() {
     // G5: the durable-only operation (submit_background) fails closed on direct
     // ingress and succeeds on durable ingress.

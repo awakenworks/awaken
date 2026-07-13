@@ -91,6 +91,17 @@ impl<S: Dispatch> DispatchWorker<S> {
         self
     }
 
+    /// Provide the per-session live inbox so this worker's runs drain mid-run
+    /// steer at their safe loop boundaries (ADR-0054 P2).
+    #[must_use]
+    pub fn with_live_inbox(
+        mut self,
+        inbox: awaken_runtime_contract::live_inbox::LiveInbox,
+    ) -> Self {
+        self.exec = self.exec.with_live_inbox(inbox);
+        self
+    }
+
     /// Override the lease duration.
     #[must_use]
     pub fn with_lease_ms(mut self, lease_ms: u64) -> Self {
