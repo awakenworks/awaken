@@ -1040,3 +1040,181 @@ fn projecting_source_reads_the_cli_compact_window_from_config() {
         .map(|(_, v)| v.clone());
     assert_eq!(window.as_deref(), Some("262144"));
 }
+
+// ── Cancellation, multi-turn usage, and mid-loop relaunch failure ────────────
+
+/// A pre-cancelled run token ends the turn `Cancelled` (lease revocation / interrupt
+/// at the executor level): the agent hangs with no `turn_end`, so the only way the
+/// turn ends is the supervisor's cancel branch → `EndCause::Cancelled`.
+#[tokio::test]
+async fn a_cancelled_token_ends_the_run_cancelled() {
+    use awaken_runtime_contract::CancellationToken;
+
+    struct HangingSource;
+    #[async_trait]
+    impl AgentChannelSource for HangingSource {
+        async fn open(&self, _a: &RunActivation) -> std::result::Result<AgentSession, OpenError> {
+            let (ours, mut theirs) = tokio::io::duplex(4096);
+            tokio::spawn(async move {
+                let mut p = String::new();
+                let mut r = BufReader::new(&mut theirs);
+                let _ = r.read_line(&mut p).await;
+                let _ = theirs
+                    .write_all(b"{\"type\":\"message\",\"text\":\"working\"}\n")
+                    .await;
+                let _ = theirs.flush().await;
+                // Hold the stream open (never turn_end), so only cancel ends the turn.
+                std::future::pending::<()>().await;
+                drop(theirs);
+            });
+            Ok(AgentSession {
+                channel: Box::new(ours),
+                process: Arc::new(FakeProcess),
+                codec: awaken_protocol_acp::Codec::Newline,
+                workspace_cwd: None,
+            })
+        }
+    }
+
+    let token = CancellationToken::new();
+    token.cancel(); // pre-cancelled → the supervisor's cancel arm fires deterministically
+    let coord = Arc::new(RecordingCoordinator::default());
+    let phase = AcpRunExecutor::new(Arc::new(HangingSource))
+        .execute(
+            activation(),
+            RuntimeRunContext::new()
+                .with_commit(coord.clone())
+                .with_cancellation(token),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(phase, Phase::Ended(EndCause::Cancelled));
+}
+
+/// Token usage is summed across relaunched turns: each launched turn emits a usage
+/// frame, and a live-inbox steer forces a second turn, so the single committed
+/// `__usage` tally is the sum of both turns — a per-turn overwrite would under-report.
+#[tokio::test]
+async fn usage_accumulates_across_relaunched_turns() {
+    use awaken_agent_contract::agent::state::Action;
+    use awaken_runtime_contract::live_inbox::{LiveInbox, MessageOrigin};
+    use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, ThreadUsage, TokenUsage};
+
+    // Every launched turn (the ScriptedSource re-emits its frames on each open) reports
+    // the same usage; two turns → the tally must double.
+    let e = exec(vec![
+        r#"{"type":"message","text":"turn"}"#.into(),
+        r#"{"type":"usage","prompt_tokens":10,"completion_tokens":20,"cache_read_tokens":5}"#
+            .into(),
+        r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
+    ]);
+    let inbox = LiveInbox::new();
+    let _ = inbox.offer_as(
+        MessageOrigin::External,
+        Message::text(MessageId("s".into()), Role::User, "again"),
+    );
+    let coord = Arc::new(RecordingCoordinator::default());
+    e.execute(
+        activation(),
+        RuntimeRunContext::new()
+            .with_commit(coord.clone())
+            .with_live_inbox(inbox.clone()),
+    )
+    .await
+    .unwrap();
+
+    let commits = coord.commits.lock().unwrap();
+    let usage_cmd = commits
+        .last()
+        .expect("a terminal commit")
+        .state
+        .iter()
+        .find(|c| c.key.0 == THREAD_USAGE_STATE_KEY)
+        .expect("usage committed as thread state");
+    let Action::Set(value) = &usage_cmd.action else {
+        panic!("usage is a Set command");
+    };
+    let tally: ThreadUsage = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(
+        tally.by_model["model"],
+        TokenUsage {
+            prompt_tokens: 20,
+            completion_tokens: 40,
+            cache_read_tokens: 10,
+            cache_creation_tokens: 0,
+        },
+        "usage is summed across the two relaunched turns, not overwritten"
+    );
+}
+
+/// A relaunch that fails to reopen the channel mid-run (the `BoundaryOutcome::Continue`
+/// branch) commits a classified terminal failure — distinct from the initial-open
+/// fault. The first open scripts a turn; a steer forces a relaunch; the second open
+/// fails, so the run ends `Error` after exactly two open attempts.
+#[tokio::test]
+async fn a_relaunch_open_failure_mid_run_classifies_and_ends() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use awaken_runtime_contract::live_inbox::{LiveInbox, MessageOrigin};
+
+    struct FlakySource(Arc<AtomicUsize>);
+    #[async_trait]
+    impl AgentChannelSource for FlakySource {
+        async fn open(&self, _a: &RunActivation) -> std::result::Result<AgentSession, OpenError> {
+            let n = self.0.fetch_add(1, Ordering::SeqCst);
+            if n >= 1 {
+                // The relaunch (second open) fails.
+                return Err(OpenError("relaunch could not reopen the channel".into()));
+            }
+            let (ours, mut theirs) = tokio::io::duplex(4096);
+            tokio::spawn(async move {
+                let mut p = String::new();
+                let mut r = BufReader::new(&mut theirs);
+                let _ = r.read_line(&mut p).await;
+                for f in [
+                    r#"{"type":"message","text":"turn"}"#,
+                    r#"{"type":"turn_end","reason":"natural_end"}"#,
+                ] {
+                    let _ = theirs.write_all(f.as_bytes()).await;
+                    let _ = theirs.write_all(b"\n").await;
+                    let _ = theirs.flush().await;
+                }
+            });
+            Ok(AgentSession {
+                channel: Box::new(ours),
+                process: Arc::new(FakeProcess),
+                codec: awaken_protocol_acp::Codec::Newline,
+                workspace_cwd: None,
+            })
+        }
+    }
+
+    let opens = Arc::new(AtomicUsize::new(0));
+    // A queued steer forces the boundary to Continue → a second (failing) open.
+    let inbox = LiveInbox::new();
+    let _ = inbox.offer_as(
+        MessageOrigin::External,
+        Message::text(MessageId("s".into()), Role::User, "again"),
+    );
+    let coord = Arc::new(RecordingCoordinator::default());
+    let phase = AcpRunExecutor::new(Arc::new(FlakySource(opens.clone())))
+        .execute(
+            activation(),
+            RuntimeRunContext::new()
+                .with_commit(coord.clone())
+                .with_live_inbox(inbox),
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        matches!(phase, Phase::Ended(EndCause::Error(_))),
+        "a mid-run relaunch-open failure ends the run classified, got {phase:?}"
+    );
+    assert_eq!(
+        opens.load(Ordering::SeqCst),
+        2,
+        "the first open ran the turn; the relaunch attempted a second open and failed"
+    );
+}
