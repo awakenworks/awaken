@@ -12,6 +12,8 @@ use awaken_agent_contract::agent::waiting::WaitingTicket;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::resolved::CatalogFingerprint;
+use crate::snapshot::ExecutableAgentSnapshotId;
 use crate::tool::ToolOutput;
 
 /// What a resume delivers back into the parked run.
@@ -47,8 +49,11 @@ pub struct ResumeCommand {
     pub correlation_id: String,
     pub run_id: RunId,
     pub thread_id: ThreadId,
-    pub snapshot_id: String,
-    pub catalog_fingerprint: String,
+    /// The parked run's executable snapshot identity — the same newtype the
+    /// snapshot and resolution paths carry, so the resume's identity check is
+    /// type-safe (a fingerprint can never be passed where a snapshot id is meant).
+    pub snapshot_id: ExecutableAgentSnapshotId,
+    pub catalog_fingerprint: CatalogFingerprint,
     pub result: ResumeResult,
     /// Caller-supplied clock (epoch millis) used to enforce the ticket deadline.
     pub now_ms: u64,
@@ -64,8 +69,10 @@ impl ResumeCommand {
             correlation_id: ticket.correlation_id.clone(),
             run_id: ticket.run_id.clone(),
             thread_id: ticket.thread_id.clone(),
-            snapshot_id: ticket.snapshot_id.clone(),
-            catalog_fingerprint: ticket.catalog_fingerprint.clone(),
+            // The ticket stores these as plain strings (its crate sits below the
+            // runtime-contract newtypes); wrap them at this one boundary.
+            snapshot_id: ExecutableAgentSnapshotId(ticket.snapshot_id.clone()),
+            catalog_fingerprint: CatalogFingerprint(ticket.catalog_fingerprint.clone()),
             result,
             now_ms,
         }
@@ -102,10 +109,12 @@ pub fn validate_resume(ticket: &WaitingTicket, command: &ResumeCommand) -> Resul
     if ticket.thread_id != command.thread_id {
         return Err(ResumeError::ThreadMismatch);
     }
-    if ticket.snapshot_id != command.snapshot_id {
+    // The ticket carries plain strings; compare against the newtype's inner value
+    // at this layer boundary.
+    if ticket.snapshot_id != command.snapshot_id.0 {
         return Err(ResumeError::SnapshotMismatch);
     }
-    if ticket.catalog_fingerprint != command.catalog_fingerprint {
+    if ticket.catalog_fingerprint != command.catalog_fingerprint.0 {
         return Err(ResumeError::FingerprintMismatch);
     }
     if let Some(deadline) = ticket.deadline_ms
@@ -140,8 +149,8 @@ mod tests {
             correlation_id: "c1".to_string(),
             run_id: RunId("run-1".to_string()),
             thread_id: ThreadId("thread-1".to_string()),
-            snapshot_id: "snap-1".to_string(),
-            catalog_fingerprint: "fp-1".to_string(),
+            snapshot_id: ExecutableAgentSnapshotId("snap-1".to_string()),
+            catalog_fingerprint: CatalogFingerprint("fp-1".to_string()),
             result: ResumeResult::Decision {
                 allow: true,
                 note: None,
@@ -160,7 +169,7 @@ mod tests {
         // Built from the ticket + an answer, it validates against that same ticket.
         let cmd = ResumeCommand::from_ticket(&ticket(), ResumeResult::allow(), 50);
         assert_eq!(cmd.correlation_id, "c1");
-        assert_eq!(cmd.snapshot_id, "snap-1");
+        assert_eq!(cmd.snapshot_id.0, "snap-1");
         assert_eq!(
             cmd.result,
             ResumeResult::Decision {
@@ -197,14 +206,14 @@ mod tests {
             ),
             (
                 ResumeCommand {
-                    snapshot_id: "x".into(),
+                    snapshot_id: ExecutableAgentSnapshotId("x".into()),
                     ..command()
                 },
                 ResumeError::SnapshotMismatch,
             ),
             (
                 ResumeCommand {
-                    catalog_fingerprint: "x".into(),
+                    catalog_fingerprint: CatalogFingerprint("x".into()),
                     ..command()
                 },
                 ResumeError::FingerprintMismatch,

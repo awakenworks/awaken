@@ -566,8 +566,8 @@ fn park_resume_command() -> ResumeCommand {
         correlation_id: "park-ticket".to_string(),
         run_id: RunId("run-1".to_string()),
         thread_id: ThreadId("thread-1".to_string()),
-        snapshot_id: "snapshot-1".to_string(),
-        catalog_fingerprint: "catalog-a".to_string(),
+        snapshot_id: awaken_runtime_contract::ExecutableAgentSnapshotId("snapshot-1".to_string()),
+        catalog_fingerprint: CatalogFingerprint("catalog-a".to_string()),
         result: ResumeResult::allow(),
         now_ms: 0,
     }

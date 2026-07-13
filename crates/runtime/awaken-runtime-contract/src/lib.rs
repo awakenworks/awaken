@@ -7,16 +7,15 @@ pub mod capability;
 pub mod capture;
 pub mod catalog;
 pub mod control;
-pub mod pause;
 pub mod data_subject;
 pub mod execution;
 pub mod live_inbox;
 pub mod llm;
 pub mod metrics;
 pub mod model_access;
+pub mod pause;
 pub mod permission;
 pub mod plugin;
-pub mod plugin_config;
 pub mod resilience;
 pub mod resolved;
 pub mod resolver;
@@ -29,11 +28,10 @@ pub mod tool;
 
 pub use activation::RunActivation;
 pub use agent_resolver::{AgentError, AgentRequest, AgentResolver, AgentStep};
+pub use boundary::{BoundaryOutcome, evaluate_boundary};
 pub use capture::{CaptureDecision, ContentCapture, ContentKind, ContentRedactor, NoopRedactor};
 pub use catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
-pub use boundary::{BoundaryOutcome, evaluate_boundary};
 pub use control::LiveRunControl;
-pub use pause::PauseSignal;
 pub use data_subject::{
     CaptureSink, ContentEraser, DataSubjectId, DataSubjectResolver, ErasureReceipt, NullResolver,
     Purpose,
@@ -41,6 +39,7 @@ pub use data_subject::{
 pub use execution::RunExecutor;
 pub use live_inbox::{LiveInbox, LiveInboxMessage, LiveInboxMessageId};
 pub use llm::{ChatRequest, ChatResponse, LlmExecutor};
+pub use pause::PauseSignal;
 pub use permission::{GateOutcome, PermissionDecision, PermissionPolicy, ToolGateHook};
 pub use plugin::{
     CapabilityBound, Contributions, PhaseHook, PhaseHookPoint, Plugin, PluginManifest,

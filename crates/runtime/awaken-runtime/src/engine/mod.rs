@@ -36,7 +36,7 @@ use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
 use awaken_runtime_contract::plugin::{
     PhaseContext, PhaseHookPoint, ResolvedExecutionEnv, RunEndContext, RunEndDecision,
 };
-use awaken_runtime_contract::resolved::{ResolvedRun, ToolPresentation};
+use awaken_runtime_contract::resolved::{CatalogFingerprint, ResolvedRun, ToolPresentation};
 use awaken_runtime_contract::resolver::{self, RunResolver};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resume};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -191,8 +191,8 @@ pub(crate) async fn perform_scheduled_action(
         correlation_id: ticket.correlation_id,
         run_id: ticket.run_id,
         thread_id: ticket.thread_id,
-        snapshot_id: ticket.snapshot_id,
-        catalog_fingerprint: ticket.catalog_fingerprint,
+        snapshot_id: ExecutableAgentSnapshotId(ticket.snapshot_id),
+        catalog_fingerprint: CatalogFingerprint(ticket.catalog_fingerprint),
         result: ResumeResult::Decision {
             allow: true,
             note: None,

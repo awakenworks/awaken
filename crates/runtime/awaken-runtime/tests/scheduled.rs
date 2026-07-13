@@ -382,8 +382,10 @@ async fn a_resume_with_a_wrong_fingerprint_for_a_scheduled_action_is_rejected() 
         correlation_id: "sched-1".to_string(),
         run_id: RunId("run-1".to_string()),
         thread_id: ThreadId("thread-1".to_string()),
-        snapshot_id: SNAP.to_string(),
-        catalog_fingerprint: "wrong-fingerprint".to_string(),
+        snapshot_id: awaken_runtime_contract::ExecutableAgentSnapshotId(SNAP.to_string()),
+        catalog_fingerprint: awaken_runtime_contract::CatalogFingerprint(
+            "wrong-fingerprint".to_string(),
+        ),
         result: ResumeResult::Decision {
             allow: true,
             note: None,

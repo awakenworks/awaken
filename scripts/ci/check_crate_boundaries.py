@@ -253,6 +253,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-agent-contract",
         "serde",
         "serde_json",
+        "sha2",
         "thiserror",
         "async-trait",
         "tokio",

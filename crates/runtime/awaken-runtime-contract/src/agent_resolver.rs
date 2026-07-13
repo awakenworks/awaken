@@ -56,7 +56,10 @@ pub trait AgentResolver: Send + Sync {
     /// never hard-codes a concrete tool id.
     fn tool_id(&self) -> &str;
 
-    /// Run a delegation turn for `request.agent_id`.
+    /// Run one delegation turn. The target agent and input live inside
+    /// `request.arguments` (the raw delegation tool-call payload): the resolver
+    /// owns that tool's schema and reads them out, so the kernel stays agnostic of
+    /// the delegate arg shape.
     async fn run(&self, request: AgentRequest) -> Result<AgentStep, AgentError>;
 
     /// Resume a parked delegation (from a prior [`AgentStep::Parked`] `handle`) with
