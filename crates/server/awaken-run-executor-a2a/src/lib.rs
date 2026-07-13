@@ -167,6 +167,7 @@ async fn finish(
             messages,
             phase.clone(),
             None,
+            Vec::new(),
         )
         .await
         .map_err(|e| Error::Commit(e.to_string()))?;

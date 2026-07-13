@@ -368,6 +368,53 @@ async fn a_pause_commits_in_flight_steer_before_parking() {
 }
 
 #[tokio::test]
+async fn a_usage_event_is_committed_as_thread_state() {
+    // A Usage event projects onto the neutral `__usage` `ThreadUsage` thread state,
+    // attributed to the bound model — the same committed truth a native run writes,
+    // so a session's ACP usage is readable identically.
+    use awaken_agent_contract::agent::state::Action;
+    use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, ThreadUsage, TokenUsage};
+
+    let e = exec(vec![
+        r#"{"type":"message","text":"hi"}"#.into(),
+        r#"{"type":"usage","prompt_tokens":10,"completion_tokens":20,"cache_read_tokens":5}"#
+            .into(),
+        r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
+    ]);
+    let coord = Arc::new(RecordingCoordinator::default());
+    e.execute(
+        activation(),
+        RuntimeRunContext::new().with_commit(coord.clone()),
+    )
+    .await
+    .unwrap();
+
+    let commits = coord.commits.lock().unwrap();
+    assert_eq!(commits.len(), 1);
+    assert_eq!(
+        commits[0].state.len(),
+        1,
+        "usage committed as one state command"
+    );
+    let cmd = &commits[0].state[0];
+    assert_eq!(cmd.key.0, THREAD_USAGE_STATE_KEY);
+    let Action::Set(value) = &cmd.action else {
+        panic!("usage is a Set command");
+    };
+    let tally: ThreadUsage = serde_json::from_value(value.clone()).unwrap();
+    // The fixture activation binds model_ref "model".
+    assert_eq!(
+        tally.by_model["model"],
+        TokenUsage {
+            prompt_tokens: 10,
+            completion_tokens: 20,
+            cache_read_tokens: 5,
+            cache_creation_tokens: 0,
+        }
+    );
+}
+
+#[tokio::test]
 async fn neutral_permission_resolver_projects_the_policy_decision() {
     // The ACP permission port is decided by the single neutral `PermissionPolicy`:
     // Allow→Allow, Deny→Deny, and Ask fails safe to Deny (no synchronous HITL over

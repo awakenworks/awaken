@@ -121,6 +121,19 @@ pub enum AgentEvent {
         #[serde(default)]
         is_error: bool,
     },
+    /// The turn's token usage, when the agent reported it (`unstable_session_usage`).
+    /// Carries plain counts so this low wire crate needs no runtime-contract
+    /// dependency; the executor projects it onto the neutral committed `ThreadUsage`.
+    Usage {
+        #[serde(default)]
+        prompt_tokens: u64,
+        #[serde(default)]
+        completion_tokens: u64,
+        #[serde(default)]
+        cache_read_tokens: u64,
+        #[serde(default)]
+        cache_creation_tokens: u64,
+    },
     /// The turn ended with a reason.
     TurnEnd { reason: TerminationReason },
 }

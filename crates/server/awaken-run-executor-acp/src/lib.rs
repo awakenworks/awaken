@@ -21,6 +21,7 @@ use awaken_agent_channel::AgentChannel;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::run::{EndCause, Failure, Phase};
+use awaken_agent_contract::agent::state::{Command as StateCommand, MergePolicy, Scope};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::{WaitingReason, WaitingTicket};
 use awaken_protocol_acp::{
@@ -36,6 +37,7 @@ use awaken_provisioning_contract::ProcessHandle;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::boundary::{BoundaryOutcome, evaluate_boundary};
 use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
+use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, ThreadUsage, TokenUsage};
 use awaken_runtime_contract::permission::{
     PermissionContext, PermissionDecision, PermissionPolicy,
 };
@@ -256,6 +258,12 @@ impl RunExecutor for AcpRunExecutor {
         // steer/redirect reaches external-CLI runs. Messages accumulate and commit
         // once at the terminal phase, matching the executor's single-commit model.
         let run_id = activation.run_id.clone();
+        let model_ref = activation
+            .snapshot
+            .resolved_spec
+            .model_binding
+            .model_ref
+            .clone();
         let mut prompt = prompt_of(&activation.input);
         let mut committed: Vec<Message> = Vec::new();
         // The ACP session id, carried across the per-turn relaunches so a resumed
@@ -263,6 +271,9 @@ impl RunExecutor for AcpRunExecutor {
         // fresh — context survives the relaunch (the newline stand-in leaves it
         // `None`, so it always starts fresh, unchanged from before).
         let mut acp_session_id: Option<String> = None;
+        // The run's token usage, accumulated across turns and committed as thread
+        // state at the terminal phase (matching the native engine's `__usage`).
+        let mut run_usage = TokenUsage::default();
 
         loop {
             let mut appender = CollectingAppender::default();
@@ -291,8 +302,10 @@ impl RunExecutor for AcpRunExecutor {
                 launch_sink,
             )
             .await;
-            // Keep the negotiated session id for the next relaunched turn.
+            // Keep the negotiated session id for the next relaunched turn, and fold
+            // this turn's token usage into the run total.
             acp_session_id = config.session_id.take();
+            run_usage = run_usage.saturating_add(appender.usage);
 
             let reason = match outcome {
                 Ok(reason) => reason,
@@ -315,6 +328,7 @@ impl RunExecutor for AcpRunExecutor {
                         committed,
                         &phase,
                         None,
+                        usage_state(&run_usage, &model_ref),
                     )
                     .await?;
                     return Ok(phase);
@@ -342,6 +356,7 @@ impl RunExecutor for AcpRunExecutor {
                                 committed,
                                 &phase,
                                 None,
+                                usage_state(&run_usage, &model_ref),
                             )
                             .await?;
                             return Ok(phase);
@@ -363,6 +378,7 @@ impl RunExecutor for AcpRunExecutor {
                         committed,
                         &phase,
                         Some(ticket),
+                        usage_state(&run_usage, &model_ref),
                     )
                     .await?;
                     return Ok(phase);
@@ -377,6 +393,7 @@ impl RunExecutor for AcpRunExecutor {
                         committed,
                         &phase,
                         None,
+                        usage_state(&run_usage, &model_ref),
                     )
                     .await?;
                     return Ok(phase);
@@ -413,6 +430,7 @@ async fn finish_failure(
         messages,
         &phase,
         None,
+        Vec::new(),
     )
     .await?;
     Ok(phase)
@@ -420,7 +438,7 @@ async fn finish_failure(
 
 /// Commit the turn's messages + terminal phase through the one boundary (G13). A
 /// `Phase::Waiting` park carries its resumable [`WaitingTicket`]; a terminus passes
-/// `None`.
+/// `None`. `state` carries the run's accumulated token usage (empty when none).
 async fn commit(
     context: &RuntimeRunContext,
     thread_id: &ThreadId,
@@ -428,6 +446,7 @@ async fn commit(
     messages: Vec<Message>,
     phase: &Phase,
     waiting: Option<WaitingTicket>,
+    state: Vec<StateCommand>,
 ) -> Result<()> {
     if let Some(coordinator) = &context.commit {
         awaken_agent_contract::commit::commit_run(
@@ -437,11 +456,30 @@ async fn commit(
             messages,
             phase.clone(),
             waiting,
+            state,
         )
         .await
         .map_err(|e| Error::Commit(e.to_string()))?;
     }
     Ok(())
+}
+
+/// The committed thread-state command recording `usage` under the bound model —
+/// the same `__usage` `ThreadUsage` tally the native engine writes, so a session's
+/// ACP usage is readable from thread state exactly like a native run's. Empty when
+/// no usage was reported (nothing to record).
+fn usage_state(usage: &TokenUsage, model_ref: &str) -> Vec<StateCommand> {
+    if *usage == TokenUsage::default() {
+        return Vec::new();
+    }
+    let mut tally = ThreadUsage::default();
+    tally.record(model_ref, *usage);
+    vec![StateCommand::set(
+        Scope::Thread,
+        MergePolicy::Commutative,
+        THREAD_USAGE_STATE_KEY,
+        serde_json::to_value(tally).expect("thread usage serializes"),
+    )]
 }
 
 /// A no-tool waiting ticket for an operator pause (ADR-0054): the ACP run parks
@@ -509,6 +547,9 @@ impl PermissionResolver for NeutralPermissionResolver {
 struct CollectingAppender {
     last: u64,
     messages: Vec<Message>,
+    /// The turn's token usage, accumulated from any `Usage` events (kept out of the
+    /// committed messages — it lands as thread state, matching the native engine).
+    usage: TokenUsage,
 }
 
 #[async_trait]
@@ -561,6 +602,19 @@ impl RunFactAppender for CollectingAppender {
                         tool_use_id(id, seq),
                         vec![ContentBlock::text(body)],
                     )],
+                });
+            }
+            AgentEvent::Usage {
+                prompt_tokens,
+                completion_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
+            } => {
+                self.usage = self.usage.saturating_add(TokenUsage {
+                    prompt_tokens: *prompt_tokens,
+                    completion_tokens: *completion_tokens,
+                    cache_read_tokens: *cache_read_tokens,
+                    cache_creation_tokens: *cache_creation_tokens,
                 });
             }
             AgentEvent::TurnEnd { .. } => {}

@@ -275,6 +275,24 @@ pub async fn run_turn_with_config(
     .await?;
     let prompt_result = pump_to_response(&mut wire, ID_PROMPT, sink, &mut seq, resolver).await?;
     let response: PromptResponse = parse(prompt_result)?;
+
+    // Project the turn's token usage (when reported) so the executor records it as
+    // committed thread usage, before the terminal `TurnEnd`. `real-acp` enables the
+    // SDK's `unstable_session_usage`, so this field is always present here.
+    if let Some(usage) = response.usage {
+        seq += 1;
+        sink.append(
+            seq,
+            &AgentEvent::Usage {
+                prompt_tokens: usage.input_tokens,
+                completion_tokens: usage.output_tokens,
+                cache_read_tokens: usage.cached_read_tokens.unwrap_or(0),
+                cache_creation_tokens: usage.cached_write_tokens.unwrap_or(0),
+            },
+        )
+        .await?;
+    }
+
     let reason = termination_from_stop_reason(response.stop_reason);
     seq += 1;
     sink.append(seq, &AgentEvent::TurnEnd { reason }).await?;
@@ -913,6 +931,55 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, AcpError::UnsupportedSessionMode(m) if m == "plan"));
+        agent.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_turn_usage_is_projected_as_a_usage_event() {
+        // A prompt response carrying `usage` (unstable_session_usage) projects a
+        // neutral Usage event (input→prompt, output→completion, caches mapped).
+        let (mut ours, theirs) = channel();
+        let agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            io.read().await;
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#,
+            )
+            .await;
+            io.read().await;
+            io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1"}}"#)
+                .await;
+            io.read().await; // prompt
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn","usage":{"totalTokens":30,"inputTokens":10,"outputTokens":20,"cachedReadTokens":5,"cachedWriteTokens":2}}}"#,
+            )
+            .await;
+        });
+
+        let mut sink = RecordingSink::default();
+        let mut config = TurnConfig::new(&AllowAll);
+        run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
+            .await
+            .unwrap();
+        let usage = sink
+            .events
+            .iter()
+            .find_map(|(_, e)| match e {
+                AgentEvent::Usage {
+                    prompt_tokens,
+                    completion_tokens,
+                    cache_read_tokens,
+                    cache_creation_tokens,
+                } => Some((
+                    *prompt_tokens,
+                    *completion_tokens,
+                    *cache_read_tokens,
+                    *cache_creation_tokens,
+                )),
+                _ => None,
+            })
+            .expect("a usage event was projected");
+        assert_eq!(usage, (10, 20, 5, 2));
         agent.await.unwrap();
     }
 
