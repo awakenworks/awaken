@@ -144,6 +144,19 @@ pub trait ScopedConfigRegistry: Send + Sync {
         scope: &ScopeId,
         fingerprint: &str,
     ) -> Result<Option<StoredPublication>, ConfigStoreError>;
+
+    /// Every **published** publication owned by `scope`, oldest first (ascending by
+    /// insertion order), so a warm-load that inserts into an agent-keyed map keeps
+    /// the latest publication per agent. Defaults to empty: only a durable store has
+    /// anything to reload across a process lifetime; the in-memory store rebuilds
+    /// fresh and does not override this.
+    async fn list_published_scoped(
+        &self,
+        scope: &ScopeId,
+    ) -> Result<Vec<StoredPublication>, ConfigStoreError> {
+        let _ = scope;
+        Ok(Vec::new())
+    }
 }
 
 /// The decorator that makes tenancy an edge aspect for the config plane: it

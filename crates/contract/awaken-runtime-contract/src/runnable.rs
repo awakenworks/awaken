@@ -55,6 +55,14 @@ impl RunnableConfig {
     pub fn into_parts(self) -> (ExecutableAgentSnapshot, RuntimeCatalogInstall) {
         (self.snapshot, self.install)
     }
+
+    /// Rebuild a config from parts a store persisted with [`into_parts`] — the
+    /// inverse used when a process warm-loads a published config back from the
+    /// durable store (the two parts carry the same fingerprint by construction, so
+    /// no re-stamping is needed).
+    pub fn from_parts(snapshot: ExecutableAgentSnapshot, install: RuntimeCatalogInstall) -> Self {
+        Self { snapshot, install }
+    }
 }
 
 /// Fluent builder for [`RunnableConfig`]. `build` stamps one fingerprint into the
