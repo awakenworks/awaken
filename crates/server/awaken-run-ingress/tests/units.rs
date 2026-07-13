@@ -49,9 +49,10 @@ async fn the_admitting_traceparent_survives_the_enqueue_claim_queue_hop() {
     let traceparent = "00-aa11bb22cc33dd44ee55ff6677889900-1122334455667788-01";
 
     store
-        .enqueue(RunExecutionRequest::new(activation("traced")).with_traceparent(Some(
-            traceparent.to_string(),
-        )))
+        .enqueue(
+            RunExecutionRequest::new(activation("traced"))
+                .with_traceparent(Some(traceparent.to_string())),
+        )
         .await
         .unwrap();
     // A second run with no captured context — proves the queue does not fabricate one.

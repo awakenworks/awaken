@@ -94,7 +94,11 @@ async fn a_terminal_drive_meters_one_claim_one_drive_and_one_done_settle() {
         Some((_, Phase::Ended(EndCause::NaturalEnd)))
     ));
 
-    assert_eq!(metrics.claimed.load(Ordering::SeqCst), 1, "one claim metered");
+    assert_eq!(
+        metrics.claimed.load(Ordering::SeqCst),
+        1,
+        "one claim metered"
+    );
     assert_eq!(
         metrics.drives.load(Ordering::SeqCst),
         1,
@@ -127,7 +131,11 @@ async fn a_parking_drive_meters_one_claim_one_drive_and_one_parked_settle() {
     let processed = worker.tick(0).await.unwrap();
     assert!(matches!(processed, Some((_, Phase::Waiting))));
 
-    assert_eq!(metrics.claimed.load(Ordering::SeqCst), 1, "one claim metered");
+    assert_eq!(
+        metrics.claimed.load(Ordering::SeqCst),
+        1,
+        "one claim metered"
+    );
     assert_eq!(
         metrics.drives.load(Ordering::SeqCst),
         1,
