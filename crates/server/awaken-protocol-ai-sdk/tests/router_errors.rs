@@ -14,7 +14,7 @@ struct NoParkRuntime;
 
 #[async_trait::async_trait]
 impl ProtocolRuntime for NoParkRuntime {
-    async fn run_turn(
+    async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,
@@ -130,7 +130,7 @@ struct ParkedRuntime;
 
 #[async_trait::async_trait]
 impl ProtocolRuntime for ParkedRuntime {
-    async fn run_turn(
+    async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,
@@ -212,7 +212,7 @@ struct PanickingRuntime;
 
 #[async_trait::async_trait]
 impl ProtocolRuntime for PanickingRuntime {
-    async fn run_turn(
+    async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,

@@ -23,7 +23,7 @@ struct ParkedRuntime {
 
 #[async_trait]
 impl ProtocolRuntime for ParkedRuntime {
-    async fn run_turn(
+    async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,
