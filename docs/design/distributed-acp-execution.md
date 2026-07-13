@@ -246,19 +246,23 @@ Order: scale workers first (cheapest) → swap store (single-cell write bottlene
 | have | co-located pool + HTTP ops surface | `SharedHost::ensure_dispatch_pool`, `durable_ops_router` |
 | have | single-writer commit, ACP subprocess launch | commit coordinator, `subprocess.rs` (env_clear + passthrough) |
 | **done · read side** | **server→client live streaming across all three frontends** — managed live previews (`event_start`/`event_delta`), ai-sdk/ag-ui already streaming. The in-process per-session broadcast is the **read-side prototype** of the cross-node event sink (same multiplex/fan-out shape) | `awaken-protocol-managed` (`preview.rs`, live SSE), the `run_streaming` seam |
-| **build · single node** | **SQLite `dispatch.db`: WAL + busy_timeout** — multi-worker-process safety (`awaken-run-ingress` sqlite store) | |
-| **build · single node** | **worker-only run mode** — start the pool without HTTP; reuse `SharedHost` | |
-| **design-first · cross-node** | **the Fact contract** — a neutral published-language type carrying identity `(thread_id, run_id, seq)` + `AgentEvent` + its delivery contract (per-thread monotonic `seq`, at-least-once with idempotent commit keyed on `(thread_id, seq)`), defined *before* any transport | a kernel type beside `AgentEvent` |
-| **build · cross-node · slice 1** | **ONE thin end-to-end path**: one worker → HTTP dispatch transport → run → push Facts → server ingest + commit + fan-out. Everything else (capability, egress policy, HA) stubbed | `DispatchQueue` HTTP impl + facts ingest on `durable_ops_router`, carrying the Fact type into the read-side broadcast |
-| **build · cross-node · later** | **capability as a dispatch-context attribute** — "can run ACP" is a `DispatchQueue`/node property claim/selection reads, **not** a floating service; **egress local direct-out** with in-place policy | |
+| **design-first · step 1** | **the Fact contract** — a neutral published-language type carrying identity `(thread_id, run_id, seq)` + `AgentEvent` + its delivery contract (per-thread monotonic `seq`, at-least-once with idempotent commit keyed on `(thread_id, seq)`), defined *before* any transport | a kernel type beside `AgentEvent` |
+| **build · slice 1** | **ONE thin end-to-end path**: one worker → **HTTP dispatch transport** (claim/settle over HTTP) → run → push Facts → server ingest + commit + fan-out. **Workers are db-less** — they never open sqlite; the server stays the single writer. Everything else (capability, egress policy, HA) stubbed | `DispatchQueue` HTTP impl + facts ingest on `durable_ops_router`, carrying the Fact type into the read-side broadcast |
+| **build · worker-only mode** | a process that runs the execution pool **off the HTTP dispatch transport** (not the co-located in-process pool), pushing facts back — the stateless worker of the cell | reuse `SharedHost`'s pool over the transport from slice 1 |
+| **build · later** | **capability as a dispatch-context attribute** — "can run ACP" is a `DispatchQueue`/node property claim/selection reads, **not** a floating service; **egress local direct-out** with in-place policy | |
 | **harden** | at-least-once idempotency / fencing-token (a known gap), settle-with-facts atomicity, server single-writer HA | |
+| **optional · not on the path** | **`journal_mode=WAL` + `busy_timeout`, set once on the shared db** — a within-process read/write-concurrency + robustness tweak, *not* a correctness requirement: no target opens the sqlite file from multiple processes (merged = one process/one shared db; split = db-less workers over HTTP) | at the shared connection open, benefits every `with_prefix(NS)` schema |
 | **Phase 2** | shard-router + cell membership + migration/failover — build only when a cell tops out | |
 
 ## Sequencing, open design, and one recorded coupling
 
-**Do the near-term two first** — WAL + busy_timeout, then worker-only mode. They
-are clean, testable, and unblock single-host multi-worker-process. Then, *before*
-any cross-node code, three disciplines keep the cross-node work simple and DDD-clean:
+**Start with the Fact contract, then a thin transport slice.** The cell's worker
+is stateless and **db-less** — it never opens sqlite; it claims runs over an HTTP
+dispatch transport and pushes facts back, and the server stays the single writer.
+So there is **no "make sqlite multi-process safe" step**: neither target opens the
+file from multiple processes (merged = one process over one shared db; split =
+db-less workers over HTTP). WAL is an optional shared-db tweak, not a gate (see
+*Storage* below). Three disciplines keep the cross-node work simple and DDD-clean:
 
 **Pin the Fact contract before the transport.** The cross-node write path moves
 exactly one thing: an edge-projected fact. Model it as **published language**, not
@@ -280,6 +284,30 @@ type, end-to-end (claim → run → push facts → commit → fan-out), everythi
 stubbed. Let capability, egress policy, fencing, and HA emerge from that slice's
 real constraints rather than being committed up front — the cross-node bucket is
 otherwise a big-bang list, which is the opposite of simple design.
+
+### Storage — one shared db, prefix-isolated schemas
+
+The merged (standalone / single-node) deployment runs all services in **one
+process over one shared sqlite database**, with each service's tables namespaced
+by the scoped-migration `with_prefix(NS)` bundle — `runtime_*` for the dispatch
+queue, `managed_*` for sessions, and so on. (Today the bin still opens separate
+`.db` files; the per-bundle prefix is exactly what makes consolidating them into
+one file mechanical — the prefix is redundant only while the files are split.)
+
+Two consequences:
+
+- **WAL/busy_timeout is a database-level, set-once concern**, applied at the one
+  shared-connection open — not a per-crate change and not on the critical path. It
+  buys within-process read/write concurrency (readers don't block the single
+  writer on a now-busier shared db) plus robustness against any external opener; it
+  is not required for correctness because nothing opens the file from multiple
+  processes.
+- **This is deliberate Shared-Database integration, kept honest by the prefixes.**
+  Each bounded context owns its `NS` prefix, with no cross-prefix foreign keys, so
+  "one physical db, N logically-isolated schemas". When a context needs a
+  multi-writer or HA store, it **extracts cleanly along its prefix into its own
+  Postgres** — which is exactly the Phase-3 "swap a cell's store" story. The shared
+  db is a pragmatic co-location, not a tangle.
 
 ### Recorded coupling (read side)
 
