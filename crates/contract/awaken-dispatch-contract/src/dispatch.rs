@@ -53,7 +53,7 @@ pub struct PendingInput {
 
 /// A lease over one claimed dispatch: the single owner allowed to execute this
 /// run until `expires_ms`. An expired lease is reclaimable (recovery).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lease {
     pub run_id: RunId,
     pub owner: String,
@@ -62,7 +62,7 @@ pub struct Lease {
 
 /// A claimed, ready-to-run dispatch and the run's undelivered pending input.
 /// `pending` is empty for a fresh run and non-empty for a wake.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Claimed {
     pub request: RunExecutionRequest,
     pub lease: Lease,
@@ -80,7 +80,7 @@ pub struct Claimed {
 }
 
 /// How a claimed attempt resolved. Settled atomically with releasing the lease.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DispatchOutcome {
     /// The run reached a terminus; the dispatch is finished and removed.
     Done,
@@ -426,5 +426,28 @@ mod tests {
         v.as_object_mut().expect("object").remove("available_at_ms");
         let back: PendingInput = serde_json::from_value(v).expect("legacy row loads");
         assert_eq!(back.available_at_ms, None);
+    }
+
+    /// The claim/settle wire payloads round-trip through JSON — the lease a worker
+    /// holds and the outcome it settles with must survive the HTTP dispatch
+    /// transport (a cross-node worker claims/settles over the wire, not the DB).
+    #[test]
+    fn lease_and_outcome_round_trip_through_serde() {
+        let lease = Lease {
+            run_id: RunId("run-1".into()),
+            owner: "host-7-42".into(),
+            expires_ms: 9_999,
+        };
+        let back: Lease =
+            serde_json::from_str(&serde_json::to_string(&lease).expect("serializes"))
+                .expect("deserializes");
+        assert_eq!(back, lease);
+
+        for outcome in [DispatchOutcome::Done, DispatchOutcome::Parked] {
+            let back: DispatchOutcome =
+                serde_json::from_str(&serde_json::to_string(&outcome).expect("serializes"))
+                    .expect("deserializes");
+            assert_eq!(back, outcome);
+        }
     }
 }
