@@ -400,4 +400,108 @@ mod tests {
                 .contains("remote agent error")
         );
     }
+
+    /// A real A2A server that records the inbound request (uri + body) and answers a
+    /// completed task; returns the backend ref and the shared capture slot.
+    async fn serve_capturing() -> (String, Arc<Mutex<Option<(String, String)>>>) {
+        const REPLY: &str = r#"{"task":{"id":"t-1","contextId":"c","status":{"state":"TASK_STATE_COMPLETED","message":{"messageId":"a","role":"ROLE_AGENT","parts":[{"text":"ok"}]}}}}"#;
+        let cap: Arc<Mutex<Option<(String, String)>>> = Arc::new(Mutex::new(None));
+        let slot = cap.clone();
+        let app = axum::Router::new().fallback(move |req: axum::extract::Request| {
+            let slot = slot.clone();
+            async move {
+                let uri = req.uri().to_string();
+                let bytes = axum::body::to_bytes(req.into_body(), 1 << 20)
+                    .await
+                    .unwrap();
+                *slot.lock().unwrap() = Some((uri, String::from_utf8_lossy(&bytes).into_owned()));
+                REPLY
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("a2a:http://{addr}"), cap)
+    }
+
+    /// The outbound `message:send` carries the A2A correlation fields the remote
+    /// agent keys on — a wrong contextId/messageId silently breaks real agents while
+    /// a body-ignoring server test still passes, so assert the real serialized wire.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_outbound_message_send_carries_the_correlation_fields() {
+        let (backend, cap) = serve_capturing().await;
+        let rec = Arc::new(Rec::default());
+        A2aRunExecutor::over_http()
+            .execute(
+                activation(&backend),
+                RuntimeRunContext::new().with_commit(rec.clone()),
+            )
+            .await
+            .unwrap();
+
+        let (uri, body) = cap.lock().unwrap().clone().expect("a request was captured");
+        assert!(uri.ends_with("/v1/a2a/message:send"), "path: {uri}");
+        assert!(
+            body.contains(r#""contextId":"t""#),
+            "contextId = thread id: {body}"
+        );
+        assert!(
+            body.contains(r#""messageId":"a2a-msg-r""#),
+            "messageId = a2a-msg-<run_id>: {body}"
+        );
+        assert!(body.contains(r#""role":"ROLE_USER""#), "user role: {body}");
+        assert!(body.contains(r#""text":"go""#), "the prompt text: {body}");
+        assert!(
+            body.contains(r#""agentId":null"#),
+            "agentId is null: {body}"
+        );
+    }
+
+    /// A real A2A server that answers every request with a fixed HTTP status + body.
+    async fn serve_status(status: u16, body: &'static str) -> String {
+        let code = axum::http::StatusCode::from_u16(status).unwrap();
+        let app = axum::Router::new().fallback(move || async move { (code, body) });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("a2a:http://{addr}")
+    }
+
+    /// A non-2xx HTTP status from the remote is classified `a2a_error` (not a panic),
+    /// mirroring the connection-refused test but for a reachable-but-erroring server.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_http_500_ends_with_a2a_error() {
+        let backend = serve_status(500, "upstream boom").await;
+        let rec = Arc::new(Rec::default());
+        let phase = A2aRunExecutor::over_http()
+            .execute(
+                activation(&backend),
+                RuntimeRunContext::new().with_commit(rec.clone()),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            phase,
+            Phase::Ended(EndCause::Error(Failure::Inference { ref code, .. })) if code == "a2a_error"
+        ));
+    }
+
+    /// A 2xx whose body is not a valid A2A task fails the parse and is classified
+    /// `a2a_error` — a garbage remote reply fails closed rather than panicking.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_malformed_2xx_body_ends_with_a2a_error() {
+        let backend = serve("this is not a2a json at all").await;
+        let rec = Arc::new(Rec::default());
+        let phase = A2aRunExecutor::over_http()
+            .execute(
+                activation(&backend),
+                RuntimeRunContext::new().with_commit(rec.clone()),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            phase,
+            Phase::Ended(EndCause::Error(Failure::Inference { ref code, .. })) if code == "a2a_error"
+        ));
+    }
 }
