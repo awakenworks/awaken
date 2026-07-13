@@ -12,6 +12,9 @@ license.workspace = true
 # store-unaware (it only sees SkillFile data via its SkillSource port).
 
 [dependencies]
+# Port-only contract: the SkillStore trait + SkillStoreError live here; this crate
+# implements them and re-exports for backward-compatible paths.
+awaken-resource-contract.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "fs"] }

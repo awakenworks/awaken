@@ -103,6 +103,11 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # names no iam/store/wire — the `ScopeId → ScopeRef` ACL lives in the PDP
     # adapter, never here.
     "awaken-tenancy": {"serde"},
+    # Resources-plane ports (FileStore / MemoryBlobStore / MemoryFs / SkillStore) +
+    # the value/error types in their signatures — mirrors awaken-provisioning-contract.
+    # A foundation leaf: no backend, SQL driver, or filesystem, so an adapter reusing
+    # these stores depends on the traits alone. The backends re-export it.
+    "awaken-resource-contract": {"async-trait", "thiserror", "serde"},
     # Cross-cutting telemetry infrastructure (NOT an `ext-*`): the process-global
     # tracing subscriber + OTLP / AWAKEN_TRACE_FILE span export + W3C traceparent
     # propagator + the axum ingress span middleware. A foundation leaf consumed by
@@ -324,6 +329,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # (postgres/s3) are separate crates over the same trait. A leaf — names no
     # provider, runtime, or host-path type.
     "awaken-file-store": {
+        # The port-only contract this crate implements and re-exports (FileStore).
+        "awaken-resource-contract",
         "async-trait",
         "thiserror",
         "blake3",
@@ -348,6 +355,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # host backs memory durability with it while the runtime stays store-unaware. It
     # names no runtime/host/provider type; only the storage stack.
     "awaken-memory-store": {
+        # The port-only contract this crate implements and re-exports
+        # (MemoryBlobStore / MemoryFs + Memory/MemoryEntry/MemErr).
+        "awaken-resource-contract",
         "async-trait",
         "thiserror",
         "tokio",
@@ -384,6 +394,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # a scoped-migration bundle over sqlite (+ an optional postgres sibling); names no
     # runtime/host/ext type, so awaken-ext-skills stays store-unaware.
     "awaken-skill-store": {
+        # The port-only contract this crate implements and re-exports (SkillStore).
+        "awaken-resource-contract",
         "async-trait",
         "thiserror",
         "tokio",

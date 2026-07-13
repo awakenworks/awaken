@@ -31,6 +31,7 @@ license = "Apache-2.0"
 awaken-agent-contract = { path = "crates/contract/awaken-agent-contract" }
 awaken-runtime-contract = { path = "crates/runtime/awaken-runtime-contract" }
 awaken-tenancy = { path = "crates/contract/awaken-tenancy" }
+awaken-resource-contract = { path = "crates/contract/awaken-resource-contract" }
 awaken-observability = { path = "crates/runtime/awaken-observability" }
 awaken-memory-store = { path = "crates/resources/awaken-memory-store" }
 awaken-skill-store = { path = "crates/resources/awaken-skill-store" }

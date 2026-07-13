@@ -15,10 +15,9 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-/// A blob store failure.
-#[derive(Debug, thiserror::Error)]
-#[error("file store error: {0}")]
-pub struct FileStoreError(pub String);
+// The `FileStore` port + its error live in the port-only contract crate; this crate
+// implements them and re-exports so `awaken_file_store::FileStore` keeps resolving.
+pub use awaken_resource_contract::{FileStore, FileStoreError};
 
 fn e(x: impl ToString) -> FileStoreError {
     FileStoreError(x.to_string())
@@ -29,20 +28,6 @@ fn e(x: impl ToString) -> FileStoreError {
 #[must_use]
 pub fn content_id(bytes: &[u8]) -> String {
     blake3::hash(bytes).to_hex().to_string()
-}
-
-/// A content-addressed, immutable blob store. `put` returns the content id and is
-/// idempotent (equal bytes → same id → no-op if present, so retries are safe).
-#[async_trait]
-pub trait FileStore: Send + Sync {
-    /// Store `bytes`, returning the content id.
-    async fn put(&self, bytes: &[u8]) -> Result<String, FileStoreError>;
-    /// Fetch by id, `None` if absent.
-    async fn get(&self, id: &str) -> Result<Option<Vec<u8>>, FileStoreError>;
-    /// List all ids (unordered by contract; backends may sort).
-    async fn list(&self) -> Result<Vec<String>, FileStoreError>;
-    /// Delete by id; returns whether it existed. GC/admin only — not a mutation.
-    async fn delete(&self, id: &str) -> Result<bool, FileStoreError>;
 }
 
 /// Filesystem-backed store: one file per blob, named by its content id. `put` writes
