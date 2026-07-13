@@ -362,6 +362,130 @@ async fn a_workspace_mismatch_is_refused_fail_closed() {
     assert_eq!(s, StatusCode::FORBIDDEN);
 }
 
+/// A `workspace_user` (no `apikey.*` at all) cannot even READ the vault surface —
+/// the existing coverage proves this for `/v1/config/credentials`, but never for
+/// the account-level `/v1/vaults` front door.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_workspace_user_cannot_read_the_vault_surface() {
+    let dir = tempfile::tempdir().unwrap();
+    let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let token = iam
+        .mint_service_token(TokenSpec {
+            token_id: "tok_user_vault".into(),
+            service_id: "ci-user".into(),
+            workspace_id: BOOTSTRAP_WORKSPACE.into(),
+            role: "workspace_user".into(),
+            created_at: None,
+            expires_at: None,
+        })
+        .unwrap();
+    let (s, err) = call(&app, "GET", "/v1/vaults", Some(token.as_str()), None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+    assert_eq!(err["error"]["type"], json!("permission_error"));
+}
+
+/// A read-scoped token (`apikey.read`, no write) is denied on the vault *sub-resource*
+/// write routes, not just `POST /v1/vaults` — the scope check fires before any
+/// handler/not-found logic, so an id that does not exist still 403s (never 404).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_read_scoped_token_cannot_write_vault_sub_resources() {
+    let dir = tempfile::tempdir().unwrap();
+    let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let token = iam
+        .mint_service_token(TokenSpec {
+            token_id: "tok_ro_vault".into(),
+            service_id: "ci-ro".into(),
+            workspace_id: BOOTSTRAP_WORKSPACE.into(),
+            role: "workspace_restricted_developer".into(),
+            created_at: None,
+            expires_at: None,
+        })
+        .unwrap();
+    let t = Some(token.as_str());
+    for (method, uri) in [
+        ("DELETE", "/v1/vaults/vault_x"),
+        ("POST", "/v1/vaults/vault_x/archive"),
+        ("POST", "/v1/vaults/vault_x/credentials"),
+    ] {
+        let (s, err) = call(&app, method, uri, t, Some(json!({}))).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{method} {uri}: {err}");
+        assert_eq!(err["error"]["type"], json!("permission_error"));
+    }
+}
+
+/// The same read-scoped token cannot archive a config credential
+/// (`POST /v1/config/credentials/{id}/archive` maps to `apikey.write`) — an untested
+/// write sub-route.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_read_scoped_token_cannot_archive_a_credential() {
+    let dir = tempfile::tempdir().unwrap();
+    let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let token = iam
+        .mint_service_token(TokenSpec {
+            token_id: "tok_ro_cred".into(),
+            service_id: "ci-ro".into(),
+            workspace_id: BOOTSTRAP_WORKSPACE.into(),
+            role: "workspace_restricted_developer".into(),
+            created_at: None,
+            expires_at: None,
+        })
+        .unwrap();
+    let (s, err) = call(
+        &app,
+        "POST",
+        "/v1/config/credentials/cred_x/archive",
+        Some(token.as_str()),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+    assert_eq!(err["error"]["type"], json!("permission_error"));
+}
+
+/// The workspace-equality fence is symmetric and not special to the Global-bound
+/// bootstrap admin: a token minted into a *second* workspace reads its own tenant
+/// (200) but is fenced off another (403). The existing mismatch test only exercises
+/// the bootstrap token.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_workspace_bound_token_reads_its_own_tenant_but_not_another() {
+    let dir = tempfile::tempdir().unwrap();
+    let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let token = iam
+        .mint_service_token(TokenSpec {
+            token_id: "tok_ws_b".into(),
+            service_id: "ci-ws-b".into(),
+            workspace_id: "wrkspc_b".into(),
+            role: "workspace_admin".into(),
+            created_at: None,
+            expires_at: None,
+        })
+        .unwrap();
+    let t = Some(token.as_str());
+
+    // Its own workspace is admitted past the fence (an empty list is still a 200).
+    let (s, _) = call(
+        &app,
+        "GET",
+        "/v1/config/credentials?workspace_id=wrkspc_b",
+        t,
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // Another tenant's workspace is fenced — 403, fail closed.
+    let (s, err) = call(
+        &app,
+        "GET",
+        &format!("/v1/config/credentials?workspace_id={BOOTSTRAP_WORKSPACE}"),
+        t,
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+    assert_eq!(err["error"]["type"], json!("permission_error"));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn minted_tokens_survive_a_restart_over_the_same_directory() {
     let dir = tempfile::tempdir().unwrap();
