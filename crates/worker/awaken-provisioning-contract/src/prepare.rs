@@ -104,7 +104,7 @@ pub fn prepare_environment(
 mod tests {
     use super::*;
     use crate::sandbox::IsolationClass;
-    use crate::vocab::{EnvValue, MountLifetime, MountSource};
+    use crate::vocab::{EnvValue, EnvVar, EnvVisibility, MountLifetime, MountSource};
 
     fn caps(isolation: IsolationClass) -> SandboxCapabilities {
         SandboxCapabilities {
@@ -173,6 +173,35 @@ mod tests {
             prepare_environment(&spec(), &c),
             Err(PrepareError::ReadOnlyUnsupported("in".into()))
         );
+    }
+
+    #[test]
+    fn rejects_a_relative_outputs_path() {
+        let mut s = spec();
+        s.outputs_path = "relative/outputs".into();
+        assert_eq!(
+            prepare_environment(&s, &caps(IsolationClass::Namespace)),
+            Err(PrepareError::OutputsPathNotAbsolute)
+        );
+    }
+
+    #[test]
+    fn an_egress_only_secret_requires_substitution_support() {
+        let mut s = spec();
+        s.env = vec![EnvVar {
+            name: "API_KEY".into(),
+            value: EnvValue::Secret {
+                reference: "broker://k".into(),
+            },
+            visibility: EnvVisibility::EgressOnly,
+        }];
+        // The Namespace tier cannot substitute at egress → fail closed.
+        assert_eq!(
+            prepare_environment(&s, &caps(IsolationClass::Namespace)),
+            Err(PrepareError::EgressSecretUnsupported("API_KEY".into()))
+        );
+        // A Container tier advertises the capability → accepted.
+        assert!(prepare_environment(&s, &caps(IsolationClass::Container)).is_ok());
     }
 
     #[test]
