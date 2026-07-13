@@ -121,6 +121,19 @@ pub enum AgentEvent {
         #[serde(default)]
         is_error: bool,
     },
+    /// The turn's token usage, when the agent reported it (`unstable_session_usage`).
+    /// Carries plain counts so this low wire crate needs no runtime-contract
+    /// dependency; the executor projects it onto the neutral committed `ThreadUsage`.
+    Usage {
+        #[serde(default)]
+        prompt_tokens: u64,
+        #[serde(default)]
+        completion_tokens: u64,
+        #[serde(default)]
+        cache_read_tokens: u64,
+        #[serde(default)]
+        cache_creation_tokens: u64,
+    },
     /// The turn ended with a reason.
     TurnEnd { reason: TerminationReason },
 }
@@ -154,6 +167,80 @@ pub enum AppendError {
 pub trait RunFactAppender: Send {
     /// Commit one projected event at `seq` (strictly increasing per run).
     async fn append(&mut self, seq: u64, event: &AgentEvent) -> Result<(), AppendError>;
+}
+
+/// A neutral projection of one agent→client permission request: the tool the
+/// external CLI (its own brain) wants to run, surfaced when the agent asks the
+/// client to authorize it mid-turn (`session/request_permission`).
+#[derive(Debug, Clone)]
+pub struct PermissionAsk {
+    /// The tool's name/kind as the agent described it (best-effort; may be empty).
+    pub tool: String,
+    /// The ACP `tool_call_id` this decision authorizes.
+    pub call_id: String,
+    /// The tool's arguments (`rawInput`), or `Null` when the agent supplied none.
+    pub arguments: serde_json::Value,
+}
+
+/// The authorization verdict for one [`PermissionAsk`], projected back onto the
+/// agent's own offered option (allow/reject).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionVerdict {
+    Allow,
+    Deny,
+}
+
+/// Resolves an agent permission request. Injected like [`RunFactAppender`]: this
+/// low wire crate defines the narrow port; the executor supplies an adapter that
+/// bridges it to the single neutral `PermissionPolicy` authority (G21). This is a
+/// projection seam, **not** a parallel policy — the driver never decides, it asks.
+#[async_trait]
+pub trait PermissionResolver: Send + Sync {
+    async fn resolve(&self, ask: &PermissionAsk) -> PermissionVerdict;
+}
+
+/// The default resolver: allow. The sandbox is the enforcement boundary for an
+/// external CLI, so a host that wires no policy defaults permissive; the newline
+/// fixture wire has no permission concept and never consults it.
+pub struct AllowAll;
+
+#[async_trait]
+impl PermissionResolver for AllowAll {
+    async fn resolve(&self, _ask: &PermissionAsk) -> PermissionVerdict {
+        PermissionVerdict::Allow
+    }
+}
+
+/// The per-turn cross-cutting inputs the driver needs beyond the prompt, bundled
+/// so a turn threads as one value rather than a widening parameter list. The Acp
+/// codec reads/updates it across the handshake; the newline stand-in ignores all
+/// but nothing (it has no session/permission concept).
+pub struct TurnConfig<'a> {
+    /// Authorizes the agent's mid-turn tool requests (the neutral `PermissionPolicy`
+    /// behind an executor adapter).
+    pub resolver: &'a dyn PermissionResolver,
+    /// In: an ACP session id to resume via `session/load` (a relaunched CLI reloads
+    /// its own session, so context survives the per-turn relaunch). Out: the id the
+    /// turn used — `session/new`'s fresh id when none was given — so the caller can
+    /// resume it next turn. Left `None` by the newline stand-in.
+    pub session_id: Option<String>,
+    /// In: a session mode to pin via `session/set_mode` after the handshake (an
+    /// adapter-local datum — `None` leaves the agent's default). Validated
+    /// fail-closed against the modes the agent advertised for the session.
+    pub session_mode: Option<String>,
+}
+
+impl<'a> TurnConfig<'a> {
+    /// A config that only authorizes (no session resume, no mode pin) — the default
+    /// a plain `run_turn`/`supervise` builds for fixtures.
+    #[must_use]
+    pub fn new(resolver: &'a dyn PermissionResolver) -> Self {
+        Self {
+            resolver,
+            session_id: None,
+            session_mode: None,
+        }
+    }
 }
 
 /// Which stage of bringing an ACP agent online a lifecycle notification marks.
@@ -258,6 +345,10 @@ pub enum AcpError {
     /// The agent stream ended before emitting a `TurnEnd`.
     #[error("agent stream ended before turn end")]
     Truncated,
+    /// A requested session mode is not among those the agent advertised — pinned
+    /// fail-closed rather than silently ignored.
+    #[error("session mode not supported by the agent: {0}")]
+    UnsupportedSessionMode(String),
 }
 
 /// The bridge: drive one turn of an opaque agent over a duplex channel.
@@ -275,10 +366,29 @@ impl AcpBridge {
         codec: Codec,
         launch_sink: Option<LaunchSink<'_>>,
     ) -> Result<TerminationReason, AcpError> {
+        let mut config = TurnConfig::new(&AllowAll);
+        Self::run_turn_with_config(channel, prompt, sink, codec, &mut config, launch_sink).await
+    }
+
+    /// Drive one turn with the [`TurnConfig`] — authorizing the agent's mid-turn
+    /// permission requests and resuming/negotiating its ACP session (the Acp codec
+    /// only; the newline stand-in ignores it). The real ACP path wires the
+    /// executor's config; fixtures use [`run_turn`](Self::run_turn).
+    pub async fn run_turn_with_config(
+        channel: &mut dyn AgentChannel,
+        prompt: &str,
+        sink: &mut dyn RunFactAppender,
+        codec: Codec,
+        config: &mut TurnConfig<'_>,
+        launch_sink: Option<LaunchSink<'_>>,
+    ) -> Result<TerminationReason, AcpError> {
         match codec {
             Codec::Newline => Self::run_turn_newline(channel, prompt, sink, launch_sink).await,
             #[cfg(feature = "real-acp")]
-            Codec::Acp => crate::jsonrpc::run_turn(channel, prompt, sink, launch_sink).await,
+            Codec::Acp => {
+                crate::jsonrpc::run_turn_with_config(channel, prompt, sink, config, launch_sink)
+                    .await
+            }
         }
     }
 
@@ -379,6 +489,39 @@ impl Supervisor {
         codec: Codec,
         launch_sink: Option<LaunchSink<'_>>,
     ) -> Result<TerminationReason, AcpError> {
+        let mut config = TurnConfig::new(&AllowAll);
+        Self::supervise_with_config(
+            channel,
+            process,
+            prompt,
+            sink,
+            cancel,
+            injections,
+            policy,
+            codec,
+            &mut config,
+            launch_sink,
+        )
+        .await
+    }
+
+    /// [`supervise`](Self::supervise) with the [`TurnConfig`]: the executor wires
+    /// its neutral permission resolver and the ACP session to resume here, so an
+    /// external CLI's tool requests are decided by the single `PermissionPolicy`
+    /// and its session survives the per-turn relaunch.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn supervise_with_config(
+        channel: &mut dyn AgentChannel,
+        process: &dyn pc::ProcessHandle,
+        prompt: &str,
+        sink: &mut dyn RunFactAppender,
+        cancel: impl std::future::Future<Output = ()>,
+        injections: &mut tokio::sync::mpsc::Receiver<Injection>,
+        policy: SupervisePolicy,
+        codec: Codec,
+        config: &mut TurnConfig<'_>,
+        launch_sink: Option<LaunchSink<'_>>,
+    ) -> Result<TerminationReason, AcpError> {
         let deadline = async {
             match policy.turn_deadline {
                 Some(d) => tokio::time::sleep(d).await,
@@ -387,7 +530,7 @@ impl Supervisor {
         };
         tokio::select! {
             biased;
-            outcome = AcpBridge::run_turn(channel, prompt, sink, codec, launch_sink) => outcome,
+            outcome = AcpBridge::run_turn_with_config(channel, prompt, sink, codec, config, launch_sink) => outcome,
             Some(Injection::Interrupt) = injections.recv() => {
                 Self::reap(process, policy.reap_grace).await?;
                 Ok(TerminationReason::Cancelled)

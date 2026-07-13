@@ -21,10 +21,13 @@ use awaken_agent_channel::AgentChannel;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::run::{EndCause, Failure, Phase};
+use awaken_agent_contract::agent::state::{Command as StateCommand, MergePolicy, Scope};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::agent::waiting::{WaitingReason, WaitingTicket};
 use awaken_protocol_acp::{
-    AcpError, AcpFailure, AgentEvent, AppendError, Injection, LaunchSink, RawAcpError,
-    RunFactAppender, Stage, SupervisePolicy, Supervisor, TerminationReason, classify_error,
+    AcpError, AcpFailure, AgentEvent, AllowAll, AppendError, Injection, LaunchSink, PermissionAsk,
+    PermissionResolver, PermissionVerdict, RawAcpError, RunFactAppender, Stage, SupervisePolicy,
+    Supervisor, TerminationReason, TurnConfig, classify_error,
 };
 // Re-exported (not just `use`d) so a host composition root selects the wire and
 // observes agent bring-up without a direct dependency on the protocol crate. The
@@ -34,6 +37,10 @@ use awaken_provisioning_contract::ProcessHandle;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::boundary::{BoundaryOutcome, evaluate_boundary};
 use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
+use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, ThreadUsage, TokenUsage};
+use awaken_runtime_contract::permission::{
+    PermissionContext, PermissionDecision, PermissionPolicy,
+};
 use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
@@ -89,6 +96,14 @@ pub struct AcpRunExecutor {
     source: Arc<dyn AgentChannelSource>,
     policy: SupervisePolicy,
     observer: Option<Arc<dyn LaunchObserver>>,
+    /// Authorizes the external CLI's mid-turn tool requests. Defaults to allow (the
+    /// sandbox is the enforcement boundary); a host wires a neutral `PermissionPolicy`
+    /// via [`with_permission_policy`](Self::with_permission_policy) to apply org
+    /// policy / HITL uniformly across native and ACP runs.
+    permission: Arc<dyn PermissionResolver>,
+    /// The ACP session mode to pin (adapter-local; `None` leaves the agent's
+    /// default). Validated fail-closed against the agent's advertised modes.
+    session_mode: Option<String>,
 }
 
 impl AcpRunExecutor {
@@ -105,7 +120,28 @@ impl AcpRunExecutor {
             source,
             policy: SupervisePolicy::default(),
             observer: None,
+            permission: Arc::new(AllowAll),
+            session_mode: None,
         }
+    }
+
+    /// Authorize the external CLI's tool requests through the single neutral
+    /// [`PermissionPolicy`] (G21) — the same authority that governs native tools —
+    /// instead of the default allow. The CLI's `session/request_permission` is
+    /// projected onto this policy and its decision projected back onto the agent's
+    /// own allow/reject option.
+    #[must_use]
+    pub fn with_permission_policy(mut self, policy: Arc<dyn PermissionPolicy>) -> Self {
+        self.permission = Arc::new(NeutralPermissionResolver { policy });
+        self
+    }
+
+    /// Pin the ACP session mode (e.g. `plan`), applied via `session/set_mode` after
+    /// the handshake and validated fail-closed against the agent's advertised modes.
+    #[must_use]
+    pub fn with_session_mode(mut self, mode: impl Into<String>) -> Self {
+        self.session_mode = Some(mode.into());
+        self
     }
 
     /// Observe this executor's agent bring-up (install → launch → initialize →
@@ -222,8 +258,22 @@ impl RunExecutor for AcpRunExecutor {
         // steer/redirect reaches external-CLI runs. Messages accumulate and commit
         // once at the terminal phase, matching the executor's single-commit model.
         let run_id = activation.run_id.clone();
+        let model_ref = activation
+            .snapshot
+            .resolved_spec
+            .model_binding
+            .model_ref
+            .clone();
         let mut prompt = prompt_of(&activation.input);
         let mut committed: Vec<Message> = Vec::new();
+        // The ACP session id, carried across the per-turn relaunches so a resumed
+        // turn reloads the CLI's own session (`session/load`) instead of starting
+        // fresh — context survives the relaunch (the newline stand-in leaves it
+        // `None`, so it always starts fresh, unchanged from before).
+        let mut acp_session_id: Option<String> = None;
+        // The run's token usage, accumulated across turns and committed as thread
+        // state at the terminal phase (matching the native engine's `__usage`).
+        let mut run_usage = TokenUsage::default();
 
         loop {
             let mut appender = CollectingAppender::default();
@@ -236,7 +286,10 @@ impl RunExecutor for AcpRunExecutor {
             };
 
             let process = session.process.clone();
-            let outcome = Supervisor::supervise(
+            let mut config = TurnConfig::new(self.permission.as_ref());
+            config.session_id = acp_session_id.take();
+            config.session_mode = self.session_mode.clone();
+            let outcome = Supervisor::supervise_with_config(
                 session.channel.as_mut(),
                 process.as_ref(),
                 &prompt,
@@ -245,9 +298,14 @@ impl RunExecutor for AcpRunExecutor {
                 &mut injections,
                 self.policy,
                 session.codec,
+                &mut config,
                 launch_sink,
             )
             .await;
+            // Keep the negotiated session id for the next relaunched turn, and fold
+            // this turn's token usage into the run total.
+            acp_session_id = config.session_id.take();
+            run_usage = run_usage.saturating_add(appender.usage);
 
             let reason = match outcome {
                 Ok(reason) => reason,
@@ -263,8 +321,16 @@ impl RunExecutor for AcpRunExecutor {
                         failure.prompt(),
                     ));
                     let phase = Phase::Ended(failure_cause(&failure));
-                    commit(&context, &activation.thread_id, run_id.clone(), committed, &phase)
-                        .await?;
+                    commit(
+                        &context,
+                        &activation.thread_id,
+                        run_id.clone(),
+                        committed,
+                        &phase,
+                        None,
+                        usage_state(&run_usage, &model_ref),
+                    )
+                    .await?;
                     return Ok(phase);
                 }
             };
@@ -289,18 +355,47 @@ impl RunExecutor for AcpRunExecutor {
                                 run_id.clone(),
                                 committed,
                                 &phase,
+                                None,
+                                usage_state(&run_usage, &model_ref),
                             )
                             .await?;
                             return Ok(phase);
                         }
                     };
                 }
-                // Idle: natural end. `Park` cannot occur until an ACP pause signal is
-                // wired (a U2 follow-up); ACP durable parking is out of P4's scope.
-                BoundaryOutcome::Idle | BoundaryOutcome::Park { .. } => {
+                // Operator pause (ADR-0054 P5/U2): commit any in-flight steer that
+                // rode out with the park, then park durably on a no-tool waiting
+                // ticket — the same clean commit-then-park the native engine does,
+                // resumed by an explicit operator resume, not a tool result.
+                BoundaryOutcome::Park { fold, reason } => {
+                    committed.extend(fold);
+                    let phase = Phase::Waiting;
+                    let ticket = pause_ticket(&activation, &run_id, reason);
+                    commit(
+                        &context,
+                        &activation.thread_id,
+                        run_id.clone(),
+                        committed,
+                        &phase,
+                        Some(ticket),
+                        usage_state(&run_usage, &model_ref),
+                    )
+                    .await?;
+                    return Ok(phase);
+                }
+                // Idle: no queued input, no pause — the turn's own reason is terminal.
+                BoundaryOutcome::Idle => {
                     let phase = Phase::Ended(end_cause(reason));
-                    commit(&context, &activation.thread_id, run_id.clone(), committed, &phase)
-                        .await?;
+                    commit(
+                        &context,
+                        &activation.thread_id,
+                        run_id.clone(),
+                        committed,
+                        &phase,
+                        None,
+                        usage_state(&run_usage, &model_ref),
+                    )
+                    .await?;
                     return Ok(phase);
                 }
             }
@@ -334,18 +429,24 @@ async fn finish_failure(
         activation.run_id.clone(),
         messages,
         &phase,
+        None,
+        Vec::new(),
     )
     .await?;
     Ok(phase)
 }
 
-/// Commit the turn's messages + terminal phase through the one boundary (G13).
+/// Commit the turn's messages + terminal phase through the one boundary (G13). A
+/// `Phase::Waiting` park carries its resumable [`WaitingTicket`]; a terminus passes
+/// `None`. `state` carries the run's accumulated token usage (empty when none).
 async fn commit(
     context: &RuntimeRunContext,
     thread_id: &ThreadId,
     run_id: RunId,
     messages: Vec<Message>,
     phase: &Phase,
+    waiting: Option<WaitingTicket>,
+    state: Vec<StateCommand>,
 ) -> Result<()> {
     if let Some(coordinator) = &context.commit {
         awaken_agent_contract::commit::commit_run(
@@ -354,11 +455,86 @@ async fn commit(
             &run_id,
             messages,
             phase.clone(),
+            waiting,
+            state,
         )
         .await
         .map_err(|e| Error::Commit(e.to_string()))?;
     }
     Ok(())
+}
+
+/// The committed thread-state command recording `usage` under the bound model —
+/// the same `__usage` `ThreadUsage` tally the native engine writes, so a session's
+/// ACP usage is readable from thread state exactly like a native run's. Empty when
+/// no usage was reported (nothing to record).
+fn usage_state(usage: &TokenUsage, model_ref: &str) -> Vec<StateCommand> {
+    if *usage == TokenUsage::default() {
+        return Vec::new();
+    }
+    let mut tally = ThreadUsage::default();
+    tally.record(model_ref, *usage);
+    vec![StateCommand::set(
+        Scope::Thread,
+        MergePolicy::Commutative,
+        THREAD_USAGE_STATE_KEY,
+        serde_json::to_value(tally).expect("thread usage serializes"),
+    )]
+}
+
+/// A no-tool waiting ticket for an operator pause (ADR-0054): the ACP run parks
+/// with no pending tool and no call id, correlated by run id, resumed by an
+/// explicit operator resume rather than a tool result. Mirrors the native
+/// engine's `pause_ticket` so a paused ACP run is resumable identically.
+fn pause_ticket(
+    activation: &RunActivation,
+    run_id: &RunId,
+    reason: WaitingReason,
+) -> WaitingTicket {
+    WaitingTicket {
+        correlation_id: run_id.0.clone(),
+        run_id: run_id.clone(),
+        thread_id: activation.thread_id.clone(),
+        snapshot_id: activation.snapshot.id.0.clone(),
+        catalog_fingerprint: activation
+            .snapshot
+            .resolved_spec
+            .catalog_fingerprint
+            .0
+            .clone(),
+        reason,
+        call_id: None,
+        pending_tool: None,
+        deadline_ms: None,
+    }
+}
+
+/// Bridges the ACP driver's [`PermissionResolver`] port onto the single neutral
+/// [`PermissionPolicy`] authority (G21). It projects the wire ask into a neutral
+/// [`PermissionContext`], asks the policy, and maps the decision back to a wire
+/// verdict — so an external CLI's tool requests are decided by the same policy that
+/// governs native tools. `Ask` (out-of-band/HITL) has no synchronous answer over
+/// the held ACP turn yet, so it fails safe to `Deny` (a turn-holding HITL resolve
+/// is a follow-up); `Allow`/`Deny` pass straight through.
+struct NeutralPermissionResolver {
+    policy: Arc<dyn PermissionPolicy>,
+}
+
+#[async_trait]
+impl PermissionResolver for NeutralPermissionResolver {
+    async fn resolve(&self, ask: &PermissionAsk) -> PermissionVerdict {
+        let ctx = PermissionContext {
+            tool_id: ask.tool.clone(),
+            call_id: ask.call_id.clone(),
+            arguments: ask.arguments.clone(),
+        };
+        match self.policy.decide(&ctx).await {
+            PermissionDecision::Allow => PermissionVerdict::Allow,
+            PermissionDecision::Deny { .. } | PermissionDecision::Ask { .. } => {
+                PermissionVerdict::Deny
+            }
+        }
+    }
 }
 
 /// A [`RunFactAppender`] that projects an ACP turn's facts into committable neutral
@@ -371,6 +547,9 @@ async fn commit(
 struct CollectingAppender {
     last: u64,
     messages: Vec<Message>,
+    /// The turn's token usage, accumulated from any `Usage` events (kept out of the
+    /// committed messages — it lands as thread state, matching the native engine).
+    usage: TokenUsage,
 }
 
 #[async_trait]
@@ -423,6 +602,19 @@ impl RunFactAppender for CollectingAppender {
                         tool_use_id(id, seq),
                         vec![ContentBlock::text(body)],
                     )],
+                });
+            }
+            AgentEvent::Usage {
+                prompt_tokens,
+                completion_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
+            } => {
+                self.usage = self.usage.saturating_add(TokenUsage {
+                    prompt_tokens: *prompt_tokens,
+                    completion_tokens: *completion_tokens,
+                    cache_read_tokens: *cache_read_tokens,
+                    cache_creation_tokens: *cache_creation_tokens,
                 });
             }
             AgentEvent::TurnEnd { .. } => {}
