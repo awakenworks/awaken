@@ -2,10 +2,12 @@
 
 pub mod activation;
 pub mod agent_resolver;
+pub mod boundary;
 pub mod capability;
 pub mod capture;
 pub mod catalog;
 pub mod control;
+pub mod pause;
 pub mod data_subject;
 pub mod execution;
 pub mod live_inbox;
@@ -29,7 +31,9 @@ pub use activation::RunActivation;
 pub use agent_resolver::{AgentError, AgentRequest, AgentResolver, AgentStep};
 pub use capture::{CaptureDecision, ContentCapture, ContentKind, ContentRedactor, NoopRedactor};
 pub use catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
+pub use boundary::{BoundaryOutcome, evaluate_boundary};
 pub use control::LiveRunControl;
+pub use pause::PauseSignal;
 pub use data_subject::{
     CaptureSink, ContentEraser, DataSubjectId, DataSubjectResolver, ErasureReceipt, NullResolver,
     Purpose,

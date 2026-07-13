@@ -15,6 +15,7 @@ use tokio_util::sync::CancellationToken;
 use crate::capture::CaptureDecision;
 use crate::data_subject::{CaptureSink, DataSubjectId};
 use crate::live_inbox::LiveInbox;
+use crate::pause::PauseSignal;
 use awaken_agent_contract::store::stream_checkpoint::StreamCheckpointStore;
 
 #[derive(Clone, Default)]
@@ -34,6 +35,11 @@ pub struct RuntimeRunContext {
     pub reader: Option<Arc<dyn ThreadReader>>,
     /// Cooperative cancellation observed at step boundaries.
     pub cancellation: Option<CancellationToken>,
+    /// Cooperative pause observed at safe loop boundaries (ADR-0054). When set and
+    /// requested, the next boundary parks the run (`WaitingReason::ManualPause`)
+    /// instead of continuing — an operator pause, never a mid-step freeze. Absent
+    /// means the attempt cannot be paused in flight.
+    pub pause: Option<PauseSignal>,
     /// Live input-direction mirror of `stream_sink`: an editable in-process
     /// queue the engine drains at safe loop boundaries; absent means the
     /// attempt accepts no mid-run input. Best-effort like the sink — the
@@ -97,6 +103,14 @@ impl RuntimeRunContext {
         self
     }
 
+    /// Provide the pause signal so an operator can park this attempt at its next
+    /// safe boundary (ADR-0054).
+    #[must_use]
+    pub fn with_pause(mut self, pause: PauseSignal) -> Self {
+        self.pause = Some(pause);
+        self
+    }
+
     #[must_use]
     pub fn with_live_inbox(mut self, inbox: LiveInbox) -> Self {
         self.live_inbox = Some(inbox);
@@ -138,5 +152,11 @@ impl RuntimeRunContext {
         self.cancellation
             .as_ref()
             .is_some_and(CancellationToken::is_cancelled)
+    }
+
+    /// True once an operator pause has been requested for this attempt (ADR-0054).
+    /// Observed only at safe loop boundaries.
+    pub fn is_pause_requested(&self) -> bool {
+        self.pause.as_ref().is_some_and(PauseSignal::requested)
     }
 }
