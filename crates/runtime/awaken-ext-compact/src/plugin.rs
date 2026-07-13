@@ -100,8 +100,8 @@ impl CompactPlugin {
 
     fn contribute(&self, config: CompactConfig) -> Contributions {
         let mut contributions = Contributions::new(COMPACT_PLUGIN_ID);
-        contributions.state_keys = vec![CompactionContext::KEY.to_string()];
-        contributions.phase_hooks.push(Arc::new(CompactHook {
+        contributions.declare_state_key(CompactionContext::KEY);
+        contributions.register_hook(Arc::new(CompactHook {
             config,
             runner: self.runner.clone(),
         }));

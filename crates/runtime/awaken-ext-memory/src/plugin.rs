@@ -60,8 +60,8 @@ impl MemoryPlugin {
     /// and configured resolve paths).
     fn contribute(&self, bounds: RecallBounds) -> Contributions {
         let mut contributions = Contributions::new(MEMORY_PLUGIN_ID);
-        contributions.state_keys = vec![RecallContext::KEY.to_string()];
-        contributions.phase_hooks.push(Arc::new(RecallHook {
+        contributions.declare_state_key(RecallContext::KEY);
+        contributions.register_hook(Arc::new(RecallHook {
             store: self.store.clone(),
             bounds,
             selector: self.selector.clone(),
