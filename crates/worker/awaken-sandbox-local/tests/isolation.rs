@@ -1,5 +1,6 @@
 //! Integration test: two environments' rooted tools are isolated, and a path
 //! escape fails closed — exercised through the real built-in `read`/`write`.
+#![allow(deprecated)] // exercises the legacy LocalSandboxProvider adapter pending the pc::Sandbox rebase.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

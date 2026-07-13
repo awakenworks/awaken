@@ -24,6 +24,8 @@ use awaken_runtime_contract::llm::{LlmExecutor, THREAD_USAGE_STATE_KEY, ThreadUs
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::tool::RawTool;
+// Legacy host-altitude provider (deprecated); see awaken_sandbox_local::SandboxProvider.
+#[allow(deprecated)]
 use awaken_sandbox_local::{LocalSandboxProvider, SandboxProvider, SandboxSpec};
 
 use crate::agent_catalog::AgentCatalog;
@@ -59,6 +61,7 @@ pub(crate) async fn run_configured_subrun(
         .resolve(agent_id)
         .ok_or_else(|| format!("unknown agent {agent_id:?}"))?
         .clone();
+    #[allow(deprecated)] // legacy SandboxProvider::create; rebased onto pc::Sandbox later.
     let env = provider
         .create(&SandboxSpec::new(thread))
         .await
