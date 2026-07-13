@@ -42,8 +42,8 @@ mod vocab;
 pub use admission::{AdmissionError, EnvironmentDecl, check_environment_soundness};
 pub use approval::{ApprovalDecision, ApprovalPolicy, SandboxAction, decide as approval_decide};
 pub use lease::{
-    AdoptionPlan, LeaseGrant, LeaseLiveness, ReapCause, ReconcileOutcome, apply_adoption_plan,
-    reconcile_adoption, reconcile_and_apply,
+    AdoptionPlan, LeaseGrant, LeaseLiveness, LivenessSignals, ReapCause, ReconcileOutcome,
+    apply_adoption_plan, decide_reap, reconcile_adoption, reconcile_and_apply,
 };
 pub use poison::{AttemptSignal, PoisonVerdict, classify as classify_poison};
 pub use prepare::{EnvironmentPlan, PrepareError, prepare_environment};

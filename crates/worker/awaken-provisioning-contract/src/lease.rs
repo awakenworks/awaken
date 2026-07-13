@@ -65,12 +65,49 @@ pub enum LeaseLiveness {
 /// Why a sandbox is being reaped — recorded for observability and idempotent reap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReapCause {
+    /// The lease was explicitly revoked (admin, or a superseding placement).
+    Revoked,
     /// The lease deadline passed without renewal (owner vanished).
     Expired,
+    /// The owner's transport to the sandbox was lost (channel closed) while the lease
+    /// was still within its deadline — a "hung but alive" reclaim.
+    TransportLost,
     /// A newer sandbox superseded this one for the same binding.
     Superseded,
     /// The owning run settled and released it.
     Released,
+}
+
+/// Point-in-time liveness signals for a leased sandbox, collapsed into a single reap
+/// decision by [`decide_reap`]. The caller supplies each from its own source (a
+/// revoke API, an `AgentChannel` close, the wall clock).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LivenessSignals {
+    /// Wall-clock now, for the deadline check.
+    pub now_ms: u64,
+    /// The lease was explicitly revoked.
+    pub revoked: bool,
+    /// The owner's transport to the sandbox was lost.
+    pub transport_lost: bool,
+}
+
+/// Decide whether to reap a leased sandbox, collapsing the signals with the fixed
+/// priority **Revoked > Expired(deadline) > TransportLost** (awaken-next parity): a
+/// revoke always wins; else a passed deadline; else a lost transport; else keep it
+/// alive. Pure — heartbeat is not a signal here (it renews the deadline upstream), so
+/// a within-deadline sandbox is only reaped on revoke or transport loss.
+#[must_use]
+pub fn decide_reap(grant: &LeaseGrant, signals: LivenessSignals) -> Option<ReapCause> {
+    if signals.revoked {
+        return Some(ReapCause::Revoked);
+    }
+    if matches!(grant.liveness(signals.now_ms, 0), LeaseLiveness::Reapable) {
+        return Some(ReapCause::Expired);
+    }
+    if signals.transport_lost {
+        return Some(ReapCause::TransportLost);
+    }
+    None
 }
 
 /// The reconciliation outcome: what to do with each live sandbox after a restart.
@@ -236,6 +273,65 @@ mod tests {
     #[test]
     fn empty_inputs_yield_empty_plan() {
         assert_eq!(reconcile_adoption(&[], &[]), AdoptionPlan::default());
+    }
+
+    fn signals(now_ms: u64, revoked: bool, transport_lost: bool) -> LivenessSignals {
+        LivenessSignals {
+            now_ms,
+            revoked,
+            transport_lost,
+        }
+    }
+
+    #[test]
+    fn a_live_lease_with_no_faults_is_not_reaped() {
+        let g = LeaseGrant::until(1_000);
+        assert_eq!(decide_reap(&g, signals(500, false, false)), None);
+    }
+
+    #[test]
+    fn revoke_beats_deadline_and_transport_loss() {
+        let g = LeaseGrant::until(1_000);
+        // Even when also expired AND transport-lost, revoke wins.
+        assert_eq!(
+            decide_reap(&g, signals(2_000, true, true)),
+            Some(ReapCause::Revoked)
+        );
+        // And even while comfortably within the deadline.
+        assert_eq!(
+            decide_reap(&g, signals(100, true, false)),
+            Some(ReapCause::Revoked)
+        );
+    }
+
+    #[test]
+    fn deadline_beats_transport_loss() {
+        let g = LeaseGrant::until(1_000);
+        // Past deadline + transport lost, not revoked → Expired (deadline wins).
+        assert_eq!(
+            decide_reap(&g, signals(1_500, false, true)),
+            Some(ReapCause::Expired)
+        );
+    }
+
+    #[test]
+    fn transport_loss_reaps_a_within_deadline_lease() {
+        let g = LeaseGrant::until(1_000);
+        // Within the deadline, not revoked, but the transport is gone → hung-but-alive.
+        assert_eq!(
+            decide_reap(&g, signals(500, false, true)),
+            Some(ReapCause::TransportLost)
+        );
+    }
+
+    #[test]
+    fn an_indefinite_lease_is_only_reaped_on_revoke_or_transport_loss() {
+        let g = LeaseGrant::indefinite();
+        assert_eq!(decide_reap(&g, signals(u64::MAX, false, false)), None);
+        assert_eq!(
+            decide_reap(&g, signals(u64::MAX, false, true)),
+            Some(ReapCause::TransportLost)
+        );
     }
 }
 
