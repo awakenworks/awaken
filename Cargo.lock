@@ -314,6 +314,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-cli"
+version = "1.0.0-dev"
+dependencies = [
+ "awaken-observability",
+ "awaken-session-executor",
+ "awaken-server",
+ "axum",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-config-resolver"
 version = "1.0.0-dev"
 dependencies = [

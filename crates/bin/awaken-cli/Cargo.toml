@@ -1,0 +1,25 @@
+[package]
+name = "awaken-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "awaken"
+path = "src/main.rs"
+
+# The single aggregated command. Config (AWAKEN_ROLE + the deployment axes) decides
+# the deployment: single-machine all-in-one, a coordinator, a database-less worker,
+# or a hand executor endpoint — one binary, no separate server-local/standalone.
+[dependencies]
+# The single-machine composition root: the Serve-role management assembly (models
+# resolved from the DB-configured catalog + credential vault) and the role axis +
+# Worker / Hand execution endpoints.
+awaken-server.workspace = true
+awaken-session-executor.workspace = true
+awaken-observability.workspace = true
+axum = "0.8"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal"] }
+
+[lints]
+workspace = true
