@@ -17,6 +17,7 @@ use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::live_inbox::LiveInbox;
+use awaken_runtime_contract::pause::PauseSignal;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor,
 };
@@ -159,6 +160,31 @@ async fn queued_messages_are_folded_in_before_the_run_ends() {
 
     // Consumed: nothing left to list or drain.
     assert!(inbox.list().is_empty());
+}
+
+#[tokio::test]
+async fn a_requested_pause_parks_the_run_at_the_next_boundary() {
+    // ADR-0054: an operator pause is a durable park at the next safe boundary, not
+    // a mid-step freeze. The run commits its turn, then parks (not ends).
+    let runtime = runtime();
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let pause = PauseSignal::new();
+    pause.request();
+
+    let ctx = RuntimeRunContext::new()
+        .with_commit(commit.clone())
+        .with_pause(pause);
+    let phase = runtime.execute(turn("rp", "Work."), ctx).await.unwrap();
+    assert!(
+        matches!(phase, Phase::Waiting),
+        "a requested pause parks the run, got {phase:?}"
+    );
+    // Commit-then-park: the assistant turn is durable before the park.
+    let committed = commit.committed_messages(&ThreadId("thread-1".to_string()));
+    assert!(
+        committed.iter().any(|m| m.role == Role::Assistant),
+        "the turn committed before parking"
+    );
 }
 
 #[tokio::test]
