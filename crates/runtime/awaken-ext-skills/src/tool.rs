@@ -15,22 +15,15 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_agent_contract::agent::message::{Message, Role};
+use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::state::Store;
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
 use awaken_runtime_contract::resolved::ToolDescriptor;
+use awaken_runtime_contract::subagent_runner::{SubagentRequest, SubagentRunner};
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 
 use crate::registry::SkillRegistry;
 use crate::spec::{SkillContext, SkillSpec, truncate_chars};
-
-/// Runs a skill as a forked sub-agent (`context: fork`). The host implements this
-/// (e.g. via a fresh sub-run) so `awaken-ext-skills` stays unaware of how a
-/// sub-agent is spawned. Returns the sub-run's final reply.
-#[async_trait]
-pub trait SubAgentRunner: Send + Sync {
-    async fn run(&self, skill_id: &str, prompt: &str) -> Result<String, String>;
-}
 
 /// A shared, live record of file paths the run has touched, so conditional
 /// (`paths`) skills surface once a matching file is accessed (ADR-0036: `paths`).
@@ -375,7 +368,7 @@ impl RawTool for ListSkillsTool {
 pub struct SkillTool {
     registry: Arc<dyn SkillRegistry>,
     session_id: Option<String>,
-    fork_runner: Option<Arc<dyn SubAgentRunner>>,
+    fork_runner: Option<Arc<dyn SubagentRunner>>,
 }
 
 impl SkillTool {
@@ -397,7 +390,7 @@ impl SkillTool {
     /// Wire the runner used for `context: fork` skills. Without it, a fork skill
     /// falls back to inline activation.
     #[must_use]
-    pub fn with_fork_runner(mut self, runner: Arc<dyn SubAgentRunner>) -> Self {
+    pub fn with_fork_runner(mut self, runner: Arc<dyn SubagentRunner>) -> Self {
         self.fork_runner = Some(runner);
         self
     }
@@ -460,8 +453,20 @@ impl RawTool for SkillTool {
             && let Some(runner) = &self.fork_runner
         {
             let (prompt, _) = resolved_body(&skill, args, session);
-            return Ok(match runner.run(&skill.id, &prompt).await {
-                Ok(text) => ToolOutput::ok(call.call_id, text),
+            // The fork runs through the neutral aux-run port (shared with the goal
+            // judge and compactor): the skill id names the sub-run and its resolved
+            // body seeds the fresh window.
+            let request = SubagentRequest {
+                agent_id: skill.id.clone(),
+                seed: vec![Message::text(
+                    MessageId(format!("skill-fork-{}", skill.id)),
+                    Role::User,
+                    prompt,
+                )],
+                cancellation: None,
+            };
+            return Ok(match runner.run(request).await {
+                Ok(reply) => ToolOutput::ok(call.call_id, reply.text.unwrap_or_default()),
                 Err(err) => ToolOutput::error(call.call_id, format!("skill fork failed: {err}")),
             });
         }
@@ -767,9 +772,22 @@ mod tests {
 
     struct EchoRunner;
     #[async_trait]
-    impl SubAgentRunner for EchoRunner {
-        async fn run(&self, skill_id: &str, prompt: &str) -> Result<String, String> {
-            Ok(format!("forked[{skill_id}]: {prompt}"))
+    impl SubagentRunner for EchoRunner {
+        async fn run(
+            &self,
+            request: SubagentRequest,
+        ) -> Result<
+            awaken_runtime_contract::subagent_runner::SubagentReply,
+            awaken_runtime_contract::subagent_runner::SubagentError,
+        > {
+            let prompt = request
+                .seed
+                .first()
+                .map(|m| m.text_content())
+                .unwrap_or_default();
+            Ok(awaken_runtime_contract::subagent_runner::SubagentReply {
+                text: Some(format!("forked[{}]: {prompt}", request.agent_id)),
+            })
         }
     }
 
