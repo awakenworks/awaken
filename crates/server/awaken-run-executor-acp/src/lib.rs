@@ -32,6 +32,7 @@ use awaken_protocol_acp::{
 pub use awaken_protocol_acp::{AcpLaunchEvent, AcpLaunchStage, Codec, LaunchObserver};
 use awaken_provisioning_contract::ProcessHandle;
 use awaken_runtime_contract::activation::RunActivation;
+use awaken_runtime_contract::boundary::{BoundaryOutcome, evaluate_boundary};
 use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
 use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -215,63 +216,93 @@ impl RunExecutor for AcpRunExecutor {
             }
         };
 
-        let prompt = prompt_of(&activation.input);
-        let mut appender = CollectingAppender::default();
-        let (_tx, mut injections) = tokio::sync::mpsc::channel::<Injection>(1);
-        let cancel = async {
-            match &context.cancellation {
-                Some(token) => token.cancelled().await,
-                None => std::future::pending::<()>().await,
-            }
-        };
+        // ADR-0054 P4: drive turns in a boundary loop. After each turn the shared
+        // `evaluate_boundary` drains any live-inbox steer; queued input becomes the
+        // next turn's prompt and the CLI relaunches (ACP is per-turn — R7), so
+        // steer/redirect reaches external-CLI runs. Messages accumulate and commit
+        // once at the terminal phase, matching the executor's single-commit model.
+        let run_id = activation.run_id.clone();
+        let mut prompt = prompt_of(&activation.input);
+        let mut committed: Vec<Message> = Vec::new();
 
-        let process = session.process.clone();
-        let outcome = Supervisor::supervise(
-            session.channel.as_mut(),
-            process.as_ref(),
-            &prompt,
-            &mut appender,
-            cancel,
-            &mut injections,
-            self.policy,
-            session.codec,
-            launch_sink,
-        )
-        .await;
+        loop {
+            let mut appender = CollectingAppender::default();
+            let (_tx, mut injections) = tokio::sync::mpsc::channel::<Injection>(1);
+            let cancel = async {
+                match &context.cancellation {
+                    Some(token) => token.cancelled().await,
+                    None => std::future::pending::<()>().await,
+                }
+            };
 
-        match outcome {
-            Ok(reason) => {
-                let phase = Phase::Ended(end_cause(reason));
-                commit(
-                    &context,
-                    &activation.thread_id,
-                    activation.run_id,
-                    appender.messages,
-                    &phase,
-                )
-                .await?;
-                Ok(phase)
-            }
-            // A driver error mid-turn: classify it (oversight taxonomy) and surface
-            // its prompt. No retry/reschedule — that is a host concern above us.
-            Err(err) => {
-                let failure = classify_from_acp_error(&err);
-                let mut messages = appender.messages;
-                messages.push(Message::text(
-                    MessageId(format!("acp-err-{}", messages.len() + 1)),
-                    Role::Assistant,
-                    failure.prompt(),
-                ));
-                let phase = Phase::Ended(failure_cause(&failure));
-                commit(
-                    &context,
-                    &activation.thread_id,
-                    activation.run_id,
-                    messages,
-                    &phase,
-                )
-                .await?;
-                Ok(phase)
+            let process = session.process.clone();
+            let outcome = Supervisor::supervise(
+                session.channel.as_mut(),
+                process.as_ref(),
+                &prompt,
+                &mut appender,
+                cancel,
+                &mut injections,
+                self.policy,
+                session.codec,
+                launch_sink,
+            )
+            .await;
+
+            let reason = match outcome {
+                Ok(reason) => reason,
+                // A driver error mid-turn: classify it (oversight taxonomy), surface
+                // its prompt, commit everything so far + the error turn, and end. No
+                // retry/reschedule — that is a host concern above us.
+                Err(err) => {
+                    let failure = classify_from_acp_error(&err);
+                    committed.extend(appender.messages);
+                    committed.push(Message::text(
+                        MessageId(format!("acp-err-{}", committed.len() + 1)),
+                        Role::Assistant,
+                        failure.prompt(),
+                    ));
+                    let phase = Phase::Ended(failure_cause(&failure));
+                    commit(&context, &activation.thread_id, run_id.clone(), committed, &phase)
+                        .await?;
+                    return Ok(phase);
+                }
+            };
+            committed.extend(appender.messages);
+
+            // The safe boundary, shared with the native engine: fold queued live
+            // steer into the next turn, or end.
+            match evaluate_boundary(&context, &run_id, &committed) {
+                BoundaryOutcome::Continue { fold } => {
+                    prompt = prompt_of(&fold);
+                    committed.extend(fold);
+                    // Relaunch the CLI for the next turn (ACP is per-turn).
+                    session = match self.source.open(&activation).await {
+                        Ok(session) => session,
+                        Err(open) => {
+                            let failure =
+                                classify_error(Stage::Initialize, &RawAcpError::message(open.0));
+                            let phase = Phase::Ended(failure_cause(&failure));
+                            commit(
+                                &context,
+                                &activation.thread_id,
+                                run_id.clone(),
+                                committed,
+                                &phase,
+                            )
+                            .await?;
+                            return Ok(phase);
+                        }
+                    };
+                }
+                // Idle: natural end. `Park` cannot occur until an ACP pause signal is
+                // wired (a U2 follow-up); ACP durable parking is out of P4's scope.
+                BoundaryOutcome::Idle | BoundaryOutcome::Park { .. } => {
+                    let phase = Phase::Ended(end_cause(reason));
+                    commit(&context, &activation.thread_id, run_id.clone(), committed, &phase)
+                        .await?;
+                    return Ok(phase);
+                }
             }
         }
     }
