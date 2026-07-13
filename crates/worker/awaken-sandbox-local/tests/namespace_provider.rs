@@ -81,10 +81,11 @@ async fn probe_ready_reflects_the_os_native_sandbox_availability() {
     // fails closed on.
     let tmp = tempfile::tempdir().unwrap();
     let provider = NamespaceProvider::new(tmp.path());
-    assert_eq!(
-        provider.probe_ready().await.is_ok(),
-        os_native_sandbox_works().await
-    );
+    let first = provider.probe_ready().await.is_ok();
+    assert_eq!(first, os_native_sandbox_works().await);
+    // Memoized: a second call (even from a different provider) yields the same result.
+    let other = NamespaceProvider::new(tmp.path());
+    assert_eq!(other.probe_ready().await.is_ok(), first);
 }
 
 #[tokio::test]

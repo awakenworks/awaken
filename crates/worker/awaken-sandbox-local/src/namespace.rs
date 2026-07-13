@@ -28,6 +28,35 @@ fn err(e: impl ToString) -> pc::SandboxError {
     pc::SandboxError::new(e.to_string())
 }
 
+/// Process-global memo of the OS-native isolator's availability (the tool's presence
+/// is a host property, so the throwaway probe runs at most once — see `probe_ready`).
+static OS_SANDBOX_PROBE: tokio::sync::OnceCell<bool> = tokio::sync::OnceCell::const_new();
+
+/// Run the actual throwaway isolation probe: bwrap (Linux) / `sandbox-exec` (macOS)
+/// must run a trivial confined `true` here.
+async fn run_os_native_probe() -> bool {
+    let (program, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
+        (
+            "sandbox-exec",
+            &["-p", "(version 1)(allow default)", "/usr/bin/true"],
+        )
+    } else {
+        (
+            "bwrap",
+            &["--unshare-user", "--ro-bind", "/", "/", "--", "true"],
+        )
+    };
+    TokioCommand::new(program)
+        .args(args)
+        .stdin(ProcStdio::null())
+        .stdout(ProcStdio::null())
+        .stderr(ProcStdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// One realized bind for the launcher: a host path exposed at a sandbox path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderMount {
@@ -296,28 +325,12 @@ impl pc::SandboxProvider for NamespaceProvider {
     /// Seatbelt profile (macOS). On a host that can't, this returns an error so
     /// `select_provider` fails closed at selection instead of deferring the failure
     /// to `create` (or, worse, launching an unisolated process).
+    ///
+    /// **Memoized per process**: the underlying tool's availability is a host
+    /// property, so the throwaway probe runs at most once regardless of how many
+    /// times / providers ask (a hot selection path never re-spawns it).
     async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
-        // `(program, args)` for a throwaway isolated `true`, per platform.
-        let (program, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
-            (
-                "sandbox-exec",
-                &["-p", "(version 1)(allow default)", "/usr/bin/true"],
-            )
-        } else {
-            (
-                "bwrap",
-                &["--unshare-user", "--ro-bind", "/", "/", "--", "true"],
-            )
-        };
-        let ok = TokioCommand::new(program)
-            .args(args)
-            .stdin(ProcStdio::null())
-            .stdout(ProcStdio::null())
-            .stderr(ProcStdio::null())
-            .status()
-            .await
-            .map(|s| s.success())
-            .unwrap_or(false);
+        let ok = *OS_SANDBOX_PROBE.get_or_init(run_os_native_probe).await;
         if ok {
             Ok(())
         } else {
