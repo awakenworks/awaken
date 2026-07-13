@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::state::Store;
+use awaken_agent_contract::agent::state::{FoldStateKey, StateKey, Store};
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
 use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, HookReaction, IdBound, PhaseContext, PhaseHook, PhaseHookPoint,
@@ -19,8 +19,8 @@ use crate::machine::{EmitTarget, Machine, ViolationAction};
 use crate::result::ToolResultView;
 use crate::state::{
     EmitThrottle, EmitThrottleCell, FsmMetricEvent, FsmMetricUpdate, FsmStore, FsmTransition,
-    FsmViolationRecord, Metrics, RunInstances, STATE_KEYS, StateCell, ThreadInstances,
-    ViolationAuditAction, ViolationLog,
+    FsmViolationRecord, Metrics, RunInstances, STATE_KEYS, ThreadInstances, ViolationAuditAction,
+    ViolationLog,
 };
 
 /// The plugin id and the id of every seam it contributes.

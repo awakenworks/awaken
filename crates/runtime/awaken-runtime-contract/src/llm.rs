@@ -220,7 +220,8 @@ pub const THREAD_USAGE_STATE_KEY: &str = "__usage";
 /// Typed view over the thread-usage cell (ADR-0055). A read fails closed on a
 /// shape drift (so a persisted run's accumulated tally is never silently reset),
 /// and a write is `Commutative` so a step's tally shallow-merges the committed
-/// object. An update records one step's usage against its bound model.
+/// object. Write-only: the loop reads the tally, folds a step's usage via
+/// [`ThreadUsage::record`], and writes the whole value back.
 pub struct ThreadUsageKey;
 
 impl StateKey for ThreadUsageKey {
@@ -228,10 +229,6 @@ impl StateKey for ThreadUsageKey {
     const SCOPE: Scope = Scope::Thread;
     const MERGE: MergePolicy = MergePolicy::Commutative;
     type Value = ThreadUsage;
-    type Update = (String, TokenUsage);
-    fn apply(value: &mut ThreadUsage, (model, usage): (String, TokenUsage)) {
-        value.record(&model, usage);
-    }
 }
 
 #[cfg(test)]
@@ -241,15 +238,18 @@ mod thread_usage_key_tests {
     use super::*;
 
     #[test]
-    fn commit_folds_a_step_usage_then_reads_back_typed() {
+    fn record_then_write_reads_back_typed() {
         let mut store = Store::new();
         let usage = TokenUsage {
             prompt_tokens: 3,
             completion_tokens: 5,
             ..Default::default()
         };
-        let cmd = ThreadUsageKey::commit(&store, ("m".to_string(), usage)).unwrap();
-        store.apply(&cmd);
+        // The loop's discipline: read the tally (fail-closed), fold a step's usage,
+        // write the whole value back.
+        let mut tally = ThreadUsageKey::load(&store).unwrap();
+        tally.record("m", usage);
+        store.apply(&ThreadUsageKey::write(&tally));
         let read = ThreadUsageKey::load(&store).unwrap();
         assert_eq!(read.by_model["m"].prompt_tokens, 3);
         assert_eq!(read.by_model["m"].completion_tokens, 5);

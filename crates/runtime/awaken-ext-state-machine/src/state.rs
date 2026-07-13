@@ -2,24 +2,19 @@
 //!
 //! Four `(scope, key)` cells back the machine set: thread- and run-scoped
 //! instance state, plus thread-scoped audit metrics and a bounded violation log.
-//! Each cell is a typed view ([`StateCell`], the contract's [`StateKey`] promoted
-//! in ADR-0055) over the untyped runtime `Command`/`Store`: a read deserializes
+//! Each is a folding state key — the contract's [`StateKey`] (address/scope/value)
+//! plus [`FoldStateKey`] (a typed `apply` delta), ADR-0055: a read deserializes
 //! the whole value, an update folds a typed delta with `apply`, and a commit
 //! writes the whole value back as one `Command`. All cells use
 //! `MergePolicy::Disjoint` — each has a single producer (this extension), so a
 //! later whole-value write replaces the earlier one and replay reproduces the
 //! folded value. These cells tolerate a shape drift by resetting to the default,
-//! so callers read through [`StateCell::load_or_default`].
+//! so callers read through [`StateKey::load_or_default`].
 
 use std::collections::HashMap;
 
-use awaken_agent_contract::agent::state::Scope;
+use awaken_agent_contract::agent::state::{FoldStateKey, Scope, StateKey};
 use serde::Serialize;
-
-/// A typed view over one `(scope, key)` cell of the untyped runtime store —
-/// the contract's [`StateKey`](awaken_agent_contract::agent::state::StateKey)
-/// promoted into the kernel (ADR-0055); re-exported here under its original name.
-pub use awaken_agent_contract::agent::state::StateKey as StateCell;
 
 /// The keys this extension may contribute, kept in sync with the plugin's
 /// `CapabilityBound.state_keys` (G30).
@@ -67,10 +62,12 @@ impl FsmStore {
 
 /// Thread-scoped instance state (persists across runs on the same thread).
 pub struct ThreadInstances;
-impl StateCell for ThreadInstances {
+impl StateKey for ThreadInstances {
     const KEY: &'static str = "tool_fsm_thread_state";
     const SCOPE: Scope = Scope::Thread;
     type Value = FsmStore;
+}
+impl FoldStateKey for ThreadInstances {
     type Update = FsmTransition;
     fn apply(value: &mut Self::Value, update: Self::Update) {
         value.reduce(update);
@@ -79,10 +76,12 @@ impl StateCell for ThreadInstances {
 
 /// Run-scoped instance state (reset at the start of every run).
 pub struct RunInstances;
-impl StateCell for RunInstances {
+impl StateKey for RunInstances {
     const KEY: &'static str = "tool_fsm_run_state";
     const SCOPE: Scope = Scope::Run;
     type Value = FsmStore;
+}
+impl FoldStateKey for RunInstances {
     type Update = FsmTransition;
     fn apply(value: &mut Self::Value, update: Self::Update) {
         value.reduce(update);
@@ -143,10 +142,12 @@ pub struct FsmMetrics {
 
 /// Thread-scoped audit counters.
 pub struct Metrics;
-impl StateCell for Metrics {
+impl StateKey for Metrics {
     const KEY: &'static str = "tool_fsm_metrics";
     const SCOPE: Scope = Scope::Thread;
     type Value = FsmMetrics;
+}
+impl FoldStateKey for Metrics {
     type Update = FsmMetricUpdate;
     fn apply(value: &mut Self::Value, update: Self::Update) {
         value.total.increment(update.event);
@@ -194,10 +195,12 @@ impl FsmViolationLog {
 
 /// Thread-scoped bounded violation samples.
 pub struct ViolationLog;
-impl StateCell for ViolationLog {
+impl StateKey for ViolationLog {
     const KEY: &'static str = "tool_fsm_violation_log";
     const SCOPE: Scope = Scope::Thread;
     type Value = FsmViolationLog;
+}
+impl FoldStateKey for ViolationLog {
     type Update = FsmViolationRecord;
     fn apply(value: &mut Self::Value, update: Self::Update) {
         value.records.push(update);
@@ -244,12 +247,10 @@ impl EmitThrottle {
 
 /// Thread-scoped emit cooldown state.
 pub struct EmitThrottleCell;
-impl StateCell for EmitThrottleCell {
+impl StateKey for EmitThrottleCell {
     const KEY: &'static str = "tool_fsm_emit_throttle";
     const SCOPE: Scope = Scope::Thread;
     type Value = EmitThrottle;
-    type Update = ();
-    fn apply(_value: &mut Self::Value, _update: Self::Update) {}
 }
 
 #[cfg(test)]

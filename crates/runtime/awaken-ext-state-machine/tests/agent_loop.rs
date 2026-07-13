@@ -11,9 +11,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, Phase};
+use awaken_agent_contract::agent::state::StateKey;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_ext_state_machine::{
-    Metrics, RunInstances, StateCell, StateMachineConfig, StateMachinePlugin, ThreadInstances,
+    Metrics, RunInstances, StateMachineConfig, StateMachinePlugin, ThreadInstances,
 };
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::{MemoryCommitCoordinator, replay_state};
