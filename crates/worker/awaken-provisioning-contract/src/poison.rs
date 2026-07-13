@@ -41,6 +41,38 @@ pub fn classify(recent: &[AttemptSignal], threshold: usize) -> PoisonVerdict {
     }
 }
 
+/// Whether a run should be redispatched given its poison verdict — the crash-loop
+/// gate (awaken-next `PodSupervisor` / ADR-0115): a `Quarantine` verdict stops
+/// redispatch (dead-letter) so a crash-looping run can't pin the fleet; `Healthy`
+/// continues. Pure and content-blind; the dispatch plane consumes it.
+#[must_use]
+pub fn should_redispatch(verdict: PoisonVerdict) -> bool {
+    matches!(verdict, PoisonVerdict::Healthy)
+}
+
+/// The resolution of a call that was outstanding when the sandbox/process crashed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InFlightOutcome {
+    /// The call completed before the crash — its result stands.
+    Settled,
+    /// The call was in flight — its effect **may** have happened, so it must not be
+    /// silently retried; the runtime surfaces it as indeterminate/error, never a
+    /// fabricated success.
+    Indeterminate,
+}
+
+/// Resolve a crashed sandbox's outstanding call: a call still in flight at the crash
+/// is `Indeterminate` (content-blind — the effect may have run), otherwise `Settled`.
+/// The runtime maps `Indeterminate` onto its tool-result vocabulary.
+#[must_use]
+pub fn resolve_inflight(in_flight_at_crash: bool) -> InFlightOutcome {
+    if in_flight_at_crash {
+        InFlightOutcome::Indeterminate
+    } else {
+        InFlightOutcome::Settled
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,5 +116,17 @@ mod tests {
     fn zero_threshold_or_empty_is_healthy() {
         assert_eq!(classify(&[InfraFault], 0), PoisonVerdict::Healthy);
         assert_eq!(classify(&[], 3), PoisonVerdict::Healthy);
+    }
+
+    #[test]
+    fn quarantine_stops_redispatch() {
+        assert!(should_redispatch(PoisonVerdict::Healthy));
+        assert!(!should_redispatch(PoisonVerdict::Quarantine));
+    }
+
+    #[test]
+    fn an_in_flight_call_at_crash_is_indeterminate() {
+        assert_eq!(resolve_inflight(true), InFlightOutcome::Indeterminate);
+        assert_eq!(resolve_inflight(false), InFlightOutcome::Settled);
     }
 }
