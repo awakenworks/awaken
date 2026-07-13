@@ -11,5 +11,9 @@ async-trait.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+# Round-trip the durable-persistence contract types through JSON in unit tests.
+serde_json.workspace = true
+
 [lints]
 workspace = true
