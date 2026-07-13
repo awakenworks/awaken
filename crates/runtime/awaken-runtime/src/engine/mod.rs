@@ -251,27 +251,56 @@ pub(crate) async fn resume_run(
         .await;
     }
 
-    // Rebuild the transcript and state from committed truth and apply the
-    // resumed result. The resumed tool's own state is folded into the store so a
-    // later step in this resume observes the advanced state.
-    let mut transcript = reader.committed_messages(&thread_id);
-    let mut store = store_from_commands(reader.committed_state(&thread_id));
-    let (resumed, seed_state) =
-        resume_into_messages(runtime, &env, &ticket, command.result, &store, &context).await;
-    for command in &seed_state {
-        store.apply(command);
-    }
-    transcript.extend(resumed.iter().cloned());
-
-    // State staged by the resumed tool itself seeds the attempt's batch (kept
-    // first), so step commits and conflict validation cover it too.
-    let checkpoint = drive(
+    // Rebuild committed truth, inject the resumed result, and drive on.
+    drive_resumed(
         runtime,
         &resolved,
         &env,
         &run_id,
         &thread_id,
+        &ticket,
+        command.result,
+        reader,
         &context,
+    )
+    .await
+}
+
+/// Rebuild the transcript and state from committed truth, inject a resumed
+/// `result` for the parked ticket, and drive the loop to its next terminal/parked
+/// checkpoint. Shared by the two resume entries — a validated `ResumeCommand`
+/// (`resume_run`) and a delegate step folded back into the parent
+/// (`resume_delegation`) — so the rebuild/inject/drive/finalize glue lives once.
+#[allow(clippy::too_many_arguments)]
+async fn drive_resumed(
+    runtime: &Runtime,
+    resolved: &ResolvedRun,
+    env: &ResolvedExecutionEnv,
+    run_id: &RunId,
+    thread_id: &ThreadId,
+    ticket: &WaitingTicket,
+    result: ResumeResult,
+    reader: &dyn ThreadReader,
+    context: &RuntimeRunContext,
+) -> Result<Phase> {
+    let mut transcript = reader.committed_messages(thread_id);
+    let mut store = store_from_commands(reader.committed_state(thread_id));
+    let (resumed, seed_state) =
+        resume_into_messages(runtime, env, ticket, result, &store, context).await;
+    // The resumed tool's own state is folded into the store so a later step in
+    // this resume observes the advanced state; it also seeds the attempt's batch
+    // (kept first) so step commits and conflict validation cover it too.
+    for command in &seed_state {
+        store.apply(command);
+    }
+    transcript.extend(resumed.iter().cloned());
+    let checkpoint = drive(
+        runtime,
+        resolved,
+        env,
+        run_id,
+        thread_id,
+        context,
         transcript,
         resumed,
         RESUME_STEP_BASE,
@@ -279,8 +308,7 @@ pub(crate) async fn resume_run(
         seed_state,
     )
     .await?;
-
-    finalize(&context, &thread_id, run_id, checkpoint).await
+    finalize(context, thread_id, run_id.clone(), checkpoint).await
 }
 
 /// Validate the staged state batch, then commit. A conflict fails closed: the
@@ -1492,29 +1520,12 @@ async fn resume_delegation(
         Err(err) => ResumeResult::ToolResult(ToolOutput::error(&call_id, err.to_string())),
     };
 
-    let mut transcript = reader.committed_messages(thread_id);
-    let mut store = store_from_commands(reader.committed_state(thread_id));
-    let (resumed, seed_state) =
-        resume_into_messages(runtime, env, ticket, synthetic, &store, context).await;
-    for command in &seed_state {
-        store.apply(command);
-    }
-    transcript.extend(resumed.iter().cloned());
-    let checkpoint = drive(
-        runtime,
-        resolved,
-        env,
-        run_id,
-        thread_id,
-        context,
-        transcript,
-        resumed,
-        RESUME_STEP_BASE,
-        store,
-        seed_state,
+    // The delegate's step, folded back as the delegate tool's replayed result,
+    // rebuilds committed truth and drives on — the same glue as a direct resume.
+    drive_resumed(
+        runtime, resolved, env, run_id, thread_id, ticket, synthetic, reader, context,
     )
-    .await?;
-    finalize(context, thread_id, run_id.clone(), checkpoint).await
+    .await
 }
 
 /// Turn a resumed result into the tool/user message(s) and any staged state.
