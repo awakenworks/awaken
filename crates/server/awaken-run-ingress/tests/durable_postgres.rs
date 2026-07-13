@@ -14,15 +14,16 @@ use std::sync::atomic::Ordering;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::store::run_store::RunStore;
+use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_run_ingress::{
-    DispatchQueue, DurableRunIngress, Inbox, PendingInput, PostgresDispatchStore,
+    DispatchQueue, DispatchWorker, DurableRunIngress, Inbox, PendingInput, PostgresDispatchStore,
     RunExecutionRequest, SubmitOptions,
 };
 use awaken_runtime::RunIngress;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_postgres::PostgresCommitCoordinator;
 
-use harness::{THREAD, TICKET, activation, activation_on, tool_runtime};
+use harness::{THREAD, TICKET, activation, activation_on, blocking_tool_runtime, tool_runtime};
 
 /// Single-writer-per-thread (ADR-0022), topology-independent: two runs of the SAME
 /// thread are both pending; two claimers race concurrently. The V0012
@@ -434,4 +435,108 @@ async fn list_dispatches_on_postgres() {
         .await
         .expect("dispatch");
     harness::assert_list_dispatches(&store).await;
+}
+
+/// Postgres parity for the mid-flight reclaim exactly-once guarantee (memory-only
+/// until now, `lease_semantics.rs`): a run reclaimed while its FIRST execution is
+/// genuinely still in flight is RE-EXECUTED, but the Postgres commit coordinator's
+/// terminal-is-final fence keeps the committed LOG exactly-once — the stale owner's
+/// duplicate post-terminal commit is rejected, so the transcript never gains a
+/// second terminal fact or a duplicate final assistant message. The worker absorbs
+/// the rejected commit as an already-done settle. The external tool side effect
+/// still runs twice (an at-least-once effect inherent to lease recovery).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn postgres_mid_flight_reclaim_keeps_the_committed_log_exactly_once() {
+    const LEASE: u64 = 1_000;
+    let schema = "t_pg_midflight";
+    let Some(pool) = harness::schema_pool(schema).await else {
+        return;
+    };
+    let commit = Arc::new(
+        PostgresCommitCoordinator::with_pool(pool.clone())
+            .await
+            .expect("commit"),
+    );
+    let store = Arc::new(
+        PostgresDispatchStore::with_pool(pool.clone())
+            .await
+            .expect("dispatch"),
+    );
+
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let (runtime, ran) = blocking_tool_runtime(release.clone());
+    let run = RunId("run-1".to_string());
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .expect("enqueue");
+
+    // Owner A drives in the background; it blocks inside the tool after committing the
+    // run's first `Running` fact (mid-step, no waiting ticket).
+    let worker_a = Arc::new(
+        DispatchWorker::new(runtime.clone(), store.clone(), commit.clone(), "owner-a")
+            .with_lease_ms(LEASE),
+    );
+    let a_handle = {
+        let worker_a = worker_a.clone();
+        tokio::spawn(async move { worker_a.tick(0).await })
+    };
+
+    // Wait until A is frozen inside the tool.
+    let frozen = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while ran.load(Ordering::SeqCst) < 1 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    assert!(frozen.is_ok(), "A reached and blocked in the tool");
+
+    let record = RunStore::get(&*commit, &run).expect("A committed a record");
+    assert_eq!(record.phase, Phase::Running, "A committed a mid-flight Running");
+
+    // Owner B's lease-expired reclaim re-drives the same run to completion — running
+    // the tool a SECOND time (the inherent double side effect).
+    let worker_b = DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-b")
+        .with_lease_ms(LEASE);
+    let processed = worker_b.tick(LEASE + 1).await.expect("B drives");
+    assert_eq!(
+        processed,
+        Some((run.clone(), Phase::Ended(EndCause::NaturalEnd))),
+        "B reclaimed the still-running run and drove it to completion"
+    );
+
+    // Release A; its re-commit over the now-terminal run is FENCED and absorbed as an
+    // already-done settle, so A's tick resolves cleanly reporting the run terminal.
+    release.add_permits(1);
+    let a_result = tokio::time::timeout(std::time::Duration::from_secs(10), a_handle)
+        .await
+        .expect("A joined")
+        .expect("A did not panic")
+        .expect("A resolved without a fatal error");
+    assert_eq!(
+        a_result,
+        Some((run.clone(), Phase::Ended(EndCause::NaturalEnd))),
+        "the stale owner's rejected re-drive settles as already-done, not a fault"
+    );
+
+    // Residual: the tool side effect ran twice (at-least-once).
+    assert_eq!(ran.load(Ordering::SeqCst), 2, "the tool ran twice");
+
+    // THE guarantee: exactly-once committed LOG. The committed transcript carries
+    // exactly ONE final "all done" assistant message and the run's record is a single
+    // terminal fact — the stale owner's duplicate terminal commit was fenced.
+    let all_done = ThreadReader::committed_messages(&*commit, &ThreadId(THREAD.to_string()))
+        .into_iter()
+        .filter(|m| m.text_content().contains("all done"))
+        .count();
+    assert_eq!(
+        all_done, 1,
+        "exactly one final assistant message — no duplicate terminal turn"
+    );
+    let record = RunStore::get(&*commit, &run).expect("terminal record");
+    assert_eq!(
+        record.phase,
+        Phase::Ended(EndCause::NaturalEnd),
+        "the run has a single terminal record"
+    );
 }
