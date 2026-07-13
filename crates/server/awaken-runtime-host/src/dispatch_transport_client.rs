@@ -19,6 +19,19 @@ use awaken_run_ingress::{
 };
 use awaken_runtime_contract::resume::ResumeResult;
 
+/// Build a worker's process dispatch store: an [`HttpDispatchQueue`] pointed at the
+/// cell server, wrapped as the injectable `AnyDispatchStore` the pool drains. Pass
+/// it to `init_shared_dispatch_store` so `ensure_dispatch_pool` claims/settles over
+/// the transport instead of a local queue.
+pub fn worker_dispatch_store(
+    server_url: impl Into<String>,
+) -> std::sync::Arc<awaken_run_ingress::AnyDispatchStore> {
+    std::sync::Arc::new(awaken_run_ingress::AnyDispatchStore::from_dispatch(
+        std::sync::Arc::new(HttpDispatchQueue::new(server_url))
+            as std::sync::Arc<dyn awaken_run_ingress::Dispatch>,
+    ))
+}
+
 /// A `Dispatch` store whose worker verbs are HTTP calls to a cell server.
 pub struct HttpDispatchQueue {
     base_url: String,
@@ -137,13 +150,15 @@ impl DispatchQueue for HttpDispatchQueue {
         Ok(())
     }
 
-    // --- server-local operational verbs: a worker never runs these ---
+    // --- server-local operational verbs: the SERVER owns dead-letter/recovery GC.
+    // A worker's pool may tick these from its maintenance loop; they are benign
+    // no-ops here (the server does the real work) so the pool's loops never fail. ---
 
     async fn reap(&self, _max_attempts: u64, _now_ms: u64) -> Result<usize, DispatchError> {
-        Self::server_local("reap")
+        Ok(0)
     }
     async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
-        Self::server_local("dead_letters")
+        Ok(Vec::new())
     }
     async fn requeue(&self, _run_id: &RunId) -> Result<bool, DispatchError> {
         Self::server_local("requeue")
@@ -152,19 +167,19 @@ impl DispatchQueue for HttpDispatchQueue {
         Self::server_local("cancel")
     }
     async fn parked_run(&self, _thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError> {
-        Self::server_local("parked_run")
+        Ok(None)
     }
     async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
-        Self::server_local("purge_dead_letters")
+        Ok(0)
     }
     async fn purge_dead_letters_before(&self, _cutoff_ms: u64) -> Result<usize, DispatchError> {
-        Self::server_local("purge_dead_letters_before")
+        Ok(0)
     }
     async fn superseded(&self) -> Result<Vec<RunId>, DispatchError> {
-        Self::server_local("superseded")
+        Ok(Vec::new())
     }
     async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError> {
-        Self::server_local("list_dispatches")
+        Ok(Vec::new())
     }
 }
 
@@ -173,8 +188,10 @@ impl Inbox for HttpDispatchQueue {
     async fn append(&self, _input: PendingInput) -> Result<bool, DispatchError> {
         Self::server_local("inbox.append")
     }
+    // The worker's pool reads the inbox during a drive; the run's pending input is
+    // already delivered in `Claimed.pending`, so an empty inbox is correct here.
     async fn list(&self, _thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError> {
-        Self::server_local("inbox.list")
+        Ok(Vec::new())
     }
     async fn retract(
         &self,
@@ -199,6 +216,6 @@ impl Outbox for HttpDispatchQueue {
         Self::server_local("outbox.stage")
     }
     async fn relay(&self) -> Result<usize, DispatchError> {
-        Self::server_local("outbox.relay")
+        Ok(0)
     }
 }

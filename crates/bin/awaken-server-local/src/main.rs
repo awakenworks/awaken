@@ -39,6 +39,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         return awaken_server_local::run_hand_server(&hand_addr, false).await;
     }
+    // Worker role (cross-node, database-less): claim runs from the cell server over
+    // the dispatch transport and commit facts to it; hold no store, serve no HTTP.
+    if let Some(upstream) = std::env::var("AWAKEN_UPSTREAM_URL")
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        return awaken_server_local::run_worker(&upstream).await;
+    }
     let addr = std::env::var("AWAKEN_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:38080".to_string());
     // Durability guard: refuse to boot a `AWAKEN_INGRESS=durable` ingress that would
     // resolve to a volatile in-memory queue (durable + default sqlite backend + no

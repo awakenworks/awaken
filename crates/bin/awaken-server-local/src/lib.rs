@@ -440,6 +440,37 @@ fn mount(host: Arc<SharedHost>) -> Router {
     mount_with_managed(host, Arc::new(state))
 }
 
+/// Run this process as a database-less **worker** of the cell server at `upstream`:
+/// its dispatch pool claims and settles runs over the server's dispatch transport,
+/// and its commit boundary posts facts to the server's commit ingest
+/// (`with_upstream`). It holds no store and serves no HTTP — it only drains.
+/// Requires `AWAKEN_INGRESS=durable` (the pool's enable gate); the injected remote
+/// store routes the drain over HTTP instead of a local queue. A deterministic echo
+/// model keeps the worker self-contained (no upstream model needed).
+pub async fn run_worker(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
+    awaken_runtime_host::init_shared_dispatch_store(awaken_runtime_host::worker_dispatch_store(
+        upstream,
+    ));
+    let host = Arc::new(SharedHost::new(Arc::new(EchoModel), "worker").with_upstream(upstream));
+    host.ensure_dispatch_pool();
+    eprintln!("awaken-server-local worker draining from {upstream}");
+    // Drain in the background; block until stopped.
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut term = signal(SignalKind::terminate())?;
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+    Ok(())
+}
+
 /// [`mount`], with a caller-assembled Managed state: the management server passes
 /// a vault-aware `ManagedState` over an MCP-wired `ManagedHost` (ADR-0043 Phase
 /// 3); every other mode goes through [`mount`], whose state is the plain host.
@@ -448,7 +479,13 @@ fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -
     // (O2): it is the sole claimer of the shared queue and drives every session's
     // runs. This is the single seam that owns an `Arc<SharedHost>`, which the pool's
     // session resolver needs.
-    host.ensure_dispatch_pool();
+    //
+    // A coordinator-only cell server (`AWAKEN_DISABLE_LOCAL_POOL=1`) skips its
+    // co-located pool so remote database-less workers are the sole drainers, claiming
+    // and settling over the dispatch transport.
+    if std::env::var("AWAKEN_DISABLE_LOCAL_POOL").as_deref() != Ok("1") {
+        host.ensure_dispatch_pool();
+    }
     let managed = router(managed_state);
     // One neutral port impl behind the three wire adapters (each `router` takes
     // `Arc<dyn ProtocolRuntime>`), so they share the host with no per-protocol twin.

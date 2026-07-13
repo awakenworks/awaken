@@ -1734,7 +1734,6 @@ impl SharedHost {
         input: Vec<Message>,
     ) -> Result<String, HostError> {
         let ctx = self.ctx_for(thread, agent).await?;
-        let pool = self.dispatch_pool_or_err()?;
         let mut messages: Vec<Message> = {
             let mut st = ctx.state.lock().await;
             std::mem::take(&mut st.pending_system)
@@ -1760,9 +1759,27 @@ impl SharedHost {
             BASE_SEQ.fetch_add(1, Ordering::SeqCst)
         ));
         activation.run_id = uid.clone();
-        pool.submit(activation)
-            .await
-            .map_err(|e| HostError::internal(e.to_string()))?;
+        match self.dispatch_pool_or_err() {
+            // Normal server: the local pool claims and drives it.
+            Ok(pool) => pool
+                .submit(activation)
+                .await
+                .map_err(|e| HostError::internal(e.to_string()))?,
+            // Coordinator-only durable server (no local pool): enqueue straight into
+            // the shared store so a remote database-less worker drains it over the
+            // dispatch transport. Non-durable keeps the original "enable the pool" error.
+            Err(e) if std::env::var("AWAKEN_INGRESS").as_deref() == Ok("durable") => {
+                use awaken_run_ingress::DispatchQueue;
+                let _ = e;
+                let store =
+                    crate::dispatch_backend::shared_durable_store(self.store_dir.as_deref())?;
+                store
+                    .enqueue(awaken_run_ingress::RunExecutionRequest::new(activation))
+                    .await
+                    .map_err(|e| HostError::internal(e.to_string()))?;
+            }
+            Err(e) => return Err(e),
+        }
         Ok(uid.0)
     }
 

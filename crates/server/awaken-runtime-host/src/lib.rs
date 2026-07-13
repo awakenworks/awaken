@@ -100,7 +100,7 @@ pub use crate::tool_catalog::{
 // The per-plane resource routers the composition root merges over one host.
 pub use crate::commit_ingest::{RemoteCoordinator, commit_ingest_router};
 pub use crate::dispatch_transport::dispatch_transport_router;
-pub use crate::dispatch_transport_client::HttpDispatchQueue;
+pub use crate::dispatch_transport_client::{HttpDispatchQueue, worker_dispatch_store};
 pub use crate::durable_ops::durable_ops_router;
 pub use crate::files::files_router;
 pub use crate::memory_store_api::memory_stores_router;
