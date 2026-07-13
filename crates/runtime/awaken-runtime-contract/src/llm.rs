@@ -8,6 +8,7 @@
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
+use awaken_agent_contract::agent::state::{MergePolicy, Scope, StateKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -215,6 +216,23 @@ impl ThreadUsage {
 /// naming any wire, and it survives a restart. Internal (the `__` prefix keeps it out
 /// of any agent-authored state namespace).
 pub const THREAD_USAGE_STATE_KEY: &str = "__usage";
+
+/// Typed view over the thread-usage cell (ADR-0055). A read fails closed on a
+/// shape drift (so a persisted run's accumulated tally is never silently reset),
+/// and a write is `Commutative` so a step's tally shallow-merges the committed
+/// object. An update records one step's usage against its bound model.
+pub struct ThreadUsageKey;
+
+impl StateKey for ThreadUsageKey {
+    const KEY: &'static str = THREAD_USAGE_STATE_KEY;
+    const SCOPE: Scope = Scope::Thread;
+    const MERGE: MergePolicy = MergePolicy::Commutative;
+    type Value = ThreadUsage;
+    type Update = (String, TokenUsage);
+    fn apply(value: &mut ThreadUsage, (model, usage): (String, TokenUsage)) {
+        value.record(&model, usage);
+    }
+}
 
 /// A classified inference failure. The variant is the classification: it
 /// decides both the retry policy (`is_retryable`) and the stable code
