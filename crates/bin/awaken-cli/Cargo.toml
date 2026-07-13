@@ -12,13 +12,12 @@ path = "src/main.rs"
 # the deployment: single-machine all-in-one, a coordinator, a database-less worker,
 # or a hand executor endpoint — one binary, no separate server-local/standalone.
 [dependencies]
-# The clean full-surface + auth assembly (reused as the Serve-role composition).
-awaken-standalone.workspace = true
-# The role axis + the Worker / Hand execution endpoints.
+# The single-machine composition root: the Serve-role management assembly (models
+# resolved from the DB-configured catalog + credential vault) and the role axis +
+# Worker / Hand execution endpoints.
 awaken-server-local.workspace = true
 awaken-runtime-host.workspace = true
 awaken-observability.workspace = true
-awaken-runtime-contract.workspace = true
 axum = "0.8"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal"] }
 

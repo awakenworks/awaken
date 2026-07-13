@@ -1,30 +1,37 @@
-// Deployment-agnostic e2e for the aggregated `awaken` command (crate awaken-cli).
+// End-to-end for the aggregated `awaken` command (crate awaken-cli), Serve role.
 //
 // `awaken` is the single binary that subsumes awaken-server-local and
 // awaken-standalone: configuration (AWAKEN_ROLE + the deployment axes) decides the
-// deployment. This test exercises the default **Serve** role — the single-machine
-// all-in-one — black-box over real HTTP with the official Anthropic SDK, proving the
-// aggregated command boots, seeds its keys, enforces the session guard, and drives a
-// full agent turn. The Serve role reuses `awaken_standalone::build` verbatim, so the
-// broader protocol/durability surface is covered by standalone_e2e; this asserts the
-// aggregation wiring itself is live.
+// deployment. The default Serve role mounts the production management assembly, whose
+// host resolves each session's model from the **database-configured** catalog +
+// credential vault (ConfigExecutorProvider) — not a baked-in demo model.
+//
+// This test proves that path through the real binary: author a provider / endpoint /
+// offering + an Anthropic credential through the console API, publish an agent bound
+// to that model, then run a session and assert the reply came from the configured
+// model over the wire (a fake Anthropic upstream). It is the first coverage of the
+// console-config → resolve → run chain end to end.
 //
 // Run: (from e2e/)  npm install && node awaken_cli_e2e.mjs
 
 import assert from 'node:assert/strict';
 import net from 'node:net';
-import os from 'node:os';
-import path from 'node:path';
-import fs from 'node:fs';
 import readline from 'node:readline';
 import { spawn, execSync } from 'node:child_process';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
+import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38411);
 const BETAS = ['managed-agents-2026-04-01'];
-const HELLO = 'Hello from awaken-standalone.'; // reused HelloModel reply
+const FAKE_KEY = 'sk-awaken-cli-fake-key'; // awaken-allow: secret
+// The management plane's per-provider credential derive resolves in this workspace
+// (authz::BOOTSTRAP_WORKSPACE); the console credential must land here to be picked up.
+const WORKSPACE = 'wrkspc_default';
+const AGENT = 'db-model-agent';
+const MODEL = 'fake-haiku';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function awakenBin() {
@@ -69,13 +76,8 @@ function startAwaken(bin, port, extraEnv = {}) {
     env: { ...process.env, AWAKEN_HTTP_ADDR: `127.0.0.1:${port}`, ...extraEnv },
     stdio: ['ignore', 'inherit', 'pipe'],
   });
-  const keys = {};
   readline.createInterface({ input: server.stderr }).on('line', (line) => {
     process.stderr.write(`${line}\n`);
-    const admin = line.match(/admin key:\s+(sk-awaken-\S+)/);
-    const api = line.match(/api key:\s+(sk-awaken-\S+)/);
-    if (admin) keys.admin = admin[1];
-    if (api) keys.api = api[1];
   });
   const stop = () =>
     new Promise((resolve) => {
@@ -83,55 +85,113 @@ function startAwaken(bin, port, extraEnv = {}) {
       server.on('exit', () => resolve());
       server.kill('SIGINT');
     });
-  return { server, keys, baseUrl: `http://127.0.0.1:${port}`, stop };
+  return { server, baseUrl: `http://127.0.0.1:${port}`, stop };
 }
 
-async function ready(handle, port) {
-  await waitForPort(port);
-  for (let i = 0; i < 200 && !handle.keys.api; i++) await sleep(50);
-  assert.ok(handle.keys.api?.startsWith('sk-awaken-'), 'captured the seeded api key from the banner');
-}
-
-function sdk(baseUrl, token) {
-  return new Anthropic({ apiKey: null, authToken: token, baseURL: baseUrl });
-}
-
-// One full agent turn: create a session, send a user message, drain the events.
-async function turn(client, text) {
-  const session = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
-  await client.beta.sessions.events.send(session.id, {
-    events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
-    betas: BETAS,
+async function req(base, method, uri, body) {
+  const res = await fetch(`${base}${uri}`, {
+    method,
+    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
-  const events = [];
-  for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) events.push(ev);
-  return events.filter((e) => e.type === 'agent.message').map((e) => e.content[0].text);
+  const text = await res.text();
+  let json = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = { _raw: text };
+  }
+  return { status: res.status, json };
+}
+
+async function ready(base, timeoutMs = 60_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const res = await fetch(`${base}/v1/capabilities`);
+      if (res.ok) return;
+    } catch {
+      /* not up yet */
+    }
+    if (Date.now() > deadline) throw new Error('management plane did not become ready');
+    await sleep(200);
+  }
 }
 
 async function main() {
+  const upstream = await startFakeAnthropic(FAKE_KEY);
   const bin = awakenBin();
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-cli-e2e-'));
-  const h = startAwaken(bin, PORT, { AWAKEN_STORAGE_DIR: dir });
+  // In-memory management stores (no AWAKEN_MGMT_DIR): the console config lives for the
+  // process lifetime, which is all this resolve→run proof needs.
+  const h = startAwaken(bin, PORT);
   try {
-    await ready(h, PORT);
-    console.log('ok: aggregated `awaken` command booted in the default Serve role');
+    await waitForPort(PORT);
+    await ready(h.baseUrl);
+    console.log('ok: aggregated `awaken` command booted in the default Serve role (management plane)');
 
-    // The session-axis guard is live: no credential → 401.
-    const anon = await fetch(`${h.baseUrl}/v1/sessions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'anthropic-beta': BETAS[0] },
-      body: JSON.stringify({ agent: 'assistant' }),
+    // ---- author the model in the database-backed console ---------------------
+    const base = h.baseUrl;
+    let r = await req(base, 'PUT', '/v1/config/providers/anthropic', {
+      id: 'anthropic', slug: 'anthropic', display_name: 'Anthropic', version: 1,
     });
-    assert.equal(anon.status, 401, '/v1/sessions requires a credential');
-    console.log('ok: session guard rejects the anonymous caller');
+    assert.equal(r.status, 200, `provider: ${JSON.stringify(r.json)}`);
+    r = await req(base, 'PUT', '/v1/config/endpoints/ep1', {
+      id: 'ep1', provider_id: 'anthropic', dialect: 'anthropic_messages',
+      base_url: `${upstream.url}/v1/`, timeout_secs: 300, display_name: 'fake', version: 1,
+    });
+    assert.equal(r.status, 200, `endpoint: ${JSON.stringify(r.json)}`);
+    r = await req(base, 'POST', '/v1/config/offerings', {
+      model_id: MODEL, provider_id: 'anthropic',
+      protocol_endpoint_id: 'ep1', dialect: 'anthropic_messages', upstream_model: null,
+    });
+    assert.equal(r.status, 200, `offering: ${JSON.stringify(r.json)}`);
+    r = await req(base, 'POST', '/v1/config/credentials', {
+      workspace_id: WORKSPACE, kind: 'vault', provider_id: 'anthropic',
+      env_key: 'ANTHROPIC_API_KEY', secret: FAKE_KEY,
+    });
+    assert.equal(r.status, 201, `credential: ${JSON.stringify(r.json)}`);
+    console.log('ok: authored provider/endpoint/offering + credential in the console DB');
 
-    // A full agent turn over the aggregated command.
-    const replies = await turn(sdk(h.baseUrl, h.keys.api), 'hello awaken');
-    assert.ok(replies.some((t) => t.includes(HELLO)), `turn replies: ${JSON.stringify(replies)}`);
-    console.log('ok: full agent turn on the aggregated command');
+    // ---- publish an agent bound to that model --------------------------------
+    // The console agent object is the managed `/v1/agents` shape: the model is
+    // `model: { id }`, which the config plane maps to a Pinned selection — so a
+    // session for this agent runs exactly the DB-configured `MODEL`.
+    r = await req(base, 'PUT', `/v1/config/agents/${AGENT}`, {
+      name: AGENT,
+      model: { id: MODEL },
+      system: 'You are a test agent.',
+      max_steps: 2,
+    });
+    assert.equal(r.status, 200, `agent config: ${JSON.stringify(r.json)}`);
+    r = await req(base, 'POST', `/v1/config/agents/${AGENT}/publish`, undefined);
+    assert.equal(r.status, 200, `publish: ${JSON.stringify(r.json)}`);
+    assert.equal(r.json.installed, true, 'published agent installed into the live catalog');
+    console.log(`ok: published agent bound to the DB-configured model '${MODEL}'`);
+
+    // ---- run a session on the DB-configured model ----------------------------
+    const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
+    const session = await client.beta.sessions.create({
+      agent: AGENT, environment_id: 'env_local', betas: BETAS,
+    });
+    assert.ok(session.id.startsWith('sesn_'), `session id: ${session.id}`);
+    await client.beta.sessions.events.send(session.id, {
+      events: [{ type: 'user.message', content: [{ type: 'text', text: 'resolve me' }] }],
+      betas: BETAS,
+    });
+    const events = [];
+    for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) events.push(ev);
+    const msg = events.find((e) => e.type === 'agent.message');
+    assert.ok(msg, `expected an agent.message in ${events.map((e) => e.type)}`);
+    const text = (msg.content ?? []).map((c) => c.text ?? '').join('');
+    assert.ok(
+      text.includes('FAKE:resolve me'),
+      `the session ran the DB-configured model over the wire: ${JSON.stringify(text)}`,
+    );
+    assert.ok(upstream.requests.length >= 1, 'the fake upstream received the configured-model call');
+    console.log('ok: session ran the database-configured model + credential over the wire');
   } finally {
     await h.stop();
-    fs.rmSync(dir, { recursive: true, force: true });
+    upstream.close();
   }
   console.log('\nawaken_cli_e2e: PASS');
 }
