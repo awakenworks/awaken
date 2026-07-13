@@ -80,6 +80,14 @@ impl IdBound {
             }
         }
     }
+
+    /// Whether this bound admits nothing — the deny-all `Exact([])` default. An
+    /// operator overlay reads this to tell a plugin that reserves a high-privilege
+    /// axis (e.g. a tool gate) from one that leaves it unused.
+    #[must_use]
+    pub fn is_deny_all(&self) -> bool {
+        matches!(self, IdBound::Exact(ids) if ids.is_empty())
+    }
 }
 
 /// The upper bound of what a plugin may contribute. Actual contributions must be
