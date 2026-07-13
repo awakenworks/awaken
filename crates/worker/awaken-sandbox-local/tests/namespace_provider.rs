@@ -107,6 +107,34 @@ async fn seatbelt_confines_a_real_spawn_on_macos() {
 }
 
 #[tokio::test]
+async fn dispose_reaps_and_shreds_a_secret_mounted_sandbox() {
+    // Ungated: create/realize/dispose need no bwrap (only spawn does). Exercises the
+    // secret-path capture in realize_layout and the shred-then-reap in dispose.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = spec("t-sec");
+    s.mounts.push(pc::MountRequirement {
+        mount_id: "auth".into(),
+        source: pc::MountSource::Secret {
+            reference: "broker://k".into(),
+            content_hash: None,
+        },
+        mount_path: "/workspace/.auth".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::PerRun,
+        required: true,
+    });
+    let provider =
+        NamespaceProvider::new(tmp.path()).with_blob("broker://k", b"sk-secret".to_vec());
+    let sandbox = provider.create_sandbox(&s).await.unwrap();
+    assert_eq!(sandbox.realized().len(), 1);
+    sandbox.dispose().await.unwrap();
+    assert!(matches!(
+        sandbox.status().await.unwrap(),
+        pc::SandboxStatus::Terminated
+    ));
+}
+
+#[tokio::test]
 async fn host_allowlist_egress_is_rejected() {
     let tmp = tempfile::tempdir().unwrap();
     let mut spec = spec("t-net");
