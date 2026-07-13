@@ -114,4 +114,37 @@ mod tests {
         assert_eq!(v["data"]["organization_id"], "org_root");
         assert_eq!(v["data"]["workspace_id"], "wrkspc_acme");
     }
+
+    #[test]
+    fn an_event_round_trips_through_deserialize() {
+        // The wire body a receiver parses must deserialize back to the same event —
+        // the `Deserialize` derive is exercised, so a `serde(rename)` drift is caught.
+        // Also pins `session.status_terminated`, a catalog entry no test touched.
+        let ev = WebhookEvent::new(
+            "event_9",
+            "2026-07-09T00:00:00Z",
+            "session.status_terminated",
+            "sesn_9",
+            "wrkspc_acme",
+            Some("org_root".to_string()),
+        );
+        let back: WebhookEvent = serde_json::from_str(&ev.to_body()).expect("body deserializes");
+        assert_eq!(back, ev, "serialize→deserialize is lossless");
+        assert_eq!(back.data.event_type, "session.status_terminated");
+        assert_eq!(back.data.organization_id.as_deref(), Some("org_root"));
+    }
+
+    #[test]
+    fn a_future_field_is_tolerated_on_deserialize() {
+        // Forward compatibility: a consumer on this version must still parse a body
+        // the catalog grew a field on (no `deny_unknown_fields`).
+        let body = r#"{"type":"event","id":"event_1","created_at":"2026-07-09T00:00:00Z",
+            "data":{"type":"session.status_idled","id":"sesn_1","workspace_id":"wrkspc_a",
+            "session_thread_id":"thrd_future"}}"#;
+        let ev: WebhookEvent = serde_json::from_str(body).expect("unknown fields are tolerated");
+        assert_eq!(ev.data.workspace_id, "wrkspc_a");
+        assert_eq!(ev.data.event_type, "session.status_idled");
+        // A self-hosted body (no organization_id) deserializes org as None.
+        assert!(ev.data.organization_id.is_none());
+    }
 }
