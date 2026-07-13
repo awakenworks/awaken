@@ -43,7 +43,8 @@ pub use admission::{AdmissionError, EnvironmentDecl, check_environment_soundness
 pub use approval::{ApprovalDecision, ApprovalPolicy, SandboxAction, decide as approval_decide};
 pub use lease::{
     AdoptionPlan, LeaseGrant, LeaseLiveness, LivenessSignals, ReapCause, ReconcileOutcome,
-    apply_adoption_plan, decide_reap, reconcile_adoption, reconcile_and_apply,
+    apply_adoption_plan, capped_expiry, decide_reap, egress_permitted, reconcile_adoption,
+    reconcile_and_apply,
 };
 pub use poison::{AttemptSignal, PoisonVerdict, classify as classify_poison};
 pub use prepare::{EnvironmentPlan, PrepareError, prepare_environment};
