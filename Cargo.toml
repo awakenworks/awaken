@@ -73,14 +73,14 @@ awaken-api-contract = { git = "https://github.com/awakenworks/awaken-foundation"
 # became consumable once iam adopted foundation ADR-0005 (rusqlite as a
 # links-safe *range*, >=0.32 <0.41), so its SqlStore/migrations now back the
 # embedded authz rows instead of a hand-rolled schema.
-awaken-iam-contract = { git = "https://github.com/awakenworks/awaken-iam", rev = "edd683371d99501389eb27de0104223e15cf18c9" }
-awaken-iam-server = { git = "https://github.com/awakenworks/awaken-iam", rev = "edd683371d99501389eb27de0104223e15cf18c9" }
-awaken-iam-core = { git = "https://github.com/awakenworks/awaken-iam", rev = "edd683371d99501389eb27de0104223e15cf18c9" }
-awaken-iam-preset = { git = "https://github.com/awakenworks/awaken-iam", rev = "edd683371d99501389eb27de0104223e15cf18c9" }
+awaken-iam-contract = { git = "https://github.com/awakenworks/awaken-iam", rev = "9aa91e1b1c2533acc00cc151aa3fdccc89f0f97f" }
+awaken-iam-server = { git = "https://github.com/awakenworks/awaken-iam", rev = "9aa91e1b1c2533acc00cc151aa3fdccc89f0f97f" }
+awaken-iam-core = { git = "https://github.com/awakenworks/awaken-iam", rev = "9aa91e1b1c2533acc00cc151aa3fdccc89f0f97f" }
+awaken-iam-preset = { git = "https://github.com/awakenworks/awaken-iam", rev = "9aa91e1b1c2533acc00cc151aa3fdccc89f0f97f" }
 # The assembly layer (ADR-0048): one IamGate (authn+authz PDP) + auth_layer PEP,
 # three modes (Open/Local/Remote). Local mode is the zero-config single-machine
 # embed (in-memory SQLite, seeded roles, ephemeral bootstrap admin token).
-awaken-iam-host = { git = "https://github.com/awakenworks/awaken-iam", rev = "edd683371d99501389eb27de0104223e15cf18c9" }
+awaken-iam-host = { git = "https://github.com/awakenworks/awaken-iam", rev = "9aa91e1b1c2533acc00cc151aa3fdccc89f0f97f" }
 awaken-managed-bridge = { path = "crates/server/awaken-managed-bridge" }
 awaken-store-conformance = { path = "crates/stores/awaken-store-conformance" }
 awaken-store-inmem = { path = "crates/runtime/awaken-store-inmem" }

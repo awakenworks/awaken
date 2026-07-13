@@ -8,21 +8,17 @@
 //!   2. **Fail-closed authn** — no credential and a bogus credential both fail to
 //!      resolve a principal; only the real ephemeral admin authenticates.
 //!
-//! **Adoption outcome (ADR-0048): engine shared; `IamGate` not interposed.** The
-//! authn/authz *core* validated here is sound and the *engine* is already shared
-//! (`authz.rs` composes iam-core/-server/-preset directly). iam-host was extended
-//! at rev `edd6833` so a Managed-style product *could* adopt its PEP with no
-//! bespoke guard: `RouteActions::scope_for` (per-workspace tenancy),
-//! `IamGate::from_local_state` (wrap a product's single-locked embed),
-//! `authenticate_scoped` (principal + token workspace), and the
-//! `extract_credential` / `render_auth_error` hooks (x-api-key, product error
-//! envelope). This plane still does not interpose the gate: `IamGate` only routes
-//! to the `ApiTokenDirectory` and policy engine `authz.rs` already calls directly,
-//! so wrapping is pure indirection — and `authenticate_scoped`'s `Option` would
-//! even drop the expired/revoked/invalid distinction the guard surfaces (see the
-//! `authz.rs` module doc, "iam-host (ADR-0048)"). This test keeps host's assembly
-//! regression-checked against our rev so a future consumer that fits the PEP can
-//! adopt it.
+//! **Adoption outcome (ADR-0048): `IamGate` is the PDP.** `authz.rs` now runs its
+//! management authn/authz through `IamGate` (built via `from_local_state` over its
+//! own embed) — see the `authz.rs` module doc, "iam-host (ADR-0048)". This test
+//! exercises host's *alternative* embed, `embed_local` (the zero-config default
+//! embed server-local does not use, since it hard-codes identity and seeds no
+//! grants), keeping that assembly regression-checked against our rev for consumers
+//! that want the batteries-included path. The lossless server-local adoption was
+//! unblocked by extending host (rev `9aa91e1`): `from_local_state` (single-lock
+//! embed), `authenticate_detailed`/`AuthReject` (distinct 401 reasons), and
+//! `authenticate_scoped`, plus `scope_for` / `extract_credential` /
+//! `render_auth_error` for a consumer adopting `auth_layer` wholesale.
 
 use awaken_iam_contract::{PrincipalRef, Timestamp};
 use awaken_iam_host::{HostConfig, embed_local};

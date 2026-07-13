@@ -68,6 +68,9 @@ awaken-iam-contract = { workspace = true }
 awaken-iam-server = { workspace = true }
 awaken-iam-core = { workspace = true }
 awaken-iam-preset = { workspace = true }
+# The IAM assembly layer (ADR-0048): IamGate (single authn/authz PDP) built over
+# our own LocalIamState, driving the management guard.
+awaken-iam-host = { workspace = true }
 # The embedded IAM token/binding rows persist under AWAKEN_MGMT_DIR/iam.sqlite;
 # same rusqlite generation as every other sqlite store in the workspace.
 rusqlite = { workspace = true }
@@ -105,6 +108,3 @@ awaken-ext-mcp = { workspace = true }
 base64 = "0.22"
 # Restart-persistence test: a management router rebuilt over the same tempdir.
 tempfile = "3"
-# ADR-0048 assembly validation: the iam-host embed (IamGate + auth_layer) proven
-# against our pinned rev — zero-config Local mode, ephemeral admin, fail-closed.
-awaken-iam-host = { workspace = true }
