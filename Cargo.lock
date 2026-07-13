@@ -1326,8 +1326,10 @@ dependencies = [
  "awaken-protocol-managed",
  "awaken-webhook",
  "axum",
+ "http-body-util",
  "serde_json",
  "tokio",
+ "tower",
 ]
 
 [[package]]
