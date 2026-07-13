@@ -137,6 +137,25 @@ impl K8sRuntime {
         self
     }
 
+    /// A runtime backed by a **lazy** client (no cluster dial), for unit-testing the
+    /// builder + Pod-assembly paths; the live `create`/`wait`/… methods still need a
+    /// real apiserver (exercised by the gated `k8s_it` integration test).
+    #[cfg(test)]
+    fn for_test(agent_addr: SocketAddr) -> Self {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let config = kube::Config::new("http://127.0.0.1:1/".parse().unwrap());
+        let client = Client::try_from(config).expect("lazy kube client builds without a cluster");
+        Self {
+            client,
+            namespace: "default".into(),
+            agent_addr,
+            owner: None,
+            memoryd_image: DEFAULT_MEMORYD_IMAGE.to_string(),
+            rendezvous: None,
+            memoryd_fuse: false,
+        }
+    }
+
     fn pods(&self) -> Api<Pod> {
         Api::namespaced(self.client.clone(), &self.namespace)
     }
@@ -470,6 +489,31 @@ impl ContainerRuntime for K8sRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn builder_methods_set_every_field_and_pod_delegates_to_build_pod() {
+        let rt = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap())
+            .with_memoryd_fuse(true)
+            .with_owner(OwnerReference::default())
+            .with_rendezvous("127.0.0.1:7000".parse().unwrap())
+            .with_memoryd_image("custom/memoryd:1");
+        assert!(rt.memoryd_fuse);
+        assert!(rt.owner.is_some());
+        assert_eq!(rt.rendezvous, Some("127.0.0.1:7000".parse().unwrap()));
+        assert_eq!(rt.memoryd_image, "custom/memoryd:1");
+        // pod() threads the builder state into build_pod and the Api handle builds.
+        let pod = rt.pod("s1", &plan_with_memory(vec![]));
+        assert!(pod.metadata.name.is_some());
+        assert!(pod.spec.is_some());
+        let _ = rt.pods();
+    }
+
+    #[tokio::test]
+    async fn artifacts_are_out_of_band_and_touch_lease_is_a_noop() {
+        let rt = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap());
+        assert!(rt.artifacts("pod").await.unwrap().is_empty());
+        assert!(rt.touch_lease("pod").await.is_ok());
+    }
 
     #[test]
     fn pod_resources_maps_cpu_memory_and_disk() {
