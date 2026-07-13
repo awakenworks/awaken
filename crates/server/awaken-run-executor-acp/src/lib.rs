@@ -36,7 +36,9 @@ pub use awaken_protocol_acp::{AcpLaunchEvent, AcpLaunchStage, Codec, LaunchObser
 use awaken_provisioning_contract::ProcessHandle;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::boundary::{BoundaryOutcome, evaluate_boundary};
-use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
+use awaken_runtime_contract::execution::{
+    Cancellation, Error, ExecutorCapabilities, Result, RunExecutor, Wait,
+};
 use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, ThreadUsage, TokenUsage};
 use awaken_runtime_contract::permission::{
     PermissionContext, PermissionDecision, PermissionPolicy,
@@ -280,6 +282,17 @@ fn failure_cause(failure: &AcpFailure) -> EndCause {
 
 #[async_trait]
 impl RunExecutor for AcpRunExecutor {
+    fn capabilities(&self) -> ExecutorCapabilities {
+        // The supervisor interrupts the opaque CLI turn when the cancel future
+        // resolves, and the ACP permission flow parks a turn on an authorization
+        // decision. Mid-turn input steer is not delivered into the CLI, so `wait`
+        // is `Auth`, not `Both`.
+        ExecutorCapabilities {
+            cancellation: Cancellation::RemoteAbort,
+            wait: Wait::Auth,
+        }
+    }
+
     async fn execute(
         &self,
         activation: RunActivation,
