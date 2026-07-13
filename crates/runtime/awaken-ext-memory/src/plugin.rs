@@ -81,10 +81,6 @@ impl StateKey for RecallContext {
     const SCOPE: Scope = Scope::Run;
     const MERGE: MergePolicy = MergePolicy::Exclusive;
     type Value = Option<Vec<Message>>;
-    type Update = Vec<Message>;
-    fn apply(value: &mut Option<Vec<Message>>, update: Vec<Message>) {
-        *value = Some(update);
-    }
 }
 
 impl Plugin for MemoryPlugin {
@@ -258,14 +254,14 @@ mod tests {
     }
 
     #[test]
-    fn recall_context_key_folds_and_reads_back() {
+    fn recall_context_key_writes_and_reads_back() {
         let block = vec![Message::text(
             MessageId("m".into()),
             Role::System,
             "recalled",
         )];
         let mut store = Store::new();
-        store.apply(&RecallContext::commit(&store, block.clone()).unwrap());
+        store.apply(&RecallContext::write(&Some(block.clone())));
         assert_eq!(RecallContext::load_or_default(&store), Some(block));
     }
 
