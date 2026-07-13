@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# Port-only contract: the FileStore trait + FileStoreError live here; this crate
+# implements them and re-exports for backward-compatible paths.
+awaken-resource-contract.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 # Content id = a stable, collision-resistant hash (not the old 64-bit DefaultHasher),

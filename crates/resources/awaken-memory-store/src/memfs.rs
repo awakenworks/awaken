@@ -24,88 +24,13 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// Hard cap on a single memory's content (Anthropic parity, ADR-0057). Enforced on
-/// every create/update before any allocation.
-pub const MAX_MEMORY_BYTES: usize = 102_400;
-/// Hard cap on a memory path.
-pub const MAX_PATH_BYTES: usize = 1024;
-
-/// One path-addressed memory. `content` is present on `get`/`create`/`update`,
-/// absent on listings. `created`/`updated` are Unix-epoch nanoseconds so a FUSE
-/// `getattr` can report faithful timestamps.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Memory {
-    pub id: String,
-    pub path: String,
-    pub content_sha256: String,
-    pub content_size: u64,
-    /// Monotonic per-path version: 1 on create, +1 on each write. The cache-validation
-    /// oracle for the distributed model (ADR-0053 D5) and a diagnostic.
-    pub version: u64,
-    pub created_unix_nanos: u128,
-    pub updated_unix_nanos: u128,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
-}
-
-/// A directory-listing entry (no content).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MemoryEntry {
-    pub id: String,
-    pub path: String,
-    pub content_sha256: String,
-    pub content_size: u64,
-    pub version: u64,
-    pub updated_unix_nanos: u128,
-}
-
-/// A [`MemoryFs`] failure.
-#[derive(Debug, thiserror::Error)]
-pub enum MemErr {
-    #[error("memory not found: {0}")]
-    NotFound(String),
-    /// Optimistic-concurrency failure: the base sha no longer matches. `current`
-    /// carries the server's live memory (sha + content) for diagnostics; the caller
-    /// must not clobber.
-    #[error("cas conflict on {}: base sha stale", .current.path)]
-    Conflict { current: Box<Memory> },
-    #[error("path already exists: {0}")]
-    PathConflict(String),
-    #[error("invalid path: {0}")]
-    InvalidPath(String),
-    #[error("content exceeds {MAX_MEMORY_BYTES} bytes")]
-    TooLarge,
-    #[error("storage: {0}")]
-    Storage(String),
-}
-
-/// A path-addressed, CAS memory store — the seam a write-through FUSE mount calls
-/// (ADR-0053). All methods are store-scoped by an opaque, globally-unique `store` id.
-#[async_trait]
-pub trait MemoryFs: Send + Sync {
-    /// Memories whose path is at or under `prefix` (`"/"` or `""` = all).
-    async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr>;
-    /// The memory at `path`, or `None`.
-    async fn get_by_path(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr>;
-    /// Create a memory at `path`. `PathConflict` if it already exists.
-    async fn create(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr>;
-    /// Compare-and-swap the content of memory `id`: succeeds only if the stored sha
-    /// equals `base_sha` (or the new content is already current — idempotent). On a
-    /// mismatch returns [`MemErr::Conflict`] carrying the live memory; never clobbers.
-    async fn update(
-        &self,
-        store: &str,
-        id: &str,
-        content: &str,
-        base_sha: &str,
-    ) -> Result<Memory, MemErr>;
-    /// Move `from` → `to` atomically, **replacing** `to` if it exists (POSIX rename
-    /// semantics). The memory keeps its id (so an open FUSE fd stays valid) and bumps
-    /// its version.
-    async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr>;
-    /// Delete the memory at `path` (idempotent — deleting an absent path is `Ok`).
-    async fn delete_by_path(&self, store: &str, path: &str) -> Result<(), MemErr>;
-}
+// The path-addressed memory port (`MemoryFs`), its value types (`Memory`,
+// `MemoryEntry`), the error (`MemErr`), and the size caps live in the port-only
+// contract crate. This module implements the port and re-exports them so
+// `awaken_memory_store::memfs::Memory` (and the root re-exports) keep resolving.
+pub use awaken_resource_contract::{
+    MAX_MEMORY_BYTES, MAX_PATH_BYTES, MemErr, Memory, MemoryEntry, MemoryFs,
+};
 
 /// Lowercase hex SHA-256 of `content` — the CAS token (Anthropic wire is sha256).
 #[must_use]
