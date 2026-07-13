@@ -357,6 +357,10 @@ pub struct SharedHost {
     /// the server's commit ingest — the worker holds no store. Set via
     /// [`with_upstream`](Self::with_upstream); `None` is a store-owning server/host.
     pub(crate) upstream: Option<String>,
+    /// The deployment axes (store/dispatch backend, durable ingress, wake), parsed
+    /// once from the environment at construction. The runtime reads this typed
+    /// config instead of reaching into process env at each call site.
+    pub(crate) deployment: crate::deployment_config::DeploymentConfig,
     /// When set, an ACP CLI's session is harvested/restored under this durable root
     /// (keyed by thread+adapter) so it survives a move to another directory or
     /// worker. Point it at a **shared** location for cross-machine recovery; leave
@@ -452,13 +456,12 @@ impl SharedHost {
     /// A host over `llm`. Configure it with the chainable `with_*` builders
     /// (client tools, delegates, a judge grader, a durable store).
     pub fn new(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Self {
-        // Composition root: durability is picked from the environment.
-        // `AWAKEN_STORAGE_DIR` set → durable SQLite commit store + a durable memory
-        // blob store under it (both survive a restart); unset → ephemeral.
-        let store_dir = std::env::var("AWAKEN_STORAGE_DIR")
-            .ok()
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from);
+        // Composition root: the deployment axes are parsed once from the environment
+        // into one typed config. `AWAKEN_STORAGE_DIR` set → durable SQLite commit
+        // store + a durable memory blob store under it (both survive a restart);
+        // unset → ephemeral.
+        let deployment = crate::deployment_config::DeploymentConfig::from_env();
+        let store_dir = deployment.storage_dir.clone();
         // The ADR-0038 memory_store family persists under the storage dir when set so
         // a harvested write-back outlives the process; otherwise a per-process temp dir
         // (unit tests / ephemeral use) keeps it in-run only.
@@ -511,6 +514,7 @@ impl SharedHost {
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from),
             upstream: None,
+            deployment,
             remote_agents: HashMap::new(),
             memory: None,
             memory_selector: None,
@@ -887,14 +891,15 @@ impl SharedHost {
         // thread, so any node serves any thread's history. Connected once at startup
         // (the non-Send sqlx connect stays out of the run loop), independent of a
         // per-thread store dir.
-        if std::env::var("AWAKEN_STORE").as_deref() == Ok("postgres") {
+        use crate::deployment_config::StoreKind;
+        if self.deployment.store == StoreKind::Postgres {
             return crate::store::postgres_commit_or_err();
         }
         let Some(dir) = &self.store_dir else {
             return Ok(HostCommit::Memory(MemoryCommitCoordinator::new()));
         };
         std::fs::create_dir_all(dir).map_err(|e| HostError::internal(e.to_string()))?;
-        let fs_backend = std::env::var("AWAKEN_STORE").is_ok_and(|value| value == "fs");
+        let fs_backend = self.deployment.store == StoreKind::Fs;
         if fs_backend {
             let thread_dir = dir.join(sanitize_thread(thread));
             let fs = FsCommitCoordinator::open(&thread_dir)
@@ -949,8 +954,7 @@ impl SharedHost {
         ),
         HostError,
     > {
-        let durable = std::env::var("AWAKEN_INGRESS").is_ok_and(|value| value == "durable");
-        if !durable {
+        if !self.deployment.durable {
             return Ok((Arc::new(DirectRunIngress::new(runtime)), None));
         }
         // The ONE process-shared dispatch queue (shared SQLite file, or the shared
@@ -984,8 +988,7 @@ impl SharedHost {
     /// routing it to the worker that owns its thread (recovering crashed runs and
     /// draining background submissions without a foreground request). Idempotent.
     pub fn ensure_dispatch_pool(self: &Arc<Self>) {
-        let durable = std::env::var("AWAKEN_INGRESS").is_ok_and(|v| v == "durable");
-        if !durable || self.dispatch_pool.get().is_some() {
+        if !self.deployment.durable || self.dispatch_pool.get().is_some() {
             return;
         }
         let Ok(store) = crate::dispatch_backend::shared_durable_store(self.store_dir.as_deref())
@@ -1768,7 +1771,7 @@ impl SharedHost {
             // Coordinator-only durable server (no local pool): enqueue straight into
             // the shared store so a remote database-less worker drains it over the
             // dispatch transport. Non-durable keeps the original "enable the pool" error.
-            Err(e) if std::env::var("AWAKEN_INGRESS").as_deref() == Ok("durable") => {
+            Err(e) if self.deployment.durable => {
                 use awaken_dispatch::DispatchQueue;
                 let _ = e;
                 let store =
