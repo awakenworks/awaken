@@ -2,57 +2,24 @@
 //!
 //! Four `(scope, key)` cells back the machine set: thread- and run-scoped
 //! instance state, plus thread-scoped audit metrics and a bounded violation log.
-//! Each cell is a typed façade ([`StateCell`]) over the untyped runtime
-//! `Command`/`Store`: a read deserializes the whole value, an update folds a
-//! typed delta with `apply`, and a commit writes the whole value back as one
-//! `Command`. All cells use `MergePolicy::Disjoint` — each has a single producer
-//! (this extension), so a later whole-value write replaces the earlier one and
-//! replay reproduces the folded value.
+//! Each cell is a typed view ([`StateCell`], the contract's [`StateKey`] promoted
+//! in ADR-0055) over the untyped runtime `Command`/`Store`: a read deserializes
+//! the whole value, an update folds a typed delta with `apply`, and a commit
+//! writes the whole value back as one `Command`. All cells use
+//! `MergePolicy::Disjoint` — each has a single producer (this extension), so a
+//! later whole-value write replaces the earlier one and replay reproduces the
+//! folded value. These cells tolerate a shape drift by resetting to the default,
+//! so callers read through [`StateCell::load_or_default`].
 
 use std::collections::HashMap;
 
-use awaken_agent_contract::agent::state::{Command, Key, MergePolicy, Scope, Store};
+use awaken_agent_contract::agent::state::Scope;
 use serde::Serialize;
-use serde::de::DeserializeOwned;
 
-/// A typed view over one `(scope, key)` cell of the untyped runtime store.
-pub trait StateCell {
-    const KEY: &'static str;
-    const SCOPE: Scope;
-    const MERGE: MergePolicy = MergePolicy::Disjoint;
-    type Value: Serialize + DeserializeOwned + Default;
-    type Update;
-
-    /// Fold one update into the value.
-    fn apply(value: &mut Self::Value, update: Self::Update);
-
-    /// Read the whole value from the live store (or the default if unset).
-    fn load(store: &Store) -> Self::Value {
-        store
-            .get(Self::SCOPE, &Key(Self::KEY.to_string()))
-            .and_then(|value| serde_json::from_value(value.clone()).ok())
-            .unwrap_or_default()
-    }
-
-    /// Read, fold the update, and produce a whole-value `Command` to stage.
-    fn commit(store: &Store, update: Self::Update) -> Command {
-        let mut value = Self::load(store);
-        Self::apply(&mut value, update);
-        Self::write(&value)
-    }
-
-    /// Produce a whole-value `Command` from an already-folded value. Use this to
-    /// emit one command per cell when a single reaction folds many updates into a
-    /// local value (avoids read-modify-write aliasing within one batch).
-    fn write(value: &Self::Value) -> Command {
-        Command::set(
-            Self::SCOPE,
-            Self::MERGE,
-            Self::KEY,
-            serde_json::to_value(value).unwrap_or(serde_json::Value::Null),
-        )
-    }
-}
+/// A typed view over one `(scope, key)` cell of the untyped runtime store —
+/// the contract's [`StateKey`](awaken_agent_contract::agent::state::StateKey)
+/// promoted into the kernel (ADR-0055); re-exported here under its original name.
+pub use awaken_agent_contract::agent::state::StateKey as StateCell;
 
 /// The keys this extension may contribute, kept in sync with the plugin's
 /// `CapabilityBound.state_keys` (G30).
@@ -287,6 +254,8 @@ impl StateCell for EmitThrottleCell {
 
 #[cfg(test)]
 mod tests {
+    use awaken_agent_contract::agent::state::{MergePolicy, Store};
+
     use super::*;
 
     #[test]
@@ -307,36 +276,45 @@ mod tests {
     #[test]
     fn instance_cell_round_trips_through_store() {
         let mut store = Store::new();
-        store.apply(&ThreadInstances::commit(
-            &store,
-            FsmTransition {
-                machine: "m".into(),
-                key: "a.rs".into(),
-                to: "read".into(),
-            },
-        ));
+        store.apply(
+            &ThreadInstances::commit(
+                &store,
+                FsmTransition {
+                    machine: "m".into(),
+                    key: "a.rs".into(),
+                    to: "read".into(),
+                },
+            )
+            .unwrap(),
+        );
         assert_eq!(
-            ThreadInstances::load(&store).current("m", "a.rs"),
+            ThreadInstances::load_or_default(&store).current("m", "a.rs"),
             Some("read")
         );
-        assert_eq!(ThreadInstances::load(&store).current("m", "b.rs"), None);
+        assert_eq!(
+            ThreadInstances::load_or_default(&store).current("m", "b.rs"),
+            None
+        );
     }
 
     #[test]
     fn instance_cell_overwrites_same_instance() {
         let mut store = Store::new();
         for to in ["read", "written"] {
-            store.apply(&ThreadInstances::commit(
-                &store,
-                FsmTransition {
-                    machine: "m".into(),
-                    key: "k".into(),
-                    to: to.into(),
-                },
-            ));
+            store.apply(
+                &ThreadInstances::commit(
+                    &store,
+                    FsmTransition {
+                        machine: "m".into(),
+                        key: "k".into(),
+                        to: to.into(),
+                    },
+                )
+                .unwrap(),
+            );
         }
         assert_eq!(
-            ThreadInstances::load(&store).current("m", "k"),
+            ThreadInstances::load_or_default(&store).current("m", "k"),
             Some("written")
         );
     }
@@ -357,15 +335,18 @@ mod tests {
             FsmMetricEvent::Transitioned,
             FsmMetricEvent::Transitioned,
         ] {
-            store.apply(&Metrics::commit(
-                &store,
-                FsmMetricUpdate {
-                    machine: "m".into(),
-                    event,
-                },
-            ));
+            store.apply(
+                &Metrics::commit(
+                    &store,
+                    FsmMetricUpdate {
+                        machine: "m".into(),
+                        event,
+                    },
+                )
+                .unwrap(),
+            );
         }
-        let metrics = Metrics::load(&store);
+        let metrics = Metrics::load_or_default(&store);
         assert_eq!(metrics.total.denied, 1);
         assert_eq!(metrics.total.transitioned, 2);
         assert_eq!(metrics.by_machine["m"].transitioned, 2);
@@ -375,18 +356,21 @@ mod tests {
     fn violation_log_keeps_last_records() {
         let mut store = Store::new();
         for index in 0..70 {
-            store.apply(&ViolationLog::commit(
-                &store,
-                FsmViolationRecord {
-                    machine: "m".into(),
-                    key: format!("k{index}"),
-                    tool_name: "Tool".into(),
-                    action: ViolationAuditAction::Deny,
-                    reason: "reason".into(),
-                },
-            ));
+            store.apply(
+                &ViolationLog::commit(
+                    &store,
+                    FsmViolationRecord {
+                        machine: "m".into(),
+                        key: format!("k{index}"),
+                        tool_name: "Tool".into(),
+                        action: ViolationAuditAction::Deny,
+                        reason: "reason".into(),
+                    },
+                )
+                .unwrap(),
+            );
         }
-        let log = ViolationLog::load(&store);
+        let log = ViolationLog::load_or_default(&store);
         assert_eq!(log.records.len(), 64);
         assert_eq!(log.records[0].key, "k6");
         assert_eq!(log.records[63].key, "k69");

@@ -11,7 +11,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, Phase};
 use awaken_agent_contract::agent::state::{
-    Command as StateCommand, Key as StateKey, MergePolicy, Scope, Store, validate_batch,
+    Command as StateCommand, Scope, StateKey, Store, validate_batch,
 };
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::{PendingTool, WaitingReason, WaitingTicket};
@@ -30,7 +30,7 @@ use awaken_runtime_contract::boundary::{BoundaryOutcome, evaluate_boundary};
 use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatMessage, ChatRequest, ChatResponse, ChatRole, DeltaSink, StopReason,
-    THREAD_USAGE_STATE_KEY, ThreadUsage, ToolCall,
+    ThreadUsage, ThreadUsageKey, ToolCall,
 };
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
 use awaken_runtime_contract::plugin::{
@@ -753,19 +753,19 @@ async fn drive(
         // records the fact without naming any wire, and it survives a restart. A step
         // whose provider reported no usage records nothing.
         if let Some(step_usage) = response.usage {
-            let mut usage: ThreadUsage = store
-                .get(Scope::Thread, &StateKey(THREAD_USAGE_STATE_KEY.to_string()))
-                .and_then(|v| serde_json::from_value(v.clone()).ok())
-                .unwrap_or_default();
-            usage.record(&resolved.spec.model_binding.model_ref, step_usage);
-            let usage_cmd = StateCommand::set(
-                Scope::Thread,
-                MergePolicy::Commutative,
-                THREAD_USAGE_STATE_KEY,
-                serde_json::to_value(usage).expect("thread usage serializes"),
-            );
-            store.apply(&usage_cmd);
-            staged_state.push(usage_cmd);
+            // Fail closed on a drift: never overwrite a persisted tally we cannot
+            // read (that would silently reset the accumulated total, ADR-0055).
+            match ThreadUsageKey::load(&store) {
+                Ok(mut usage) => {
+                    usage.record(&resolved.spec.model_binding.model_ref, step_usage);
+                    let usage_cmd = ThreadUsageKey::write(&usage);
+                    store.apply(&usage_cmd);
+                    staged_state.push(usage_cmd);
+                }
+                Err(error) => {
+                    tracing::error!(%error, "thread usage state drifted; skipping record");
+                }
+            }
         }
 
         run_phase_hooks(
@@ -1596,17 +1596,16 @@ fn merge_thread_usage(
     if delta.is_empty() {
         return;
     }
-    let mut usage: ThreadUsage = store
-        .get(Scope::Thread, &StateKey(THREAD_USAGE_STATE_KEY.to_string()))
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
+    // Fail closed on a drift rather than resetting the accumulated tally (ADR-0055).
+    let mut usage = match ThreadUsageKey::load(store) {
+        Ok(usage) => usage,
+        Err(error) => {
+            tracing::error!(%error, "thread usage state drifted; skipping sub-agent rollup");
+            return;
+        }
+    };
     usage.merge(delta);
-    let usage_cmd = StateCommand::set(
-        Scope::Thread,
-        MergePolicy::Commutative,
-        THREAD_USAGE_STATE_KEY,
-        serde_json::to_value(usage).expect("thread usage serializes"),
-    );
+    let usage_cmd = ThreadUsageKey::write(&usage);
     store.apply(&usage_cmd);
     staged_state.push(usage_cmd);
 }

@@ -165,8 +165,8 @@ impl ToolGateHook for StateMachineGate {
     }
 
     async fn gate(&self, ctx: &PermissionContext, state: &Store) -> GateOutcome {
-        let thread = ThreadInstances::load(state);
-        let run = RunInstances::load(state);
+        let thread = ThreadInstances::load_or_default(state);
+        let run = RunInstances::load_or_default(state);
         let evals = gate_evaluate(&self.machines, &thread, &run, &ctx.tool_id, &ctx.arguments);
         match gate_decision(&evals) {
             Some(v) if v.action == ViolationAction::Deny => GateOutcome::Block { reason: v.reason },
@@ -199,15 +199,15 @@ impl ToolOutcomeHook for StateMachineObserver {
         output: &ToolOutput,
         state: &Store,
     ) -> HookReaction {
-        let thread_base = ThreadInstances::load(state);
-        let run_base = RunInstances::load(state);
+        let thread_base = ThreadInstances::load_or_default(state);
+        let run_base = RunInstances::load_or_default(state);
 
         // Local folded copies; one whole-value command per touched cell is
         // emitted at the end so multiple folds within this reaction compose.
         let mut thread = thread_base.clone();
         let mut run = run_base.clone();
-        let mut metrics = Metrics::load(state);
-        let mut vlog = ViolationLog::load(state);
+        let mut metrics = Metrics::load_or_default(state);
+        let mut vlog = ViolationLog::load_or_default(state);
         let (mut thread_dirty, mut run_dirty) = (false, false);
         let (mut metrics_dirty, mut vlog_dirty) = (false, false);
         // Loaded lazily on the first emit; a tick is spent per tool result that
@@ -324,7 +324,7 @@ impl ToolOutcomeHook for StateMachineObserver {
                     // Spend a tick and skip a reminder that is still cooling down.
                     let msg_key = format!("{machine}.{key}");
                     let tick = throttle.get_or_insert_with(|| {
-                        let mut loaded = EmitThrottleCell::load(state);
+                        let mut loaded = EmitThrottleCell::load_or_default(state);
                         loaded.tick += 1;
                         loaded
                     });
@@ -426,8 +426,8 @@ impl RunEndGuard for StateMachineGuard {
         {
             return complete();
         }
-        let thread = ThreadInstances::load(ctx.state);
-        let run = RunInstances::load(ctx.state);
+        let thread = ThreadInstances::load_or_default(ctx.state);
+        let run = RunInstances::load_or_default(ctx.state);
         let mut incomplete = incomplete_instances(&self.machines, &thread, &run);
         if incomplete.is_empty() {
             return complete();

@@ -57,7 +57,8 @@ fn read_state(store: &mut Store, key: &str) {
             key: key.into(),
             to: "read".into(),
         },
-    );
+    )
+    .unwrap();
     store.apply(&command);
 }
 
@@ -214,10 +215,10 @@ async fn observer_advances_on_success_and_records_metric() {
         .await;
     apply(&mut store, &reaction.state);
     assert_eq!(
-        ThreadInstances::load(&store).current("rbw", "a.rs"),
+        ThreadInstances::load_or_default(&store).current("rbw", "a.rs"),
         Some("read")
     );
-    assert_eq!(Metrics::load(&store).total.transitioned, 1);
+    assert_eq!(Metrics::load_or_default(&store).total.transitioned, 1);
     assert!(reaction.messages.is_empty());
 }
 
@@ -232,7 +233,10 @@ async fn observer_does_not_advance_on_error() {
         .after_tool(&call("Read", json!({"file_path": "a.rs"})), &output, &store)
         .await;
     apply(&mut store, &reaction.state);
-    assert_eq!(ThreadInstances::load(&store).current("rbw", "a.rs"), None);
+    assert_eq!(
+        ThreadInstances::load_or_default(&store).current("rbw", "a.rs"),
+        None
+    );
 }
 
 #[tokio::test]
@@ -251,8 +255,8 @@ async fn observer_records_deny_metric_and_violation_on_blocked_write() {
         )
         .await;
     apply(&mut store, &reaction.state);
-    assert_eq!(Metrics::load(&store).total.denied, 1);
-    let log = ViolationLog::load(&store);
+    assert_eq!(Metrics::load_or_default(&store).total.denied, 1);
+    let log = ViolationLog::load_or_default(&store);
     assert_eq!(log.records.len(), 1);
     assert_eq!(log.records[0].tool_name, "Write");
 }
@@ -277,8 +281,8 @@ async fn observer_emits_warn_message_and_records() {
     apply(&mut store, &reaction.state);
     assert_eq!(reaction.messages.len(), 1);
     assert_eq!(reaction.messages[0].text_content(), "writing unread a.rs");
-    assert_eq!(Metrics::load(&store).total.warned, 1);
-    assert_eq!(ViolationLog::load(&store).records.len(), 1);
+    assert_eq!(Metrics::load_or_default(&store).total.warned, 1);
+    assert_eq!(ViolationLog::load_or_default(&store).records.len(), 1);
 }
 
 #[tokio::test]
@@ -300,7 +304,7 @@ async fn observer_records_asked_on_approved_ask_call() {
         )
         .await;
     apply(&mut store, &reaction.state);
-    assert_eq!(Metrics::load(&store).total.asked, 1);
+    assert_eq!(Metrics::load_or_default(&store).total.asked, 1);
 }
 
 #[tokio::test]
@@ -351,8 +355,11 @@ async fn observer_emits_transition_message() {
     apply(&mut store, &reaction.state);
     assert_eq!(reaction.messages.len(), 1);
     assert_eq!(reaction.messages[0].text_content(), "moved to b");
-    assert_eq!(RunInstances::load(&store).current("m", ""), Some("b"));
-    assert_eq!(Metrics::load(&store).total.emitted, 1);
+    assert_eq!(
+        RunInstances::load_or_default(&store).current("m", ""),
+        Some("b")
+    );
+    assert_eq!(Metrics::load_or_default(&store).total.emitted, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -397,7 +404,8 @@ async fn guard_completes_when_all_terminal() {
             key: "a.rs".into(),
             to: "written".into(),
         },
-    );
+    )
+    .unwrap();
     store.apply(&command);
     assert!(matches!(
         evaluate_guard(&p, &store, 0).await,

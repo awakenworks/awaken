@@ -191,12 +191,12 @@ async fn deny_then_corrected_read_write_reaches_terminal() {
     // Final state: the instance advanced read → written.
     let store = replay_state(&committed);
     assert_eq!(
-        ThreadInstances::load(&store).current("rbw", "a.rs"),
+        ThreadInstances::load_or_default(&store).current("rbw", "a.rs"),
         Some("written")
     );
 
     // Metrics: one deny, two transitions (read, written).
-    let metrics = Metrics::load(&store);
+    let metrics = Metrics::load_or_default(&store);
     assert_eq!(metrics.total.denied, 1);
     assert_eq!(metrics.total.transitioned, 2);
 }
@@ -236,7 +236,7 @@ async fn warn_message_reaches_the_next_model_turn() {
         "warn guidance should be committed to the transcript"
     );
     let store = replay_state(&committed);
-    assert_eq!(Metrics::load(&store).total.warned, 1);
+    assert_eq!(Metrics::load_or_default(&store).total.warned, 1);
 }
 
 const WORK_FLOW: &str = r#"{"machines":[{
@@ -289,7 +289,10 @@ async fn continuation_nudge_keeps_running_until_terminal() {
     );
     // It ended only after reaching the terminal state.
     let store = replay_state(&committed);
-    assert_eq!(RunInstances::load(&store).current("work", ""), Some("done"));
+    assert_eq!(
+        RunInstances::load_or_default(&store).current("work", ""),
+        Some("done")
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -345,7 +348,7 @@ async fn config_section_drives_the_machine_set() {
     );
     let store = replay_state(&committed);
     assert_eq!(
-        ThreadInstances::load(&store).current("rbw", "a.rs"),
+        ThreadInstances::load_or_default(&store).current("rbw", "a.rs"),
         Some("written")
     );
 }
