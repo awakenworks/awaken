@@ -11,12 +11,6 @@
  * Stable id of a [`ProtocolEndpoint`].
  *
  * Stable id of a [`Provider`] (vendor namespace).
- *
- * A management-plane project identifier. It doubles as the project's ingress
- * address segment (`/projects/{id}/…` or a per-project domain label), so it is
- * constrained to a DNS-safe lowercase slug at authoring time. The rule is the
- * shared tenancy slug rule [`awaken_scope::scope::slug_is_valid`], so a project
- * id validates identically here, in the scope tree, and across products.
  */
 type CredentialPoolID = string;
 
@@ -32,12 +26,6 @@ type CredentialPoolID = string;
  * Stable id of a [`ProtocolEndpoint`].
  *
  * Stable id of a [`Provider`] (vendor namespace).
- *
- * A management-plane project identifier. It doubles as the project's ingress
- * address segment (`/projects/{id}/…` or a per-project domain label), so it is
- * constrained to a DNS-safe lowercase slug at authoring time. The rule is the
- * shared tenancy slug rule [`awaken_scope::scope::slug_is_valid`], so a project
- * id validates identically here, in the scope tree, and across products.
  */
 type MCPServerID = string;
 
@@ -174,8 +162,16 @@ export type Type = "none" | "exact" | "one_of_credential_pool";
  * over to the next rather than failing the run (fail-closed only when none work).
  */
 export interface CredentialPool {
-    id:           string;
-    members:      MemberElement[];
+    id:      string;
+    members: MemberElement[];
+    /**
+     * How the selector picks among eligible members. `#[serde(default)]` keeps
+     * existing pool rows (persisted as JSON) loadable as [`FirstHealthy`], the
+     * historical behavior.
+     *
+     * [`FirstHealthy`]: SelectionPolicy::FirstHealthy
+     */
+    policy?:      Policy;
     workspace_id: string;
     [property: string]: any;
 }
@@ -192,6 +188,33 @@ export interface MemberElement {
     selection_weight?:    number;
     [property: string]: any;
 }
+
+/**
+ * How the selector picks among eligible members. `#[serde(default)]` keeps
+ * existing pool rows (persisted as JSON) loadable as [`FirstHealthy`], the
+ * historical behavior.
+ *
+ * [`FirstHealthy`]: SelectionPolicy::FirstHealthy
+ *
+ * How a pool picks among its eligible members — the *intent* behind selection,
+ * consumed by the runtime selector (an availability-aware picker, per ADR-0043).
+ * The pool's [`selection_order`](CredentialPool::selection_order) always yields the
+ * eligible members in ordinal order; this policy decides which of them the picker
+ * commits to.
+ *
+ * Names align with awaken-next's `SelectionPolicy`. `#[non_exhaustive]` so adding a
+ * policy is not a breaking change.
+ *
+ * Pin the first eligible member in ordinal order (the default; the historical
+ * behavior). Deterministic — the same pool state always picks the same member.
+ *
+ * Round-robin across the eligible members to spread load and delay quota
+ * exhaustion. Rotation state lives in the selector, not the pool.
+ *
+ * Reuse the member a prior run in the same scope committed to, when it is still
+ * eligible, for prompt-cache / session affinity.
+ */
+export type Policy = "first_healthy" | "rotate_spread" | "sticky_resume";
 
 /**
  * One source's membership in a pool. `ordinal` is the default selection order
@@ -222,6 +245,12 @@ export interface CredentialSource {
      */
     material_ref?: null | string;
     /**
+     * The refresh helper for a [`CredentialKind::Oauth`] source: `[program,
+     * args…]`, whose trimmed stdout is a fresh access token. `None` for every
+     * other kind. Only a *reference to a command* travels — never a token.
+     */
+    oauth_command?: string[] | null;
+    /**
      * Provider namespace this credential authenticates (`anthropic`, `openai`).
      */
     provider_id?: null | string;
@@ -237,8 +266,13 @@ export interface CredentialSource {
  * Secret material sealed in the vault (a [`SecretRef`] into [`SecretStore`]).
  *
  * A host environment variable named by `env_key`; nothing is stored here.
+ *
+ * An OAuth-backed provider credential (#5): the secret is a short-lived
+ * Bearer token minted on demand by running `oauth_command`, never stored. The
+ * long-lived grant lives inside the helper (e.g. `gcloud`), so nothing secret
+ * crosses the control plane.
  */
-export type CredentialKind = "vault" | "env";
+export type CredentialKind = "vault" | "env" | "oauth";
 
 /**
  * Lifecycle of a source.
@@ -286,13 +320,41 @@ export interface EnterCredentialRequest {
  * The resolver reads it — it is never flowed into the runtime.
  */
 export interface InferenceProfile {
+    /**
+     * The credential-identity axis. `CredentialBinding` is *already* an
+     * [`AxisBinding`] over provider identities — `Exact` is a pin, and
+     * `OneOfCredentialPool` is a pool with failover — so the identity axis needs
+     * no new type here; each resolved model reuses this binding.
+     */
     credential_binding:     InferenceProfileCredentialBinding;
     disabled_endpoint_ids?: string[];
-    model_id:               string;
+    /**
+     * Additional models the resolver falls over to, in order, after `model_id`.
+     * Empty (the default) means a single-model profile — unchanged behavior, and
+     * older stored rows load without the field. Together with `model_id` these
+     * form the [`AxisBinding`] the profile exposes as [`model_axis`].
+     *
+     * [`model_axis`]: InferenceProfile::model_axis
+     */
+    model_fallbacks?: string[];
+    /**
+     * The pinned / primary model — tried first. Kept as a bare field for wire and
+     * storage compatibility; the ordered model axis is [`model_axis`] (this plus
+     * [`model_fallbacks`]).
+     *
+     * [`model_axis`]: InferenceProfile::model_axis
+     * [`model_fallbacks`]: InferenceProfile::model_fallbacks
+     */
+    model_id: string;
     [property: string]: any;
 }
 
 /**
+ * The credential-identity axis. `CredentialBinding` is *already* an
+ * [`AxisBinding`] over provider identities — `Exact` is a pin, and
+ * `OneOfCredentialPool` is a pool with failover — so the identity axis needs
+ * no new type here; each resolved model reuses this binding.
+ *
  * The "which credential" axis (oversight-next / awaken-management-contract).
  *
  * No credential is needed.
@@ -347,7 +409,7 @@ export interface MCPServerDefCredentialBinding {
  * `ModelSpec` (the intrinsic model attributes, owned by `awaken-agent-contract`).
  */
 export interface Offering {
-    flavor: ModelAPICompat;
+    dialect: APIDialect;
     /**
      * The protocol-agnostic catalog model id (e.g. `claude-opus-4-8`).
      */
@@ -363,7 +425,7 @@ export interface Offering {
 
 /**
  * The wire/model-API dialect a surface speaks. Replaces oversight's `WireFormat`;
- * the credential/model bindings are resolved against this flavor (ADR-0043).
+ * the credential/model bindings are resolved against this dialect (ADR-0043).
  *
  * The `claude` adapter's wire.
  *
@@ -371,37 +433,7 @@ export interface Offering {
  *
  * The Gemini wire.
  */
-export type ModelAPICompat = "anthropic_messages" | "open_ai_chat" | "gemini";
-
-/**
- * Which MCP servers an agent uses *within one project* — the project-scoped
- * consumption binding. Shape mirrors [`AgentMcpConfig`] (the workspace-level
- * default); a session created through `/projects/{id}/…` consults this first
- * and falls back to the workspace binding when absent, so bare-path behavior
- * is byte-identical to before projects existed.
- */
-export interface ProjectAgentConfig {
-    agent_id:       string;
-    mcp_server_ids: string[];
-    project_id:     string;
-    version:        number;
-    [property: string]: any;
-}
-
-/**
- * A consumption-side project under a workspace (ADR-0042 amendment: the URL
- * carries the project as ADDRESSING only — tenancy and authority still flow
- * from the API key's workspace). Supply (catalog, credentials, pools, MCP
- * defs) stays workspace-owned; a project only *selects* from it, so no secret
- * is ever duplicated per project.
- */
-export interface Project {
-    display_name: string;
-    id:           string;
-    version:      number;
-    workspace_id: string;
-    [property: string]: any;
-}
+export type APIDialect = "anthropic_messages" | "open_ai_chat" | "gemini";
 
 /**
  * A concrete protocol surface of a provider: which wire + which URL. Distinct
@@ -412,8 +444,8 @@ export interface ProtocolEndpoint {
      * `http(s)` base URL override (proxy / self-hosted / compat endpoint).
      */
     base_url?:    null | string;
+    dialect:      APIDialect;
     display_name: string;
-    flavor:       ModelAPICompat;
     id:           string;
     provider_id:  string;
     /**
@@ -444,8 +476,8 @@ export interface EndpointValue {
      * `http(s)` base URL override (proxy / self-hosted / compat endpoint).
      */
     base_url?:    null | string;
+    dialect:      APIDialect;
     display_name: string;
-    flavor:       ModelAPICompat;
     id:           string;
     provider_id:  string;
     /**
@@ -461,7 +493,7 @@ export interface EndpointValue {
  * `ModelSpec` (the intrinsic model attributes, owned by `awaken-agent-contract`).
  */
 export interface OfferingElement {
-    flavor: ModelAPICompat;
+    dialect: APIDialect;
     /**
      * The protocol-agnostic catalog model id (e.g. `claude-opus-4-8`).
      */

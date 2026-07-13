@@ -48,7 +48,11 @@ impl HttpDispatchQueue {
         }
     }
 
-    async fn post(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value, DispatchError> {
+    async fn post(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+    ) -> Result<serde_json::Value, DispatchError> {
         let resp = self
             .client
             .post(format!("{}{}", self.base_url, path))

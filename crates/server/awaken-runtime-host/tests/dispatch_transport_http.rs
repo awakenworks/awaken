@@ -9,9 +9,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_run_ingress::{
-    AnyDispatchStore, Dispatch, MemoryDispatchStore, RunExecutionRequest,
-};
+use awaken_run_ingress::{AnyDispatchStore, Dispatch, MemoryDispatchStore, RunExecutionRequest};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
@@ -96,7 +94,8 @@ async fn a_db_less_worker_claims_renews_and_settles_over_http() {
     let router = dispatch_transport_router(host);
 
     // enqueue a run over the transport.
-    let request = serde_json::to_value(RunExecutionRequest::new(activation("run-A", "t1"))).unwrap();
+    let request =
+        serde_json::to_value(RunExecutionRequest::new(activation("run-A", "t1"))).unwrap();
     let (s, _) = post(
         &router,
         "/v1/worker/dispatch/enqueue",
@@ -117,7 +116,10 @@ async fn a_db_less_worker_claims_renews_and_settles_over_http() {
         v["claimed"]["request"]["activation"]["run_id"], "run-A",
         "claim returns the enqueued run over the wire: {v}"
     );
-    assert_eq!(v["claimed"]["lease"]["owner"], "worker-1", "the lease is owned: {v}");
+    assert_eq!(
+        v["claimed"]["lease"]["owner"], "worker-1",
+        "the lease is owned: {v}"
+    );
 
     // renew the lease: still owned → true.
     let (s, v) = post(
@@ -136,7 +138,10 @@ async fn a_db_less_worker_claims_renews_and_settles_over_http() {
         json!({ "owner": "worker-2", "lease_ms": 30_000, "now_ms": 1_000 }),
     )
     .await;
-    assert!(v["claimed"].is_null(), "a leased run is not double-claimed: {v}");
+    assert!(
+        v["claimed"].is_null(),
+        "a leased run is not double-claimed: {v}"
+    );
 
     // settle Done: the dispatch is finished and removed.
     let (s, v) = post(

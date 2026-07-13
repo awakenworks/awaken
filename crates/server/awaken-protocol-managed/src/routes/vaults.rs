@@ -517,9 +517,10 @@ async fn update_vault(
     ManagedJson(params): ManagedJson<VaultUpdateParams>,
 ) -> Result<Json<Vault>, WireError> {
     if let Some(name) = &params.display_name
-        && (name.is_empty() || name.len() > 255) {
-            return Err(bad_request("display_name must be 1-255 characters"));
-        }
+        && (name.is_empty() || name.len() > 255)
+    {
+        return Err(bad_request("display_name must be 1-255 characters"));
+    }
     let mut store = state.inner.lock().unwrap();
     let record = store
         .vaults

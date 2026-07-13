@@ -41,7 +41,9 @@ async fn a_db_less_worker_runs_and_commits_its_facts_to_the_server() {
     });
 
     // The worker: no store of its own — every thread commits to the server.
-    let worker = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_upstream(format!("http://{addr}")));
+    let worker = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub").with_upstream(format!("http://{addr}")),
+    );
 
     // Drive one fresh turn on the worker. Its commit boundary is remote, so the
     // facts land on the SERVER, not the worker.
@@ -57,7 +59,9 @@ async fn a_db_less_worker_runs_and_commits_its_facts_to_the_server() {
     // The committed truth lives on the server's store, readable back there.
     let committed = server.committed_messages("t1").await;
     assert!(
-        committed.iter().any(|m| m.text_content().contains("db-less worker")),
+        committed
+            .iter()
+            .any(|m| m.text_content().contains("db-less worker")),
         "the worker's turn committed on the server: {committed:?}"
     );
 

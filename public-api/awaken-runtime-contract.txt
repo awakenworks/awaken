@@ -1040,10 +1040,10 @@ pub fn awaken_runtime_contract::metrics::NoopRecorder::record_tool(&self, &str, 
 pub mod awaken_runtime_contract::model_access
 pub enum awaken_runtime_contract::model_access::ModelAccessGrant
 pub awaken_runtime_contract::model_access::ModelAccessGrant::CloudManagedGateway
+pub awaken_runtime_contract::model_access::ModelAccessGrant::CloudManagedGateway::dialect: alloc::string::String
 pub awaken_runtime_contract::model_access::ModelAccessGrant::CloudManagedGateway::gateway_base_url: alloc::string::String
 pub awaken_runtime_contract::model_access::ModelAccessGrant::CloudManagedGateway::lease_token: alloc::string::String
 pub awaken_runtime_contract::model_access::ModelAccessGrant::CloudManagedGateway::model_ref: alloc::string::String
-pub awaken_runtime_contract::model_access::ModelAccessGrant::CloudManagedGateway::surface: alloc::string::String
 pub awaken_runtime_contract::model_access::ModelAccessGrant::LocalSelfCredentialed
 pub awaken_runtime_contract::model_access::ModelAccessGrant::LocalSelfCredentialed::model_ref: core::option::Option<alloc::string::String>
 pub awaken_runtime_contract::model_access::ModelAccessGrant::LocalSelfCredentialed::provider_ref: core::option::Option<alloc::string::String>
@@ -1073,8 +1073,8 @@ impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::model_acc
 pub struct awaken_runtime_contract::model_access::ResolvedModelEndpoint
 pub awaken_runtime_contract::model_access::ResolvedModelEndpoint::base_url: core::option::Option<alloc::string::String>
 pub awaken_runtime_contract::model_access::ResolvedModelEndpoint::bearer: core::option::Option<alloc::string::String>
+pub awaken_runtime_contract::model_access::ResolvedModelEndpoint::dialect: core::option::Option<alloc::string::String>
 pub awaken_runtime_contract::model_access::ResolvedModelEndpoint::model_ref: core::option::Option<alloc::string::String>
-pub awaken_runtime_contract::model_access::ResolvedModelEndpoint::surface: core::option::Option<alloc::string::String>
 impl core::clone::Clone for awaken_runtime_contract::model_access::ResolvedModelEndpoint
 pub fn awaken_runtime_contract::model_access::ResolvedModelEndpoint::clone(&self) -> awaken_runtime_contract::model_access::ResolvedModelEndpoint
 impl core::cmp::Eq for awaken_runtime_contract::model_access::ResolvedModelEndpoint
@@ -1937,6 +1937,7 @@ pub mod awaken_runtime_contract::runnable
 pub struct awaken_runtime_contract::runnable::RunnableConfig
 impl awaken_runtime_contract::runnable::RunnableConfig
 pub fn awaken_runtime_contract::runnable::RunnableConfig::builder(impl core::convert::Into<alloc::string::String>) -> awaken_runtime_contract::runnable::RunnableConfigBuilder
+pub fn awaken_runtime_contract::runnable::RunnableConfig::from_parts(awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_runtime_contract::catalog::RuntimeCatalogInstall) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfig::install(&self) -> &awaken_runtime_contract::catalog::RuntimeCatalogInstall
 pub fn awaken_runtime_contract::runnable::RunnableConfig::into_parts(self) -> (awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_runtime_contract::catalog::RuntimeCatalogInstall)
 pub fn awaken_runtime_contract::runnable::RunnableConfig::snapshot(&self) -> &awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
@@ -2377,10 +2378,10 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::IdBoun
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::IdBound
 pub enum awaken_runtime_contract::ModelAccessGrant
 pub awaken_runtime_contract::ModelAccessGrant::CloudManagedGateway
+pub awaken_runtime_contract::ModelAccessGrant::CloudManagedGateway::dialect: alloc::string::String
 pub awaken_runtime_contract::ModelAccessGrant::CloudManagedGateway::gateway_base_url: alloc::string::String
 pub awaken_runtime_contract::ModelAccessGrant::CloudManagedGateway::lease_token: alloc::string::String
 pub awaken_runtime_contract::ModelAccessGrant::CloudManagedGateway::model_ref: alloc::string::String
-pub awaken_runtime_contract::ModelAccessGrant::CloudManagedGateway::surface: alloc::string::String
 pub awaken_runtime_contract::ModelAccessGrant::LocalSelfCredentialed
 pub awaken_runtime_contract::ModelAccessGrant::LocalSelfCredentialed::model_ref: core::option::Option<alloc::string::String>
 pub awaken_runtime_contract::ModelAccessGrant::LocalSelfCredentialed::provider_ref: core::option::Option<alloc::string::String>
@@ -3030,8 +3031,8 @@ impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::Resolved
 pub struct awaken_runtime_contract::ResolvedModelEndpoint
 pub awaken_runtime_contract::ResolvedModelEndpoint::base_url: core::option::Option<alloc::string::String>
 pub awaken_runtime_contract::ResolvedModelEndpoint::bearer: core::option::Option<alloc::string::String>
+pub awaken_runtime_contract::ResolvedModelEndpoint::dialect: core::option::Option<alloc::string::String>
 pub awaken_runtime_contract::ResolvedModelEndpoint::model_ref: core::option::Option<alloc::string::String>
-pub awaken_runtime_contract::ResolvedModelEndpoint::surface: core::option::Option<alloc::string::String>
 impl core::clone::Clone for awaken_runtime_contract::model_access::ResolvedModelEndpoint
 pub fn awaken_runtime_contract::model_access::ResolvedModelEndpoint::clone(&self) -> awaken_runtime_contract::model_access::ResolvedModelEndpoint
 impl core::cmp::Eq for awaken_runtime_contract::model_access::ResolvedModelEndpoint
@@ -3146,6 +3147,7 @@ impl<'a> core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::RunEn
 pub struct awaken_runtime_contract::RunnableConfig
 impl awaken_runtime_contract::runnable::RunnableConfig
 pub fn awaken_runtime_contract::runnable::RunnableConfig::builder(impl core::convert::Into<alloc::string::String>) -> awaken_runtime_contract::runnable::RunnableConfigBuilder
+pub fn awaken_runtime_contract::runnable::RunnableConfig::from_parts(awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_runtime_contract::catalog::RuntimeCatalogInstall) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfig::install(&self) -> &awaken_runtime_contract::catalog::RuntimeCatalogInstall
 pub fn awaken_runtime_contract::runnable::RunnableConfig::into_parts(self) -> (awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_runtime_contract::catalog::RuntimeCatalogInstall)
 pub fn awaken_runtime_contract::runnable::RunnableConfig::snapshot(&self) -> &awaken_runtime_contract::snapshot::ExecutableAgentSnapshot

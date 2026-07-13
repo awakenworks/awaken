@@ -26,7 +26,10 @@ pub struct SharedConfigStores {
 /// Open the catalog + credential vault + sealed secret store from `cfg`, sealing
 /// secrets under `key`. Each component honors its own `AWAKEN_<COMPONENT>_DB`
 /// backend (a SQLite file or a shared Postgres) — the durable, shared-DB path.
-pub async fn open_shared_config_stores(cfg: &ControlStoreConfig, key: &[u8; 32]) -> SharedConfigStores {
+pub async fn open_shared_config_stores(
+    cfg: &ControlStoreConfig,
+    key: &[u8; 32],
+) -> SharedConfigStores {
     fn ensure_parent(backend: &StoreBackend) {
         if let StoreBackend::Sqlite(path) = backend {
             if let Some(parent) = path.parent() {

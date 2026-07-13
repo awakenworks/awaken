@@ -883,9 +883,9 @@ impl SharedHost {
         // Database-less worker: every thread commits to the cell server's ingest.
         if let Some(url) = &self.upstream {
             let _ = thread;
-            return Ok(HostCommit::Remote(crate::commit_ingest::RemoteCoordinator::new(
-                url.clone(),
-            )));
+            return Ok(HostCommit::Remote(
+                crate::commit_ingest::RemoteCoordinator::new(url.clone()),
+            ));
         }
         // Shared Postgres commit backend (ADR-0022 D6): one coordinator keyed by
         // thread, so any node serves any thread's history. Connected once at startup
@@ -1422,11 +1422,13 @@ impl SharedHost {
         };
         let mut usage = ThreadUsage::default();
         for cmd in ctx.commit.committed_state(&ctx.thread_id) {
-            if cmd.scope == Scope::Thread && cmd.key.0 == THREAD_USAGE_STATE_KEY
+            if cmd.scope == Scope::Thread
+                && cmd.key.0 == THREAD_USAGE_STATE_KEY
                 && let Action::Set(value) = &cmd.action
-                    && let Ok(parsed) = serde_json::from_value::<ThreadUsage>(value.clone()) {
-                        usage = parsed;
-                    }
+                && let Ok(parsed) = serde_json::from_value::<ThreadUsage>(value.clone())
+            {
+                usage = parsed;
+            }
         }
         usage
     }

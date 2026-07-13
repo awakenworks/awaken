@@ -123,11 +123,13 @@ pub(crate) async fn run_configured_subrun(
 fn usage_from_committed(commit: &MemoryCommitCoordinator, thread_id: &ThreadId) -> ThreadUsage {
     let mut usage = ThreadUsage::default();
     for cmd in commit.committed_state(thread_id) {
-        if cmd.scope == Scope::Thread && cmd.key.0 == THREAD_USAGE_STATE_KEY
+        if cmd.scope == Scope::Thread
+            && cmd.key.0 == THREAD_USAGE_STATE_KEY
             && let Action::Set(value) = &cmd.action
-                && let Ok(parsed) = serde_json::from_value::<ThreadUsage>(value.clone()) {
-                    usage = parsed;
-                }
+            && let Ok(parsed) = serde_json::from_value::<ThreadUsage>(value.clone())
+        {
+            usage = parsed;
+        }
     }
     usage
 }

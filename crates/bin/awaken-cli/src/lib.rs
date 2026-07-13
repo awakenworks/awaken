@@ -16,12 +16,12 @@ mod brain_admin;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use awaken_protocol_managed::{EnvironmentState, ManagedState, VaultState};
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_host::{
     ConfigPlane, ConfigService, ExtMcpProbe, ManagedHost, RESERVED_ADMIN_SCOPE, ScopedToolCatalog,
     SharedHost, ToolCatalogSource, advertised_tools,
 };
-use awaken_protocol_managed::{EnvironmentState, ManagedState, VaultState};
 use axum::Router;
 
 pub use crate::brain_admin::{DrainController, with_brain_admin};
@@ -225,7 +225,8 @@ async fn open_management_stores(
     match &cfg.admin {
         StoreBackend::Sqlite(p) => {
             let admin = Arc::new(
-                awaken_admin_config_api::SqliteAdminStore::open(&path(p)).expect("open admin sqlite"),
+                awaken_admin_config_api::SqliteAdminStore::open(&path(p))
+                    .expect("open admin sqlite"),
             );
             admin_profiles = admin.clone();
             admin_mcp = admin.clone();
@@ -365,6 +366,22 @@ fn mgmt_seal_key_from_env() -> [u8; 32] {
 /// `AWAKEN_MGMT_DIR` and panics with a clear message when it is missing. Unset — the
 /// default — is today's open behavior, byte-identical.
 pub async fn build_management_router() -> Router {
+    build_management_router_with_fallback(
+        Arc::new(awaken_server::no_model::NoModelConfiguredExecutor),
+        awaken_server::no_model::UNCONFIGURED_MODEL_REF.to_string(),
+    )
+    .await
+}
+
+/// [`build_management_router`] with the host default (pre-published) model injected —
+/// the env-driven store selection (durable/in-memory + IAM) is IDENTICAL to the
+/// production entry point, only the no-model fallback differs. Exposed so the e2e
+/// scenario host can drive the REAL management router with a deterministic model
+/// (e.g. the MCP scenario model) while keeping the production fallback provider-free.
+pub async fn build_management_router_with_fallback(
+    fallback_model: Arc<dyn LlmExecutor>,
+    fallback_model_ref: String,
+) -> Router {
     let iam = match std::env::var("AWAKEN_MGMT_IAM") {
         Ok(mode) if mode == "embedded" => {
             let dir = std::env::var("AWAKEN_MGMT_DIR").unwrap_or_else(|_| {
@@ -392,8 +409,8 @@ pub async fn build_management_router() -> Router {
             management_router_over(
                 open_management_stores(cfg, &key).await,
                 iam,
-                Arc::new(awaken_server::no_model::NoModelConfiguredExecutor),
-                awaken_server::no_model::UNCONFIGURED_MODEL_REF.to_string(),
+                fallback_model,
+                fallback_model_ref,
             )
             .await
         }
@@ -401,8 +418,8 @@ pub async fn build_management_router() -> Router {
             management_router_over(
                 in_memory_management_stores(),
                 iam,
-                Arc::new(awaken_server::no_model::NoModelConfiguredExecutor),
-                awaken_server::no_model::UNCONFIGURED_MODEL_REF.to_string(),
+                fallback_model,
+                fallback_model_ref,
             )
             .await
         }
@@ -676,9 +693,15 @@ mod seal_key_tests {
     #[test]
     fn an_unreadable_file_reports_the_path() {
         let err = resolve_seal_key_hex(None, Some("/nope".into()), |_| {
-            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no such file"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no such file",
+            ))
         })
         .unwrap_err();
-        assert!(err.contains("/nope") && err.contains("could not be read"), "{err}");
+        assert!(
+            err.contains("/nope") && err.contains("could not be read"),
+            "{err}"
+        );
     }
 }

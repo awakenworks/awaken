@@ -63,7 +63,7 @@ async function main() {
       r = await req(base, 'PUT', '/v1/config/endpoints/ep1', {
         id: 'ep1',
         provider_id: 'anthropic',
-        flavor: 'anthropic_messages',
+        dialect: 'anthropic_messages',
         base_url: 'https://api.anthropic.com/v1/',
         timeout_secs: 300,
         display_name: 'prod',
@@ -76,7 +76,7 @@ async function main() {
         model_id: 'claude-opus-4-8',
         provider_id: 'anthropic',
         protocol_endpoint_id: 'ep1',
-        flavor: 'anthropic_messages',
+        dialect: 'anthropic_messages',
         upstream_model: null,
       });
       assert.equal(r.status, 200);
@@ -155,7 +155,7 @@ async function main() {
       // An offering that references an endpoint that doesn't exist fails closed.
       r = await req(base, 'POST', '/v1/config/offerings', {
         model_id: 'ghost', provider_id: 'anthropic',
-        protocol_endpoint_id: 'no-such-endpoint', flavor: 'anthropic_messages', upstream_model: null,
+        protocol_endpoint_id: 'no-such-endpoint', dialect: 'anthropic_messages', upstream_model: null,
       });
       assert.ok(r.status === 404 || r.status === 422, `dangling offering rejected, got ${r.status}`);
       pass('error arms: unknown provider/endpoint/credential -> 404; dangling offering -> 4xx');
@@ -253,7 +253,7 @@ async function main() {
       // --- catalog invariant: an offering whose flavor mismatches its endpoint ---
       r = await req(base, 'POST', '/v1/config/offerings', {
         model_id: 'mismatch', provider_id: 'anthropic',
-        protocol_endpoint_id: 'ep1', flavor: 'open_ai_chat', upstream_model: null,
+        protocol_endpoint_id: 'ep1', dialect: 'open_ai_chat', upstream_model: null,
       });
       assert.equal(r.status, 422, JSON.stringify(r.json));
       assert.equal(r.json.code, 'catalog_invariant');
@@ -263,12 +263,12 @@ async function main() {
       // A second endpoint + offering for the same model, so a profile can steer away
       // from ep1 by disabling it.
       await req(base, 'PUT', '/v1/config/endpoints/ep2', {
-        id: 'ep2', provider_id: 'anthropic', flavor: 'anthropic_messages',
+        id: 'ep2', provider_id: 'anthropic', dialect: 'anthropic_messages',
         base_url: 'https://ep2.example/v1/', timeout_secs: 300, display_name: 'backup', version: 1,
       });
       await req(base, 'POST', '/v1/config/offerings', {
         model_id: 'claude-opus-4-8', provider_id: 'anthropic',
-        protocol_endpoint_id: 'ep2', flavor: 'anthropic_messages', upstream_model: null,
+        protocol_endpoint_id: 'ep2', dialect: 'anthropic_messages', upstream_model: null,
       });
 
       r = await req(base, 'PUT', '/v1/config/inference-profiles/prof1', {

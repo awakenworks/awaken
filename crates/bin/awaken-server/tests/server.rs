@@ -8,7 +8,9 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
 };
-use awaken_scenario_host::{EchoModel, build_custom_router, build_delegation_router, build_graded_router, build_router};
+use awaken_scenario_host::{
+    EchoModel, build_custom_router, build_delegation_router, build_graded_router, build_router,
+};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

@@ -83,26 +83,46 @@ mod tests {
     fn cfg(env: &[(&str, &str)]) -> ControlStoreConfig {
         let dir = Path::new("/var/awaken");
         ControlStoreConfig::resolve(dir, |k| {
-            env.iter().find(|(key, _)| *key == k).map(|(_, v)| v.to_string())
+            env.iter()
+                .find(|(key, _)| *key == k)
+                .map(|(_, v)| v.to_string())
         })
     }
 
     #[test]
     fn unset_falls_back_to_the_bundle_sqlite_files() {
         let c = cfg(&[]);
-        assert_eq!(c.catalog, StoreBackend::Sqlite("/var/awaken/catalog.db".into()));
-        assert_eq!(c.credential, StoreBackend::Sqlite("/var/awaken/credential.db".into()));
-        assert_eq!(c.config, StoreBackend::Sqlite("/var/awaken/config.db".into()));
+        assert_eq!(
+            c.catalog,
+            StoreBackend::Sqlite("/var/awaken/catalog.db".into())
+        );
+        assert_eq!(
+            c.credential,
+            StoreBackend::Sqlite("/var/awaken/credential.db".into())
+        );
+        assert_eq!(
+            c.config,
+            StoreBackend::Sqlite("/var/awaken/config.db".into())
+        );
         assert_eq!(c.admin, StoreBackend::Sqlite("/var/awaken/admin.db".into()));
-        assert_eq!(c.sessions, StoreBackend::Sqlite("/var/awaken/sessions.db".into()));
+        assert_eq!(
+            c.sessions,
+            StoreBackend::Sqlite("/var/awaken/sessions.db".into())
+        );
     }
 
     #[test]
     fn a_postgres_url_selects_the_postgres_backend() {
         let c = cfg(&[("AWAKEN_CREDENTIAL_DB", "postgres://h/creds")]);
-        assert_eq!(c.credential, StoreBackend::Postgres("postgres://h/creds".into()));
+        assert_eq!(
+            c.credential,
+            StoreBackend::Postgres("postgres://h/creds".into())
+        );
         // Other components are untouched — each is independent.
-        assert_eq!(c.config, StoreBackend::Sqlite("/var/awaken/config.db".into()));
+        assert_eq!(
+            c.config,
+            StoreBackend::Sqlite("/var/awaken/config.db".into())
+        );
     }
 
     #[test]
@@ -111,8 +131,14 @@ mod tests {
             ("AWAKEN_CATALOG_DB", "/mnt/fast/catalog.db"),
             ("AWAKEN_CONFIG_DB", "postgresql://h/cfg"),
         ]);
-        assert_eq!(c.catalog, StoreBackend::Sqlite("/mnt/fast/catalog.db".into()));
-        assert_eq!(c.config, StoreBackend::Postgres("postgresql://h/cfg".into()));
+        assert_eq!(
+            c.catalog,
+            StoreBackend::Sqlite("/mnt/fast/catalog.db".into())
+        );
+        assert_eq!(
+            c.config,
+            StoreBackend::Postgres("postgresql://h/cfg".into())
+        );
     }
 
     #[test]
@@ -123,7 +149,10 @@ mod tests {
             ("AWAKEN_SESSIONS_DB", "/data/sessions.db"),
         ]);
         assert_eq!(c.catalog, StoreBackend::Postgres("postgres://h/cat".into()));
-        assert_eq!(c.credential, StoreBackend::Postgres("postgres://secure/cred".into()));
+        assert_eq!(
+            c.credential,
+            StoreBackend::Postgres("postgres://secure/cred".into())
+        );
         assert_eq!(c.sessions, StoreBackend::Sqlite("/data/sessions.db".into()));
         assert_eq!(c.admin, StoreBackend::Sqlite("/var/awaken/admin.db".into()));
     }

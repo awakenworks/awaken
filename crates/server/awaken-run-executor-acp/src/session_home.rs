@@ -115,9 +115,10 @@ impl SessionHomeProvider for DirSessionHome {
 
     async fn harvest(&self, key: &SessionHomeKey, plan: &SessionHomePlan) {
         if let Ok(dir) = self.session_dir(key, plan)
-            && dir.is_dir() {
-                let _ = self.blobs.store(key, &dir).await;
-            }
+            && dir.is_dir()
+        {
+            let _ = self.blobs.store(key, &dir).await;
+        }
     }
 }
 

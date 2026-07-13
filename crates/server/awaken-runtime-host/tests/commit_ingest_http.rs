@@ -67,11 +67,18 @@ async fn db_less_worker_pushes_facts_and_the_server_commits_them() {
         .commit(thread_commit())
         .await
         .expect("commit over http");
-    assert!(record.sequence >= 1, "the server sequenced the commit: {record:?}");
+    assert!(
+        record.sequence >= 1,
+        "the server sequenced the commit: {record:?}"
+    );
 
     // The fact is now committed truth on the SERVER's store, readable back.
     let committed = host.committed_messages("t1").await;
-    assert_eq!(committed.len(), 1, "the worker's message committed on the server");
+    assert_eq!(
+        committed.len(),
+        1,
+        "the worker's message committed on the server"
+    );
     assert!(
         committed[0].text_content().contains("db-less worker"),
         "the committed message is the one the worker pushed"

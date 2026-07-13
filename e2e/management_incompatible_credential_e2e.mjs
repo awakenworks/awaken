@@ -38,7 +38,7 @@ async function main() {
       (await cfg('PUT', '/v1/config/endpoints/ep1', {
         id: 'ep1',
         provider_id: 'anthropic',
-        flavor: 'anthropic_messages',
+        dialect: 'anthropic_messages',
         base_url: 'https://example.invalid/v1/',
         timeout_secs: 300,
         display_name: 'dummy',
@@ -52,7 +52,7 @@ async function main() {
         model_id: MODEL,
         provider_id: 'anthropic',
         protocol_endpoint_id: 'ep1',
-        flavor: 'anthropic_messages',
+        dialect: 'anthropic_messages',
         upstream_model: null,
       })).status,
       200,

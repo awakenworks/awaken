@@ -26,7 +26,6 @@ pub enum Relationship {
     Internal,
 }
 
-
 /// `BetaUserProfile` — the wire projection.
 #[derive(Debug, Clone, Serialize)]
 pub struct UserProfile {

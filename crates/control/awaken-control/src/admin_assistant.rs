@@ -178,9 +178,10 @@ mod tests {
             RESERVED_ADMIN_SCOPE,
             awaken_admin_assistant::admin_tool_descriptors(),
         ));
-        let service = Arc::new(ConfigService::new().with_model_resolver(Arc::new(
-            FirstOfferingResolver(catalog("m-1")),
-        )));
+        let service = Arc::new(
+            ConfigService::new()
+                .with_model_resolver(Arc::new(FirstOfferingResolver(catalog("m-1")))),
+        );
         let plane = ConfigPlane::new(service.clone(), store, tools);
 
         seed_admin_assistant(&plane).await.expect("seed");

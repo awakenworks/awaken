@@ -65,13 +65,13 @@ async function main() {
     });
     assert.equal(r.status, 200);
     r = await req(base, 'PUT', '/v1/config/endpoints/ep1', {
-      id: 'ep1', provider_id: 'anthropic', flavor: 'anthropic_messages',
+      id: 'ep1', provider_id: 'anthropic', dialect: 'anthropic_messages',
       base_url: 'https://api.anthropic.com/v1/', timeout_secs: 300, display_name: 'prod', version: 1,
     });
     assert.equal(r.status, 200);
     r = await req(base, 'POST', '/v1/config/offerings', {
       model_id: 'claude-opus-4-8', provider_id: 'anthropic',
-      protocol_endpoint_id: 'ep1', flavor: 'anthropic_messages', upstream_model: null,
+      protocol_endpoint_id: 'ep1', dialect: 'anthropic_messages', upstream_model: null,
     });
     assert.equal(r.status, 200);
     pass('authored provider/endpoint/offering under AWAKEN_MGMT_DIR');
@@ -179,7 +179,7 @@ async function main() {
     });
     const events = await listEvents(client2, session.id);
     assert.ok(
-      events.some((e) => e.type === 'agent.tool_use' && e.name === 'mcp__calc__add'),
+      events.some((e) => e.type === 'agent.mcp_tool_use' && e.name === 'mcp__calc__add'),
       `an mcp__calc__add tool_use: ${JSON.stringify(events.map((e) => e.type))}`,
     );
     assert.ok(

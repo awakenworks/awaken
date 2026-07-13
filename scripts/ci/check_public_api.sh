@@ -48,7 +48,13 @@ crates=$(cargo metadata --no-deps --format-version 1 \
 # migration bundles, so they pull awaken-scoped-migration non-optionally; the
 # resolver/bridge/admin-api that build on them inherit it). All five are excluded
 # for the same nightly-toolchain reason and reviewed in code (ADR-0043).
-excluded="awaken-store-postgres awaken-store-schema awaken-store-sqlite awaken-run-ingress awaken-config-store awaken-protocol-managed awaken-protocol-ai-sdk awaken-protocol-ag-ui awaken-protocol-acp awaken-server awaken-model-catalog awaken-credential-vault awaken-config-resolver awaken-managed-bridge awaken-admin-config-api awaken-authz-enforce awaken-webhook-managed"
+#
+# The composed deployables — awaken-cli (composition root), awaken-worker (db-less
+# worker), awaken-scenario-host (test-only), and awaken-control (authoring plane,
+# pulls scoped-migration via admin-config-api/model-catalog/credential-vault) — are
+# product binaries / assembly crates, not stable neutral contracts, exactly like
+# awaken-server. Their surface is gated by their own tests + the e2e harness.
+excluded="awaken-store-postgres awaken-store-schema awaken-store-sqlite awaken-run-ingress awaken-config-store awaken-protocol-managed awaken-protocol-ai-sdk awaken-protocol-ag-ui awaken-protocol-acp awaken-server awaken-model-catalog awaken-credential-vault awaken-config-resolver awaken-managed-bridge awaken-admin-config-api awaken-authz-enforce awaken-webhook-managed awaken-cli awaken-worker awaken-scenario-host awaken-control"
 
 fail=0
 drifted=()      # crates whose surface changed

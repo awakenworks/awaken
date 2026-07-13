@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+use awaken_scenario_host::CustomToolModel;
 use awaken_server::{HostResume, SharedHost};
-use awaken_scenario_host::{CustomToolModel};
 
 fn user(id: &str, text: &str) -> Message {
     Message::text(MessageId(id.into()), Role::User, text)

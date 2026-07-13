@@ -113,7 +113,10 @@ pub async fn run_hand_role() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(hand_addr) = env("AWAKEN_HAND_LISTEN") {
         return run_hand_server(&hand_addr, false).await;
     }
-    Err("AWAKEN_ROLE=hand requires one of AWAKEN_HAND_NATS / AWAKEN_HAND_DIAL / AWAKEN_HAND_LISTEN".into())
+    Err(
+        "AWAKEN_ROLE=hand requires one of AWAKEN_HAND_NATS / AWAKEN_HAND_DIAL / AWAKEN_HAND_LISTEN"
+            .into(),
+    )
 }
 
 #[cfg(test)]

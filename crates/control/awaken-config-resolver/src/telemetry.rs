@@ -36,8 +36,7 @@ impl RedactionMode {
 /// A telemetry ceiling: the most a layer permits. `retention_days = None` means
 /// unbounded (the least strict). Org's is the compliance baseline; lower layers
 /// tighten it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct TelemetryCeiling {
     /// The most content this layer permits.
     pub content_capture: ContentCapture,
@@ -47,7 +46,6 @@ pub struct TelemetryCeiling {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention_days: Option<u32>,
 }
-
 
 impl TelemetryCeiling {
     /// Compose this (upper) ceiling with a `lower` layer's narrowing: capture

@@ -30,13 +30,11 @@ pub use awaken_runtime_host::{
     memory_stores_router, models_router, parse_skill_md, skills_router,
 };
 
+use awaken_server::placement;
 /// An [`ExecutorProvider`] mapping a model ref to a labeled executor, so a
 /// session bound to `fast`/`slow` resolves a distinct model — the R1/R2/R5 demo
 /// surface.
-use awaken_server::{
-    ResolvedExecutorError, executor_from_resolved, mount, mount_with_managed,
-};
-use awaken_server::placement;
+use awaken_server::{ResolvedExecutorError, executor_from_resolved, mount, mount_with_managed};
 struct RouteProvider;
 
 impl ExecutorProvider for RouteProvider {

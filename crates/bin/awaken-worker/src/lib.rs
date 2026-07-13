@@ -69,7 +69,9 @@ pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
             .with_executor_provider(Arc::new(config_exec_provider)),
     );
     host.ensure_dispatch_pool();
-    eprintln!("awaken-worker draining from {upstream} (per-run model resolution from the config plane)");
+    eprintln!(
+        "awaken-worker draining from {upstream} (per-run model resolution from the config plane)"
+    );
 
     // Drain in the background; block until asked to stop. SIGINT is a developer's
     // foreground stop; SIGTERM is what an orchestrator sends first before SIGKILL.

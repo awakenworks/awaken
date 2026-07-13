@@ -249,7 +249,10 @@ impl ConfigService {
         let mut installed = self.installed.lock().unwrap();
         let n = pubs.len();
         for p in pubs {
-            installed.insert(p.agent_id, RunnableConfig::from_parts(p.snapshot, p.install));
+            installed.insert(
+                p.agent_id,
+                RunnableConfig::from_parts(p.snapshot, p.install),
+            );
         }
         n
     }

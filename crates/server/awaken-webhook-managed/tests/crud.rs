@@ -11,9 +11,7 @@ use awaken_agent_contract::RedactedString;
 use awaken_config_resolver::{WebhookEndpointDef, WebhookStore};
 use awaken_credential_vault::{CredentialError, SecretRef, SecretStore};
 use awaken_protocol_managed::{SessionLifecycleSink, WorkspaceScope};
-use awaken_webhook::{
-    ResolvedSubscription, SubscriptionSource, WebhookDispatcher, WebhookSender,
-};
+use awaken_webhook::{ResolvedSubscription, SubscriptionSource, WebhookDispatcher, WebhookSender};
 use awaken_webhook_managed::{
     ConfigPlaneSubscriptionSource, WebhookLifecycleSink, webhook_config_router,
 };
@@ -149,7 +147,9 @@ async fn create_mints_a_secret_seals_it_and_stores_the_row() {
     assert_eq!(status, StatusCode::CREATED);
     assert_eq!(body["id"], "wh1");
     assert_eq!(body["workspace_id"], "ws_a");
-    let secret = body["secret"].as_str().expect("plaintext secret returned once");
+    let secret = body["secret"]
+        .as_str()
+        .expect("plaintext secret returned once");
     assert!(!secret.is_empty());
     // The secret-free row is stored, sealed under its own ref.
     let row = store.get("wh1").expect("row stored");
@@ -185,8 +185,8 @@ async fn an_ssrf_shaped_url_is_rejected_and_seals_no_secret() {
     // minted or sealed for it.
     for bad in [
         "https://169.254.169.254/latest/meta-data/", // cloud metadata (link-local)
-        "https://127.0.0.1/admin",                    // loopback
-        "http://hooks.example.com/x",                 // non-https
+        "https://127.0.0.1/admin",                   // loopback
+        "http://hooks.example.com/x",                // non-https
     ] {
         let store = Arc::new(MemStore::default());
         let secrets = Arc::new(MemSecrets::ok());
@@ -277,7 +277,10 @@ async fn cross_tenant_delete_is_a_noop() {
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    assert!(store.get("wh1").is_some(), "another tenant's row is not deleted");
+    assert!(
+        store.get("wh1").is_some(),
+        "another tenant's row is not deleted"
+    );
 }
 
 #[tokio::test]
@@ -305,7 +308,10 @@ async fn update_in_place_preserves_the_sealed_secret() {
     // No new secret minted on update, and none echoed.
     assert!(body.get("secret").is_none(), "update never echoes a secret");
     let row = store.get("wh1").unwrap();
-    assert_eq!(row.secret_ref.0, "whsec:original", "sealed secret preserved");
+    assert_eq!(
+        row.secret_ref.0, "whsec:original",
+        "sealed secret preserved"
+    );
     assert!(row.disabled, "disabled flag preserved across an update");
 }
 
@@ -324,7 +330,10 @@ async fn get_projects_the_row_without_the_secret() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["url"], "https://old.example/hook");
-    assert!(body.get("secret").is_none(), "the view never leaks the secret");
+    assert!(
+        body.get("secret").is_none(),
+        "the view never leaks the secret"
+    );
     assert!(body.get("secret_ref").is_none(), "nor the secret ref");
 }
 
@@ -351,10 +360,19 @@ async fn list_is_scoped_to_the_tenant() {
 // --- ConfigPlaneSubscriptionSource: the dispatcher's read port ---
 
 /// Seed an enabled row AND seal its secret, so `matching` can resolve it.
-async fn seed_resolvable(store: &MemStore, secrets: &MemSecrets, id: &str, ws: &str, types: &[&str]) {
+async fn seed_resolvable(
+    store: &MemStore,
+    secrets: &MemSecrets,
+    id: &str,
+    ws: &str,
+    types: &[&str],
+) {
     let secret_ref = SecretRef(format!("whsec:{id}"));
     secrets
-        .put(&secret_ref, RedactedString::new("whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"))
+        .put(
+            &secret_ref,
+            RedactedString::new("whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"),
+        )
         .await
         .unwrap();
     store.put(WebhookEndpointDef {
@@ -368,7 +386,10 @@ async fn seed_resolvable(store: &MemStore, secrets: &MemSecrets, id: &str, ws: &
 }
 
 fn source(store: Arc<MemStore>, secrets: Arc<MemSecrets>) -> ConfigPlaneSubscriptionSource {
-    ConfigPlaneSubscriptionSource::new(store as Arc<dyn WebhookStore>, secrets as Arc<dyn SecretStore>)
+    ConfigPlaneSubscriptionSource::new(
+        store as Arc<dyn WebhookStore>,
+        secrets as Arc<dyn SecretStore>,
+    )
 }
 
 #[tokio::test]
@@ -376,10 +397,15 @@ async fn matching_resolves_an_enabled_subscription_with_its_secret() {
     let store = Arc::new(MemStore::default());
     let secrets = Arc::new(MemSecrets::ok());
     seed_resolvable(&store, &secrets, "wh1", "ws_a", &["run.completed"]).await;
-    let out = source(store, secrets).matching("ws_a", "run.completed").await;
+    let out = source(store, secrets)
+        .matching("ws_a", "run.completed")
+        .await;
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].id, "wh1");
-    assert!(!out[0].secret.is_empty(), "the secret is materialized at delivery");
+    assert!(
+        !out[0].secret.is_empty(),
+        "the secret is materialized at delivery"
+    );
 }
 
 #[tokio::test]
@@ -388,8 +414,13 @@ async fn matching_skips_a_subscription_whose_secret_is_unresolvable() {
     let secrets = Arc::new(MemSecrets::ok());
     // Row present, but its secret was never sealed → unsignable → skipped.
     seed(&store, "wh1", "ws_a");
-    let out = source(store, secrets).matching("ws_a", "run.completed").await;
-    assert!(out.is_empty(), "an endpoint that can never sign is not delivered to");
+    let out = source(store, secrets)
+        .matching("ws_a", "run.completed")
+        .await;
+    assert!(
+        out.is_empty(),
+        "an endpoint that can never sign is not delivered to"
+    );
 }
 
 #[tokio::test]
@@ -403,9 +434,15 @@ async fn matching_skips_disabled_and_type_mismatched_subscriptions() {
     disabled.disabled = true;
     store.put(disabled);
 
-    let out = source(store, secrets).matching("ws_a", "run.completed").await;
+    let out = source(store, secrets)
+        .matching("ws_a", "run.completed")
+        .await;
     let ids: Vec<&str> = out.iter().map(|s| s.id.as_str()).collect();
-    assert_eq!(ids, vec!["wh_ok"], "only the enabled, type-matching endpoint");
+    assert_eq!(
+        ids,
+        vec!["wh_ok"],
+        "only the enabled, type-matching endpoint"
+    );
 }
 
 #[tokio::test]
@@ -414,7 +451,10 @@ async fn disable_flips_the_row_in_the_store() {
     let secrets = Arc::new(MemSecrets::ok());
     seed_resolvable(&store, &secrets, "wh1", "ws_a", &[]).await;
     source(store.clone(), secrets).disable("wh1").await;
-    assert!(store.get("wh1").unwrap().disabled, "auto-disable is a config-plane write");
+    assert!(
+        store.get("wh1").unwrap().disabled,
+        "auto-disable is a config-plane write"
+    );
 }
 
 // --- WebhookLifecycleSink: the no-owner early return ---
