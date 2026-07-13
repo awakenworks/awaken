@@ -66,10 +66,10 @@ pub fn init() {
     // configured, so a server with OTLP set exports metrics with no extra wiring.
     // Best-effort: a metric-export failure must never stop the process.
     let config = config::OtelConfig::from_env();
-    if config.is_configured() {
-        if let Err(error) = metrics::init_otlp_meter(&config) {
-            tracing::warn!(%error, "OTLP meter init failed; continuing without metric export");
-        }
+    if config.is_configured()
+        && let Err(error) = metrics::init_otlp_meter(&config)
+    {
+        tracing::warn!(%error, "OTLP meter init failed; continuing without metric export");
     }
 }
 

@@ -654,7 +654,10 @@ mod shred_tests {
 
         let path = sandbox.secret_paths[0].clone();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "a realized secret must be owner-only, got {mode:o}");
+        assert_eq!(
+            mode, 0o600,
+            "a realized secret must be owner-only, got {mode:o}"
+        );
     }
 
     #[tokio::test]

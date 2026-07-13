@@ -1158,14 +1158,26 @@ async fn events_are_paged_by_cursor() {
     };
 
     // Full, unpaged page: all events, no cursor.
-    let full = json_call(&app, "GET", &format!("/v1/sessions/{id}/events"), serde_json::Value::Null).await;
+    let full = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
     let full_ids = ids(&full);
     assert_eq!(full_ids.len(), 6, "two turns produced six events");
     assert_eq!(full["has_more"], serde_json::json!(false));
     assert_eq!(full["next_page"], serde_json::Value::Null);
 
     // First page of 2 → more remain, cursor names the 2nd event.
-    let p1 = json_call(&app, "GET", &format!("/v1/sessions/{id}/events?limit=2"), serde_json::Value::Null).await;
+    let p1 = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events?limit=2"),
+        serde_json::Value::Null,
+    )
+    .await;
     assert_eq!(ids(&p1), full_ids[0..2]);
     assert_eq!(p1["has_more"], serde_json::json!(true));
     assert_eq!(p1["next_page"], serde_json::json!(full_ids[1]));

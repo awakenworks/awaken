@@ -81,7 +81,9 @@ async fn thread_messages(
     match paginate_history(&history, params.cursor.as_deref(), params.limit()) {
         // The house cursor-page envelope (`awaken-api-contract`): `{ items, cursor }`,
         // where `cursor` is the continuation (`null` on the last page).
-        Ok(page) => Json(CursorPage::new(encode_history(page.items), page.next_page)).into_response(),
+        Ok(page) => {
+            Json(CursorPage::new(encode_history(page.items), page.next_page)).into_response()
+        }
         // A stale or fabricated cursor is a caller fault: a plain 400. This GET is
         // a JSON read, not a run, so it is not framed as an SSE RUN_ERROR.
         Err(err) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),

@@ -101,7 +101,6 @@ async fn metrics(State(ctrl): State<Arc<DrainController>>) -> impl IntoResponse 
 
 /// Layer the Brain admin surface onto a router: the connection-count metric for
 /// autoscaling, and the drain endpoint + readiness for graceful scale-in.
-#[must_use]
 pub fn with_brain_admin(base: Router, ctrl: Arc<DrainController>) -> Router {
     // Count only real traffic — the admin probes (/metrics, /readyz, /admin/drain)
     // are frequent short polls and must not inflate the connection gauge (nor let

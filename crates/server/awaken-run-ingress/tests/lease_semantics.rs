@@ -32,9 +32,9 @@ use awaken_run_ingress::{
     DispatchOutcome, DispatchQueue, DispatchWorker, MemoryDispatchStore, RunExecutionRequest,
     SqliteDispatchStore,
 };
+use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
-use awaken_runtime::memory::MemoryCommitCoordinator;
 
 use harness::{activation, blocking_tool_runtime, counting_text_runtime, text_runtime};
 
@@ -112,8 +112,8 @@ async fn expired_lease_is_reclaimed_and_driven_exactly_once() {
     assert_eq!(infers.load(Ordering::SeqCst), 0, "A died before executing");
 
     // B's worker reclaims after expiry, drives to Done, and settles.
-    let worker_b = DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-b")
-        .with_lease_ms(LEASE);
+    let worker_b =
+        DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-b").with_lease_ms(LEASE);
     let processed = worker_b.tick(LEASE + 1).await.unwrap();
     assert_eq!(
         processed,
@@ -169,8 +169,8 @@ async fn stale_reclaim_of_a_completed_run_settles_without_re_executing() {
 
     // B reclaims the still-Running dispatch (lease expired). The committed terminal
     // record is authority: the worker settles Done and does not re-run the model.
-    let worker_b = DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-b")
-        .with_lease_ms(LEASE);
+    let worker_b =
+        DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-b").with_lease_ms(LEASE);
     let processed = worker_b.tick(LEASE + 1).await.unwrap();
     assert_eq!(
         processed,
@@ -185,7 +185,11 @@ async fn stale_reclaim_of_a_completed_run_settles_without_re_executing() {
         1,
         "the model ran exactly once — the terminal record fenced re-execution"
     );
-    assert_eq!(store.dispatch_count(), 0, "the completed dispatch is removed");
+    assert_eq!(
+        store.dispatch_count(),
+        0,
+        "the completed dispatch is removed"
+    );
 }
 
 // --- 4. Lease renewal keeps a slow-but-alive owner across many periods ------
@@ -219,7 +223,11 @@ async fn renewal_keeps_a_slow_owner_across_multiple_lease_periods() {
             "the heartbeat renewed A's in-flight lease"
         );
         assert!(
-            store.claim("owner-b", lease, poke_at).await.unwrap().is_none(),
+            store
+                .claim("owner-b", lease, poke_at)
+                .await
+                .unwrap()
+                .is_none(),
             "a renewed lease is never reclaimable while A stays alive"
         );
     }
@@ -313,8 +321,8 @@ async fn mid_flight_reclaim_keeps_the_committed_log_exactly_once() {
 
     // B's lease-expired reclaim re-drives the SAME run to completion, running the
     // tool a SECOND time (the inherent double side effect).
-    let worker_b = DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-b")
-        .with_lease_ms(LEASE);
+    let worker_b =
+        DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-b").with_lease_ms(LEASE);
     let processed = worker_b.tick(LEASE + 1).await.unwrap();
     assert_eq!(
         processed,

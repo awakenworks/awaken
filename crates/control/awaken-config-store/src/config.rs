@@ -16,19 +16,14 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// triple it always was (`{provider_identity_ref, model_ref, backend_ref}`), so
 /// every config authored before this type — and its content-address fingerprint —
 /// is byte-identical. Only `Auto` is new, serialized as `{"mode":"auto"}`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ModelSelection {
     /// Resolve to a first provider-backed offering at publish (the default). The
     /// reconciler re-resolves these on a model-catalog change (ADR-0052 D5).
+    #[default]
     Auto,
     /// The operator's explicit concrete binding — never overwritten by resolution.
     Pinned(ModelBinding),
-}
-
-impl Default for ModelSelection {
-    fn default() -> Self {
-        ModelSelection::Auto
-    }
 }
 
 impl ModelSelection {

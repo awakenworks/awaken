@@ -112,6 +112,11 @@ pub fn dispatch_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(BUNDLE_ID, migrations)
 }
 
+/// The runtime table prefix, mirrored from `postgres::NS`/`sqlite::NS` so the
+/// render test can assert the prefixing without reaching into a backend module.
+#[cfg(test)]
+const NS: &str = "runtime";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,8 +161,3 @@ mod tests {
         }
     }
 }
-
-/// The runtime table prefix, mirrored from `postgres::NS`/`sqlite::NS` so the
-/// render test can assert the prefixing without reaching into a backend module.
-#[cfg(test)]
-const NS: &str = "runtime";

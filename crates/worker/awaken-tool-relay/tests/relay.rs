@@ -218,7 +218,9 @@ async fn a_reply_with_a_mismatched_correlation_id_is_indeterminate() {
                 correlation_id: req.correlation_id.wrapping_add(999),
                 result: HandResult::ok(ToolOutput::ok("c1", "stale")),
             };
-            let _ = framed.send(serde_json::to_vec(&reply).unwrap().into()).await;
+            let _ = framed
+                .send(serde_json::to_vec(&reply).unwrap().into())
+                .await;
         }
     });
     let executor = RemoteToolExecutor::new(brain_end);
@@ -305,10 +307,7 @@ async fn serve_hand_fails_closed_on_a_frame_that_is_not_a_request() {
     framed.send(b"garbage-frame".to_vec().into()).await.unwrap();
 
     match hand.await.unwrap() {
-        Err(e) => assert!(
-            e.to_string().contains("not a HandRequest"),
-            "got: {e}"
-        ),
+        Err(e) => assert!(e.to_string().contains("not a HandRequest"), "got: {e}"),
         Ok(()) => panic!("expected the hand to fail closed on a non-request frame"),
     }
 }

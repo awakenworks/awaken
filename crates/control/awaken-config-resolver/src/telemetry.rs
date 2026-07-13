@@ -37,6 +37,7 @@ impl RedactionMode {
 /// unbounded (the least strict). Org's is the compliance baseline; lower layers
 /// tighten it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct TelemetryCeiling {
     /// The most content this layer permits.
     pub content_capture: ContentCapture,
@@ -47,15 +48,6 @@ pub struct TelemetryCeiling {
     pub retention_days: Option<u32>,
 }
 
-impl Default for TelemetryCeiling {
-    fn default() -> Self {
-        Self {
-            content_capture: ContentCapture::default(),
-            redaction: RedactionMode::default(),
-            retention_days: None,
-        }
-    }
-}
 
 impl TelemetryCeiling {
     /// Compose this (upper) ceiling with a `lower` layer's narrowing: capture

@@ -228,11 +228,10 @@ async fn a_delegates_usage_folds_into_the_parent_thread_tally() {
     let mut tally = ThreadUsage::default();
     for cmd in commit.committed_state(&thread_id) {
         use awaken_agent_contract::agent::state::{Action, Scope};
-        if cmd.scope == Scope::Thread && cmd.key.0 == THREAD_USAGE_STATE_KEY {
-            if let Action::Set(value) = &cmd.action {
+        if cmd.scope == Scope::Thread && cmd.key.0 == THREAD_USAGE_STATE_KEY
+            && let Action::Set(value) = &cmd.action {
                 tally = serde_json::from_value(value.clone()).expect("thread usage");
             }
-        }
     }
     let total = tally.total();
     assert_eq!(total.prompt_tokens, 13, "delegate input tokens rolled up");

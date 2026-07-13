@@ -88,6 +88,7 @@ fn stitch_prefix(response: ChatResponse, prefix: &str) -> ChatResponse {
         otel.status_code = tracing::field::Empty,
     )
 )]
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn infer_with_retry(
     llm: &std::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
     request: ChatRequest,

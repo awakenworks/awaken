@@ -255,7 +255,7 @@ async fn list_skills(State(state): State<Arc<SkillsApi>>) -> impl IntoResponse {
         let registry = state.registry.lock().unwrap();
         (
             registry.iter().map(|(id, r)| r.project(id)).collect(),
-            registry.iter().map(|(id, _)| id.clone()).collect(),
+            registry.keys().cloned().collect(),
         )
     };
     for id in state.host.skill_store_list().await {

@@ -61,7 +61,11 @@ impl ProtocolRuntime for PersistedRuntime {
 fn transcript(n: usize) -> Vec<Message> {
     let mut messages = Vec::new();
     for i in 0..n {
-        messages.push(Message::text(Id(format!("u{i}")), Role::User, format!("ask {i}")));
+        messages.push(Message::text(
+            Id(format!("u{i}")),
+            Role::User,
+            format!("ask {i}"),
+        ));
         messages.push(Message::text(
             Id(format!("a{i}")),
             Role::Assistant,
@@ -126,7 +130,10 @@ async fn returns_the_persisted_transcript_in_ag_ui_message_shape() {
     assert_eq!(body["cursor"], Value::Null);
     let msgs = body["items"].as_array().unwrap();
     assert_eq!(msgs.len(), 3);
-    assert_eq!(msgs[0], serde_json::json!({ "id": "u0", "role": "user", "content": "hi" }));
+    assert_eq!(
+        msgs[0],
+        serde_json::json!({ "id": "u0", "role": "user", "content": "hi" })
+    );
     assert_eq!(msgs[1]["role"], "assistant");
     assert_eq!(msgs[1]["toolCalls"][0]["function"]["name"], "read");
     assert_eq!(

@@ -380,6 +380,7 @@ impl AcpBridge {
     /// permission requests and resuming/negotiating its ACP session (the Acp codec
     /// only; the newline stand-in ignores it). The real ACP path wires the
     /// executor's config; fixtures use [`run_turn`](Self::run_turn).
+    #[cfg_attr(not(feature = "real-acp"), allow(unused_variables))]
     pub async fn run_turn_with_config(
         channel: &mut dyn AgentChannel,
         prompt: &str,
@@ -484,6 +485,7 @@ impl Supervisor {
 
     /// Drive a turn, racing it against `cancel`, mid-turn `injections`, and the
     /// policy's turn deadline. Any of the three reaps the agent and maps the reason.
+    #[allow(clippy::too_many_arguments)]
     pub async fn supervise(
         channel: &mut dyn AgentChannel,
         process: &dyn pc::ProcessHandle,

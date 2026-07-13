@@ -1,5 +1,5 @@
 //! ADR-0048 assembly validation: prove `awaken-iam-host` (the single-PDP `IamGate`
-//! + `auth_layer` PEP) works against our pinned iam rev, ahead of adopting it in
+//! with `auth_layer` PEP) works against our pinned iam rev, ahead of adopting it in
 //! place of the hand-rolled `ManagementAuthz` / `EnforceEngine`.
 //!
 //! What this locks:

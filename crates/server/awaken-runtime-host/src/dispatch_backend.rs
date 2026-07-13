@@ -107,12 +107,9 @@ pub async fn init_shared_postgres_dispatch(url: &str) -> Result<(), String> {
 async fn connect_postgres_with_nats_wake(url: &str) -> Result<Arc<AnyDispatchStore>, String> {
     let nats_url = std::env::var("AWAKEN_NATS_URL")
         .map_err(|_| "AWAKEN_DISPATCH_WAKE=nats requires AWAKEN_NATS_URL".to_string())?;
-    let (store, wake) = AnyDispatchStore::connect_postgres_with_nats_wake(
-        url,
-        &nats_url,
-        &dispatch_wake_channel(),
-    )
-    .await?;
+    let (store, wake) =
+        AnyDispatchStore::connect_postgres_with_nats_wake(url, &nats_url, &dispatch_wake_channel())
+            .await?;
     let _ = SHARED_NATS_WAKE.set(wake);
     Ok(Arc::new(store))
 }
@@ -122,9 +119,11 @@ async fn connect_postgres_with_nats_wake(url: &str) -> Result<Arc<AnyDispatchSto
 /// poll-only (which would look identical to a working wake but never nudge a peer).
 #[cfg(not(feature = "nats"))]
 async fn connect_postgres_with_nats_wake(_url: &str) -> Result<Arc<AnyDispatchStore>, String> {
-    Err("AWAKEN_DISPATCH_WAKE=nats requested but binary built without --features nats \
+    Err(
+        "AWAKEN_DISPATCH_WAKE=nats requested but binary built without --features nats \
          (rebuild awaken-server-local with --features nats to enable the NATS wake)"
-        .to_string())
+            .to_string(),
+    )
 }
 
 /// Inject a pre-assembled dispatch store as THE process backend, outranking the

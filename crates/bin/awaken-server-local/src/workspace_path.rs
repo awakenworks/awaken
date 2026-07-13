@@ -30,7 +30,6 @@ use tower::ServiceExt;
 /// `/v1/workspaces/{ws}/{rest}` request is rewritten to `/v1/{rest}`, scoped to
 /// `{ws}`, and forwarded into `flat`; every other path falls through to `flat`
 /// unchanged.
-#[must_use]
 pub fn with_workspace_path_addressing(flat: Router) -> Router {
     Router::new()
         .route("/v1/workspaces/{ws}/{*rest}", any(dispatch))

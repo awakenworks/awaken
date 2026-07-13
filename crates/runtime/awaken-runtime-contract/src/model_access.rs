@@ -91,7 +91,7 @@ impl ModelAccessGrant {
         }
     }
 
-    /// Whether this grant routes egress through a cloud-managed gateway. An altitude
+    /// Whether this grant routes egress through a gateway. An altitude
     /// that cannot honor a gateway grant (e.g. the native in-process provider path)
     /// checks this to fail closed rather than degrade to local credentials.
     #[must_use]
