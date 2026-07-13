@@ -390,6 +390,7 @@ pub fn activation_on(run: &str, thread: &str) -> RunActivation {
             content: vec![ContentBlock::text("go")],
         }],
         trace: Default::default(),
+        model_access: Default::default(),
     }
 }
 

@@ -89,6 +89,7 @@ fn activation(fingerprint: &str) -> RunActivation {
             content: vec![ContentBlock::text("hello")],
         }],
         trace: Default::default(),
+        model_access: Default::default(),
     }
 }
 

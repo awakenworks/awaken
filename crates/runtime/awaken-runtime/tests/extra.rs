@@ -115,6 +115,7 @@ async fn a_system_role_message_is_carried_into_inference() {
             },
         ],
         trace: Default::default(),
+        model_access: Default::default(),
     };
 
     let outcome = runtime

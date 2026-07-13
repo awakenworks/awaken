@@ -116,6 +116,7 @@ pub(crate) fn activation() -> RunActivation {
         },
         input: vec![Message::text(MessageId("u1".into()), Role::User, "do it")],
         trace: Default::default(),
+        model_access: Default::default(),
     }
 }
 

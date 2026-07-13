@@ -60,6 +60,7 @@ fn activation(thread: &str) -> RunActivation {
         },
         input: vec![Message::text(MessageId("u1".into()), Role::User, "go")],
         trace: Default::default(),
+        model_access: Default::default(),
     }
 }
 

@@ -166,6 +166,7 @@ fn activation(plugin_ids: Vec<String>) -> RunActivation {
             content: vec![ContentBlock::text("go")],
         }],
         trace: Default::default(),
+        model_access: Default::default(),
     }
 }
 

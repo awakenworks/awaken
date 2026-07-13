@@ -117,6 +117,7 @@ fn turn(run_id: &str, text: &str) -> RunActivation {
             content: vec![ContentBlock::text(text)],
         }],
         trace: Default::default(),
+        model_access: Default::default(),
     }
 }
 
