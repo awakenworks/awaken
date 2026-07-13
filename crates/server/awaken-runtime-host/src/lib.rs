@@ -24,6 +24,7 @@ mod config;
 mod config_plane;
 mod data_subject_api;
 mod delegate;
+mod commit_ingest;
 mod dispatch_backend;
 mod dispatch_transport;
 mod dispatch_transport_client;
@@ -97,6 +98,7 @@ pub use crate::tool_catalog::{
     RESERVED_ADMIN_SCOPE, ScopedToolCatalog, StaticToolCatalog, ToolCatalogSource,
 };
 // The per-plane resource routers the composition root merges over one host.
+pub use crate::commit_ingest::{RemoteCoordinator, commit_ingest_router};
 pub use crate::dispatch_transport::dispatch_transport_router;
 pub use crate::dispatch_transport_client::HttpDispatchQueue;
 pub use crate::durable_ops::durable_ops_router;
