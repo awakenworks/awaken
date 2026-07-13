@@ -123,6 +123,8 @@ fn session_surface(managed_state: &Arc<ManagedState>, host: &Arc<SharedHost>) ->
         .merge(memory_stores_router(host.clone()))
         .merge(skills_router(host.clone()))
         .merge(durable_ops_router(host.clone()))
+        .merge(awaken_runtime_host::dispatch_transport_router(host.clone()))
+        .merge(awaken_runtime_host::commit_ingest_router(host.clone()))
         .merge(models_router(Arc::new(default_models())))
 }
 

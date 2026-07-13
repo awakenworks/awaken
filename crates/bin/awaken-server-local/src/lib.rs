@@ -459,6 +459,10 @@ fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -
     // The durable-ingress operations surface (slice E): ADR-0009 follow-on verbs
     // (supersede / reconcile / reap / dead-letter GC) over the same shared host.
     let durable_ops = durable_ops_router(host.clone());
+    // The worker-facing cross-node seam: a database-less worker claims/settles runs
+    // over the dispatch transport and pushes committed facts to the commit ingest.
+    let dispatch_transport = awaken_runtime_host::dispatch_transport_router(host.clone());
+    let commit_ingest = awaken_runtime_host::commit_ingest_router(host.clone());
     // The Files API (`/v1/files`) over the host's blob store — file resources + artifacts.
     let files = files_router(host.clone());
     // Tenant ownership for memory stores (ADR-0053 / ADR-0051): fence cross-tenant
@@ -490,6 +494,8 @@ fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -
         .merge(ag_ui)
         .merge(a2a)
         .merge(durable_ops)
+        .merge(dispatch_transport)
+        .merge(commit_ingest)
         .merge(files)
         .merge(memory_stores)
         .merge(skills)
