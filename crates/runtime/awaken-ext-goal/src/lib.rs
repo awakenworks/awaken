@@ -42,8 +42,9 @@ pub enum GraderRef {
     },
 }
 
-/// A goal to grade a deliverable against. `rubric` is the requirement text (a
-/// Managed `user.define_outcome` rubric normalizes to this via [`rubric_text`]).
+/// A goal to grade a deliverable against. `rubric` is plain requirement text; any
+/// managed-plane rubric wire shape is normalized to it by the host/managed adapter
+/// that builds the goal, never by this neutral crate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoalSpec {
     pub description: String,
@@ -69,26 +70,11 @@ impl GoalSpec {
     }
 }
 
-/// Normalize a Managed rubric (a bare string, `{type:"text",content}`, or
-/// `{type:"file",...}`) to requirement text. A file rubric has no inline text, so
-/// it yields an empty requirement (fail-open at the grader).
-pub fn rubric_text(rubric: &Value) -> String {
-    match rubric {
-        Value::String(s) => s.clone(),
-        Value::Object(map) => map
-            .get("content")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        _ => String::new(),
-    }
-}
-
 /// The **grader's** judgement for one deliverable — nothing about iteration
 /// budgets or lifecycle (those are the loop's concern, [`GoalOutcome`]). Keeping
 /// the grader verdict separate from the loop result is the boundary that lets a
 /// grader stay a faithful judge: it never needs to know how many revisions are
-/// left (separation of concerns; cf. `awaken-ext-outcome`'s `GradeResult`).
+/// left (separation of concerns).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GradeResult {

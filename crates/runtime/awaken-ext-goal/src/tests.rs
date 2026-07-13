@@ -309,20 +309,6 @@ fn goal_outcome_tokens_and_terminality() {
 }
 
 #[test]
-fn rubric_text_normalizes_string_object_and_file() {
-    assert_eq!(rubric_text(&serde_json::json!("X")), "X");
-    assert_eq!(
-        rubric_text(&serde_json::json!({"type":"text","content":"Y"})),
-        "Y"
-    );
-    // A file rubric has no inline text → empty (fail-open at the grader).
-    assert_eq!(
-        rubric_text(&serde_json::json!({"type":"file","file_id":"f"})),
-        ""
-    );
-}
-
-#[test]
 fn round_detail_carries_result_and_explanation() {
     let d = round_detail(GoalOutcome::NeedsRevision, "why");
     assert_eq!(d["result"], "needs_revision");
