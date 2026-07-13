@@ -114,7 +114,7 @@ pub(crate) async fn run_subagent(
     model_ref: &str,
     provider: &LocalSandboxProvider,
     name: &str,
-    input: &str,
+    input: impl Into<RunInput>,
     cancellation: Option<CancellationToken>,
 ) -> Result<(String, ThreadUsage), String> {
     // A judge/native sub-agent does not offer skills (ADR-0036).

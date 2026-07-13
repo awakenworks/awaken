@@ -13,11 +13,14 @@ use std::sync::Arc;
 use awaken_ext_skills::{
     CompositeSkillRegistry, InMemorySkillRegistry, ListSkillsTool, PathActivations, RecordingGate,
     SkillFile, SkillProvenance, SkillRegistry, SkillSource, SkillSpec, SkillTool,
-    SourceSkillRegistry, SubAgentRunner,
+    SourceSkillRegistry,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::permission::ToolGateHook;
 use awaken_runtime_contract::resolved::ToolDescriptor;
+use awaken_runtime_contract::subagent_runner::{
+    SubagentError, SubagentReply, SubagentRequest, SubagentRunner,
+};
 use awaken_runtime_contract::tool::RawTool;
 use awaken_sandbox_local::{Environment, LocalSandboxProvider};
 
@@ -65,8 +68,10 @@ impl SkillSource for SnapshotSkillSource {
     }
 }
 
-/// Runs a `context: fork` skill as a fresh, isolated sub-agent, returning its
-/// reply. Bridges the [`SubAgentRunner`] port to the shared `run_subagent`.
+/// Runs a `context: fork` skill as a fresh, isolated default-assistant sub-agent
+/// (no skills, so a fork cannot recurse), returning its reply. Implements the
+/// neutral [`SubagentRunner`] port — the same one the goal judge and compactor use
+/// — so skills no longer needs a bespoke fork-runner trait.
 struct ForkRunner {
     llm: Arc<dyn LlmExecutor>,
     model_ref: String,
@@ -74,21 +79,22 @@ struct ForkRunner {
 }
 
 #[async_trait::async_trait]
-impl SubAgentRunner for ForkRunner {
-    async fn run(&self, skill_id: &str, prompt: &str) -> Result<String, String> {
-        let name = format!("skill-{skill_id}");
-        // A `context: fork` skill runs its own isolated sub-thread; its usage stays
-        // there (this port surfaces only the reply text).
+impl SubagentRunner for ForkRunner {
+    async fn run(&self, request: SubagentRequest) -> Result<SubagentReply, SubagentError> {
+        // The skill id names the sub-run; the seed is the resolved skill body. The
+        // sub-thread's usage stays there (this port surfaces only the reply text).
+        let name = format!("skill-{}", request.agent_id);
         crate::subagent::run_subagent(
             self.llm.clone(),
             &self.model_ref,
             &self.provider,
             &name,
-            prompt,
-            None,
+            request.seed,
+            request.cancellation,
         )
         .await
-        .map(|(text, _usage)| text)
+        .map(|(text, _usage)| SubagentReply { text: Some(text) })
+        .map_err(SubagentError)
     }
 }
 
@@ -161,7 +167,7 @@ pub(crate) fn wire_skills(
     let gate: Arc<dyn ToolGateHook> = Arc::new(RecordingGate::new(base_gate, activations.clone()));
     let list: Arc<dyn RawTool> =
         Arc::new(ListSkillsTool::new(registry.clone()).with_path_activations(activations));
-    let fork_runner: Arc<dyn SubAgentRunner> = Arc::new(ForkRunner {
+    let fork_runner: Arc<dyn SubagentRunner> = Arc::new(ForkRunner {
         llm,
         model_ref: model_ref.to_string(),
         provider: LocalSandboxProvider::new(fork_base),
