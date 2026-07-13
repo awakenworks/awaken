@@ -372,7 +372,9 @@ async fn list_versions(
 ) -> Result<Json<Page<Agent>>, WireError> {
     let store = state.inner.lock().unwrap();
     let record = store.get(&id).ok_or_else(not_found)?;
-    Ok(Json(paginate(record.history.clone(), &page, |a| a.id.as_str())))
+    Ok(Json(paginate(record.history.clone(), &page, |a| {
+        a.id.as_str()
+    })))
 }
 
 #[cfg(test)]
@@ -506,5 +508,125 @@ mod tests {
         let b = create_owned(&app, "ws_b").await;
         assert_eq!(list_ids(&app, "ws_a").await, vec![a]);
         assert_eq!(list_ids(&app, "ws_b").await, vec![b]);
+    }
+
+    /// A cross-tenant `update` (POST `/v1/agents/{id}`) and `versions`
+    /// (GET `/v1/agents/{id}/versions`) are fenced by the same guard: a foreign
+    /// workspace is 404'd before the handler runs (never 403), while the owner's
+    /// own update and version listing are admitted. The existing tests only cover
+    /// GET/archive; these pin the remaining two `{id}` verbs.
+    #[tokio::test]
+    async fn cross_tenant_update_and_versions_are_fenced() {
+        let app = agents_router(Arc::new(AgentRegistryState::new()));
+        let id = create_owned(&app, "ws_a").await;
+
+        // A foreign-tenant update is 404'd at the guard (body never reaches the
+        // optimistic-concurrency check).
+        assert_eq!(
+            call_scoped(&app, "POST", &format!("/v1/agents/{id}"), Some("ws_b")).await,
+            StatusCode::NOT_FOUND
+        );
+        // A foreign-tenant version listing is likewise fenced.
+        assert_eq!(
+            call_scoped(
+                &app,
+                "GET",
+                &format!("/v1/agents/{id}/versions"),
+                Some("ws_b")
+            )
+            .await,
+            StatusCode::NOT_FOUND
+        );
+
+        // The owner updates with the correct version, then reads two snapshots back.
+        let mut req = Request::builder()
+            .method("POST")
+            .uri(format!("/v1/agents/{id}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&json!({ "version": 1, "name": "renamed" })).unwrap(),
+            ))
+            .unwrap();
+        req.extensions_mut().insert(WorkspaceScope("ws_a".into()));
+        assert_eq!(
+            app.clone().oneshot(req).await.unwrap().status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            call_scoped(
+                &app,
+                "GET",
+                &format!("/v1/agents/{id}/versions"),
+                Some("ws_a")
+            )
+            .await,
+            StatusCode::OK
+        );
+    }
+
+    /// An empty `WorkspaceScope("")` is its own tenant — not silently coerced to the
+    /// seeded default. An agent it owns is readable by an equally-empty scope, but
+    /// invisible to a named workspace and to a bare (default-resolved) request.
+    #[tokio::test]
+    async fn an_empty_scope_is_a_distinct_tenant() {
+        let app = agents_router(Arc::new(AgentRegistryState::new()));
+        let id = create_owned(&app, "").await;
+        let path = format!("/v1/agents/{id}");
+        assert_eq!(
+            call_scoped(&app, "GET", &path, Some("")).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            call_scoped(&app, "GET", &path, Some("ws_a")).await,
+            StatusCode::NOT_FOUND
+        );
+        // A bare request resolves to DEFAULT_SCOPE, which is not "".
+        assert_eq!(
+            call_scoped(&app, "GET", &path, None).await,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    /// The seeded default scope is a real tenant an explicit credential can name:
+    /// a bare-created (default-owned) agent is reachable by a request that stamps
+    /// the literal `DEFAULT_SCOPE`, and unreachable by any other workspace. This
+    /// pins the default↔explicit collision so a future change to `request_scope`
+    /// can't silently split or merge the two.
+    #[tokio::test]
+    async fn the_default_scope_is_addressable_as_a_tenant() {
+        let app = agents_router(Arc::new(AgentRegistryState::new()));
+        // Bare create → owner is DEFAULT_SCOPE.
+        let id = create_owned(&app, DEFAULT_SCOPE).await;
+        let path = format!("/v1/agents/{id}");
+        // A bare request (resolves to DEFAULT_SCOPE) and an explicit DEFAULT_SCOPE
+        // request both own it.
+        assert_eq!(call_scoped(&app, "GET", &path, None).await, StatusCode::OK);
+        assert_eq!(
+            call_scoped(&app, "GET", &path, Some(DEFAULT_SCOPE)).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            call_scoped(&app, "GET", &path, Some("ws_a")).await,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    /// A config-plane projection (an agent published on the config plane, never
+    /// created via this registry) has no registry owner, so the ownership guard
+    /// passes it through: it is retrievable under ANY scope. Its tenant scoping
+    /// lives in the config store, not this aspect layer — this characterizes the
+    /// deliberate pass-through so a regression that either over- or under-fences it
+    /// is caught.
+    #[tokio::test]
+    async fn a_config_plane_projection_is_not_fenced_by_this_guard() {
+        let state = Arc::new(AgentRegistryState::new().with_config_source(Arc::new(OneAgent)));
+        let app = agents_router(state);
+        for scope in [Some("ws_a"), Some("ws_b"), None] {
+            assert_eq!(
+                call_scoped(&app, "GET", "/v1/agents/assistant", scope).await,
+                StatusCode::OK,
+                "config-plane projection passes the ownership guard for {scope:?}"
+            );
+        }
     }
 }
