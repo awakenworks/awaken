@@ -274,6 +274,18 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn compaction_context_key_folds_and_reads_back() {
+        let block = vec![Message::text(
+            MessageId("s".into()),
+            Role::System,
+            "summary",
+        )];
+        let mut store = Store::new();
+        store.apply(&CompactionContext::commit(&store, block.clone()).unwrap());
+        assert_eq!(CompactionContext::load_or_default(&store), Some(block));
+    }
+
     fn phase_ctx() -> PhaseContext {
         PhaseContext {
             run_id: RunId("r".into()),

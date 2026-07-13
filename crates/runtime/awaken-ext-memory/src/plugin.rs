@@ -258,6 +258,18 @@ mod tests {
     }
 
     #[test]
+    fn recall_context_key_folds_and_reads_back() {
+        let block = vec![Message::text(
+            MessageId("m".into()),
+            Role::System,
+            "recalled",
+        )];
+        let mut store = Store::new();
+        store.apply(&RecallContext::commit(&store, block.clone()).unwrap());
+        assert_eq!(RecallContext::load_or_default(&store), Some(block));
+    }
+
+    #[test]
     fn manifest_declares_the_before_inference_hook_and_config_section() {
         let plugin = MemoryPlugin::new(store_with(&[]), RecallBounds::default());
         let manifest = plugin.manifest();

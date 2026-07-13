@@ -126,6 +126,15 @@ fn exec(frames: Vec<String>) -> AcpRunExecutor {
     }))
 }
 
+#[test]
+fn advertises_remote_abort_and_auth_wait() {
+    // The supervisor interrupts the opaque CLI turn on cancel, and the ACP
+    // permission flow parks on an authorization decision (ADR-0055).
+    let caps = exec(vec![]).capabilities();
+    assert_eq!(caps.cancellation, Cancellation::RemoteAbort);
+    assert_eq!(caps.wait, Wait::Auth);
+}
+
 /// Records every lifecycle event the executor emits during bring-up.
 #[derive(Default)]
 struct RecordingObserver {
