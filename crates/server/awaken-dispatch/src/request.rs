@@ -13,6 +13,7 @@ use awaken_agent_contract::commit::coordinator::Coordinator as CommitCoordinator
 use awaken_agent_contract::store::stream_checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
+use awaken_runtime_contract::live_inbox::LiveInbox;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use tokio_util::sync::CancellationToken;
 
@@ -30,6 +31,11 @@ pub struct RunExecutionContext {
     reader: Option<Arc<dyn ThreadReader>>,
     stream_sink: Option<Arc<dyn StreamSink>>,
     stream_checkpoint: Option<Arc<dyn StreamCheckpointStore>>,
+    /// The per-session live inbox a worker-driven run drains at safe loop
+    /// boundaries (ADR-0054 P2). Absent means the durable path accepts no
+    /// mid-run steer — the pre-P2 behaviour. Neutral: the worker never learns a
+    /// protocol; it drains folded `Message`s like the direct path.
+    live_inbox: Option<LiveInbox>,
 }
 
 impl RunExecutionContext {
@@ -40,7 +46,17 @@ impl RunExecutionContext {
             reader: None,
             stream_sink: None,
             stream_checkpoint: None,
+            live_inbox: None,
         }
+    }
+
+    /// Provide the per-session live inbox so worker-driven runs drain mid-run
+    /// steer at their boundaries (ADR-0054 P2). The same neutral inbox the offer
+    /// side reaches, so steer/redirect works on the durable path.
+    #[must_use]
+    pub fn with_live_inbox(mut self, inbox: LiveInbox) -> Self {
+        self.live_inbox = Some(inbox);
+        self
     }
 
     /// Provide the committed-history read port so a fresh run continues the
@@ -86,6 +102,9 @@ impl RunExecutionContext {
         }
         if let Some(store) = &self.stream_checkpoint {
             context = context.with_stream_checkpoint(store.clone());
+        }
+        if let Some(inbox) = &self.live_inbox {
+            context = context.with_live_inbox(inbox.clone());
         }
         context
     }
