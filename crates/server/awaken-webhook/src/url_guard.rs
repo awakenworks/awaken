@@ -58,7 +58,7 @@ pub fn validate_endpoint_url(url: &str) -> Result<(), UrlRejected> {
     }
     // An IP-literal host must be globally routable; a DNS name passes this guard.
     if let Ok(ip) = host.parse::<IpAddr>()
-        && !is_global(&ip)
+        && !ip_is_global(&ip)
     {
         return Err(UrlRejected::PrivateHost);
     }
@@ -82,8 +82,9 @@ fn host_of(hostport: &str) -> Result<&str, UrlRejected> {
 /// Whether an IP literal is safe to fetch from the server (globally routable), i.e.
 /// not loopback / private / link-local / unique-local / unspecified / multicast /
 /// documentation. The cloud metadata address `169.254.169.254` is link-local and so
-/// is rejected here.
-fn is_global(ip: &IpAddr) -> bool {
+/// is rejected here. Shared with the delivery-time resolve-and-pin guard so the
+/// admission check and the connect-time check use one definition of "internal".
+pub(crate) fn ip_is_global(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => is_global_v4(v4),
         IpAddr::V6(v6) => is_global_v6(v6),

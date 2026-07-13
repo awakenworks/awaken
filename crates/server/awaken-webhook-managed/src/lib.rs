@@ -370,9 +370,11 @@ pub fn assemble(
         store.clone(),
         secrets.clone(),
     ));
+    // The production sender enforces the delivery-time SSRF / DNS-rebinding guard:
+    // it resolves-and-pins each endpoint to globally-routable addresses only.
     let dispatcher = Arc::new(WebhookDispatcher::new(
         source,
-        Arc::new(ReqwestSender::default()),
+        Arc::new(ReqwestSender::guarded()),
     ));
     let sink = Arc::new(WebhookLifecycleSink::new(dispatcher, org_id));
     (sink, webhook_config_router(store, secrets))
