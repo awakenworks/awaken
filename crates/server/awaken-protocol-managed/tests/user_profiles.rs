@@ -135,3 +135,46 @@ async fn over_long_fields_are_rejected() {
     .await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn user_profiles_paginate_by_anthropic_page_cursor() {
+    // The list is an Anthropic Managed Agents `PageCursor`: `?limit=&page=`, and the
+    // response carries `next_page` (the cursor) — `null` on the last page.
+    let app = app();
+    for i in 0..3 {
+        let (s, _) = call(
+            &app,
+            "POST",
+            "/v1/user_profiles",
+            Some(json!({ "external_id": format!("u-{i}") })),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+    }
+
+    // First page of 2 → more remain, next_page names the last row of the page.
+    let (_, p1) = call(&app, "GET", "/v1/user_profiles?limit=2", None).await;
+    let ids1: Vec<&str> = p1["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids1.len(), 2);
+    assert_eq!(p1["has_more"], true);
+    assert_eq!(p1["next_page"], ids1[1]);
+
+    // Resume with `?page=<next_page>` → the remaining row, terminal (next_page null).
+    let cursor = p1["next_page"].as_str().unwrap();
+    let (_, p2) = call(&app, "GET", &format!("/v1/user_profiles?page={cursor}"), None).await;
+    let ids2: Vec<&str> = p2["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids2.len(), 1);
+    assert_ne!(ids2[0], ids1[1], "no overlap with the first page");
+    assert!(p2["next_page"].is_null(), "the last page has no continuation cursor");
+    assert_eq!(p2["has_more"], false);
+}

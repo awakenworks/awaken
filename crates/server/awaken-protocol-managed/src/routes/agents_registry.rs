@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -26,7 +26,7 @@ use crate::routes::ManagedJson;
 use crate::routes::WorkspaceScope;
 use crate::state::DEFAULT_SCOPE;
 use crate::types::agent::{Agent, AgentCreateParams, AgentUpdateParams};
-use crate::types::{ErrorResponse, ModelConfig, Page};
+use crate::types::{ErrorResponse, ModelConfig, Page, PageQuery, paginate};
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 
@@ -278,16 +278,17 @@ async fn retrieve_agent(
 async fn list_agents(
     State(state): State<Arc<AgentRegistryState>>,
     scope: Option<Extension<WorkspaceScope>>,
+    Query(page): Query<PageQuery>,
 ) -> Json<Page<Agent>> {
     let scope = request_scope(&scope);
     let owners = state.owners.lock().unwrap();
     let store = state.inner.lock().unwrap();
-    let data = store
+    let data: Vec<Agent> = store
         .iter()
         .filter(|(id, _)| owners.get(id.as_str()).map(String::as_str) == Some(scope.as_str()))
         .map(|(id, r)| r.project(id))
         .collect();
-    Json(Page::single(data))
+    Json(paginate(data, &page, |a| a.id.as_str()))
 }
 
 /// `POST /v1/agents/:id` — update with optimistic concurrency. The body's
@@ -367,10 +368,11 @@ async fn archive_agent(
 async fn list_versions(
     State(state): State<Arc<AgentRegistryState>>,
     Path(id): Path<String>,
+    Query(page): Query<PageQuery>,
 ) -> Result<Json<Page<Agent>>, WireError> {
     let store = state.inner.lock().unwrap();
     let record = store.get(&id).ok_or_else(not_found)?;
-    Ok(Json(Page::single(record.history.clone())))
+    Ok(Json(paginate(record.history.clone(), &page, |a| a.id.as_str())))
 }
 
 #[cfg(test)]
