@@ -18,11 +18,14 @@ use awaken_ext_memory::{
 };
 use awaken_ext_skills::{
     InMemorySkillRegistry, ListSkillsTool, PathActivations, RecordingGate, SKILL_LIST_TOOL_ID,
-    SKILL_TOOL_ID, SkillContext, SkillSpec, SkillTool, SubAgentRunner, list_skills_tool_descriptor,
+    SKILL_TOOL_ID, SkillContext, SkillSpec, SkillTool, list_skills_tool_descriptor,
     skill_tool_descriptor,
 };
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
+};
+use awaken_runtime_contract::subagent_runner::{
+    SubagentError, SubagentReply, SubagentRequest, SubagentRunner,
 };
 use awaken_runtime_examples::prelude::*;
 
@@ -91,9 +94,16 @@ impl LlmExecutor for RecipeLlm {
 struct EchoFork;
 
 #[async_trait]
-impl SubAgentRunner for EchoFork {
-    async fn run(&self, skill_id: &str, prompt: &str) -> Result<String, String> {
-        Ok(format!("forked[{skill_id}]: {prompt}"))
+impl SubagentRunner for EchoFork {
+    async fn run(&self, request: SubagentRequest) -> Result<SubagentReply, SubagentError> {
+        let prompt = request
+            .seed
+            .first()
+            .map(|m| m.text_content())
+            .unwrap_or_default();
+        Ok(SubagentReply {
+            text: Some(format!("forked[{}]: {prompt}", request.agent_id)),
+        })
     }
 }
 
