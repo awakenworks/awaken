@@ -356,3 +356,75 @@ pub trait Outbox: Send + Sync {
 pub trait Dispatch: DispatchQueue + Inbox + Outbox {}
 
 impl<T: DispatchQueue + Inbox + Outbox> Dispatch for T {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_runtime_contract::resume::ResumeResult;
+
+    /// The SQL backends' `status` column maps to the public enum, and any value
+    /// outside the known set (a typo, a future status this build predates) falls
+    /// back to `Pending` rather than panicking or mis-rendering the monitor.
+    #[test]
+    fn dispatch_status_from_db_maps_known_values_and_falls_back() {
+        assert_eq!(DispatchStatus::from_db("running"), DispatchStatus::Running);
+        assert_eq!(DispatchStatus::from_db("parked"), DispatchStatus::Parked);
+        assert_eq!(
+            DispatchStatus::from_db("dead_letter"),
+            DispatchStatus::DeadLetter
+        );
+        assert_eq!(
+            DispatchStatus::from_db("superseded"),
+            DispatchStatus::Superseded
+        );
+        // "pending" is explicit; an unknown token and the empty string both fall back.
+        assert_eq!(DispatchStatus::from_db("pending"), DispatchStatus::Pending);
+        assert_eq!(DispatchStatus::from_db("Running"), DispatchStatus::Pending); // case-sensitive
+        assert_eq!(DispatchStatus::from_db("bogus"), DispatchStatus::Pending);
+        assert_eq!(DispatchStatus::from_db(""), DispatchStatus::Pending);
+    }
+
+    /// The neutral submit default every existing caller inherits: ordinary priority,
+    /// no dedupe key, no supersede — so `enqueue` is behavior-unchanged.
+    #[test]
+    fn submit_options_default_is_ordinary_priority_no_dedupe_no_supersede() {
+        let o = SubmitOptions::default();
+        assert_eq!(o.priority, 0);
+        assert!(o.dedupe_key.is_none());
+        assert!(!o.supersede);
+    }
+
+    fn pending() -> PendingInput {
+        PendingInput {
+            message_id: "m1".into(),
+            run_id: RunId("run-1".into()),
+            thread_id: ThreadId("thrd-1".into()),
+            correlation_id: "corr-1".into(),
+            available_at_ms: Some(1_234),
+            result: ResumeResult::allow(),
+        }
+    }
+
+    /// A pending-input row round-trips through JSON unchanged — the durable delivery
+    /// payload the inbox persists.
+    #[test]
+    fn pending_input_round_trips_through_serde() {
+        let p = pending();
+        let json = serde_json::to_string(&p).expect("serializes");
+        let back: PendingInput = serde_json::from_str(&json).expect("deserializes");
+        assert_eq!(back, p);
+    }
+
+    /// ADR-0014 added `available_at_ms` with `#[serde(default)]`: a row written
+    /// before it (no such key) must deserialize as `None`, not fail — otherwise a
+    /// pre-existing pending input would be dropped (a no-data-loss invariant). Built
+    /// by stripping the key from a real row, so it never hardcodes `ResumeResult`'s
+    /// wire shape.
+    #[test]
+    fn a_pending_row_without_available_at_ms_loads_as_none() {
+        let mut v = serde_json::to_value(pending()).expect("to value");
+        v.as_object_mut().expect("object").remove("available_at_ms");
+        let back: PendingInput = serde_json::from_value(v).expect("legacy row loads");
+        assert_eq!(back.available_at_ms, None);
+    }
+}
