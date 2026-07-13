@@ -337,6 +337,8 @@ const FAKE_ACP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_acp::A
     config_home_env: "CLAUDE_CONFIG_DIR",
     memory_entrypoint: "CLAUDE.md",
     retained_paths: &[],
+    // The fake gateway CLI keeps no local session (it is a scripted stand-in).
+    session_persistence: awaken_run_executor_acp::SessionPersistence::None,
     context_window_env: None,
     env: &[],
 };
