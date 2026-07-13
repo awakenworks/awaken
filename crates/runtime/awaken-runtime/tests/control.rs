@@ -112,6 +112,7 @@ fn activation() -> RunActivation {
             content: vec![ContentBlock::text("hi")],
         }],
         trace: Default::default(),
+        model_access: Default::default(),
     }
 }
 

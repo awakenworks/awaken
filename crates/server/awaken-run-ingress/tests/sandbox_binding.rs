@@ -44,6 +44,7 @@ fn activation(run: &str, thread: &str) -> RunActivation {
         },
         input: vec![],
         trace: Default::default(),
+        model_access: Default::default(),
     }
 }
 

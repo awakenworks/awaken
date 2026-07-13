@@ -111,6 +111,7 @@ async fn run(chunks: Vec<&'static str>) -> (MemoryCommitCoordinator, MemoryStrea
             content: vec![ContentBlock::text("hi")],
         }],
         trace: Default::default(),
+        model_access: Default::default(),
     };
     let outcome = runtime.execute(activation, context).await.expect("runs");
     assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));

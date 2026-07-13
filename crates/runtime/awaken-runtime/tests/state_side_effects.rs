@@ -165,6 +165,7 @@ fn activation(tool_ids: &[&str]) -> RunActivation {
             content: vec![ContentBlock::text("go")],
         }],
         trace: Default::default(),
+        model_access: Default::default(),
     }
 }
 

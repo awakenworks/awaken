@@ -49,6 +49,19 @@ impl SharedHost {
             ctx.close_live_inbox();
             return result;
         }
+        // Fail closed: a cloud-managed gateway grant needs the mediated egress an ACP
+        // CLI in a sandbox gets. The native in-process provider path builds its
+        // `LlmExecutor` from the catalog, not the per-run grant, so it cannot honor a
+        // gateway grant — and must reject rather than degrade to local credentials,
+        // which would defeat the secret-custody the grant exists to enforce (ADR-0004).
+        // (When the native path learns to dial the grant's endpoint, this becomes a
+        // materialize-and-honor instead of a rejection.)
+        if activation.model_access.is_gateway() {
+            return Err(HostError::bad_request(
+                "native runtime cannot honor a cloud-managed gateway grant; \
+                 select an ACP runtime for gateway-mediated egress",
+            ));
+        }
         if supersede {
             // Durable + superseding: enqueue (marking prior pending superseded) and
             // let the process pool drive it on this session's worker (O2).
