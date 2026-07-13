@@ -1323,7 +1323,7 @@ async fn run_phase_hooks(
         };
         let reaction = hook.on_phase(&ctx, conversation).await;
         staged_state.extend(reaction.state);
-        context.extend(reaction.context);
+        context.extend(reaction.messages);
     }
     context
 }

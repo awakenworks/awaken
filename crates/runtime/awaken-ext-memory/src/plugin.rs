@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_runtime_contract::plugin::{
-    CapabilityBound, Contributions, PhaseContext, PhaseHook, PhaseHookPoint, PhaseReaction, Plugin,
+    CapabilityBound, Contributions, HookReaction, PhaseContext, PhaseHook, PhaseHookPoint, Plugin,
     PluginConfigError, PluginManifest,
 };
 
@@ -189,16 +189,16 @@ impl PhaseHook for RecallHook {
         PhaseHookPoint::BeforeInference
     }
 
-    async fn on_phase(&self, ctx: &PhaseContext, conversation: &[Message]) -> PhaseReaction {
+    async fn on_phase(&self, ctx: &PhaseContext, conversation: &[Message]) -> HookReaction {
         if let Some(hit) = self.cache.lock().unwrap().get(&ctx.run_id) {
-            return PhaseReaction::context(hit.clone());
+            return HookReaction::messages(hit.clone());
         }
         let block = self.compute(conversation).await;
         self.cache
             .lock()
             .unwrap()
             .insert(ctx.run_id.clone(), block.clone());
-        PhaseReaction::context(block)
+        HookReaction::messages(block)
     }
 }
 
@@ -274,9 +274,9 @@ mod tests {
         );
         let hook = &plugin.resolve().phase_hooks[0];
         let reaction = hook.on_phase(&phase_ctx(), &[]).await;
-        assert_eq!(reaction.context.len(), 1);
+        assert_eq!(reaction.messages.len(), 1);
         assert!(
-            reaction.context[0]
+            reaction.messages[0]
                 .text_content()
                 .contains("user likes tea")
         );
@@ -317,11 +317,11 @@ mod tests {
         )];
         let reaction = hook.on_phase(&phase_ctx(), &conversation).await;
         // Only the selected memory is injected; the selector saw the user query.
-        assert_eq!(reaction.context.len(), 1);
+        assert_eq!(reaction.messages.len(), 1);
         assert_eq!(*selector.seen_query.lock().unwrap(), "which one?");
         // (entries are newest-first; index 1 is one of them — just assert one shown)
         assert_eq!(
-            reaction.context[0].text_content().matches("\n\n").count(),
+            reaction.messages[0].text_content().matches("\n\n").count(),
             1
         );
     }

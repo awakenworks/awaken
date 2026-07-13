@@ -18,7 +18,7 @@ use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInst
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::plugin::{
-    CapabilityBound, Contributions, PhaseContext, PhaseHook, PhaseHookPoint, PhaseReaction, Plugin,
+    CapabilityBound, Contributions, HookReaction, PhaseContext, PhaseHook, PhaseHookPoint, Plugin,
     PluginManifest,
 };
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
@@ -51,8 +51,8 @@ impl PhaseHook for MarkHook {
     fn point(&self) -> PhaseHookPoint {
         PhaseHookPoint::StepStart
     }
-    async fn on_phase(&self, ctx: &PhaseContext, _conversation: &[Message]) -> PhaseReaction {
-        PhaseReaction::state(vec![StateCommand::set(
+    async fn on_phase(&self, ctx: &PhaseContext, _conversation: &[Message]) -> HookReaction {
+        HookReaction::state(vec![StateCommand::set(
             Scope::Run,
             MergePolicy::Disjoint,
             "phase",

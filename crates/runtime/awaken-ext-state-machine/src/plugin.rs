@@ -8,8 +8,8 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::state::Store;
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
 use awaken_runtime_contract::plugin::{
-    CapabilityBound, Contributions, Plugin, PluginConfigError, PluginManifest, RunEndContext,
-    RunEndDecision, RunEndGuard, ToolOutcomeHook, ToolReaction,
+    CapabilityBound, Contributions, HookReaction, Plugin, PluginConfigError, PluginManifest,
+    RunEndContext, RunEndDecision, RunEndGuard, ToolOutcomeHook,
 };
 use awaken_runtime_contract::tool::{ToolCall, ToolOutput};
 use serde_json::{Value, json};
@@ -198,7 +198,7 @@ impl ToolOutcomeHook for StateMachineObserver {
         call: &ToolCall,
         output: &ToolOutput,
         state: &Store,
-    ) -> ToolReaction {
+    ) -> HookReaction {
         let thread_base = ThreadInstances::load(state);
         let run_base = RunInstances::load(state);
 
@@ -213,7 +213,7 @@ impl ToolOutcomeHook for StateMachineObserver {
         // Loaded lazily on the first emit; a tick is spent per tool result that
         // reaches an emit, and a reminder is skipped while its key is cooling down.
         let mut throttle: Option<EmitThrottle> = None;
-        let mut reaction = ToolReaction::default();
+        let mut reaction = HookReaction::default();
 
         // Attribute the gate verdict for this call: a blocked result this machine
         // set denies records a deny; an *executed* call it would ask about — a

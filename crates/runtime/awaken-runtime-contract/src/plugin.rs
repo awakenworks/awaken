@@ -75,30 +75,36 @@ pub struct PhaseContext {
     pub point: PhaseHookPoint,
 }
 
-/// What a phase hook stages: durable state commands and, at `BeforeInference`,
-/// request-only context messages prepended to the model request (never committed).
-/// Mirrors [`ToolReaction`] so the two message-injecting hooks share one shape.
-/// Outside `BeforeInference` the `context` is ignored.
+/// What a hook stages back into the loop: durable state commands plus messages.
+/// One shape shared by both message-injecting hook families ([`PhaseHook`] and
+/// [`ToolOutcomeHook`]); *how* the `messages` reach the model is the hook point's
+/// concern, not the type's:
+/// - a [`PhaseHook`] at `BeforeInference` returns request-only context, prepended
+///   to that inference and never committed (ignored at other phase points);
+/// - a [`ToolOutcomeHook`] returns committed reminder messages appended to the
+///   transcript, so they reach the next inference and replay deterministically.
+/// Both are existing aggregates — a reaction introduces no new effect type.
 #[derive(Debug, Default, Clone)]
-pub struct PhaseReaction {
+pub struct HookReaction {
     pub state: Vec<StateCommand>,
-    pub context: Vec<Message>,
+    pub messages: Vec<Message>,
 }
 
-impl PhaseReaction {
+impl HookReaction {
     /// A reaction that only stages state (the common case).
     pub fn state(state: Vec<StateCommand>) -> Self {
         Self {
             state,
-            context: Vec::new(),
+            messages: Vec::new(),
         }
     }
 
-    /// A reaction that only injects request-only context (a `BeforeInference` hook).
-    pub fn context(context: Vec<Message>) -> Self {
+    /// A reaction that only injects messages (request-only context for a
+    /// `BeforeInference` phase hook, or committed reminders for a tool-outcome hook).
+    pub fn messages(messages: Vec<Message>) -> Self {
         Self {
             state: Vec::new(),
-            context,
+            messages,
         }
     }
 }
@@ -111,7 +117,7 @@ impl PhaseReaction {
 #[async_trait]
 pub trait PhaseHook: Send + Sync {
     fn point(&self) -> PhaseHookPoint;
-    async fn on_phase(&self, ctx: &PhaseContext, conversation: &[Message]) -> PhaseReaction;
+    async fn on_phase(&self, ctx: &PhaseContext, conversation: &[Message]) -> HookReaction;
 }
 
 /// What a run-end guard sees when the model/tool loop reaches a natural end (a
@@ -162,28 +168,18 @@ pub trait RunEndGuard: Send + Sync {
     async fn evaluate(&self, ctx: &RunEndContext<'_>) -> RunEndDecision;
 }
 
-/// What a tool-outcome hook produces after a tool runs: state commands (staged
-/// through the commit path like any state write, G1) and reminder messages
-/// (appended to the transcript like a steered turn, so they reach the next
-/// inference and replay deterministically). Both are existing aggregates — a
-/// reaction introduces no new effect type.
-#[derive(Default)]
-pub struct ToolReaction {
-    pub state: Vec<StateCommand>,
-    pub messages: Vec<Message>,
-}
-
 /// A post-execution reaction port — the symmetric partner of the pre-execution
 /// gate. The loop calls it at the one point a tool result is produced (and again
 /// when an approved pending call is replayed on resume), passing the executed
 /// call, its output, and the run's read-only state. It never authorizes; it only
-/// stages state and reminders.
+/// stages state and reminders. Its [`HookReaction::messages`] are committed
+/// reminder messages appended to the transcript (G1).
 #[async_trait]
 pub trait ToolOutcomeHook: Send + Sync {
     /// Stable id, checked against the plugin's `CapabilityBound` (G30).
     fn id(&self) -> &str;
     async fn after_tool(&self, call: &ToolCall, output: &ToolOutput, state: &Store)
-    -> ToolReaction;
+    -> HookReaction;
 }
 
 /// A tool contributed with its executable behavior and descriptor. Used by
@@ -625,8 +621,8 @@ mod tests {
         fn point(&self) -> PhaseHookPoint {
             self.0
         }
-        async fn on_phase(&self, _ctx: &PhaseContext, _conversation: &[Message]) -> PhaseReaction {
-            PhaseReaction::default()
+        async fn on_phase(&self, _ctx: &PhaseContext, _conversation: &[Message]) -> HookReaction {
+            HookReaction::default()
         }
     }
 
