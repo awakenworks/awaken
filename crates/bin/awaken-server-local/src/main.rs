@@ -14,38 +14,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // and the W3C traceparent propagator before any request is served, so every
     // `#[instrument]` span in the request path is captured on one trace.
     awaken_observability::init();
-    // Hand role (ADR-0044/0045): this binary is a remote execution endpoint that
-    // serves the executor channel on TCP and never starts the HTTP surface.
-    //   - AWAKEN_HAND_LISTEN=host:port → listen; brains dial in (Direct).
-    //   - AWAKEN_HAND_DIAL=host:port   → dial the brain rendezvous (Reverse / NAT).
-    //   - AWAKEN_HAND_NATS=url    → serve over a NATS broker (Relay).
-    if let Some(nats_url) = std::env::var("AWAKEN_HAND_NATS")
-        .ok()
-        .filter(|v| !v.is_empty())
-    {
-        let subject =
-            std::env::var("AWAKEN_HAND_SUBJECT").unwrap_or_else(|_| "awaken.hand.exec".to_string());
-        return awaken_server_local::run_hand_server_nats(&nats_url, &subject).await;
-    }
-    if let Some(dial_addr) = std::env::var("AWAKEN_HAND_DIAL")
-        .ok()
-        .filter(|v| !v.is_empty())
-    {
-        return awaken_server_local::run_hand_server(&dial_addr, true).await;
-    }
-    if let Some(hand_addr) = std::env::var("AWAKEN_HAND_LISTEN")
-        .ok()
-        .filter(|v| !v.is_empty())
-    {
-        return awaken_server_local::run_hand_server(&hand_addr, false).await;
-    }
-    // Worker role (cross-node, database-less): claim runs from the cell server over
-    // the dispatch transport and commit facts to it; hold no store, serve no HTTP.
-    if let Some(upstream) = std::env::var("AWAKEN_UPSTREAM_URL")
-        .ok()
-        .filter(|v| !v.is_empty())
-    {
-        return awaken_server_local::run_worker(&upstream).await;
+    // The single role axis (`AWAKEN_ROLE`, with backward-compatible inference from
+    // the historic `AWAKEN_HAND_*` / `AWAKEN_UPSTREAM_URL`). Hand and Worker are
+    // execution endpoints that never start the HTTP surface; Serve is the default —
+    // single-machine all-in-one, or a coordinator when the local pool is disabled.
+    match awaken_server_local::deployment_role() {
+        awaken_server_local::Role::Hand => return awaken_server_local::run_hand_role().await,
+        awaken_server_local::Role::Worker => {
+            let upstream = std::env::var("AWAKEN_UPSTREAM_URL").unwrap_or_default();
+            return awaken_server_local::run_worker(&upstream).await;
+        }
+        awaken_server_local::Role::Serve => {}
     }
     let addr = std::env::var("AWAKEN_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:38080".to_string());
     // Durability guard: refuse to boot a `AWAKEN_INGRESS=durable` ingress that would
