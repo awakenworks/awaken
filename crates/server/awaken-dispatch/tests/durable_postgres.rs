@@ -492,12 +492,16 @@ async fn postgres_mid_flight_reclaim_keeps_the_committed_log_exactly_once() {
     assert!(frozen.is_ok(), "A reached and blocked in the tool");
 
     let record = RunStore::get(&*commit, &run).expect("A committed a record");
-    assert_eq!(record.phase, Phase::Running, "A committed a mid-flight Running");
+    assert_eq!(
+        record.phase,
+        Phase::Running,
+        "A committed a mid-flight Running"
+    );
 
     // Owner B's lease-expired reclaim re-drives the same run to completion — running
     // the tool a SECOND time (the inherent double side effect).
-    let worker_b = DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-b")
-        .with_lease_ms(LEASE);
+    let worker_b =
+        DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-b").with_lease_ms(LEASE);
     let processed = worker_b.tick(LEASE + 1).await.expect("B drives");
     assert_eq!(
         processed,
