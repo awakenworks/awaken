@@ -34,8 +34,8 @@ use awaken_runtime_contract::llm::{
 };
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
 use awaken_runtime_contract::plugin::{
-    AfterToolContext, PhaseContext, PhaseHookPoint, PhaseKind, ResolvedExecutionEnv, RunEndContext,
-    RunEndDecision,
+    AfterToolContext, ContextMessages, PhaseContext, PhaseHookPoint, PhaseKind,
+    ResolvedExecutionEnv, RunEndContext, RunEndDecision,
 };
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ResolvedRun, ToolPresentation};
 use awaken_runtime_contract::resolver::{self, RunResolver};
@@ -600,7 +600,7 @@ async fn drive(
             &mut staged_state,
         )
         .await;
-        let prelude = run_phase_hooks(
+        run_phase_hooks(
             env,
             run_id,
             step,
@@ -610,6 +610,13 @@ async fn drive(
             &mut staged_state,
         )
         .await;
+        // Request-only context the `BeforeInference` hooks wrote to state: the
+        // kernel reads it here (single chokepoint) and prepends the flattened
+        // per-producer blocks to this inference, never committing them (ADR-0055).
+        let prelude: Vec<Message> = ContextMessages::load_or_default(&store)
+            .into_values()
+            .flatten()
+            .collect();
 
         // A `MaxTokens`-truncated text-only turn is continued in place: the
         // partial text is committed as its own assistant message, a continuation
@@ -1209,7 +1216,7 @@ async fn run_phase_hooks(
     conversation: &[Message],
     store: &mut Store,
     staged_state: &mut Vec<StateCommand>,
-) -> Vec<Message> {
+) {
     // The tool-result phase carries per-call data and runs via
     // `collect_tool_reactions`, never here.
     let kind = match point {
@@ -1221,7 +1228,6 @@ async fn run_phase_hooks(
             unreachable!("AfterTool phase hooks run via collect_tool_reactions")
         }
     };
-    let mut context = Vec::new();
     for hook in env.hooks_for(point) {
         let ctx = PhaseContext {
             run_id: run_id.clone(),
@@ -1232,14 +1238,14 @@ async fn run_phase_hooks(
         // Apply the reaction's state to the live store before the next hook, so a
         // once-per-run hook that gates on its own run-scoped key sees its own
         // earlier write and replays instead of recomputing (ADR-0055) — the same
-        // apply-then-stage discipline the tool-outcome path uses.
+        // apply-then-stage discipline the tool-outcome path uses. Request-only
+        // context is written to `ContextMessages` here; the kernel reads it at
+        // request assembly (a phase hook never returns request-only messages).
         for command in &reaction.state {
             store.apply(command);
         }
         staged_state.extend(reaction.state);
-        context.extend(reaction.messages);
     }
-    context
 }
 
 /// The runtime's view of a run-end consultation, folding the registered guards'

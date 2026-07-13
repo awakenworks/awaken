@@ -9,12 +9,15 @@
 //! dependency-ordered. Hooks emit state through the commit path; they never write
 //! a store or bypass permission (G9).
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_agent_contract::agent::state::{Command as StateCommand, Store};
+use awaken_agent_contract::agent::state::{
+    Command as StateCommand, MergePolicy, Scope, StateKey, Store,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -168,14 +171,29 @@ pub struct PhaseContext {
     pub kind: PhaseKind,
 }
 
-/// What a hook stages back into the loop: durable state commands plus messages.
-/// *How* the `messages` reach the model is the hook point's concern, not the
-/// type's:
-/// - a [`PhaseHook`] at `BeforeInference` returns request-only context, prepended
-///   to that inference and never committed (ignored at other phase points);
-/// - a [`PhaseHook`] at `AfterTool` returns committed reminder messages appended
-///   to the transcript, so they reach the next inference and replay
-///   deterministically.
+/// The run-scoped state a `BeforeInference` hook writes to inject **request-only**
+/// context (recalled memories, a compaction summary): the kernel reads it at
+/// request assembly and prepends the flattened blocks to that inference, never
+/// committing them to the transcript (ADR-0055). Keyed by contributing plugin id
+/// and `Commutative`-merged, so several producers coexist and each replays across
+/// steps and a resumed run from committed state — request-only-ness is a property
+/// of *this key*, not of an overloaded message field (resolving the former
+/// dual-meaning `HookReaction.messages`).
+pub struct ContextMessages;
+
+impl StateKey for ContextMessages {
+    const KEY: &'static str = "context_messages";
+    const SCOPE: Scope = Scope::Run;
+    const MERGE: MergePolicy = MergePolicy::Commutative;
+    type Value = BTreeMap<String, Vec<Message>>;
+}
+
+/// What a hook stages back into the loop: durable state commands plus committed
+/// messages. `messages` are **committed** reminder messages an `AfterTool` hook
+/// appends to the transcript (so they reach the next inference and replay
+/// deterministically). Request-only context is *not* a message here — a
+/// `BeforeInference` hook writes it to the [`ContextMessages`] state key, which the
+/// kernel reads and prepends to the request.
 #[derive(Debug, Default, Clone)]
 pub struct HookReaction {
     pub state: Vec<StateCommand>,
@@ -191,8 +209,8 @@ impl HookReaction {
         }
     }
 
-    /// A reaction that only injects messages (request-only context for a
-    /// `BeforeInference` phase hook, or committed reminders for an `AfterTool` one).
+    /// A reaction that only appends committed reminder messages (an `AfterTool`
+    /// hook's transcript contribution).
     pub fn messages(messages: Vec<Message>) -> Self {
         Self {
             state: Vec::new(),
@@ -203,9 +221,10 @@ impl HookReaction {
 
 /// A phase hook: behavior contributed by a plugin at one phase point. Async so a
 /// real hook can consult an external system (e.g. run a selection sub-agent). It
-/// stages state commands and, at `BeforeInference`, request-only context (e.g.
-/// recalled memories). `conversation` is the transcript at this point, so a
-/// `BeforeInference` hook can select context relevant to the user's message.
+/// stages state commands; a `BeforeInference` hook injects request-only context
+/// (e.g. recalled memories) by writing the [`ContextMessages`] state key, which
+/// the kernel reads and prepends. `conversation` is the transcript at this point,
+/// so a `BeforeInference` hook can select context relevant to the user's message.
 /// `state` is the run's read-only materialized state, so a hook whose work is
 /// once-per-run (recall, compaction) gates on its own run-scoped state key and
 /// replays across steps and resume instead of caching by `run_id` (ADR-0055).

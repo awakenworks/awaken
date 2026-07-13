@@ -13,14 +13,15 @@
 //! [`RecallContext`] state so it replays across steps and a resumed run instead
 //! of recomputing (ADR-0055).
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::state::{MergePolicy, Scope, StateKey, Store};
+use awaken_agent_contract::agent::state::{StateKey, Store};
 use awaken_runtime_contract::plugin::{
-    CapabilityBound, Contributions, HookReaction, IdBound, PhaseContext, PhaseHook, PhaseHookPoint,
-    PhaseKind, Plugin, PluginConfigError, PluginManifest,
+    CapabilityBound, ContextMessages, Contributions, HookReaction, IdBound, PhaseContext,
+    PhaseHook, PhaseHookPoint, Plugin, PluginConfigError, PluginManifest,
 };
 
 use crate::localfs::MemoryDir;
@@ -60,7 +61,7 @@ impl MemoryPlugin {
     /// and configured resolve paths).
     fn contribute(&self, bounds: RecallBounds) -> Contributions {
         let mut contributions = Contributions::new(MEMORY_PLUGIN_ID);
-        contributions.declare_state_key(RecallContext::KEY);
+        contributions.declare_state_key(ContextMessages::KEY);
         contributions.register_hook(Arc::new(RecallHook {
             store: self.store.clone(),
             bounds,
@@ -68,19 +69,6 @@ impl MemoryPlugin {
         }));
         contributions
     }
-}
-
-/// The run-scoped cell holding this run's computed recall block. `None` (absent)
-/// means recall has not run yet; `Some(block)` (possibly empty) means it has, so a
-/// later step — or a resumed run replaying committed state — re-injects the same
-/// block without re-running the relevance selector (ADR-0055). Replaces the former
-/// per-`run_id` in-process cache, which did not survive resume.
-struct RecallContext;
-impl StateKey for RecallContext {
-    const KEY: &'static str = "recall_context";
-    const SCOPE: Scope = Scope::Run;
-    const MERGE: MergePolicy = MergePolicy::Exclusive;
-    type Value = Option<Vec<Message>>;
 }
 
 impl Plugin for MemoryPlugin {
@@ -91,7 +79,7 @@ impl Plugin for MemoryPlugin {
             config_sections: vec![MEMORY_PLUGIN_ID.into()],
             bound: CapabilityBound {
                 phase_hooks: vec![PhaseHookPoint::BeforeInference],
-                state_keys: IdBound::Exact(vec![RecallContext::KEY.into()]),
+                state_keys: IdBound::Exact(vec![ContextMessages::KEY.into()]),
                 ..Default::default()
             },
         }
@@ -209,22 +197,23 @@ impl PhaseHook for RecallHook {
         conversation: &[Message],
         state: &Store,
     ) -> HookReaction {
-        // Already computed this run (replayed across steps and resume): re-inject
-        // the same request-only block without re-running the selector.
-        if let Some(block) = RecallContext::load_or_default(state) {
-            return HookReaction::messages(block);
+        // Already computed this run (replayed across steps and a resumed run): the
+        // kernel injects it from `ContextMessages`, so there is nothing to restage.
+        if ContextMessages::load_or_default(state).contains_key(MEMORY_PLUGIN_ID) {
+            return HookReaction::default();
         }
         let block = self.compute(conversation).await;
-        HookReaction {
-            state: vec![RecallContext::write(&Some(block.clone()))],
-            messages: block,
-        }
+        HookReaction::state(vec![ContextMessages::write(&BTreeMap::from([(
+            MEMORY_PLUGIN_ID.to_string(),
+            block,
+        )]))])
     }
 }
 
 #[cfg(test)]
 mod tests {
     use awaken_agent_contract::agent::run::Id as RunId;
+    use awaken_runtime_contract::plugin::PhaseKind;
 
     use super::*;
     use crate::recall::RecallBounds;
@@ -252,16 +241,16 @@ mod tests {
         }
     }
 
-    #[test]
-    fn recall_context_key_writes_and_reads_back() {
-        let block = vec![Message::text(
-            MessageId("m".into()),
-            Role::System,
-            "recalled",
-        )];
+    /// The request-only block a reaction wrote for this plugin, read back from the
+    /// `ContextMessages` state the kernel injects (ADR-0055).
+    fn injected(reaction: &HookReaction) -> Vec<Message> {
         let mut store = Store::new();
-        store.apply(&RecallContext::write(&Some(block.clone())));
-        assert_eq!(RecallContext::load_or_default(&store), Some(block));
+        for command in &reaction.state {
+            store.apply(command);
+        }
+        ContextMessages::load_or_default(&store)
+            .remove(MEMORY_PLUGIN_ID)
+            .unwrap_or_default()
     }
 
     #[test]
@@ -308,12 +297,9 @@ mod tests {
         );
         let hook = &plugin.resolve().phase_hooks[0];
         let reaction = hook.on_phase(&phase_ctx(), &[], &Store::new()).await;
-        assert_eq!(reaction.messages.len(), 1);
-        assert!(
-            reaction.messages[0]
-                .text_content()
-                .contains("user likes tea")
-        );
+        let block = injected(&reaction);
+        assert_eq!(block.len(), 1);
+        assert!(block[0].text_content().contains("user likes tea"));
     }
 
     /// A selector that returns fixed indices, recording the query it saw.
@@ -351,26 +337,22 @@ mod tests {
         )];
         let mut state = Store::new();
         let reaction = hook.on_phase(&phase_ctx(), &conversation, &state).await;
-        // Only the selected memory is injected; the selector saw the user query.
-        assert_eq!(reaction.messages.len(), 1);
+        // Only the selected memory is injected (into `ContextMessages` state); the
+        // selector saw the user query.
+        let block = injected(&reaction);
+        assert_eq!(block.len(), 1);
         assert_eq!(*selector.seen_query.lock().unwrap(), "which one?");
         // (entries are newest-first; index 1 is one of them — just assert one shown)
-        assert_eq!(
-            reaction.messages[0].text_content().matches("\n\n").count(),
-            1
-        );
-        // The first call staged its recall block into run state.
-        assert!(!reaction.state.is_empty());
+        assert_eq!(block[0].text_content().matches("\n\n").count(), 1);
 
         // Apply that state (as the engine does), then a later step of the same run
-        // replays the block without re-running the selector — the gate the deleted
-        // per-run cache used to provide, now resume-safe (ADR-0055).
+        // stages nothing new and does not re-run the selector — the block replays
+        // from committed state, resume-safe (ADR-0055).
         for command in &reaction.state {
             state.apply(command);
         }
         *selector.seen_query.lock().unwrap() = String::new();
         let replay = hook.on_phase(&phase_ctx(), &conversation, &state).await;
-        assert_eq!(replay.messages.len(), 1);
         assert!(replay.state.is_empty(), "a replay stages no new state");
         assert_eq!(
             *selector.seen_query.lock().unwrap(),
