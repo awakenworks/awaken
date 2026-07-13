@@ -131,7 +131,7 @@ pub struct DispatchSummary {
 
 /// Dispatch-level options for an accepted run. Defaults to ordinary priority and
 /// no caller dedupe key — `enqueue` uses these so existing callers are unchanged.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubmitOptions {
     /// Higher runs first among fresh (not-yet-started) work; default 0.
     pub priority: i64,

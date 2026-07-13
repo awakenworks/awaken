@@ -352,6 +352,11 @@ pub struct SharedHost {
     /// `store_dir/<thread>.db`, so a parked run survives a process restart. When
     /// `None`, sessions use an in-memory coordinator (ephemeral).
     pub(crate) store_dir: Option<PathBuf>,
+    /// The cell server this host is a database-less **worker** of, if any. When set,
+    /// every thread's commit boundary is a [`HostCommit::Remote`] that posts facts to
+    /// the server's commit ingest — the worker holds no store. Set via
+    /// [`with_upstream`](Self::with_upstream); `None` is a store-owning server/host.
+    pub(crate) upstream: Option<String>,
     /// When set, an ACP CLI's session is harvested/restored under this durable root
     /// (keyed by thread+adapter) so it survives a move to another directory or
     /// worker. Point it at a **shared** location for cross-machine recovery; leave
@@ -505,6 +510,7 @@ impl SharedHost {
                 .ok()
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from),
+            upstream: None,
             remote_agents: HashMap::new(),
             memory: None,
             memory_selector: None,
@@ -599,6 +605,16 @@ impl SharedHost {
     /// to `mem_dir`), without blocking the turn. The extractor runs the default
     /// memory agent over this host's model; drain it before shutdown with
     /// [`drain_memory`](Self::drain_memory).
+    /// Make this host a database-less **worker** of the cell server at `url`: every
+    /// thread's commit posts facts to the server's commit ingest instead of a local
+    /// store (paired with an `HttpDispatchQueue` for claim/settle). The worker holds
+    /// no store; the server stays the single writer.
+    #[must_use]
+    pub fn with_upstream(mut self, url: impl Into<String>) -> Self {
+        self.upstream = Some(url.into());
+        self
+    }
+
     pub fn with_memory(mut self, mem_dir: impl Into<PathBuf>) -> Self {
         let catalog = Arc::new(AgentCatalog::new().with_agent(default_memory_agent(
             &self.model_ref,
@@ -860,6 +876,13 @@ impl SharedHost {
     /// durable SQLite database (default) or the filesystem append-log backend when
     /// `AWAKEN_STORE=fs`, or an in-memory coordinator when no store dir is set.
     async fn build_commit(&self, thread: &str) -> Result<HostCommit, HostError> {
+        // Database-less worker: every thread commits to the cell server's ingest.
+        if let Some(url) = &self.upstream {
+            let _ = thread;
+            return Ok(HostCommit::Remote(crate::commit_ingest::RemoteCoordinator::new(
+                url.clone(),
+            )));
+        }
         // Shared Postgres commit backend (ADR-0022 D6): one coordinator keyed by
         // thread, so any node serves any thread's history. Connected once at startup
         // (the non-Send sqlx connect stays out of the run loop), independent of a
