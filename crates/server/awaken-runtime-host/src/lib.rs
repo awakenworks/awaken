@@ -23,6 +23,7 @@ mod compact;
 mod config;
 mod config_home;
 mod config_plane;
+pub mod session_home;
 mod data_subject_api;
 mod delegate;
 mod dispatch_backend;
