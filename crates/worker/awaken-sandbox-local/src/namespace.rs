@@ -206,12 +206,15 @@ impl NamespaceProvider {
             Vec<RenderMount>,
             Vec<pc::RealizedMount>,
             Vec<Box<dyn pc::MemoryMount>>,
+            Vec<PathBuf>,
         ),
         pc::SandboxError,
     > {
         let mut layout = Vec::new();
         let mut realized = Vec::new();
         let mut memory_mounts: Vec<Box<dyn pc::MemoryMount>> = Vec::new();
+        // Host paths of realized secrets — shredded at dispose (ADR-0023).
+        let mut secret_paths: Vec<PathBuf> = Vec::new();
         for req in &spec.mounts {
             let host = root.resolve(&req.mount_path).map_err(err)?;
             // memory_store is a keyed store, not a byte blob (ADR-0038/0053): realize
@@ -274,8 +277,11 @@ impl NamespaceProvider {
                 realization: pc::Realization::Bind,
                 content_hash: bytes.as_ref().map(|b| content_fingerprint(b)),
             });
+            if matches!(req.source, pc::MountSource::Secret { .. }) {
+                secret_paths.push(host);
+            }
         }
-        Ok((layout, realized, memory_mounts))
+        Ok((layout, realized, memory_mounts, secret_paths))
     }
 }
 
@@ -352,6 +358,7 @@ impl pc::SandboxProvider for NamespaceProvider {
             network: pc::NetworkPolicy::Unrestricted,
             layout: Vec::new(),
             realized: Vec::new(),
+            secret_paths: Vec::new(),
             memory_mounts: std::sync::Mutex::new(Vec::new()),
         }))
     }
@@ -388,17 +395,18 @@ impl NamespaceProvider {
             }
         }
 
-        let (layout, realized, memory_mounts) = match self.realize_layout(&root, spec).await {
-            Ok(v) => v,
-            Err(e) => {
-                // On a failed layout, `realize_layout`'s already-realized guards drop
-                // as it returns: a FUSE mount unmounts via its handle's Drop, and a
-                // copy's files are reaped with the directory below (no harvest — the
-                // durable store is left untouched on an aborted create).
-                let _ = std::fs::remove_dir_all(root.root());
-                return Err(e);
-            }
-        };
+        let (layout, realized, memory_mounts, secret_paths) =
+            match self.realize_layout(&root, spec).await {
+                Ok(v) => v,
+                Err(e) => {
+                    // On a failed layout, `realize_layout`'s already-realized guards drop
+                    // as it returns: a FUSE mount unmounts via its handle's Drop, and a
+                    // copy's files are reaped with the directory below (no harvest — the
+                    // durable store is left untouched on an aborted create).
+                    let _ = std::fs::remove_dir_all(root.root());
+                    return Err(e);
+                }
+            };
 
         Ok(NamespaceSandbox {
             id: spec.scope.clone(),
@@ -410,6 +418,7 @@ impl NamespaceProvider {
             network: spec.network.clone(),
             layout,
             realized,
+            secret_paths,
             memory_mounts: std::sync::Mutex::new(memory_mounts),
         })
     }
@@ -426,6 +435,9 @@ pub struct NamespaceSandbox {
     network: pc::NetworkPolicy,
     layout: Vec<RenderMount>,
     realized: Vec<pc::RealizedMount>,
+    /// Host paths of realized secrets, shredded at dispose before the tree is reaped
+    /// (ADR-0023). Empty after an `adopt`.
+    secret_paths: Vec<PathBuf>,
     /// Live memory-store mounts, harvested / unmounted at dispose before the tree is
     /// reaped. Empty after an `adopt` (a reconnected sandbox owns no fresh guards).
     memory_mounts: std::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>>,
@@ -587,9 +599,14 @@ impl pc::Sandbox for NamespaceSandbox {
     }
 
     async fn dispose(&self) -> Result<(), pc::SandboxError> {
-        // Harvest / unmount memory stores BEFORE the tree is reaped (a copy harvest
-        // reads the edited files back).
+        // Order: harvest memory (reads edits back) → shred secrets → reap the tree, so
+        // a promised memory write-back is never lost and no credential lingers on disk.
         self.teardown_memory_mounts().await;
+        for path in &self.secret_paths {
+            if let Ok(meta) = std::fs::metadata(path) {
+                let _ = std::fs::write(path, vec![0u8; meta.len() as usize]);
+            }
+        }
         let root = self.root.root();
         if root.exists() {
             std::fs::remove_dir_all(root).map_err(err)?;
