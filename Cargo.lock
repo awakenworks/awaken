@@ -314,6 +314,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-cli"
+version = "1.0.0-dev"
+dependencies = [
+ "awaken-observability",
+ "awaken-runtime-contract",
+ "awaken-runtime-host",
+ "awaken-server-local",
+ "awaken-standalone",
+ "axum",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-config-resolver"
 version = "1.0.0-dev"
 dependencies = [
