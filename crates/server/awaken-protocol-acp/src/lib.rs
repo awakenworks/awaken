@@ -711,6 +711,110 @@ mod tests {
         agent.abort();
     }
 
+    /// A write that fails mid-prompt surfaces as `AcpError::Io`, not a wrong terminal
+    /// class: with the agent side dropped before the turn starts, the prompt
+    /// `write_all` hits a broken pipe. This is the entire outbound-write error path,
+    /// which the read-side `Frame`/`Truncated` tests never reach.
+    #[tokio::test]
+    async fn a_broken_pipe_on_the_prompt_write_surfaces_as_io() {
+        let (mut ours, theirs) = combined();
+        drop(theirs); // the agent is gone before we write the prompt
+        let mut sink = RecordingSink::default();
+        let err = AcpBridge::run_turn(ours.as_mut(), "p", &mut sink, Codec::Newline, None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AcpError::Io(_)),
+            "a write failure is Io, got {err:?}"
+        );
+    }
+
+    // ── AgentEvent wire contract ─────────────────────────────────────────────
+    //
+    // AgentEvent is the projection contract the newline codec (and the store)
+    // depend on: every variant must round-trip, its `#[serde(default)]` fields must
+    // tolerate an agent that omits them, and an unknown tag must be a clean error.
+
+    fn round_trip(ev: &AgentEvent) -> AgentEvent {
+        let json = serde_json::to_string(ev).expect("serializes");
+        serde_json::from_str(&json).expect("deserializes")
+    }
+
+    #[tokio::test]
+    async fn every_agent_event_variant_round_trips() {
+        let events = [
+            AgentEvent::Message { text: "hi".into() },
+            AgentEvent::ToolCall {
+                id: "call_1".into(),
+                name: "read_file".into(),
+                input: serde_json::json!({ "path": "a" }),
+            },
+            AgentEvent::ToolResult {
+                id: "call_1".into(),
+                content: "ok".into(),
+                is_error: true,
+            },
+            AgentEvent::Usage {
+                prompt_tokens: 10,
+                completion_tokens: 20,
+                cache_read_tokens: 3,
+                cache_creation_tokens: 4,
+            },
+            AgentEvent::TurnEnd {
+                reason: TerminationReason::NaturalEnd,
+            },
+        ];
+        for ev in events {
+            assert_eq!(round_trip(&ev), ev, "{ev:?} is lossless on the wire");
+        }
+    }
+
+    #[tokio::test]
+    async fn optional_fields_default_when_the_agent_omits_them() {
+        // A tool_call with neither id nor input.
+        let tc: AgentEvent =
+            serde_json::from_str(r#"{"type":"tool_call","name":"ls"}"#).expect("tool_call parses");
+        assert_eq!(
+            tc,
+            AgentEvent::ToolCall {
+                id: String::new(),
+                name: "ls".into(),
+                input: serde_json::Value::Null,
+            }
+        );
+        // A tool_result with neither id nor is_error.
+        let tr: AgentEvent = serde_json::from_str(r#"{"type":"tool_result","content":"done"}"#)
+            .expect("tool_result parses");
+        assert_eq!(
+            tr,
+            AgentEvent::ToolResult {
+                id: String::new(),
+                content: "done".into(),
+                is_error: false,
+            }
+        );
+        // A usage frame reporting only some token axes; the rest default to 0.
+        let us: AgentEvent = serde_json::from_str(r#"{"type":"usage","prompt_tokens":7}"#)
+            .expect("partial usage parses");
+        assert_eq!(
+            us,
+            AgentEvent::Usage {
+                prompt_tokens: 7,
+                completion_tokens: 0,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_event_tag_is_a_clean_deserialize_error() {
+        let err = serde_json::from_str::<AgentEvent>(r#"{"type":"nope","text":"x"}"#)
+            .expect_err("an unknown tag must not parse");
+        // The newline codec maps exactly this serde error into AcpError::Frame.
+        assert!(err.to_string().contains("nope") || err.is_data());
+    }
+
     // ── Supervisor ──────────────────────────────────────────────────────────
 
     struct FakeProcess {
