@@ -111,7 +111,11 @@ async fn fence_increments_monotonically() {
     // commit; a run ends exactly once.)
     for expected in 1..=3u64 {
         let record = store
-            .commit(empty_commit("thread-1", ended(&format!("run-{expected}")), None))
+            .commit(empty_commit(
+                "thread-1",
+                ended(&format!("run-{expected}")),
+                None,
+            ))
             .await
             .expect("commit");
         assert_eq!(record.sequence, expected);

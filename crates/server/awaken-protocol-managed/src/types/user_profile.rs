@@ -18,17 +18,14 @@ use serde::{Deserialize, Serialize};
 /// How the entity behind a profile relates to the API-key owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum Relationship {
+    #[default]
     External,
     Resold,
     Internal,
 }
 
-impl Default for Relationship {
-    fn default() -> Self {
-        Self::External
-    }
-}
 
 /// `BetaUserProfile` — the wire projection.
 #[derive(Debug, Clone, Serialize)]

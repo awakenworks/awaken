@@ -126,10 +126,10 @@ impl<T: TokenSource> CachingTokenSource<T> {
 #[async_trait::async_trait]
 impl<T: TokenSource> TokenSource for CachingTokenSource<T> {
     async fn access_token(&self) -> Result<RedactedString, CredentialError> {
-        if let Some((token, minted)) = self.cached.lock().unwrap().as_ref() {
-            if minted.elapsed() < self.ttl {
-                return Ok(token.clone());
-            }
+        if let Some((token, minted)) = self.cached.lock().unwrap().as_ref()
+            && minted.elapsed() < self.ttl
+        {
+            return Ok(token.clone());
         }
         let fresh = self.inner.access_token().await?;
         *self.cached.lock().unwrap() = Some((fresh.clone(), Instant::now()));

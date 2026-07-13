@@ -1396,13 +1396,11 @@ impl SharedHost {
         };
         let mut usage = ThreadUsage::default();
         for cmd in ctx.commit.committed_state(&ctx.thread_id) {
-            if cmd.scope == Scope::Thread && cmd.key.0 == THREAD_USAGE_STATE_KEY {
-                if let Action::Set(value) = &cmd.action {
-                    if let Ok(parsed) = serde_json::from_value::<ThreadUsage>(value.clone()) {
+            if cmd.scope == Scope::Thread && cmd.key.0 == THREAD_USAGE_STATE_KEY
+                && let Action::Set(value) = &cmd.action
+                    && let Ok(parsed) = serde_json::from_value::<ThreadUsage>(value.clone()) {
                         usage = parsed;
                     }
-                }
-            }
         }
         usage
     }

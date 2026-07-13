@@ -15,7 +15,7 @@
 //!     not on read, so a crash before settle leaves it for re-delivery — and it is
 //!     NOT re-delivered to a later run once a settle has consumed it;
 //!  3. the commit boundary is atomic: a commit writes messages + run-fact + events
-//!     + ticket in one transaction, so after a successful commit exactly the
+//!     and a ticket in one transaction, so after a successful commit exactly the
 //!     expected rows exist and survive a fresh hydrate (projection == replay, no
 //!     orphan message without its run-fact); a rejected commit adds no rows.
 //!
@@ -71,7 +71,8 @@ async fn crash_before_settle_re_delivers_bound_pending_exactly_once() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let run = RunId("run-1".to_string());
 
-    let worker = DispatchWorker::new(runtime, store.clone(), commit.clone(), "w").with_lease_ms(LEASE);
+    let worker =
+        DispatchWorker::new(runtime, store.clone(), commit.clone(), "w").with_lease_ms(LEASE);
 
     // The fresh run parks on the gate; the gated tool has not run.
     store
@@ -83,7 +84,11 @@ async fn crash_before_settle_re_delivers_bound_pending_exactly_once() {
         Some((run.clone(), Phase::Waiting)),
         "the fresh run parks on the gate ticket"
     );
-    assert_eq!(ran.load(Ordering::SeqCst), 0, "the gated tool has not run yet");
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        0,
+        "the gated tool has not run yet"
+    );
 
     // The correctly-correlated input arrives.
     store
@@ -112,7 +117,11 @@ async fn crash_before_settle_re_delivers_bound_pending_exactly_once() {
         1,
         "a claim without settle does not consume the pending input"
     );
-    assert_eq!(ran.load(Ordering::SeqCst), 0, "the crashed owner drove nothing");
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        0,
+        "the crashed owner drove nothing"
+    );
 
     // Recovery: after the lease lapses, the worker reclaims and delivers the SAME
     // pending exactly once, driving the run to completion.
@@ -139,7 +148,11 @@ async fn crash_before_settle_re_delivers_bound_pending_exactly_once() {
         worker.tick(10 + 2 * LEASE).await.unwrap().is_none(),
         "nothing is left to drive"
     );
-    assert_eq!(ran.load(Ordering::SeqCst), 1, "and the tool never ran again");
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        1,
+        "and the tool never ran again"
+    );
 }
 
 /// Store-level spec (both backends must match): a claim HANDS a run's bound pending
@@ -200,7 +213,11 @@ async fn assert_bound_pending_survives_claim_without_settle<S: Dispatch>(store: 
         .await
         .unwrap();
     assert!(
-        store.list(&ThreadId(THREAD.to_string())).await.unwrap().is_empty(),
+        store
+            .list(&ThreadId(THREAD.to_string()))
+            .await
+            .unwrap()
+            .is_empty(),
         "the pending is removed only by the settle that consumes it"
     );
 }
@@ -233,7 +250,8 @@ async fn crash_before_settle_re_delivers_unbound_inbox_input_exactly_once() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let thread = ThreadId(THREAD.to_string());
 
-    let worker = DispatchWorker::new(runtime, store.clone(), commit.clone(), "w").with_lease_ms(LEASE);
+    let worker =
+        DispatchWorker::new(runtime, store.clone(), commit.clone(), "w").with_lease_ms(LEASE);
 
     // An unbound idle-thread message waits for the thread (empty run + correlation).
     store
@@ -266,7 +284,12 @@ async fn crash_before_settle_re_delivers_unbound_inbox_input_exactly_once() {
 
     // No loss: the unbound input survived the crash (reads do not consume it).
     assert!(
-        store.list(&thread).await.unwrap().iter().any(|r| r.input.message_id == "u1"),
+        store
+            .list(&thread)
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.input.message_id == "u1"),
         "the unbound input survives a claim without settle"
     );
 
@@ -275,7 +298,10 @@ async fn crash_before_settle_re_delivers_unbound_inbox_input_exactly_once() {
     let recovered = worker.tick(LEASE + 1).await.unwrap();
     assert_eq!(
         recovered,
-        Some((RunId("run-1".to_string()), Phase::Ended(EndCause::NaturalEnd)))
+        Some((
+            RunId("run-1".to_string()),
+            Phase::Ended(EndCause::NaturalEnd)
+        ))
     );
     let assistant = commit
         .committed()
@@ -309,7 +335,10 @@ async fn crash_before_settle_re_delivers_unbound_inbox_input_exactly_once() {
     let next = worker.tick(LEASE + 2).await.unwrap();
     assert_eq!(
         next,
-        Some((RunId("run-2".to_string()), Phase::Ended(EndCause::NaturalEnd)))
+        Some((
+            RunId("run-2".to_string()),
+            Phase::Ended(EndCause::NaturalEnd)
+        ))
     );
     let u1_deliveries = commit
         .committed()
@@ -343,7 +372,12 @@ async fn recovering_a_terminal_run_consumes_its_delivered_unbound_input() {
     // delivered by the crashed attempt (it stands in for input that arrived after the
     // terminal commit) — it must survive recovery, proving no over-consumption/loss.
     store
-        .append(pending("u1", "", "", ResumeResult::Input("from-inbox".to_string())))
+        .append(pending(
+            "u1",
+            "",
+            "",
+            ResumeResult::Input("from-inbox".to_string()),
+        ))
         .await
         .unwrap();
 
@@ -366,28 +400,39 @@ async fn recovering_a_terminal_run_consumes_its_delivered_unbound_input() {
         Message::new(
             MessageId("u1".to_string()),
             Role::User,
-            vec![awaken_agent_contract::agent::content::ContentBlock::text("from-inbox")],
+            vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                "from-inbox",
+            )],
         ),
     );
     let ctx = awaken_runtime_contract::runtime_context::RuntimeRunContext::new()
         .with_commit(commit.clone());
-    let phase = awaken_runtime_contract::execution::RunExecutor::execute(runtime.as_ref(), act, ctx)
-        .await
-        .unwrap();
+    let phase =
+        awaken_runtime_contract::execution::RunExecutor::execute(runtime.as_ref(), act, ctx)
+            .await
+            .unwrap();
     assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
     // The crashed attempt delivered u1 into the committed transcript, but the inbox
     // still lists it (never consumed — the settle never ran).
     assert_eq!(
-        commit.committed().messages.iter().filter(|m| m.id.0 == "u1").count(),
+        commit
+            .committed()
+            .messages
+            .iter()
+            .filter(|m| m.id.0 == "u1")
+            .count(),
         1,
         "the crashed attempt committed u1 into the transcript"
     );
-    assert!(list_has_u1(store.as_ref(), &thread).await, "u1 still lingers in the inbox");
+    assert!(
+        list_has_u1(store.as_ref(), &thread).await,
+        "u1 still lingers in the inbox"
+    );
 
     // Recovery: the worker reclaims the now-terminal run, settles Done, and consumes
     // the delivered unbound input from committed truth.
-    let worker =
-        DispatchWorker::new(runtime.clone(), store.clone(), commit.clone(), "w").with_lease_ms(LEASE);
+    let worker = DispatchWorker::new(runtime.clone(), store.clone(), commit.clone(), "w")
+        .with_lease_ms(LEASE);
     let recovered = worker.tick(LEASE + 1).await.unwrap();
     assert_eq!(
         recovered,
@@ -407,10 +452,18 @@ async fn recovering_a_terminal_run_consumes_its_delivered_unbound_input() {
         .unwrap();
     assert_eq!(
         worker.tick(LEASE + 2).await.unwrap(),
-        Some((RunId("run-2".to_string()), Phase::Ended(EndCause::NaturalEnd)))
+        Some((
+            RunId("run-2".to_string()),
+            Phase::Ended(EndCause::NaturalEnd)
+        ))
     );
     assert_eq!(
-        commit.committed().messages.iter().filter(|m| m.id.0 == "u1").count(),
+        commit
+            .committed()
+            .messages
+            .iter()
+            .filter(|m| m.id.0 == "u1")
+            .count(),
         1,
         "the user's unbound input drove exactly one run — no duplicate re-delivery"
     );
@@ -431,7 +484,11 @@ async fn recovering_a_terminal_run_keeps_undelivered_unbound_input() {
         .enqueue(RunExecutionRequest::new(activation("run-1")))
         .await
         .unwrap();
-    let _crashed = store.claim("crasher", LEASE, 0).await.unwrap().expect("claim");
+    let _crashed = store
+        .claim("crasher", LEASE, 0)
+        .await
+        .unwrap()
+        .expect("claim");
     // The crashed attempt commits a terminal record that does NOT contain u1.
     let ctx = awaken_runtime_contract::runtime_context::RuntimeRunContext::new()
         .with_commit(commit.clone());
@@ -445,7 +502,12 @@ async fn recovering_a_terminal_run_keeps_undelivered_unbound_input() {
     assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
     // u1 arrives AFTER the commit (never delivered to run-1).
     store
-        .append(pending("u1", "", "", ResumeResult::Input("late".to_string())))
+        .append(pending(
+            "u1",
+            "",
+            "",
+            ResumeResult::Input("late".to_string()),
+        ))
         .await
         .unwrap();
 
@@ -470,12 +532,7 @@ async fn assert_unbound_consumed_on_settle_not_on_read<S: Dispatch>(store: &S) {
     let thread = ThreadId(THREAD.to_string());
 
     store
-        .append(pending(
-            "u1",
-            "",
-            "",
-            ResumeResult::Input("hi".to_string()),
-        ))
+        .append(pending("u1", "", "", ResumeResult::Input("hi".to_string())))
         .await
         .unwrap();
 
@@ -670,7 +727,10 @@ async fn commit_is_atomic_and_survives_replay_with_no_orphans() {
         )
     };
 
-    assert!(fence >= 2, "at least a park commit and a resume commit landed");
+    assert!(
+        fence >= 2,
+        "at least a park commit and a resume commit landed"
+    );
     assert!(
         !messages.is_empty(),
         "the run committed a transcript (user + assistant + tool messages)"
@@ -708,4 +768,3 @@ fn now_nanos() -> u128 {
         .map(|d| d.as_nanos())
         .unwrap_or(0)
 }
-

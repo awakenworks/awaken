@@ -63,7 +63,11 @@ mod tests {
     #[test]
     fn a_missing_outputs_dir_scans_to_empty() {
         let missing = std::path::Path::new("/no/such/awaken/outputs/dir");
-        assert!(scan_outputs(missing, "/mnt/session/outputs").unwrap().is_empty());
+        assert!(
+            scan_outputs(missing, "/mnt/session/outputs")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

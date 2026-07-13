@@ -710,8 +710,8 @@ impl SessionRuntime for ManagedHost {
         // This is the seam that actually realizes a published agent's memory store:
         // config injects the prompt, this injects the mount. Skip a mount path the
         // wire set already claimed (an explicit per-session override wins).
-        if let Some(store) = &self.resources {
-            if let Some(cfg) = store.get_agent_resource(&init.agent_id) {
+        if let Some(store) = &self.resources
+            && let Some(cfg) = store.get_agent_resource(&init.agent_id) {
                 let taken: std::collections::HashSet<String> = init
                     .resources
                     .iter()
@@ -728,7 +728,6 @@ impl SessionRuntime for ManagedHost {
                     all.repos.extend(one.repos);
                 }
             }
-        }
         if !all.mounts.is_empty()
             || !all.prompts.is_empty()
             || !all.repos.is_empty()

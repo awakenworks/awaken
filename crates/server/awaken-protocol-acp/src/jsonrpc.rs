@@ -257,7 +257,7 @@ pub async fn run_turn_with_config(
     //     the agent advertised for the session (an unsupported pin never silently
     //     no-ops; it ends the turn with a classified fault).
     if let Some(mode) = config.session_mode.clone() {
-        if !available_modes.iter().any(|m| *m == mode) {
+        if !available_modes.contains(&mode) {
             return Err(AcpError::UnsupportedSessionMode(mode));
         }
         wire.send_request(
@@ -751,8 +751,8 @@ mod tests {
             .unwrap();
         assert_eq!(reason, TerminationReason::NaturalEnd);
         agent.await.unwrap();
-        let reply = seen.lock().unwrap().clone();
-        reply
+        
+        seen.lock().unwrap().clone()
     }
 
     #[tokio::test]

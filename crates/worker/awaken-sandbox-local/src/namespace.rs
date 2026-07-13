@@ -743,14 +743,16 @@ mod tests {
             eprintln!("skipping: no usable bwrap / user namespaces");
             return;
         }
-        use pc::ProcessHandle;
         let tmp = tempfile::tempdir().unwrap();
         let provider = NamespaceProvider::new(tmp.path());
         let sandbox = provider
             .create_sandbox(&ns_spec("t-ns-spawn", Vec::new()))
             .await
             .unwrap();
-        let (proc, _channel) = sandbox.spawn_agent(pc::Command::new(["true"])).await.unwrap();
+        let (proc, _channel) = sandbox
+            .spawn_agent(pc::Command::new(["true"]))
+            .await
+            .unwrap();
         assert!(!proc.id().is_empty());
         assert_eq!(proc.wait().await.unwrap().code, Some(0));
     }

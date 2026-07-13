@@ -112,10 +112,10 @@ async fn user_profile_crud_and_metadata_merge() {
 
     // Unknown ids 404 on retrieve/update/enrollment.
     for (method, path) in [
-        ("GET", format!("/v1/user_profiles/uprof_missing")),
+        ("GET", "/v1/user_profiles/uprof_missing".to_string()),
         (
             "POST",
-            format!("/v1/user_profiles/uprof_missing/enrollment_url"),
+            "/v1/user_profiles/uprof_missing/enrollment_url".to_string(),
         ),
     ] {
         let (s, _) = call(&app, method, &path, None).await;

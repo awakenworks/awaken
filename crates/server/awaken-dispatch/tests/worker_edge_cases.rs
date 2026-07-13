@@ -70,8 +70,7 @@ async fn duplicate_submit_same_run_id_drives_exactly_once() {
         "a duplicate run id does not create a second dispatch row"
     );
 
-    let worker =
-        DispatchWorker::new(runtime, store.clone(), commit, "solo").with_lease_ms(LEASE);
+    let worker = DispatchWorker::new(runtime, store.clone(), commit, "solo").with_lease_ms(LEASE);
     let processed = worker.tick(0).await.unwrap();
     assert_eq!(
         processed,
@@ -292,7 +291,12 @@ async fn stale_correlation_input_is_dropped_and_the_run_stays_parked() {
     // Deliver input with the WRONG correlation. The worker wakes, finds no input
     // answering the committed ticket, and re-parks without applying it.
     store
-        .append(harness::pending("stale", "run-1", "wrong-correlation", allow()))
+        .append(harness::pending(
+            "stale",
+            "run-1",
+            "wrong-correlation",
+            allow(),
+        ))
         .await
         .unwrap();
     let after_stale = worker.tick(1).await.unwrap();

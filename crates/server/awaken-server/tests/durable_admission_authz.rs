@@ -56,10 +56,7 @@ static GATE: Mutex<()> = Mutex::const_new(());
 /// exactly once; every test dereferences it before building a router, so the two
 /// `set_var` writes happen-before every later env read (no data race).
 static DURABLE: LazyLock<PathBuf> = LazyLock::new(|| {
-    let dir = std::env::temp_dir().join(format!(
-        "awaken-durable-admission-{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("awaken-durable-admission-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create durable storage dir");
     // SAFETY: the LazyLock `Once` runs this closure a single time with no other
     // thread able to observe the vars until it returns; after that the values are
@@ -293,8 +290,16 @@ async fn durable_plane_shares_its_managed_siblings_open_local_trust_posture() {
         json!({ "text": "hello from an unauthenticated local caller" }),
     )
     .await;
-    assert_ne!(status, StatusCode::UNAUTHORIZED, "durable submit is not authed");
-    assert_ne!(status, StatusCode::FORBIDDEN, "durable submit is not authed");
+    assert_ne!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "durable submit is not authed"
+    );
+    assert_ne!(
+        status,
+        StatusCode::FORBIDDEN,
+        "durable submit is not authed"
+    );
     assert_eq!(
         status,
         StatusCode::OK,
@@ -310,8 +315,16 @@ async fn durable_plane_shares_its_managed_siblings_open_local_trust_posture() {
         json!({ "run_id": "run-unknown" }),
     )
     .await;
-    assert_ne!(status, StatusCode::UNAUTHORIZED, "durable cancel is not authed");
-    assert_ne!(status, StatusCode::FORBIDDEN, "durable cancel is not authed");
+    assert_ne!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "durable cancel is not authed"
+    );
+    assert_ne!(
+        status,
+        StatusCode::FORBIDDEN,
+        "durable cancel is not authed"
+    );
 
     // A garbage bearer token is ignored (not honored, not rejected) — the plane
     // simply does not consult Authorization, confirming the trust boundary is the

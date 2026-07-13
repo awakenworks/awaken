@@ -227,6 +227,7 @@ mod tests {
     struct ScriptedSender {
         calls: Mutex<u32>,
         fail_first: u32,
+        #[allow(clippy::type_complexity)]
         captured: Mutex<Vec<(String, Vec<(String, String)>, String)>>,
     }
     impl ScriptedSender {
