@@ -19,6 +19,7 @@ mod control_stores;
 mod hand_server;
 mod model_resolver;
 mod models;
+mod no_model;
 pub mod placement;
 pub mod resource_owner;
 pub mod webhooks;
@@ -523,6 +524,62 @@ mod role_tests {
     fn an_unknown_explicit_role_falls_back_to_inference() {
         assert_eq!(role_from(Some("bogus"), false, true), Role::Worker);
         assert_eq!(role_from(Some("bogus"), false, false), Role::Serve);
+    }
+}
+
+#[cfg(test)]
+mod seal_key_tests {
+    use super::resolve_seal_key_hex;
+
+    // A reader that must not be consulted (the inline / error paths never read a file).
+    fn no_read(_: &str) -> std::io::Result<String> {
+        panic!("read_file should not be called");
+    }
+
+    #[test]
+    fn inline_key_is_used_verbatim() {
+        let hex = resolve_seal_key_hex(Some("abc".into()), None, no_read).unwrap();
+        assert_eq!(hex, "abc");
+    }
+
+    #[test]
+    fn file_source_reads_the_path() {
+        let hex = resolve_seal_key_hex(None, Some("/run/seal.key".into()), |p| {
+            assert_eq!(p, "/run/seal.key");
+            Ok("deadbeef\n".to_string())
+        })
+        .unwrap();
+        // Returned as-read; the trailing newline is trimmed later by parse_seal_key.
+        assert_eq!(hex, "deadbeef\n");
+    }
+
+    #[test]
+    fn both_sources_set_is_a_hard_error() {
+        let err = resolve_seal_key_hex(Some("abc".into()), Some("/p".into()), no_read).unwrap_err();
+        assert!(err.contains("mutually exclusive"), "{err}");
+    }
+
+    #[test]
+    fn neither_source_set_is_the_brick_on_restart_error() {
+        let err = resolve_seal_key_hex(None, None, no_read).unwrap_err();
+        assert!(err.contains("neither AWAKEN_MGMT_SEAL_KEY"), "{err}");
+    }
+
+    #[test]
+    fn empty_values_are_treated_as_unset() {
+        // Empty inline + whitespace file path → neither is present → the unset error,
+        // and the (empty) file path is never read.
+        let err = resolve_seal_key_hex(Some("  ".into()), Some("".into()), no_read).unwrap_err();
+        assert!(err.contains("neither AWAKEN_MGMT_SEAL_KEY"), "{err}");
+    }
+
+    #[test]
+    fn an_unreadable_file_reports_the_path() {
+        let err = resolve_seal_key_hex(None, Some("/nope".into()), |_| {
+            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no such file"))
+        })
+        .unwrap_err();
+        assert!(err.contains("/nope") && err.contains("could not be read"), "{err}");
     }
 }
 
@@ -1728,20 +1785,59 @@ fn parse_seal_key(hex: &str) -> Result<[u8; 32], String> {
     Ok(key)
 }
 
-/// The AEAD key for the durable management plane, from `AWAKEN_MGMT_SEAL_KEY`
-/// (64 hex characters = 32 bytes). Fails loudly when unset or malformed: a
-/// durable store sealed under an ephemeral random key would look healthy until
-/// the first restart, then every persisted secret would be unopenable.
+/// Pure resolution of the seal-key hex from its two possible sources, so the
+/// precedence + mutual-exclusion rules are testable without touching the process
+/// environment or the filesystem. `read_file` is injected (real: `read_to_string`).
+///
+/// Two sources, exactly one required:
+///   - `AWAKEN_MGMT_SEAL_KEY`       — the key hex inline (today's behavior),
+///   - `AWAKEN_MGMT_SEAL_KEY_FILE`  — a path to a file holding the key hex
+///     (keeps the key out of the environment / `ps` / logs; put it on tmpfs, mode
+///     0600, backed up separately from the DB — this is the source that lets an
+///     operator manage/rotate the key via the deployment rather than the runtime).
+/// Both set is a hard error (ambiguous); neither set is the same brick-on-restart
+/// error as before. The file's contents are parsed identically to the inline value
+/// (64 hex chars; a trailing newline is trimmed by [`parse_seal_key`]).
+fn resolve_seal_key_hex(
+    inline: Option<String>,
+    file_path: Option<String>,
+    read_file: impl Fn(&str) -> std::io::Result<String>,
+) -> Result<String, String> {
+    let inline = inline.filter(|v| !v.trim().is_empty());
+    let file_path = file_path.filter(|v| !v.trim().is_empty());
+    match (inline, file_path) {
+        (Some(_), Some(_)) => Err(
+            "both AWAKEN_MGMT_SEAL_KEY and AWAKEN_MGMT_SEAL_KEY_FILE are set; they are \
+             mutually exclusive — set exactly one"
+                .to_string(),
+        ),
+        (Some(hex), None) => Ok(hex),
+        (None, Some(path)) => read_file(&path)
+            .map_err(|e| format!("AWAKEN_MGMT_SEAL_KEY_FILE={path} could not be read: {e}")),
+        (None, None) => Err(
+            "AWAKEN_MGMT_DIR is set but neither AWAKEN_MGMT_SEAL_KEY nor \
+             AWAKEN_MGMT_SEAL_KEY_FILE is set. A durable management store needs a stable \
+             AEAD key (64 hex characters = 32 bytes); sealing under an ephemeral key \
+             would brick every restart"
+                .to_string(),
+        ),
+    }
+}
+
+/// The AEAD key for the durable management plane, from `AWAKEN_MGMT_SEAL_KEY` (the
+/// key hex inline) **or** `AWAKEN_MGMT_SEAL_KEY_FILE` (a path to a file holding it).
+/// Exactly one must be set. Fails loudly when unset, both-set, unreadable, or
+/// malformed: a durable store sealed under an ephemeral random key would look
+/// healthy until the first restart, then every persisted secret would be unopenable.
 fn mgmt_seal_key_from_env() -> [u8; 32] {
-    let hex = std::env::var("AWAKEN_MGMT_SEAL_KEY").unwrap_or_else(|_| {
-        panic!(
-            "AWAKEN_MGMT_DIR is set but AWAKEN_MGMT_SEAL_KEY is not. A durable \
-             management store needs a stable AEAD key (64 hex characters = 32 bytes); \
-             sealing under an ephemeral key would brick every restart."
-        )
-    });
+    let hex = resolve_seal_key_hex(
+        std::env::var("AWAKEN_MGMT_SEAL_KEY").ok(),
+        std::env::var("AWAKEN_MGMT_SEAL_KEY_FILE").ok(),
+        |p| std::fs::read_to_string(p),
+    )
+    .unwrap_or_else(|reason| panic!("{reason}."));
     parse_seal_key(&hex).unwrap_or_else(|reason| {
-        panic!("AWAKEN_MGMT_SEAL_KEY is malformed: {reason}. Provide 64 hex characters (a 32-byte key).")
+        panic!("the management seal key is malformed: {reason}. Provide 64 hex characters (a 32-byte key).")
     })
 }
 
@@ -1751,9 +1847,11 @@ fn mgmt_seal_key_from_env() -> [u8; 32] {
 /// - `AWAKEN_MGMT_DIR` unset — in-memory stores, exactly the previous behavior.
 /// - `AWAKEN_MGMT_DIR=<dir>` — SQLite-backed stores under `<dir>`
 ///   (`catalog.db` / `credential.db` / `admin.db`), with secrets AEAD-sealed
-///   under `AWAKEN_MGMT_SEAL_KEY` (**required** then: 64 hex characters = a
-///   32-byte key; unset or malformed panics rather than sealing under a key
-///   that cannot survive a restart).
+///   under the seal key (**required** then: 64 hex characters = a 32-byte key;
+///   unset or malformed panics rather than sealing under a key that cannot
+///   survive a restart). The key comes from exactly one of `AWAKEN_MGMT_SEAL_KEY`
+///   (inline) or `AWAKEN_MGMT_SEAL_KEY_FILE` (a path to a file holding it — keeps
+///   the key out of the environment / `ps` / logs); setting both is an error.
 ///
 /// What persists across a restart is the authored **domain** state: the catalog,
 /// the secret-free credential/pool rows plus their sealed secrets, and the
@@ -1795,10 +1893,35 @@ pub async fn build_management_router() -> Router {
             // Each control-plane store honors its own `AWAKEN_<COMPONENT>_DB` override
             // (SQLite path or shared Postgres), defaulting to `<dir>/<name>.db`.
             let cfg = crate::control_stores::ControlStoreConfig::from_env(std::path::Path::new(&dir));
-            management_router_over(open_management_stores(cfg, &key).await, iam).await
+            management_router_over(
+                open_management_stores(cfg, &key).await,
+                iam,
+                Arc::new(crate::no_model::NoModelConfiguredExecutor),
+                crate::no_model::UNCONFIGURED_MODEL_REF.to_string(),
+            )
+            .await
         }
-        Err(_) => management_router_over(in_memory_management_stores(), iam).await,
+        Err(_) => {
+            management_router_over(
+                in_memory_management_stores(),
+                iam,
+                Arc::new(crate::no_model::NoModelConfiguredExecutor),
+                crate::no_model::UNCONFIGURED_MODEL_REF.to_string(),
+            )
+            .await
+        }
     }
+}
+
+/// Build the management router over in-memory stores with an explicit host default
+/// model injected — a **test-only** seam so an integration test can drive the real
+/// management router with a deterministic (mock) model, keeping the mock out of the
+/// production assembly (which uses [`no_model::NoModelConfiguredExecutor`]).
+pub async fn build_management_router_with_model(
+    model: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+) -> Router {
+    management_router_over(in_memory_management_stores(), None, model, model_ref.into()).await
 }
 
 /// [`build_management_router`] with explicit persistence inputs (no environment
@@ -1807,7 +1930,13 @@ pub async fn build_management_router() -> Router {
 /// simulated process lifetimes without racing on process-global env vars.
 /// No IAM guard — the open (default) management plane.
 pub async fn build_durable_management_router(dir: &std::path::Path, key: &[u8; 32]) -> Router {
-    management_router_over(durable_management_stores(dir, key), None).await
+    management_router_over(
+        durable_management_stores(dir, key),
+        None,
+        Arc::new(crate::no_model::NoModelConfiguredExecutor),
+        crate::no_model::UNCONFIGURED_MODEL_REF.to_string(),
+    )
+    .await
 }
 
 /// [`build_durable_management_router`] with the embedded IAM guard enabled —
@@ -1819,8 +1948,13 @@ pub async fn build_secured_management_router(
     key: &[u8; 32],
 ) -> (Router, Arc<ManagementAuthz>) {
     let iam = embedded_iam(dir);
-    let router =
-        management_router_over(durable_management_stores(dir, key), Some(iam.clone())).await;
+    let router = management_router_over(
+        durable_management_stores(dir, key),
+        Some(iam.clone()),
+        Arc::new(crate::no_model::NoModelConfiguredExecutor),
+        crate::no_model::UNCONFIGURED_MODEL_REF.to_string(),
+    )
+    .await;
     (router, iam)
 }
 
@@ -1831,6 +1965,12 @@ pub async fn build_secured_management_router(
 async fn management_router_over(
     stores: ManagementStores,
     iam: Option<Arc<ManagementAuthz>>,
+    // The host default model for the window before an operator publishes one. In
+    // production this is the provider-free `NoModelConfiguredExecutor` (guidance,
+    // never a mock); a test may inject a deterministic model to drive a scenario
+    // through the real management router.
+    fallback_model: Arc<dyn LlmExecutor>,
+    fallback_model_ref: String,
 ) -> Router {
     let ManagementStores {
         catalog,
@@ -1928,7 +2068,7 @@ async fn management_router_over(
     // The server's model (real Gemini under `AWAKEN_MODEL_SOURCE=gemini`, else the
     // in-process MCP-driving model). Chosen up here because the admin assistant's
     // `Auto` binding resolves against a catalog carrying this model at seed time.
-    let (model, model_ref) = scenario_model(Arc::new(McpToolModel), "management");
+    let (model, model_ref) = (fallback_model, fallback_model_ref);
     // Scope-free `ConfigService` + the `ConfigPlane` scope edge (ADR-0051/0052): the
     // plane binds the request scope (a `ScopedConfig` registry + the scope's tool
     // catalog) onto the service per call. The reserved admin scope additionally sees
@@ -1959,6 +2099,20 @@ async fn management_router_over(
             )))
             .with_resources(resource_store.clone()),
     );
+    // Warm-load the installed catalog from the durable config store BEFORE the plane
+    // takes ownership: a fresh process (a restart, or — once control/server split —
+    // a server that did not author the publish) repopulates `installed` so a
+    // rehydrated session resolves its published agent, not the seed model. A no-op on
+    // the in-memory path (nothing durable to reload).
+    let warmed = config_service
+        .warm_install(
+            config.as_ref(),
+            &awaken_tenancy::ScopeId::from(awaken_config_store::DEFAULT_SCOPE),
+        )
+        .await;
+    if warmed > 0 {
+        eprintln!("config: warm-loaded {warmed} published agent(s) from the durable store");
+    }
     let plane = awaken_runtime_host::ConfigPlane::new(config_service.clone(), config, tool_catalog);
     // Seed the in-console Admin Assistant as an ordinary published agent in the
     // reserved scope (ADR-0052 D1/D2), so `/v1/agents/__admin_assistant` is live and a

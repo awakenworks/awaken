@@ -38,8 +38,17 @@ use awaken_credential_vault::{InMemorySecretStore, SecretRef, SecretStore};
 use awaken_ext_mcp::{AuthChallenge, Credential, CredentialRefresher};
 use awaken_protocol_managed::{McpProbe, McpProbeStatus, TokenEndpointAuthBinding};
 use awaken_server_local::{
-    ExtMcpProbe, PreparedMcpRefresh, VaultRefresher, build_management_router,
+    ExtMcpProbe, McpToolModel, PreparedMcpRefresh, VaultRefresher,
+    build_management_router_with_model,
 };
+
+// This test drives the REAL management router but needs a deterministic model that
+// calls the MCP tool on `add <a> <b>` — that is a test concern, so it injects the
+// (mock) `McpToolModel` through the test-only seam. Production uses the provider-free
+// `NoModelConfiguredExecutor`; the mock never ships in the management assembly.
+async fn build_management_router() -> Router {
+    build_management_router_with_model(Arc::new(McpToolModel), "management").await
+}
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Json, State};

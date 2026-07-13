@@ -230,6 +230,29 @@ impl ConfigService {
     pub fn installed(&self, agent: &str) -> Option<RunnableConfig> {
         self.installed.lock().unwrap().get(agent).cloned()
     }
+
+    /// Warm-load the installed catalog from a durable registry's published configs
+    /// (scope-bound). `installed` is otherwise populated only at publish time and
+    /// held in-memory, so a fresh process — after a restart, or a server that did
+    /// not author the publish itself — would resolve a published agent to the seed
+    /// model. This rehydrates it from the store; the latest publication per agent
+    /// wins (rows arrive oldest-first). Returns how many agents were installed.
+    pub async fn warm_install(
+        &self,
+        registry: &dyn ScopedConfigRegistry,
+        scope: &ScopeId,
+    ) -> usize {
+        let pubs = match registry.list_published_scoped(scope).await {
+            Ok(pubs) => pubs,
+            Err(_) => return 0,
+        };
+        let mut installed = self.installed.lock().unwrap();
+        let n = pubs.len();
+        for p in pubs {
+            installed.insert(p.agent_id, RunnableConfig::from_parts(p.snapshot, p.install));
+        }
+        n
+    }
 }
 
 /// The scope-aware **edge** over the scope-free [`ConfigService`]: it holds the
