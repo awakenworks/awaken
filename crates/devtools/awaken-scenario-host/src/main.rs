@@ -56,16 +56,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("probe") => {
             awaken_scenario_host::build_router(Arc::new(awaken_scenario_host::ProbeModel), "probe")
         }
-        Ok("revise") => {
-            awaken_scenario_host::build_router(Arc::new(awaken_scenario_host::ReviseModel), "revise")
-        }
+        Ok("revise") => awaken_scenario_host::build_router(
+            Arc::new(awaken_scenario_host::ReviseModel),
+            "revise",
+        ),
         Ok("custom") => awaken_scenario_host::build_custom_router(),
         Ok("remote-hand") => awaken_scenario_host::build_remote_hand_router(),
         Ok("delegate") => awaken_scenario_host::build_delegation_router(),
         Ok("statemachine") => awaken_scenario_host::build_statemachine_router(),
         Ok("statemachine-rich") => awaken_scenario_host::build_statemachine_rich_router(),
         Ok("config") => awaken_scenario_host::build_config_router().await,
-        Ok("management") => awaken_cli::build_management_router().await,
+        // The management scenario drives the REAL management router but with the
+        // deterministic MCP scenario model as the pre-published fallback (production
+        // uses the provider-free NoModelConfiguredExecutor); env-driven store
+        // selection + IAM are identical to production.
+        Ok("management") => {
+            awaken_cli::build_management_router_with_fallback(
+                std::sync::Arc::new(awaken_scenario_host::McpToolModel),
+                "management".to_string(),
+            )
+            .await
+        }
         Ok("real") => awaken_scenario_host::build_real_router(),
         Ok("real-gemini") => awaken_scenario_host::build_real_gemini_router().await,
         Ok("real-resolved") => awaken_scenario_host::build_resolved_real_router().await,

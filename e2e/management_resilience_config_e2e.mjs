@@ -30,9 +30,9 @@ async function main() {
 
     // ── Catalog: one provider, one endpoint, TWO offerings (a model pool) ────
     ok(await cfg('PUT', '/v1/config/providers/anthropic', { id: 'anthropic', slug: 'anthropic', display_name: 'A', version: 1 }), 200, 'provider');
-    ok(await cfg('PUT', '/v1/config/endpoints/ep1', { id: 'ep1', provider_id: 'anthropic', flavor: 'anthropic_messages', base_url: 'https://example.invalid/v1/', timeout_secs: 300, display_name: 'd', version: 1 }), 200, 'endpoint');
+    ok(await cfg('PUT', '/v1/config/endpoints/ep1', { id: 'ep1', provider_id: 'anthropic', dialect: 'anthropic_messages', base_url: 'https://example.invalid/v1/', timeout_secs: 300, display_name: 'd', version: 1 }), 200, 'endpoint');
     for (const m of ['model-a', 'model-b']) {
-      ok(await cfg('POST', '/v1/config/offerings', { model_id: m, provider_id: 'anthropic', protocol_endpoint_id: 'ep1', flavor: 'anthropic_messages', upstream_model: null }), 200, `offering ${m}`);
+      ok(await cfg('POST', '/v1/config/offerings', { model_id: m, provider_id: 'anthropic', protocol_endpoint_id: 'ep1', dialect: 'anthropic_messages', upstream_model: null }), 200, `offering ${m}`);
     }
 
     // ── Two anthropic-scoped credentials + a pool over them ─────────────────

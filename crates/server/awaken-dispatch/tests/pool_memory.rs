@@ -87,7 +87,10 @@ impl WorkerResolver<MemoryDispatchStore> for RecordingResolver {
         thread_id: &ThreadId,
         model_ref: Option<&str>,
     ) -> Result<Arc<MemWorker>, Error> {
-        self.seen.lock().unwrap().push(model_ref.map(str::to_string));
+        self.seen
+            .lock()
+            .unwrap()
+            .push(model_ref.map(str::to_string));
         self.inner.worker_for(thread_id, model_ref).await
     }
 }
@@ -118,7 +121,9 @@ async fn the_pool_forwards_a_claimed_runs_model_ref_to_the_resolver() {
         2,
     );
 
-    pool.submit(activation_on("run-m", "thread-m")).await.unwrap();
+    pool.submit(activation_on("run-m", "thread-m"))
+        .await
+        .unwrap();
     assert!(
         wait_for(|| commit.commit_count() >= 1).await,
         "the run drained"

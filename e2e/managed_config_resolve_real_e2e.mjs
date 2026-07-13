@@ -59,7 +59,7 @@ async function main() {
       const ep = await cfg('PUT', '/v1/config/endpoints/ep-kimi', {
         id: 'ep-kimi',
         provider_id: 'anthropic',
-        flavor: 'anthropic_messages',
+        dialect: 'anthropic_messages',
         base_url: BASE,
         timeout_secs: 300,
         display_name: 'kimi',
@@ -71,7 +71,7 @@ async function main() {
         model_id: MODEL,
         provider_id: 'anthropic',
         protocol_endpoint_id: 'ep-kimi',
-        flavor: 'anthropic_messages',
+        dialect: 'anthropic_messages',
         upstream_model: null,
       });
       assert.equal(off.status, 200, 'offering stored');

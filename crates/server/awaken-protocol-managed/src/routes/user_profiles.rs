@@ -103,11 +103,12 @@ fn bad_request(message: impl Into<String>) -> WireError {
 
 fn check_len(field: &str, value: &Option<String>) -> Result<(), WireError> {
     if let Some(v) = value
-        && v.len() > 255 {
-            return Err(bad_request(format!(
-                "{field} must be at most 255 characters"
-            )));
-        }
+        && v.len() > 255
+    {
+        return Err(bad_request(format!(
+            "{field} must be at most 255 characters"
+        )));
+    }
     Ok(())
 }
 

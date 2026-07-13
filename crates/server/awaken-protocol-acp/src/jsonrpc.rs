@@ -751,7 +751,7 @@ mod tests {
             .unwrap();
         assert_eq!(reason, TerminationReason::NaturalEnd);
         agent.await.unwrap();
-        
+
         seen.lock().unwrap().clone()
     }
 
