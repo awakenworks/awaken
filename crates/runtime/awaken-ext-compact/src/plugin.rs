@@ -7,16 +7,14 @@
 //! the older raw turns from the model view, so summary + kept tail cover the whole
 //! conversation. Summarization runs at most once per run (cached by `run_id`).
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_agent_contract::agent::state::{Action, Command, MergePolicy, Scope};
+use awaken_agent_contract::agent::state::{Action, Command, MergePolicy, Scope, StateKey, Store};
 use awaken_runtime_contract::plugin::{
-    CapabilityBound, Contributions, HookReaction, PhaseContext, PhaseHook, PhaseHookPoint, Plugin,
-    PluginConfigError, PluginManifest,
+    CapabilityBound, Contributions, HookReaction, IdBound, PhaseContext, PhaseHook, PhaseHookPoint,
+    Plugin, PluginConfigError, PluginManifest,
 };
 use awaken_runtime_contract::subagent_runner::{SubagentRequest, SubagentRunner};
 
@@ -102,12 +100,30 @@ impl CompactPlugin {
 
     fn contribute(&self, config: CompactConfig) -> Contributions {
         let mut contributions = Contributions::new(COMPACT_PLUGIN_ID);
+        contributions.state_keys = vec![CompactionContext::KEY.to_string()];
         contributions.phase_hooks.push(Arc::new(CompactHook {
             config,
             runner: self.runner.clone(),
-            cache: Mutex::new(HashMap::new()),
         }));
         contributions
+    }
+}
+
+/// The run-scoped cell holding this run's compaction decision: `None` (absent)
+/// means compaction has not been evaluated yet; `Some(block)` means it has, where a
+/// non-empty block is the summary to re-inject each step and an empty block records
+/// "evaluated, did not fold". Gates summarization to at most once per run and
+/// replays across steps and a resumed run without re-running the compactor
+/// sub-agent (ADR-0055); replaces the former per-`run_id` in-process cache.
+struct CompactionContext;
+impl StateKey for CompactionContext {
+    const KEY: &'static str = "compaction_context";
+    const SCOPE: Scope = Scope::Run;
+    const MERGE: MergePolicy = MergePolicy::Exclusive;
+    type Value = Option<Vec<Message>>;
+    type Update = Vec<Message>;
+    fn apply(value: &mut Option<Vec<Message>>, update: Vec<Message>) {
+        *value = Some(update);
     }
 }
 
@@ -119,6 +135,7 @@ impl Plugin for CompactPlugin {
             config_sections: vec![COMPACT_PLUGIN_ID.into()],
             bound: CapabilityBound {
                 phase_hooks: vec![PhaseHookPoint::BeforeInference],
+                state_keys: IdBound::Exact(vec![CompactionContext::KEY.into()]),
                 ..Default::default()
             },
         }
@@ -149,7 +166,6 @@ pub fn config_schema() -> serde_json::Value {
 struct CompactHook {
     config: CompactConfig,
     runner: Option<Arc<dyn SubagentRunner>>,
-    cache: Mutex<HashMap<RunId, Vec<Message>>>,
 }
 
 impl CompactHook {
@@ -212,31 +228,44 @@ impl PhaseHook for CompactHook {
         PhaseHookPoint::BeforeInference
     }
 
-    async fn on_phase(&self, ctx: &PhaseContext, conversation: &[Message]) -> HookReaction {
-        if let Some(hit) = self.cache.lock().unwrap().get(&ctx.run_id) {
-            // A later step of the same run: replay the summary, but do not re-stage
-            // the fact — it was committed on the folding step (emit-once per run).
-            return HookReaction::messages(hit.clone());
+    async fn on_phase(
+        &self,
+        ctx: &PhaseContext,
+        conversation: &[Message],
+        state: &Store,
+    ) -> HookReaction {
+        if let Some(block) = CompactionContext::load_or_default(state) {
+            // A later step of the same run (or a resumed run replaying committed
+            // state): replay the summary, but do not re-fold and do not re-stage
+            // the marker — it was committed on the folding step (emit-once per run).
+            return HookReaction::messages(block);
         }
-        let summary = self.compute(conversation).await;
-        self.cache
-            .lock()
-            .unwrap()
-            .insert(ctx.run_id.clone(), summary.clone().unwrap_or_default());
-        match summary {
-            // A fold happened: inject the summary request-only *and* stage the
+        match self.compute(conversation).await {
+            // A fold happened: record the summary in run state (so later steps and a
+            // resumed run replay it), inject it request-only, *and* stage the
             // durable, protocol-neutral marker the adapter projects into the event.
             Some(block) => HookReaction {
-                state: vec![compaction_marker(&ctx.run_id.0)],
+                state: vec![
+                    CompactionContext::write(&Some(block.clone())),
+                    compaction_marker(&ctx.run_id.0),
+                ],
                 messages: block,
             },
-            None => HookReaction::default(),
+            // No fold this step: record the "evaluated, did not fold" decision so a
+            // later step does not re-evaluate the grown conversation and fold late
+            // (at-most-once-per-run, matching the former cache).
+            None => HookReaction {
+                state: vec![CompactionContext::write(&Some(Vec::new()))],
+                messages: Vec::new(),
+            },
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use awaken_agent_contract::agent::run::Id as RunId;
+
     use super::*;
 
     fn convo(n: usize) -> Vec<Message> {
@@ -289,7 +318,7 @@ mod tests {
             seen_len: std::sync::Mutex::new(0),
         }));
         let hook = &plugin.resolve().phase_hooks[0];
-        let reaction = hook.on_phase(&phase_ctx(), &convo(5)).await;
+        let reaction = hook.on_phase(&phase_ctx(), &convo(5), &Store::new()).await;
         assert!(reaction.messages.is_empty());
     }
 
@@ -306,7 +335,7 @@ mod tests {
         .with_runner(summarizer.clone());
         let hook = &plugin.resolve().phase_hooks[0];
         // 10 messages, keep_last 2 → summarize the first 8.
-        let reaction = hook.on_phase(&phase_ctx(), &convo(10)).await;
+        let reaction = hook.on_phase(&phase_ctx(), &convo(10), &Store::new()).await;
         assert_eq!(*summarizer.seen_len.lock().unwrap(), 9); // 8 folded + summarize prompt
         assert_eq!(reaction.messages.len(), 1);
         assert!(
@@ -348,7 +377,7 @@ mod tests {
         })
         .with_runner(recorder.clone());
         default_plugin.resolve().phase_hooks[0]
-            .on_phase(&phase_ctx(), &convo(10))
+            .on_phase(&phase_ctx(), &convo(10), &Store::new())
             .await;
         assert_eq!(*recorder.seen_prompt.lock().unwrap(), SUMMARIZE_PROMPT);
 
@@ -362,7 +391,7 @@ mod tests {
         })
         .with_runner(recorder.clone());
         tuned_plugin.resolve().phase_hooks[0]
-            .on_phase(&phase_ctx(), &convo(10))
+            .on_phase(&phase_ctx(), &convo(10), &Store::new())
             .await;
         assert_eq!(*recorder.seen_prompt.lock().unwrap(), custom);
     }
@@ -378,10 +407,10 @@ mod tests {
             seen_len: std::sync::Mutex::new(0),
         }));
         let hook = &plugin.resolve().phase_hooks[0];
-        let reaction = hook.on_phase(&phase_ctx(), &convo(10)).await;
+        let reaction = hook.on_phase(&phase_ctx(), &convo(10), &Store::new()).await;
         // The fold stages exactly one thread-scoped compaction marker, which the
         // read-back helper resolves to `true`.
-        assert_eq!(reaction.state.len(), 1);
+        assert_eq!(reaction.state.len(), 2);
         assert_eq!(compaction_count(&reaction.state), 1);
     }
 
@@ -396,8 +425,8 @@ mod tests {
             seen_len: std::sync::Mutex::new(0),
         }));
         let hook = &plugin.resolve().phase_hooks[0];
-        let reaction = hook.on_phase(&phase_ctx(), &convo(5)).await;
-        assert!(reaction.state.is_empty());
+        let reaction = hook.on_phase(&phase_ctx(), &convo(5), &Store::new()).await;
+        assert_eq!(reaction.state.len(), 1);
         assert_eq!(compaction_count(&reaction.state), 0);
     }
 
@@ -412,10 +441,16 @@ mod tests {
             seen_len: std::sync::Mutex::new(0),
         }));
         let hook = &plugin.resolve().phase_hooks[0];
-        let first = hook.on_phase(&phase_ctx(), &convo(10)).await;
-        assert_eq!(first.state.len(), 1);
-        // A later step of the same run replays the summary but stages no new fact.
-        let second = hook.on_phase(&phase_ctx(), &convo(10)).await;
+        let mut state = Store::new();
+        let first = hook.on_phase(&phase_ctx(), &convo(10), &state).await;
+        assert_eq!(first.state.len(), 2, "summary block + compaction marker");
+        assert_eq!(compaction_count(&first.state), 1);
+        // A later step of the same run replays the summary but stages no new fact,
+        // gated on the run-scoped compaction state applied here (ADR-0055).
+        for command in &first.state {
+            state.apply(command);
+        }
+        let second = hook.on_phase(&phase_ctx(), &convo(10), &state).await;
         assert!(second.state.is_empty(), "emit-once per run");
         assert_eq!(second.messages.len(), 1, "the summary still replays");
     }
@@ -434,7 +469,7 @@ mod tests {
         }));
         let hook = &plugin.resolve().phase_hooks[0];
         // 10 short messages (~15 est. tokens) exceed the 8-token budget.
-        let reaction = hook.on_phase(&phase_ctx(), &convo(10)).await;
+        let reaction = hook.on_phase(&phase_ctx(), &convo(10), &Store::new()).await;
         assert_eq!(
             reaction.messages.len(),
             1,
@@ -456,7 +491,7 @@ mod tests {
             seen_len: std::sync::Mutex::new(0),
         }));
         let hook = &plugin.resolve().phase_hooks[0];
-        let reaction = hook.on_phase(&phase_ctx(), &convo(10)).await;
+        let reaction = hook.on_phase(&phase_ctx(), &convo(10), &Store::new()).await;
         assert!(reaction.messages.is_empty());
         assert_eq!(compaction_count(&reaction.state), 0);
     }

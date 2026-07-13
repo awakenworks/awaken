@@ -595,6 +595,7 @@ async fn drive(
             step,
             PhaseHookPoint::StepStart,
             &transcript,
+            &mut store,
             &mut staged_state,
         )
         .await;
@@ -604,6 +605,7 @@ async fn drive(
             step,
             PhaseHookPoint::BeforeInference,
             &transcript,
+            &mut store,
             &mut staged_state,
         )
         .await;
@@ -774,6 +776,7 @@ async fn drive(
             step,
             PhaseHookPoint::AfterInference,
             &transcript,
+            &mut store,
             &mut staged_state,
         )
         .await;
@@ -933,6 +936,7 @@ async fn drive(
             step,
             PhaseHookPoint::StepEnd,
             &transcript,
+            &mut store,
             &mut staged_state,
         )
         .await;
@@ -1201,6 +1205,7 @@ async fn run_phase_hooks(
     step: usize,
     point: PhaseHookPoint,
     conversation: &[Message],
+    store: &mut Store,
     staged_state: &mut Vec<StateCommand>,
 ) -> Vec<Message> {
     let mut context = Vec::new();
@@ -1210,7 +1215,14 @@ async fn run_phase_hooks(
             step,
             point,
         };
-        let reaction = hook.on_phase(&ctx, conversation).await;
+        let reaction = hook.on_phase(&ctx, conversation, store).await;
+        // Apply the reaction's state to the live store before the next hook, so a
+        // once-per-run hook that gates on its own run-scoped key sees its own
+        // earlier write and replays instead of recomputing (ADR-0055) — the same
+        // apply-then-stage discipline the tool-outcome path uses.
+        for command in &reaction.state {
+            store.apply(command);
+        }
         staged_state.extend(reaction.state);
         context.extend(reaction.messages);
     }

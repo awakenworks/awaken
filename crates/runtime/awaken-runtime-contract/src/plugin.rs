@@ -160,10 +160,18 @@ impl HookReaction {
 /// stages state commands and, at `BeforeInference`, request-only context (e.g.
 /// recalled memories). `conversation` is the transcript at this point, so a
 /// `BeforeInference` hook can select context relevant to the user's message.
+/// `state` is the run's read-only materialized state, so a hook whose work is
+/// once-per-run (recall, compaction) gates on its own run-scoped state key and
+/// replays across steps and resume instead of caching by `run_id` (ADR-0055).
 #[async_trait]
 pub trait PhaseHook: Send + Sync {
     fn point(&self) -> PhaseHookPoint;
-    async fn on_phase(&self, ctx: &PhaseContext, conversation: &[Message]) -> HookReaction;
+    async fn on_phase(
+        &self,
+        ctx: &PhaseContext,
+        conversation: &[Message],
+        state: &Store,
+    ) -> HookReaction;
 }
 
 /// What a run-end guard sees when the model/tool loop reaches a natural end (a
@@ -659,7 +667,12 @@ mod tests {
         fn point(&self) -> PhaseHookPoint {
             self.0
         }
-        async fn on_phase(&self, _ctx: &PhaseContext, _conversation: &[Message]) -> HookReaction {
+        async fn on_phase(
+            &self,
+            _ctx: &PhaseContext,
+            _conversation: &[Message],
+            _state: &Store,
+        ) -> HookReaction {
             HookReaction::default()
         }
     }
