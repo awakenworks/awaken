@@ -8,9 +8,15 @@
 //! redeclares an identical copy. It names no wire type and constructs no runtime.
 
 mod convert;
+mod page;
 mod port;
 mod stream;
 
 pub use convert::blocks_text;
+pub use page::paginate_history;
+// Re-export the kernel pagination surface so adapters have one import site.
+pub use awaken_agent_contract::page::{
+    CursorParams, DEFAULT_PAGE_LIMIT, HistoryPage, MAX_PAGE_LIMIT, UnknownCursor, paginate_by_id,
+};
 pub use port::{DriverError, Pending, ProtocolRuntime, Resume, StepOutcome};
 pub use stream::ChannelStreamSink;

@@ -8,7 +8,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{FromRequest, Path, Request, State};
+use axum::extract::{FromRequest, Path, Query, Request, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
@@ -329,9 +329,13 @@ async fn archive_thread(
 async fn list_thread_events(
     State(state): State<Arc<ManagedState>>,
     Path((id, tid)): Path<(String, String)>,
+    Query(query): Query<EventsQuery>,
 ) -> Result<Json<ListEventsResponse>, WireErr> {
     state.get_thread(&id, &tid).map_err(error_response)?;
-    state.list_events(&id).map(Json).map_err(error_response)
+    state
+        .list_events(&id, query.cursor.as_deref(), query.limit)
+        .map(Json)
+        .map_err(error_response)
 }
 
 async fn stream_thread_events(
@@ -415,11 +419,27 @@ async fn send_events(
         .map_err(error_response)
 }
 
+/// Cursor-pagination query for the events list. This surface mirrors the Anthropic
+/// Managed Agents wire (`limit` + `data`/`has_more`), a deliberate bounded-context
+/// boundary distinct from the house `awaken-api-contract` cursor shape the AG-UI /
+/// AI SDK message endpoints use; only the pagination *engine* is shared.
+#[derive(Debug, Default, serde::Deserialize)]
+struct EventsQuery {
+    #[serde(default)]
+    cursor: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
 async fn list_events(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
+    Query(query): Query<EventsQuery>,
 ) -> Result<Json<ListEventsResponse>, (StatusCode, Json<ErrorResponse>)> {
-    state.list_events(&id).map(Json).map_err(error_response)
+    state
+        .list_events(&id, query.cursor.as_deref(), query.limit)
+        .map(Json)
+        .map_err(error_response)
 }
 
 async fn stream_events(

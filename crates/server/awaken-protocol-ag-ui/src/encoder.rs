@@ -3,8 +3,14 @@
 //! the `AgentEvent -> AgUiEvent` mapping. The encoder is per-stream: it holds the
 //! thread/run ids and mints tool-result message ids, so it is stateful `&mut self`.
 
-use awaken_agent_contract::project::{AgentEvent, Transcoder, project_messages, terminal_waiting};
+use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::message::{Message, Role};
+use awaken_agent_contract::project::{
+    AgentEvent, HistorySink, ToolUseRef, Transcoder, project_history, project_messages,
+    terminal_waiting,
+};
 use awaken_protocol_transport::{StepOutcome, blocks_text};
+use serde_json::{Value, json};
 
 use crate::types::AgUiEvent;
 
@@ -153,6 +159,84 @@ pub fn encode_close(outcome: &StepOutcome, thread_id: &str, run_id: &str) -> Vec
         run_id: run_id.to_string(),
     });
     out
+}
+
+/// Project committed thread history into the AG-UI message shape — the read-model
+/// counterpart to the streaming transcoder. AG-UI is client-forward (the client
+/// replays history in each `RunAgentInput`), so a client that lost its state
+/// rehydrates from this server-persisted list. Each message is
+/// `{ id, role, content, ... }`, matching the AG-UI SDK `Message` union: an
+/// assistant turn carries any `toolCalls` (OpenAI-style, `arguments` a JSON
+/// string); a tool result becomes its own `role:"tool"` message keyed by the
+/// `toolCallId` it answers. Empty messages (no text, no tool call) are dropped, as
+/// the streaming encoder drops them.
+pub fn encode_history(messages: &[Message]) -> Vec<Value> {
+    let mut sink = AgUiHistorySink::default();
+    project_history(messages, &mut sink);
+    sink.encoded
+}
+
+/// The AG-UI read-model strategy: a user/system/assistant message becomes
+/// `{ id, role, content, toolCalls? }`; a tool result becomes its own standalone
+/// `role:"tool"` message keyed by the `toolCallId` it answers.
+#[derive(Default)]
+struct AgUiHistorySink {
+    encoded: Vec<Value>,
+}
+
+impl HistorySink for AgUiHistorySink {
+    fn user_or_system(&mut self, id: &str, role: Role, content: &[ContentBlock]) {
+        let role = if role == Role::User { "user" } else { "system" };
+        self.encoded
+            .push(json!({ "id": id, "role": role, "content": blocks_text(content) }));
+    }
+
+    fn assistant(&mut self, id: &str, content: &[ContentBlock], tools: &[ToolUseRef<'_>]) {
+        let tool_calls: Vec<Value> = tools
+            .iter()
+            .map(|tool| {
+                json!({
+                    "id": tool.id,
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "arguments": serde_json::to_string(tool.input).unwrap_or_default(),
+                    },
+                })
+            })
+            .collect();
+        let mut msg = serde_json::Map::new();
+        msg.insert("id".into(), json!(id));
+        msg.insert("role".into(), json!("assistant"));
+        msg.insert("content".into(), json!(blocks_text(content)));
+        if !tool_calls.is_empty() {
+            msg.insert("toolCalls".into(), Value::Array(tool_calls));
+        }
+        self.encoded.push(Value::Object(msg));
+    }
+
+    fn tool_result(
+        &mut self,
+        message_id: &str,
+        sub: usize,
+        tool_use_id: &str,
+        content: &[ContentBlock],
+    ) {
+        // A neutral tool message may bundle several results; each becomes its own
+        // AG-UI ToolMessage. The first reuses the message id; extras suffix it so
+        // ids stay unique.
+        let id = if sub == 0 {
+            message_id.to_string()
+        } else {
+            format!("{message_id}-{sub}")
+        };
+        self.encoded.push(json!({
+            "id": id,
+            "role": "tool",
+            "content": blocks_text(content),
+            "toolCallId": tool_use_id,
+        }));
+    }
 }
 
 #[cfg(test)]
@@ -370,5 +454,112 @@ mod tests {
         assert!(matches!(events[0], AgUiEvent::ToolCallStart { .. }));
         assert!(matches!(events[1], AgUiEvent::ToolCallArgs { .. }));
         assert!(matches!(events[2], AgUiEvent::ToolCallEnd { .. }));
+    }
+
+    #[test]
+    fn history_projects_user_and_assistant_to_ag_ui_messages() {
+        let messages = vec![
+            Message::text(Id("u1".into()), Role::User, "hi there"),
+            Message::text(Id("a1".into()), Role::Assistant, "hello back"),
+        ];
+        let encoded = encode_history(&messages);
+        assert_eq!(
+            encoded,
+            vec![
+                json!({ "id": "u1", "role": "user", "content": "hi there" }),
+                json!({ "id": "a1", "role": "assistant", "content": "hello back" }),
+            ]
+        );
+    }
+
+    #[test]
+    fn history_projects_a_system_message() {
+        let messages = vec![Message::text(Id("s1".into()), Role::System, "be terse")];
+        let encoded = encode_history(&messages);
+        assert_eq!(
+            encoded,
+            vec![json!({ "id": "s1", "role": "system", "content": "be terse" })]
+        );
+    }
+
+    #[test]
+    fn history_projects_assistant_tool_calls_as_openai_function_calls() {
+        let messages = vec![Message {
+            id: Id("a1".into()),
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::text("calling"),
+                ContentBlock::ToolUse {
+                    id: "c1".into(),
+                    name: "read".into(),
+                    input: json!({ "path": "x" }),
+                },
+            ],
+        }];
+        let encoded = encode_history(&messages);
+        assert_eq!(
+            encoded,
+            vec![json!({
+                "id": "a1",
+                "role": "assistant",
+                "content": "calling",
+                "toolCalls": [{
+                    "id": "c1",
+                    "type": "function",
+                    "function": { "name": "read", "arguments": "{\"path\":\"x\"}" },
+                }],
+            })]
+        );
+    }
+
+    #[test]
+    fn history_projects_a_tool_result_as_a_keyed_tool_message() {
+        let messages = vec![Message {
+            id: Id("t1".into()),
+            role: Role::Tool,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "c1".into(),
+                content: vec![ContentBlock::text("42")],
+            }],
+        }];
+        let encoded = encode_history(&messages);
+        assert_eq!(
+            encoded,
+            vec![json!({ "id": "t1", "role": "tool", "content": "42", "toolCallId": "c1" })]
+        );
+    }
+
+    #[test]
+    fn history_expands_bundled_tool_results_with_distinct_ids() {
+        let messages = vec![Message {
+            id: Id("t1".into()),
+            role: Role::Tool,
+            content: vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "c1".into(),
+                    content: vec![ContentBlock::text("a")],
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: "c2".into(),
+                    content: vec![ContentBlock::text("b")],
+                },
+            ],
+        }];
+        let encoded = encode_history(&messages);
+        let ids: Vec<&str> = encoded.iter().map(|m| m["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["t1", "t1-1"]);
+    }
+
+    #[test]
+    fn history_drops_an_empty_message() {
+        let messages = vec![
+            Message::text(Id("u1".into()), Role::User, ""),
+            Message {
+                id: Id("a1".into()),
+                role: Role::Assistant,
+                content: vec![],
+            },
+        ];
+        assert!(encode_history(&messages).is_empty());
     }
 }
