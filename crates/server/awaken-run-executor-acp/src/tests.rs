@@ -266,6 +266,108 @@ async fn live_inbox_steer_folds_into_a_relaunched_turn() {
 }
 
 #[tokio::test]
+async fn a_requested_pause_parks_the_run_on_a_waiting_ticket() {
+    // ADR-0054 P5/U2: an operator pause requested by the next boundary parks the ACP
+    // run durably — `Phase::Waiting` on a no-tool `ManualPause` ticket — rather than
+    // ending, even though the turn reached a natural end. The turn's messages commit
+    // before the park (clean commit-then-park), mirroring the native engine.
+    use awaken_agent_contract::agent::waiting::WaitingReason;
+    use awaken_runtime_contract::pause::PauseSignal;
+
+    let e = exec(vec![
+        r#"{"type":"message","text":"turn"}"#.into(),
+        r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
+    ]);
+    let pause = PauseSignal::new();
+    pause.request();
+    let coord = Arc::new(RecordingCoordinator::default());
+    let phase = e
+        .execute(
+            activation(),
+            RuntimeRunContext::new()
+                .with_commit(coord.clone())
+                .with_pause(pause),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(phase, Phase::Waiting, "a requested pause parks, not ends");
+    let commits = coord.commits.lock().unwrap();
+    assert_eq!(commits.len(), 1, "one commit at the park boundary");
+    // The in-flight turn commits before the park.
+    assert!(
+        commits[0]
+            .messages
+            .iter()
+            .any(|m| m.text_content() == "turn"),
+        "the turn's assistant text commits before parking"
+    );
+    // A resumable no-tool `ManualPause` ticket rode the same commit.
+    let ticket = commits[0]
+        .waiting
+        .as_ref()
+        .expect("a parked run commits its waiting ticket");
+    assert_eq!(ticket.reason, WaitingReason::ManualPause);
+    assert_eq!(ticket.run_id, RunId("run-1".into()));
+    assert_eq!(ticket.thread_id, ThreadId("thread-1".into()));
+    assert!(
+        ticket.call_id.is_none() && ticket.pending_tool.is_none(),
+        "an operator pause parks on no tool"
+    );
+}
+
+#[tokio::test]
+async fn a_pause_commits_in_flight_steer_before_parking() {
+    // Pause preempts queued input, but the in-flight steer is not lost: it rides out
+    // with the park (fold) and commits before the run parks (boundary priority is
+    // pause > queued-input > idle).
+    use awaken_agent_contract::agent::waiting::WaitingReason;
+    use awaken_runtime_contract::live_inbox::{LiveInbox, MessageOrigin};
+    use awaken_runtime_contract::pause::PauseSignal;
+
+    let e = exec(vec![
+        r#"{"type":"message","text":"turn"}"#.into(),
+        r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
+    ]);
+    let inbox = LiveInbox::new();
+    let _ = inbox.offer_as(
+        MessageOrigin::External,
+        Message::text(MessageId("client-id".into()), Role::User, "late steer"),
+    );
+    let pause = PauseSignal::new();
+    pause.request();
+    let coord = Arc::new(RecordingCoordinator::default());
+    let phase = e
+        .execute(
+            activation(),
+            RuntimeRunContext::new()
+                .with_commit(coord.clone())
+                .with_live_inbox(inbox.clone())
+                .with_pause(pause),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(phase, Phase::Waiting, "pause preempts the queued input");
+    let commits = coord.commits.lock().unwrap();
+    assert_eq!(commits.len(), 1);
+    let steer = commits[0]
+        .messages
+        .iter()
+        .find(|m| m.id.0 == "run-1-inbox-0")
+        .expect("in-flight steer rides out with the park and commits");
+    assert_eq!(steer.text_content(), "late steer");
+    assert_eq!(
+        commits[0].waiting.as_ref().map(|t| &t.reason),
+        Some(&WaitingReason::ManualPause)
+    );
+    assert!(
+        inbox.list().is_empty(),
+        "the inbox was drained at the boundary"
+    );
+}
+
+#[tokio::test]
 async fn a_tool_call_and_its_result_commit_as_neutral_messages() {
     use awaken_agent_contract::agent::content::ContentBlock;
 

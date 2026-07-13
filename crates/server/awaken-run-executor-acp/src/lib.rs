@@ -22,6 +22,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::run::{EndCause, Failure, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::agent::waiting::{WaitingReason, WaitingTicket};
 use awaken_protocol_acp::{
     AcpError, AcpFailure, AgentEvent, AppendError, Injection, LaunchSink, RawAcpError,
     RunFactAppender, Stage, SupervisePolicy, Supervisor, TerminationReason, classify_error,
@@ -263,8 +264,15 @@ impl RunExecutor for AcpRunExecutor {
                         failure.prompt(),
                     ));
                     let phase = Phase::Ended(failure_cause(&failure));
-                    commit(&context, &activation.thread_id, run_id.clone(), committed, &phase)
-                        .await?;
+                    commit(
+                        &context,
+                        &activation.thread_id,
+                        run_id.clone(),
+                        committed,
+                        &phase,
+                        None,
+                    )
+                    .await?;
                     return Ok(phase);
                 }
             };
@@ -289,18 +297,44 @@ impl RunExecutor for AcpRunExecutor {
                                 run_id.clone(),
                                 committed,
                                 &phase,
+                                None,
                             )
                             .await?;
                             return Ok(phase);
                         }
                     };
                 }
-                // Idle: natural end. `Park` cannot occur until an ACP pause signal is
-                // wired (a U2 follow-up); ACP durable parking is out of P4's scope.
-                BoundaryOutcome::Idle | BoundaryOutcome::Park { .. } => {
+                // Operator pause (ADR-0054 P5/U2): commit any in-flight steer that
+                // rode out with the park, then park durably on a no-tool waiting
+                // ticket — the same clean commit-then-park the native engine does,
+                // resumed by an explicit operator resume, not a tool result.
+                BoundaryOutcome::Park { fold, reason } => {
+                    committed.extend(fold);
+                    let phase = Phase::Waiting;
+                    let ticket = pause_ticket(&activation, &run_id, reason);
+                    commit(
+                        &context,
+                        &activation.thread_id,
+                        run_id.clone(),
+                        committed,
+                        &phase,
+                        Some(ticket),
+                    )
+                    .await?;
+                    return Ok(phase);
+                }
+                // Idle: no queued input, no pause — the turn's own reason is terminal.
+                BoundaryOutcome::Idle => {
                     let phase = Phase::Ended(end_cause(reason));
-                    commit(&context, &activation.thread_id, run_id.clone(), committed, &phase)
-                        .await?;
+                    commit(
+                        &context,
+                        &activation.thread_id,
+                        run_id.clone(),
+                        committed,
+                        &phase,
+                        None,
+                    )
+                    .await?;
                     return Ok(phase);
                 }
             }
@@ -334,18 +368,22 @@ async fn finish_failure(
         activation.run_id.clone(),
         messages,
         &phase,
+        None,
     )
     .await?;
     Ok(phase)
 }
 
-/// Commit the turn's messages + terminal phase through the one boundary (G13).
+/// Commit the turn's messages + terminal phase through the one boundary (G13). A
+/// `Phase::Waiting` park carries its resumable [`WaitingTicket`]; a terminus passes
+/// `None`.
 async fn commit(
     context: &RuntimeRunContext,
     thread_id: &ThreadId,
     run_id: RunId,
     messages: Vec<Message>,
     phase: &Phase,
+    waiting: Option<WaitingTicket>,
 ) -> Result<()> {
     if let Some(coordinator) = &context.commit {
         awaken_agent_contract::commit::commit_run(
@@ -354,11 +392,39 @@ async fn commit(
             &run_id,
             messages,
             phase.clone(),
+            waiting,
         )
         .await
         .map_err(|e| Error::Commit(e.to_string()))?;
     }
     Ok(())
+}
+
+/// A no-tool waiting ticket for an operator pause (ADR-0054): the ACP run parks
+/// with no pending tool and no call id, correlated by run id, resumed by an
+/// explicit operator resume rather than a tool result. Mirrors the native
+/// engine's `pause_ticket` so a paused ACP run is resumable identically.
+fn pause_ticket(
+    activation: &RunActivation,
+    run_id: &RunId,
+    reason: WaitingReason,
+) -> WaitingTicket {
+    WaitingTicket {
+        correlation_id: run_id.0.clone(),
+        run_id: run_id.clone(),
+        thread_id: activation.thread_id.clone(),
+        snapshot_id: activation.snapshot.id.0.clone(),
+        catalog_fingerprint: activation
+            .snapshot
+            .resolved_spec
+            .catalog_fingerprint
+            .0
+            .clone(),
+        reason,
+        call_id: None,
+        pending_tool: None,
+        deadline_ms: None,
+    }
 }
 
 /// A [`RunFactAppender`] that projects an ACP turn's facts into committable neutral

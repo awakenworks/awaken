@@ -10,20 +10,37 @@
 use crate::agent::message::Message;
 use crate::agent::run::{Id as RunId, Phase};
 use crate::agent::thread::Id as ThreadId;
+use crate::agent::waiting::WaitingTicket;
 use crate::commit::coordinator::{Coordinator, Error};
 use crate::commit::staged::{CommitRecord, ThreadCommit};
+use crate::event::draft::Draft;
+use crate::event::kind::Kind;
 use crate::fact::run::Fact as RunFact;
 
 /// Commit a run's terminal facts — its produced messages and final phase —
 /// through the single commit boundary (G1/G13). The one place a `Vec<Message>` +
 /// `Phase` becomes committed truth, shared by the native, ACP, and A2A executors.
+///
+/// A `Phase::Waiting` park carries its resumable `WaitingTicket` (a `Park` at the
+/// safe loop boundary, ADR-0054), so a paused ACP run persists the same durable
+/// waiting authority the native engine commits; a `RunWaiting` event rides the
+/// same commit. A terminus passes `None` and no waiting event is emitted.
 pub async fn commit_run(
     coordinator: &dyn Coordinator,
     thread_id: &ThreadId,
     run_id: &RunId,
     messages: Vec<Message>,
     phase: Phase,
+    waiting: Option<WaitingTicket>,
 ) -> Result<CommitRecord, Error> {
+    let events = if waiting.is_some() {
+        vec![Draft {
+            kind: Kind::RunWaiting,
+            payload: serde_json::json!({ "run_id": run_id.0 }),
+        }]
+    } else {
+        Vec::new()
+    };
     coordinator
         .commit(ThreadCommit {
             thread_id: thread_id.clone(),
@@ -33,9 +50,9 @@ pub async fn commit_run(
             },
             messages,
             state: Vec::new(),
-            events: Vec::new(),
+            events,
             outbox: Vec::new(),
-            waiting: None,
+            waiting,
         })
         .await
 }
