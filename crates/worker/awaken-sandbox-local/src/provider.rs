@@ -90,6 +90,26 @@ pub(crate) fn verify(source: &pc::MountSource, bytes: &[u8]) -> Result<(), pc::S
     Ok(())
 }
 
+/// Tighten a materialized secret file to owner-only (`0600`) so other host users
+/// cannot read the credential bytes in the window before dispose shreds them.
+///
+/// This is the *local* provider's ceiling: it realizes onto the host filesystem,
+/// so it can restrict permissions but cannot keep the bytes off swap. True
+/// anti-swap isolation (a `tmpfs` with `noswap`) is the namespace/container
+/// provider's job — see [`SandboxCapabilities`](pc::SandboxCapabilities). The
+/// secret still never enters our process as a value: it is resolved by reference
+/// through the injected [`BlobSource`](pc::BlobSource) straight to disk.
+#[cfg(unix)]
+pub(crate) fn restrict_to_owner(path: &std::path::Path) -> Result<(), pc::SandboxError> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(err)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn restrict_to_owner(_path: &std::path::Path) -> Result<(), pc::SandboxError> {
+    Ok(())
+}
+
 /// Realizes [`LocalSandbox`] environments as directories under a base path.
 pub struct LocalProvider {
     base: PathBuf,
@@ -231,6 +251,11 @@ impl LocalProvider {
                     std::fs::create_dir_all(parent).map_err(err)?;
                 }
                 std::fs::write(&host, &bytes).map_err(err)?;
+                // A realized secret is owner-only on disk (0600); the bytes are
+                // still shredded on dispose (see `secret_paths`/`shred_secrets`).
+                if matches!(req.source, pc::MountSource::Secret { .. }) {
+                    restrict_to_owner(&host)?;
+                }
                 pc::RealizedMount {
                     mount_id: req.mount_id.clone(),
                     mount_path: req.mount_path.clone(),
@@ -613,6 +638,23 @@ mod shred_tests {
         // A non-secret mount is NOT tracked (only credentials are shredded).
         sandbox.dispose().await.unwrap();
         assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_materialized_secret_is_owner_only_on_disk() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let provider =
+            LocalProvider::new(tmp.path()).with_blob("broker://k", b"sk-secret".to_vec());
+        let sandbox = provider
+            .create_sandbox(&secret_spec("t-perms"))
+            .await
+            .unwrap();
+
+        let path = sandbox.secret_paths[0].clone();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "a realized secret must be owner-only, got {mode:o}");
     }
 
     #[tokio::test]

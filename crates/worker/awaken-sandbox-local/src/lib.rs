@@ -701,15 +701,34 @@ impl std::fmt::Debug for Environment {
 #[error("sandbox provisioning failed: {0}")]
 pub struct SandboxError(pub String);
 
-/// The provisioning port. The local impl is here; a remote/container impl lives
-/// in a distributed repository and plugs in through this trait.
+/// Legacy **host-altitude** provisioning port: it returns the rich [`Environment`]
+/// (hand tools, skill scanning, repo provisioning), not a bare substrate sandbox.
+///
+/// The single canonical **substrate** provider contract is
+/// [`awaken_provisioning_contract::sandbox::SandboxProvider`] — implemented by
+/// [`LocalProvider`] and [`NamespaceProvider`] in this crate, returning
+/// `dyn `[`awaken_provisioning_contract::sandbox::Sandbox`]. New providers
+/// (remote / container / cloud) must implement **that** trait.
+///
+/// These two are not redundant implementations of one shape; they sit at
+/// different altitudes. `Environment`/[`LocalSandboxProvider`] is slated to be
+/// rebased onto `pc::Sandbox` as a host adapter rather than a rival provider, at
+/// which point this trait is removed. Do not build new code against it.
+#[deprecated(
+    since = "1.0.0-dev",
+    note = "legacy host-altitude port; the canonical substrate provider is \
+            awaken_provisioning_contract::sandbox::SandboxProvider (LocalProvider/NamespaceProvider). \
+            Environment/LocalSandboxProvider will be rebased onto pc::Sandbox as a host adapter."
+)]
 #[async_trait]
 pub trait SandboxProvider: Send + Sync {
     async fn create(&self, spec: &SandboxSpec) -> Result<Environment, SandboxError>;
     async fn teardown(&self, id: &str) -> Result<(), SandboxError>;
 }
 
-/// Provisions environments as directories under a base path.
+/// Provisions environments as directories under a base path. The host adapter
+/// over the local filesystem; see [`SandboxProvider`] for why it is legacy and
+/// what supersedes it at the substrate altitude.
 pub struct LocalSandboxProvider {
     base: PathBuf,
 }
@@ -720,6 +739,7 @@ impl LocalSandboxProvider {
     }
 }
 
+#[allow(deprecated)] // LocalSandboxProvider is the host adapter that still backs this legacy port.
 #[async_trait]
 impl SandboxProvider for LocalSandboxProvider {
     async fn create(&self, spec: &SandboxSpec) -> Result<Environment, SandboxError> {
@@ -1158,6 +1178,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(deprecated)] // legacy LocalSandboxProvider adapter, pending the pc::Sandbox rebase.
     async fn local_provider_create_yields_tools_and_teardown_is_idempotent() {
         let base = std::env::temp_dir().join(format!("awaken-sbx-unit-{}", std::process::id()));
         let provider = LocalSandboxProvider::new(&base);

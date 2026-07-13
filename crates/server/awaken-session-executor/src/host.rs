@@ -42,6 +42,9 @@ use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::tool::{ToolExecutor, ToolExecutorProvider, ToolOutput};
+// Legacy host-altitude provider (deprecated); the host still runs on it pending
+// the rebase onto pc::Sandbox. See awaken_sandbox_local::SandboxProvider.
+#[allow(deprecated)]
 use awaken_sandbox_local::{Environment, LocalSandboxProvider, SandboxProvider};
 use awaken_store_fs::{FsCommitCoordinator, FsStreamCheckpointStore};
 use awaken_store_sqlite::SqliteCommitCoordinator;
@@ -1116,6 +1119,7 @@ impl SharedHost {
         if let Some(ctx) = sessions.get(thread) {
             return Ok(ctx.clone());
         }
+        #[allow(deprecated)] // legacy SandboxProvider::create; rebased onto pc::Sandbox later.
         let env = Arc::new(
             self.provider
                 .create(&self.sandbox_spec(thread))

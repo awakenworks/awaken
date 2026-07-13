@@ -7,6 +7,8 @@
 //! longer a sandbox mount (ADR-0036): they are fronted by the single `Skill` tool
 //! in `awaken-ext-skills`, not surfaced as per-skill environment tools.
 
+#![allow(deprecated)] // exercises the legacy LocalSandboxProvider adapter pending the pc::Sandbox rebase.
+
 use std::path::PathBuf;
 
 use awaken_runtime_contract::llm::ToolCall;

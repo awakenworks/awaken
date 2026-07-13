@@ -143,6 +143,7 @@ impl crate::host::SharedHost {
 
 #[cfg(test)]
 mod tests {
+    #![allow(deprecated)] // legacy SandboxProvider; host tests still drive it pending the pc::Sandbox rebase.
     use super::*;
     use crate::host::SharedHost;
 
