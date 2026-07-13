@@ -22,15 +22,6 @@ pub enum StoreError {
     Migrate(String),
 }
 
-fn open_migrated(conn: Connection) -> Result<Arc<Mutex<Connection>>, StoreError> {
-    let bundle = data_subject_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
-    awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
-        .map_err(|err| StoreError::Migrate(err.to_string()))?
-        .run_bundle(&conn, &bundle)
-        .map_err(|err| StoreError::Migrate(err.to_string()))?;
-    Ok(Arc::new(Mutex::new(conn)))
-}
-
 fn storage(err: impl std::fmt::Display) -> DataSubjectError {
     DataSubjectError::Storage(err.to_string())
 }
@@ -57,20 +48,46 @@ pub struct SqliteDataSubjectRepo {
 }
 
 impl SqliteDataSubjectRepo {
-    /// Open (or create) a database file and apply the data-subject migrations.
+    /// Open (or create) a database file and apply the data-subject migrations
+    /// (one-step convenience for a store-owned database).
     pub fn open(path: &str) -> Result<Self, StoreError> {
-        let conn = Connection::open(path).map_err(|err| StoreError::Open(err.to_string()))?;
-        Ok(Self {
-            conn: open_migrated(conn)?,
-        })
+        let store =
+            Self::over(Connection::open(path).map_err(|err| StoreError::Open(err.to_string()))?);
+        store.ensure_schema()?;
+        Ok(store)
     }
 
     /// Open a private in-memory database (tests / ephemeral).
     pub fn open_in_memory() -> Result<Self, StoreError> {
-        let conn = Connection::open_in_memory().map_err(|err| StoreError::Open(err.to_string()))?;
-        Ok(Self {
-            conn: open_migrated(conn)?,
-        })
+        let store = Self::over(
+            Connection::open_in_memory().map_err(|err| StoreError::Open(err.to_string()))?,
+        );
+        store.ensure_schema()?;
+        Ok(store)
+    }
+
+    /// Wrap an existing connection **without migrating**. Call [`Self::ensure_schema`],
+    /// or let a unified migration pipeline own the `data_subject` scope so this store
+    /// shares the caller's database.
+    pub fn over(conn: Connection) -> Self {
+        Self {
+            conn: Arc::new(Mutex::new(conn)),
+        }
+    }
+
+    /// Apply the `data_subject` scoped migration bundle (idempotent). Optional: skip
+    /// it when the schema is owned externally.
+    pub fn ensure_schema(&self) -> Result<(), StoreError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| StoreError::Migrate("data_subject connection poisoned".to_string()))?;
+        let bundle = data_subject_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
+        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+            .map_err(|err| StoreError::Migrate(err.to_string()))?
+            .run_bundle(&conn, &bundle)
+            .map_err(|err| StoreError::Migrate(err.to_string()))?;
+        Ok(())
     }
 }
 
@@ -139,5 +156,32 @@ impl DataSubjectRepo for SqliteDataSubjectRepo {
             Ok(())
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The injection seam: a caller supplies its own connection, `over` wraps it
+    /// WITHOUT migrating, and `ensure_schema` applies the `data_subject` scope — so a
+    /// unified migration pipeline can own the schema and this store shares the
+    /// caller's database (mirrors the resource-family stores' `over`/`ensure_schema`).
+    #[tokio::test]
+    async fn over_then_ensure_schema_round_trips_on_a_caller_owned_connection() {
+        let conn = Connection::open_in_memory().unwrap();
+        let repo = SqliteDataSubjectRepo::over(conn);
+        repo.ensure_schema().unwrap();
+        repo.put(DataSubject::new(
+            DataSubjectId("dsub_a".into()),
+            "org_1",
+            100,
+        ))
+        .await
+        .unwrap();
+        assert_eq!(
+            repo.get(&DataSubjectId("dsub_a".into())).await.unwrap().org,
+            "org_1"
+        );
     }
 }

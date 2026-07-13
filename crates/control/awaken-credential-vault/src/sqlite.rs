@@ -34,13 +34,16 @@ pub enum StoreError {
     Migrate(String),
 }
 
-fn open_migrated(conn: Connection) -> Result<Arc<Mutex<Connection>>, StoreError> {
+/// Apply the shared `credential` scoped bundle to a connection. Both stores key the
+/// same scope, so this is the migration half they share; the wrap-without-migrate
+/// half is each store's `over`.
+fn run_migrations(conn: &Connection) -> Result<(), StoreError> {
     let bundle = credential_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
     awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
         .map_err(|err| StoreError::Migrate(err.to_string()))?
-        .run_bundle(&conn, &bundle)
+        .run_bundle(conn, &bundle)
         .map_err(|err| StoreError::Migrate(err.to_string()))?;
-    Ok(Arc::new(Mutex::new(conn)))
+    Ok(())
 }
 
 fn storage(err: impl std::fmt::Display) -> CredentialError {
@@ -99,20 +102,41 @@ pub struct SqliteCredentialRepo {
 }
 
 impl SqliteCredentialRepo {
-    /// Open (or create) a database file and apply the credential migrations.
+    /// Open (or create) a database file and apply the credential migrations
+    /// (one-step convenience for a store-owned database).
     pub fn open(path: &str) -> Result<Self, StoreError> {
-        let conn = Connection::open(path).map_err(|err| StoreError::Open(err.to_string()))?;
-        Ok(Self {
-            conn: open_migrated(conn)?,
-        })
+        let store =
+            Self::over(Connection::open(path).map_err(|err| StoreError::Open(err.to_string()))?);
+        store.ensure_schema()?;
+        Ok(store)
     }
 
     /// Open a private in-memory database (tests / ephemeral).
     pub fn open_in_memory() -> Result<Self, StoreError> {
-        let conn = Connection::open_in_memory().map_err(|err| StoreError::Open(err.to_string()))?;
-        Ok(Self {
-            conn: open_migrated(conn)?,
-        })
+        let store = Self::over(
+            Connection::open_in_memory().map_err(|err| StoreError::Open(err.to_string()))?,
+        );
+        store.ensure_schema()?;
+        Ok(store)
+    }
+
+    /// Wrap an existing connection **without migrating**. Call [`Self::ensure_schema`],
+    /// or let a unified migration pipeline own the `credential` scope so this store
+    /// shares the caller's database.
+    pub fn over(conn: Connection) -> Self {
+        Self {
+            conn: Arc::new(Mutex::new(conn)),
+        }
+    }
+
+    /// Apply the `credential` scoped migration bundle (idempotent). Optional: skip it
+    /// when the schema is owned externally.
+    pub fn ensure_schema(&self) -> Result<(), StoreError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| StoreError::Migrate("credential connection poisoned".to_string()))?;
+        run_migrations(&conn)
     }
 }
 
@@ -215,20 +239,41 @@ pub struct SqliteSealedBlobStore {
 }
 
 impl SqliteSealedBlobStore {
-    /// Open (or create) a database file and apply the credential migrations.
+    /// Open (or create) a database file and apply the credential migrations
+    /// (one-step convenience for a store-owned database).
     pub fn open(path: &str) -> Result<Self, StoreError> {
-        let conn = Connection::open(path).map_err(|err| StoreError::Open(err.to_string()))?;
-        Ok(Self {
-            conn: open_migrated(conn)?,
-        })
+        let store =
+            Self::over(Connection::open(path).map_err(|err| StoreError::Open(err.to_string()))?);
+        store.ensure_schema()?;
+        Ok(store)
     }
 
     /// Open a private in-memory database (tests / ephemeral).
     pub fn open_in_memory() -> Result<Self, StoreError> {
-        let conn = Connection::open_in_memory().map_err(|err| StoreError::Open(err.to_string()))?;
-        Ok(Self {
-            conn: open_migrated(conn)?,
-        })
+        let store = Self::over(
+            Connection::open_in_memory().map_err(|err| StoreError::Open(err.to_string()))?,
+        );
+        store.ensure_schema()?;
+        Ok(store)
+    }
+
+    /// Wrap an existing connection **without migrating**. Call [`Self::ensure_schema`],
+    /// or let a unified migration pipeline own the `credential` scope so this store
+    /// shares the caller's database.
+    pub fn over(conn: Connection) -> Self {
+        Self {
+            conn: Arc::new(Mutex::new(conn)),
+        }
+    }
+
+    /// Apply the `credential` scoped migration bundle (idempotent). Optional: skip it
+    /// when the schema is owned externally.
+    pub fn ensure_schema(&self) -> Result<(), StoreError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| StoreError::Migrate("credential connection poisoned".to_string()))?;
+        run_migrations(&conn)
     }
 }
 
@@ -264,5 +309,42 @@ impl SealedBlobStore for SqliteSealedBlobStore {
             blob.ok_or(CredentialError::SecretNotFound(key))
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{CredentialKind, CredentialStatus};
+
+    /// Both stores' injection seam: a caller-owned connection, `over` wraps it WITHOUT
+    /// migrating, `ensure_schema` applies the shared `credential` scope — so a unified
+    /// migration pipeline can own the schema and these stores share the caller's
+    /// database (mirrors the resource-family stores). Round-trips the repo and the
+    /// sealed blob store, which key the same scope.
+    #[tokio::test]
+    async fn over_then_ensure_schema_round_trips_on_a_caller_owned_connection() {
+        let repo = SqliteCredentialRepo::over(Connection::open_in_memory().unwrap());
+        repo.ensure_schema().unwrap();
+        repo.put(CredentialSource {
+            id: CredentialSourceId("cred:a".into()),
+            workspace_id: "ws".into(),
+            kind: CredentialKind::Vault,
+            provider_id: Some("anthropic".into()),
+            env_key: Some("ANTHROPIC_API_KEY".into()),
+            material_ref: None,
+            oauth_command: None,
+            status: CredentialStatus::Active,
+            version: 1,
+        })
+        .await
+        .unwrap();
+        assert_eq!(repo.list("ws").await.unwrap().len(), 1);
+
+        let blobs = SqliteSealedBlobStore::over(Connection::open_in_memory().unwrap());
+        blobs.ensure_schema().unwrap();
+        let r = SecretRef("sec:a".into());
+        blobs.put_blob(&r, b"sealed".to_vec()).await.unwrap();
+        assert_eq!(blobs.get_blob(&r).await.unwrap(), b"sealed");
     }
 }
