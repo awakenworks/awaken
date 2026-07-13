@@ -119,9 +119,10 @@ async fn db_less_worker_drives_runs_over_real_http() {
         "a settled run is gone"
     );
 
-    // A server-local operational verb is refused on the worker transport.
+    // A server-local write verb is refused on the worker transport (cancel is the
+    // server's to make — a worker never cancels a peer's run).
     assert!(
-        queue.reap(0, 3_000).await.is_err(),
-        "reap is not available on the worker dispatch transport"
+        queue.cancel(&RunId("no-such-run".into())).await.is_err(),
+        "cancel is not available on the worker dispatch transport"
     );
 }
