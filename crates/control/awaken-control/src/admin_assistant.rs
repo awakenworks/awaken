@@ -113,12 +113,36 @@ mod tests {
     use super::*;
     use awaken_config_store::{DEFAULT_SCOPE, ModelSelection, SqliteConfigStore};
     use awaken_model_catalog::{ApiDialect, Offering, ProtocolEndpointId, Provider, ProviderId};
-    use awaken_runtime_host::{ConfigPlane, ConfigService, ScopedToolCatalog, StaticToolCatalog};
+    use awaken_runtime_contract::resolved::ModelBinding;
+    use awaken_runtime_host::{
+        ConfigPlane, ConfigService, ModelResolver, ResolvedModel, ScopedToolCatalog,
+        StaticToolCatalog,
+    };
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
     fn tool(id: &str) -> ToolDescriptor {
         ToolDescriptor::pinned("t", id, "d", serde_json::json!({"type": "object"}))
+    }
+
+    /// A minimal `ModelResolver` for the test: resolves `Auto` to the catalog's
+    /// first offering (the data-plane's `CatalogModelResolver` lives in the server
+    /// crate; this crate needs only a stub to publish the seeded assistant).
+    struct FirstOfferingResolver(ProviderCatalog);
+
+    impl ModelResolver for FirstOfferingResolver {
+        fn resolve_auto(&self) -> Result<ResolvedModel, String> {
+            let mut offerings = self.0.offerings.iter();
+            let primary = offerings
+                .next()
+                .ok_or_else(|| "no provider-backed model in the catalog".to_string())?;
+            Ok(ResolvedModel {
+                primary: ModelBinding::new("default", primary.model_id.clone(), "default"),
+                candidates: offerings
+                    .map(|o| ModelBinding::new("default", o.model_id.clone(), "default"))
+                    .collect(),
+            })
+        }
     }
 
     fn catalog(model: &str) -> ProviderCatalog {
@@ -155,7 +179,7 @@ mod tests {
             awaken_admin_assistant::admin_tool_descriptors(),
         ));
         let service = Arc::new(ConfigService::new().with_model_resolver(Arc::new(
-            crate::model_resolver::CatalogModelResolver::new(catalog("m-1")),
+            FirstOfferingResolver(catalog("m-1")),
         )));
         let plane = ConfigPlane::new(service.clone(), store, tools);
 

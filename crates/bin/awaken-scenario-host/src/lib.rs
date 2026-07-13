@@ -19,12 +19,6 @@ use awaken_runtime_contract::llm::{
 };
 use axum::Router;
 
-// Embedded management-plane IAM (ADR-0042/0043 P1): the authorizer, its boot
-// fn, the mint spec (tests / operator embeddings), and the bootstrap constants.
-pub use awaken_server::{
-    ADMIN_TOKEN_FILE, BOOTSTRAP_PRINCIPAL, BOOTSTRAP_WORKSPACE, ManagementAuthz, TokenSpec,
-    embedded_iam,
-};
 // The managed-agents service layer (`awaken-runtime-host`): the neutral host,
 // the two port adapters, the per-plane routers, and the authoring/transport
 // re-exports a composition root (and the integration tests) drive directly.
@@ -1134,18 +1128,18 @@ pub async fn build_config_router() -> Router {
     // Seed the management assistant as an ordinary published agent in the reserved
     // scope (ADR-0052 D1/D2): it becomes a compiled RunnableConfig via the same path
     // as any agent, projectable on `/v1/agents`.
-    awaken_server::admin_assistant::seed_admin_assistant(&plane)
+    awaken_control::seed_admin_assistant(&plane)
         .await
         .expect("seed admin assistant");
     // The management tool executables, backed by real ports (D3/D4): the capability
     // reader reads the shared catalog + advertised tools; the validator runs the same
     // compile check as `/v1/config/agents/validate` on drafts (in the tenant scope).
-    let reader = Arc::new(awaken_server::admin_assistant::CatalogCapabilityReader::new(
+    let reader = Arc::new(awaken_control::CatalogCapabilityReader::new(
         &catalog,
         &global,
         &[],
     ));
-    let validator = Arc::new(awaken_server::admin_assistant::ConfigServiceDraftValidator::new(
+    let validator = Arc::new(awaken_control::ConfigServiceDraftValidator::new(
         plane.clone(),
         awaken_config_store::DEFAULT_SCOPE,
     ));

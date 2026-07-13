@@ -1,19 +1,19 @@
-//! Tenant ownership for the id-addressed management config resources (ADR-0051):
-//! MCP server defs (`/v1/config/mcp-servers/{id}`), inference profiles
-//! (`/v1/config/inference-profiles/{id}`), and webhook subscriptions
-//! (`/v1/config/webhook-subscriptions/{id}`, ADR-0048).
+//! Tenant ownership for the id-addressed memory stores (ADR-0053 / ADR-0051).
 //!
-//! These live behind the cross-crate `awaken-config-resolver` stores (keyed by id
-//! only), and the config-layer admin crate cannot see the agents-layer edge scope.
-//! So ownership is enforced here, at the assembly layer, by a small middleware that
-//! wraps the admin router: it records the authoring scope of each id on a
-//! successful `PUT`, and answers a cross-tenant `GET`/`PUT` with **404** (never
-//! 403 — no existence disclosure). The scope is the edge-stamped [`WorkspaceScope`]
-//! (from workspace path addressing or an API key), defaulting to the seeded scope
-//! for a single-tenant deployment, so such a deployment never fences itself.
+//! Memory stores (`/v1/memory_stores/{id}`, and the `/memories`, `/memory_versions`
+//! subresources) are id-addressed and minted *server-side* (the id is in the create
+//! RESPONSE, not the request path). So this guard records the owning scope by reading
+//! the id out of a successful `POST /v1/memory_stores` body, fences any later
+//! cross-tenant access to that store (or its memories/versions) with **404**, and
+//! filters the store *list* to the caller's own scope so ids do not leak across
+//! tenants. A single-tenant deployment resolves every request to [`DEFAULT_SCOPE`], so
+//! it never fences itself. A store created before the guard saw it (unrecorded) stays
+//! reachable by direct id — first-touch does not steal ownership — but an unrecorded
+//! store belongs to no scope, so it never appears in a scoped list.
 //!
-//! The model catalog (providers/endpoints/offerings) is intentionally NOT covered:
-//! it is org/deployment-level shared configuration, not a per-workspace resource.
+//! This is the data-plane sibling of the config-resource ownership guard, which lives
+//! in the authoring plane (`awaken-control`); the two guards are independent (each
+//! owns its own [`ResourceOwners`] instance).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -30,9 +30,8 @@ use axum::response::{IntoResponse, Response};
 /// in step with the managed session default so a bare deployment is self-consistent.
 const DEFAULT_SCOPE: &str = "default";
 
-/// The id→owner-scope index for the covered config resources, shared across
-/// requests. Cloneable (an `Arc`), so it is both middleware state and, in tests,
-/// inspectable.
+/// The id→owner-scope index for memory stores, shared across requests. Cloneable
+/// (an `Arc`), so it is both middleware state and, in tests, inspectable.
 #[derive(Clone, Default)]
 pub struct ResourceOwners(Arc<Mutex<HashMap<String, String>>>);
 
@@ -58,61 +57,6 @@ impl ResourceOwners {
     }
 }
 
-/// The middleware: fence a cross-tenant request to an owned config resource, and
-/// record ownership on a successful author (`PUT`).
-pub async fn resource_ownership_guard(
-    State(owners): State<ResourceOwners>,
-    request: Request,
-    next: Next,
-) -> Response {
-    let Some(key) = owned_resource_key(request.uri().path()) else {
-        return next.run(request).await;
-    };
-    let scope = request
-        .extensions()
-        .get::<WorkspaceScope>()
-        .map(|w| w.0.clone())
-        .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
-    // Fence: a known owner other than this scope → 404, before the handler runs.
-    if let Some(owner) = owners.owner(&key)
-        && owner != scope
-    {
-        return not_found();
-    }
-    let method = request.method().clone();
-    let response = next.run(request).await;
-    // Record ownership on a first successful author, so a later cross-tenant
-    // access is fenced. (A same-scope re-author just re-records the same owner.)
-    if method == Method::PUT && response.status().is_success() {
-        owners.record(key, scope);
-    }
-    response
-}
-
-/// The ownership key (`"mcp:{id}"` / `"profile:{id}"`) for a covered config
-/// resource path, or `None` for any other path (list routes, the resolve
-/// sub-actions, the shared catalog, and everything else pass through unfenced).
-fn owned_resource_key(path: &str) -> Option<String> {
-    let mut segments = path.trim_start_matches('/').split('/');
-    if segments.next()? != "v1" || segments.next()? != "config" {
-        return None;
-    }
-    let kind = match segments.next()? {
-        "mcp-servers" => "mcp",
-        "inference-profiles" => "profile",
-        "webhook-subscriptions" => "webhook",
-        _ => return None,
-    };
-    let id = segments.next().filter(|s| !s.is_empty())?;
-    // Only the bare `/{id}` resource is owned; sub-actions (e.g. `/resolve`) pass
-    // through — they are reads gated by the same middleware on the parent id in
-    // practice, and never author ownership.
-    if segments.next().is_some() {
-        return None;
-    }
-    Some(format!("{kind}:{id}"))
-}
-
 fn not_found() -> Response {
     (
         StatusCode::NOT_FOUND,
@@ -123,20 +67,6 @@ fn not_found() -> Response {
     )
         .into_response()
 }
-
-// ── Memory stores (ADR-0053 / ADR-0051) ───────────────────────────────────────
-//
-// Memory stores (`/v1/memory_stores/{id}`, and the `/memories`, `/memory_versions`
-// subresources) are id-addressed and, unlike the config resources above, minted
-// *server-side* (the id is in the create RESPONSE, not the request path). So this
-// sibling guard records the owning scope by reading the id out of a successful
-// `POST /v1/memory_stores` body, fences any later cross-tenant access to that store
-// (or its memories/versions) with **404**, and filters the store *list* to the caller's
-// own scope so ids do not leak across tenants. A single-tenant deployment resolves
-// every request to [`DEFAULT_SCOPE`], so it never fences itself. A store created
-// before the guard saw it (unrecorded) stays reachable by direct id — first-touch does
-// not steal ownership — but an unrecorded store belongs to no scope, so it never
-// appears in a scoped list.
 
 /// Fence cross-tenant access to a memory store, record ownership of a freshly created
 /// one (from the minted id in the create response body), and scope the store list.
@@ -251,27 +181,6 @@ fn is_memory_stores_collection(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn keys_only_the_owned_id_resources() {
-        assert_eq!(
-            owned_resource_key("/v1/config/mcp-servers/calc"),
-            Some("mcp:calc".to_string())
-        );
-        assert_eq!(
-            owned_resource_key("/v1/config/inference-profiles/p1"),
-            Some("profile:p1".to_string())
-        );
-        // List routes, sub-actions, the shared catalog, and unrelated paths: None.
-        assert_eq!(owned_resource_key("/v1/config/mcp-servers"), None);
-        assert_eq!(
-            owned_resource_key("/v1/config/inference-profiles/p1/resolve"),
-            None
-        );
-        assert_eq!(owned_resource_key("/v1/config/catalog"), None);
-        assert_eq!(owned_resource_key("/v1/config/providers/anthropic"), None);
-        assert_eq!(owned_resource_key("/v1/agents/x"), None);
-    }
 
     #[test]
     fn memory_store_id_covers_the_store_and_its_subresources() {

@@ -22,7 +22,7 @@
 //! `ScopedRepo` fence in their own crates' unit tests. This file is the
 //! management-plane system-integration slice.
 
-use awaken_server::build_management_router;
+use awaken_cli::build_management_router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;

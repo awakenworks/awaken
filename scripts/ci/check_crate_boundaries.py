@@ -1029,6 +1029,11 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-scenario-host": {
         "async-nats",
         "async-trait",
+        # Stage B2: the `management` scenario mode + brain-admin surface live in the
+        # composition root; the config-router mode seeds the assistant via the
+        # authoring plane. Dev-dep cycle-free (awaken-cli dev-depends back for mocks).
+        "awaken-cli",
+        "awaken-control",
         "awaken-admin-assistant",
         "awaken-admin-config-api",
         "awaken-agent-contract",
@@ -1148,6 +1153,73 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # dev-only: the restart-persistence test rebuilds the durable management
         # router over one tempdir across simulated process lifetimes.
         "tempfile",
+    },
+    # Authoring / authz plane (Stage B2): the management CRUD surfaces + the embedded
+    # IAM guard, split out of awaken-server. A sibling of the awaken-server data plane —
+    # the two never depend on each other; awaken-cli is the composition root that weaves
+    # them. It names the Managed wire (protocol-managed) + host ports (runtime-host) +
+    # the webhook bridge it constructs the authoring routers over.
+    "awaken-control": {
+        "awaken-runtime-host",
+        "awaken-admin-assistant",
+        "awaken-tenancy",
+        "awaken-authz-enforce",
+        "awaken-protocol-managed",
+        "awaken-config-store",
+        "awaken-config-resolver",
+        "awaken-admin-config-api",
+        "awaken-model-catalog",
+        "awaken-credential-vault",
+        "awaken-data-subject",
+        "awaken-iam-contract",
+        "awaken-iam-server",
+        "awaken-iam-core",
+        "awaken-iam-preset",
+        "awaken-iam-host",
+        "awaken-webhook-managed",
+        "awaken-agent-contract",
+        "awaken-runtime-contract",
+        "rusqlite",
+        "async-trait",
+        "serde_json",
+        "tokio",
+        "axum",
+        # dev-only: the authz restart tests open a tempdir-backed iam.sqlite.
+        "tempfile",
+    },
+    # The single aggregated command + the single-machine composition root (Stage B2):
+    # it weaves the authoring plane (awaken-control) and the data plane (awaken-server)
+    # into one management router. A composition root, so it may name them all.
+    "awaken-cli": {
+        "awaken-control",
+        "awaken-server",
+        "awaken-runtime-host",
+        "awaken-observability",
+        "awaken-protocol-managed",
+        "awaken-model-catalog",
+        "awaken-credential-vault",
+        "awaken-admin-config-api",
+        "awaken-config-store",
+        "awaken-config-resolver",
+        "awaken-admin-assistant",
+        "awaken-tenancy",
+        "awaken-provider-genai",
+        "awaken-agent-contract",
+        "awaken-runtime-contract",
+        "async-trait",
+        "axum",
+        "tokio",
+        # dev-only: the management integration tests moved here from awaken-server.
+        "awaken-scenario-host",
+        "awaken-ext-mcp",
+        "awaken-iam-contract",
+        "awaken-iam-core",
+        "rusqlite",
+        "base64",
+        "tempfile",
+        "http-body-util",
+        "tower",
+        "serde_json",
     },
 }
 
@@ -1394,7 +1466,12 @@ BUCKET_ALLOWED_DEPS = {
     # links no heavy store. Worker still may NOT depend on `stores` (the commit-log
     # tier, G13 authority) — that is the store A-G17 keeps out of the exec tier.
     "worker": {"contract", "runtime", "resources", "worker"},
-    "control": {"contract", "runtime", "stores", "resources", "control"},
+    # The authoring plane's assembly crate (awaken-control, Stage B2) names the Managed
+    # wire (protocol-managed) + host ports (runtime-host) + the webhook bridge — all in
+    # the `server` bucket — because the management CRUD it assembles is expressed in
+    # those types. It stays a sibling of the awaken-server data-plane bin: neither
+    # depends on the other (the composition root, awaken-cli, weaves them).
+    "control": {"contract", "runtime", "stores", "resources", "control", "server"},
     "server": {"contract", "runtime", "stores", "resources", "worker", "control", "server"},
     "bin": {
         "contract",

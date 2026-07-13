@@ -52,15 +52,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         awaken_runtime_host::init_shared_postgres_commit(&url).await?;
     }
 
-    // The production management assembly: the full protocol surface over a host whose
-    // ExecutorProvider resolves each session's model from the DB-configured catalog +
-    // credential vault (ConfigExecutorProvider). Configure a provider/model/credential
-    // through /v1/config/* + /v1/vaults/* and sessions run that real model.
-    let app = awaken_server::build_management_router().await;
+    // The production management assembly (this crate's own composition-root library):
+    // the full protocol surface over a host whose ExecutorProvider resolves each
+    // session's model from the DB-configured catalog + credential vault. Configure a
+    // provider/model/credential through /v1/config/* + /v1/vaults/* and sessions run
+    // that real model.
+    let app = awaken_cli::build_management_router().await;
     // The brain admin surface (connection-count metric + /admin/drain + /readyz) so a
     // graceful, stream-preserving scale-in works; wraps the served router.
-    let app =
-        awaken_server::with_brain_admin(app, awaken_server::DrainController::new());
+    let app = awaken_cli::with_brain_admin(app, awaken_cli::DrainController::new());
     // Root every request span in the ingress middleware (extracts the inbound
     // traceparent); the whole request→inference path nests under it.
     let app = app.layer(axum::middleware::from_fn(awaken_observability::trace_http));

@@ -4,22 +4,64 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "awaken_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "awaken"
 path = "src/main.rs"
 
-# The single aggregated command. Config (AWAKEN_ROLE + the deployment axes) decides
-# the deployment: single-machine all-in-one, a coordinator, a database-less worker,
-# or a hand executor endpoint — one binary, no separate server-local/standalone.
+# The single aggregated command + the single-machine composition root. Config
+# (AWAKEN_ROLE + the deployment axes) decides the deployment: single-machine all-in-one,
+# a coordinator, a database-less worker, or a hand executor endpoint. The Serve role
+# weaves the authoring plane (awaken-control) and the data plane (awaken-server) — two
+# siblings that never depend on each other — into one management router here.
 [dependencies]
-# The single-machine composition root: the Serve-role management assembly (models
-# resolved from the DB-configured catalog + credential vault) and the role axis +
-# Worker / Hand execution endpoints.
-awaken-server.workspace = true
-awaken-runtime-host.workspace = true
-awaken-observability.workspace = true
+# The two management planes this composition root weaves together.
+awaken-control = { workspace = true }
+awaken-server = { workspace = true }
+# The service layer: SharedHost / ManagedHost / ConfigService / ConfigPlane and the
+# durable session repositories the composition opens.
+awaken-runtime-host = { workspace = true }
+awaken-observability = { workspace = true }
+# The Managed wire aggregates the composition builds directly: session repos, the
+# vault + environment state shared across both planes.
+awaken-protocol-managed = { workspace = true }
+# The management stores this composition opens (in-memory / SQLite / Postgres).
+awaken-model-catalog = { workspace = true, features = ["sqlite", "postgres"] }
+awaken-credential-vault = { workspace = true, features = ["sqlite", "sealed-aead", "postgres"] }
+awaken-admin-config-api = { workspace = true, features = ["sqlite", "postgres"] }
+awaken-config-store = { workspace = true }
+awaken-config-resolver = { workspace = true }
+# The management assistant executables the host carries (ADR-0052).
+awaken-admin-assistant = { workspace = true }
+# The opaque scope id the warm-load + reserved-scope seeding are keyed by.
+awaken-tenancy = { workspace = true }
+# The live credential probe backing the admin router — the only place the model SDK
+# is named in the composition (mirrors the standalone's GenaiProbe).
+awaken-provider-genai = { workspace = true }
+awaken-agent-contract = { workspace = true }
+awaken-runtime-contract = { workspace = true }
+async-trait.workspace = true
 axum = "0.8"
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
+
+[dev-dependencies]
+# The management integration tests moved here from awaken-server (they drive
+# build_management_router* over this composition root).
+awaken-scenario-host = { workspace = true }
+# mcp_sessions drives the VaultRefresher refresh grant + the ext-mcp tool-id shape.
+awaken-ext-mcp = { workspace = true }
+# management_authz drives a legacy iam.sqlite import: the contract ids + the sqlite driver.
+awaken-iam-contract = { workspace = true }
+awaken-iam-core = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
+base64 = "0.22"
+tempfile = "3"
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+serde_json.workspace = true
 
 [lints]
 workspace = true

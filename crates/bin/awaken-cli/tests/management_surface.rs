@@ -3,7 +3,7 @@
 //! and a credential entered through the Managed vault surface is visible to
 //! resolution because both share one store.
 
-use awaken_server::build_management_router;
+use awaken_cli::build_management_router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;

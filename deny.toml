@@ -65,6 +65,9 @@ wrappers = [
     "awaken-protocol-a2a",
     "awaken-protocol-mcp",
     "awaken-server",
+    # Stage B2: the authoring plane + the composition root.
+    "awaken-control",
+    "awaken-cli",
     "awaken-credential-vault",
     "awaken-data-subject",
     "awaken-config-resolver",
@@ -100,6 +103,9 @@ wrappers = [
     "awaken-sandbox-local",
     "awaken-protocol-mcp",
     "awaken-server",
+    # Stage B2: the authoring plane + the composition root.
+    "awaken-control",
+    "awaken-cli",
     "awaken-config-resolver",
     "awaken-data-subject",
     "awaken-run-executor-acp",

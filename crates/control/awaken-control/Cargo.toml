@@ -1,0 +1,49 @@
+[package]
+name = "awaken-control"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The authoring / authz plane (Stage B2): the management CRUD surfaces (admin
+# config, vault front door, webhook subscriptions, user profiles, deployments,
+# environments, config authoring plane, capabilities) plus the embedded IAM guard.
+# It knows nothing of the single-machine composition root (awaken-cli) and does
+# NOT depend on the awaken-server data-plane bin — the two planes are siblings the
+# composition root (awaken-cli) weaves together.
+[dependencies]
+awaken-runtime-host = { workspace = true }
+awaken-admin-assistant = { workspace = true }
+awaken-tenancy = { workspace = true }
+awaken-authz-enforce = { workspace = true }
+awaken-protocol-managed = { workspace = true }
+awaken-config-store = { workspace = true }
+awaken-config-resolver = { workspace = true }
+awaken-admin-config-api = { workspace = true, features = ["sqlite", "postgres"] }
+awaken-model-catalog = { workspace = true, features = ["sqlite", "postgres"] }
+awaken-credential-vault = { workspace = true, features = ["oauth-command", "sqlite", "sealed-aead", "postgres"] }
+awaken-data-subject = { workspace = true }
+# Embedded IAM (ADR-0042/0043 P1): the authorizer, the argon2id token directory +
+# minter + default-deny PolicySet evaluator, the seeded Anthropic role catalog, the
+# iam-server SqlStore rows, and the IamGate PDP the management guard drives.
+awaken-iam-contract = { workspace = true }
+awaken-iam-server = { workspace = true }
+awaken-iam-core = { workspace = true }
+awaken-iam-preset = { workspace = true }
+awaken-iam-host = { workspace = true }
+# Webhook plane (ADR-0048 / S10): the CRUD router + lifecycle sink over the neutral
+# dispatcher/store; the sink is handed back to the composition root for the data plane.
+awaken-webhook-managed = { workspace = true }
+awaken-agent-contract = { workspace = true }
+awaken-runtime-contract = { workspace = true }
+# The embedded IAM token/binding rows persist under <AWAKEN_MGMT_DIR>/iam.sqlite.
+rusqlite = { version = "0.32", features = ["bundled"] }
+async-trait.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
+axum = { version = "0.8", features = ["multipart"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -63,6 +63,10 @@ awaken-credential-vault = { path = "crates/control/awaken-credential-vault" }
 awaken-data-subject = { path = "crates/control/awaken-data-subject" }
 awaken-config-resolver = { path = "crates/control/awaken-config-resolver" }
 awaken-admin-config-api = { path = "crates/control/awaken-admin-config-api" }
+# Authoring / authz plane (Stage B2): the management CRUD surfaces + embedded IAM
+# guard, split out of awaken-server. Sibling of the data plane; the two never depend
+# on each other — awaken-cli is the composition root that weaves them together.
+awaken-control = { path = "crates/control/awaken-control" }
 # Foundation contract half (ADR-0043): RFC-9457 ApiError, pagination, and the
 # allowlisted ListQuery/QuerySchema the admin config API serves its CRUD on.
 awaken-api-contract = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9" }
@@ -104,6 +108,7 @@ awaken-runtime-host = { path = "crates/server/awaken-runtime-host" }
 awaken-admin-assistant = { path = "crates/control/awaken-admin-assistant" }
 awaken-server = { path = "crates/bin/awaken-server" }
 awaken-scenario-host = { path = "crates/bin/awaken-scenario-host" }
+awaken-cli = { path = "crates/bin/awaken-cli" }
 awaken-authz-enforce = { path = "crates/control/awaken-authz-enforce" }
 awaken-webhook = { path = "crates/server/awaken-webhook" }
 awaken-webhook-managed = { path = "crates/server/awaken-webhook-managed" }

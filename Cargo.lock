@@ -317,11 +317,34 @@ dependencies = [
 name = "awaken-cli"
 version = "1.0.0-dev"
 dependencies = [
+ "async-trait",
+ "awaken-admin-assistant",
+ "awaken-admin-config-api",
+ "awaken-agent-contract",
+ "awaken-config-resolver",
+ "awaken-config-store",
+ "awaken-control",
+ "awaken-credential-vault",
+ "awaken-ext-mcp",
+ "awaken-iam-contract",
+ "awaken-iam-core",
+ "awaken-model-catalog",
  "awaken-observability",
+ "awaken-protocol-managed",
+ "awaken-provider-genai",
+ "awaken-runtime-contract",
  "awaken-runtime-host",
+ "awaken-scenario-host",
  "awaken-server",
+ "awaken-tenancy",
  "axum",
+ "base64 0.22.1",
+ "http-body-util",
+ "rusqlite",
+ "serde_json",
+ "tempfile",
  "tokio",
+ "tower",
 ]
 
 [[package]]
@@ -381,6 +404,37 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "awaken-control"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-admin-assistant",
+ "awaken-admin-config-api",
+ "awaken-agent-contract",
+ "awaken-authz-enforce",
+ "awaken-config-resolver",
+ "awaken-config-store",
+ "awaken-credential-vault",
+ "awaken-data-subject",
+ "awaken-iam-contract",
+ "awaken-iam-core",
+ "awaken-iam-host",
+ "awaken-iam-preset",
+ "awaken-iam-server",
+ "awaken-model-catalog",
+ "awaken-protocol-managed",
+ "awaken-runtime-contract",
+ "awaken-runtime-host",
+ "awaken-tenancy",
+ "awaken-webhook-managed",
+ "axum",
+ "rusqlite",
+ "serde_json",
+ "tempfile",
  "tokio",
 ]
 
@@ -1132,9 +1186,11 @@ dependencies = [
  "awaken-admin-config-api",
  "awaken-agent-contract",
  "awaken-authz-enforce",
+ "awaken-cli",
  "awaken-config-resolver",
  "awaken-config-store",
  "awaken-connection-plan",
+ "awaken-control",
  "awaken-credential-vault",
  "awaken-data-subject",
  "awaken-ext-builtin-tools",
