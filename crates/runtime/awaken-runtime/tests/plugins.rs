@@ -15,7 +15,9 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::{MemoryCommitCoordinator, replay_state};
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
+use awaken_runtime_contract::capability::{
+    PluginCapability, RuntimeCapabilityCatalog, RuntimeCapabilitySource,
+};
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
@@ -213,6 +215,46 @@ async fn inactive_plugin_contributes_nothing() {
 
     assert!(commit.committed().state.is_empty());
     assert_eq!(resolves.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn runtime_capabilities_project_the_plugin_declared_bound() {
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(TextLlm))
+        .with_plugin(Arc::new(MarkPlugin {
+            resolves: Arc::new(AtomicUsize::new(0)),
+        }));
+    let fingerprint = CatalogFingerprint("catalog-a".to_string());
+    // The advertised catalog carries the plugin id with an unset (deny-all) bound.
+    runtime
+        .install_catalog(RuntimeCatalogInstall {
+            publication_id: "pub-1".to_string(),
+            fingerprint: fingerprint.clone(),
+            source_revisions: vec!["rev-1".to_string()],
+            capabilities: RuntimeCapabilityCatalog {
+                catalog_fingerprint: fingerprint,
+                runtime_version: "test".to_string(),
+                tools: Vec::new(),
+                plugins: vec![PluginCapability {
+                    id: "mark".to_string(),
+                    schema_keys: Vec::new(),
+                    config_schema: None,
+                    bound: Default::default(),
+                }],
+            },
+        })
+        .expect("installs");
+
+    // The served catalog projects the plugin's authoritative manifest bound (G8),
+    // so an operator overlay sees the real ceiling, not the deny-all placeholder.
+    let served = runtime.runtime_capabilities();
+    let mark = served
+        .plugins
+        .iter()
+        .find(|p| p.id == "mark")
+        .expect("mark advertised");
+    assert_eq!(mark.bound.phase_hooks, vec![PhaseHookPoint::StepStart]);
+    assert!(mark.bound.state_keys.allows("phase"));
 }
 
 #[tokio::test]

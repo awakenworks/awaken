@@ -252,16 +252,19 @@ pub(crate) fn platform_plugin_capabilities() -> Vec<PluginCapability> {
             id: STATE_MACHINE_PLUGIN_ID.to_string(),
             schema_keys: vec![STATE_MACHINE_PLUGIN_ID.to_string()],
             config_schema: Some(awaken_ext_state_machine::config_schema()),
+            bound: Default::default(),
         },
         PluginCapability {
             id: awaken_ext_memory::MEMORY_PLUGIN_ID.to_string(),
             schema_keys: vec![awaken_ext_memory::MEMORY_PLUGIN_ID.to_string()],
             config_schema: Some(awaken_ext_memory::memory_config_schema()),
+            bound: Default::default(),
         },
         PluginCapability {
             id: awaken_ext_compact::COMPACT_PLUGIN_ID.to_string(),
             schema_keys: vec![awaken_ext_compact::COMPACT_PLUGIN_ID.to_string()],
             config_schema: Some(awaken_ext_compact::compact_config_schema()),
+            bound: Default::default(),
         },
     ]
 }
