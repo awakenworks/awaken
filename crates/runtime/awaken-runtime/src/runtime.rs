@@ -11,6 +11,7 @@ use awaken_runtime_contract::catalog::{
 };
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
 use awaken_runtime_contract::llm::LlmExecutor;
+use awaken_runtime_contract::pause::PauseSignal;
 use awaken_runtime_contract::permission::ToolGateHook;
 use awaken_runtime_contract::plugin::{MergeError, Plugin, ResolvedExecutionEnv};
 use awaken_runtime_contract::resolved::CatalogFingerprint;
@@ -44,6 +45,9 @@ pub struct Runtime {
     plugins: Vec<Arc<dyn Plugin>>,
     /// Cancellation tokens for in-flight runs, so live control can steer them.
     active_runs: Mutex<HashMap<RunId, CancellationToken>>,
+    /// Pause signals for in-flight runs, so live control can park them at the next
+    /// safe boundary (ADR-0054). Mirrors `active_runs`, keyed the same way.
+    active_pauses: Mutex<HashMap<RunId, PauseSignal>>,
     /// How retryable inference failures are retried (attempts and backoff).
     retry_policy: crate::retry::LlmRetryPolicy,
     /// How many continuation rounds a `MaxTokens`-truncated text turn may use
@@ -270,6 +274,21 @@ impl Runtime {
         }
     }
 
+    /// Track an in-flight run's pause signal so `LiveRunControl` can park it.
+    /// Called at the start of execution when the context carries a signal.
+    pub(crate) fn register_pause(&self, run_id: &RunId, pause: PauseSignal) {
+        if let Ok(mut active) = self.active_pauses.lock() {
+            active.insert(run_id.clone(), pause);
+        }
+    }
+
+    /// Stop tracking a run's pause signal once it reaches a terminal state.
+    pub(crate) fn deregister_pause(&self, run_id: &RunId) {
+        if let Ok(mut active) = self.active_pauses.lock() {
+            active.remove(run_id);
+        }
+    }
+
     /// Register an executable snapshot for by-id resolution. Returns the id so
     /// callers can submit `AgentSnapshotInput::ById`.
     pub fn register_snapshot(
@@ -418,19 +437,26 @@ impl RuntimeCapabilitySource for Runtime {
 
 impl LiveRunControl for Runtime {
     fn deliver(&self, command: LiveCommand) -> Result<(), ControlError> {
-        let run_id = match &command {
-            LiveCommand::Cancel { run_id } | LiveCommand::Wake { run_id, .. } => run_id.clone(),
-        };
-        let active = self
-            .active_runs
-            .lock()
-            .map_err(|_| ControlError::Rejected("active run registry poisoned".to_string()))?;
-        let token = active.get(&run_id).ok_or(ControlError::NotActive)?;
         match command {
             // Cancellation is cooperative: signal the token; the loop observes it
             // at the next step boundary and commits a terminal Cancelled outcome.
-            LiveCommand::Cancel { .. } => {
-                token.cancel();
+            LiveCommand::Cancel { run_id } => {
+                let active = self.active_runs.lock().map_err(|_| {
+                    ControlError::Rejected("active run registry poisoned".to_string())
+                })?;
+                active.get(&run_id).ok_or(ControlError::NotActive)?.cancel();
+                Ok(())
+            }
+            // Pause is cooperative: signal the pause; the loop observes it at the
+            // next safe boundary and commits a durable `ManualPause` park (ADR-0054).
+            LiveCommand::Pause { run_id } => {
+                let active = self.active_pauses.lock().map_err(|_| {
+                    ControlError::Rejected("active pause registry poisoned".to_string())
+                })?;
+                active
+                    .get(&run_id)
+                    .ok_or(ControlError::NotActive)?
+                    .request();
                 Ok(())
             }
             // Wake is a live nudge for an in-flight run. Durable resume of a
