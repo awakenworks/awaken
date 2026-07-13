@@ -89,3 +89,6 @@ tempfile = "3"
 # The sandboxed-channel-source integration test observes what the bwrap-confined
 # agent said through the in-memory commit boundary.
 awaken-store-inmem = { workspace = true }
+# Drives the durable-ops axum router in-process (ServiceExt::oneshot) to exercise
+# the SharedHost operational verbs over their real HTTP surface.
+tower = { version = "0.5", features = ["util"] }
