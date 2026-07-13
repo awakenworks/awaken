@@ -24,6 +24,40 @@ pub struct ModelDelivery {
     pub aliases: &'static [&'static str],
 }
 
+/// How a CLI keys its persisted sessions — decides whether cross-directory
+/// recovery needs a stable interior working directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionKey {
+    /// Keyed by the working directory (e.g. Claude Code's `projects/<cwd-slug>/`):
+    /// recovery needs the same interior cwd every relaunch.
+    Cwd,
+    /// Keyed by an internal session id stored in the session data itself
+    /// (e.g. Codex rollout files): cwd-independent.
+    InternalId,
+}
+
+/// Where a CLI keeps its durable session — the axis that decides how (and whether)
+/// we recover it across directories and machines. Three classes: a local config
+/// dir we harvest/restore as a portable resource, a server-side gateway that owns
+/// the session, or none (recovery is the neutral thread history only). Data-driven
+/// per row — no `match adapter_kind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionPersistence {
+    /// Session state lives in the CLI's local config home. `session_subpath` is the
+    /// portable subtree to harvest (the conversation store); credentials/local
+    /// config to exclude are the row's [`AcpCli::retained_paths`].
+    LocalDir {
+        session_subpath: &'static str,
+        keyed_by: SessionKey,
+    },
+    /// Session state lives server-side (a cloud gateway owns it) — no local harvest;
+    /// `session/load` resumes by id against the gateway, so it is cross-machine
+    /// already.
+    Gateway,
+    /// No native session persistence; recovery is the neutral thread history only.
+    None,
+}
+
 /// How a CLI receives its MCP servers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpInterface {
@@ -47,7 +81,12 @@ pub struct AcpCli {
     /// The memory file the CLI reads from its config home (e.g. `CLAUDE.md`).
     pub memory_entrypoint: &'static str,
     /// Paths under the config home that survive across sessions (auth, config).
+    /// Also the exclusion set when harvesting the portable session-home — these are
+    /// credential/local-config, never carried into a cross-machine session blob.
     pub retained_paths: &'static [&'static str],
+    /// Where this CLI keeps its durable session, deciding cross-directory /
+    /// cross-machine recovery (see [`SessionPersistence`]).
+    pub session_persistence: SessionPersistence,
     /// Env key for the CLI's own auto-compaction window, if it exposes one.
     pub context_window_env: Option<&'static str>,
     /// Static non-secret env defaults for this CLI (lowest precedence).
@@ -152,6 +191,11 @@ const CLAUDE: AcpCli = AcpCli {
     config_home_env: "CLAUDE_CONFIG_DIR",
     memory_entrypoint: "CLAUDE.md",
     retained_paths: &[".credentials.json", "settings.json"],
+    // Claude Code stores conversations under `projects/<cwd-slug>/`, keyed by cwd.
+    session_persistence: SessionPersistence::LocalDir {
+        session_subpath: "projects",
+        keyed_by: SessionKey::Cwd,
+    },
     context_window_env: Some("CLAUDE_CODE_AUTO_COMPACT_WINDOW"),
     env: &[],
 };
@@ -183,6 +227,11 @@ const CODEX: AcpCli = AcpCli {
     config_home_env: "CODEX_HOME",
     memory_entrypoint: "AGENTS.md",
     retained_paths: &["auth.json", "config.toml"],
+    // Codex writes rollout files under `sessions/`, keyed by an internal id.
+    session_persistence: SessionPersistence::LocalDir {
+        session_subpath: "sessions",
+        keyed_by: SessionKey::InternalId,
+    },
     context_window_env: None,
     env: &[],
 };
@@ -203,6 +252,12 @@ const GEMINI: AcpCli = AcpCli {
     config_home_env: "GEMINI_DIR",
     memory_entrypoint: "GEMINI.md",
     retained_paths: &[],
+    // Gemini keeps chat state under `tmp/<hash>/`, keyed by an internal id
+    // (provisional — confirm the exact subtree by capability probe).
+    session_persistence: SessionPersistence::LocalDir {
+        session_subpath: "tmp",
+        keyed_by: SessionKey::InternalId,
+    },
     context_window_env: None,
     env: &[],
 };
@@ -254,6 +309,26 @@ mod tests {
         assert!(acp_cli("codex").is_some());
         assert!(acp_cli("gemini").is_some());
         assert!(acp_cli("no_such_cli").is_none());
+    }
+
+    #[test]
+    fn session_persistence_is_declared_per_cli_with_the_right_keying() {
+        // Claude keys sessions by cwd (recovery needs a stable interior cwd); Codex
+        // keys by an internal id (cwd-independent). Both are LocalDir → harvestable.
+        assert_eq!(
+            acp_cli("claude").unwrap().session_persistence,
+            SessionPersistence::LocalDir {
+                session_subpath: "projects",
+                keyed_by: SessionKey::Cwd,
+            }
+        );
+        assert_eq!(
+            acp_cli("codex").unwrap().session_persistence,
+            SessionPersistence::LocalDir {
+                session_subpath: "sessions",
+                keyed_by: SessionKey::InternalId,
+            }
+        );
     }
 
     #[test]

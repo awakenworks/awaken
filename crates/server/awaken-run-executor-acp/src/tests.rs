@@ -75,6 +75,7 @@ impl AgentChannelSource for ScriptedSource {
             channel: Box::new(ours),
             process: Arc::new(FakeProcess),
             codec: awaken_protocol_acp::Codec::Newline,
+            workspace_cwd: None,
         })
     }
 }
@@ -415,6 +416,210 @@ async fn a_usage_event_is_committed_as_thread_state() {
 }
 
 #[tokio::test]
+async fn a_session_persisted_in_one_dir_is_recovered_in_another_through_the_executor() {
+    // End-to-end through the real executor: run 1 in config-home A writes a session
+    // marker (a stand-in for the CLI's own session files); the executor harvests it.
+    // Run 2 in a *different* config-home B restores it before launch, and the agent
+    // finds the marker — proving cross-directory recovery of the whole
+    // restore→run→harvest chain (a real CLI's `session/load` is the same shape).
+    use std::path::{Path, PathBuf};
+
+    /// A fake source whose agent persists a marker into its config-home on a fresh
+    /// session and echoes it back once the dir was restored.
+    struct PersistingSource {
+        dir: PathBuf,
+    }
+    #[async_trait]
+    impl AgentChannelSource for PersistingSource {
+        async fn open(&self, _a: &RunActivation) -> std::result::Result<AgentSession, OpenError> {
+            let (ours, mut theirs) = tokio::io::duplex(4096);
+            let marker = self.dir.join("projects/marker");
+            tokio::spawn(async move {
+                let mut prompt = String::new();
+                let mut reader = BufReader::new(&mut theirs);
+                let _ = reader.read_line(&mut prompt).await;
+                let text = match std::fs::read_to_string(&marker) {
+                    Ok(s) => format!("resumed:{s}"),
+                    Err(_) => {
+                        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+                        std::fs::write(&marker, "s1").unwrap();
+                        "fresh".to_string()
+                    }
+                };
+                let _ = theirs
+                    .write_all(format!("{{\"type\":\"message\",\"text\":\"{text}\"}}\n").as_bytes())
+                    .await;
+                let _ = theirs
+                    .write_all(b"{\"type\":\"turn_end\",\"reason\":\"natural_end\"}\n")
+                    .await;
+                let _ = theirs.flush().await;
+            });
+            Ok(AgentSession {
+                channel: Box::new(ours),
+                process: Arc::new(FakeProcess),
+                codec: awaken_protocol_acp::Codec::Newline,
+                workspace_cwd: Some("/workspace".to_string()),
+            })
+        }
+    }
+
+    fn copy_dir(src: &Path, dst: &Path) {
+        std::fs::create_dir_all(dst).unwrap();
+        for e in std::fs::read_dir(src).unwrap() {
+            let e = e.unwrap();
+            let to = dst.join(e.file_name());
+            if e.file_type().unwrap().is_dir() {
+                copy_dir(&e.path(), &to);
+            } else {
+                std::fs::copy(e.path(), to).unwrap();
+            }
+        }
+    }
+
+    /// The session-home harvest/restore essence: copy the config-home's session
+    /// subtree to/from a durable blob keyed by thread (what `DirSessionHome` does).
+    struct TmpHome {
+        blobs: PathBuf,
+        dir: PathBuf,
+    }
+    #[async_trait]
+    impl SessionHomeProvider for TmpHome {
+        async fn restore(&self, key: &SessionHomeKey, _p: &SessionHomePlan) {
+            let blob = self.blobs.join(&key.thread_id);
+            if blob.is_dir() {
+                copy_dir(&blob, &self.dir.join("projects"));
+            }
+        }
+        async fn harvest(&self, key: &SessionHomeKey, _p: &SessionHomePlan) {
+            let src = self.dir.join("projects");
+            if src.is_dir() {
+                let dst = self.blobs.join(&key.thread_id);
+                let _ = std::fs::remove_dir_all(&dst);
+                copy_dir(&src, &dst);
+            }
+        }
+    }
+
+    let root = std::env::temp_dir().join(format!("acp-recovery-e2e-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (dir_a, dir_b, blobs) = (root.join("a"), root.join("b"), root.join("blobs"));
+
+    // Run 1 in dir A: a fresh session; the marker is written and harvested.
+    let coord_a = Arc::new(RecordingCoordinator::default());
+    AcpRunExecutor::new(Arc::new(PersistingSource { dir: dir_a.clone() }))
+        .with_session_home(Arc::new(TmpHome {
+            blobs: blobs.clone(),
+            dir: dir_a.clone(),
+        }))
+        .execute(
+            activation(),
+            RuntimeRunContext::new().with_commit(coord_a.clone()),
+        )
+        .await
+        .unwrap();
+    assert!(
+        coord_a.commits.lock().unwrap()[0]
+            .messages
+            .iter()
+            .any(|m| m.text_content() == "fresh"),
+        "run 1 starts a fresh session"
+    );
+
+    // Run 2 in a different dir B: the executor restores the harvested session first,
+    // so the agent finds the marker and resumes.
+    let coord_b = Arc::new(RecordingCoordinator::default());
+    AcpRunExecutor::new(Arc::new(PersistingSource { dir: dir_b.clone() }))
+        .with_session_home(Arc::new(TmpHome {
+            blobs: blobs.clone(),
+            dir: dir_b.clone(),
+        }))
+        .execute(
+            activation(),
+            RuntimeRunContext::new().with_commit(coord_b.clone()),
+        )
+        .await
+        .unwrap();
+    assert!(
+        coord_b.commits.lock().unwrap()[0]
+            .messages
+            .iter()
+            .any(|m| m.text_content() == "resumed:s1"),
+        "the session persisted in dir A was recovered in dir B through the executor"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[derive(Default)]
+struct RecordingSessionHome {
+    calls: Mutex<Vec<(String, SessionHomeKey, SessionHomePlan)>>,
+}
+
+#[async_trait]
+impl SessionHomeProvider for RecordingSessionHome {
+    async fn restore(&self, key: &SessionHomeKey, plan: &SessionHomePlan) {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(("restore".into(), key.clone(), plan.clone()));
+    }
+    async fn harvest(&self, key: &SessionHomeKey, plan: &SessionHomePlan) {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(("harvest".into(), key.clone(), plan.clone()));
+    }
+}
+
+#[tokio::test]
+async fn a_local_dir_session_home_is_restored_before_and_harvested_after() {
+    // A LocalDir CLI (the fixture's backend is `acp:claude`) restores its portable
+    // session before the run and harvests it after, keyed by (thread, adapter), with
+    // the harvest plan drawn from the catalog row (subpath, cwd-keying, exclusions).
+    let recorder = Arc::new(RecordingSessionHome::default());
+    let e = AcpRunExecutor::new(Arc::new(ScriptedSource {
+        frames: vec![
+            r#"{"type":"message","text":"hi"}"#.into(),
+            r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
+        ],
+        open_error: None,
+    }))
+    .with_session_home(recorder.clone());
+
+    e.execute(activation(), RuntimeRunContext::new())
+        .await
+        .unwrap();
+
+    let calls = recorder.calls.lock().unwrap();
+    let seq: Vec<&str> = calls.iter().map(|(c, _, _)| c.as_str()).collect();
+    assert_eq!(
+        seq,
+        vec!["restore", "harvest"],
+        "restore before the run, harvest after"
+    );
+    let (_, key, plan) = &calls[0];
+    assert_eq!(key.adapter, "claude");
+    assert_eq!(key.thread_id, "thread-1");
+    assert_eq!(plan.config_home_env, "CLAUDE_CONFIG_DIR");
+    assert_eq!(plan.session_subpath, "projects");
+    assert!(plan.keyed_by_cwd, "Claude keys sessions by cwd");
+    assert!(
+        plan.exclude.contains(&".credentials.json".to_string()),
+        "credentials are excluded from the harvest"
+    );
+}
+
+#[test]
+fn session_home_binding_is_none_for_a_non_acp_backend() {
+    // A native (non-ACP) backend has no CLI session-home — the binding is absent, so
+    // the provider is never engaged (Gateway/stateless adapters skip the same way).
+    let mut act = activation();
+    act.snapshot.resolved_spec.model_binding = ModelBinding::new("prov", "model", "native");
+    let e = exec(vec![]);
+    assert!(e.session_home_binding(&act).is_none());
+}
+
+#[tokio::test]
 async fn neutral_permission_resolver_projects_the_policy_decision() {
     // The ACP permission port is decided by the single neutral `PermissionPolicy`:
     // Allow→Allow, Deny→Deny, and Ask fails safe to Deny (no synchronous HITL over
@@ -728,6 +933,7 @@ async fn acp_relaunches_the_cli_every_turn_so_a_model_switch_takes_effect() {
                 channel: Box::new(ours),
                 process: Arc::new(FakeProcess),
                 codec: awaken_protocol_acp::Codec::Newline,
+                workspace_cwd: None,
             })
         }
     }
