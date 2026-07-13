@@ -1,5 +1,6 @@
 //! Runtime integration: the `Plugin` that contributes the state machine's gate,
-//! tool-outcome hook, run-end guard, and state keys under its `CapabilityBound`.
+//! `AfterTool` phase hook, run-end guard, and state keys under its
+//! `CapabilityBound`.
 
 use std::sync::Arc;
 
@@ -9,7 +10,8 @@ use awaken_agent_contract::agent::state::{FoldStateKey, StateKey, Store};
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
 use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, HookReaction, IdBound, PhaseContext, PhaseHook, PhaseHookPoint,
-    Plugin, PluginConfigError, PluginManifest, RunEndContext, RunEndDecision, RunEndGuard,
+    PhaseKind, Plugin, PluginConfigError, PluginManifest, RunEndContext, RunEndDecision,
+    RunEndGuard,
 };
 use serde_json::{Value, json};
 
@@ -196,9 +198,9 @@ impl PhaseHook for StateMachineObserver {
         _conversation: &[Message],
         state: &Store,
     ) -> HookReaction {
-        // `AfterTool` always carries the executed call and its output; nothing to
-        // react to at any other point.
-        let Some(after) = &ctx.after_tool else {
+        // `AfterTool` carries the executed call and its output; nothing to react
+        // to at any other point.
+        let PhaseKind::AfterTool(after) = &ctx.kind else {
             return HookReaction::default();
         };
         let call = &after.call;

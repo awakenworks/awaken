@@ -12,8 +12,8 @@ use awaken_ext_state_machine::{
 };
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
 use awaken_runtime_contract::plugin::{
-    AfterToolContext, HookReaction, PhaseContext, PhaseHook, PhaseHookPoint, Plugin, RunEndContext,
-    RunEndDecision, enforce_bound,
+    AfterToolContext, HookReaction, PhaseContext, PhaseHook, PhaseHookPoint, PhaseKind, Plugin,
+    RunEndContext, RunEndDecision, enforce_bound,
 };
 use awaken_runtime_contract::tool::{ToolCall, ToolOutput};
 use serde_json::json;
@@ -29,8 +29,7 @@ async fn after_tool(
     let ctx = PhaseContext {
         run_id: RunId("r".into()),
         step: 0,
-        point: PhaseHookPoint::AfterTool,
-        after_tool: Some(AfterToolContext {
+        kind: PhaseKind::AfterTool(AfterToolContext {
             call: call.clone(),
             output: output.clone(),
         }),
