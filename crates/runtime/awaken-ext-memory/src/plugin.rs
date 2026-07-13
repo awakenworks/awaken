@@ -10,7 +10,7 @@
 //! `bounds.select_over` and a [`RecallSelector`] is wired, the hook picks the
 //! memories relevant to the user's message (③) through a single `memory-selector`
 //! sub-agent call — run at most once per run, gated on the run-scoped
-//! [`RecallContext`] state so it replays across steps and a resumed run instead
+//! [`ContextMessages`] state so it replays across steps and a resumed run instead
 //! of recomputing (ADR-0055).
 
 use std::collections::BTreeMap;
@@ -133,7 +133,7 @@ pub fn config_schema() -> serde_json::Value {
 }
 
 /// The `BeforeInference` hook. Relevance selection runs at most once per run (the
-/// hook fires every step), gated on the run-scoped [`RecallContext`] state so the
+/// hook fires every step), gated on the run-scoped [`ContextMessages`] state so the
 /// block replays across steps and a resumed run rather than recomputing.
 struct RecallHook {
     store: MemoryDir,
