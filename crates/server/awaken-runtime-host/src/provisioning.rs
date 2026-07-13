@@ -407,6 +407,7 @@ mod memory_store_tests {
 /// memory/repo write-back happy paths run in `host::tests` through a real session.
 #[cfg(test)]
 mod provisioning_registry_tests {
+    #![allow(deprecated)] // legacy SandboxProvider; host tests still drive it pending the pc::Sandbox rebase.
     use super::*;
     use crate::host::SharedHost;
     use awaken_runtime_contract::llm::{ChatRequest, ChatResponse};

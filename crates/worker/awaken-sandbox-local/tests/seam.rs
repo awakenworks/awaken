@@ -3,6 +3,7 @@
 //! `mounts` / `constraints` as forward-compatible data the local provider ignores
 //! but a distributed one consumes. This fixes the single-machine <-> distributed
 //! boundary: this repo ships only the local side, but the seam is stable.
+#![allow(deprecated)] // this seam IS the legacy SandboxProvider port, deprecated in favour of pc::SandboxProvider.
 
 use awaken_sandbox_local::{Environment, SandboxError, SandboxProvider, SandboxSpec};
 
