@@ -133,6 +133,15 @@ async fn factory_and_bind_error_paths() {
     )
     .await;
     assert!(r.is_err());
+    // The Unix dial arm fails closed the same way when no socket is listening.
+    let u = connect_with_retry(
+        &TokioChannelFactory,
+        &ConnectionPlan::unix_dial("/no/such/awaken-relay.sock"),
+        2,
+        std::time::Duration::from_millis(1),
+    )
+    .await;
+    assert!(u.is_err(), "dialing a dead unix socket is an Io error");
 }
 
 #[tokio::test]
