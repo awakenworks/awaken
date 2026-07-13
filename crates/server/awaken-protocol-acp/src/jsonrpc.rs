@@ -11,15 +11,19 @@
 //! Projection and the [`RunFactAppender`] contract are identical to the newline
 //! stand-in ([`crate::AcpBridge`]) — a `session/update` becomes the same
 //! [`AgentEvent`], so nothing downstream (the store, the executor) sees ACP
-//! vocabulary. Agent→client requests are answered fail-closed: `session/
-//! request_permission` selects a reject option (we advertise no `fs`/`terminal`
-//! capabilities, so those requests get `method_not_found`).
+//! vocabulary. A `session/request_permission` is decided by the injected
+//! [`crate::PermissionResolver`] (the neutral `PermissionPolicy` behind an executor
+//! adapter) and projected back onto the agent's own allow/reject option. We
+//! advertise no `fs`/`terminal` capabilities, so those agent requests still get
+//! `method_not_found` — tool execution is the hand's job, never proxied over ACP.
 
 use agent_client_protocol::{
     AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES, ClientCapabilities, ContentBlock, InitializeRequest,
-    NewSessionRequest, NewSessionResponse, PermissionOptionKind, PromptRequest, PromptResponse,
-    ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionNotification,
+    InitializeResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
+    NewSessionResponse, PermissionOptionKind, PromptRequest, PromptResponse, ProtocolVersion,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionId, SessionModeId, SessionModeState, SessionNotification,
+    SetSessionModeRequest,
 };
 use awaken_agent_channel::AgentChannel;
 use serde::Serialize;
@@ -27,14 +31,18 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::real_acp::{project_update, termination_from_stop_reason};
 use crate::{
-    AcpError, AcpLaunchEvent, AcpLaunchStage, AgentEvent, LaunchSink, RunFactAppender,
-    TerminationReason, notify_launch,
+    AcpError, AcpLaunchEvent, AcpLaunchStage, AgentEvent, AllowAll, LaunchSink, PermissionAsk,
+    PermissionResolver, PermissionVerdict, RunFactAppender, TerminationReason, TurnConfig,
+    notify_launch,
 };
 
 const JSONRPC: &str = "2.0";
 const ID_INITIALIZE: u64 = 1;
 const ID_NEW_SESSION: u64 = 2;
 const ID_PROMPT: u64 = 3;
+/// `session/set_mode` (only sent when a mode is pinned) — a distinct correlation
+/// id; JSON-RPC ids need only be unique, not ordered.
+const ID_SET_MODE: u64 = 4;
 /// JSON-RPC "method not found" (the reply to any capability we do not advertise).
 const METHOD_NOT_FOUND: i64 = -32601;
 
@@ -162,10 +170,29 @@ pub async fn run_turn(
     sink: &mut dyn RunFactAppender,
     launch_sink: Option<LaunchSink<'_>>,
 ) -> Result<TerminationReason, AcpError> {
+    let mut config = TurnConfig::new(&AllowAll);
+    run_turn_with_config(channel, prompt, sink, &mut config, launch_sink).await
+}
+
+/// [`run_turn`] driven by a [`TurnConfig`]: authorize the agent's mid-turn
+/// `session/request_permission` through `config.resolver`, and — when
+/// `config.session_id` is set and the agent advertises `loadSession` — resume that
+/// session via `session/load` instead of `session/new` (so context survives the
+/// per-turn relaunch); otherwise open a fresh session and record its id back into
+/// `config.session_id` for the next turn. `fs`/`terminal` requests are still
+/// refused `method_not_found` — tool execution is the hand's job.
+pub async fn run_turn_with_config(
+    channel: &mut dyn AgentChannel,
+    prompt: &str,
+    sink: &mut dyn RunFactAppender,
+    config: &mut TurnConfig<'_>,
+    launch_sink: Option<LaunchSink<'_>>,
+) -> Result<TerminationReason, AcpError> {
+    let resolver = config.resolver;
     let mut wire = Wire::new(channel);
     let mut seq = 0u64;
 
-    // The process is up; the ACP handshake (initialize + session/new) begins now.
+    // The process is up; the ACP handshake (initialize + session/new|load) begins.
     notify_launch(
         launch_sink,
         AcpLaunchEvent::stage(AcpLaunchStage::Initializing),
@@ -173,27 +200,68 @@ pub async fn run_turn(
 
     // 1. initialize — advertise the latest protocol version and no fs/terminal
     //    capabilities (default `ClientCapabilities`), so those agent requests are
-    //    refused fail-closed later.
+    //    refused fail-closed later. Read back the agent's capabilities to gate a
+    //    session resume fail-closed (only load when the agent advertises it).
     wire.send_request(
         ID_INITIALIZE,
         AGENT_METHOD_NAMES.initialize,
-        // Default `ClientCapabilities` = no fs/terminal, so those agent requests are
-        // refused fail-closed later.
         InitializeRequest::new(ProtocolVersion::LATEST)
             .client_capabilities(ClientCapabilities::default()),
     )
     .await?;
-    pump_to_response(&mut wire, ID_INITIALIZE, sink, &mut seq).await?;
+    let init: InitializeResponse =
+        parse(pump_to_response(&mut wire, ID_INITIALIZE, sink, &mut seq, resolver).await?)?;
+    let can_load = init.agent_capabilities.load_session;
 
-    // 2. session/new — a fresh session rooted at the sandbox cwd, no MCP servers.
-    wire.send_request(
-        ID_NEW_SESSION,
-        AGENT_METHOD_NAMES.session_new,
-        NewSessionRequest::new("/"),
-    )
-    .await?;
-    let new_session: NewSessionResponse =
-        parse(pump_to_response(&mut wire, ID_NEW_SESSION, sink, &mut seq).await?)?;
+    // 2. session/load (resume the CLI's own session across the relaunch) when we
+    //    hold a prior id and the agent supports it; else session/new. Fail-safe:
+    //    an agent that does not advertise `loadSession` falls back to a fresh
+    //    session (the neutral thread history is the authority — never lost).
+    let (session_id, available_modes): (SessionId, Vec<String>) = match config.session_id.clone() {
+        Some(prior) if can_load => {
+            wire.send_request(
+                ID_NEW_SESSION,
+                AGENT_METHOD_NAMES.session_load,
+                LoadSessionRequest::new(SessionId::new(prior.as_str()), "/"),
+            )
+            .await?;
+            let resp: LoadSessionResponse = parse(
+                pump_to_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver).await?,
+            )?;
+            (SessionId::new(prior.as_str()), mode_ids(resp.modes))
+        }
+        _ => {
+            wire.send_request(
+                ID_NEW_SESSION,
+                AGENT_METHOD_NAMES.session_new,
+                NewSessionRequest::new("/"),
+            )
+            .await?;
+            let new_session: NewSessionResponse = parse(
+                pump_to_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver).await?,
+            )?;
+            let modes = mode_ids(new_session.modes);
+            (new_session.session_id, modes)
+        }
+    };
+    // Record the negotiated id so the caller resumes this session next turn.
+    config.session_id = Some(session_id.to_string());
+
+    // 2b. session/set_mode — pin the adapter's mode, fail-closed against the modes
+    //     the agent advertised for the session (an unsupported pin never silently
+    //     no-ops; it ends the turn with a classified fault).
+    if let Some(mode) = config.session_mode.clone() {
+        if !available_modes.iter().any(|m| *m == mode) {
+            return Err(AcpError::UnsupportedSessionMode(mode));
+        }
+        wire.send_request(
+            ID_SET_MODE,
+            AGENT_METHOD_NAMES.session_set_mode,
+            SetSessionModeRequest::new(session_id.clone(), SessionModeId::new(mode.as_str())),
+        )
+        .await?;
+        pump_to_response(&mut wire, ID_SET_MODE, sink, &mut seq, resolver).await?;
+    }
 
     // Handshake complete — the agent is live and about to accept the prompt.
     notify_launch(launch_sink, AcpLaunchEvent::stage(AcpLaunchStage::Ready));
@@ -202,11 +270,29 @@ pub async fn run_turn(
     wire.send_request(
         ID_PROMPT,
         AGENT_METHOD_NAMES.session_prompt,
-        PromptRequest::new(new_session.session_id, vec![ContentBlock::from(prompt)]),
+        PromptRequest::new(session_id, vec![ContentBlock::from(prompt)]),
     )
     .await?;
-    let prompt_result = pump_to_response(&mut wire, ID_PROMPT, sink, &mut seq).await?;
+    let prompt_result = pump_to_response(&mut wire, ID_PROMPT, sink, &mut seq, resolver).await?;
     let response: PromptResponse = parse(prompt_result)?;
+
+    // Project the turn's token usage (when reported) so the executor records it as
+    // committed thread usage, before the terminal `TurnEnd`. `real-acp` enables the
+    // SDK's `unstable_session_usage`, so this field is always present here.
+    if let Some(usage) = response.usage {
+        seq += 1;
+        sink.append(
+            seq,
+            &AgentEvent::Usage {
+                prompt_tokens: usage.input_tokens,
+                completion_tokens: usage.output_tokens,
+                cache_read_tokens: usage.cached_read_tokens.unwrap_or(0),
+                cache_creation_tokens: usage.cached_write_tokens.unwrap_or(0),
+            },
+        )
+        .await?;
+    }
+
     let reason = termination_from_stop_reason(response.stop_reason);
     seq += 1;
     sink.append(seq, &AgentEvent::TurnEnd { reason }).await?;
@@ -222,6 +308,7 @@ async fn pump_to_response(
     target_id: u64,
     sink: &mut dyn RunFactAppender,
     seq: &mut u64,
+    resolver: &dyn PermissionResolver,
 ) -> Result<serde_json::Value, AcpError> {
     loop {
         let Some(msg) = wire.read().await? else {
@@ -240,7 +327,7 @@ async fn pump_to_response(
             }
             Some(request_id) => {
                 let method = msg.method.as_deref().unwrap_or_default();
-                answer_request(wire, request_id.clone(), method, msg.params).await?;
+                answer_request(wire, request_id.clone(), method, msg.params, resolver).await?;
             }
             // A notification (no id).
             None => {
@@ -270,20 +357,31 @@ async fn project_notification(
     Ok(())
 }
 
-/// Answer an agent→client request fail-closed: a permission request selects a
-/// reject option (or `cancelled` if none is offered); every other method — the
-/// `fs`/`terminal` capabilities we never advertised — gets `method_not_found`.
+/// Answer an agent→client request: a permission request is decided by `resolver`
+/// (the neutral `PermissionPolicy`) and projected back onto the agent's own
+/// offered option — allow or reject, once-preferred over always; `cancelled` when
+/// no matching option is offered. Every other method — the `fs`/`terminal`
+/// capabilities we never advertised — gets `method_not_found`, because tool
+/// execution is the hand's job and is never proxied back over ACP.
 async fn answer_request(
     wire: &mut Wire<'_>,
     id: serde_json::Value,
     method: &str,
     params: Option<serde_json::Value>,
+    resolver: &dyn PermissionResolver,
 ) -> Result<(), AcpError> {
     if method == CLIENT_METHOD_NAMES.session_request_permission {
-        let outcome = params
-            .and_then(|p| parse::<RequestPermissionRequest>(p).ok())
-            .map(|req| reject_outcome(&req))
-            .unwrap_or(RequestPermissionOutcome::Cancelled);
+        let outcome = match params.and_then(|p| {
+            parse::<RequestPermissionRequest>(p.clone())
+                .ok()
+                .map(|r| (p, r))
+        }) {
+            Some((raw, req)) => {
+                let verdict = resolver.resolve(&permission_ask(&raw)).await;
+                select_outcome(&req, verdict)
+            }
+            None => RequestPermissionOutcome::Cancelled,
+        };
         return wire
             .send(&OutResult {
                 jsonrpc: JSONRPC,
@@ -303,19 +401,56 @@ async fn answer_request(
     .await
 }
 
-/// The fail-closed permission decision: pick a reject option if the agent offered
-/// one (once-preferred over always), else report the turn cancelled.
-fn reject_outcome(req: &RequestPermissionRequest) -> RequestPermissionOutcome {
-    let reject = req
+/// Project a raw `session/request_permission` params object into a neutral
+/// [`PermissionAsk`] — the tool's title/kind, its `toolCallId`, and its `rawInput`
+/// — read loosely so the ask survives adapter-to-adapter shape differences.
+fn permission_ask(raw: &serde_json::Value) -> PermissionAsk {
+    let tool_call = raw.get("toolCall");
+    let tool = tool_call
+        .and_then(|tc| tc.get("title").or_else(|| tc.get("kind")))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let call_id = tool_call
+        .and_then(|tc| tc.get("toolCallId"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let arguments = tool_call
+        .and_then(|tc| tc.get("rawInput"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    PermissionAsk {
+        tool,
+        call_id,
+        arguments,
+    }
+}
+
+/// Project a [`PermissionVerdict`] onto the agent's own offered option: an
+/// `Allow` picks `allow_once` (else `allow_always`); a `Deny` picks `reject_once`
+/// (else `reject_always`). When the agent offered no option of the decided kind
+/// the turn is cancelled (a well-behaved agent always offers both).
+fn select_outcome(
+    req: &RequestPermissionRequest,
+    verdict: PermissionVerdict,
+) -> RequestPermissionOutcome {
+    let (once, always) = match verdict {
+        PermissionVerdict::Allow => (
+            PermissionOptionKind::AllowOnce,
+            PermissionOptionKind::AllowAlways,
+        ),
+        PermissionVerdict::Deny => (
+            PermissionOptionKind::RejectOnce,
+            PermissionOptionKind::RejectAlways,
+        ),
+    };
+    let chosen = req
         .options
         .iter()
-        .find(|o| o.kind == PermissionOptionKind::RejectOnce)
-        .or_else(|| {
-            req.options
-                .iter()
-                .find(|o| o.kind == PermissionOptionKind::RejectAlways)
-        });
-    match reject {
+        .find(|o| o.kind == once)
+        .or_else(|| req.options.iter().find(|o| o.kind == always));
+    match chosen {
         Some(option) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
             option.option_id.clone(),
         )),
@@ -325,6 +460,20 @@ fn reject_outcome(req: &RequestPermissionRequest) -> RequestPermissionOutcome {
 
 fn parse<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, AcpError> {
     serde_json::from_value(value).map_err(|e| AcpError::Frame(e.to_string()))
+}
+
+/// The ids of the modes an agent advertised for a session (empty when it declares
+/// none), used to validate a mode pin fail-closed.
+fn mode_ids(modes: Option<SessionModeState>) -> Vec<String> {
+    modes
+        .map(|state| {
+            state
+                .available_modes
+                .into_iter()
+                .map(|mode| mode.id.0.to_string())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -354,6 +503,30 @@ mod tests {
             self.last = seq;
             self.events.push((seq, event.clone()));
             Ok(())
+        }
+    }
+
+    /// A resolver that denies every ask — stands in for a `PermissionPolicy` that
+    /// refuses the CLI's tool.
+    struct DenyAll;
+    #[async_trait]
+    impl PermissionResolver for DenyAll {
+        async fn resolve(&self, _ask: &PermissionAsk) -> PermissionVerdict {
+            PermissionVerdict::Deny
+        }
+    }
+
+    /// A resolver that records the ask it saw, then allows — proves the driver
+    /// projects the agent's request into a neutral [`PermissionAsk`].
+    #[derive(Default)]
+    struct RecordingResolver {
+        seen: Mutex<Vec<PermissionAsk>>,
+    }
+    #[async_trait]
+    impl PermissionResolver for RecordingResolver {
+        async fn resolve(&self, ask: &PermissionAsk) -> PermissionVerdict {
+            self.seen.lock().unwrap().push(ask.clone());
+            PermissionVerdict::Allow
         }
     }
 
@@ -537,16 +710,18 @@ mod tests {
         agent.await.unwrap();
     }
 
-    #[tokio::test]
-    async fn permission_request_is_answered_fail_closed_with_a_reject_option() {
+    /// A permission request offering both an allow and a reject option, over a tool
+    /// with a title and raw input (so the projected ask carries them).
+    const PERM: &str = r#"{"jsonrpc":"2.0","id":42,"method":"session/request_permission","params":{"sessionId":"sess-1","toolCall":{"toolCallId":"t1","title":"bash","rawInput":{"cmd":"ls"}},"options":[{"optionId":"ok","name":"Allow","kind":"allow_once"},{"optionId":"no","name":"Reject","kind":"reject_once"}]}}"#;
+
+    /// Drive one turn where the agent asks `PERM` mid-turn, decided by `resolver`;
+    /// return the client's raw permission reply line.
+    async fn drive_permission(resolver: &dyn PermissionResolver) -> String {
         let (mut ours, theirs) = channel();
         let seen = Arc::new(Mutex::new(String::new()));
-        // The agent asks permission mid-turn; we must select the reject option.
-        let perm = r#"{"jsonrpc":"2.0","id":42,"method":"session/request_permission","params":{"sessionId":"sess-1","toolCall":{"toolCallId":"t1"},"options":[{"optionId":"ok","name":"Allow","kind":"allow_once"},{"optionId":"no","name":"Reject","kind":"reject_once"}]}}"#;
         let seen2 = seen.clone();
         let agent = tokio::spawn(async move {
             let mut io = AgentIo::new(theirs);
-            // 1 initialize, 2 new session
             io.read().await;
             io.write_line(
                 r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#,
@@ -555,28 +730,257 @@ mod tests {
             io.read().await;
             io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-1"}}"#)
                 .await;
-            // read the prompt request (id 3), then send the permission request
-            io.read().await;
-            io.write_line(perm).await;
-            // read the client's permission reply
-            io.read().await;
+            io.read().await; // prompt request (id 3)
+            io.write_line(PERM).await;
+            io.read().await; // the client's permission reply
             *seen2.lock().unwrap() = io.line.clone();
-            // finish the prompt
             io.write_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#)
                 .await;
         });
 
         let mut sink = RecordingSink::default();
-        let reason = run_turn(ours.as_mut(), "p", &mut sink, None).await.unwrap();
+        let mut config = TurnConfig::new(resolver);
+        let reason = run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
+            .await
+            .unwrap();
         assert_eq!(reason, TerminationReason::NaturalEnd);
         agent.await.unwrap();
         let reply = seen.lock().unwrap().clone();
+        reply
+    }
+
+    #[tokio::test]
+    async fn a_denying_policy_selects_the_agents_reject_option() {
+        // The neutral policy denies → we select the agent's own reject option.
+        let reply = drive_permission(&DenyAll).await;
         assert!(
             reply.contains("\"id\":42"),
             "replied to the request id: {reply}"
         );
         assert!(reply.contains("selected"), "selected an option: {reply}");
         assert!(reply.contains("\"no\""), "the reject option id: {reply}");
+    }
+
+    #[tokio::test]
+    async fn an_allowing_policy_selects_the_agents_allow_option_and_projects_the_ask() {
+        // The neutral policy allows → we select the agent's own allow option, and
+        // the driver projected the request into a neutral ask (tool + args + id).
+        let resolver = RecordingResolver::default();
+        let reply = drive_permission(&resolver).await;
+        assert!(reply.contains("selected"), "selected an option: {reply}");
+        assert!(reply.contains("\"ok\""), "the allow option id: {reply}");
+        let seen = resolver.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "the resolver saw exactly one ask");
+        assert_eq!(seen[0].tool, "bash");
+        assert_eq!(seen[0].call_id, "t1");
+        assert_eq!(seen[0].arguments["cmd"], "ls");
+    }
+
+    #[tokio::test]
+    async fn a_prior_session_is_resumed_via_session_load_when_the_agent_supports_it() {
+        // Holding a session id and facing an agent that advertises loadSession, the
+        // driver resumes via session/load (not new) and reports the same id back.
+        let (mut ours, theirs) = channel();
+        let saw_load = Arc::new(Mutex::new(false));
+        let saw_load2 = saw_load.clone();
+        let agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            io.read().await; // initialize
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}"#,
+            )
+            .await;
+            let req2 = io.read().await.unwrap(); // session/load
+            *saw_load2.lock().unwrap() = req2.get("method").and_then(|m| m.as_str())
+                == Some(AGENT_METHOD_NAMES.session_load);
+            io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{}}"#)
+                .await;
+            io.read().await; // prompt
+            io.write_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#)
+                .await;
+        });
+
+        let mut sink = RecordingSink::default();
+        let mut config = TurnConfig::new(&AllowAll);
+        config.session_id = Some("sess-resume".into());
+        let reason = run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
+            .await
+            .unwrap();
+        assert_eq!(reason, TerminationReason::NaturalEnd);
+        assert!(*saw_load.lock().unwrap(), "the driver sent session/load");
+        assert_eq!(
+            config.session_id.as_deref(),
+            Some("sess-resume"),
+            "the resumed id is reported back for the next turn"
+        );
+        agent.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_prior_session_falls_back_to_new_when_the_agent_lacks_load() {
+        // The agent does not advertise loadSession, so even with a prior id we open
+        // a fresh session (fail-safe — the neutral thread history is the authority).
+        let (mut ours, theirs) = channel();
+        let method2 = Arc::new(Mutex::new(String::new()));
+        let m2 = method2.clone();
+        let agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            io.read().await;
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#,
+            )
+            .await;
+            let req2 = io.read().await.unwrap();
+            *m2.lock().unwrap() = req2
+                .get("method")
+                .and_then(|m| m.as_str())
+                .unwrap_or("")
+                .to_string();
+            io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"fresh"}}"#)
+                .await;
+            io.read().await;
+            io.write_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#)
+                .await;
+        });
+
+        let mut sink = RecordingSink::default();
+        let mut config = TurnConfig::new(&AllowAll);
+        config.session_id = Some("stale".into());
+        run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
+            .await
+            .unwrap();
+        assert_eq!(*method2.lock().unwrap(), AGENT_METHOD_NAMES.session_new);
+        assert_eq!(
+            config.session_id.as_deref(),
+            Some("fresh"),
+            "the fresh id replaced the stale one"
+        );
+        agent.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_pinned_session_mode_is_set_when_the_agent_advertises_it() {
+        // With a mode pinned and the agent advertising it, the driver sends
+        // session/set_mode with that mode id before prompting.
+        let (mut ours, theirs) = channel();
+        let saw = Arc::new(Mutex::new(None));
+        let saw2 = saw.clone();
+        let agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            io.read().await; // initialize
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#,
+            )
+            .await;
+            io.read().await; // session/new
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1","modes":{"currentModeId":"default","availableModes":[{"id":"default","name":"Default"},{"id":"plan","name":"Plan"}]}}}"#,
+            )
+            .await;
+            let set = io.read().await.unwrap(); // session/set_mode (id 4)
+            if set.get("method").and_then(|m| m.as_str())
+                == Some(AGENT_METHOD_NAMES.session_set_mode)
+            {
+                *saw2.lock().unwrap() = set
+                    .get("params")
+                    .and_then(|p| p.get("modeId"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+            }
+            io.write_line(r#"{"jsonrpc":"2.0","id":4,"result":{}}"#)
+                .await;
+            io.read().await; // prompt (id 3)
+            io.write_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#)
+                .await;
+        });
+
+        let mut sink = RecordingSink::default();
+        let mut config = TurnConfig::new(&AllowAll);
+        config.session_mode = Some("plan".into());
+        let reason = run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
+            .await
+            .unwrap();
+        assert_eq!(reason, TerminationReason::NaturalEnd);
+        assert_eq!(saw.lock().unwrap().as_deref(), Some("plan"));
+        agent.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unadvertised_session_mode_fails_closed() {
+        // The pinned mode is not among those the agent advertised → the turn ends
+        // with a fail-closed error, not a silently ignored pin.
+        let (mut ours, theirs) = channel();
+        let agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            io.read().await;
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#,
+            )
+            .await;
+            io.read().await; // session/new
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1","modes":{"currentModeId":"default","availableModes":[{"id":"default","name":"Default"}]}}}"#,
+            )
+            .await;
+        });
+
+        let mut sink = RecordingSink::default();
+        let mut config = TurnConfig::new(&AllowAll);
+        config.session_mode = Some("plan".into());
+        let err = run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AcpError::UnsupportedSessionMode(m) if m == "plan"));
+        agent.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_turn_usage_is_projected_as_a_usage_event() {
+        // A prompt response carrying `usage` (unstable_session_usage) projects a
+        // neutral Usage event (input→prompt, output→completion, caches mapped).
+        let (mut ours, theirs) = channel();
+        let agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            io.read().await;
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#,
+            )
+            .await;
+            io.read().await;
+            io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1"}}"#)
+                .await;
+            io.read().await; // prompt
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn","usage":{"totalTokens":30,"inputTokens":10,"outputTokens":20,"cachedReadTokens":5,"cachedWriteTokens":2}}}"#,
+            )
+            .await;
+        });
+
+        let mut sink = RecordingSink::default();
+        let mut config = TurnConfig::new(&AllowAll);
+        run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
+            .await
+            .unwrap();
+        let usage = sink
+            .events
+            .iter()
+            .find_map(|(_, e)| match e {
+                AgentEvent::Usage {
+                    prompt_tokens,
+                    completion_tokens,
+                    cache_read_tokens,
+                    cache_creation_tokens,
+                } => Some((
+                    *prompt_tokens,
+                    *completion_tokens,
+                    *cache_read_tokens,
+                    *cache_creation_tokens,
+                )),
+                _ => None,
+            })
+            .expect("a usage event was projected");
+        assert_eq!(usage, (10, 20, 5, 2));
+        agent.await.unwrap();
     }
 
     #[tokio::test]
@@ -666,7 +1070,7 @@ mod tests {
             {"optionId":"no","name":"Reject","kind":"reject_once"},
             {"optionId":"never","name":"Reject always","kind":"reject_always"},
         ]));
-        let out = reject_outcome(&req);
+        let out = select_outcome(&req, PermissionVerdict::Deny);
         assert!(matches!(out, RequestPermissionOutcome::Selected(_)));
         assert!(
             outcome_json(&out).contains("\"no\""),
@@ -681,7 +1085,7 @@ mod tests {
             {"optionId":"ok","name":"Allow","kind":"allow_once"},
             {"optionId":"never","name":"Reject always","kind":"reject_always"},
         ]));
-        let out = reject_outcome(&req);
+        let out = select_outcome(&req, PermissionVerdict::Deny);
         assert!(matches!(out, RequestPermissionOutcome::Selected(_)));
         assert!(outcome_json(&out).contains("\"never\""));
     }
@@ -692,7 +1096,7 @@ mod tests {
             {"optionId":"ok","name":"Allow","kind":"allow_once"},
         ]));
         assert!(matches!(
-            reject_outcome(&req),
+            select_outcome(&req, PermissionVerdict::Deny),
             RequestPermissionOutcome::Cancelled
         ));
     }

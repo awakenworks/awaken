@@ -11,6 +11,7 @@ awaken-provisioning-contract.workspace = true
 awaken-agent-channel.workspace = true
 awaken-protocol-acp.workspace = true
 async-trait.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "macros", "time", "process", "io-util"] }
 

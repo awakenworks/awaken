@@ -18,8 +18,12 @@ agent-client-protocol = { version = "0.10.4", optional = true }
 
 [features]
 # Substitute the official agent-client-protocol codec for the newline-JSON
-# stand-in (same projection + RunEventSink downstream).
-real-acp = ["dep:agent-client-protocol"]
+# stand-in (same projection + RunEventSink downstream). Enables the SDK's
+# `unstable_session_usage` so a turn's token usage is projected too.
+real-acp = [
+    "dep:agent-client-protocol",
+    "agent-client-protocol/unstable_session_usage",
+]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "io-util", "time", "sync"] }

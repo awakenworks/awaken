@@ -166,6 +166,8 @@ async fn finish(
             &activation.run_id,
             messages,
             phase.clone(),
+            None,
+            Vec::new(),
         )
         .await
         .map_err(|e| Error::Commit(e.to_string()))?;
