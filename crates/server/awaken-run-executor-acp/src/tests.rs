@@ -225,6 +225,47 @@ async fn drives_a_turn_commits_messages_and_returns_natural_end() {
 }
 
 #[tokio::test]
+async fn live_inbox_steer_folds_into_a_relaunched_turn() {
+    // ADR-0054 P4: a steer message queued on the run's live inbox is drained at the
+    // turn boundary, folded (re-identified) into the transcript, and drives a second
+    // relaunched turn — so steer/redirect reaches an external-CLI run.
+    use awaken_runtime_contract::live_inbox::{LiveInbox, MessageOrigin};
+
+    let e = exec(vec![
+        r#"{"type":"message","text":"turn"}"#.into(),
+        r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
+    ]);
+    let inbox = LiveInbox::new();
+    let _ = inbox.offer_as(
+        MessageOrigin::External,
+        Message::text(MessageId("client-id".into()), Role::User, "steer me"),
+    );
+    let coord = Arc::new(RecordingCoordinator::default());
+    let phase = e
+        .execute(
+            activation(),
+            RuntimeRunContext::new()
+                .with_commit(coord.clone())
+                .with_live_inbox(inbox.clone()),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    let commits = coord.commits.lock().unwrap();
+    assert_eq!(commits.len(), 1, "one commit at the terminal phase");
+    let steer = commits[0]
+        .messages
+        .iter()
+        .find(|m| m.id.0 == "run-1-inbox-0")
+        .expect("steer drained + re-identified into the committed transcript");
+    assert_eq!(steer.text_content(), "steer me");
+    // The caller-supplied id never reaches the transcript; the inbox was consumed.
+    assert!(commits[0].messages.iter().all(|m| m.id.0 != "client-id"));
+    assert!(inbox.list().is_empty());
+}
+
+#[tokio::test]
 async fn a_tool_call_and_its_result_commit_as_neutral_messages() {
     use awaken_agent_contract::agent::content::ContentBlock;
 

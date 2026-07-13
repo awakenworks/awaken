@@ -34,12 +34,20 @@ impl SharedHost {
         if let Some(acp) = &self.acp
             && acp.is_acp(thread)
         {
-            let context = ctx.context_for(&activation).await;
-            return acp
+            // The ACP executor runs inline under this session ctx, so it can drain
+            // the same live inbox the offer side reaches (ADR-0054 P4): wire it so
+            // steer/redirect works for external-CLI runs, then close it on return.
+            let context = ctx
+                .context_for(&activation)
+                .await
+                .with_live_inbox(ctx.open_live_inbox());
+            let result = acp
                 .executor
                 .execute(activation, context)
                 .await
                 .map_err(|e| HostError::internal(e.to_string()));
+            ctx.close_live_inbox();
+            return result;
         }
         if supersede {
             // Durable + superseding: enqueue (marking prior pending superseded) and
