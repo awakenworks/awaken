@@ -523,6 +523,7 @@ name = "awaken-file-store"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "awaken-resource-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "blake3",
@@ -655,6 +656,7 @@ name = "awaken-memory-store"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "awaken-resource-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "rusqlite",
@@ -845,6 +847,15 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "awaken-resource-contract"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1149,6 +1160,7 @@ name = "awaken-skill-store"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "awaken-resource-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "rusqlite",
