@@ -12,7 +12,7 @@
 //! scoped (404 unknown id); and the bootstrap token can be rotated away —
 //! revoke it with a freshly minted admin token and only the successor works.
 
-use awaken_server::{BOOTSTRAP_WORKSPACE, TokenSpec, build_secured_management_router};
+use awaken_cli::{BOOTSTRAP_WORKSPACE, TokenSpec, build_secured_management_router};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -74,7 +74,7 @@ async fn call(
 }
 
 fn admin_token(dir: &std::path::Path) -> String {
-    std::fs::read_to_string(dir.join(awaken_server::ADMIN_TOKEN_FILE))
+    std::fs::read_to_string(dir.join(awaken_cli::ADMIN_TOKEN_FILE))
         .expect("bootstrap admin-token file")
 }
 
