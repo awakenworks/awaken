@@ -5,6 +5,14 @@
 //! migration seam). Durable under `AWAKEN_STORAGE_DIR/threads/<t>/config_home` when
 //! a storage dir is set; a process-lifetime temp dir otherwise — matching how the
 //! host picks durability for the commit and memory stores.
+//!
+//! This lives in the ACP executor crate (not the host) because it is the shared
+//! kernel of the ACP config-home *path convention*: both the host's launch
+//! preparation and the cross-machine session recovery ([`DirSessionHome`]) derive
+//! their paths through it, so the convention has one owner. It has no domain
+//! dependency (pure std), so the host depends on it rather than owning it.
+//!
+//! [`DirSessionHome`]: crate::DirSessionHome
 
 use std::fs;
 use std::io;
