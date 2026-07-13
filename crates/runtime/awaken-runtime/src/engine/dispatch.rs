@@ -20,6 +20,7 @@ pub(super) async fn run_tool_calls(
     resolved: &ResolvedRun,
     env: &ResolvedExecutionEnv,
     run_id: &RunId,
+    step: usize,
     calls: Vec<ToolCall>,
     transcript: &mut Vec<Message>,
     new_messages: &mut Vec<Message>,
@@ -143,7 +144,8 @@ pub(super) async fn run_tool_calls(
         for command in &output.state {
             store.apply(command);
         }
-        let (reactions, reminders) = collect_tool_reactions(env, &call, &output, store).await;
+        let (reactions, reminders) =
+            collect_tool_reactions(env, run_id, step, &call, &output, store).await;
         for command in &reactions {
             store.apply(command);
         }

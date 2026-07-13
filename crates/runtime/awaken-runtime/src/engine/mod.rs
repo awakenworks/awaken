@@ -34,7 +34,8 @@ use awaken_runtime_contract::llm::{
 };
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
 use awaken_runtime_contract::plugin::{
-    PhaseContext, PhaseHookPoint, ResolvedExecutionEnv, RunEndContext, RunEndDecision,
+    AfterToolContext, PhaseContext, PhaseHookPoint, ResolvedExecutionEnv, RunEndContext,
+    RunEndDecision,
 };
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ResolvedRun, ToolPresentation};
 use awaken_runtime_contract::resolver::{self, RunResolver};
@@ -287,7 +288,7 @@ async fn drive_resumed(
     let mut transcript = reader.committed_messages(thread_id);
     let mut store = store_from_commands(reader.committed_state(thread_id));
     let (resumed, seed_state) =
-        resume_into_messages(runtime, env, ticket, result, &store, context).await;
+        resume_into_messages(runtime, env, run_id, ticket, result, &store, context).await;
     // The resumed tool's own state is folded into the store so a later step in
     // this resume observes the advanced state; it also seeds the attempt's batch
     // (kept first) so step commits and conflict validation cover it too.
@@ -915,6 +916,7 @@ async fn drive(
             resolved,
             env,
             run_id,
+            step,
             calls,
             &mut transcript,
             &mut new_messages,
@@ -1214,6 +1216,7 @@ async fn run_phase_hooks(
             run_id: run_id.clone(),
             step,
             point,
+            after_tool: None,
         };
         let reaction = hook.on_phase(&ctx, conversation, store).await;
         // Apply the reaction's state to the live store before the next hook, so a
@@ -1435,6 +1438,7 @@ async fn resume_delegation(
 async fn resume_into_messages(
     runtime: &Runtime,
     env: &ResolvedExecutionEnv,
+    run_id: &RunId,
     ticket: &WaitingTicket,
     result: ResumeResult,
     store: &Store,
@@ -1460,7 +1464,7 @@ async fn resume_into_messages(
                     work.apply(command);
                 }
                 let (reactions, reminders) =
-                    collect_tool_reactions(env, &call, &output, &work).await;
+                    collect_tool_reactions(env, run_id, 0, &call, &output, &work).await;
                 state.extend(reactions);
                 messages.extend(reminders);
             }
@@ -1481,7 +1485,7 @@ async fn resume_into_messages(
                     work.apply(command);
                 }
                 let (reactions, reminders) =
-                    collect_tool_reactions(env, &call, &output, &work).await;
+                    collect_tool_reactions(env, run_id, 0, &call, &output, &work).await;
                 state.extend(reactions);
                 messages.extend(reminders);
                 (messages, state)
@@ -1551,13 +1555,16 @@ fn store_from_commands(commands: Vec<StateCommand>) -> Store {
     Store::rebuild(&kept)
 }
 
-/// Consult the tool-outcome hooks for one executed call. `state` must already
-/// reflect the tool's own output state; each hook reads the folded state and may
-/// stage further state and reminder messages. Returns the hooks' additional
-/// state commands and messages (the tool's own output state is staged by the
-/// caller).
+/// Consult the `AfterTool` phase hooks for one executed call (ADR-0055 folds the
+/// former `ToolOutcomeHook` into the phase-hook model). `state` must already
+/// reflect the tool's own output state; each hook reads the folded state and the
+/// executed call/output on `PhaseContext::after_tool`, and may stage further state
+/// and reminder messages. Returns the hooks' additional state commands and
+/// messages (the tool's own output state is staged by the caller).
 async fn collect_tool_reactions(
     env: &ResolvedExecutionEnv,
+    run_id: &RunId,
+    step: usize,
     call: &ToolCall,
     output: &ToolOutput,
     state: &Store,
@@ -1565,8 +1572,17 @@ async fn collect_tool_reactions(
     let mut work = state.clone();
     let mut commands: Vec<StateCommand> = Vec::new();
     let mut messages: Vec<Message> = Vec::new();
-    for observer in env.tool_observers() {
-        let reaction = observer.after_tool(call, output, &work).await;
+    let ctx = PhaseContext {
+        run_id: run_id.clone(),
+        step,
+        point: PhaseHookPoint::AfterTool,
+        after_tool: Some(AfterToolContext {
+            call: call.clone(),
+            output: output.clone(),
+        }),
+    };
+    for hook in env.hooks_for(PhaseHookPoint::AfterTool) {
+        let reaction = hook.on_phase(&ctx, &[], &work).await;
         for command in &reaction.state {
             work.apply(command);
             commands.push(command.clone());

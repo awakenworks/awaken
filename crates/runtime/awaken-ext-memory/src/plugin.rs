@@ -1,16 +1,17 @@
 //! Recall as a plugin hook.
 //!
 //! [`MemoryPlugin`] contributes a `BeforeInference` [`PhaseHook`] that injects
-//! recall of saved memories as **request-only** context — the same message-
-//! injection shape a tool-outcome hook uses, but at inference time and never
-//! committed (G13). This is how recall reaches the model through the plugin
-//! framework (under a `CapabilityBound`, G30) rather than a host side channel.
+//! recall of saved memories as **request-only** context — prepended at inference
+//! time and never committed (G13). This is how recall reaches the model through
+//! the plugin framework (under a `CapabilityBound`, G30) rather than a host side
+//! channel.
 //!
 //! A small store injects the newest memories bounded (①). Once it grows past
 //! `bounds.select_over` and a [`RecallSelector`] is wired, the hook picks the
 //! memories relevant to the user's message (③) through a single `memory-selector`
-//! sub-agent call — run at most once per run (cached by `run_id`, since the hook
-//! fires every inference step).
+//! sub-agent call — run at most once per run, gated on the run-scoped
+//! [`RecallContext`] state so it replays across steps and a resumed run instead
+//! of recomputing (ADR-0055).
 
 use std::sync::Arc;
 
@@ -252,6 +253,7 @@ mod tests {
             run_id: RunId("r".into()),
             step: 0,
             point: PhaseHookPoint::BeforeInference,
+            after_tool: None,
         }
     }
 

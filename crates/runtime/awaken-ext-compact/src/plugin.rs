@@ -279,6 +279,7 @@ mod tests {
             run_id: RunId("r".into()),
             step: 0,
             point: PhaseHookPoint::BeforeInference,
+            after_tool: None,
         }
     }
 

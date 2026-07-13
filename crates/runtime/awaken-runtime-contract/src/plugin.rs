@@ -28,6 +28,11 @@ pub enum PhaseHookPoint {
     StepStart,
     BeforeInference,
     AfterInference,
+    /// After one tool call produced its output (fires once per executed call, and
+    /// again when an approved pending call is replayed on resume). The executed
+    /// call and its output are carried on [`PhaseContext::after_tool`]. Folds the
+    /// former separate `ToolOutcomeHook` into the phase-hook model (ADR-0055).
+    AfterTool,
     StepEnd,
 }
 
@@ -97,9 +102,6 @@ pub struct CapabilityBound {
     /// Tool-gate ids this plugin may contribute (a pre-execution decision that
     /// can only restrict, never grant — permission stays the sole grant, G21).
     pub tool_gates: IdBound,
-    /// Tool-outcome hook ids this plugin may contribute (a post-execution
-    /// reaction staging state and reminder messages).
-    pub tool_observers: IdBound,
 }
 
 /// Declared plugin identity and bound. One `validate`-able home for config.
@@ -112,24 +114,35 @@ pub struct PluginManifest {
     pub bound: CapabilityBound,
 }
 
+/// The executed tool call and its output, carried on [`PhaseContext`] at
+/// [`PhaseHookPoint::AfterTool`] so a phase hook can react to a tool result (the
+/// data the former `ToolOutcomeHook` received directly).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AfterToolContext {
+    pub call: ToolCall,
+    pub output: ToolOutput,
+}
+
 /// Context passed to a phase hook. Immutable data; a hook returns state commands
 /// rather than mutating anything directly.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PhaseContext {
     pub run_id: RunId,
     pub step: usize,
     pub point: PhaseHookPoint,
+    /// Present only at [`PhaseHookPoint::AfterTool`]: the executed call and its
+    /// output. `None` at every other point.
+    pub after_tool: Option<AfterToolContext>,
 }
 
 /// What a hook stages back into the loop: durable state commands plus messages.
-/// One shape shared by both message-injecting hook families ([`PhaseHook`] and
-/// [`ToolOutcomeHook`]); *how* the `messages` reach the model is the hook point's
-/// concern, not the type's:
+/// *How* the `messages` reach the model is the hook point's concern, not the
+/// type's:
 /// - a [`PhaseHook`] at `BeforeInference` returns request-only context, prepended
 ///   to that inference and never committed (ignored at other phase points);
-/// - a [`ToolOutcomeHook`] returns committed reminder messages appended to the
-///   transcript, so they reach the next inference and replay deterministically.
-/// Both are existing aggregates — a reaction introduces no new effect type.
+/// - a [`PhaseHook`] at `AfterTool` returns committed reminder messages appended
+///   to the transcript, so they reach the next inference and replay
+///   deterministically.
 #[derive(Debug, Default, Clone)]
 pub struct HookReaction {
     pub state: Vec<StateCommand>,
@@ -146,7 +159,7 @@ impl HookReaction {
     }
 
     /// A reaction that only injects messages (request-only context for a
-    /// `BeforeInference` phase hook, or committed reminders for a tool-outcome hook).
+    /// `BeforeInference` phase hook, or committed reminders for an `AfterTool` one).
     pub fn messages(messages: Vec<Message>) -> Self {
         Self {
             state: Vec::new(),
@@ -222,20 +235,6 @@ pub trait RunEndGuard: Send + Sync {
     async fn evaluate(&self, ctx: &RunEndContext<'_>) -> RunEndDecision;
 }
 
-/// A post-execution reaction port — the symmetric partner of the pre-execution
-/// gate. The loop calls it at the one point a tool result is produced (and again
-/// when an approved pending call is replayed on resume), passing the executed
-/// call, its output, and the run's read-only state. It never authorizes; it only
-/// stages state and reminders. Its [`HookReaction::messages`] are committed
-/// reminder messages appended to the transcript (G1).
-#[async_trait]
-pub trait ToolOutcomeHook: Send + Sync {
-    /// Stable id, checked against the plugin's `CapabilityBound` (G30).
-    fn id(&self) -> &str;
-    async fn after_tool(&self, call: &ToolCall, output: &ToolOutput, state: &Store)
-    -> HookReaction;
-}
-
 /// A tool contributed with its executable behavior and descriptor. Used by
 /// plugins whose tool set is dynamic (e.g. an MCP server's live tools), where
 /// the id is not known at composition time and so cannot be pre-registered on
@@ -260,8 +259,6 @@ pub struct Contributions {
     pub run_end_guards: Vec<Arc<dyn RunEndGuard>>,
     /// Pre-execution tool gates this plugin contributes.
     pub tool_gates: Vec<Arc<dyn ToolGateHook>>,
-    /// Post-execution tool-outcome hooks this plugin contributes.
-    pub tool_observers: Vec<Arc<dyn ToolOutcomeHook>>,
     /// Tools contributed with their executable behavior, for dynamic tool sets.
     pub dynamic_tools: Vec<DynamicTool>,
 }
@@ -276,7 +273,6 @@ impl Contributions {
             action_kinds: Vec::new(),
             run_end_guards: Vec::new(),
             tool_gates: Vec::new(),
-            tool_observers: Vec::new(),
             dynamic_tools: Vec::new(),
         }
     }
@@ -348,8 +344,6 @@ pub enum BoundViolation {
     RunEndGuard { plugin: String, id: String },
     #[error("plugin {plugin} contributes tool gate {id:?} outside its declared bound")]
     ToolGate { plugin: String, id: String },
-    #[error("plugin {plugin} contributes tool observer {id:?} outside its declared bound")]
-    ToolObserver { plugin: String, id: String },
 }
 
 /// Enforce that a plugin's actual contributions are a subset of its bound (G30).
@@ -421,14 +415,6 @@ pub fn enforce_bound(
             });
         }
     }
-    for observer in &contributions.tool_observers {
-        if !bound.tool_observers.allows(observer.id()) {
-            return Err(BoundViolation::ToolObserver {
-                plugin: id.clone(),
-                id: observer.id().to_string(),
-            });
-        }
-    }
     Ok(())
 }
 
@@ -473,9 +459,6 @@ pub struct ResolvedExecutionEnv {
     /// Pre-execution tool gates the selected plugins contribute, in dependency
     /// order. Consulted after the host gate; each can only restrict.
     pub tool_gates: Vec<Arc<dyn ToolGateHook>>,
-    /// Post-execution tool-outcome hooks the selected plugins contribute, in
-    /// dependency order. Consulted at each tool result.
-    pub tool_observers: Vec<Arc<dyn ToolOutcomeHook>>,
     /// Dynamic tools (descriptor + executable) contributed by the selected
     /// plugins, in dependency order. Merged into the model-visible tool face and
     /// consulted for execution alongside the runtime's static tool registry.
@@ -512,7 +495,6 @@ impl ResolvedExecutionEnv {
         let mut phase_hooks: Vec<Arc<dyn PhaseHook>> = Vec::new();
         let mut run_end_guards: Vec<Arc<dyn RunEndGuard>> = Vec::new();
         let mut tool_gates: Vec<Arc<dyn ToolGateHook>> = Vec::new();
-        let mut tool_observers: Vec<Arc<dyn ToolOutcomeHook>> = Vec::new();
         let mut dynamic_tools: Vec<DynamicTool> = Vec::new();
         let mut action_kinds: Vec<String> = Vec::new();
         let mut action_owner: std::collections::BTreeMap<String, String> =
@@ -554,7 +536,6 @@ impl ResolvedExecutionEnv {
             phase_hooks.extend(contributions.phase_hooks.iter().cloned());
             run_end_guards.extend(contributions.run_end_guards.iter().cloned());
             tool_gates.extend(contributions.tool_gates.iter().cloned());
-            tool_observers.extend(contributions.tool_observers.iter().cloned());
             for kind in &contributions.action_kinds {
                 if let Some(first) = action_owner.get(kind) {
                     return Err(MergeError::DuplicateActionKind {
@@ -576,7 +557,6 @@ impl ResolvedExecutionEnv {
             action_kinds,
             run_end_guards,
             tool_gates,
-            tool_observers,
             dynamic_tools,
         })
     }
@@ -621,11 +601,6 @@ impl ResolvedExecutionEnv {
     /// Plugin-contributed pre-execution tool gates, in dependency order.
     pub fn tool_gates(&self) -> &[Arc<dyn ToolGateHook>] {
         &self.tool_gates
-    }
-
-    /// Plugin-contributed post-execution tool-outcome hooks, in dependency order.
-    pub fn tool_observers(&self) -> &[Arc<dyn ToolOutcomeHook>] {
-        &self.tool_observers
     }
 }
 
