@@ -435,8 +435,15 @@ async fn a_resolver_error_is_swallowed_and_the_drain_survives() {
         }
     })
     .await;
-    assert!(claimed, "the orphan run is present (claimed but never driven)");
-    assert_eq!(commit.commit_count(), 0, "nothing was driven for the orphan");
+    assert!(
+        claimed,
+        "the orphan run is present (claimed but never driven)"
+    );
+    assert_eq!(
+        commit.commit_count(),
+        0,
+        "nothing was driven for the orphan"
+    );
 
     // The drain did NOT die: a run on a mapped thread still drains.
     pool.submit(activation_on("good-run", "thread-good"))
@@ -715,7 +722,10 @@ async fn the_maintenance_loop_reaps_a_poison_run_then_gcs_it() {
     // budget below. The pool's single drain will claim it first and block in its tool,
     // so the drain can never reach the poison.
     store
-        .enqueue(RunExecutionRequest::new(activation_on("busy", "thread-busy")))
+        .enqueue(RunExecutionRequest::new(activation_on(
+            "busy",
+            "thread-busy",
+        )))
         .await
         .unwrap();
     assert!(store.claim("dead-a", 1_000, 0).await.unwrap().is_some());

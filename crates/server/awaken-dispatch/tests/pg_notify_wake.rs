@@ -108,7 +108,10 @@ async fn listener_reconnects_after_its_connection_is_dropped() {
     let wait_task = tokio::spawn(async move { waiter.wait().await });
     tokio::time::sleep(Duration::from_millis(300)).await;
     let republisher = PgNotifyWake::new(pool.clone(), channel);
-    republisher.publish().await.expect("publish after reconnect");
+    republisher
+        .publish()
+        .await
+        .expect("publish after reconnect");
     let woke = tokio::time::timeout(Duration::from_secs(5), wait_task).await;
     assert!(
         woke.is_ok(),
