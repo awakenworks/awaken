@@ -15,6 +15,7 @@ mod admin_assistant;
 mod authz;
 mod brain_admin;
 mod config_executor;
+mod control_stores;
 mod hand_server;
 mod model_resolver;
 mod models;
@@ -1566,6 +1567,150 @@ fn durable_management_stores(dir: &std::path::Path, key: &[u8; 32]) -> Managemen
     }
 }
 
+/// Open the control-plane stores per the [`ControlStoreConfig`] — each component on
+/// its own database (SQLite file or shared Postgres). This generalizes
+/// [`durable_management_stores`] (which is the all-SQLite bundle special case): each
+/// store independently honors its `AWAKEN_<COMPONENT>_DB` override, so credentials can
+/// live on a hardened Postgres while config stays elsewhere, and a separate control /
+/// server process can share the same per-component databases (Option A, shared-DB).
+async fn open_management_stores(
+    cfg: crate::control_stores::ControlStoreConfig,
+    key: &[u8; 32],
+) -> ManagementStores {
+    use crate::control_stores::StoreBackend;
+
+    // Create the parent directory for any SQLite path (a bundle dir or a custom path).
+    fn ensure_parent(backend: &StoreBackend) {
+        if let StoreBackend::Sqlite(path) = backend {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("create control-store directory");
+            }
+        }
+    }
+    let path = |p: &std::path::Path| p.to_string_lossy().into_owned();
+
+    ensure_parent(&cfg.catalog);
+    let catalog: Arc<dyn awaken_model_catalog::repo::CatalogRepo> = match &cfg.catalog {
+        StoreBackend::Sqlite(p) => Arc::new(
+            awaken_model_catalog::SqliteCatalogRepo::open(&path(p)).expect("open catalog sqlite"),
+        ),
+        StoreBackend::Postgres(url) => Arc::new(
+            awaken_model_catalog::PostgresCatalogRepo::connect(url)
+                .await
+                .expect("connect catalog postgres"),
+        ),
+    };
+
+    // The credential repo and its sealed-secret blobs share the one credential backend.
+    ensure_parent(&cfg.credential);
+    let (credentials, secrets): (
+        Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
+        Arc<dyn awaken_credential_vault::SecretStore>,
+    ) = match &cfg.credential {
+        StoreBackend::Sqlite(p) => {
+            let file = path(p);
+            let creds = Arc::new(
+                awaken_credential_vault::SqliteCredentialRepo::open(&file)
+                    .expect("open credential sqlite"),
+            );
+            let blobs = awaken_credential_vault::SqliteSealedBlobStore::open(&file)
+                .expect("open credential sealed-blob sqlite");
+            (
+                creds,
+                Arc::new(awaken_credential_vault::SealedAeadSecretStore::over(
+                    key,
+                    Arc::new(blobs),
+                )),
+            )
+        }
+        StoreBackend::Postgres(url) => {
+            let creds = Arc::new(
+                awaken_credential_vault::PostgresCredentialRepo::connect(url)
+                    .await
+                    .expect("connect credential postgres"),
+            );
+            let blobs = awaken_credential_vault::PostgresSealedBlobStore::connect(url)
+                .await
+                .expect("connect credential sealed-blob postgres");
+            (
+                creds,
+                Arc::new(awaken_credential_vault::SealedAeadSecretStore::over(
+                    key,
+                    Arc::new(blobs),
+                )),
+            )
+        }
+    };
+
+    // The admin aggregate backs three ports (profiles / MCP / webhooks) off one store.
+    ensure_parent(&cfg.admin);
+    let admin_profiles: Arc<dyn awaken_admin_config_api::InferenceProfileStore>;
+    let admin_mcp: Arc<dyn awaken_admin_config_api::McpStore>;
+    let admin_webhooks: Arc<dyn awaken_admin_config_api::WebhookStore>;
+    match &cfg.admin {
+        StoreBackend::Sqlite(p) => {
+            let admin = Arc::new(
+                awaken_admin_config_api::SqliteAdminStore::open(&path(p)).expect("open admin sqlite"),
+            );
+            admin_profiles = admin.clone();
+            admin_mcp = admin.clone();
+            admin_webhooks = admin;
+        }
+        StoreBackend::Postgres(url) => {
+            // `PostgresAdminStore::connect` builds its own runtime and blocks, so it
+            // must run off the async worker thread to avoid a nested-runtime panic.
+            let url = url.clone();
+            let admin = Arc::new(
+                tokio::task::spawn_blocking(move || {
+                    awaken_admin_config_api::PostgresAdminStore::connect(&url)
+                })
+                .await
+                .expect("join admin postgres connect")
+                .expect("connect admin postgres"),
+            );
+            admin_profiles = admin.clone();
+            admin_mcp = admin.clone();
+            admin_webhooks = admin;
+        }
+    }
+
+    ensure_parent(&cfg.sessions);
+    let sessions: Arc<dyn awaken_protocol_managed::ManagedSessionRepository> = match &cfg.sessions {
+        StoreBackend::Sqlite(p) => Arc::new(
+            awaken_runtime_host::SqliteManagedSessionRepository::open(&path(p))
+                .expect("open sessions sqlite"),
+        ),
+        StoreBackend::Postgres(url) => Arc::new(
+            awaken_runtime_host::PostgresManagedSessionRepository::connect(url)
+                .await
+                .expect("connect sessions postgres"),
+        ),
+    };
+
+    ensure_parent(&cfg.config);
+    let config: Arc<dyn awaken_config_store::ScopedConfigRegistry> = match &cfg.config {
+        StoreBackend::Sqlite(p) => Arc::new(
+            awaken_config_store::SqliteConfigStore::open(&path(p)).expect("open config sqlite"),
+        ),
+        StoreBackend::Postgres(url) => Arc::new(
+            awaken_config_store::PostgresConfigStore::connect(url)
+                .await
+                .expect("connect config postgres"),
+        ),
+    };
+
+    ManagementStores {
+        catalog,
+        credentials,
+        secrets,
+        profiles: admin_profiles,
+        mcp: admin_mcp,
+        webhooks: admin_webhooks,
+        sessions,
+        config,
+    }
+}
+
 /// Parse `AWAKEN_MGMT_SEAL_KEY`: exactly 64 hex characters (a 32-byte AEAD key).
 fn parse_seal_key(hex: &str) -> Result<[u8; 32], String> {
     let hex = hex.trim();
@@ -1647,11 +1792,10 @@ pub async fn build_management_router() -> Router {
     match std::env::var("AWAKEN_MGMT_DIR") {
         Ok(dir) => {
             let key = mgmt_seal_key_from_env();
-            management_router_over(
-                durable_management_stores(std::path::Path::new(&dir), &key),
-                iam,
-            )
-            .await
+            // Each control-plane store honors its own `AWAKEN_<COMPONENT>_DB` override
+            // (SQLite path or shared Postgres), defaulting to `<dir>/<name>.db`.
+            let cfg = crate::control_stores::ControlStoreConfig::from_env(std::path::Path::new(&dir));
+            management_router_over(open_management_stores(cfg, &key).await, iam).await
         }
         Err(_) => management_router_over(in_memory_management_stores(), iam).await,
     }

@@ -51,12 +51,12 @@ awaken-provider-genai = { workspace = true }
 # The management-plane HTTP surfaces this binary mounts: admin config CRUD and the
 # Managed vault/credential front door, over shared stores — in-memory by default,
 # SQLite-backed when AWAKEN_MGMT_DIR selects durable persistence (`sqlite` features).
-awaken-admin-config-api = { workspace = true, features = ["sqlite"] }
-awaken-model-catalog = { workspace = true, features = ["sqlite"] }
+awaken-admin-config-api = { workspace = true, features = ["sqlite", "postgres"] }
+awaken-model-catalog = { workspace = true, features = ["sqlite", "postgres"] }
 # `oauth-command`: refresh a Google OAuth2 token (gcloud) for the `real-gemini` mode.
 # `sqlite` + `sealed-aead`: the durable management plane persists secret-free rows in
 # SQLite and secrets only as AEAD-sealed blobs under AWAKEN_MGMT_SEAL_KEY.
-awaken-credential-vault = { workspace = true, features = ["oauth-command", "sqlite", "sealed-aead"] }
+awaken-credential-vault = { workspace = true, features = ["oauth-command", "sqlite", "sealed-aead", "postgres"] }
 # Data-subject consent/erasure store (ADR-0050): backs the /v1/user_profiles/:id/erasure endpoint.
 awaken-data-subject = { workspace = true }
 # Embedded IAM (ADR-0042/0043 P1): AWAKEN_MGMT_IAM=embedded gates the management
