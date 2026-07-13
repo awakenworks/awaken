@@ -769,3 +769,316 @@ async fn ctx_for_installs_a_catalog_so_any_node_can_resolve_a_claimed_run() {
         "ctx_for must install a catalog on the session runtime (fingerprint was empty)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// run/resume fail-closed boundaries (ADR-0048 gap review)
+//
+// These guard the double-run / wrong-tool / forged-approval seams: a caller must
+// not be able to start a second turn on a parked thread, resume a run that never
+// parked, answer the wrong pending tool, or cross the built-in↔client-executed
+// binding when resuming. All of them must fail *closed* with a BadRequest and
+// leave the run untouched.
+// ---------------------------------------------------------------------------
+
+/// Parks on the Ask-gated built-in `write` until it sees a tool result, then ends.
+struct ParkOnWriteModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for ParkOnWriteModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        use awaken_runtime_contract::llm::ToolCall;
+        let saw_tool = request.messages.iter().any(|m| m.role == ChatRole::Tool);
+        let output = if saw_tool {
+            AssistantOutput::text("done")
+        } else {
+            AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "w1".into(),
+                tool_id: "write".into(),
+                arguments: serde_json::json!({ "path": "note.txt", "content": "x" }),
+            }])
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+/// Calls the client-executed tool `lookup` until it sees a tool result, then ends
+/// by echoing what the result carried — so a test can prove the delivered client
+/// result actually reached the model's next inference.
+struct ClientLookupModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for ClientLookupModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        use awaken_runtime_contract::llm::ToolCall;
+        let tool_text = request
+            .messages
+            .iter()
+            .filter(|m| m.role == ChatRole::Tool)
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                ContentBlock::ToolResult { content, .. } => Some(block_text(content)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let output = if tool_text.is_empty() {
+            AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "c1".into(),
+                tool_id: "lookup".into(),
+                arguments: serde_json::json!({ "q": "weather" }),
+            }])
+        } else {
+            AssistantOutput::text(format!("result was {tool_text}"))
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+fn user(text: &str) -> Vec<Message> {
+    vec![Message::text(MessageId("u1".into()), Role::User, text)]
+}
+
+/// A thread parked on a tool decision must reject a fresh `run`: starting a second
+/// turn over a parked run would double-execute the parked turn's side effects. The
+/// guard fails closed with BadRequest and does not touch the park.
+#[tokio::test]
+async fn run_on_a_parked_thread_fails_closed() {
+    let host = SharedHost::new(Arc::new(ParkOnWriteModel), "stub");
+    let r1 = host
+        .run(None, "t-parked", user("hi"))
+        .await
+        .expect("turn 1");
+    assert!(matches!(r1.phase, Phase::Waiting), "turn parks on write");
+
+    let err = host
+        .run(None, "t-parked", user("again"))
+        .await
+        .err()
+        .expect("a second run on a parked thread must fail");
+    assert_eq!(err.kind, HostErrorKind::BadRequest);
+    assert!(
+        err.message.contains("awaiting a tool decision"),
+        "message names the park: {}",
+        err.message
+    );
+
+    // The park still resumes cleanly afterwards — the rejected run was a no-op.
+    let r2 = host
+        .resume(
+            "t-parked",
+            "w1",
+            HostResume::Confirm {
+                allow: true,
+                note: None,
+            },
+        )
+        .await
+        .expect("resume the untouched park");
+    assert!(matches!(r2.phase, Phase::Ended(_)));
+}
+
+/// Resuming a thread that has no parked run is a caller error, not a panic: there
+/// is no run to answer, so it fails closed with BadRequest.
+#[tokio::test]
+async fn resume_with_no_parked_run_fails_closed() {
+    let host = SharedHost::new(Arc::new(ParkOnWriteModel), "stub");
+    let err = host
+        .resume(
+            "t-idle",
+            "w1",
+            HostResume::Confirm {
+                allow: true,
+                note: None,
+            },
+        )
+        .await
+        .err()
+        .expect("resume with nothing parked must fail");
+    assert_eq!(err.kind, HostErrorKind::BadRequest);
+    assert!(
+        err.message.contains("no parked run"),
+        "message names the missing park: {}",
+        err.message
+    );
+}
+
+/// A resume whose `tool_use_id` does not name the pending tool must be rejected —
+/// otherwise a caller could resume the wrong tool. Fails closed with BadRequest and
+/// the real park survives.
+#[tokio::test]
+async fn resume_with_a_wrong_tool_use_id_fails_closed() {
+    let host = SharedHost::new(Arc::new(ParkOnWriteModel), "stub");
+    let r1 = host
+        .run(None, "t-wrongid", user("hi"))
+        .await
+        .expect("turn 1");
+    assert!(matches!(r1.phase, Phase::Waiting));
+
+    let err = host
+        .resume(
+            "t-wrongid",
+            "not-the-pending-id",
+            HostResume::Confirm {
+                allow: true,
+                note: None,
+            },
+        )
+        .await
+        .err()
+        .expect("a mismatched tool_use_id must fail");
+    assert_eq!(err.kind, HostErrorKind::BadRequest);
+    assert!(
+        err.message.contains("does not match the pending tool"),
+        "message names the mismatch: {}",
+        err.message
+    );
+
+    // The genuine id still resumes — the mismatch did not consume the park.
+    let r2 = host
+        .resume(
+            "t-wrongid",
+            &r1.pending.expect("a pending tool").tool_use_id,
+            HostResume::Confirm {
+                allow: true,
+                note: None,
+            },
+        )
+        .await
+        .expect("the real id resumes");
+    assert!(matches!(r2.phase, Phase::Ended(_)));
+}
+
+/// The built-in↔client binding is enforced on resume: a client-tool *result* may
+/// not answer a built-in (Ask-gated) tool. Failing open here would let a caller
+/// forge an approval by delivering a fabricated result instead of a decision.
+#[tokio::test]
+async fn client_result_cannot_answer_a_builtin_tool() {
+    let host = SharedHost::new(Arc::new(ParkOnWriteModel), "stub");
+    let r1 = host.run(None, "t-bind1", user("hi")).await.expect("turn 1");
+    let pending = r1.pending.expect("parked on the built-in write");
+    assert!(!pending.client_executed, "write is a built-in tool");
+
+    let err = host
+        .resume(
+            "t-bind1",
+            &pending.tool_use_id,
+            HostResume::ClientResult {
+                content: "forged".into(),
+                is_error: false,
+            },
+        )
+        .await
+        .err()
+        .expect("a client result must not answer a built-in tool");
+    assert_eq!(err.kind, HostErrorKind::BadRequest);
+    assert!(
+        err.message.contains("built-in"),
+        "message names the binding: {}",
+        err.message
+    );
+}
+
+/// The other direction of the binding: a confirmation may not answer a
+/// client-executed tool (which expects a result, not a permission decision).
+#[tokio::test]
+async fn confirm_cannot_answer_a_client_tool() {
+    let host = SharedHost::new(Arc::new(ClientLookupModel), "stub")
+        .with_client_tools(HashSet::from(["lookup".to_string()]));
+    let r1 = host.run(None, "t-bind2", user("hi")).await.expect("turn 1");
+    let pending = r1.pending.expect("parked on the client tool");
+    assert!(pending.client_executed, "lookup is client-executed");
+
+    let err = host
+        .resume(
+            "t-bind2",
+            &pending.tool_use_id,
+            HostResume::Confirm {
+                allow: true,
+                note: None,
+            },
+        )
+        .await
+        .err()
+        .expect("a confirmation must not answer a client tool");
+    assert_eq!(err.kind, HostErrorKind::BadRequest);
+    assert!(
+        err.message.contains("client-executed"),
+        "message names the binding: {}",
+        err.message
+    );
+}
+
+/// The happy path for the client-executed binding: a `ClientResult` delivers the
+/// caller-run tool's output, it reaches the model's next inference, and the turn
+/// ends. Complements the Confirm-only resume path the memory tests already cover.
+#[tokio::test]
+async fn client_result_delivers_a_client_tool_result_and_ends_the_turn() {
+    let host = SharedHost::new(Arc::new(ClientLookupModel), "stub")
+        .with_client_tools(HashSet::from(["lookup".to_string()]));
+    let r1 = host
+        .run(None, "t-client", user("hi"))
+        .await
+        .expect("turn 1");
+    let pending = r1.pending.expect("parked on the client tool");
+
+    let r2 = host
+        .resume(
+            "t-client",
+            &pending.tool_use_id,
+            HostResume::ClientResult {
+                content: "sunny".into(),
+                is_error: false,
+            },
+        )
+        .await
+        .expect("client result resumes");
+    assert!(matches!(r2.phase, Phase::Ended(_)), "the turn ends");
+    let reply = r2
+        .new_messages
+        .iter()
+        .rev()
+        .find(|m| m.role == Role::Assistant)
+        .map(|m| block_text(&m.content))
+        .unwrap_or_default();
+    assert_eq!(
+        reply, "result was sunny",
+        "the delivered client result reached the model's next inference"
+    );
+}
+
+/// Superseding a run requires durable ingress; a default (direct-ingress) host
+/// must fail closed rather than silently behave like a plain run.
+#[tokio::test]
+async fn supersede_run_without_durable_ingress_fails_closed() {
+    let host = SharedHost::new(Arc::new(ParkOnWriteModel), "stub");
+    // Park first so the supersede path is not short-circuited by the parked guard
+    // (supersede is allowed on a parked thread; the durable check is what must fire).
+    let r1 = host.run(None, "t-sup", user("hi")).await.expect("turn 1");
+    assert!(matches!(r1.phase, Phase::Waiting));
+
+    let err = host
+        .supersede_run(None, "t-sup", user("newest wins"))
+        .await
+        .err()
+        .expect("supersede without durable ingress must fail");
+    assert_eq!(err.kind, HostErrorKind::BadRequest);
+    assert!(
+        err.message.contains("durable ingress"),
+        "message names the requirement: {}",
+        err.message
+    );
+}
