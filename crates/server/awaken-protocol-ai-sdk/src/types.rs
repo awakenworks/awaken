@@ -199,12 +199,6 @@ pub struct ApprovalResponse {
     pub approved: bool,
 }
 
-/// The `messages` list echoed by the history endpoint, as UI messages.
-#[derive(Debug, Clone, Serialize)]
-pub struct HistoryResponse {
-    pub messages: Vec<Value>,
-}
-
 /// A history UI message: `{ id, role, parts }`.
 pub fn history_message(id: &str, role: &str, parts: Vec<Value>) -> Value {
     serde_json::json!({ "id": id, "role": role, "parts": parts })

@@ -47,6 +47,20 @@ async function main() {
     assert.ok(histText.includes('Echo: AGENT-SCOPED'), 'history includes the assistant reply');
     pass('thread history GET projected committed truth (thread_messages / HistoryResponse)');
 
+    // Cursor pagination over the same persisted thread: ?size + ?cursor walk it.
+    // House cursor-page envelope (awaken-api-contract): { items, cursor }.
+    const hp1 = await (await fetch(`${BASE}/v1/ai-sdk/threads/aiextra/messages?size=1`)).json();
+    assert.equal(hp1.items.length, 1, 'history page 1 holds one message');
+    assert.equal(typeof hp1.cursor, 'string', 'history page 1 carries a continuation cursor');
+    const hp2 = await (await fetch(
+      `${BASE}/v1/ai-sdk/threads/aiextra/messages?size=1&cursor=${encodeURIComponent(hp1.cursor)}`,
+    )).json();
+    assert.ok(hp2.items.length >= 1, 'history page 2 resumes after the cursor');
+    assert.notEqual(hp2.items[0].id, hp1.items[0].id, 'history page 2 does not repeat page 1');
+    const hBad = await fetch(`${BASE}/v1/ai-sdk/threads/aiextra/messages?cursor=this-id-does-not-exist`);
+    assert.equal(hBad.status, 400, 'a fabricated cursor is a 400');
+    pass('history is paged by cursor (?size + ?cursor, items/cursor, bad cursor → 400)');
+
     // Plain `/chat` route (no thread/agent in the path).
     const plain = await postStream('/v1/ai-sdk/chat', body('PLAIN-CHAT', 'aichat'));
     assert.equal(plain.status, 200, 'plain chat accepted');

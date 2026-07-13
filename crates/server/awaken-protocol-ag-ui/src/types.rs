@@ -80,6 +80,7 @@ impl AgUiEvent {
     }
 }
 
+
 /// The AG-UI `RunAgentInput` request body (only the fields the runtime slice
 /// reads; unknown fields — `tools`, `context`, `state`, `forwardedProps` — are
 /// ignored so the full input is accepted).

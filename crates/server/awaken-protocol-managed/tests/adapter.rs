@@ -1130,3 +1130,74 @@ async fn the_collection_route_is_never_fenced() {
         StatusCode::OK
     );
 }
+
+/// The event list is paged by cursor (`?cursor=<event_id>&limit=<n>`): the pages
+/// walk the session's events oldest-first with no gap or overlap, `has_more` and
+/// `next_page` bracket the walk, and a fabricated cursor is a 400.
+#[tokio::test]
+async fn events_are_paged_by_cursor() {
+    let app = router(Arc::new(ManagedState::new(EchoFake)));
+    let id = create(&app).await;
+    // Two turns → 6 events (running/message/idle × 2).
+    for text in ["one", "two"] {
+        json_call(
+            &app,
+            "POST",
+            &format!("/v1/sessions/{id}/events"),
+            serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": text }] }] }),
+        )
+        .await;
+    }
+    let ids = |list: &serde_json::Value| -> Vec<String> {
+        list["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    // Full, unpaged page: all events, no cursor.
+    let full = json_call(&app, "GET", &format!("/v1/sessions/{id}/events"), serde_json::Value::Null).await;
+    let full_ids = ids(&full);
+    assert_eq!(full_ids.len(), 6, "two turns produced six events");
+    assert_eq!(full["has_more"], serde_json::json!(false));
+    assert_eq!(full["next_page"], serde_json::Value::Null);
+
+    // First page of 2 → more remain, cursor names the 2nd event.
+    let p1 = json_call(&app, "GET", &format!("/v1/sessions/{id}/events?limit=2"), serde_json::Value::Null).await;
+    assert_eq!(ids(&p1), full_ids[0..2]);
+    assert_eq!(p1["has_more"], serde_json::json!(true));
+    assert_eq!(p1["next_page"], serde_json::json!(full_ids[1]));
+
+    // Resume after the cursor, to the end.
+    let cursor = p1["next_page"].as_str().unwrap();
+    let p2 = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events?cursor={cursor}&limit=50"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(ids(&p2), full_ids[2..]);
+    assert_eq!(p2["has_more"], serde_json::json!(false));
+    assert_eq!(p2["next_page"], serde_json::Value::Null);
+
+    // The two pages reassemble the whole list, in order, no overlap.
+    let walked: Vec<String> = ids(&p1).into_iter().chain(ids(&p2)).collect();
+    assert_eq!(walked, full_ids);
+
+    // A fabricated cursor is a caller error (400).
+    let bad = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/sessions/{id}/events?cursor=evt_nope"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+}

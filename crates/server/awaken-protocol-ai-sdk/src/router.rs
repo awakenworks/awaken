@@ -14,7 +14,7 @@ use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{FromRequest, Json, Path, Request, State};
+use axum::extract::{FromRequest, Json, Path, Query, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -22,14 +22,16 @@ use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
+use awaken_api_contract::CursorPage;
 use awaken_protocol_transport::{
-    ChannelStreamSink, DriverError, Pending, ProtocolRuntime, Resume, StepOutcome,
+    ChannelStreamSink, CursorParams, DriverError, Pending, ProtocolRuntime, Resume, StepOutcome,
+    paginate_history,
 };
 
 use crate::encoder::{encode_close, encode_history, encode_step};
 use crate::live::LiveTranscoder;
 use crate::request::{DecisionKind, process_request, result_text};
-use crate::types::{AiSdkChatRequest, HistoryResponse, UIStreamEvent, attach_usage};
+use crate::types::{AiSdkChatRequest, UIStreamEvent, attach_usage};
 
 type Runtime = Arc<dyn ProtocolRuntime>;
 
@@ -254,9 +256,17 @@ fn to_resume(kind: &DecisionKind, pending: &Pending) -> Resume {
 async fn thread_messages(
     State(rt): State<Runtime>,
     Path(thread_id): Path<String>,
-) -> Json<HistoryResponse> {
-    let messages = encode_history(&rt.history(&thread_id).await);
-    Json(HistoryResponse { messages })
+    Query(params): Query<CursorParams>,
+) -> Response {
+    let history = rt.history(&thread_id).await;
+    match paginate_history(&history, params.cursor.as_deref(), params.limit()) {
+        // The house cursor-page envelope (`awaken-api-contract`): `{ items, cursor }`,
+        // where `cursor` is the continuation (`null` on the last page).
+        Ok(page) => Json(CursorPage::new(encode_history(page.items), page.next_page)).into_response(),
+        // A stale or fabricated cursor is a caller fault: a plain 400, not the UI
+        // stream error frame (this GET is not a chat stream).
+        Err(err) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+    }
 }
 
 /// The AI SDK UI Message Stream response headers (SSE + the transport marker).
