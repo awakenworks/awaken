@@ -17,10 +17,7 @@ use crate::host::HostError;
 /// (ADR-0019/0024). `AWAKEN_DISPATCH_OWNER` overrides; the default
 /// `<hostname>-<pid>` is distinct per process and per node.
 pub(crate) fn dispatch_owner() -> String {
-    std::env::var("AWAKEN_DISPATCH_OWNER").unwrap_or_else(|_| {
-        let host = std::env::var("HOSTNAME").unwrap_or_else(|_| "host".to_string());
-        format!("{host}-{}", std::process::id())
-    })
+    crate::deployment_config::DeploymentConfig::from_env().dispatch_owner
 }
 
 /// The lease-renewal heartbeat cadence for the standing daemon: a third of the
@@ -138,8 +135,7 @@ pub fn init_shared_dispatch_store(store: Arc<AnyDispatchStore>) {
 /// The cross-node wake channel/subject for the served pool. Shared by both the
 /// `pg_notify` channel and the NATS subject (default `awaken_dispatch_wake`).
 fn dispatch_wake_channel() -> String {
-    std::env::var("AWAKEN_DISPATCH_WAKE_CHANNEL")
-        .unwrap_or_else(|_| "awaken_dispatch_wake".to_string())
+    crate::deployment_config::DeploymentConfig::from_env().wake_channel
 }
 
 /// The cross-node wake backend selected by `AWAKEN_DISPATCH_WAKE`, if any.
@@ -161,55 +157,19 @@ fn dispatch_wake_kind() -> DispatchWake {
     }
 }
 
-/// Composition-root guard: a **durable** ingress must be backed by a **persistent**
-/// queue, or it is a durable ingress in name only. `shared_durable_store` falls back
-/// to an in-memory SQLite queue when the sqlite backend has no store dir
-/// (`open_sqlite_in_memory`, above) — convenient for tests, but in a real boot it
-/// would silently drop on restart exactly the runs the durable path exists to
-/// protect (crash-recovery, dead-letter, scheduled actions). That violates the
-/// no-data-loss invariant, so refuse to start instead of degrading silently.
-///
-/// Persistent backings that satisfy the guard:
-/// - `AWAKEN_DISPATCH_BACKEND=postgres` (the shared cross-node queue), or
-/// - a set `AWAKEN_STORAGE_DIR` (the on-disk `dispatch.db` SQLite queue), or
-/// - an injected backend (a closed composition root already assembled a durable
-///   `ShardedDispatchQueue`; it owns its own durability contract).
-///
-/// A pure decision so it is unit-tested without touching process env; the public
-/// [`ensure_durable_backend`] wraps it over the environment.
-fn durable_backend_persisted(
-    durable: bool,
-    postgres_backend: bool,
-    has_storage_dir: bool,
-    injected: bool,
-) -> Result<(), &'static str> {
-    if durable && !postgres_backend && !has_storage_dir && !injected {
-        return Err(
-            "AWAKEN_INGRESS=durable needs a persistent dispatch queue, but none is \
-             configured: the default SQLite backend has no AWAKEN_STORAGE_DIR, so the \
-             queue would be in-memory and a restart would silently drop every queued, \
-             crashed, dead-lettered, and scheduled run. Set AWAKEN_STORAGE_DIR for the \
-             durable on-disk queue (<dir>/dispatch.db), or AWAKEN_DISPATCH_BACKEND=postgres \
-             with AWAKEN_DATABASE_URL for the shared queue. Refusing to serve a 'durable' \
-             ingress on a volatile queue.",
-        );
-    }
-    Ok(())
-}
-
 /// Fail fast at startup when `AWAKEN_INGRESS=durable` would resolve to a volatile
 /// in-memory queue (see [`durable_backend_persisted`]). Call this in the composition
 /// root before serving — every open boot path (`awaken-server-local`,
 /// `awaken-standalone`) does. A no-op unless durable ingress is enabled.
 pub fn ensure_durable_backend() -> Result<(), String> {
-    let durable = std::env::var("AWAKEN_INGRESS").as_deref() == Ok("durable");
-    let postgres_backend = std::env::var("AWAKEN_DISPATCH_BACKEND").as_deref() == Ok("postgres");
-    let has_storage_dir = std::env::var("AWAKEN_STORAGE_DIR")
-        .ok()
-        .is_some_and(|value| !value.is_empty());
+    // The deployment axes now come from one typed config (parsed from the historic
+    // env vars), not scattered `std::env::var` reads. An injected shard fan-out owns
+    // its own durability contract, so it is passed in rather than read from config.
     let injected = SHARED_INJECTED_DISPATCH.get().is_some();
-    durable_backend_persisted(durable, postgres_backend, has_storage_dir, injected)
-        .map_err(str::to_string)
+    crate::deployment_config::DeploymentConfig::from_env()
+        .durable_needs_persistence_error(injected)
+        .map(str::to_string)
+        .map_or(Ok(()), Err)
 }
 
 /// The cross-node wake to spawn the served pool with, if one was built at startup
@@ -271,34 +231,5 @@ pub(crate) fn shared_durable_store(
                 .cloned()
                 .expect("shared sqlite dispatch store set"))
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::durable_backend_persisted;
-
-    #[test]
-    fn direct_ingress_never_requires_persistence() {
-        // Not durable → the queue is irrelevant, any combination is fine.
-        assert!(durable_backend_persisted(false, false, false, false).is_ok());
-    }
-
-    #[test]
-    fn durable_sqlite_without_storage_dir_is_rejected() {
-        // The footgun: `AWAKEN_INGRESS=durable` on the default sqlite backend with no
-        // `AWAKEN_STORAGE_DIR` would give a volatile in-memory queue — refuse it.
-        let err = durable_backend_persisted(true, false, false, false).unwrap_err();
-        assert!(err.contains("AWAKEN_STORAGE_DIR"), "{err}");
-        assert!(err.contains("durable"), "{err}");
-    }
-
-    #[test]
-    fn durable_is_accepted_on_any_persistent_backing() {
-        // A storage dir (on-disk dispatch.db), Postgres (shared queue), or an injected
-        // backend each satisfy the durability contract.
-        assert!(durable_backend_persisted(true, false, true, false).is_ok());
-        assert!(durable_backend_persisted(true, true, false, false).is_ok());
-        assert!(durable_backend_persisted(true, false, false, true).is_ok());
     }
 }
