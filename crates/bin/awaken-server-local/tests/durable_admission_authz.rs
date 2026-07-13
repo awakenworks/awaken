@@ -34,7 +34,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::LazyLock;
 
-use awaken_server_local::{EchoModel, build_router};
+use awaken_scenario_host::{EchoModel, build_router};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

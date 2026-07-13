@@ -103,6 +103,7 @@ awaken-run-ingress = { path = "crates/server/awaken-run-ingress" }
 awaken-runtime-host = { path = "crates/server/awaken-runtime-host" }
 awaken-admin-assistant = { path = "crates/control/awaken-admin-assistant" }
 awaken-server-local = { path = "crates/bin/awaken-server-local" }
+awaken-scenario-host = { path = "crates/bin/awaken-scenario-host" }
 awaken-authz-enforce = { path = "crates/control/awaken-authz-enforce" }
 awaken-webhook = { path = "crates/server/awaken-webhook" }
 awaken-webhook-managed = { path = "crates/server/awaken-webhook-managed" }

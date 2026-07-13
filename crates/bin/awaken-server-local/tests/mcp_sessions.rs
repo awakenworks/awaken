@@ -37,10 +37,8 @@ use awaken_agent_contract::RedactedString;
 use awaken_credential_vault::{InMemorySecretStore, SecretRef, SecretStore};
 use awaken_ext_mcp::{AuthChallenge, Credential, CredentialRefresher};
 use awaken_protocol_managed::{McpProbe, McpProbeStatus, TokenEndpointAuthBinding};
-use awaken_server_local::{
-    ExtMcpProbe, McpToolModel, PreparedMcpRefresh, VaultRefresher,
-    build_management_router_with_model,
-};
+use awaken_server_local::{ExtMcpProbe, PreparedMcpRefresh, VaultRefresher, build_management_router_with_model};
+use awaken_scenario_host::{McpToolModel};
 
 // This test drives the REAL management router but needs a deterministic model that
 // calls the MCP tool on `add <a> <b>` — that is a test concern, so it injects the

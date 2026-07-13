@@ -1123,6 +1123,55 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-scenario-host"
+version = "1.0.0-dev"
+dependencies = [
+ "async-nats",
+ "async-trait",
+ "awaken-admin-assistant",
+ "awaken-admin-config-api",
+ "awaken-agent-contract",
+ "awaken-authz-enforce",
+ "awaken-config-resolver",
+ "awaken-config-store",
+ "awaken-connection-plan",
+ "awaken-credential-vault",
+ "awaken-data-subject",
+ "awaken-ext-builtin-tools",
+ "awaken-iam-contract",
+ "awaken-iam-core",
+ "awaken-iam-host",
+ "awaken-iam-preset",
+ "awaken-iam-server",
+ "awaken-memory-store",
+ "awaken-model-catalog",
+ "awaken-observability",
+ "awaken-protocol-a2a",
+ "awaken-protocol-ag-ui",
+ "awaken-protocol-ai-sdk",
+ "awaken-protocol-managed",
+ "awaken-protocol-transport",
+ "awaken-provider-genai",
+ "awaken-run-executor-acp",
+ "awaken-runtime",
+ "awaken-runtime-contract",
+ "awaken-runtime-host",
+ "awaken-server-local",
+ "awaken-tenancy",
+ "awaken-tool-relay",
+ "awaken-webhook",
+ "awaken-webhook-managed",
+ "axum",
+ "bytes",
+ "futures",
+ "rusqlite",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+]
+
+[[package]]
 name = "awaken-scoped-migration"
 version = "0.1.0-dev"
 source = "git+https://github.com/awakenworks/awaken-foundation?rev=dfa512edd2e5b7e34ad0b05db01b973845f0f9e9#dfa512edd2e5b7e34ad0b05db01b973845f0f9e9"
@@ -1176,6 +1225,7 @@ dependencies = [
  "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-runtime-host",
+ "awaken-scenario-host",
  "awaken-tenancy",
  "awaken-tool-relay",
  "awaken-webhook",

@@ -24,7 +24,7 @@ echo "[1/3] Rust unit + integration tests (instrumented)"
 cargo test --workspace --quiet 2>&1 | grep -E "test result|error\[" | tail -3
 
 echo "[2/3] instrumented bins + the TS e2e suite"
-cargo build --quiet -p awaken-server-local --bin awaken-server-local
+cargo build --quiet -p awaken-scenario-host --bin awaken-scenario-host
 cargo build --quiet -p awaken-cli --bin awaken
 cd e2e
 for f in *_e2e.mjs; do env timeout 150 node "$f" >/dev/null 2>&1 && echo "ok" || echo "miss"; done \

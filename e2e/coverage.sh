@@ -29,7 +29,7 @@ rm -rf "$CARGO_TARGET_DIR"
 eval "$(cargo llvm-cov show-env --sh)"
 
 echo "[build] instrumented awaken-server-local into $CARGO_TARGET_DIR"
-cargo build --quiet -p awaken-server-local --bin awaken-server-local
+cargo build --quiet -p awaken-scenario-host --bin awaken-scenario-host
 # The aggregated `awaken` binary the awaken_*_e2e drive (each spawns its own
 # process); build it instrumented into the same target dir so its coverage is
 # attributed to the e2e too.

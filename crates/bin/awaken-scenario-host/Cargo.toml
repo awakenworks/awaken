@@ -1,9 +1,12 @@
 [package]
-name = "awaken-server-local"
+name = "awaken-scenario-host"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "awaken-scenario-host"
+path = "src/main.rs"
 
 [dependencies]
 # The extracted service layer: SharedHost / ManagedHost / ProtocolHost and all
@@ -70,7 +73,7 @@ awaken-iam-preset = { workspace = true }
 awaken-iam-host = { workspace = true }
 # The embedded IAM token/binding rows persist under AWAKEN_MGMT_DIR/iam.sqlite;
 # same rusqlite generation as every other sqlite store in the workspace.
-rusqlite = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 # Webhook plane (ADR-0048 / S10): the WebhookLifecycleSink bridges the managed
@@ -88,21 +91,8 @@ axum = { version = "0.8", features = ["multipart"] }
 # (also used by the integration tests).
 tower = { version = "0.5", features = ["util"] }
 
-[features]
-# Cross-node dispatch wake over NATS (AWAKEN_DISPATCH_WAKE=nats). Passes through to
-# awaken-runtime-host → awaken-run-ingress so the built binary carries a NATS-capable
-# wake selector. This is the *wake* channel only and is independent of the crate's
-# non-optional `async-nats` used for the ADR-0045 hand relay — do not conflate them.
-nats = ["awaken-runtime-host/nats"]
+# Depends on the product crate for the now-pub assembly helpers + production executors.
+awaken-server-local = { workspace = true }
 
-[dev-dependencies]
-awaken-scenario-host = { workspace = true }
-http-body-util = "0.1"
-awaken-agent-contract = { workspace = true }
-# mcp_sessions test: drives the VaultRefresher's RFC 6749 refresh grant and
-# asserts the tool-id shape via awaken_ext_mcp::to_tool_id; base64 rebuilds the
-# expected §2.3.1 Basic header. Test-only — the runtime code moved to the host.
-awaken-ext-mcp = { workspace = true }
-base64 = "0.22"
-# Restart-persistence test: a management router rebuilt over the same tempdir.
-tempfile = "3"
+[lints]
+workspace = true

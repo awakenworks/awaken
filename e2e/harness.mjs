@@ -20,7 +20,7 @@ let serverBin = null;
 function ensureBuilt() {
   if (serverBin) return serverBin;
   const out = execSync(
-    'cargo build --quiet --message-format=json -p awaken-server-local --bin awaken-server-local',
+    'cargo build --quiet --message-format=json -p awaken-scenario-host --bin awaken-scenario-host',
     { cwd: REPO_ROOT, maxBuffer: 64 * 1024 * 1024 },
   ).toString();
   for (const line of out.split('\n')) {
@@ -31,7 +31,7 @@ function ensureBuilt() {
     } catch {
       continue;
     }
-    if (msg.executable && msg.target?.name === 'awaken-server-local') serverBin = msg.executable;
+    if (msg.executable && msg.target?.name === 'awaken-scenario-host') serverBin = msg.executable;
   }
   if (!serverBin) throw new Error('could not resolve the awaken-server-local binary path');
   return serverBin;

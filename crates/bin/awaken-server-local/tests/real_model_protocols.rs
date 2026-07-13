@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use awaken_provider_genai::GenaiExecutor;
-use awaken_server_local::{build_graded_router, build_router};
+use awaken_scenario_host::{build_graded_router, build_router};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

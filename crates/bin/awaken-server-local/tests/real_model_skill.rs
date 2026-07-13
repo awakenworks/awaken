@@ -16,7 +16,8 @@
 use std::sync::Arc;
 
 use awaken_provider_genai::GenaiExecutor;
-use awaken_server_local::{SkillSpec, build_router_with_skills};
+use awaken_server_local::{SkillSpec};
+use awaken_scenario_host::{build_router_with_skills};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

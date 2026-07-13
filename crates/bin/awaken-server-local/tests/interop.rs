@@ -20,7 +20,7 @@
 //! Errors never leak axum's default plain-text 400: each adapter's JSON extractor
 //! converts a decode failure into its own error frame (categories 4 and 5).
 
-use awaken_server_local::{build_custom_router, build_echo_router};
+use awaken_scenario_host::{build_custom_router, build_echo_router};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

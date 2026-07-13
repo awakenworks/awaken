@@ -23,7 +23,8 @@ use awaken_model_catalog::{
     ApiDialect, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderCatalog,
     ProviderId,
 };
-use awaken_server_local::{ResolvedExecutorError, build_resolved_router, executor_from_resolved};
+use awaken_server_local::{ResolvedExecutorError, executor_from_resolved};
+use awaken_scenario_host::{build_resolved_router};
 
 /// Register provider + endpoint + offering through the real admin repo.
 async fn seed_catalog(base_url: &str, model_id: &str) -> ProviderCatalog {

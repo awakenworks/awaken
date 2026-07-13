@@ -4,7 +4,7 @@
 //! replies with the user's text; `=probe` writes/reads a file so the HITL
 //! (`user.tool_confirmation`) path can be exercised; `=vision` reports the media it
 //! received so the multimodal path can be verified. A provider executor is
-//! swapped in through [`awaken_server_local::build_router`].
+//! swapped in through [`awaken_scenario_host::build_router`].
 
 use std::sync::Arc;
 
@@ -52,41 +52,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let app = match std::env::var("AWAKEN_MODEL_MODE").as_deref() {
         Ok("probe") => {
-            awaken_server_local::build_router(Arc::new(awaken_server_local::ProbeModel), "probe")
+            awaken_scenario_host::build_router(Arc::new(awaken_scenario_host::ProbeModel), "probe")
         }
         Ok("revise") => {
-            awaken_server_local::build_router(Arc::new(awaken_server_local::ReviseModel), "revise")
+            awaken_scenario_host::build_router(Arc::new(awaken_scenario_host::ReviseModel), "revise")
         }
-        Ok("custom") => awaken_server_local::build_custom_router(),
-        Ok("remote-hand") => awaken_server_local::build_remote_hand_router(),
-        Ok("delegate") => awaken_server_local::build_delegation_router(),
-        Ok("statemachine") => awaken_server_local::build_statemachine_router(),
-        Ok("statemachine-rich") => awaken_server_local::build_statemachine_rich_router(),
-        Ok("config") => awaken_server_local::build_config_router().await,
+        Ok("custom") => awaken_scenario_host::build_custom_router(),
+        Ok("remote-hand") => awaken_scenario_host::build_remote_hand_router(),
+        Ok("delegate") => awaken_scenario_host::build_delegation_router(),
+        Ok("statemachine") => awaken_scenario_host::build_statemachine_router(),
+        Ok("statemachine-rich") => awaken_scenario_host::build_statemachine_rich_router(),
+        Ok("config") => awaken_scenario_host::build_config_router().await,
         Ok("management") => awaken_server_local::build_management_router().await,
-        Ok("real") => awaken_server_local::build_real_router(),
-        Ok("real-gemini") => awaken_server_local::build_real_gemini_router().await,
-        Ok("real-resolved") => awaken_server_local::build_resolved_real_router().await,
-        Ok("oauth-resolved") => awaken_server_local::build_oauth_resolved_router().await,
-        Ok("schedule") => awaken_server_local::build_schedule_router(),
-        Ok("skills") => awaken_server_local::build_skills_router(),
-        Ok("skills-durable") => awaken_server_local::build_skills_durable_router(),
-        Ok("pool-failover") => awaken_server_local::build_pool_failover_router(),
-        Ok("delegate-remote") => awaken_server_local::build_remote_delegation_router(),
-        Ok("vision") => awaken_server_local::build_vision_router(),
-        Ok("model-route") => awaken_server_local::build_model_route_router(),
-        Ok("acp") => awaken_server_local::build_acp_router(),
-        Ok("acp-jsonrpc") => awaken_server_local::build_acp_jsonrpc_router(),
-        Ok("acp-sandboxed") => awaken_server_local::build_acp_sandboxed_router(),
-        Ok("acp-gateway") => awaken_server_local::build_acp_gateway_router(),
-        Ok("memory") => awaken_server_local::build_memory_router(),
-        Ok("memory-resource") => awaken_server_local::build_memory_resource_router(),
-        Ok("git-repo") => awaken_server_local::build_git_repo_router(),
-        Ok("compaction") => awaken_server_local::build_compaction_router(),
-        Ok("error") => awaken_server_local::build_error_router(),
-        Ok("worker") => awaken_server_local::build_worker_router(),
-        Ok("full-chain") => awaken_server_local::build_full_chain_router(),
-        _ => awaken_server_local::build_echo_router(),
+        Ok("real") => awaken_scenario_host::build_real_router(),
+        Ok("real-gemini") => awaken_scenario_host::build_real_gemini_router().await,
+        Ok("real-resolved") => awaken_scenario_host::build_resolved_real_router().await,
+        Ok("oauth-resolved") => awaken_scenario_host::build_oauth_resolved_router().await,
+        Ok("schedule") => awaken_scenario_host::build_schedule_router(),
+        Ok("skills") => awaken_scenario_host::build_skills_router(),
+        Ok("skills-durable") => awaken_scenario_host::build_skills_durable_router(),
+        Ok("pool-failover") => awaken_scenario_host::build_pool_failover_router(),
+        Ok("delegate-remote") => awaken_scenario_host::build_remote_delegation_router(),
+        Ok("vision") => awaken_scenario_host::build_vision_router(),
+        Ok("model-route") => awaken_scenario_host::build_model_route_router(),
+        Ok("acp") => awaken_scenario_host::build_acp_router(),
+        Ok("acp-jsonrpc") => awaken_scenario_host::build_acp_jsonrpc_router(),
+        Ok("acp-sandboxed") => awaken_scenario_host::build_acp_sandboxed_router(),
+        Ok("acp-gateway") => awaken_scenario_host::build_acp_gateway_router(),
+        Ok("memory") => awaken_scenario_host::build_memory_router(),
+        Ok("memory-resource") => awaken_scenario_host::build_memory_resource_router(),
+        Ok("git-repo") => awaken_scenario_host::build_git_repo_router(),
+        Ok("compaction") => awaken_scenario_host::build_compaction_router(),
+        Ok("error") => awaken_scenario_host::build_error_router(),
+        Ok("worker") => awaken_scenario_host::build_worker_router(),
+        Ok("full-chain") => awaken_scenario_host::build_full_chain_router(),
+        _ => awaken_scenario_host::build_echo_router(),
     };
     // Brain admin surface (ADR-0022 D7): the connection-count metric that KEDA
     // autoscales on, plus /admin/drain + /readyz for graceful, stream-preserving
