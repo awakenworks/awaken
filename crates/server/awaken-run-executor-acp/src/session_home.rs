@@ -14,15 +14,20 @@
 //! failed blob just falls back to `session/new` + the neutral thread history, which
 //! is always the authority. The durable backing is an injected [`SessionBlobStore`];
 //! a shared (content-addressed) one makes recovery cross-machine.
+//!
+//! This is the *reference* implementation of the crate's [`SessionHomeProvider`]
+//! port. It depends only on the port + the [`ConfigHome`] path convention (both in
+//! this crate) and std — never on the heavy host service layer — so a host reuses it
+//! for cross-machine recovery without linking the management plane.
 
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_run_executor_acp::{SessionHomeKey, SessionHomePlan, SessionHomeProvider};
 
 use crate::config_home::ConfigHome;
+use crate::{SessionHomeKey, SessionHomePlan, SessionHomeProvider};
 
 /// Durable storage for a thread's portable session subtree, keyed by (thread,
 /// adapter). Dependency-inverted so a host swaps a local directory for a shared,

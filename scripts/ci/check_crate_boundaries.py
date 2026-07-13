@@ -700,6 +700,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tokio",
         # dev-only: build a `plugin_config` JSON value in the compaction-window test.
         "serde_json",
+        # dev-only: temp dirs for the session-home reference impl's recovery tests.
+        "tempfile",
     },
     # A2A executor: a remote A2A agent (Coze / A2A HTTP) as a peer RunExecutor.
     # Runtime plane; foundation contracts + the A2A protocol crate only, like the

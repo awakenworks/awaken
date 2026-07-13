@@ -21,9 +21,7 @@ mod capabilities;
 mod commit_backend;
 mod compact;
 mod config;
-mod config_home;
 mod config_plane;
-pub mod session_home;
 mod data_subject_api;
 mod delegate;
 mod dispatch_backend;
@@ -88,7 +86,6 @@ pub use crate::binding_resolver::{
 };
 pub use crate::capabilities::capabilities_router;
 pub use crate::config::{advertised_tools, block_text};
-pub use crate::config_home::{ConfigHome, RetentionPolicy, SessionReuse};
 pub use crate::config_plane::{
     ConfigPlane, ConfigService, ConfigServiceAgentSource, PublishError, config_router,
 };

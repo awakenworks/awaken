@@ -9,10 +9,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use awaken_run_executor_acp::{AcpCli, LaunchResolver, OpenError, ResolvedModel};
+use awaken_run_executor_acp::{AcpCli, ConfigHome, LaunchResolver, OpenError, ResolvedModel};
 use awaken_runtime_contract::activation::RunActivation;
-
-use crate::config_home::ConfigHome;
 
 /// Reads a var from the environment source; injectable so tests need no global env.
 type EnvSource = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
