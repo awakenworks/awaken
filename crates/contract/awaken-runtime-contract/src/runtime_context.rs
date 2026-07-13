@@ -18,6 +18,23 @@ use crate::live_inbox::LiveInbox;
 use crate::pause::PauseSignal;
 use awaken_agent_contract::store::stream_checkpoint::StreamCheckpointStore;
 
+/// The content-capture wiring for one attempt (ADR-0050): the resolved decision
+/// (level + redactor) plus, when content persistence is on, the subject it is
+/// attributed to and the sink it is written to. Grouped so the privacy cluster
+/// travels as one cohesive unit rather than three loose context fields.
+#[derive(Clone, Default)]
+pub struct CaptureContext {
+    /// The resolved capture decision (level + redactor). Default is `Structured`
+    /// (no content); the host resolves the real decision per run/turn.
+    pub decision: CaptureDecision,
+    /// The data subject captured content is attributed to (opaque). Content is
+    /// written only when this, `sink`, and a content-permitting level all hold.
+    pub subject: Option<DataSubjectId>,
+    /// Where captured content is written (subject-tagged, erasable). Best-effort;
+    /// absent means content is recorded to spans only, not a queryable store.
+    pub sink: Option<Arc<dyn CaptureSink>>,
+}
+
 #[derive(Clone, Default)]
 pub struct RuntimeRunContext {
     /// Live best-effort progress delivery; absent means no live streaming.
@@ -50,18 +67,10 @@ pub struct RuntimeRunContext {
     /// present routes every already-gated call through this port — e.g. a remote
     /// hand. The kernel never learns placement; it calls the port either way.
     pub tool_executor: Option<Arc<dyn crate::tool::ToolExecutor>>,
-    /// The resolved content-capture decision for this attempt (ADR-0050 D5):
-    /// the level plus redactor gating what prompt/completion/tool content the
-    /// engine records onto telemetry. Default is `Structured` (no content); the
-    /// host resolves the real decision per run/turn and sets it here.
-    pub capture: CaptureDecision,
-    /// The data subject this attempt's content is attributed to (ADR-0050),
-    /// opaque. Only when both this and `capture_sink` are set — and the capture
-    /// level permits content — does the engine write captured content.
-    pub data_subject: Option<DataSubjectId>,
-    /// Where captured content is written (subject-tagged, erasable). Best-effort;
-    /// absent means content is recorded to spans only, not a queryable store.
-    pub capture_sink: Option<Arc<dyn CaptureSink>>,
+    /// The content-capture wiring for this attempt (ADR-0050 D5): the resolved
+    /// decision (level + redactor) gating what prompt/completion/tool content the
+    /// engine records, plus the subject + sink it is attributed to and written to.
+    pub capture: CaptureContext,
 }
 
 impl RuntimeRunContext {
@@ -128,7 +137,7 @@ impl RuntimeRunContext {
     /// Set the resolved content-capture decision for this attempt (ADR-0050).
     #[must_use]
     pub fn with_capture(mut self, capture: CaptureDecision) -> Self {
-        self.capture = capture;
+        self.capture.decision = capture;
         self
     }
 
@@ -136,15 +145,18 @@ impl RuntimeRunContext {
     /// `sink` (ADR-0050). Both are needed for the engine to persist content.
     #[must_use]
     pub fn with_capture_sink(mut self, subject: DataSubjectId, sink: Arc<dyn CaptureSink>) -> Self {
-        self.data_subject = Some(subject);
-        self.capture_sink = Some(sink);
+        self.capture.subject = Some(subject);
+        self.capture.sink = Some(sink);
         self
     }
 
     /// The subject + sink to persist captured content to, when BOTH are set.
     #[must_use]
     pub fn content_sink(&self) -> Option<(&Arc<dyn CaptureSink>, &DataSubjectId)> {
-        self.capture_sink.as_ref().zip(self.data_subject.as_ref())
+        self.capture
+            .sink
+            .as_ref()
+            .zip(self.capture.subject.as_ref())
     }
 
     /// True once cancellation has been requested for this attempt.
