@@ -8,7 +8,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, Phase};
-use awaken_agent_contract::agent::state::{Command as StateCommand, Key, MergePolicy, Scope};
+use awaken_agent_contract::agent::state::{
+    Command as StateCommand, Key, MergePolicy, Scope, Store,
+};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::{MemoryCommitCoordinator, replay_state};
@@ -51,7 +53,12 @@ impl PhaseHook for MarkHook {
     fn point(&self) -> PhaseHookPoint {
         PhaseHookPoint::StepStart
     }
-    async fn on_phase(&self, ctx: &PhaseContext, _conversation: &[Message]) -> HookReaction {
+    async fn on_phase(
+        &self,
+        ctx: &PhaseContext,
+        _conversation: &[Message],
+        _state: &Store,
+    ) -> HookReaction {
         HookReaction::state(vec![StateCommand::set(
             Scope::Run,
             MergePolicy::Disjoint,

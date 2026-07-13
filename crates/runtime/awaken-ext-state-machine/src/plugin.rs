@@ -8,10 +8,9 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::state::Store;
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
 use awaken_runtime_contract::plugin::{
-    CapabilityBound, Contributions, HookReaction, IdBound, Plugin, PluginConfigError,
-    PluginManifest, RunEndContext, RunEndDecision, RunEndGuard, ToolOutcomeHook,
+    CapabilityBound, Contributions, HookReaction, IdBound, PhaseContext, PhaseHook, PhaseHookPoint,
+    Plugin, PluginConfigError, PluginManifest, RunEndContext, RunEndDecision, RunEndGuard,
 };
-use awaken_runtime_contract::tool::{ToolCall, ToolOutput};
 use serde_json::{Value, json};
 
 use crate::config::{ContinuationSettings, StateMachineConfig, StateMachineConfigError};
@@ -79,7 +78,7 @@ impl StateMachinePlugin {
             machines: Arc::clone(&machines),
         }));
         contributions
-            .tool_observers
+            .phase_hooks
             .push(Arc::new(StateMachineObserver {
                 machines: Arc::clone(&machines),
             }));
@@ -102,7 +101,7 @@ impl Plugin for StateMachinePlugin {
             bound: CapabilityBound {
                 state_keys: IdBound::Exact(STATE_KEYS.iter().map(|k| (*k).to_string()).collect()),
                 tool_gates: IdBound::Exact(vec![STATE_MACHINE_PLUGIN_ID.into()]),
-                tool_observers: IdBound::Exact(vec![STATE_MACHINE_PLUGIN_ID.into()]),
+                phase_hooks: vec![PhaseHookPoint::AfterTool],
                 run_end_guards: IdBound::Exact(vec![STATE_MACHINE_PLUGIN_ID.into()]),
                 ..Default::default()
             },
@@ -188,17 +187,24 @@ struct StateMachineObserver {
 }
 
 #[async_trait]
-impl ToolOutcomeHook for StateMachineObserver {
-    fn id(&self) -> &str {
-        STATE_MACHINE_PLUGIN_ID
+impl PhaseHook for StateMachineObserver {
+    fn point(&self) -> PhaseHookPoint {
+        PhaseHookPoint::AfterTool
     }
 
-    async fn after_tool(
+    async fn on_phase(
         &self,
-        call: &ToolCall,
-        output: &ToolOutput,
+        ctx: &PhaseContext,
+        _conversation: &[Message],
         state: &Store,
     ) -> HookReaction {
+        // `AfterTool` always carries the executed call and its output; nothing to
+        // react to at any other point.
+        let Some(after) = &ctx.after_tool else {
+            return HookReaction::default();
+        };
+        let call = &after.call;
+        let output = &after.output;
         let thread_base = ThreadInstances::load_or_default(state);
         let run_base = RunInstances::load_or_default(state);
 

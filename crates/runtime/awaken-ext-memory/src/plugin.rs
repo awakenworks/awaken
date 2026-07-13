@@ -1,26 +1,26 @@
 //! Recall as a plugin hook.
 //!
 //! [`MemoryPlugin`] contributes a `BeforeInference` [`PhaseHook`] that injects
-//! recall of saved memories as **request-only** context — the same message-
-//! injection shape a tool-outcome hook uses, but at inference time and never
-//! committed (G13). This is how recall reaches the model through the plugin
-//! framework (under a `CapabilityBound`, G30) rather than a host side channel.
+//! recall of saved memories as **request-only** context — prepended at inference
+//! time and never committed (G13). This is how recall reaches the model through
+//! the plugin framework (under a `CapabilityBound`, G30) rather than a host side
+//! channel.
 //!
 //! A small store injects the newest memories bounded (①). Once it grows past
 //! `bounds.select_over` and a [`RecallSelector`] is wired, the hook picks the
 //! memories relevant to the user's message (③) through a single `memory-selector`
-//! sub-agent call — run at most once per run (cached by `run_id`, since the hook
-//! fires every inference step).
+//! sub-agent call — run at most once per run, gated on the run-scoped
+//! [`RecallContext`] state so it replays across steps and a resumed run instead
+//! of recomputing (ADR-0055).
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::agent::state::{MergePolicy, Scope, StateKey, Store};
 use awaken_runtime_contract::plugin::{
-    CapabilityBound, Contributions, HookReaction, PhaseContext, PhaseHook, PhaseHookPoint, Plugin,
-    PluginConfigError, PluginManifest,
+    CapabilityBound, Contributions, HookReaction, IdBound, PhaseContext, PhaseHook, PhaseHookPoint,
+    Plugin, PluginConfigError, PluginManifest,
 };
 
 use crate::localfs::MemoryDir;
@@ -60,13 +60,30 @@ impl MemoryPlugin {
     /// and configured resolve paths).
     fn contribute(&self, bounds: RecallBounds) -> Contributions {
         let mut contributions = Contributions::new(MEMORY_PLUGIN_ID);
+        contributions.state_keys = vec![RecallContext::KEY.to_string()];
         contributions.phase_hooks.push(Arc::new(RecallHook {
             store: self.store.clone(),
             bounds,
             selector: self.selector.clone(),
-            cache: Mutex::new(HashMap::new()),
         }));
         contributions
+    }
+}
+
+/// The run-scoped cell holding this run's computed recall block. `None` (absent)
+/// means recall has not run yet; `Some(block)` (possibly empty) means it has, so a
+/// later step — or a resumed run replaying committed state — re-injects the same
+/// block without re-running the relevance selector (ADR-0055). Replaces the former
+/// per-`run_id` in-process cache, which did not survive resume.
+struct RecallContext;
+impl StateKey for RecallContext {
+    const KEY: &'static str = "recall_context";
+    const SCOPE: Scope = Scope::Run;
+    const MERGE: MergePolicy = MergePolicy::Exclusive;
+    type Value = Option<Vec<Message>>;
+    type Update = Vec<Message>;
+    fn apply(value: &mut Option<Vec<Message>>, update: Vec<Message>) {
+        *value = Some(update);
     }
 }
 
@@ -78,6 +95,7 @@ impl Plugin for MemoryPlugin {
             config_sections: vec![MEMORY_PLUGIN_ID.into()],
             bound: CapabilityBound {
                 phase_hooks: vec![PhaseHookPoint::BeforeInference],
+                state_keys: IdBound::Exact(vec![RecallContext::KEY.into()]),
                 ..Default::default()
             },
         }
@@ -131,12 +149,12 @@ pub fn config_schema() -> serde_json::Value {
 }
 
 /// The `BeforeInference` hook. Relevance selection runs at most once per run (the
-/// hook fires every step), cached by `run_id`.
+/// hook fires every step), gated on the run-scoped [`RecallContext`] state so the
+/// block replays across steps and a resumed run rather than recomputing.
 struct RecallHook {
     store: MemoryDir,
     bounds: RecallBounds,
     selector: Option<Arc<dyn RecallSelector>>,
-    cache: Mutex<HashMap<RunId, Vec<Message>>>,
 }
 
 impl RecallHook {
@@ -189,21 +207,29 @@ impl PhaseHook for RecallHook {
         PhaseHookPoint::BeforeInference
     }
 
-    async fn on_phase(&self, ctx: &PhaseContext, conversation: &[Message]) -> HookReaction {
-        if let Some(hit) = self.cache.lock().unwrap().get(&ctx.run_id) {
-            return HookReaction::messages(hit.clone());
+    async fn on_phase(
+        &self,
+        _ctx: &PhaseContext,
+        conversation: &[Message],
+        state: &Store,
+    ) -> HookReaction {
+        // Already computed this run (replayed across steps and resume): re-inject
+        // the same request-only block without re-running the selector.
+        if let Some(block) = RecallContext::load_or_default(state) {
+            return HookReaction::messages(block);
         }
         let block = self.compute(conversation).await;
-        self.cache
-            .lock()
-            .unwrap()
-            .insert(ctx.run_id.clone(), block.clone());
-        HookReaction::messages(block)
+        HookReaction {
+            state: vec![RecallContext::write(&Some(block.clone()))],
+            messages: block,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use awaken_agent_contract::agent::run::Id as RunId;
+
     use super::*;
     use crate::recall::RecallBounds;
 
@@ -227,6 +253,7 @@ mod tests {
             run_id: RunId("r".into()),
             step: 0,
             point: PhaseHookPoint::BeforeInference,
+            after_tool: None,
         }
     }
 
@@ -273,7 +300,7 @@ mod tests {
             RecallBounds::default(),
         );
         let hook = &plugin.resolve().phase_hooks[0];
-        let reaction = hook.on_phase(&phase_ctx(), &[]).await;
+        let reaction = hook.on_phase(&phase_ctx(), &[], &Store::new()).await;
         assert_eq!(reaction.messages.len(), 1);
         assert!(
             reaction.messages[0]
@@ -296,7 +323,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn large_store_uses_the_selector_and_caches_per_run() {
+    async fn large_store_uses_the_selector_and_gates_on_run_state() {
         // 3 memories, select_over = 1 → selection kicks in.
         let store = store_with(&[("a", "AAA"), ("b", "BBB"), ("c", "CCC")]);
         let bounds = RecallBounds {
@@ -315,7 +342,8 @@ mod tests {
             Role::User,
             "which one?",
         )];
-        let reaction = hook.on_phase(&phase_ctx(), &conversation).await;
+        let mut state = Store::new();
+        let reaction = hook.on_phase(&phase_ctx(), &conversation, &state).await;
         // Only the selected memory is injected; the selector saw the user query.
         assert_eq!(reaction.messages.len(), 1);
         assert_eq!(*selector.seen_query.lock().unwrap(), "which one?");
@@ -323,6 +351,24 @@ mod tests {
         assert_eq!(
             reaction.messages[0].text_content().matches("\n\n").count(),
             1
+        );
+        // The first call staged its recall block into run state.
+        assert!(!reaction.state.is_empty());
+
+        // Apply that state (as the engine does), then a later step of the same run
+        // replays the block without re-running the selector — the gate the deleted
+        // per-run cache used to provide, now resume-safe (ADR-0055).
+        for command in &reaction.state {
+            state.apply(command);
+        }
+        *selector.seen_query.lock().unwrap() = String::new();
+        let replay = hook.on_phase(&phase_ctx(), &conversation, &state).await;
+        assert_eq!(replay.messages.len(), 1);
+        assert!(replay.state.is_empty(), "a replay stages no new state");
+        assert_eq!(
+            *selector.seen_query.lock().unwrap(),
+            "",
+            "selector must not re-run once recall is computed for the run"
         );
     }
 }

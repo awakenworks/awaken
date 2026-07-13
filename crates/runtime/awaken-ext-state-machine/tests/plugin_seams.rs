@@ -11,9 +11,32 @@ use awaken_ext_state_machine::{
     StateMachinePlugin, ThreadInstances, ViolationLog,
 };
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
-use awaken_runtime_contract::plugin::{Plugin, RunEndContext, RunEndDecision, enforce_bound};
+use awaken_runtime_contract::plugin::{
+    AfterToolContext, HookReaction, PhaseContext, PhaseHook, PhaseHookPoint, Plugin, RunEndContext,
+    RunEndDecision, enforce_bound,
+};
 use awaken_runtime_contract::tool::{ToolCall, ToolOutput};
 use serde_json::json;
+
+/// Drive the state-machine observer (now a `PhaseHook` at `AfterTool`, ADR-0055)
+/// with one executed call and its output, as the engine does.
+async fn after_tool(
+    hook: &std::sync::Arc<dyn PhaseHook>,
+    call: &ToolCall,
+    output: &ToolOutput,
+    store: &Store,
+) -> HookReaction {
+    let ctx = PhaseContext {
+        run_id: RunId("r".into()),
+        step: 0,
+        point: PhaseHookPoint::AfterTool,
+        after_tool: Some(AfterToolContext {
+            call: call.clone(),
+            output: output.clone(),
+        }),
+    };
+    hook.on_phase(&ctx, &[], store).await
+}
 
 const READ_BEFORE_WRITE: &str = r#"{"machines":[{
     "name":"rbw","scope":"thread","key":"{file_path}","initial":"unread","terminal":["written"],
@@ -74,7 +97,7 @@ fn manifest_admits_resolved_contributions() {
     assert_eq!(manifest.id, "state_machine");
     assert!(enforce_bound(&manifest, &contributions).is_ok());
     assert_eq!(contributions.tool_gates.len(), 1);
-    assert_eq!(contributions.tool_observers.len(), 1);
+    assert_eq!(contributions.phase_hooks.len(), 1);
     assert_eq!(contributions.run_end_guards.len(), 1);
     assert_eq!(contributions.state_keys.len(), 5);
 }
@@ -207,12 +230,16 @@ async fn gate_suspends_on_ask() {
 async fn observer_advances_on_success_and_records_metric() {
     let p = plugin(READ_BEFORE_WRITE);
     let contributions = p.resolve();
-    let observer = &contributions.tool_observers[0];
+    let observer = &contributions.phase_hooks[0];
     let mut store = Store::new();
     let output = ToolOutput::ok("call-1", "contents");
-    let reaction = observer
-        .after_tool(&call("Read", json!({"file_path": "a.rs"})), &output, &store)
-        .await;
+    let reaction = after_tool(
+        observer,
+        &call("Read", json!({"file_path": "a.rs"})),
+        &output,
+        &store,
+    )
+    .await;
     apply(&mut store, &reaction.state);
     assert_eq!(
         ThreadInstances::load_or_default(&store).current("rbw", "a.rs"),
@@ -226,12 +253,16 @@ async fn observer_advances_on_success_and_records_metric() {
 async fn observer_does_not_advance_on_error() {
     let p = plugin(READ_BEFORE_WRITE);
     let contributions = p.resolve();
-    let observer = &contributions.tool_observers[0];
+    let observer = &contributions.phase_hooks[0];
     let mut store = Store::new();
     let output = ToolOutput::error("call-1", "boom");
-    let reaction = observer
-        .after_tool(&call("Read", json!({"file_path": "a.rs"})), &output, &store)
-        .await;
+    let reaction = after_tool(
+        observer,
+        &call("Read", json!({"file_path": "a.rs"})),
+        &output,
+        &store,
+    )
+    .await;
     apply(&mut store, &reaction.state);
     assert_eq!(
         ThreadInstances::load_or_default(&store).current("rbw", "a.rs"),
@@ -243,17 +274,17 @@ async fn observer_does_not_advance_on_error() {
 async fn observer_records_deny_metric_and_violation_on_blocked_write() {
     let p = plugin(READ_BEFORE_WRITE);
     let contributions = p.resolve();
-    let observer = &contributions.tool_observers[0];
+    let observer = &contributions.phase_hooks[0];
     let mut store = Store::new();
     // The gate blocked the write; the runtime feeds an error result back.
     let output = ToolOutput::error("call-1", "blocked: Read a.rs before writing.");
-    let reaction = observer
-        .after_tool(
-            &call("Write", json!({"file_path": "a.rs"})),
-            &output,
-            &store,
-        )
-        .await;
+    let reaction = after_tool(
+        observer,
+        &call("Write", json!({"file_path": "a.rs"})),
+        &output,
+        &store,
+    )
+    .await;
     apply(&mut store, &reaction.state);
     assert_eq!(Metrics::load_or_default(&store).total.denied, 1);
     let log = ViolationLog::load_or_default(&store);
@@ -268,16 +299,16 @@ async fn observer_emits_warn_message_and_records() {
             "on_violation":{"action":"warn","reason":"writing unread {file_path}"}}]}]}"#;
     let p = plugin(cfg);
     let contributions = p.resolve();
-    let observer = &contributions.tool_observers[0];
+    let observer = &contributions.phase_hooks[0];
     let mut store = Store::new();
     let output = ToolOutput::ok("call-1", "wrote");
-    let reaction = observer
-        .after_tool(
-            &call("Write", json!({"file_path": "a.rs"})),
-            &output,
-            &store,
-        )
-        .await;
+    let reaction = after_tool(
+        observer,
+        &call("Write", json!({"file_path": "a.rs"})),
+        &output,
+        &store,
+    )
+    .await;
     apply(&mut store, &reaction.state);
     assert_eq!(reaction.messages.len(), 1);
     assert_eq!(reaction.messages[0].text_content(), "writing unread a.rs");
@@ -294,15 +325,15 @@ async fn observer_records_asked_on_approved_ask_call() {
             "on_violation":{"action":"ask"}}]}]}"#;
     let p = plugin(cfg);
     let contributions = p.resolve();
-    let observer = &contributions.tool_observers[0];
+    let observer = &contributions.phase_hooks[0];
     let mut store = Store::new();
-    let reaction = observer
-        .after_tool(
-            &call("Write", json!({"file_path": "a.rs"})),
-            &ToolOutput::ok("call-1", "wrote"),
-            &store,
-        )
-        .await;
+    let reaction = after_tool(
+        observer,
+        &call("Write", json!({"file_path": "a.rs"})),
+        &ToolOutput::ok("call-1", "wrote"),
+        &store,
+    )
+    .await;
     apply(&mut store, &reaction.state);
     assert_eq!(Metrics::load_or_default(&store).total.asked, 1);
 }
@@ -316,17 +347,17 @@ async fn emit_cooldown_throttles_repeat_reminders() {
             "emit":{"target":"system","content":"check {file_path}","cooldown_turns":2}}]}]}"#;
     let p = plugin(cfg);
     let contributions = p.resolve();
-    let observer = &contributions.tool_observers[0];
+    let observer = &contributions.phase_hooks[0];
     let mut store = Store::new();
     let mut emitted = 0;
     for _ in 0..3 {
-        let reaction = observer
-            .after_tool(
-                &call("Edit", json!({"file_path": "a.rs"})),
-                &ToolOutput::ok("call-1", "ok"),
-                &store,
-            )
-            .await;
+        let reaction = after_tool(
+            observer,
+            &call("Edit", json!({"file_path": "a.rs"})),
+            &ToolOutput::ok("call-1", "ok"),
+            &store,
+        )
+        .await;
         emitted += reaction.messages.len();
         apply(&mut store, &reaction.state);
     }
@@ -343,15 +374,15 @@ async fn observer_emits_transition_message() {
             "emit":{"target":"conversation","content":"moved to b","role":"assistant"}}]}]}"#;
     let p = plugin(cfg);
     let contributions = p.resolve();
-    let observer = &contributions.tool_observers[0];
+    let observer = &contributions.phase_hooks[0];
     let mut store = Store::new();
-    let reaction = observer
-        .after_tool(
-            &call("X", json!({})),
-            &ToolOutput::ok("call-1", "ok"),
-            &store,
-        )
-        .await;
+    let reaction = after_tool(
+        observer,
+        &call("X", json!({})),
+        &ToolOutput::ok("call-1", "ok"),
+        &store,
+    )
+    .await;
     apply(&mut store, &reaction.state);
     assert_eq!(reaction.messages.len(), 1);
     assert_eq!(reaction.messages[0].text_content(), "moved to b");
