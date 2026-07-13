@@ -213,15 +213,16 @@ impl std::fmt::Display for StateError {
 impl std::error::Error for StateError {}
 
 /// A typed view over one `(scope, key)` cell of the untyped store: a key declares
-/// its address, scope, merge policy, value type, and how a typed update folds
-/// into the value (`apply`). Reads are typed and fail closed on a shape drift;
-/// writes serialize the whole value into one `Command`. Promoted into the
-/// contract (ADR-0055) from the state-machine extension's original façade so the
-/// engine and every extension share one typed-state discipline.
+/// its address, scope, merge policy, and value type. Reads are typed and fail
+/// closed on a shape drift; writes serialize the whole value into one `Command`.
+/// Promoted into the contract (ADR-0055) so the engine and every extension share
+/// one typed-state discipline.
 ///
-/// `apply` must stay total and deterministic: `Store::rebuild` replays committed
-/// updates without re-validating, so an illegal update is recorded (e.g. a
-/// bounded violation log), never a panic.
+/// This is the base a *write-only* key needs — one that computes a whole value
+/// and writes it (recall/compaction context, thread usage). A key that instead
+/// reads-folds-writes a typed delta additionally implements [`FoldStateKey`], so
+/// a write-only key is never forced to declare a fold it does not have (interface
+/// segregation).
 pub trait StateKey {
     /// Stable string address. Part of the persisted wire — never rename without
     /// a migration.
@@ -229,10 +230,6 @@ pub trait StateKey {
     const SCOPE: Scope;
     const MERGE: MergePolicy = MergePolicy::Disjoint;
     type Value: Serialize + DeserializeOwned + Default;
-    type Update;
-
-    /// Fold one typed update into the value.
-    fn apply(value: &mut Self::Value, update: Self::Update);
 
     /// This key's untyped address.
     fn address() -> Key {
@@ -261,16 +258,7 @@ pub trait StateKey {
         Self::load(store).unwrap_or_default()
     }
 
-    /// Load (fail-closed), fold the update, and produce a whole-value `Command`.
-    fn commit(store: &Store, update: Self::Update) -> Result<Command, StateError> {
-        let mut value = Self::load(store)?;
-        Self::apply(&mut value, update);
-        Ok(Self::write(&value))
-    }
-
-    /// Produce a whole-value `Command` from an already-folded value. Use this to
-    /// emit one command per key when a single reaction folds many updates into a
-    /// local value (avoids read-modify-write aliasing within one batch).
+    /// Produce a whole-value `Command` from an already-computed value.
     fn write(value: &Self::Value) -> Command {
         Command::set(
             Self::SCOPE,
@@ -278,6 +266,25 @@ pub trait StateKey {
             Self::KEY,
             serde_json::to_value(value).unwrap_or(serde_json::Value::Null),
         )
+    }
+}
+
+/// A [`StateKey`] whose value is maintained by folding a typed delta rather than
+/// written whole (the state-machine cells, thread-usage accumulation). `apply`
+/// must stay total and deterministic: `Store::rebuild` replays committed updates
+/// without re-validating, so an illegal update is recorded (e.g. a bounded
+/// violation log), never a panic.
+pub trait FoldStateKey: StateKey {
+    type Update;
+
+    /// Fold one typed update into the value.
+    fn apply(value: &mut Self::Value, update: Self::Update);
+
+    /// Load (fail-closed), fold the update, and produce a whole-value `Command`.
+    fn commit(store: &Store, update: Self::Update) -> Result<Command, StateError> {
+        let mut value = Self::load(store)?;
+        Self::apply(&mut value, update);
+        Ok(Self::write(&value))
     }
 }
 
@@ -448,6 +455,8 @@ mod tests {
         const SCOPE: Scope = Scope::Run;
         const MERGE: MergePolicy = MergePolicy::Disjoint;
         type Value = u64;
+    }
+    impl FoldStateKey for Counter {
         type Update = u64;
         fn apply(value: &mut u64, update: u64) {
             *value += update;

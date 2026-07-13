@@ -5,9 +5,9 @@
 
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_agent_contract::agent::state::{Command, Store};
+use awaken_agent_contract::agent::state::{Command, FoldStateKey, StateKey, Store};
 use awaken_ext_state_machine::{
-    ContinuationSettings, FsmTransition, Metrics, RunInstances, StateCell, StateMachineConfig,
+    ContinuationSettings, FsmTransition, Metrics, RunInstances, StateMachineConfig,
     StateMachinePlugin, ThreadInstances, ViolationLog,
 };
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};

@@ -123,10 +123,6 @@ impl StateKey for CompactionContext {
     const SCOPE: Scope = Scope::Run;
     const MERGE: MergePolicy = MergePolicy::Exclusive;
     type Value = Option<Vec<Message>>;
-    type Update = Vec<Message>;
-    fn apply(value: &mut Option<Vec<Message>>, update: Vec<Message>) {
-        *value = Some(update);
-    }
 }
 
 impl Plugin for CompactPlugin {
@@ -277,14 +273,14 @@ mod tests {
     }
 
     #[test]
-    fn compaction_context_key_folds_and_reads_back() {
+    fn compaction_context_key_writes_and_reads_back() {
         let block = vec![Message::text(
             MessageId("s".into()),
             Role::System,
             "summary",
         )];
         let mut store = Store::new();
-        store.apply(&CompactionContext::commit(&store, block.clone()).unwrap());
+        store.apply(&CompactionContext::write(&Some(block.clone())));
         assert_eq!(CompactionContext::load_or_default(&store), Some(block));
     }
 

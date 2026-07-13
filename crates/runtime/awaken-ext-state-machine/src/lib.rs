@@ -37,6 +37,6 @@ pub fn config_schema() -> serde_json::Value {
 pub use result::{ContentMatcher, ResultMatcher, StatusMatcher, ToolResultView, result_matches};
 pub use state::{
     FsmMetricCounts, FsmMetricEvent, FsmMetricUpdate, FsmMetrics, FsmStore, FsmTransition,
-    FsmViolationLog, FsmViolationRecord, Metrics, RunInstances, STATE_KEYS, StateCell,
-    ThreadInstances, ViolationAuditAction, ViolationLog,
+    FsmViolationLog, FsmViolationRecord, Metrics, RunInstances, STATE_KEYS, ThreadInstances,
+    ViolationAuditAction, ViolationLog,
 };
