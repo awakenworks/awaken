@@ -393,6 +393,37 @@ pub fn activation_on(run: &str, thread: &str) -> RunActivation {
     }
 }
 
+/// A plain-text runtime wired to a metrics recorder, so a test can assert the
+/// worker meters the dispatch lifecycle on the same recorder the runtime uses.
+pub fn text_runtime_with_metrics(metrics: Arc<dyn MetricsRecorder>) -> Arc<Runtime> {
+    let runtime = Arc::new(
+        Runtime::new()
+            .with_llm(Arc::new(TextLlm("done")))
+            .with_metrics(metrics),
+    );
+    install(&runtime);
+    runtime
+}
+
+/// A park-on-gate runtime wired to a metrics recorder, so a test can assert a run
+/// that settles `Parked` meters a `parked` settle.
+pub fn tool_runtime_with_metrics(
+    metrics: Arc<dyn MetricsRecorder>,
+) -> (Arc<Runtime>, Arc<AtomicUsize>) {
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = Arc::new(
+        Runtime::new()
+            .with_llm(Arc::new(ToolThenText {
+                calls: AtomicUsize::new(0),
+            }))
+            .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
+            .with_gate(Arc::new(SuspendGate))
+            .with_metrics(metrics),
+    );
+    install(&runtime);
+    (runtime, ran)
+}
+
 /// A model that emits a `echo` tool call for its first `n` inferences, then ends
 /// with text. Paired with [`ScheduleGate`] it lets a run commit *several*
 /// consecutive ScheduledAction parks, so a test can drive the worker's
