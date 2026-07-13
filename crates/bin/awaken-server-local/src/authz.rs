@@ -80,31 +80,35 @@
 //! **What P1 defers**: custom roles, org-level scopes, group rosters,
 //! entitlements, and approval discharge.
 //!
-//! **iam-host (ADR-0048) — engine shared, PEP + embed intentionally local.**
-//! The authorization *engine* is already the shared one: this module composes
-//! `awaken-iam-core` (mint/directory/policy/repos), `awaken-iam-server`
-//! (`SqlStore` + migrations), and `awaken-iam-preset` (role catalog + seed) —
-//! there is no second policy engine to fold in. iam-host was *extended* (rev
-//! `fe7eb6c`) to make its PEP adoptable in principle — `RouteActions::scope_for`
-//! removed the hard-coded `ScopeRef::Global`, and `IamGate::from_local_authz`
-//! lets a product wrap its own embed — but this plane still keeps its own
-//! `IamGate`-free guard and embed, because the swap remains a *net regression*
-//! for the Managed surface and this module's invariants:
-//!   1. `auth_layer` reads only `Authorization: Bearer`; this guard also accepts
-//!      `x-api-key` (what the Anthropic SDK sends for `apiKey`) — [`bearer_token`].
-//!   2. `auth_layer` renders its own problem+json error; this plane must answer
-//!      401/403 in the Managed [`ErrorResponse`] envelope SDK clients parse.
-//!   3. `IamGate::authenticate_bearer` returns only the principal, but this
-//!      plane authorizes a *workspace-less* route at the **token's** home
-//!      workspace and needs that binding for token views/roles — [`authenticate`]
-//!      returns `(principal, workspace)`.
-//!   4. `from_local_authz` holds the directory and policy behind **two** mutexes;
-//!      mint here takes **one** lock over both so the row + binding writes cannot
-//!      interleave (see [`ManagementAuthz::state`]) — the two-mutex shape would
-//!      break that atomicity.
-//! The extensions are the right response to "adopt iam-host": they make the host
-//! PEP tenancy-capable and gate-wrappable for consumers that fit it. The assembly
-//! is validated against our rev in `tests/iam_host_embed.rs`.
+//! **iam-host (ADR-0048) — engine shared at the primitive level; `IamGate`
+//! deliberately not interposed.** The authorization *engine* is already the
+//! shared one: this module composes `awaken-iam-core` (mint/directory/policy/
+//! repos), `awaken-iam-server` (`SqlStore` + migrations), and `awaken-iam-preset`
+//! (role catalog + seed) directly. There is no second policy engine, token store,
+//! or minter to fold in — the dedup ADR-0048 sought is complete here.
+//!
+//! iam-host was *extended* (rev `edd6833`) to make its `IamGate` + `auth_layer`
+//! PEP genuinely adoptable by a Managed-style product: `RouteActions::scope_for`
+//! (per-workspace tenancy, not hard-coded `Global`), `IamGate::from_local_state`
+//! (wrap a product's own single-locked embed), `authenticate_scoped`
+//! (principal + the token's workspace binding), and the `extract_credential` /
+//! `render_auth_error` hooks (x-api-key, product error envelope). Those are the
+//! right, bounded response to "adopt iam-host" and let a fresh consumer use the
+//! host PEP with no bespoke guard.
+//!
+//! This plane still does **not** interpose `IamGate`, because here it would be
+//! pure indirection with negative value: `IamGate` is a thin router over exactly
+//! the two primitives this module already holds and calls directly — the
+//! `ApiTokenDirectory` (authn, via [`authenticate`]) and the policy engine
+//! (authz, via [`ManagementAuthz::authorize`]). Routing those same calls through
+//! the gate removes no code and *loses* information the guard surfaces: the gate's
+//! `authenticate_scoped` returns `Option`, collapsing the distinct
+//! expired / revoked / invalid `IamError` kinds this guard maps to distinct 401
+//! messages. The guard's remaining logic — `x-api-key` (via [`bearer_token`]), the
+//! Managed [`ErrorResponse`] envelope, the workspace path/query/body fence, the
+//! 413 body cap, and the `TokenAdmin` delegation — is irreducibly Managed-specific
+//! and would have to be re-supplied to `auth_layer` as trait callbacks anyway. The
+//! host assembly is validated against our rev in `tests/iam_host_embed.rs`.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};

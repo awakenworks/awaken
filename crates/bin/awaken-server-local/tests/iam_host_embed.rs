@@ -8,19 +8,21 @@
 //!   2. **Fail-closed authn** — no credential and a bogus credential both fail to
 //!      resolve a principal; only the real ephemeral admin authenticates.
 //!
-//! **Adoption outcome (ADR-0048): engine shared; PEP + embed stay local.** The
+//! **Adoption outcome (ADR-0048): engine shared; `IamGate` not interposed.** The
 //! authn/authz *core* validated here is sound and the *engine* is already shared
-//! (`authz.rs` composes iam-core/-server/-preset directly). Two of the original
-//! blockers were *fixed by extending host* at rev `fe7eb6c`:
-//! `RouteActions::scope_for` removed the hard-coded `ScopeRef::Global` (so the PEP
-//! can now enforce per-workspace tenancy), and `IamGate::from_local_authz` lets a
-//! product wrap its own embed (identity + grants) instead of `embed_local`'s fixed
-//! grant-less default. The swap still stays out of this plane because it remains a
-//! net regression for the Managed surface — `x-api-key` auth, the Managed
-//! `ErrorResponse` envelope, token-home-workspace authz for workspace-less routes,
-//! and the single-lock mint invariant (see the `authz.rs` module doc, "iam-host
-//! (ADR-0048)"). This test keeps host's assembly regression-checked against our
-//! rev so a future consumer that fits the PEP can adopt it.
+//! (`authz.rs` composes iam-core/-server/-preset directly). iam-host was extended
+//! at rev `edd6833` so a Managed-style product *could* adopt its PEP with no
+//! bespoke guard: `RouteActions::scope_for` (per-workspace tenancy),
+//! `IamGate::from_local_state` (wrap a product's single-locked embed),
+//! `authenticate_scoped` (principal + token workspace), and the
+//! `extract_credential` / `render_auth_error` hooks (x-api-key, product error
+//! envelope). This plane still does not interpose the gate: `IamGate` only routes
+//! to the `ApiTokenDirectory` and policy engine `authz.rs` already calls directly,
+//! so wrapping is pure indirection — and `authenticate_scoped`'s `Option` would
+//! even drop the expired/revoked/invalid distinction the guard surfaces (see the
+//! `authz.rs` module doc, "iam-host (ADR-0048)"). This test keeps host's assembly
+//! regression-checked against our rev so a future consumer that fits the PEP can
+//! adopt it.
 
 use awaken_iam_contract::{PrincipalRef, Timestamp};
 use awaken_iam_host::{HostConfig, embed_local};
