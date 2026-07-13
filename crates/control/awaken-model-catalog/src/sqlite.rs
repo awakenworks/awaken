@@ -35,27 +35,46 @@ pub struct SqliteCatalogRepo {
 }
 
 impl SqliteCatalogRepo {
-    /// Open (or create) a database file and apply the catalog migrations.
+    /// Open (or create) a database file and apply the catalog migrations
+    /// (one-step convenience for a store-owned database).
     pub fn open(path: &str) -> Result<Self, StoreError> {
-        let conn = Connection::open(path).map_err(|err| StoreError::Open(err.to_string()))?;
-        Self::from_connection(conn)
+        let store =
+            Self::over(Connection::open(path).map_err(|err| StoreError::Open(err.to_string()))?);
+        store.ensure_schema()?;
+        Ok(store)
     }
 
     /// Open a private in-memory database (tests / ephemeral).
     pub fn open_in_memory() -> Result<Self, StoreError> {
-        let conn = Connection::open_in_memory().map_err(|err| StoreError::Open(err.to_string()))?;
-        Self::from_connection(conn)
+        let store = Self::over(
+            Connection::open_in_memory().map_err(|err| StoreError::Open(err.to_string()))?,
+        );
+        store.ensure_schema()?;
+        Ok(store)
     }
 
-    fn from_connection(conn: Connection) -> Result<Self, StoreError> {
+    /// Wrap an existing connection **without migrating**. Call [`Self::ensure_schema`],
+    /// or let a unified migration pipeline own the `catalog` scope so this store
+    /// shares the caller's database.
+    pub fn over(conn: Connection) -> Self {
+        Self {
+            conn: Arc::new(Mutex::new(conn)),
+        }
+    }
+
+    /// Apply the `catalog` scoped migration bundle (idempotent). Optional: skip it
+    /// when the schema is owned externally.
+    pub fn ensure_schema(&self) -> Result<(), StoreError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| StoreError::Migrate("catalog connection poisoned".to_string()))?;
         let bundle = catalog_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
         awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
             .map_err(|err| StoreError::Migrate(err.to_string()))?
             .run_bundle(&conn, &bundle)
             .map_err(|err| StoreError::Migrate(err.to_string()))?;
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-        })
+        Ok(())
     }
 
     async fn with_conn<T, F>(&self, f: F) -> Result<T, RepoError>
@@ -234,5 +253,36 @@ impl CatalogRepo for SqliteCatalogRepo {
             Ok(cat)
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The injection seam: a caller supplies its own connection, `over` wraps it
+    /// WITHOUT migrating, and `ensure_schema` applies the `catalog` scope — so a
+    /// unified migration pipeline can own the schema and this store shares the
+    /// caller's database (mirrors the resource-family stores' `over`/`ensure_schema`).
+    #[tokio::test]
+    async fn over_then_ensure_schema_round_trips_on_a_caller_owned_connection() {
+        let conn = Connection::open_in_memory().unwrap();
+        let repo = SqliteCatalogRepo::over(conn);
+        repo.ensure_schema().unwrap();
+        repo.put_provider(Provider {
+            id: ProviderId::new("anthropic"),
+            slug: "anthropic".into(),
+            display_name: "Anthropic".into(),
+            version: 1,
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            repo.get_provider(&ProviderId::new("anthropic"))
+                .await
+                .unwrap()
+                .slug,
+            "anthropic"
+        );
     }
 }
