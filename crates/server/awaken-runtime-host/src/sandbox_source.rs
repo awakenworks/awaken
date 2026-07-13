@@ -52,6 +52,11 @@ impl ThreadEgress {
     }
 }
 
+/// The fixed interior path the namespace sandbox binds the workspace to and chdirs
+/// into (see `awaken-sandbox-local`), so a cwd-keyed CLI's session slug is stable
+/// across relaunches and machines regardless of the host workspace path.
+const SANDBOX_WORKSPACE: &str = "/workspace";
+
 /// Opens each run's [`AgentSession`] inside a fresh namespace-tier sandbox: build
 /// the spec from the activation's thread (scope + egress policy), realize it, and
 /// `spawn_agent` the launch's argv under bwrap with piped stdio.
@@ -153,10 +158,11 @@ impl AgentChannelSource for SandboxChannelSource {
             channel,
             process: Arc::from(process),
             codec: self.codec,
-            // Pinned to the sandbox's stable interior workspace path once the
-            // session-home resource wires it (cross-machine recovery); until then the
-            // CLI runs at the default cwd.
-            workspace_cwd: None,
+            // The namespace sandbox binds the (host-varying) workspace to the fixed
+            // interior path `/workspace` and chdirs there, so a cwd-keyed CLI keys its
+            // session under the same slug every relaunch/machine — the stable interior
+            // identity cross-directory/cross-machine recovery needs.
+            workspace_cwd: Some(SANDBOX_WORKSPACE.to_string()),
         })
     }
 }

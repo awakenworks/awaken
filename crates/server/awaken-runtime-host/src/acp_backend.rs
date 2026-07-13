@@ -109,7 +109,8 @@ impl crate::host::SharedHost {
         store_dir: Option<std::path::PathBuf>,
     ) -> Self {
         let resolver = Arc::new(crate::acp_provision::EnvLaunchResolver::from_process_env(
-            cli, store_dir,
+            cli,
+            store_dir.clone(),
         ));
         let source = Arc::new(awaken_run_executor_acp::ProjectingChannelSource::new(
             cli, resolver,
@@ -117,7 +118,18 @@ impl crate::host::SharedHost {
         // Publish this CLI's bring-up (install/launch/initialize/ready) to the hub,
         // so a UI can show progress while a cold npx cache installs the adapter.
         let observer = self.acp_launch_observer();
-        let executor = AcpRunExecutor::new(source).with_launch_observer(observer);
+        let mut executor = AcpRunExecutor::new(source).with_launch_observer(observer);
+        // When a session-blob root is configured, recover this CLI's session across
+        // directories/machines: harvest it to the (shared) root after a run and
+        // restore it before the next, keyed by thread+adapter — under the same
+        // config home the resolver opens. A `Gateway`/stateless CLI is skipped by the
+        // executor's own dispatch; a single-machine host leaves this unset.
+        if let Some(blob_root) = self.session_blob_root.clone() {
+            let blobs = Arc::new(crate::session_home::FsSessionBlobStore::new(blob_root));
+            executor = executor.with_session_home(Arc::new(
+                crate::session_home::DirSessionHome::new(store_dir, blobs),
+            ));
+        }
         self.with_acp(Arc::new(executor))
     }
 
@@ -154,6 +166,19 @@ mod tests {
         let acp = host.acp.as_ref().expect("acp backend wired");
         assert!(acp.is_acp("t"));
         assert!(!acp.is_acp("native-thread"));
+    }
+
+    #[test]
+    fn a_session_blob_root_composes_a_recovering_acp_backend() {
+        // With a session-blob root set, the projecting-ACP composition wires the
+        // session-home recovery into the executor and still routes acp:* threads.
+        let cli = *awaken_run_executor_acp::acp_cli("claude").unwrap();
+        let blobs = std::env::temp_dir().join(format!("acp-blobs-{}", std::process::id()));
+        let host = SharedHost::new(Arc::new(NoLlm), "test")
+            .with_session_blob_root(blobs)
+            .with_projected_acp(cli, None);
+        host.register_thread_runtime("t", "acp:claude");
+        assert!(host.acp.as_ref().expect("acp backend wired").is_acp("t"));
     }
 
     #[tokio::test]
