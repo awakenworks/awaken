@@ -114,6 +114,60 @@ mod cgroup_host_config_tests {
         assert!(hc.memory_swap.is_none());
         assert!(hc.storage_opt.is_none());
     }
+
+    #[test]
+    fn signal_name_maps_every_signal() {
+        assert_eq!(signal_name(pc::Signal::Term), "SIGTERM");
+        assert_eq!(signal_name(pc::Signal::Kill), "SIGKILL");
+        assert_eq!(signal_name(pc::Signal::Int), "SIGINT");
+    }
+
+    fn plan_with_binds() -> ContainerPlan {
+        ContainerPlan {
+            binds: vec![
+                crate::BindPlan {
+                    source_ref: "/host/ro".into(),
+                    mount_path: "/in".into(),
+                    read_only: true,
+                },
+                crate::BindPlan {
+                    source_ref: "/host/rw".into(),
+                    mount_path: "/work".into(),
+                    read_only: false,
+                },
+            ],
+            ..plan()
+        }
+    }
+
+    // The bollard client builds lazily (no dial until a request), so the pure
+    // host-config assembly is unit-testable without a live daemon.
+    #[test]
+    fn host_config_hardens_rootfs_publishes_the_agent_port_and_maps_binds_ro_flag() {
+        let rt = DockerRuntime::connect_local(8080).expect("client builds without a daemon");
+        let hc = rt.host_config(&plan_with_binds());
+        assert_eq!(hc.readonly_rootfs, Some(true));
+        assert!(hc.tmpfs.as_ref().unwrap().contains_key("/tmp"));
+        assert!(hc.port_bindings.as_ref().unwrap().contains_key("8080/tcp"));
+        let binds = hc.binds.unwrap();
+        assert!(binds.contains(&"/host/ro:/in:ro".to_string()));
+        assert!(binds.contains(&"/host/rw:/work".to_string()));
+    }
+
+    #[test]
+    fn with_client_wraps_a_handle_and_connect_local_builds_one() {
+        let docker = Docker::connect_with_local_defaults().unwrap();
+        let rt = DockerRuntime::with_client(docker, 9000);
+        assert_eq!(rt.agent_port, 9000);
+        assert_eq!(rt.port_key(), "9000/tcp");
+    }
+
+    #[tokio::test]
+    async fn artifacts_are_out_of_band_and_touch_lease_is_a_noop() {
+        let rt = DockerRuntime::connect_local(8080).unwrap();
+        assert!(rt.artifacts("cid").await.unwrap().is_empty());
+        assert!(rt.touch_lease("cid").await.is_ok());
+    }
 }
 
 fn signal_name(signal: pc::Signal) -> &'static str {
