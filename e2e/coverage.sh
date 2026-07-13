@@ -30,10 +30,10 @@ eval "$(cargo llvm-cov show-env --sh)"
 
 echo "[build] instrumented awaken-server-local into $CARGO_TARGET_DIR"
 cargo build --quiet -p awaken-server-local --bin awaken-server-local
-# The open single-machine binary the deployment-agnostic standalone_e2e.mjs drives
-# (it spawns its own process); build it instrumented into the same target dir so
-# its coverage is attributed to the e2e too.
-cargo build --quiet -p awaken-standalone --bin awaken-standalone
+# The aggregated `awaken` binary the awaken_*_e2e drive (each spawns its own
+# process); build it instrumented into the same target dir so its coverage is
+# attributed to the e2e too.
+cargo build --quiet -p awaken-cli --bin awaken
 
 cd e2e
 run() { # file, label, extra-env...
@@ -69,14 +69,14 @@ cargo llvm-cov report --summary-only 2>/dev/null | tail -1
 echo "[coverage] e2e-surface (server + protocols + config + runtime-core + ingress):"
 EXC='(awaken-ext-memory|awaken-ext-compact|awaken-ext-mcp|awaken-ext-goal|awaken-ext-skills|awaken-ext-state-machine|awaken-ext-builtin-tools|awaken-ext-permission|awaken-tool-pattern|awaken-mcp-wire|awaken-sandbox-local|awaken-provisioning-contract|awaken-agent-channel|awaken-store-fs|awaken-store-inmem|awaken-credential|awaken-store-schema|awaken-file-store)/'
 cargo llvm-cov report --summary-only --ignore-filename-regex "$EXC" 2>/dev/null | tail -1
-# The OPEN single-machine serving surface — the wiring the deployment-agnostic
-# standalone_e2e is designed to validate end to end: the protocol adapters, the
-# neutral host, the config resolver, the enforcement guard, and the standalone
-# assembly. The runtime KERNEL (engine/retry/breaker), the ext-* extensions, the
-# stores and the sandbox are unit-tested for their logic (not this HTTP e2e's job),
-# and the BuSL management plane (admin authoring / iam-server) is out of the open
-# single-machine form entirely — all excluded here.
-echo "[coverage] open single-machine serving surface (protocols + host + config-resolver + authz-enforce + standalone):"
-SURF='(awaken-standalone|awaken-authz-enforce|awaken-protocol-managed|awaken-protocol-ai-sdk|awaken-protocol-ag-ui|awaken-protocol-a2a|awaken-protocol-transport|awaken-runtime-host|awaken-config-resolver)/src'
+# The OPEN single-machine serving surface — the wiring the aggregated `awaken`
+# e2e (awaken_durability_e2e / awaken_cli_e2e / awaken_per_component_db_e2e)
+# validate end to end: the protocol adapters, the neutral host, the config
+# resolver, and the enforcement guard. The runtime KERNEL (engine/retry/breaker),
+# the ext-* extensions, the stores and the sandbox are unit-tested for their logic
+# (not this HTTP e2e's job), and the BuSL management plane (admin authoring /
+# iam-server) is out of the open single-machine form entirely — all excluded here.
+echo "[coverage] open single-machine serving surface (protocols + host + config-resolver + authz-enforce):"
+SURF='(awaken-authz-enforce|awaken-protocol-managed|awaken-protocol-ai-sdk|awaken-protocol-ag-ui|awaken-protocol-a2a|awaken-protocol-transport|awaken-runtime-host|awaken-config-resolver)/src'
 cargo llvm-cov report 2>/dev/null | grep -E "$SURF" | grep -v runtime-examples \
   | awk '{lines+=$8; missed+=$9} END {printf "  lines: %d  missed: %d  cover: %.2f%%\n", lines, missed, (lines-missed)/lines*100}'

@@ -9,7 +9,7 @@ resolver = "2"
 #   crates/server/*     → resident daemon: Managed + protocol front doors, ingress/dispatch, host, local sandbox, notify.
 #   crates/worker/*     → on-demand isolated execution: container/k8s sandbox + channel/relay (links no stores).
 #   crates/control/*    → self-hosted config/vault/iam authoring plane (ADR-0043).
-#   crates/bin/*        → composed deployables (server-local, standalone) + harnesses.
+#   crates/bin/*        → composed deployables (awaken-cli, server-local) + harnesses.
 #                         Boundaries enforced by scripts/ci/check_crate_boundaries.py.
 members = [
     "crates/contract/*",
@@ -106,7 +106,6 @@ awaken-server-local = { path = "crates/bin/awaken-server-local" }
 awaken-authz-enforce = { path = "crates/control/awaken-authz-enforce" }
 awaken-webhook = { path = "crates/server/awaken-webhook" }
 awaken-webhook-managed = { path = "crates/server/awaken-webhook-managed" }
-awaken-standalone = { path = "crates/bin/awaken-standalone" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

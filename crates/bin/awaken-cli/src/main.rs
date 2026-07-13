@@ -18,8 +18,7 @@
 //! The Serve role reuses the production management assembly from
 //! `awaken-server-local` (the single-machine composition root); the Worker / Hand
 //! roles reuse its role helpers. This subsumes the separate `awaken-server-local`
-//! and `awaken-standalone` binaries — server-local remains the e2e-scenario host,
-//! and standalone the zero-config demo surface.
+//! binary, which remains only as the e2e-scenario host.
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

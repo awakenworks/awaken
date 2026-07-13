@@ -1209,28 +1209,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "awaken-standalone"
-version = "1.0.0-dev"
-dependencies = [
- "async-trait",
- "awaken-authz-enforce",
- "awaken-config-resolver",
- "awaken-credential-vault",
- "awaken-observability",
- "awaken-protocol-a2a",
- "awaken-protocol-ag-ui",
- "awaken-protocol-ai-sdk",
- "awaken-protocol-managed",
- "awaken-protocol-transport",
- "awaken-runtime-contract",
- "awaken-runtime-host",
- "awaken-webhook-managed",
- "axum",
- "tokio",
- "tower",
-]
-
-[[package]]
 name = "awaken-store-conformance"
 version = "1.0.0-dev"
 dependencies = [

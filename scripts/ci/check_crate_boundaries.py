@@ -73,31 +73,6 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "tokio",
     },
-    # The minimal single-machine assembly (a `bin/` deployable). Everything in this
-    # repo is open, so there is no licensing boundary here; this allowlist just keeps
-    # the standalone binary lean — it composes the open runtime + protocol planes and
-    # a durable Postgres store, but not the fuller management/authoring surface that
-    # server-local carries.
-    "awaken-standalone": {
-        "awaken-runtime-host",
-        "awaken-observability",
-        "awaken-protocol-managed",
-        "awaken-protocol-ai-sdk",
-        "awaken-protocol-ag-ui",
-        "awaken-protocol-a2a",
-        "awaken-protocol-transport",
-        "awaken-authz-enforce",
-        "awaken-webhook-managed",
-        "awaken-config-resolver",
-        # Open webhook plane over in-memory stores: the SecretStore the whsec_ key is
-        # sealed behind (standalone has no durable config-authoring plane).
-        "awaken-credential-vault",
-        "awaken-runtime-contract",
-        "axum",
-        "async-trait",
-        "tokio",
-        "tower",
-    },
     # Tenancy as an edge aspect (ADR-0051): the opaque `ScopeId` + the pure
     # ingress reconciliation (`resolve_scope`). A foundation leaf, serde-only;
     # names no iam/store/wire — the `ScopeId → ScopeRef` ACL lives in the PDP

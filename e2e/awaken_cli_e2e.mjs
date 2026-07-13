@@ -1,8 +1,8 @@
 // End-to-end for the aggregated `awaken` command (crate awaken-cli), Serve role.
 //
-// `awaken` is the single binary that subsumes awaken-server-local and
-// awaken-standalone: configuration (AWAKEN_ROLE + the deployment axes) decides the
-// deployment. The default Serve role mounts the production management assembly, whose
+// `awaken` is the single binary that subsumes awaken-server-local:
+// configuration (AWAKEN_ROLE + the deployment axes) decides the deployment. The
+// default Serve role mounts the production management assembly, whose
 // host resolves each session's model from the **database-configured** catalog +
 // credential vault (ConfigExecutorProvider) — not a baked-in demo model.
 //

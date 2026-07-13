@@ -161,8 +161,8 @@ fn dispatch_wake_kind() -> DispatchWake {
 
 /// Fail fast at startup when `AWAKEN_INGRESS=durable` would resolve to a volatile
 /// in-memory queue (see [`durable_backend_persisted`]). Call this in the composition
-/// root before serving — every open boot path (`awaken-server-local`,
-/// `awaken-standalone`) does. A no-op unless durable ingress is enabled.
+/// root before serving — every open boot path (`awaken` / `awaken-server-local`)
+/// does. A no-op unless durable ingress is enabled.
 pub fn ensure_durable_backend() -> Result<(), String> {
     // The deployment axes now come from one typed config (parsed from the historic
     // env vars), not scattered `std::env::var` reads. An injected shard fan-out owns

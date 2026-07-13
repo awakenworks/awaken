@@ -9,8 +9,7 @@
 //!
 //! All open crates (config-resolver / credential-vault / agent-contract are the
 //! read-side + vault ports, never the durable admin backend — that is injected by
-//! the assembly), so both `awaken-server-local` and
-//! `awaken-standalone` use it.
+//! the assembly), so the `awaken` / `awaken-server-local` management plane uses it.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -259,8 +258,8 @@ async fn put_subscription(
 
     // Update in place: keep the sealed secret + owner. Self-fence on the row's owner
     // so a caller cannot hijack another tenant's id (belt-and-suspenders with the
-    // management-plane resource-ownership guard; the sole fence under standalone,
-    // which has no such middleware). 404, never 403 — no existence disclosure.
+    // management-plane resource-ownership guard). 404, never 403 — no existence
+    // disclosure.
     if let Some(existing) = state.store.get(&id) {
         if existing.workspace_id != workspace_id {
             return (StatusCode::NOT_FOUND, Json(not_found()));
