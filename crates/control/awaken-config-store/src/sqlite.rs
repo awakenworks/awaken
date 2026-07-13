@@ -198,6 +198,30 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         })
         .await
     }
+
+    async fn list_published_scoped(
+        &self,
+        scope: &ScopeId,
+    ) -> Result<Vec<StoredPublication>, ConfigStoreError> {
+        let scope = scope.0.clone();
+        self.with_conn(move |conn, p| {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT record FROM {p}_publication \
+                     WHERE scope_id = ?1 AND state = 'published' ORDER BY rowid ASC"
+                ))
+                .map_err(reject)?;
+            let rows = stmt
+                .query_map(params![scope], |r| r.get::<_, String>(0))
+                .map_err(reject)?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(serde_json::from_str(&row.map_err(reject)?).map_err(reject)?);
+            }
+            Ok(out)
+        })
+        .await
+    }
 }
 
 /// The scope-free [`ConfigRegistry`] over SQLite operates in the seeded
