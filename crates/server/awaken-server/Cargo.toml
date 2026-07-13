@@ -4,9 +4,6 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[[bin]]
-name = "awaken-server"
-path = "src/main.rs"
 
 [dependencies]
 # The extracted service layer: SharedHost / ManagedHost / ProtocolHost and all
@@ -99,6 +96,7 @@ tower = { version = "0.5", features = ["util"] }
 nats = ["awaken-session-executor/nats"]
 
 [dev-dependencies]
+awaken-scenario-host = { workspace = true }
 http-body-util = "0.1"
 awaken-agent-contract = { workspace = true }
 # mcp_sessions test: drives the VaultRefresher's RFC 6749 refresh grant and
