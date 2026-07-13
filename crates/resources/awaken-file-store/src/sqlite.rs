@@ -24,25 +24,43 @@ pub struct SqliteFileStore {
 }
 
 impl SqliteFileStore {
-    /// Open (or create) a database file and apply the file-store migrations.
+    /// Open (or create) a database file and apply the file-store migrations
+    /// (one-step convenience for a store-owned database).
     pub fn open(path: &str) -> Result<Self, FileStoreError> {
-        Self::over(Connection::open(path).map_err(e)?)
+        let store = Self::over(Connection::open(path).map_err(e)?);
+        store.ensure_schema()?;
+        Ok(store)
     }
 
     /// Open a private in-memory database (tests / ephemeral).
     pub fn open_in_memory() -> Result<Self, FileStoreError> {
-        Self::over(Connection::open_in_memory().map_err(e)?)
+        let store = Self::over(Connection::open_in_memory().map_err(e)?);
+        store.ensure_schema()?;
+        Ok(store)
     }
 
-    fn over(conn: Connection) -> Result<Self, FileStoreError> {
+    /// Wrap an existing connection **without migrating**. Call
+    /// [`Self::ensure_schema`], or let a unified migration pipeline own the
+    /// `file_store` scope so this store shares the caller's database.
+    pub fn over(conn: Connection) -> Self {
+        Self {
+            conn: Arc::new(Mutex::new(conn)),
+        }
+    }
+
+    /// Apply the `file_store` scoped migration bundle (idempotent). Optional:
+    /// skip it when the schema is owned externally.
+    pub fn ensure_schema(&self) -> Result<(), FileStoreError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| e("file store connection poisoned"))?;
         let bundle = file_store_bundle().map_err(e)?;
         awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
             .map_err(e)?
             .run_bundle(&conn, &bundle)
             .map_err(e)?;
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-        })
+        Ok(())
     }
 
     async fn with_conn<T, F>(&self, f: F) -> Result<T, FileStoreError>
@@ -120,5 +138,29 @@ impl FileStore for SqliteFileStore {
             Ok(affected > 0)
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `over` wraps a connection but must NOT migrate: the store is unusable until
+    /// the caller opts into the `file_store` scope via `ensure_schema` (or lets a
+    /// unified pipeline own the schema). This is the seam that lets the store share
+    /// a caller's single database instead of forcing a parallel migration.
+    #[tokio::test]
+    async fn over_does_not_migrate_but_ensure_schema_does() {
+        let store = SqliteFileStore::over(Connection::open_in_memory().unwrap());
+        // No schema yet → the blob table is absent, so writes fail.
+        assert!(store.put(b"hello").await.is_err());
+
+        // Opting in applies the scoped bundle; now the store works.
+        store.ensure_schema().unwrap();
+        let id = store.put(b"hello").await.unwrap();
+        assert_eq!(store.get(&id).await.unwrap(), Some(b"hello".to_vec()));
+
+        // ensure_schema is idempotent (safe to re-run).
+        store.ensure_schema().unwrap();
     }
 }
