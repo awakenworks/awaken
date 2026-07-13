@@ -102,9 +102,9 @@ impl EnvLaunchResolver {
         ) {
             (Some(gateway), Some(lease)) => ModelAccessGrant::CloudManagedGateway {
                 gateway_base_url: gateway,
-                // The ACP CLI does not consume `surface`; the model comes from the
+                // The ACP CLI does not consume `dialect`; the model comes from the
                 // run's `model_ref`, applied by the caller.
-                surface: String::new(),
+                dialect: String::new(),
                 model_ref: String::new(),
                 lease_token: lease,
             },
@@ -229,7 +229,7 @@ mod tests {
         let r = resolver_with(&[], None);
         let grant = ModelAccessGrant::CloudManagedGateway {
             gateway_base_url: "https://gw.manifest".into(),
-            surface: "AnthropicMessages".into(),
+            dialect: "AnthropicMessages".into(),
             model_ref: "claude-from-grant".into(),
             lease_token: "lease-manifest".into(), // awaken-allow: secret
         };
