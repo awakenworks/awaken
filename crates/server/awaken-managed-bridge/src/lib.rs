@@ -47,10 +47,15 @@ pub fn decode_model_axis(
     metadata_awaken: Option<&serde_json::Value>,
 ) -> Result<ModelRef, ModelAxisError> {
     let axis = metadata_awaken.and_then(|m| m.get("model"));
-    // The axis id (if present) takes precedence over the bare wire `model` string.
+    // The axis id (if present AND non-empty) takes precedence over the bare wire
+    // `model` string. Filtering the empty string *before* the fallback is what makes
+    // an empty axis id fall through to a valid bare `model` instead of shadowing it
+    // (the empty check must not run only after `or_else`, or `Some("")` would win and
+    // then be discarded, rejecting an otherwise-valid request).
     let model_id = axis
         .and_then(|a| a.get("id"))
         .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
         .map(str::to_string)
         .or_else(|| model.map(str::to_string))
         .filter(|s| !s.is_empty())
@@ -312,5 +317,39 @@ mod tests {
             decode_model_axis(Some(""), None),
             Err(ModelAxisError::NoModel)
         ));
+    }
+
+    #[test]
+    fn an_empty_axis_id_falls_back_to_the_bare_model() {
+        // A client that always sends the axis object but leaves `id` empty (no
+        // override) must still resolve the bare wire `model` — the empty axis id
+        // does not shadow it. It also does not discard a pinned credential source.
+        let meta =
+            serde_json::json!({ "model": { "id": "", "credential_source_id": "cred:ws:9" } });
+        let r = decode_model_axis(Some("claude-opus-4-8"), Some(&meta)).unwrap();
+        assert_eq!(
+            r.model_id, "claude-opus-4-8",
+            "bare model is used, not shadowed"
+        );
+        assert_eq!(r.credential_source_id.as_deref(), Some("cred:ws:9"));
+    }
+
+    #[test]
+    fn an_empty_axis_id_with_no_bare_model_still_fails_closed() {
+        let meta = serde_json::json!({ "model": { "id": "" } });
+        assert!(matches!(
+            decode_model_axis(None, Some(&meta)),
+            Err(ModelAxisError::NoModel)
+        ));
+    }
+
+    #[test]
+    fn a_metadata_object_without_a_model_key_uses_the_bare_model() {
+        // `metadata.awaken` present but carrying no `model` axis → the bare wire
+        // string is used (the axis lookup is None, not an error).
+        let meta = serde_json::json!({ "something_else": true });
+        let r = decode_model_axis(Some("claude-sonnet-5"), Some(&meta)).unwrap();
+        assert_eq!(r.model_id, "claude-sonnet-5");
+        assert!(r.credential_source_id.is_none());
     }
 }
