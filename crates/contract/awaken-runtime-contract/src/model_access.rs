@@ -40,7 +40,7 @@ pub enum ModelAccessGrant {
     /// worker can never be pointed at an arbitrary provider endpoint.
     CloudManagedGateway {
         gateway_base_url: String,
-        surface: String,
+        dialect: String,
         model_ref: String,
         /// Short-lived lease capability — opaque handshake material, never logged.
         lease_token: String,
@@ -75,18 +75,18 @@ impl ModelAccessGrant {
                 base_url: None,
                 model_ref: model_ref.clone(),
                 bearer: None,
-                surface: None,
+                dialect: None,
             },
             Self::CloudManagedGateway {
                 gateway_base_url,
-                surface,
+                dialect,
                 model_ref,
                 lease_token,
             } => ResolvedModelEndpoint {
                 base_url: Some(gateway_base_url.clone()),
                 model_ref: Some(model_ref.clone()),
                 bearer: Some(lease_token.clone()),
-                surface: Some(surface.clone()),
+                dialect: Some(dialect.clone()),
             },
         }
     }
@@ -111,8 +111,8 @@ pub struct ResolvedModelEndpoint {
     pub model_ref: Option<String>,
     /// Opaque bearer presented on egress (a lease token). Never logged.
     pub bearer: Option<String>,
-    /// The provider surface (e.g. an Anthropic/OpenAI-compatible shape), if named.
-    pub surface: Option<String>,
+    /// The provider dialect (e.g. an Anthropic/OpenAI-compatible shape), if named.
+    pub dialect: Option<String>,
 }
 
 #[cfg(test)]
@@ -127,7 +127,7 @@ mod tests {
         };
         let gateway = ModelAccessGrant::CloudManagedGateway {
             gateway_base_url: "https://gw.internal".into(),
-            surface: "AnthropicMessages".into(),
+            dialect: "AnthropicMessages".into(),
             model_ref: "claude".into(),
             lease_token: "lease-abc".into(), // awaken-allow: secret
         };
@@ -160,14 +160,14 @@ mod tests {
     fn gateway_grant_materializes_to_gateway_url_and_lease_bearer() {
         let ep = ModelAccessGrant::CloudManagedGateway {
             gateway_base_url: "https://gw.internal".into(),
-            surface: "AnthropicMessages".into(),
+            dialect: "AnthropicMessages".into(),
             model_ref: "claude".into(),
             lease_token: "lease-abc".into(), // awaken-allow: secret
         }
         .materialize();
         assert_eq!(ep.base_url.as_deref(), Some("https://gw.internal"));
         assert_eq!(ep.bearer.as_deref(), Some("lease-abc")); // lease, not a key
-        assert_eq!(ep.surface.as_deref(), Some("AnthropicMessages"));
+        assert_eq!(ep.dialect.as_deref(), Some("AnthropicMessages"));
     }
 
     #[test]
@@ -200,7 +200,7 @@ mod tests {
 
         let gateway = ModelAccessGrant::CloudManagedGateway {
             gateway_base_url: "https://gw.internal".into(),
-            surface: "AnthropicMessages".into(),
+            dialect: "AnthropicMessages".into(),
             model_ref: "claude".into(),
             lease_token: "lease-abc".into(), // awaken-allow: secret
         };
