@@ -1,0 +1,98 @@
+[package]
+name = "awaken-scenario-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "awaken-scenario-host"
+path = "src/main.rs"
+
+[dependencies]
+# The extracted service layer: SharedHost / ManagedHost / ProtocolHost and all
+# host modules live here; this bin only composes them into router modes.
+awaken-session-executor = { workspace = true }
+awaken-admin-assistant = { workspace = true }
+awaken-tenancy = { workspace = true }
+# Cross-cutting telemetry: the tracing subscriber + OTLP/AWAKEN_TRACE_FILE span
+# export + W3C traceparent propagator + ingress span middleware (not an ext).
+awaken-observability = { workspace = true }
+# Open enforcement (S1): the session-axis guard + RequestTenancy the project
+# ingress stamps. The standalone wraps the session router with it.
+awaken-authz-enforce = { workspace = true }
+awaken-protocol-managed = { workspace = true }
+awaken-protocol-ai-sdk = { workspace = true }
+awaken-protocol-ag-ui = { workspace = true }
+awaken-protocol-a2a = { workspace = true }
+awaken-protocol-transport = { workspace = true }
+awaken-config-store = { workspace = true }
+# Remote hand (ADR-0044): the `remote-hand` scenario mode routes a run's tools to
+# a hand task over a framed channel. tool-relay = the RemoteToolExecutor/serve_hand;
+# connection-plan = the in-process channel; ext-builtin-tools = the hand's toolset.
+awaken-tool-relay = { workspace = true }
+awaken-connection-plan = { workspace = true }
+awaken-ext-builtin-tools = { workspace = true }
+# Relay topology (ADR-0045): brain + hand meet at a NATS broker. NATS request/reply
+# carries the HandRequest/HandReply wire; futures drives the subscriber stream.
+async-nats = "0.38"
+bytes = "1"
+futures = "0.3"
+# Durable memory persistence (resources plane): the memory-extraction mode roots its
+# store under AWAKEN_STORAGE_DIR via `memory_scope_root` so it survives a restart.
+awaken-memory-store = { workspace = true }
+# ACP runtime (R3/R4): drive an external ACP CLI as a peer RunExecutor when a
+# session selects `runtime: "acp:*"`.
+awaken-run-executor-acp = { workspace = true }
+# Management plane (ADR-0043): the composition root resolves a run's inference
+# (adapter_kind + base_url + already-resolved credential) and builds the host's
+# model executor from it — the runtime never sees the credential binding (D6/D9).
+awaken-config-resolver = { workspace = true }
+awaken-provider-genai = { workspace = true }
+# The management-plane HTTP surfaces this binary mounts: admin config CRUD and the
+# Managed vault/credential front door, over shared stores — in-memory by default,
+# SQLite-backed when AWAKEN_MGMT_DIR selects durable persistence (`sqlite` features).
+awaken-admin-config-api = { workspace = true, features = ["sqlite", "postgres"] }
+awaken-model-catalog = { workspace = true, features = ["sqlite", "postgres"] }
+# `oauth-command`: refresh a Google OAuth2 token (gcloud) for the `real-gemini` mode.
+# `sqlite` + `sealed-aead`: the durable management plane persists secret-free rows in
+# SQLite and secrets only as AEAD-sealed blobs under AWAKEN_MGMT_SEAL_KEY.
+awaken-credential-vault = { workspace = true, features = ["oauth-command", "sqlite", "sealed-aead", "postgres"] }
+# Data-subject consent/erasure store (ADR-0050): backs the /v1/user_profiles/:id/erasure endpoint.
+awaken-data-subject = { workspace = true }
+# Embedded IAM (ADR-0042/0043 P1): AWAKEN_MGMT_IAM=embedded gates the management
+# plane behind bearer ApiTokens. contract = ids/scopes/requests, core = token
+# directory + minter + the default-deny PolicySet evaluator, preset = the seeded
+# Anthropic role catalog + the iam-server store (rusqlite range is links-safe
+# since iam adopted foundation ADR-0005).
+awaken-iam-contract = { workspace = true }
+awaken-iam-server = { workspace = true }
+awaken-iam-core = { workspace = true }
+awaken-iam-preset = { workspace = true }
+# The IAM assembly layer (ADR-0048): IamGate (single authn/authz PDP) built over
+# our own LocalIamState, driving the management guard.
+awaken-iam-host = { workspace = true }
+# The embedded IAM token/binding rows persist under AWAKEN_MGMT_DIR/iam.sqlite;
+# same rusqlite generation as every other sqlite store in the workspace.
+rusqlite = { version = "0.32", features = ["bundled"] }
+awaken-agent-contract.workspace = true
+awaken-runtime-contract.workspace = true
+# Webhook plane (ADR-0048 / S10): the WebhookLifecycleSink bridges the managed
+# session lifecycle to the neutral dispatcher; the CRUD router manages
+# workspace-scoped subscriptions. Env-gated by AWAKEN_WEBHOOK_DIR.
+awaken-webhook = { workspace = true }
+awaken-webhook-managed = { workspace = true }
+awaken-runtime = { workspace = true }
+async-trait.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
+axum = { version = "0.8", features = ["multipart"] }
+# oneshot-forwarding for the /projects/{id} prefix-stripping ingress proxy
+# (also used by the integration tests).
+tower = { version = "0.5", features = ["util"] }
+
+# Depends on the product crate for the now-pub assembly helpers + production executors.
+awaken-server = { workspace = true }
+
+[lints]
+workspace = true
