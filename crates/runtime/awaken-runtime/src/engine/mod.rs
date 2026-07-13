@@ -654,7 +654,7 @@ async fn drive(
                     &delta_sink,
                     checkpoint_ref,
                     pending_resume.take(),
-                    &context.capture,
+                    &context.capture.decision,
                     context.content_sink(),
                     runtime.metrics(),
                 )

@@ -58,7 +58,7 @@ pub use resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 pub use resolver::{AgentSnapshotResolver, RunResolver};
 pub use resume::{ResumeCommand, ResumeError, ResumeResult, validate_resume};
 pub use runnable::{RunnableConfig, RunnableConfigBuilder};
-pub use runtime_context::RuntimeRunContext;
+pub use runtime_context::{CaptureContext, RuntimeRunContext};
 pub use snapshot::{ExecutableAgentSnapshot, ExecutableAgentSnapshotId};
 pub use tokio_util::sync::CancellationToken;
 pub use tool::{RawTool, Tool, ToolExecutor, ToolOutput};
