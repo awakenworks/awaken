@@ -337,6 +337,7 @@ dependencies = [
  "awaken-scenario-host",
  "awaken-server",
  "awaken-tenancy",
+ "awaken-worker",
  "axum",
  "base64 0.22.1",
  "http-body-util",
@@ -1451,6 +1452,19 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower",
+]
+
+[[package]]
+name = "awaken-worker"
+version = "1.0.0-dev"
+dependencies = [
+ "awaken-agent-contract",
+ "awaken-control",
+ "awaken-credential-vault",
+ "awaken-model-catalog",
+ "awaken-runtime-host",
+ "awaken-server",
+ "tokio",
 ]
 
 [[package]]

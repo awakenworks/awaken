@@ -145,42 +145,12 @@ mod role_tests {
     }
 }
 
-/// Run this process as a database-less **worker** of the cell server at `upstream`:
-/// its dispatch pool claims and settles runs over the server's dispatch transport,
-/// and its commit boundary posts facts to the server's commit ingest
-/// (`with_upstream`). It holds no store and serves no HTTP — it only drains.
-/// Requires `AWAKEN_INGRESS=durable` (the pool's enable gate); the injected remote
-/// store routes the drain over HTTP instead of a local queue. A deterministic echo
-/// model keeps the worker self-contained (no upstream model needed).
-pub async fn run_worker(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
-    awaken_runtime_host::init_shared_dispatch_store(awaken_runtime_host::worker_dispatch_store(
-        upstream,
-    ));
-    // Production worker: no mock model. Stage C replaces this with a real
-    // `ConfigExecutorProvider` over the shared stores so a drained run resolves its
-    // configured model; until then the fallback is the provider-free guidance model.
-    let host = Arc::new(
-        SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "worker")
-            .with_upstream(upstream),
-    );
-    host.ensure_dispatch_pool();
-    eprintln!("awaken-server worker draining from {upstream}");
-    // Drain in the background; block until stopped.
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-        let mut term = signal(SignalKind::terminate())?;
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
-            _ = term.recv() => {}
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
-    }
-    Ok(())
-}
+// The database-less **worker** role moved to the production `awaken-worker` crate
+// (Stage C): it resolves EACH drained run's model from the DB-configured catalog +
+// vault via `ConfigExecutorProvider`, with `NoModelConfiguredExecutor` only as the
+// fallback. The `awaken` binary's Worker role delegates to `awaken_worker::run`. The
+// test-only echo-draining worker (for the worker-pool e2e) lives in
+// `awaken-scenario-host::run_echo_worker`.
 
 /// [`mount`], with a caller-assembled Managed state: the management server passes
 /// a vault-aware `ManagedState` over an MCP-wired `ManagedHost` (ADR-0043 Phase

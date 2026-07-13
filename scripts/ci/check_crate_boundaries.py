@@ -1193,6 +1193,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-cli": {
         "awaken-control",
         "awaken-server",
+        # Stage C: the Worker role delegates to the production database-less worker.
+        "awaken-worker",
         "awaken-runtime-host",
         "awaken-observability",
         "awaken-protocol-managed",
@@ -1220,6 +1222,25 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "http-body-util",
         "tower",
         "serde_json",
+    },
+    # The PRODUCTION database-less worker (Stage C): a peer of the control / data
+    # planes. It composes the neutral host (runtime-host) with the data plane's
+    # ConfigExecutorProvider + NoModelConfiguredExecutor (awaken-server) over the
+    # shared control-plane stores it opens through awaken-control (catalog / credential
+    # vault / secret store + seal key). Depends on awaken-control — NOT awaken-cli —
+    # so the graph stays acyclic (awaken-cli's bin depends on this crate). The
+    # dev-deps back the offline model-resolution test.
+    "awaken-worker": {
+        "awaken-runtime-host",
+        "awaken-server",
+        "awaken-control",
+        "tokio",
+        # dev-only: the ConfigExecutorProvider resolution test authors an in-memory
+        # catalog + credential and asserts a configured model_ref resolves to a real
+        # executor (and falls back otherwise).
+        "awaken-model-catalog",
+        "awaken-credential-vault",
+        "awaken-agent-contract",
     },
 }
 

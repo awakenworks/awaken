@@ -109,6 +109,7 @@ awaken-admin-assistant = { path = "crates/control/awaken-admin-assistant" }
 awaken-server = { path = "crates/bin/awaken-server" }
 awaken-scenario-host = { path = "crates/bin/awaken-scenario-host" }
 awaken-cli = { path = "crates/bin/awaken-cli" }
+awaken-worker = { path = "crates/bin/awaken-worker" }
 awaken-authz-enforce = { path = "crates/control/awaken-authz-enforce" }
 awaken-webhook = { path = "crates/server/awaken-webhook" }
 awaken-webhook-managed = { path = "crates/server/awaken-webhook-managed" }

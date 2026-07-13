@@ -204,6 +204,37 @@ pub fn build_error_router() -> Router {
 /// `submit_answer` tool — by **running the tool and posting the result back**, the
 /// way a self-hosted worker executes the session's tool calls. Heartbeats the lease
 /// and stops the work on completion. `AWAKEN_MODEL_MODE=worker`.
+/// Run this process as a database-less **echo worker** of the cell server at
+/// `upstream` — the test-only drain the worker-pool e2e spawns (`AWAKEN_ROLE=worker`
+/// on this scenario host). Its dispatch pool claims/settles runs over the server's
+/// dispatch transport and posts committed facts back over the commit ingest
+/// (`with_upstream`); it holds no store and serves no HTTP. A deterministic
+/// [`EchoModel`] keeps the worker self-contained (no upstream model needed), so the
+/// e2e can assert the worker drove the run without configuring a provider. The
+/// PRODUCTION worker (real per-run model resolution) lives in `awaken-worker`.
+pub async fn run_echo_worker(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
+    awaken_runtime_host::init_shared_dispatch_store(awaken_runtime_host::worker_dispatch_store(
+        upstream,
+    ));
+    let host = Arc::new(SharedHost::new(Arc::new(EchoModel), "worker").with_upstream(upstream));
+    host.ensure_dispatch_pool();
+    eprintln!("awaken-scenario-host echo worker draining from {upstream}");
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut term = signal(SignalKind::terminate())?;
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+    Ok(())
+}
+
 pub fn build_worker_router() -> Router {
     let client_tools = HashSet::from(["submit_answer".to_string()]);
     let (model, model_ref) = scenario_model(Arc::new(CustomToolModel), "worker");

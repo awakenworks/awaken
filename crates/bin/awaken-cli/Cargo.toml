@@ -21,6 +21,8 @@ path = "src/main.rs"
 # The two management planes this composition root weaves together.
 awaken-control = { workspace = true }
 awaken-server = { workspace = true }
+# The production database-less worker (Stage C): the Worker role delegates to it.
+awaken-worker = { workspace = true }
 # The service layer: SharedHost / ManagedHost / ConfigService / ConfigPlane and the
 # durable session repositories the composition opens.
 awaken-runtime-host = { workspace = true }

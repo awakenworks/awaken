@@ -1,0 +1,44 @@
+[package]
+name = "awaken-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "awaken_worker"
+path = "src/lib.rs"
+
+[[bin]]
+name = "awaken-worker"
+path = "src/main.rs"
+
+# The PRODUCTION database-less worker (Stage C): a peer of the control / data planes.
+# It drains runs over the dispatch transport and resolves EACH run's model_ref (from
+# its activation snapshot) to the real DB-configured provider via
+# `awaken_server::ConfigExecutorProvider` over the SAME shared control-plane stores
+# `awaken-cli` opens — no mocks. `NoModelConfiguredExecutor` is only the auxiliary
+# fallback for a run whose model is not yet published.
+[dependencies]
+# The neutral host substrate: SharedHost, the dispatch pool, and the worker dispatch
+# store that routes the drain over HTTP to the cell server.
+awaken-runtime-host = { workspace = true }
+# The data plane: the production NoModelConfiguredExecutor fallback + the
+# ConfigExecutorProvider that resolves a run's model_ref to a real executor.
+awaken-server = { workspace = true }
+# The authoring/control plane: reuse its shared control-store opening (catalog /
+# credential vault / secret store) + seal-key resolution, and its BOOTSTRAP_WORKSPACE
+# default. Depending here (not on awaken-cli) keeps the graph acyclic — awaken-cli's
+# bin depends on this worker crate.
+awaken-control = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
+
+[dev-dependencies]
+# The resolution test builds a ConfigExecutorProvider over in-memory stores and
+# asserts a configured model_ref resolves to a real executor (and falls back
+# otherwise) — proving no-mock per-run model resolution.
+awaken-model-catalog = { workspace = true }
+awaken-credential-vault = { workspace = true }
+awaken-agent-contract = { workspace = true }
+
+[lints]
+workspace = true
