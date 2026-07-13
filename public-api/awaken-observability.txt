@@ -1,0 +1,93 @@
+pub mod awaken_observability
+pub enum awaken_observability::OtelProtocol
+pub awaken_observability::OtelProtocol::Grpc
+pub awaken_observability::OtelProtocol::HttpJson
+pub awaken_observability::OtelProtocol::HttpProtobuf
+impl core::clone::Clone for awaken_observability::OtelProtocol
+pub fn awaken_observability::OtelProtocol::clone(&self) -> awaken_observability::OtelProtocol
+impl core::cmp::Eq for awaken_observability::OtelProtocol
+impl core::cmp::PartialEq for awaken_observability::OtelProtocol
+pub fn awaken_observability::OtelProtocol::eq(&self, &awaken_observability::OtelProtocol) -> bool
+impl core::default::Default for awaken_observability::OtelProtocol
+pub fn awaken_observability::OtelProtocol::default() -> awaken_observability::OtelProtocol
+impl core::fmt::Debug for awaken_observability::OtelProtocol
+pub fn awaken_observability::OtelProtocol::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_observability::OtelProtocol
+impl core::str::traits::FromStr for awaken_observability::OtelProtocol
+pub type awaken_observability::OtelProtocol::Err = core::convert::Infallible
+pub fn awaken_observability::OtelProtocol::from_str(&str) -> core::result::Result<Self, Self::Err>
+impl core::marker::Freeze for awaken_observability::OtelProtocol
+impl core::marker::Send for awaken_observability::OtelProtocol
+impl core::marker::Sync for awaken_observability::OtelProtocol
+impl core::marker::Unpin for awaken_observability::OtelProtocol
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_observability::OtelProtocol
+impl core::panic::unwind_safe::UnwindSafe for awaken_observability::OtelProtocol
+pub struct awaken_observability::OtelConfig
+pub awaken_observability::OtelConfig::endpoint: core::option::Option<alloc::string::String>
+pub awaken_observability::OtelConfig::headers: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub awaken_observability::OtelConfig::protocol: awaken_observability::OtelProtocol
+pub awaken_observability::OtelConfig::service_name: core::option::Option<alloc::string::String>
+pub awaken_observability::OtelConfig::service_version: core::option::Option<alloc::string::String>
+pub awaken_observability::OtelConfig::timeout: core::time::Duration
+pub awaken_observability::OtelConfig::traces_endpoint: core::option::Option<alloc::string::String>
+pub awaken_observability::OtelConfig::traces_protocol: core::option::Option<awaken_observability::OtelProtocol>
+impl awaken_observability::OtelConfig
+pub fn awaken_observability::OtelConfig::builder() -> awaken_observability::OtelConfigBuilder
+pub fn awaken_observability::OtelConfig::effective_traces_endpoint(&self) -> core::option::Option<&str>
+pub fn awaken_observability::OtelConfig::effective_traces_protocol(&self) -> &awaken_observability::OtelProtocol
+pub fn awaken_observability::OtelConfig::from_env() -> Self
+pub fn awaken_observability::OtelConfig::is_configured(&self) -> bool
+impl core::clone::Clone for awaken_observability::OtelConfig
+pub fn awaken_observability::OtelConfig::clone(&self) -> awaken_observability::OtelConfig
+impl core::default::Default for awaken_observability::OtelConfig
+pub fn awaken_observability::OtelConfig::default() -> Self
+impl core::fmt::Debug for awaken_observability::OtelConfig
+pub fn awaken_observability::OtelConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_observability::OtelConfig
+impl core::marker::Send for awaken_observability::OtelConfig
+impl core::marker::Sync for awaken_observability::OtelConfig
+impl core::marker::Unpin for awaken_observability::OtelConfig
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_observability::OtelConfig
+impl core::panic::unwind_safe::UnwindSafe for awaken_observability::OtelConfig
+pub struct awaken_observability::OtelConfigBuilder
+impl awaken_observability::OtelConfigBuilder
+pub fn awaken_observability::OtelConfigBuilder::build(self) -> awaken_observability::OtelConfig
+pub fn awaken_observability::OtelConfigBuilder::endpoint(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_observability::OtelConfigBuilder::protocol(self, awaken_observability::OtelProtocol) -> Self
+pub fn awaken_observability::OtelConfigBuilder::service_name(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_observability::OtelConfigBuilder::service_version(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_observability::OtelConfigBuilder::traces_endpoint(self, impl core::convert::Into<alloc::string::String>) -> Self
+impl core::default::Default for awaken_observability::OtelConfigBuilder
+pub fn awaken_observability::OtelConfigBuilder::default() -> awaken_observability::OtelConfigBuilder
+impl core::fmt::Debug for awaken_observability::OtelConfigBuilder
+pub fn awaken_observability::OtelConfigBuilder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_observability::OtelConfigBuilder
+impl core::marker::Send for awaken_observability::OtelConfigBuilder
+impl core::marker::Sync for awaken_observability::OtelConfigBuilder
+impl core::marker::Unpin for awaken_observability::OtelConfigBuilder
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_observability::OtelConfigBuilder
+impl core::panic::unwind_safe::UnwindSafe for awaken_observability::OtelConfigBuilder
+pub struct awaken_observability::OtelMetricsRecorder
+impl awaken_observability::OtelMetricsRecorder
+pub fn awaken_observability::OtelMetricsRecorder::new() -> Self
+impl awaken_runtime_contract::metrics::MetricsRecorder for awaken_observability::OtelMetricsRecorder
+pub fn awaken_observability::OtelMetricsRecorder::record_dispatch_claimed(&self)
+pub fn awaken_observability::OtelMetricsRecorder::record_dispatch_drive(&self, core::time::Duration)
+pub fn awaken_observability::OtelMetricsRecorder::record_dispatch_settled(&self, &str)
+pub fn awaken_observability::OtelMetricsRecorder::record_inference(&self, awaken_runtime_contract::metrics::InferenceMetric<'_>)
+pub fn awaken_observability::OtelMetricsRecorder::record_tool(&self, &str, &str, core::time::Duration)
+impl core::default::Default for awaken_observability::OtelMetricsRecorder
+pub fn awaken_observability::OtelMetricsRecorder::default() -> Self
+impl core::marker::Freeze for awaken_observability::OtelMetricsRecorder
+impl core::marker::Send for awaken_observability::OtelMetricsRecorder
+impl core::marker::Sync for awaken_observability::OtelMetricsRecorder
+impl core::marker::Unpin for awaken_observability::OtelMetricsRecorder
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_observability::OtelMetricsRecorder
+impl !core::panic::unwind_safe::UnwindSafe for awaken_observability::OtelMetricsRecorder
+pub fn awaken_observability::current_traceparent() -> core::option::Option<alloc::string::String>
+pub fn awaken_observability::dispatch_span(core::option::Option<&str>) -> tracing::span::Span
+pub fn awaken_observability::init()
+pub fn awaken_observability::init_otlp_meter(&awaken_observability::OtelConfig) -> core::result::Result<opentelemetry_sdk::metrics::meter_provider::SdkMeterProvider, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
+pub fn awaken_observability::init_otlp_tracer(&awaken_observability::OtelConfig) -> core::result::Result<(opentelemetry_sdk::trace::provider::SdkTracerProvider, opentelemetry_sdk::trace::tracer::SdkTracer), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
+pub fn awaken_observability::shutdown()
+pub async fn awaken_observability::trace_http(axum_core::extract::Request, axum::middleware::from_fn::Next) -> axum_core::response::Response

@@ -501,6 +501,27 @@ impl core::marker::Sync for awaken_agent_contract::agent::state::Key
 impl core::marker::Unpin for awaken_agent_contract::agent::state::Key
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::state::Key
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::state::Key
+pub struct awaken_agent_contract::agent::state::StateError
+pub awaken_agent_contract::agent::state::StateError::detail: alloc::string::String
+pub awaken_agent_contract::agent::state::StateError::key: alloc::string::String
+pub awaken_agent_contract::agent::state::StateError::scope: awaken_agent_contract::agent::state::Scope
+impl core::clone::Clone for awaken_agent_contract::agent::state::StateError
+pub fn awaken_agent_contract::agent::state::StateError::clone(&self) -> awaken_agent_contract::agent::state::StateError
+impl core::cmp::Eq for awaken_agent_contract::agent::state::StateError
+impl core::cmp::PartialEq for awaken_agent_contract::agent::state::StateError
+pub fn awaken_agent_contract::agent::state::StateError::eq(&self, &awaken_agent_contract::agent::state::StateError) -> bool
+impl core::error::Error for awaken_agent_contract::agent::state::StateError
+impl core::fmt::Debug for awaken_agent_contract::agent::state::StateError
+pub fn awaken_agent_contract::agent::state::StateError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_agent_contract::agent::state::StateError
+pub fn awaken_agent_contract::agent::state::StateError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::state::StateError
+impl core::marker::Freeze for awaken_agent_contract::agent::state::StateError
+impl core::marker::Send for awaken_agent_contract::agent::state::StateError
+impl core::marker::Sync for awaken_agent_contract::agent::state::StateError
+impl core::marker::Unpin for awaken_agent_contract::agent::state::StateError
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::state::StateError
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::state::StateError
 pub struct awaken_agent_contract::agent::state::Store
 impl awaken_agent_contract::agent::state::Store
 pub fn awaken_agent_contract::agent::state::Store::apply(&mut self, &awaken_agent_contract::agent::state::Command)
@@ -544,6 +565,19 @@ impl core::marker::Sync for awaken_agent_contract::agent::state::Value
 impl core::marker::Unpin for awaken_agent_contract::agent::state::Value
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::state::Value
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::state::Value
+pub trait awaken_agent_contract::agent::state::FoldStateKey: awaken_agent_contract::agent::state::StateKey
+pub type awaken_agent_contract::agent::state::FoldStateKey::Update
+pub fn awaken_agent_contract::agent::state::FoldStateKey::apply(&mut Self::Value, Self::Update)
+pub fn awaken_agent_contract::agent::state::FoldStateKey::commit(&awaken_agent_contract::agent::state::Store, Self::Update) -> core::result::Result<awaken_agent_contract::agent::state::Command, awaken_agent_contract::agent::state::StateError>
+pub trait awaken_agent_contract::agent::state::StateKey
+pub type awaken_agent_contract::agent::state::StateKey::Value: serde_core::ser::Serialize + serde_core::de::DeserializeOwned + core::default::Default
+pub const awaken_agent_contract::agent::state::StateKey::KEY: &'static str
+pub const awaken_agent_contract::agent::state::StateKey::MERGE: awaken_agent_contract::agent::state::MergePolicy
+pub const awaken_agent_contract::agent::state::StateKey::SCOPE: awaken_agent_contract::agent::state::Scope
+pub fn awaken_agent_contract::agent::state::StateKey::address() -> awaken_agent_contract::agent::state::Key
+pub fn awaken_agent_contract::agent::state::StateKey::load(&awaken_agent_contract::agent::state::Store) -> core::result::Result<Self::Value, awaken_agent_contract::agent::state::StateError>
+pub fn awaken_agent_contract::agent::state::StateKey::load_or_default(&awaken_agent_contract::agent::state::Store) -> Self::Value
+pub fn awaken_agent_contract::agent::state::StateKey::write(&Self::Value) -> awaken_agent_contract::agent::state::Command
 pub fn awaken_agent_contract::agent::state::validate_batch(&[awaken_agent_contract::agent::state::Command]) -> core::result::Result<(), awaken_agent_contract::agent::state::Conflict>
 pub mod awaken_agent_contract::agent::thread
 pub struct awaken_agent_contract::agent::thread::Id(pub alloc::string::String)
@@ -725,7 +759,7 @@ impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::commit::coo
 pub trait awaken_agent_contract::commit::coordinator::Coordinator: core::marker::Send + core::marker::Sync
 pub fn awaken_agent_contract::commit::coordinator::Coordinator::commit<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::commit::staged::ThreadCommit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::commit::staged::CommitRecord, awaken_agent_contract::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub mod awaken_agent_contract::commit::run
-pub async fn awaken_agent_contract::commit::run::commit_run(&dyn awaken_agent_contract::commit::coordinator::Coordinator, &awaken_agent_contract::agent::thread::Id, &awaken_agent_contract::agent::run::Id, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, awaken_agent_contract::agent::run::Phase) -> core::result::Result<awaken_agent_contract::commit::staged::CommitRecord, awaken_agent_contract::commit::coordinator::Error>
+pub async fn awaken_agent_contract::commit::run::commit_run(&dyn awaken_agent_contract::commit::coordinator::Coordinator, &awaken_agent_contract::agent::thread::Id, &awaken_agent_contract::agent::run::Id, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, awaken_agent_contract::agent::run::Phase, core::option::Option<awaken_agent_contract::agent::waiting::WaitingTicket>, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>) -> core::result::Result<awaken_agent_contract::commit::staged::CommitRecord, awaken_agent_contract::commit::coordinator::Error>
 pub mod awaken_agent_contract::commit::staged
 pub struct awaken_agent_contract::commit::staged::CommitRecord
 pub awaken_agent_contract::commit::staged::CommitRecord::sequence: u64
@@ -806,7 +840,7 @@ impl core::marker::Sync for awaken_agent_contract::commit::staged::ValidationErr
 impl core::marker::Unpin for awaken_agent_contract::commit::staged::ValidationError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::commit::staged::ValidationError
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::commit::staged::ValidationError
-pub async fn awaken_agent_contract::commit::commit_run(&dyn awaken_agent_contract::commit::coordinator::Coordinator, &awaken_agent_contract::agent::thread::Id, &awaken_agent_contract::agent::run::Id, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, awaken_agent_contract::agent::run::Phase) -> core::result::Result<awaken_agent_contract::commit::staged::CommitRecord, awaken_agent_contract::commit::coordinator::Error>
+pub async fn awaken_agent_contract::commit::commit_run(&dyn awaken_agent_contract::commit::coordinator::Coordinator, &awaken_agent_contract::agent::thread::Id, &awaken_agent_contract::agent::run::Id, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, awaken_agent_contract::agent::run::Phase, core::option::Option<awaken_agent_contract::agent::waiting::WaitingTicket>, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>) -> core::result::Result<awaken_agent_contract::commit::staged::CommitRecord, awaken_agent_contract::commit::coordinator::Error>
 pub mod awaken_agent_contract::event
 pub mod awaken_agent_contract::event::draft
 pub struct awaken_agent_contract::event::draft::Draft
@@ -1087,6 +1121,53 @@ impl core::marker::Sync for awaken_agent_contract::model_spec::ModelSpec
 impl core::marker::Unpin for awaken_agent_contract::model_spec::ModelSpec
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::model_spec::ModelSpec
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::model_spec::ModelSpec
+pub mod awaken_agent_contract::page
+pub struct awaken_agent_contract::page::CursorParams
+pub awaken_agent_contract::page::CursorParams::cursor: core::option::Option<alloc::string::String>
+pub awaken_agent_contract::page::CursorParams::size: core::option::Option<u32>
+impl awaken_agent_contract::page::CursorParams
+pub fn awaken_agent_contract::page::CursorParams::limit(&self) -> core::option::Option<usize>
+impl core::clone::Clone for awaken_agent_contract::page::CursorParams
+pub fn awaken_agent_contract::page::CursorParams::clone(&self) -> awaken_agent_contract::page::CursorParams
+impl core::default::Default for awaken_agent_contract::page::CursorParams
+pub fn awaken_agent_contract::page::CursorParams::default() -> awaken_agent_contract::page::CursorParams
+impl core::fmt::Debug for awaken_agent_contract::page::CursorParams
+pub fn awaken_agent_contract::page::CursorParams::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::page::CursorParams
+pub fn awaken_agent_contract::page::CursorParams::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::page::CursorParams
+impl core::marker::Send for awaken_agent_contract::page::CursorParams
+impl core::marker::Sync for awaken_agent_contract::page::CursorParams
+impl core::marker::Unpin for awaken_agent_contract::page::CursorParams
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::page::CursorParams
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::page::CursorParams
+pub struct awaken_agent_contract::page::HistoryPage<'a, T>
+pub awaken_agent_contract::page::HistoryPage::has_more: bool
+pub awaken_agent_contract::page::HistoryPage::items: &'a [T]
+pub awaken_agent_contract::page::HistoryPage::next_page: core::option::Option<alloc::string::String>
+impl<'a, T: core::fmt::Debug> core::fmt::Debug for awaken_agent_contract::page::HistoryPage<'a, T>
+pub fn awaken_agent_contract::page::HistoryPage<'a, T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a, T> core::marker::Freeze for awaken_agent_contract::page::HistoryPage<'a, T>
+impl<'a, T> core::marker::Send for awaken_agent_contract::page::HistoryPage<'a, T> where T: core::marker::Sync
+impl<'a, T> core::marker::Sync for awaken_agent_contract::page::HistoryPage<'a, T> where T: core::marker::Sync
+impl<'a, T> core::marker::Unpin for awaken_agent_contract::page::HistoryPage<'a, T>
+impl<'a, T> core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::page::HistoryPage<'a, T> where T: core::panic::unwind_safe::RefUnwindSafe
+impl<'a, T> core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::page::HistoryPage<'a, T> where T: core::panic::unwind_safe::RefUnwindSafe
+pub struct awaken_agent_contract::page::UnknownCursor
+impl core::error::Error for awaken_agent_contract::page::UnknownCursor
+impl core::fmt::Debug for awaken_agent_contract::page::UnknownCursor
+pub fn awaken_agent_contract::page::UnknownCursor::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_agent_contract::page::UnknownCursor
+pub fn awaken_agent_contract::page::UnknownCursor::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_agent_contract::page::UnknownCursor
+impl core::marker::Send for awaken_agent_contract::page::UnknownCursor
+impl core::marker::Sync for awaken_agent_contract::page::UnknownCursor
+impl core::marker::Unpin for awaken_agent_contract::page::UnknownCursor
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::page::UnknownCursor
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::page::UnknownCursor
+pub const awaken_agent_contract::page::DEFAULT_PAGE_LIMIT: usize
+pub const awaken_agent_contract::page::MAX_PAGE_LIMIT: usize
+pub fn awaken_agent_contract::page::paginate_by_id<'a, T>(&'a [T], core::option::Option<&str>, core::option::Option<usize>, impl core::ops::function::Fn(&T) -> &str) -> core::result::Result<awaken_agent_contract::page::HistoryPage<'a, T>, awaken_agent_contract::page::UnknownCursor>
 pub mod awaken_agent_contract::project
 pub enum awaken_agent_contract::project::AgentEvent
 pub awaken_agent_contract::project::AgentEvent::AssistantMessage
@@ -1140,10 +1221,25 @@ impl core::marker::Sync for awaken_agent_contract::project::ToolDisposition
 impl core::marker::Unpin for awaken_agent_contract::project::ToolDisposition
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::project::ToolDisposition
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::project::ToolDisposition
+pub struct awaken_agent_contract::project::ToolUseRef<'a>
+pub awaken_agent_contract::project::ToolUseRef::id: &'a str
+pub awaken_agent_contract::project::ToolUseRef::input: &'a serde_json::value::Value
+pub awaken_agent_contract::project::ToolUseRef::name: &'a str
+impl<'a> core::marker::Freeze for awaken_agent_contract::project::ToolUseRef<'a>
+impl<'a> core::marker::Send for awaken_agent_contract::project::ToolUseRef<'a>
+impl<'a> core::marker::Sync for awaken_agent_contract::project::ToolUseRef<'a>
+impl<'a> core::marker::Unpin for awaken_agent_contract::project::ToolUseRef<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::project::ToolUseRef<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::project::ToolUseRef<'a>
+pub trait awaken_agent_contract::project::HistorySink
+pub fn awaken_agent_contract::project::HistorySink::assistant(&mut self, &str, &[awaken_agent_contract::agent::content::ContentBlock], &[awaken_agent_contract::project::ToolUseRef<'_>])
+pub fn awaken_agent_contract::project::HistorySink::tool_result(&mut self, &str, usize, &str, &[awaken_agent_contract::agent::content::ContentBlock])
+pub fn awaken_agent_contract::project::HistorySink::user_or_system(&mut self, &str, awaken_agent_contract::agent::message::Role, &[awaken_agent_contract::agent::content::ContentBlock])
 pub trait awaken_agent_contract::project::Transcoder
 pub type awaken_agent_contract::project::Transcoder::Output
 pub fn awaken_agent_contract::project::Transcoder::transcode(&mut self, &awaken_agent_contract::project::AgentEvent) -> alloc::vec::Vec<Self::Output>
 pub fn awaken_agent_contract::project::Transcoder::transcode_all(&mut self, &[awaken_agent_contract::project::AgentEvent]) -> alloc::vec::Vec<Self::Output>
+pub fn awaken_agent_contract::project::project_history(&[awaken_agent_contract::agent::message::Message], &mut impl awaken_agent_contract::project::HistorySink)
 pub fn awaken_agent_contract::project::project_messages(&[awaken_agent_contract::agent::message::Message], core::option::Option<(&str, bool)>) -> alloc::vec::Vec<awaken_agent_contract::project::AgentEvent>
 pub fn awaken_agent_contract::project::project_step(&[awaken_agent_contract::agent::message::Message], &awaken_agent_contract::agent::run::Phase, core::option::Option<(&str, bool)>) -> alloc::vec::Vec<awaken_agent_contract::project::AgentEvent>
 pub fn awaken_agent_contract::project::terminal(&awaken_agent_contract::agent::run::Phase, core::option::Option<(&str, bool)>) -> awaken_agent_contract::project::AgentEvent

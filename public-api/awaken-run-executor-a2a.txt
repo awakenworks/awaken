@@ -1,0 +1,15 @@
+pub mod awaken_run_executor_a2a
+pub struct awaken_run_executor_a2a::A2aRunExecutor
+impl awaken_run_executor_a2a::A2aRunExecutor
+pub fn awaken_run_executor_a2a::A2aRunExecutor::new(awaken_run_executor_a2a::TransportFactory) -> Self
+pub fn awaken_run_executor_a2a::A2aRunExecutor::over_http() -> Self
+impl awaken_runtime_contract::execution::RunExecutor for awaken_run_executor_a2a::A2aRunExecutor
+pub fn awaken_run_executor_a2a::A2aRunExecutor::capabilities(&self) -> awaken_runtime_contract::execution::ExecutorCapabilities
+pub fn awaken_run_executor_a2a::A2aRunExecutor::execute<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::Phase>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl core::marker::Freeze for awaken_run_executor_a2a::A2aRunExecutor
+impl core::marker::Send for awaken_run_executor_a2a::A2aRunExecutor
+impl core::marker::Sync for awaken_run_executor_a2a::A2aRunExecutor
+impl core::marker::Unpin for awaken_run_executor_a2a::A2aRunExecutor
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_run_executor_a2a::A2aRunExecutor
+impl !core::panic::unwind_safe::UnwindSafe for awaken_run_executor_a2a::A2aRunExecutor
+pub type awaken_run_executor_a2a::TransportFactory = alloc::sync::Arc<(dyn core::ops::function::Fn(&str) -> alloc::sync::Arc<dyn awaken_protocol_a2a::client::Transport> + core::marker::Send + core::marker::Sync)>

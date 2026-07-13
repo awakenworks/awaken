@@ -1,4 +1,10 @@
 pub mod awaken_protocol_transport
+pub use awaken_protocol_transport::CursorParams
+pub use awaken_protocol_transport::DEFAULT_PAGE_LIMIT
+pub use awaken_protocol_transport::HistoryPage
+pub use awaken_protocol_transport::MAX_PAGE_LIMIT
+pub use awaken_protocol_transport::UnknownCursor
+pub use awaken_protocol_transport::paginate_by_id
 pub enum awaken_protocol_transport::DriverError
 pub awaken_protocol_transport::DriverError::BadRequest(alloc::string::String)
 pub awaken_protocol_transport::DriverError::Internal(alloc::string::String)
@@ -80,3 +86,4 @@ pub fn awaken_protocol_transport::ProtocolRuntime::run<'life0, 'life1, 'async_tr
 pub fn awaken_protocol_transport::ProtocolRuntime::run_streaming<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_transport::StepOutcome, awaken_protocol_transport::DriverError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_protocol_transport::ProtocolRuntime::usage<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = (u64, u64)> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_protocol_transport::blocks_text(&[awaken_agent_contract::agent::content::ContentBlock]) -> alloc::string::String
+pub fn awaken_protocol_transport::paginate_history<'a>(&'a [awaken_agent_contract::agent::message::Message], core::option::Option<&str>, core::option::Option<usize>) -> core::result::Result<awaken_agent_contract::page::HistoryPage<'a, awaken_agent_contract::agent::message::Message>, awaken_agent_contract::page::UnknownCursor>

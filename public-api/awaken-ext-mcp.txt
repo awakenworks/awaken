@@ -140,10 +140,10 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::manager::Server
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::manager::ServerStatus
 pub mod awaken_ext_mcp::plugin
 pub struct awaken_ext_mcp::plugin::McpPlugin
-impl awaken_runtime_contract::plugin::Plugin for awaken_ext_mcp::plugin::McpPlugin
+impl awaken_runtime_contract::plugin::contributions::Plugin for awaken_ext_mcp::plugin::McpPlugin
 pub fn awaken_ext_mcp::plugin::McpPlugin::live_version(&self) -> core::option::Option<u64>
-pub fn awaken_ext_mcp::plugin::McpPlugin::manifest(&self) -> awaken_runtime_contract::plugin::PluginManifest
-pub fn awaken_ext_mcp::plugin::McpPlugin::resolve(&self) -> awaken_runtime_contract::plugin::Contributions
+pub fn awaken_ext_mcp::plugin::McpPlugin::manifest(&self) -> awaken_runtime_contract::plugin::capability::PluginManifest
+pub fn awaken_ext_mcp::plugin::McpPlugin::resolve(&self) -> awaken_runtime_contract::plugin::contributions::Contributions
 impl core::marker::Freeze for awaken_ext_mcp::plugin::McpPlugin
 impl core::marker::Send for awaken_ext_mcp::plugin::McpPlugin
 impl core::marker::Sync for awaken_ext_mcp::plugin::McpPlugin
@@ -571,10 +571,10 @@ impl core::marker::Unpin for awaken_ext_mcp::manager::McpManager
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::manager::McpManager
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::manager::McpManager
 pub struct awaken_ext_mcp::McpPlugin
-impl awaken_runtime_contract::plugin::Plugin for awaken_ext_mcp::plugin::McpPlugin
+impl awaken_runtime_contract::plugin::contributions::Plugin for awaken_ext_mcp::plugin::McpPlugin
 pub fn awaken_ext_mcp::plugin::McpPlugin::live_version(&self) -> core::option::Option<u64>
-pub fn awaken_ext_mcp::plugin::McpPlugin::manifest(&self) -> awaken_runtime_contract::plugin::PluginManifest
-pub fn awaken_ext_mcp::plugin::McpPlugin::resolve(&self) -> awaken_runtime_contract::plugin::Contributions
+pub fn awaken_ext_mcp::plugin::McpPlugin::manifest(&self) -> awaken_runtime_contract::plugin::capability::PluginManifest
+pub fn awaken_ext_mcp::plugin::McpPlugin::resolve(&self) -> awaken_runtime_contract::plugin::contributions::Contributions
 impl core::marker::Freeze for awaken_ext_mcp::plugin::McpPlugin
 impl core::marker::Send for awaken_ext_mcp::plugin::McpPlugin
 impl core::marker::Sync for awaken_ext_mcp::plugin::McpPlugin
