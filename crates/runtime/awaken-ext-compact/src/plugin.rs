@@ -5,7 +5,9 @@
 //! an injected [`SubagentRunner`] sub-agent and injects the summary as **request-only**
 //! context (never committed, G13). The main agent's `ContextPolicy::KeepLast` drops
 //! the older raw turns from the model view, so summary + kept tail cover the whole
-//! conversation. Summarization runs at most once per run (cached by `run_id`).
+//! conversation. Summarization runs at most once per run, gated on the run-scoped
+//! [`CompactionContext`] state so it replays across steps and a resumed run
+//! instead of recomputing (ADR-0055).
 
 use std::sync::Arc;
 
