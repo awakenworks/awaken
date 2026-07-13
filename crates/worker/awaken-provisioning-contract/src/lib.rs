@@ -37,6 +37,7 @@ mod prepare;
 mod sandbox;
 mod shape;
 mod spec;
+mod token;
 mod vocab;
 
 pub use admission::{AdmissionError, EnvironmentDecl, check_environment_soundness};
@@ -58,6 +59,7 @@ pub use sandbox::{
 };
 pub use shape::{ExecutionShape, plan_shape};
 pub use spec::{Command, EnvironmentKind, RootfsSource, SandboxSpec, Stdio};
+pub use token::{LeaseCallbackClaims, LeaseCallbackToken, NonceWatermark, TokenError};
 pub use vocab::{
     Artifact, EnvValue, EnvVar, EnvVisibility, MountAccess, MountLifetime, MountRequirement,
     MountSource, NetworkPolicy, RESERVED_ENV_KEYS, Realization, RealizedMount, ResourceLimits,
