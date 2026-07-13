@@ -420,7 +420,8 @@ impl RuntimeCapabilitySource for Runtime {
     fn runtime_capabilities(
         &self,
     ) -> awaken_runtime_contract::capability::RuntimeCapabilityCatalog {
-        self.active_catalog
+        let mut catalog = self
+            .active_catalog
             .lock()
             .ok()
             .and_then(|catalog| catalog.as_ref().map(|install| install.capabilities.clone()))
@@ -431,7 +432,21 @@ impl RuntimeCapabilitySource for Runtime {
                     tools: Vec::new(),
                     plugins: Vec::new(),
                 },
-            )
+            );
+        // Project each registered plugin's authoritative `CapabilityBound` onto the
+        // served catalog so an operator overlay can allow/deny by the declared
+        // ceiling without a dry-run resolve (ADR-0055). Sourced from the plugin's
+        // own manifest, so it cannot drift from what `enforce_bound` checks.
+        for plugin_cap in &mut catalog.plugins {
+            if let Some(plugin) = self
+                .plugins
+                .iter()
+                .find(|plugin| plugin.manifest().id == plugin_cap.id)
+            {
+                plugin_cap.bound = plugin.manifest().bound;
+            }
+        }
+        catalog
     }
 }
 
