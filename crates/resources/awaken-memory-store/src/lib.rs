@@ -69,32 +69,11 @@ pub fn sanitize_stem(name: &str) -> String {
     }
 }
 
-/// A memory-store failure.
-#[derive(Debug, thiserror::Error)]
-pub enum MemoryStoreError {
-    #[error("io: {0}")]
-    Io(String),
-    #[error("storage: {0}")]
-    Storage(String),
-}
-
-/// A durable, id-keyed, workspace-scoped byte store: one blob per id. Backs the
-/// ADR-0038 `memory_store` resource family. `create` mints a dense, globally-unique
-/// `memstore_<n>` id and writes it empty so it resolves before any write-back. Async
-/// so a network-DB backend fits; the filesystem/in-memory backends satisfy it
-/// trivially. Mirrors awaken-file-store's `FileStore`.
-#[async_trait]
-pub trait MemoryBlobStore: Send + Sync {
-    /// Mint a new, empty store and return its stable id.
-    async fn create(&self, workspace_id: &str) -> Result<String, MemoryStoreError>;
-    /// Overwrite the bytes under `id` (the harvest write-back path).
-    async fn put(&self, workspace_id: &str, id: &str, bytes: &[u8])
-    -> Result<(), MemoryStoreError>;
-    /// The bytes under `id`, or `None` if no such store exists.
-    async fn get(&self, workspace_id: &str, id: &str) -> Result<Option<Vec<u8>>, MemoryStoreError>;
-    /// Whether a store with `id` exists.
-    async fn exists(&self, workspace_id: &str, id: &str) -> Result<bool, MemoryStoreError>;
-}
+// The `MemoryBlobStore` port + its error live in the port-only contract crate; this
+// crate implements them and re-exports so `awaken_memory_store::MemoryBlobStore`
+// keeps resolving. (The path-addressed `MemoryFs` + `Memory`/`MemErr` are re-exported
+// via the `memfs` module below, matching the pre-extraction layout.)
+pub use awaken_resource_contract::{MemoryBlobStore, MemoryStoreError};
 
 /// In-memory [`MemoryBlobStore`] (tests / ephemeral single-process).
 #[derive(Default)]

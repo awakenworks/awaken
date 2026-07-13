@@ -60,37 +60,9 @@ pub fn sanitize_stem(name: &str) -> String {
     }
 }
 
-/// A skill-store failure.
-#[derive(Debug, thiserror::Error)]
-pub enum SkillStoreError {
-    #[error("io: {0}")]
-    Io(String),
-    #[error("storage: {0}")]
-    Storage(String),
-}
-
-/// A durable, workspace-scoped catalog of `SKILL.md` bodies, addressed by a stable
-/// id. `put` returns the sanitized id the skill is addressable by (what `list`
-/// reports); `list` is sorted by id for a stable catalog. Async so a network-DB
-/// backend fits; the filesystem/in-memory backends satisfy it trivially. Mirrors
-/// awaken-file-store's `FileStore`.
-#[async_trait]
-pub trait SkillStore: Send + Sync {
-    /// Store (or overwrite) `content` under `id` in `workspace_id`; returns the safe
-    /// id (sanitized stem) it is addressable by.
-    async fn put(
-        &self,
-        workspace_id: &str,
-        id: &str,
-        content: &str,
-    ) -> Result<String, SkillStoreError>;
-    /// The content under `id`, or `None` if absent.
-    async fn get(&self, workspace_id: &str, id: &str) -> Result<Option<String>, SkillStoreError>;
-    /// Every skill in the workspace as `(id, content)`, sorted by id.
-    async fn list(&self, workspace_id: &str) -> Result<Vec<(String, String)>, SkillStoreError>;
-    /// Delete a skill; returns whether it existed. Idempotent.
-    async fn delete(&self, workspace_id: &str, id: &str) -> Result<bool, SkillStoreError>;
-}
+// The `SkillStore` port + its error live in the port-only contract crate; this crate
+// implements them and re-exports so `awaken_skill_store::SkillStore` keeps resolving.
+pub use awaken_resource_contract::{SkillStore, SkillStoreError};
 
 /// In-memory [`SkillStore`] (tests / ephemeral single-process).
 #[derive(Default)]
