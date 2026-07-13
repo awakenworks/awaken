@@ -39,6 +39,14 @@ pub(crate) enum HostCommit {
     Sqlite(SqliteCommitCoordinator),
     Fs(FsCommitCoordinator),
     Postgres(Arc<PostgresCommitCoordinator>),
+    /// The database-less worker's boundary: `commit` posts facts to the cell server
+    /// (the single writer) over HTTP; the committed-truth READS return empty because
+    /// the worker holds no store. This is correct for a **fresh, self-contained run**
+    /// (nothing prior to read — the activation carries the input), which is the cell
+    /// worker's role. A resume/multi-turn run that must read prior committed context
+    /// needs remote reads, which the synchronous `ThreadReader`/`RunStore` traits
+    /// cannot express without blocking — a separate async-reader redesign.
+    Remote(crate::commit_ingest::RemoteCoordinator),
 }
 
 /// Recover the parked position from a durable backend's fact-derived read model
@@ -66,6 +74,7 @@ impl HostCommit {
             HostCommit::Sqlite(inner) => inner.open_wait_for_thread(thread),
             HostCommit::Fs(inner) => parked_from_reader(inner, thread),
             HostCommit::Postgres(inner) => parked_from_reader(inner.as_ref(), thread),
+            HostCommit::Remote(_) => None,
         }
     }
 
@@ -94,6 +103,7 @@ impl HostCommit {
                 .filter(|event| event.kind == Kind::Continuation)
                 .map(|event| event.payload)
                 .collect(),
+            HostCommit::Remote(_) => Vec::new(),
         }
     }
 }
@@ -106,6 +116,7 @@ impl Coordinator for HostCommit {
             HostCommit::Sqlite(inner) => inner.commit(commit).await,
             HostCommit::Fs(inner) => inner.commit(commit).await,
             HostCommit::Postgres(inner) => inner.commit(commit).await,
+            HostCommit::Remote(inner) => inner.commit(commit).await,
         }
     }
 }
@@ -117,6 +128,7 @@ impl ThreadReader for HostCommit {
             HostCommit::Sqlite(inner) => inner.committed_messages(thread_id),
             HostCommit::Fs(inner) => inner.committed_messages(thread_id),
             HostCommit::Postgres(inner) => inner.committed_messages(thread_id),
+            HostCommit::Remote(_) => Vec::new(),
         }
     }
 
@@ -126,6 +138,7 @@ impl ThreadReader for HostCommit {
             HostCommit::Sqlite(inner) => inner.waiting_ticket(run_id),
             HostCommit::Fs(inner) => inner.waiting_ticket(run_id),
             HostCommit::Postgres(inner) => inner.waiting_ticket(run_id),
+            HostCommit::Remote(_) => None,
         }
     }
 
@@ -138,6 +151,7 @@ impl ThreadReader for HostCommit {
             HostCommit::Sqlite(inner) => inner.committed_state(thread_id),
             HostCommit::Fs(inner) => inner.committed_state(thread_id),
             HostCommit::Postgres(inner) => inner.committed_state(thread_id),
+            HostCommit::Remote(_) => Vec::new(),
         }
     }
 }
@@ -149,6 +163,7 @@ impl RunStore for HostCommit {
             HostCommit::Sqlite(inner) => inner.get(id),
             HostCommit::Fs(inner) => inner.get(id),
             HostCommit::Postgres(inner) => inner.get(id),
+            HostCommit::Remote(_) => None,
         }
     }
 }
