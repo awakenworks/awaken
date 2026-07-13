@@ -184,7 +184,7 @@ mod tests {
 
     #[tokio::test]
     async fn hub_launch_observer_republishes_lifecycle_to_the_thread_hub() {
-        use awaken_run_executor_acp::{AcpLaunchEvent, AcpLaunchStage, LaunchObserver};
+        use awaken_run_executor_acp::{AcpLaunchEvent, AcpLaunchStage};
 
         let host = SharedHost::new(Arc::new(NoLlm), "test");
         // A UI-facing observer subscribes to the thread before the agent starts.

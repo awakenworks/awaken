@@ -56,7 +56,11 @@ impl ProtocolRuntime for PersistedRuntime {
 fn transcript(n: usize) -> Vec<Message> {
     let mut messages = Vec::new();
     for i in 0..n {
-        messages.push(Message::text(Id(format!("u{i}")), Role::User, format!("ask {i}")));
+        messages.push(Message::text(
+            Id(format!("u{i}")),
+            Role::User,
+            format!("ask {i}"),
+        ));
         messages.push(Message::text(
             Id(format!("a{i}")),
             Role::Assistant,

@@ -338,11 +338,10 @@ async fn delete_subscription(
 ) -> StatusCode {
     // Only unsubscribe an endpoint this tenant owns; a cross-tenant or absent id is a
     // silent no-op (idempotent, and no ownership disclosure).
-    if let Some(def) = state.store.get(&id) {
-        if def.workspace_id == scope_of(scope) {
+    if let Some(def) = state.store.get(&id)
+        && def.workspace_id == scope_of(scope) {
             state.store.delete(&id);
         }
-    }
     StatusCode::NO_CONTENT
 }
 

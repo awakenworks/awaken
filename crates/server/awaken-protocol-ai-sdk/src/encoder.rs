@@ -183,8 +183,7 @@ impl HistorySink for AiSdkHistorySink {
             self.pending_parts
                 .insert(tool.id.to_string(), (message_index, part_index));
         }
-        self.encoded
-            .push(history_message(id, "assistant", parts));
+        self.encoded.push(history_message(id, "assistant", parts));
     }
 
     fn tool_result(

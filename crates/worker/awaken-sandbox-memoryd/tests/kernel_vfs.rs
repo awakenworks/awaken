@@ -259,6 +259,7 @@ fn kernel_exercises_metadata_truncate_offsets_dirs_and_errors() {
     assert_eq!(std::fs::read_to_string(mnt.join("b.md")).unwrap(), "a");
     // chmod → setattr with size=None (metadata-only; returns the current attr).
     let mut perms = std::fs::metadata(mnt.join("b.md")).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
     perms.set_readonly(false);
     std::fs::set_permissions(mnt.join("b.md"), perms).unwrap();
 

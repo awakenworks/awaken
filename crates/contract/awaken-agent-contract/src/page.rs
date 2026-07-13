@@ -103,6 +103,7 @@ mod tests {
     fn items(n: usize) -> Vec<String> {
         (0..n).map(|i| format!("m{i}")).collect()
     }
+    #[allow(clippy::ptr_arg)]
     fn id(s: &String) -> &str {
         s.as_str()
     }
@@ -160,9 +161,15 @@ mod tests {
     #[test]
     fn limit_is_clamped_and_zero_becomes_one() {
         let v = items(10);
-        assert_eq!(paginate_by_id(&v, None, Some(0), id).unwrap().items.len(), 1);
         assert_eq!(
-            paginate_by_id(&v, None, Some(usize::MAX), id).unwrap().items.len(),
+            paginate_by_id(&v, None, Some(0), id).unwrap().items.len(),
+            1
+        );
+        assert_eq!(
+            paginate_by_id(&v, None, Some(usize::MAX), id)
+                .unwrap()
+                .items
+                .len(),
             10
         );
     }

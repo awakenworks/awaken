@@ -157,6 +157,18 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0041-sandbox-execution-environment-provider.md` | Decision record | Required | self |
 | `adr/0042-public-api-tenancy-authz-and-front-door-consistency.md` | Decision record | Not required | n/a |
 | `adr/0043-management-plane-config-credential-model-and-runtime-unaware-secret-seam.md` | Decision record | Not required | n/a |
+| `adr/0044-remote-hand-tool-executor-over-a-channel.md` | Decision record | Not required | n/a |
+| `adr/0045-connection-plan-and-network-topology.md` | Decision record | Not required | n/a |
+| `adr/0046-hand-placement-tool-executor-provider.md` | Decision record | Not required | n/a |
+| `adr/0047-compaction-as-agent-run-and-the-context-plane-boundary.md` | Decision record | Not required | n/a |
+| `adr/0048-iam-host-adoption-org-workspace-path-alignment-and-a2a-carve-out.md` | Decision record | Not required | n/a |
+| `adr/0049-a2a-cross-tenant-federation-carve-out.md` | Decision record | Not required | n/a |
+| `adr/0050-telemetry-content-capture-consent-and-gdpr-erasure.md` | Decision record | Not required | n/a |
+| `adr/0051-tenancy-edge-aspect-one-opaque-scope-id.md` | Decision record | Not required | n/a |
+| `adr/0052-management-assistant-ordinary-agent-in-a-reserved-scope.md` | Decision record | Not required | n/a |
+| `adr/0053-memory-store-fuse-mount.md` | Decision record | Not required | n/a |
+| `adr/0054-safe-loop-boundary-shared-seam-and-pause-as-durable-park.md` | Decision record | Not required | n/a |
+| `adr/0055-typed-state-kernel-loop-actions-as-state.md` | Decision record | Not required | n/a |
 
 ## Implementation Context
 

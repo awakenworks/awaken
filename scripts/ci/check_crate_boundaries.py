@@ -722,6 +722,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # port, so it constructs no runtime.
     "awaken-protocol-ai-sdk": {
         "awaken-agent-contract",
+        "awaken-api-contract",
         "awaken-protocol-transport",
         "async-trait",
         "serde",
@@ -738,6 +739,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # `AgUiRuntime` port and constructs no runtime.
     "awaken-protocol-ag-ui": {
         "awaken-agent-contract",
+        "awaken-api-contract",
         "awaken-protocol-transport",
         "async-trait",
         "serde",

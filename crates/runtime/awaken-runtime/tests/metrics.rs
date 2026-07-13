@@ -34,6 +34,7 @@ use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 /// Captures every metric the engine emits, so a test can assert on the labels.
 #[derive(Default)]
 struct SpyRecorder {
+    #[allow(clippy::type_complexity)]
     inferences: Mutex<Vec<(String, String, Option<u64>, Option<u64>)>>,
     tools: Mutex<Vec<(String, String)>>,
 }

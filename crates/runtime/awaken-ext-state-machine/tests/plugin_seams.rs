@@ -12,7 +12,7 @@ use awaken_ext_state_machine::{
 };
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
 use awaken_runtime_contract::plugin::{
-    AfterToolContext, HookReaction, PhaseContext, PhaseHook, PhaseHookPoint, PhaseKind, Plugin,
+    AfterToolContext, HookReaction, PhaseContext, PhaseHook, PhaseKind, Plugin,
     RunEndContext, RunEndDecision, enforce_bound,
 };
 use awaken_runtime_contract::tool::{ToolCall, ToolOutput};
