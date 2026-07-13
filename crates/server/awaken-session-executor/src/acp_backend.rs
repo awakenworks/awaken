@@ -125,9 +125,9 @@ impl crate::host::SharedHost {
         // config home the resolver opens. A `Gateway`/stateless CLI is skipped by the
         // executor's own dispatch; a single-machine host leaves this unset.
         if let Some(blob_root) = self.session_blob_root.clone() {
-            let blobs = Arc::new(crate::session_home::FsSessionBlobStore::new(blob_root));
+            let blobs = Arc::new(awaken_run_executor_acp::FsSessionBlobStore::new(blob_root));
             executor = executor.with_session_home(Arc::new(
-                crate::session_home::DirSessionHome::new(store_dir, blobs),
+                awaken_run_executor_acp::DirSessionHome::new(store_dir, blobs),
             ));
         }
         self.with_acp(Arc::new(executor))

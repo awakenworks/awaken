@@ -808,11 +808,17 @@ impl RunExecutor for DispatchRunExecutor {
 }
 
 mod acp_cli;
+mod config_home;
+mod session_home;
 mod subprocess;
 pub use acp_cli::{
     AcpCli, McpInterface, ModelDelivery, ResolvedModel, SessionKey, SessionPersistence, acp_cli,
     is_dynamic_install, known_acp_clis,
 };
+// The ACP config-home path convention (shared kernel) and the reference cross-machine
+// session-home provider over it — the host consumes these instead of owning them.
+pub use config_home::{ConfigHome, RetentionPolicy, SessionReuse};
+pub use session_home::{DirSessionHome, FsSessionBlobStore, SessionBlobStore};
 pub use subprocess::{AcpLaunch, LaunchResolver, ProjectingChannelSource, SubprocessChannelSource};
 
 #[cfg(test)]
