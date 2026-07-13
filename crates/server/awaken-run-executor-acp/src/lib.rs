@@ -24,8 +24,9 @@ use awaken_agent_contract::agent::run::{EndCause, Failure, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::{WaitingReason, WaitingTicket};
 use awaken_protocol_acp::{
-    AcpError, AcpFailure, AgentEvent, AppendError, Injection, LaunchSink, RawAcpError,
-    RunFactAppender, Stage, SupervisePolicy, Supervisor, TerminationReason, classify_error,
+    AcpError, AcpFailure, AgentEvent, AllowAll, AppendError, Injection, LaunchSink, PermissionAsk,
+    PermissionResolver, PermissionVerdict, RawAcpError, RunFactAppender, Stage, SupervisePolicy,
+    Supervisor, TerminationReason, classify_error,
 };
 // Re-exported (not just `use`d) so a host composition root selects the wire and
 // observes agent bring-up without a direct dependency on the protocol crate. The
@@ -35,6 +36,9 @@ use awaken_provisioning_contract::ProcessHandle;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::boundary::{BoundaryOutcome, evaluate_boundary};
 use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
+use awaken_runtime_contract::permission::{
+    PermissionContext, PermissionDecision, PermissionPolicy,
+};
 use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
@@ -90,6 +94,11 @@ pub struct AcpRunExecutor {
     source: Arc<dyn AgentChannelSource>,
     policy: SupervisePolicy,
     observer: Option<Arc<dyn LaunchObserver>>,
+    /// Authorizes the external CLI's mid-turn tool requests. Defaults to allow (the
+    /// sandbox is the enforcement boundary); a host wires a neutral `PermissionPolicy`
+    /// via [`with_permission_policy`](Self::with_permission_policy) to apply org
+    /// policy / HITL uniformly across native and ACP runs.
+    permission: Arc<dyn PermissionResolver>,
 }
 
 impl AcpRunExecutor {
@@ -106,7 +115,19 @@ impl AcpRunExecutor {
             source,
             policy: SupervisePolicy::default(),
             observer: None,
+            permission: Arc::new(AllowAll),
         }
+    }
+
+    /// Authorize the external CLI's tool requests through the single neutral
+    /// [`PermissionPolicy`] (G21) — the same authority that governs native tools —
+    /// instead of the default allow. The CLI's `session/request_permission` is
+    /// projected onto this policy and its decision projected back onto the agent's
+    /// own allow/reject option.
+    #[must_use]
+    pub fn with_permission_policy(mut self, policy: Arc<dyn PermissionPolicy>) -> Self {
+        self.permission = Arc::new(NeutralPermissionResolver { policy });
+        self
     }
 
     /// Observe this executor's agent bring-up (install → launch → initialize →
@@ -237,7 +258,7 @@ impl RunExecutor for AcpRunExecutor {
             };
 
             let process = session.process.clone();
-            let outcome = Supervisor::supervise(
+            let outcome = Supervisor::supervise_with_permission(
                 session.channel.as_mut(),
                 process.as_ref(),
                 &prompt,
@@ -246,6 +267,7 @@ impl RunExecutor for AcpRunExecutor {
                 &mut injections,
                 self.policy,
                 session.codec,
+                self.permission.as_ref(),
                 launch_sink,
             )
             .await;
@@ -424,6 +446,34 @@ fn pause_ticket(
         call_id: None,
         pending_tool: None,
         deadline_ms: None,
+    }
+}
+
+/// Bridges the ACP driver's [`PermissionResolver`] port onto the single neutral
+/// [`PermissionPolicy`] authority (G21). It projects the wire ask into a neutral
+/// [`PermissionContext`], asks the policy, and maps the decision back to a wire
+/// verdict — so an external CLI's tool requests are decided by the same policy that
+/// governs native tools. `Ask` (out-of-band/HITL) has no synchronous answer over
+/// the held ACP turn yet, so it fails safe to `Deny` (a turn-holding HITL resolve
+/// is a follow-up); `Allow`/`Deny` pass straight through.
+struct NeutralPermissionResolver {
+    policy: Arc<dyn PermissionPolicy>,
+}
+
+#[async_trait]
+impl PermissionResolver for NeutralPermissionResolver {
+    async fn resolve(&self, ask: &PermissionAsk) -> PermissionVerdict {
+        let ctx = PermissionContext {
+            tool_id: ask.tool.clone(),
+            call_id: ask.call_id.clone(),
+            arguments: ask.arguments.clone(),
+        };
+        match self.policy.decide(&ctx).await {
+            PermissionDecision::Allow => PermissionVerdict::Allow,
+            PermissionDecision::Deny { .. } | PermissionDecision::Ask { .. } => {
+                PermissionVerdict::Deny
+            }
+        }
     }
 }
 

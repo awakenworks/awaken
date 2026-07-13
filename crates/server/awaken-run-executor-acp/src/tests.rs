@@ -368,6 +368,52 @@ async fn a_pause_commits_in_flight_steer_before_parking() {
 }
 
 #[tokio::test]
+async fn neutral_permission_resolver_projects_the_policy_decision() {
+    // The ACP permission port is decided by the single neutral `PermissionPolicy`:
+    // Allow→Allow, Deny→Deny, and Ask fails safe to Deny (no synchronous HITL over
+    // the held ACP turn yet).
+    use awaken_protocol_acp::{PermissionAsk, PermissionResolver, PermissionVerdict};
+    use awaken_runtime_contract::permission::{
+        PermissionContext, PermissionDecision, PermissionPolicy,
+    };
+
+    struct FixedPolicy(PermissionDecision);
+    #[async_trait]
+    impl PermissionPolicy for FixedPolicy {
+        async fn decide(&self, _ctx: &PermissionContext) -> PermissionDecision {
+            self.0.clone()
+        }
+    }
+
+    let ask = PermissionAsk {
+        tool: "bash".into(),
+        call_id: "t1".into(),
+        arguments: serde_json::json!({"cmd": "ls"}),
+    };
+    let cases = [
+        (PermissionDecision::Allow, PermissionVerdict::Allow),
+        (
+            PermissionDecision::Deny {
+                reason: "policy".into(),
+            },
+            PermissionVerdict::Deny,
+        ),
+        (
+            PermissionDecision::Ask {
+                ticket_id: "tk".into(),
+            },
+            PermissionVerdict::Deny,
+        ),
+    ];
+    for (decision, want) in cases {
+        let resolver = NeutralPermissionResolver {
+            policy: Arc::new(FixedPolicy(decision)),
+        };
+        assert_eq!(resolver.resolve(&ask).await, want);
+    }
+}
+
+#[tokio::test]
 async fn a_tool_call_and_its_result_commit_as_neutral_messages() {
     use awaken_agent_contract::agent::content::ContentBlock;
 

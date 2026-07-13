@@ -156,6 +156,48 @@ pub trait RunFactAppender: Send {
     async fn append(&mut self, seq: u64, event: &AgentEvent) -> Result<(), AppendError>;
 }
 
+/// A neutral projection of one agent→client permission request: the tool the
+/// external CLI (its own brain) wants to run, surfaced when the agent asks the
+/// client to authorize it mid-turn (`session/request_permission`).
+#[derive(Debug, Clone)]
+pub struct PermissionAsk {
+    /// The tool's name/kind as the agent described it (best-effort; may be empty).
+    pub tool: String,
+    /// The ACP `tool_call_id` this decision authorizes.
+    pub call_id: String,
+    /// The tool's arguments (`rawInput`), or `Null` when the agent supplied none.
+    pub arguments: serde_json::Value,
+}
+
+/// The authorization verdict for one [`PermissionAsk`], projected back onto the
+/// agent's own offered option (allow/reject).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionVerdict {
+    Allow,
+    Deny,
+}
+
+/// Resolves an agent permission request. Injected like [`RunFactAppender`]: this
+/// low wire crate defines the narrow port; the executor supplies an adapter that
+/// bridges it to the single neutral `PermissionPolicy` authority (G21). This is a
+/// projection seam, **not** a parallel policy — the driver never decides, it asks.
+#[async_trait]
+pub trait PermissionResolver: Send + Sync {
+    async fn resolve(&self, ask: &PermissionAsk) -> PermissionVerdict;
+}
+
+/// The default resolver: allow. The sandbox is the enforcement boundary for an
+/// external CLI, so a host that wires no policy defaults permissive; the newline
+/// fixture wire has no permission concept and never consults it.
+pub struct AllowAll;
+
+#[async_trait]
+impl PermissionResolver for AllowAll {
+    async fn resolve(&self, _ask: &PermissionAsk) -> PermissionVerdict {
+        PermissionVerdict::Allow
+    }
+}
+
 /// Which stage of bringing an ACP agent online a lifecycle notification marks.
 /// Ordered install → launch → initialize → ready, aligning to oversight-next's
 /// probe stages so a UI renders a consistent progress affordance. `Failed` is the
@@ -275,10 +317,34 @@ impl AcpBridge {
         codec: Codec,
         launch_sink: Option<LaunchSink<'_>>,
     ) -> Result<TerminationReason, AcpError> {
+        Self::run_turn_with_permission(channel, prompt, sink, codec, &AllowAll, launch_sink).await
+    }
+
+    /// Drive one turn, authorizing the agent's mid-turn permission requests through
+    /// `resolver` (the Acp codec only; the newline stand-in has no permission
+    /// concept and ignores it). The real ACP path wires the executor's neutral
+    /// resolver; fixtures use [`run_turn`](Self::run_turn) (default allow).
+    pub async fn run_turn_with_permission(
+        channel: &mut dyn AgentChannel,
+        prompt: &str,
+        sink: &mut dyn RunFactAppender,
+        codec: Codec,
+        resolver: &dyn PermissionResolver,
+        launch_sink: Option<LaunchSink<'_>>,
+    ) -> Result<TerminationReason, AcpError> {
         match codec {
             Codec::Newline => Self::run_turn_newline(channel, prompt, sink, launch_sink).await,
             #[cfg(feature = "real-acp")]
-            Codec::Acp => crate::jsonrpc::run_turn(channel, prompt, sink, launch_sink).await,
+            Codec::Acp => {
+                crate::jsonrpc::run_turn_with_permission(
+                    channel,
+                    prompt,
+                    sink,
+                    resolver,
+                    launch_sink,
+                )
+                .await
+            }
         }
     }
 
@@ -379,6 +445,37 @@ impl Supervisor {
         codec: Codec,
         launch_sink: Option<LaunchSink<'_>>,
     ) -> Result<TerminationReason, AcpError> {
+        Self::supervise_with_permission(
+            channel,
+            process,
+            prompt,
+            sink,
+            cancel,
+            injections,
+            policy,
+            codec,
+            &AllowAll,
+            launch_sink,
+        )
+        .await
+    }
+
+    /// [`supervise`](Self::supervise), authorizing the agent's mid-turn permission
+    /// requests through `resolver`. The executor wires its neutral resolver here so
+    /// an external CLI's tool requests are decided by the single `PermissionPolicy`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn supervise_with_permission(
+        channel: &mut dyn AgentChannel,
+        process: &dyn pc::ProcessHandle,
+        prompt: &str,
+        sink: &mut dyn RunFactAppender,
+        cancel: impl std::future::Future<Output = ()>,
+        injections: &mut tokio::sync::mpsc::Receiver<Injection>,
+        policy: SupervisePolicy,
+        codec: Codec,
+        resolver: &dyn PermissionResolver,
+        launch_sink: Option<LaunchSink<'_>>,
+    ) -> Result<TerminationReason, AcpError> {
         let deadline = async {
             match policy.turn_deadline {
                 Some(d) => tokio::time::sleep(d).await,
@@ -387,7 +484,7 @@ impl Supervisor {
         };
         tokio::select! {
             biased;
-            outcome = AcpBridge::run_turn(channel, prompt, sink, codec, launch_sink) => outcome,
+            outcome = AcpBridge::run_turn_with_permission(channel, prompt, sink, codec, resolver, launch_sink) => outcome,
             Some(Injection::Interrupt) = injections.recv() => {
                 Self::reap(process, policy.reap_grace).await?;
                 Ok(TerminationReason::Cancelled)

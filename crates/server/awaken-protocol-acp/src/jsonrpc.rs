@@ -11,9 +11,11 @@
 //! Projection and the [`RunFactAppender`] contract are identical to the newline
 //! stand-in ([`crate::AcpBridge`]) — a `session/update` becomes the same
 //! [`AgentEvent`], so nothing downstream (the store, the executor) sees ACP
-//! vocabulary. Agent→client requests are answered fail-closed: `session/
-//! request_permission` selects a reject option (we advertise no `fs`/`terminal`
-//! capabilities, so those requests get `method_not_found`).
+//! vocabulary. A `session/request_permission` is decided by the injected
+//! [`crate::PermissionResolver`] (the neutral `PermissionPolicy` behind an executor
+//! adapter) and projected back onto the agent's own allow/reject option. We
+//! advertise no `fs`/`terminal` capabilities, so those agent requests still get
+//! `method_not_found` — tool execution is the hand's job, never proxied over ACP.
 
 use agent_client_protocol::{
     AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES, ClientCapabilities, ContentBlock, InitializeRequest,
@@ -27,8 +29,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::real_acp::{project_update, termination_from_stop_reason};
 use crate::{
-    AcpError, AcpLaunchEvent, AcpLaunchStage, AgentEvent, LaunchSink, RunFactAppender,
-    TerminationReason, notify_launch,
+    AcpError, AcpLaunchEvent, AcpLaunchStage, AgentEvent, AllowAll, LaunchSink, PermissionAsk,
+    PermissionResolver, PermissionVerdict, RunFactAppender, TerminationReason, notify_launch,
 };
 
 const JSONRPC: &str = "2.0";
@@ -162,6 +164,20 @@ pub async fn run_turn(
     sink: &mut dyn RunFactAppender,
     launch_sink: Option<LaunchSink<'_>>,
 ) -> Result<TerminationReason, AcpError> {
+    run_turn_with_permission(channel, prompt, sink, &AllowAll, launch_sink).await
+}
+
+/// [`run_turn`], authorizing the agent's mid-turn `session/request_permission`
+/// requests through `resolver` (the neutral `PermissionPolicy` behind an executor
+/// adapter). `fs`/`terminal` requests are still refused `method_not_found` — tool
+/// execution is the hand's job, never proxied back over ACP.
+pub async fn run_turn_with_permission(
+    channel: &mut dyn AgentChannel,
+    prompt: &str,
+    sink: &mut dyn RunFactAppender,
+    resolver: &dyn PermissionResolver,
+    launch_sink: Option<LaunchSink<'_>>,
+) -> Result<TerminationReason, AcpError> {
     let mut wire = Wire::new(channel);
     let mut seq = 0u64;
 
@@ -183,7 +199,7 @@ pub async fn run_turn(
             .client_capabilities(ClientCapabilities::default()),
     )
     .await?;
-    pump_to_response(&mut wire, ID_INITIALIZE, sink, &mut seq).await?;
+    pump_to_response(&mut wire, ID_INITIALIZE, sink, &mut seq, resolver).await?;
 
     // 2. session/new — a fresh session rooted at the sandbox cwd, no MCP servers.
     wire.send_request(
@@ -193,7 +209,7 @@ pub async fn run_turn(
     )
     .await?;
     let new_session: NewSessionResponse =
-        parse(pump_to_response(&mut wire, ID_NEW_SESSION, sink, &mut seq).await?)?;
+        parse(pump_to_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver).await?)?;
 
     // Handshake complete — the agent is live and about to accept the prompt.
     notify_launch(launch_sink, AcpLaunchEvent::stage(AcpLaunchStage::Ready));
@@ -205,7 +221,7 @@ pub async fn run_turn(
         PromptRequest::new(new_session.session_id, vec![ContentBlock::from(prompt)]),
     )
     .await?;
-    let prompt_result = pump_to_response(&mut wire, ID_PROMPT, sink, &mut seq).await?;
+    let prompt_result = pump_to_response(&mut wire, ID_PROMPT, sink, &mut seq, resolver).await?;
     let response: PromptResponse = parse(prompt_result)?;
     let reason = termination_from_stop_reason(response.stop_reason);
     seq += 1;
@@ -222,6 +238,7 @@ async fn pump_to_response(
     target_id: u64,
     sink: &mut dyn RunFactAppender,
     seq: &mut u64,
+    resolver: &dyn PermissionResolver,
 ) -> Result<serde_json::Value, AcpError> {
     loop {
         let Some(msg) = wire.read().await? else {
@@ -240,7 +257,7 @@ async fn pump_to_response(
             }
             Some(request_id) => {
                 let method = msg.method.as_deref().unwrap_or_default();
-                answer_request(wire, request_id.clone(), method, msg.params).await?;
+                answer_request(wire, request_id.clone(), method, msg.params, resolver).await?;
             }
             // A notification (no id).
             None => {
@@ -270,20 +287,31 @@ async fn project_notification(
     Ok(())
 }
 
-/// Answer an agent→client request fail-closed: a permission request selects a
-/// reject option (or `cancelled` if none is offered); every other method — the
-/// `fs`/`terminal` capabilities we never advertised — gets `method_not_found`.
+/// Answer an agent→client request: a permission request is decided by `resolver`
+/// (the neutral `PermissionPolicy`) and projected back onto the agent's own
+/// offered option — allow or reject, once-preferred over always; `cancelled` when
+/// no matching option is offered. Every other method — the `fs`/`terminal`
+/// capabilities we never advertised — gets `method_not_found`, because tool
+/// execution is the hand's job and is never proxied back over ACP.
 async fn answer_request(
     wire: &mut Wire<'_>,
     id: serde_json::Value,
     method: &str,
     params: Option<serde_json::Value>,
+    resolver: &dyn PermissionResolver,
 ) -> Result<(), AcpError> {
     if method == CLIENT_METHOD_NAMES.session_request_permission {
-        let outcome = params
-            .and_then(|p| parse::<RequestPermissionRequest>(p).ok())
-            .map(|req| reject_outcome(&req))
-            .unwrap_or(RequestPermissionOutcome::Cancelled);
+        let outcome = match params.and_then(|p| {
+            parse::<RequestPermissionRequest>(p.clone())
+                .ok()
+                .map(|r| (p, r))
+        }) {
+            Some((raw, req)) => {
+                let verdict = resolver.resolve(&permission_ask(&raw)).await;
+                select_outcome(&req, verdict)
+            }
+            None => RequestPermissionOutcome::Cancelled,
+        };
         return wire
             .send(&OutResult {
                 jsonrpc: JSONRPC,
@@ -303,19 +331,56 @@ async fn answer_request(
     .await
 }
 
-/// The fail-closed permission decision: pick a reject option if the agent offered
-/// one (once-preferred over always), else report the turn cancelled.
-fn reject_outcome(req: &RequestPermissionRequest) -> RequestPermissionOutcome {
-    let reject = req
+/// Project a raw `session/request_permission` params object into a neutral
+/// [`PermissionAsk`] — the tool's title/kind, its `toolCallId`, and its `rawInput`
+/// — read loosely so the ask survives adapter-to-adapter shape differences.
+fn permission_ask(raw: &serde_json::Value) -> PermissionAsk {
+    let tool_call = raw.get("toolCall");
+    let tool = tool_call
+        .and_then(|tc| tc.get("title").or_else(|| tc.get("kind")))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let call_id = tool_call
+        .and_then(|tc| tc.get("toolCallId"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let arguments = tool_call
+        .and_then(|tc| tc.get("rawInput"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    PermissionAsk {
+        tool,
+        call_id,
+        arguments,
+    }
+}
+
+/// Project a [`PermissionVerdict`] onto the agent's own offered option: an
+/// `Allow` picks `allow_once` (else `allow_always`); a `Deny` picks `reject_once`
+/// (else `reject_always`). When the agent offered no option of the decided kind
+/// the turn is cancelled (a well-behaved agent always offers both).
+fn select_outcome(
+    req: &RequestPermissionRequest,
+    verdict: PermissionVerdict,
+) -> RequestPermissionOutcome {
+    let (once, always) = match verdict {
+        PermissionVerdict::Allow => (
+            PermissionOptionKind::AllowOnce,
+            PermissionOptionKind::AllowAlways,
+        ),
+        PermissionVerdict::Deny => (
+            PermissionOptionKind::RejectOnce,
+            PermissionOptionKind::RejectAlways,
+        ),
+    };
+    let chosen = req
         .options
         .iter()
-        .find(|o| o.kind == PermissionOptionKind::RejectOnce)
-        .or_else(|| {
-            req.options
-                .iter()
-                .find(|o| o.kind == PermissionOptionKind::RejectAlways)
-        });
-    match reject {
+        .find(|o| o.kind == once)
+        .or_else(|| req.options.iter().find(|o| o.kind == always));
+    match chosen {
         Some(option) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
             option.option_id.clone(),
         )),
@@ -354,6 +419,30 @@ mod tests {
             self.last = seq;
             self.events.push((seq, event.clone()));
             Ok(())
+        }
+    }
+
+    /// A resolver that denies every ask — stands in for a `PermissionPolicy` that
+    /// refuses the CLI's tool.
+    struct DenyAll;
+    #[async_trait]
+    impl PermissionResolver for DenyAll {
+        async fn resolve(&self, _ask: &PermissionAsk) -> PermissionVerdict {
+            PermissionVerdict::Deny
+        }
+    }
+
+    /// A resolver that records the ask it saw, then allows — proves the driver
+    /// projects the agent's request into a neutral [`PermissionAsk`].
+    #[derive(Default)]
+    struct RecordingResolver {
+        seen: Mutex<Vec<PermissionAsk>>,
+    }
+    #[async_trait]
+    impl PermissionResolver for RecordingResolver {
+        async fn resolve(&self, ask: &PermissionAsk) -> PermissionVerdict {
+            self.seen.lock().unwrap().push(ask.clone());
+            PermissionVerdict::Allow
         }
     }
 
@@ -537,16 +626,18 @@ mod tests {
         agent.await.unwrap();
     }
 
-    #[tokio::test]
-    async fn permission_request_is_answered_fail_closed_with_a_reject_option() {
+    /// A permission request offering both an allow and a reject option, over a tool
+    /// with a title and raw input (so the projected ask carries them).
+    const PERM: &str = r#"{"jsonrpc":"2.0","id":42,"method":"session/request_permission","params":{"sessionId":"sess-1","toolCall":{"toolCallId":"t1","title":"bash","rawInput":{"cmd":"ls"}},"options":[{"optionId":"ok","name":"Allow","kind":"allow_once"},{"optionId":"no","name":"Reject","kind":"reject_once"}]}}"#;
+
+    /// Drive one turn where the agent asks `PERM` mid-turn, decided by `resolver`;
+    /// return the client's raw permission reply line.
+    async fn drive_permission(resolver: &dyn PermissionResolver) -> String {
         let (mut ours, theirs) = channel();
         let seen = Arc::new(Mutex::new(String::new()));
-        // The agent asks permission mid-turn; we must select the reject option.
-        let perm = r#"{"jsonrpc":"2.0","id":42,"method":"session/request_permission","params":{"sessionId":"sess-1","toolCall":{"toolCallId":"t1"},"options":[{"optionId":"ok","name":"Allow","kind":"allow_once"},{"optionId":"no","name":"Reject","kind":"reject_once"}]}}"#;
         let seen2 = seen.clone();
         let agent = tokio::spawn(async move {
             let mut io = AgentIo::new(theirs);
-            // 1 initialize, 2 new session
             io.read().await;
             io.write_line(
                 r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#,
@@ -555,28 +646,49 @@ mod tests {
             io.read().await;
             io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-1"}}"#)
                 .await;
-            // read the prompt request (id 3), then send the permission request
-            io.read().await;
-            io.write_line(perm).await;
-            // read the client's permission reply
-            io.read().await;
+            io.read().await; // prompt request (id 3)
+            io.write_line(PERM).await;
+            io.read().await; // the client's permission reply
             *seen2.lock().unwrap() = io.line.clone();
-            // finish the prompt
             io.write_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#)
                 .await;
         });
 
         let mut sink = RecordingSink::default();
-        let reason = run_turn(ours.as_mut(), "p", &mut sink, None).await.unwrap();
+        let reason = run_turn_with_permission(ours.as_mut(), "p", &mut sink, resolver, None)
+            .await
+            .unwrap();
         assert_eq!(reason, TerminationReason::NaturalEnd);
         agent.await.unwrap();
         let reply = seen.lock().unwrap().clone();
+        reply
+    }
+
+    #[tokio::test]
+    async fn a_denying_policy_selects_the_agents_reject_option() {
+        // The neutral policy denies → we select the agent's own reject option.
+        let reply = drive_permission(&DenyAll).await;
         assert!(
             reply.contains("\"id\":42"),
             "replied to the request id: {reply}"
         );
         assert!(reply.contains("selected"), "selected an option: {reply}");
         assert!(reply.contains("\"no\""), "the reject option id: {reply}");
+    }
+
+    #[tokio::test]
+    async fn an_allowing_policy_selects_the_agents_allow_option_and_projects_the_ask() {
+        // The neutral policy allows → we select the agent's own allow option, and
+        // the driver projected the request into a neutral ask (tool + args + id).
+        let resolver = RecordingResolver::default();
+        let reply = drive_permission(&resolver).await;
+        assert!(reply.contains("selected"), "selected an option: {reply}");
+        assert!(reply.contains("\"ok\""), "the allow option id: {reply}");
+        let seen = resolver.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "the resolver saw exactly one ask");
+        assert_eq!(seen[0].tool, "bash");
+        assert_eq!(seen[0].call_id, "t1");
+        assert_eq!(seen[0].arguments["cmd"], "ls");
     }
 
     #[tokio::test]
@@ -666,7 +778,7 @@ mod tests {
             {"optionId":"no","name":"Reject","kind":"reject_once"},
             {"optionId":"never","name":"Reject always","kind":"reject_always"},
         ]));
-        let out = reject_outcome(&req);
+        let out = select_outcome(&req, PermissionVerdict::Deny);
         assert!(matches!(out, RequestPermissionOutcome::Selected(_)));
         assert!(
             outcome_json(&out).contains("\"no\""),
@@ -681,7 +793,7 @@ mod tests {
             {"optionId":"ok","name":"Allow","kind":"allow_once"},
             {"optionId":"never","name":"Reject always","kind":"reject_always"},
         ]));
-        let out = reject_outcome(&req);
+        let out = select_outcome(&req, PermissionVerdict::Deny);
         assert!(matches!(out, RequestPermissionOutcome::Selected(_)));
         assert!(outcome_json(&out).contains("\"never\""));
     }
@@ -692,7 +804,7 @@ mod tests {
             {"optionId":"ok","name":"Allow","kind":"allow_once"},
         ]));
         assert!(matches!(
-            reject_outcome(&req),
+            select_outcome(&req, PermissionVerdict::Deny),
             RequestPermissionOutcome::Cancelled
         ));
     }
