@@ -234,6 +234,28 @@ impl StateKey for ThreadUsageKey {
     }
 }
 
+#[cfg(test)]
+mod thread_usage_key_tests {
+    use awaken_agent_contract::agent::state::{StateKey, Store};
+
+    use super::*;
+
+    #[test]
+    fn commit_folds_a_step_usage_then_reads_back_typed() {
+        let mut store = Store::new();
+        let usage = TokenUsage {
+            prompt_tokens: 3,
+            completion_tokens: 5,
+            ..Default::default()
+        };
+        let cmd = ThreadUsageKey::commit(&store, ("m".to_string(), usage)).unwrap();
+        store.apply(&cmd);
+        let read = ThreadUsageKey::load(&store).unwrap();
+        assert_eq!(read.by_model["m"].prompt_tokens, 3);
+        assert_eq!(read.by_model["m"].completion_tokens, 5);
+    }
+}
+
 /// A classified inference failure. The variant is the classification: it
 /// decides both the retry policy (`is_retryable`) and the stable code
 /// (`code`) a run that cannot recover reports in its terminal failure.

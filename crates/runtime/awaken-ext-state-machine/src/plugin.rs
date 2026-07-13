@@ -73,21 +73,19 @@ impl StateMachinePlugin {
         continuation: ContinuationSettings,
     ) -> Contributions {
         let mut contributions = Contributions::new(STATE_MACHINE_PLUGIN_ID);
-        contributions.state_keys = STATE_KEYS.iter().map(|k| (*k).to_string()).collect();
-        contributions.tool_gates.push(Arc::new(StateMachineGate {
+        for key in STATE_KEYS {
+            contributions.declare_state_key(*key);
+        }
+        contributions.register_gate(Arc::new(StateMachineGate {
             machines: Arc::clone(&machines),
         }));
-        contributions
-            .phase_hooks
-            .push(Arc::new(StateMachineObserver {
-                machines: Arc::clone(&machines),
-            }));
-        contributions
-            .run_end_guards
-            .push(Arc::new(StateMachineGuard {
-                machines,
-                continuation,
-            }));
+        contributions.register_hook(Arc::new(StateMachineObserver {
+            machines: Arc::clone(&machines),
+        }));
+        contributions.register_guard(Arc::new(StateMachineGuard {
+            machines,
+            continuation,
+        }));
         contributions
     }
 }

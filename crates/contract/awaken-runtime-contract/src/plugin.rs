@@ -284,6 +284,42 @@ impl Contributions {
             dynamic_tools: Vec::new(),
         }
     }
+
+    // A small registrar over the contribution axes (ADR-0055): a plugin declares
+    // what it contributes through these chainable methods rather than reaching
+    // into each `Vec`, so the seam a plugin uses is one method per axis and the
+    // fields stay the merge/enforce_bound reading surface. Each declared state key
+    // must sit within the plugin's `CapabilityBound` (G30).
+
+    /// Declare a state key this plugin writes (must be within its bound, G30).
+    pub fn declare_state_key(&mut self, key: impl Into<String>) -> &mut Self {
+        self.state_keys.push(key.into());
+        self
+    }
+
+    /// Register a phase hook (any point, including `AfterTool`).
+    pub fn register_hook(&mut self, hook: Arc<dyn PhaseHook>) -> &mut Self {
+        self.phase_hooks.push(hook);
+        self
+    }
+
+    /// Register a pre-execution tool gate.
+    pub fn register_gate(&mut self, gate: Arc<dyn ToolGateHook>) -> &mut Self {
+        self.tool_gates.push(gate);
+        self
+    }
+
+    /// Register a run-end continuation guard.
+    pub fn register_guard(&mut self, guard: Arc<dyn RunEndGuard>) -> &mut Self {
+        self.run_end_guards.push(guard);
+        self
+    }
+
+    /// Register a dynamically discovered tool (descriptor + executable).
+    pub fn register_dynamic_tool(&mut self, tool: DynamicTool) -> &mut Self {
+        self.dynamic_tools.push(tool);
+        self
+    }
 }
 
 /// A plugin factory. `resolve` is called once per run to compile contributions
