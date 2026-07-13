@@ -1,6 +1,5 @@
 //! ADR-0048 assembly validation: prove `awaken-iam-host` (the single-PDP `IamGate`
-//! with `auth_layer` PEP) works against our pinned iam rev, ahead of adopting it in
-//! place of the hand-rolled `ManagementAuthz` / `EnforceEngine`.
+//! + `auth_layer` PEP) works against our pinned iam rev.
 //!
 //! What this locks:
 //!   1. **Zero-config Local embed** — `HostConfig::local_in_memory()` boots with no
@@ -9,12 +8,17 @@
 //!   2. **Fail-closed authn** — no credential and a bogus credential both fail to
 //!      resolve a principal; only the real ephemeral admin authenticates.
 //!
-//! Caveat for the actual adoption: `auth_layer(gate, actions)` (the tower PEP)
-//! does not `.layer()` directly onto our `axum::Router` — the `IamAuthService`
-//! bounds want the inner service's exact `Response`/`Error`, so the HTTP wiring
-//! will go through an `axum::middleware::from_fn` adapter around the gate rather
-//! than the raw layer. That wiring lands with the real engine replacement; here we
-//! validate the assembly's authn/authz core against our pinned rev.
+//! **Adoption outcome (ADR-0048): `IamGate` is the PDP.** `authz.rs` now runs its
+//! management authn/authz through `IamGate` (built via `from_local_state` over its
+//! own embed) — see the `authz.rs` module doc, "iam-host (ADR-0048)". This test
+//! exercises host's *alternative* embed, `embed_local` (the zero-config default
+//! embed server-local does not use, since it hard-codes identity and seeds no
+//! grants), keeping that assembly regression-checked against our rev for consumers
+//! that want the batteries-included path. The lossless server-local adoption was
+//! unblocked by extending host (rev `9aa91e1`): `from_local_state` (single-lock
+//! embed), `authenticate_detailed`/`AuthReject` (distinct 401 reasons), and
+//! `authenticate_scoped`, plus `scope_for` / `extract_credential` /
+//! `render_auth_error` for a consumer adopting `auth_layer` wholesale.
 
 use awaken_iam_contract::{PrincipalRef, Timestamp};
 use awaken_iam_host::{HostConfig, embed_local};

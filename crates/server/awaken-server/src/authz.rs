@@ -79,6 +79,32 @@
 //!
 //! **What P1 defers**: custom roles, org-level scopes, group rosters,
 //! entitlements, and approval discharge.
+//!
+//! **iam-host (ADR-0048) — `IamGate` is the PDP; the guard is the Managed PEP.**
+//! authn and authz run through iam-host's [`IamGate`] (rev `9aa91e1`), the single
+//! policy-decision point. The gate is built via `IamGate::from_local_state` over
+//! *this crate's own* [`LocalIamState`] — the argon2 token directory + the
+//! default-deny policy this module seeds (preset role grants) and hydrates from
+//! `<dir>/iam.sqlite`. So the durable rows, the minter, and the evaluator are the
+//! shared iam engine, and the gate is the one authn/authz front door:
+//! [`ManagementAuthz::authenticate`] calls `gate.authenticate_detailed` (which
+//! surfaces the distinct expired / revoked / invalid reasons the guard maps to
+//! its 401 messages), and [`ManagementAuthz::authorize`] calls `gate.authorize`.
+//! The gate shares the single state lock, so mint's paired write (token row +
+//! role binding) stays atomic to a concurrent authenticate/authorize.
+//!
+//! What stays in this crate is the Managed-specific **PEP** shell the guard needs
+//! and the generic host `auth_layer` cannot express without re-supplying it all as
+//! callbacks: `x-api-key` credentials (via [`bearer_token`]), the Managed
+//! [`ErrorResponse`] 401/403 envelope, the workspace path/query/body fence, the
+//! 413 body cap, and the `TokenAdmin` delegation. Reaching that lossless split is
+//! what the host extensions at rev `9aa91e1` delivered — `from_local_state`
+//! (single-lock embed), `authenticate_detailed`/`AuthReject` (the 401 reasons),
+//! `authenticate_scoped` (token workspace), plus `scope_for` /
+//! `extract_credential` / `render_auth_error` for a fresh consumer that adopts
+//! `auth_layer` wholesale. The pre-existing black-box tests
+//! (`tests/management_authz.rs`, `tests/management_tokens.rs`) are the equivalence
+//! oracle and pass unchanged across this adoption.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -90,11 +116,12 @@ use awaken_iam_contract::{
 };
 use awaken_iam_core::{
     ApiTokenDirectory, ApiTokenMinter, Effect, EntropySource, Grant, GrantId, GrantSubject,
-    IamError, IssuedApiToken, OsEntropy, PolicySet, RoleBinding, RoleId,
+    IamError, IssuedApiToken, OsEntropy, RoleBinding, RoleId,
 };
 use awaken_iam_core::{ApiTokenRepo, RoleBindingRepo};
+use awaken_iam_host::{AuthReject, IamClient, IamGate, LocalIamState};
 use awaken_iam_preset::{named_role_catalog, seed_named_roles};
-use awaken_iam_server::{SqlStore, SqliteBackend, sqlite_migrated_store};
+use awaken_iam_server::{AuthzApi, SqlStore, SqliteBackend, sqlite_migrated_store};
 use awaken_protocol_managed::types::ErrorResponse;
 use axum::body::Body;
 use axum::extract::{Query, Request, State};
@@ -136,21 +163,21 @@ const WORKSPACE_WRITE: &str = "workspace.write";
 const APIKEY_READ: &str = "apikey.read";
 const APIKEY_WRITE: &str = "apikey.write";
 
-/// The live evaluator state: the argon2-verifying token directory and the
-/// default-deny policy (role grants + workspace-scoped bindings). Both are
-/// in-memory; [`ManagementAuthz`] keeps them consistent with the SQLite rows.
-struct EngineState {
-    directory: ApiTokenDirectory,
-    policy: PolicySet,
-}
-
 /// The embedded management-plane authorizer: authn (bearer token → principal)
 /// and authz (principal × action × workspace scope → decision), with its
 /// durable token/binding rows in `<dir>/iam.sqlite`.
+///
+/// authn/authz run through iam-host's [`IamGate`] (the single PDP), built over
+/// the same [`LocalIamState`] this struct mints and hydrates into — the argon2
+/// token directory and the default-deny policy (role grants + workspace-scoped
+/// bindings), both in-memory and kept consistent with the SQLite rows.
 pub struct ManagementAuthz {
-    /// Evaluator state; also serializes mint (engine write + row write) so a
-    /// concurrent mint cannot interleave the two.
-    state: Mutex<EngineState>,
+    /// Authz engine + token directory behind one lock (host's [`LocalIamState`]),
+    /// shared with `gate`. Also serializes mint (directory write + binding write)
+    /// so a concurrent mint cannot interleave the two.
+    state: Arc<Mutex<LocalIamState>>,
+    /// iam-host gate over `state`: the authn/authz PDP the guard calls.
+    gate: IamGate,
     /// iam-server's repository adapter over `<dir>/iam.sqlite` (tokens,
     /// bindings, role defs — its schema, its migration ledger).
     store: SqlStore<SqliteBackend>,
@@ -198,9 +225,9 @@ impl ManagementAuthz {
             expires_at: spec.expires_at.map(Timestamp),
         };
         let mut guard = self.state.lock().unwrap();
-        let state = &mut *guard;
+        let LocalIamState { authz, directory } = &mut *guard;
         let issued = ApiTokenMinter::new(OsEntropy)
-            .mint(&mut state.directory, &mut state.policy, request)
+            .mint(directory, authz.policy_mut(), request)
             .map_err(|err| err.to_string())?;
         // Persist through the SqlStore ports, mirroring exactly what mint wrote
         // into the live engine: the token row and the principal→role binding at
@@ -309,17 +336,26 @@ impl ManagementAuthz {
         self.role_of(&token)
     }
 
-    /// Authenticate a presented bearer credential, returning its principal and
-    /// workspace binding.
-    fn authenticate(&self, presented: &str) -> Result<(PrincipalRef, WorkspaceId), IamError> {
-        let state = self.state.lock().unwrap();
-        let token = state
-            .directory
-            .authenticate(presented, &Timestamp(now_rfc3339()))?;
-        Ok((token.principal.clone(), token.workspace.clone()))
+    /// Authenticate a presented bearer credential through the gate, returning its
+    /// principal and workspace binding — or the reason it failed, so the guard
+    /// can answer the distinct expired / revoked / invalid 401s.
+    fn authenticate(&self, presented: &str) -> Result<(PrincipalRef, WorkspaceId), AuthReject> {
+        // now_unix is unused for API tokens (this plane mints no JWTs); pass 0.
+        match self
+            .gate
+            .authenticate_detailed(presented, &Timestamp(now_rfc3339()), 0)
+        {
+            Ok((principal, Some(workspace))) => Ok((principal, workspace)),
+            // A management credential is always a workspace-bound API token; a
+            // resolved token with no workspace (only a JWT, never minted here) is
+            // treated as unauthenticated.
+            Ok((_, None)) => Err(AuthReject::Invalid),
+            Err(reject) => Err(reject),
+        }
     }
 
-    /// Evaluate `principal` performing `action` at the token's workspace scope.
+    /// Evaluate `principal` performing `action` at the token's workspace scope,
+    /// through the gate (the same default-deny engine, one PDP).
     fn authorize(
         &self,
         principal: PrincipalRef,
@@ -333,12 +369,7 @@ impl ManagementAuthz {
                 workspace_id: workspace,
             },
         );
-        self.state
-            .lock()
-            .unwrap()
-            .policy
-            .evaluate(&request)
-            .decision
+        self.gate.authorize(request)
     }
 }
 
@@ -384,7 +415,8 @@ pub fn embedded_iam(dir: &Path) -> Arc<ManagementAuthz> {
     .expect("ensure the bootstrap principal's global admin binding");
 
     let mut directory = ApiTokenDirectory::new();
-    let mut policy = PolicySet::new();
+    let mut engine = AuthzApi::new();
+    let policy = engine.policy_mut();
 
     // The preset Anthropic role catalog, as data: every role's action patterns
     // become `GrantSubject::Role` grants at Global scope. Global here is NOT a
@@ -420,13 +452,18 @@ pub fn embedded_iam(dir: &Path) -> Arc<ManagementAuthz> {
                 hydrated_tokens += 1;
             }
         }
-        policy.bind_role(binding);
+        engine.policy_mut().bind_role(binding);
     }
 
-    let authz = Arc::new(ManagementAuthz {
-        state: Mutex::new(EngineState { directory, policy }),
-        store,
-    });
+    // One lock over the authz engine + token directory, wrapped as the gate's
+    // Local state; `ManagementAuthz` keeps a clone to mint/hydrate through the
+    // same lock the gate reads under.
+    let state = Arc::new(Mutex::new(LocalIamState {
+        authz: engine,
+        directory,
+    }));
+    let gate = IamGate::from_local_state(Arc::clone(&state));
+    let authz = Arc::new(ManagementAuthz { state, gate, store });
 
     if hydrated_tokens == 0 {
         bootstrap_admin_token(&authz, dir);
@@ -613,9 +650,9 @@ pub async fn management_guard(
     };
     let (principal, workspace) = match authz.authenticate(&presented) {
         Ok(identity) => identity,
-        Err(IamError::ApiTokenExpired { .. }) => return unauthorized("API token is expired"),
-        Err(IamError::ApiTokenRevoked { .. }) => return unauthorized("API token is revoked"),
-        Err(_) => return unauthorized("invalid API token"),
+        Err(AuthReject::Expired) => return unauthorized("API token is expired"),
+        Err(AuthReject::Revoked) => return unauthorized("API token is revoked"),
+        Err(AuthReject::Invalid) => return unauthorized("invalid API token"),
     };
 
     let action = match route {
