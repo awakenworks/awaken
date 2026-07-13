@@ -438,9 +438,8 @@ mod tests {
             owner: "host-7-42".into(),
             expires_ms: 9_999,
         };
-        let back: Lease =
-            serde_json::from_str(&serde_json::to_string(&lease).expect("serializes"))
-                .expect("deserializes");
+        let back: Lease = serde_json::from_str(&serde_json::to_string(&lease).expect("serializes"))
+            .expect("deserializes");
         assert_eq!(back, lease);
 
         for outcome in [DispatchOutcome::Done, DispatchOutcome::Parked] {

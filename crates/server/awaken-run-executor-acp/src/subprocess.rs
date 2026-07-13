@@ -74,9 +74,10 @@ fn with_host_passthrough(
 ) -> Vec<(String, String)> {
     for key in HOST_PASSTHROUGH_ENV {
         if !env.iter().any(|(k, _)| k == key)
-            && let Some(value) = lookup(key) {
-                env.push(((*key).to_string(), value));
-            }
+            && let Some(value) = lookup(key)
+        {
+            env.push(((*key).to_string(), value));
+        }
     }
     env
 }

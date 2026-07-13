@@ -939,9 +939,10 @@ impl ManagedState {
         // for an external worker to claim and run (the session still exists here; the
         // work item is how a polling worker discovers and drives it).
         if let Some(envs) = self.environments.as_ref()
-            && envs.is_self_hosted(&environment_id) {
-                envs.enqueue_session_work(&environment_id, &id);
-            }
+            && envs.is_self_hosted(&environment_id)
+        {
+            envs.enqueue_session_work(&environment_id, &id);
+        }
         // Enumerate the runtime's provisioned surface so the agent object reports what
         // the run can actually do (built-in toolset, custom tools, skills, delegates),
         // not an empty set. The wire shaping lives in `project`; the host supplies
@@ -1284,12 +1285,11 @@ impl ManagedState {
         // `session.status_idled`. The owning workspace is resolved from the session's
         // persisted owner (the archive edge carries only the id) so a subscription in
         // that workspace is matched even after a restart lost the in-memory index.
-        if newly_terminated
-            && let Some(sink) = &self.lifecycle_sink {
-                let owner = self.resolve_owner(id).await;
-                sink.emit(id, owner.as_deref(), lifecycle_event::SESSION_TERMINATED)
-                    .await;
-            }
+        if newly_terminated && let Some(sink) = &self.lifecycle_sink {
+            let owner = self.resolve_owner(id).await;
+            sink.emit(id, owner.as_deref(), lifecycle_event::SESSION_TERMINATED)
+                .await;
+        }
         Ok(session)
     }
 
@@ -1594,9 +1594,9 @@ impl ManagedState {
                 && let Some(d) = delegates
                     .iter_mut()
                     .find(|d| d.tool_use_id.as_deref() == Some(tool_use_id.as_str()))
-                {
-                    d.received = content.clone();
-                }
+            {
+                d.received = content.clone();
+            }
         }
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;

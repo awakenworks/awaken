@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_server::{HttpTransport, Response, SharedHost, Transport};
 use awaken_scenario_host::{DelegatingModel, EchoModel, build_router};
+use awaken_server::{HttpTransport, Response, SharedHost, Transport};
 use axum::Router;
 use axum::body::Body;
 use axum::http::Request;

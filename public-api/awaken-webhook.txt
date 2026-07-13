@@ -16,6 +16,28 @@ impl core::marker::Sync for awaken_webhook::SignError
 impl core::marker::Unpin for awaken_webhook::SignError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_webhook::SignError
 impl core::panic::unwind_safe::UnwindSafe for awaken_webhook::SignError
+pub enum awaken_webhook::UrlRejected
+pub awaken_webhook::UrlRejected::Malformed
+pub awaken_webhook::UrlRejected::NotHttps
+pub awaken_webhook::UrlRejected::PrivateHost
+impl core::clone::Clone for awaken_webhook::UrlRejected
+pub fn awaken_webhook::UrlRejected::clone(&self) -> awaken_webhook::UrlRejected
+impl core::cmp::Eq for awaken_webhook::UrlRejected
+impl core::cmp::PartialEq for awaken_webhook::UrlRejected
+pub fn awaken_webhook::UrlRejected::eq(&self, &awaken_webhook::UrlRejected) -> bool
+impl core::error::Error for awaken_webhook::UrlRejected
+impl core::fmt::Debug for awaken_webhook::UrlRejected
+pub fn awaken_webhook::UrlRejected::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_webhook::UrlRejected
+pub fn awaken_webhook::UrlRejected::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_webhook::UrlRejected
+impl core::marker::StructuralPartialEq for awaken_webhook::UrlRejected
+impl core::marker::Freeze for awaken_webhook::UrlRejected
+impl core::marker::Send for awaken_webhook::UrlRejected
+impl core::marker::Sync for awaken_webhook::UrlRejected
+impl core::marker::Unpin for awaken_webhook::UrlRejected
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_webhook::UrlRejected
+impl core::panic::unwind_safe::UnwindSafe for awaken_webhook::UrlRejected
 pub struct awaken_webhook::DispatchReport
 pub awaken_webhook::DispatchReport::delivered: alloc::vec::Vec<alloc::string::String>
 pub awaken_webhook::DispatchReport::disabled: alloc::vec::Vec<alloc::string::String>
@@ -35,6 +57,8 @@ impl core::marker::Unpin for awaken_webhook::DispatchReport
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_webhook::DispatchReport
 impl core::panic::unwind_safe::UnwindSafe for awaken_webhook::DispatchReport
 pub struct awaken_webhook::ReqwestSender
+impl awaken_webhook::ReqwestSender
+pub fn awaken_webhook::ReqwestSender::guarded() -> Self
 impl awaken_webhook::WebhookSender for awaken_webhook::ReqwestSender
 pub fn awaken_webhook::ReqwestSender::post<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<u16, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl core::default::Default for awaken_webhook::ReqwestSender
@@ -119,6 +143,7 @@ impl core::marker::Sync for awaken_webhook::WebhookEventData
 impl core::marker::Unpin for awaken_webhook::WebhookEventData
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_webhook::WebhookEventData
 impl core::panic::unwind_safe::UnwindSafe for awaken_webhook::WebhookEventData
+pub const awaken_webhook::DEFAULT_TOLERANCE_SECS: i64
 pub const awaken_webhook::SECRET_PREFIX: &str
 pub trait awaken_webhook::SubscriptionSource: core::marker::Send + core::marker::Sync
 pub fn awaken_webhook::SubscriptionSource::disable<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -130,4 +155,7 @@ pub fn awaken_webhook::ReqwestSender::post<'life0, 'life1, 'async_trait>(&'life0
 pub fn awaken_webhook::generate_secret() -> alloc::string::String
 pub fn awaken_webhook::sign_bytes(&str, &str, i64, &str) -> core::result::Result<alloc::string::String, awaken_webhook::SignError>
 pub fn awaken_webhook::signature_header(&str, &str, i64, &str) -> core::result::Result<alloc::string::String, awaken_webhook::SignError>
+pub fn awaken_webhook::timestamp_within_tolerance(i64, i64, i64) -> bool
+pub fn awaken_webhook::validate_endpoint_url(&str) -> core::result::Result<(), awaken_webhook::UrlRejected>
 pub fn awaken_webhook::verify(&str, &str, i64, &str, &str) -> core::result::Result<bool, awaken_webhook::SignError>
+pub fn awaken_webhook::verify_fresh(&str, &str, i64, &str, &str, i64, i64) -> core::result::Result<bool, awaken_webhook::SignError>

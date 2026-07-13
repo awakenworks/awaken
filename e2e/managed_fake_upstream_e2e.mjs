@@ -94,12 +94,12 @@ async function main() {
         id: 'anthropic', slug: 'anthropic', display_name: 'Anthropic', version: 1,
       });
       await req(base, 'PUT', '/v1/config/endpoints/ep1', {
-        id: 'ep1', provider_id: 'anthropic', flavor: 'anthropic_messages',
+        id: 'ep1', provider_id: 'anthropic', dialect: 'anthropic_messages',
         base_url: `${upstream.url}/v1/`, timeout_secs: 300, display_name: 'fake', version: 1,
       });
       await req(base, 'POST', '/v1/config/offerings', {
         model_id: 'fake-haiku', provider_id: 'anthropic',
-        protocol_endpoint_id: 'ep1', flavor: 'anthropic_messages', upstream_model: null,
+        protocol_endpoint_id: 'ep1', dialect: 'anthropic_messages', upstream_model: null,
       });
 
       let r = await req(base, 'POST', '/v1/config/credentials', {

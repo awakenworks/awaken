@@ -166,7 +166,13 @@ async fn user_profiles_paginate_by_anthropic_page_cursor() {
 
     // Resume with `?page=<next_page>` → the remaining row, terminal (next_page null).
     let cursor = p1["next_page"].as_str().unwrap();
-    let (_, p2) = call(&app, "GET", &format!("/v1/user_profiles?page={cursor}"), None).await;
+    let (_, p2) = call(
+        &app,
+        "GET",
+        &format!("/v1/user_profiles?page={cursor}"),
+        None,
+    )
+    .await;
     let ids2: Vec<&str> = p2["data"]
         .as_array()
         .unwrap()
@@ -175,6 +181,9 @@ async fn user_profiles_paginate_by_anthropic_page_cursor() {
         .collect();
     assert_eq!(ids2.len(), 1);
     assert_ne!(ids2[0], ids1[1], "no overlap with the first page");
-    assert!(p2["next_page"].is_null(), "the last page has no continuation cursor");
+    assert!(
+        p2["next_page"].is_null(),
+        "the last page has no continuation cursor"
+    );
     assert_eq!(p2["has_more"], false);
 }

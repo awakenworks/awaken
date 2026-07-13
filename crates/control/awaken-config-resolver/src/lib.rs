@@ -379,12 +379,13 @@ async fn resolve_credential(
                 .get(credential_source_id.0.as_str())
                 .ok_or_else(|| ResolveError::SourceMissing(credential_source_id.0.clone()))?;
             if let Some(provider) = offering_provider
-                && !can_consume(provider, source) {
-                    return Err(ResolveError::IncompatibleCredential {
-                        source_id: credential_source_id.0.clone(),
-                        provider_id: provider.to_string(),
-                    });
-                }
+                && !can_consume(provider, source)
+            {
+                return Err(ResolveError::IncompatibleCredential {
+                    source_id: credential_source_id.0.clone(),
+                    provider_id: provider.to_string(),
+                });
+            }
             Ok(Some(
                 awaken_credential_vault::materialize(source, secret_store).await?,
             ))
