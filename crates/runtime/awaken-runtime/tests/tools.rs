@@ -409,7 +409,7 @@ async fn invalid_arguments_yield_a_model_visible_error_result() {
 /// Captures the tool schemas the model receives so we can assert the real
 /// descriptor schema (not a placeholder) reaches inference (A2).
 struct CaptureTools {
-    seen: Arc<std::sync::Mutex<Vec<awaken_runtime_contract::llm::ToolSchema>>>,
+    seen: Arc<std::sync::Mutex<Vec<awaken_runtime_contract::resolved::ToolDescriptor>>>,
 }
 
 #[async_trait::async_trait]

@@ -57,21 +57,6 @@ pub struct ResolvedSpec {
 }
 
 impl ResolvedSpec {
-    /// The execution adapter this run binds to (R3): `"awaken"` for the native
-    /// runtime, or `"acp:<cli>"` for an external ACP agent (Claude Code / Codex).
-    /// Derived by convention from the model binding's `backend_ref` — an `acp:*`
-    /// backend selects that ACP CLI — so runtime selection is first-class without
-    /// churning the resolved-spec shape (30+ existing constructions).
-    #[must_use]
-    pub fn runtime_adapter(&self) -> &str {
-        let backend = self.model_binding.backend_ref.as_str();
-        if backend == "acp" || backend.starts_with("acp:") {
-            backend
-        } else {
-            "awaken"
-        }
-    }
-
     /// The ordered model bindings this run may use: the primary
     /// [`model_binding`](Self::model_binding) first, then any pool fallbacks in
     /// [`model_candidates`](Self::model_candidates). A single-model agent yields
@@ -396,20 +381,31 @@ impl ToolPresentation {
 
 /// Stable content hash over the model-visible descriptor surface. Uses a
 /// canonical JSON encoding so equal schemas hash equally regardless of the
-/// in-memory `Value` shape.
+/// in-memory `Value` shape, and SHA-256 so the digest is portable across
+/// processes and Rust versions — this value is persisted in the snapshot and
+/// re-checked fail-closed, matching the `sha256` the catalog fingerprint uses.
 fn content_hash(
     prefix: &str,
     id: &str,
     description: &str,
     parameters: &serde_json::Value,
 ) -> String {
-    use std::hash::{Hash, Hasher};
+    use sha2::{Digest, Sha256};
     let canonical = serde_json::to_string(parameters).unwrap_or_default();
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    id.hash(&mut hasher);
-    description.hash(&mut hasher);
-    canonical.hash(&mut hasher);
-    format!("{prefix}:{id}:{:016x}", hasher.finish())
+    let mut hasher = Sha256::new();
+    // Length-prefix each field so `(id, description)` and `(id+description, "")`
+    // cannot collide by concatenation.
+    for field in [id, description, canonical.as_str()] {
+        hasher.update((field.len() as u64).to_le_bytes());
+        hasher.update(field.as_bytes());
+    }
+    let digest = hasher.finalize();
+    // 16 hex chars (64 bits) keeps the id readable while a schema change still
+    // moves the digest; the full prefix keeps owner namespacing.
+    format!(
+        "{prefix}:{id}:{:016x}",
+        u64::from_le_bytes(digest[..8].try_into().unwrap())
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -583,5 +579,28 @@ mod tests {
         assert_ne!(base.content_hash, desc_changed.content_hash);
         assert_ne!(base.content_hash, id_changed.content_hash);
         assert!(base.content_hash.starts_with("p:t:"));
+    }
+
+    #[test]
+    fn content_hash_is_length_prefixed_against_field_concatenation_collisions() {
+        // Without length-prefixing, ("ab","c") and ("a","bc") would concatenate to
+        // the same byte stream and collide. The id is part of the readable prefix,
+        // so vary the description/schema boundary where the digest actually matters.
+        let a = ToolDescriptor::pinned("p", "t", "ab", serde_json::json!("c"));
+        let b = ToolDescriptor::pinned("p", "t", "a", serde_json::json!("bc"));
+        assert_ne!(a.content_hash, b.content_hash);
+    }
+
+    #[test]
+    fn content_hash_is_deterministic_sha256_hex() {
+        // Portable digest: the same inputs always yield the same 16 hex chars, and
+        // the tail is valid lowercase hex (not a platform-dependent SipHash value).
+        let h = ToolDescriptor::pinned("p", "t", "desc", serde_json::json!({"a": 1})).content_hash;
+        let tail = h.rsplit(':').next().unwrap();
+        assert_eq!(tail.len(), 16);
+        assert!(
+            tail.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        );
     }
 }

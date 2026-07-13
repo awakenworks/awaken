@@ -165,8 +165,8 @@ fn resume_command(result: ResumeResult) -> ResumeCommand {
         correlation_id: "ticket-1".to_string(),
         run_id: RunId("run-1".to_string()),
         thread_id: ThreadId("thread-1".to_string()),
-        snapshot_id: SNAPSHOT_ID.to_string(),
-        catalog_fingerprint: FINGERPRINT.to_string(),
+        snapshot_id: awaken_runtime_contract::ExecutableAgentSnapshotId(SNAPSHOT_ID.to_string()),
+        catalog_fingerprint: awaken_runtime_contract::CatalogFingerprint(FINGERPRINT.to_string()),
         result,
         now_ms: 0,
     }
@@ -301,7 +301,7 @@ async fn resume_with_wrong_fingerprint_fails_closed() {
         allow: true,
         note: None,
     });
-    command.catalog_fingerprint = "wrong".to_string();
+    command.catalog_fingerprint = awaken_runtime_contract::CatalogFingerprint("wrong".to_string());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let err = runtime
         .resume(command, commit.as_ref(), context)

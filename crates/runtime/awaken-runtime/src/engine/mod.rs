@@ -36,7 +36,7 @@ use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
 use awaken_runtime_contract::plugin::{
     PhaseContext, PhaseHookPoint, ResolvedExecutionEnv, RunEndContext, RunEndDecision,
 };
-use awaken_runtime_contract::resolved::{ResolvedRun, ToolPresentation};
+use awaken_runtime_contract::resolved::{CatalogFingerprint, ResolvedRun, ToolPresentation};
 use awaken_runtime_contract::resolver::{self, RunResolver};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resume};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -47,6 +47,7 @@ use crate::runtime::Runtime;
 
 mod content;
 mod convert;
+mod dispatch;
 mod inference;
 pub(crate) use convert::*;
 use inference::infer_with_retry;
@@ -191,8 +192,8 @@ pub(crate) async fn perform_scheduled_action(
         correlation_id: ticket.correlation_id,
         run_id: ticket.run_id,
         thread_id: ticket.thread_id,
-        snapshot_id: ticket.snapshot_id,
-        catalog_fingerprint: ticket.catalog_fingerprint,
+        snapshot_id: ExecutableAgentSnapshotId(ticket.snapshot_id),
+        catalog_fingerprint: CatalogFingerprint(ticket.catalog_fingerprint),
         result: ResumeResult::Decision {
             allow: true,
             note: None,
@@ -251,27 +252,56 @@ pub(crate) async fn resume_run(
         .await;
     }
 
-    // Rebuild the transcript and state from committed truth and apply the
-    // resumed result. The resumed tool's own state is folded into the store so a
-    // later step in this resume observes the advanced state.
-    let mut transcript = reader.committed_messages(&thread_id);
-    let mut store = store_from_commands(reader.committed_state(&thread_id));
-    let (resumed, seed_state) =
-        resume_into_messages(runtime, &env, &ticket, command.result, &store, &context).await;
-    for command in &seed_state {
-        store.apply(command);
-    }
-    transcript.extend(resumed.iter().cloned());
-
-    // State staged by the resumed tool itself seeds the attempt's batch (kept
-    // first), so step commits and conflict validation cover it too.
-    let checkpoint = drive(
+    // Rebuild committed truth, inject the resumed result, and drive on.
+    drive_resumed(
         runtime,
         &resolved,
         &env,
         &run_id,
         &thread_id,
+        &ticket,
+        command.result,
+        reader,
         &context,
+    )
+    .await
+}
+
+/// Rebuild the transcript and state from committed truth, inject a resumed
+/// `result` for the parked ticket, and drive the loop to its next terminal/parked
+/// checkpoint. Shared by the two resume entries — a validated `ResumeCommand`
+/// (`resume_run`) and a delegate step folded back into the parent
+/// (`resume_delegation`) — so the rebuild/inject/drive/finalize glue lives once.
+#[allow(clippy::too_many_arguments)]
+async fn drive_resumed(
+    runtime: &Runtime,
+    resolved: &ResolvedRun,
+    env: &ResolvedExecutionEnv,
+    run_id: &RunId,
+    thread_id: &ThreadId,
+    ticket: &WaitingTicket,
+    result: ResumeResult,
+    reader: &dyn ThreadReader,
+    context: &RuntimeRunContext,
+) -> Result<Phase> {
+    let mut transcript = reader.committed_messages(thread_id);
+    let mut store = store_from_commands(reader.committed_state(thread_id));
+    let (resumed, seed_state) =
+        resume_into_messages(runtime, env, ticket, result, &store, context).await;
+    // The resumed tool's own state is folded into the store so a later step in
+    // this resume observes the advanced state; it also seeds the attempt's batch
+    // (kept first) so step commits and conflict validation cover it too.
+    for command in &seed_state {
+        store.apply(command);
+    }
+    transcript.extend(resumed.iter().cloned());
+    let checkpoint = drive(
+        runtime,
+        resolved,
+        env,
+        run_id,
+        thread_id,
+        context,
         transcript,
         resumed,
         RESUME_STEP_BASE,
@@ -279,8 +309,7 @@ pub(crate) async fn resume_run(
         seed_state,
     )
     .await?;
-
-    finalize(&context, &thread_id, run_id, checkpoint).await
+    finalize(context, thread_id, run_id.clone(), checkpoint).await
 }
 
 /// Validate the staged state batch, then commit. A conflict fails closed: the
@@ -874,138 +903,26 @@ async fn drive(
             }
         }
 
-        // Otherwise run each requested tool and feed the results back.
-        for call in calls {
-            // The reserved `tool_open` meta-tool (ADR-0053) loads a deferred tool for
-            // later steps: it mutates this run's `opened` set and returns a result, so it
-            // bypasses the gate and never reaches an executor.
-            let output = if call.tool_id == awaken_runtime_contract::resolved::TOOL_OPEN_ID {
-                open_deferred_tool(&resolved.spec.tool_presentation, &call, &mut opened)
-            } else {
-                let outcome = gate_decision(runtime, &call, env, &store).await;
-                // Audit the decision of a real (policy-backed) gate (ADR-0030).
-                if runtime.gate().is_some() {
-                    audit.push(permission_audit(&call, &outcome));
-                }
-                match outcome {
-                    GateOutcome::Allow => match run_delegation(runtime, context, &call).await {
-                        Some(Ok(AgentStep::Done { text, usage })) => {
-                            // Fold the delegate's token spend into this thread's running
-                            // tally, so a session's usage counts delegated work (the
-                            // sub-run's own isolated store is already gone).
-                            merge_thread_usage(&mut store, &mut staged_state, &usage);
-                            ToolOutput::ok(&call.call_id, text)
-                        }
-                        // The delegate parked needing input: park the parent on a
-                        // Delegation ticket carrying the opaque handle (durable), resumed
-                        // through the resolver.
-                        Some(Ok(AgentStep::Parked { handle })) => {
-                            let ticket = waiting_ticket(
-                                resolved,
-                                run_id,
-                                &call.call_id,
-                                &call,
-                                WaitingReason::Delegation,
-                                Some(handle),
-                            );
-                            end = Some(End::Parked(Box::new(ticket)));
-                            emit(
-                                context,
-                                run_id,
-                                StreamKind::Waiting {
-                                    reason: "delegation".to_string(),
-                                },
-                            )
-                            .await;
-                            break;
-                        }
-                        Some(Err(err)) => ToolOutput::error(&call.call_id, err.to_string()),
-                        None => execute_tool(runtime, Some(env), &call, context).await,
-                    },
-                    GateOutcome::Block { reason } => {
-                        ToolOutput::error(&call.call_id, format!("blocked: {reason}"))
-                    }
-                    GateOutcome::SetResult(output) => output,
-                    GateOutcome::Suspend { ticket_id } => {
-                        // Park the run on a structured ticket carrying the pending
-                        // call so an allow decision can run it later.
-                        let ticket = waiting_ticket(
-                            resolved,
-                            run_id,
-                            &ticket_id,
-                            &call,
-                            WaitingReason::ToolPermission,
-                            None,
-                        );
-                        end = Some(End::Parked(Box::new(ticket)));
-                        emit(
-                            context,
-                            run_id,
-                            StreamKind::Waiting {
-                                reason: "tool_permission".to_string(),
-                            },
-                        )
-                        .await;
-                        break;
-                    }
-                    GateOutcome::Schedule {
-                        correlation_id,
-                        action_kind,
-                    } => {
-                        // A plugin-owned scheduled-action kind must be in the resolved
-                        // environment; an absent kind (its plugin not selected) fails
-                        // the run closed (RS-SCH-005, ADR-0027).
-                        if let Some(kind) = &action_kind
-                            && !env.permits_action_kind(kind)
-                        {
-                            end = Some(End::Ended(EndCause::Error(Failure::CapabilityBound)));
-                            break;
-                        }
-                        // Commit a ScheduledAction (ADR-0020): the call is deferred and
-                        // performed later from the committed request, not decided.
-                        let ticket = waiting_ticket(
-                            resolved,
-                            run_id,
-                            &correlation_id,
-                            &call,
-                            WaitingReason::ScheduledAction,
-                            None,
-                        );
-                        end = Some(End::Parked(Box::new(ticket)));
-                        emit(
-                            context,
-                            run_id,
-                            StreamKind::Waiting {
-                                reason: "scheduled_action".to_string(),
-                            },
-                        )
-                        .await;
-                        break;
-                    }
-                }
-            };
-            staged_state.extend(output.state.clone());
-            let message = tool_result_message(&call, &output);
-            transcript.push(message.clone());
-            new_messages.push(message);
-
-            // Post-execution reaction: fold the tool's own state into the live
-            // store, then let tool-outcome hooks stage transitions and reminders.
-            for command in &output.state {
-                store.apply(command);
-            }
-            let (reactions, reminders) = collect_tool_reactions(env, &call, &output, &store).await;
-            for command in &reactions {
-                store.apply(command);
-            }
-            staged_state.extend(reactions);
-            for reminder in reminders {
-                transcript.push(reminder.clone());
-                new_messages.push(reminder);
-            }
-        }
-
-        if end.is_some() {
+        // Otherwise run each requested tool and feed the results back. A call that
+        // parks or fails the run returns the terminal `End` here, ending the step
+        // loop; every call answered with a result returns `None` and the loop goes on.
+        if let Some(reached) = dispatch::run_tool_calls(
+            runtime,
+            context,
+            resolved,
+            env,
+            run_id,
+            calls,
+            &mut transcript,
+            &mut new_messages,
+            &mut staged_state,
+            &mut audit,
+            &mut store,
+            &mut opened,
+        )
+        .await
+        {
+            end = Some(reached);
             break;
         }
 
@@ -1295,7 +1212,7 @@ async fn run_phase_hooks(
         };
         let reaction = hook.on_phase(&ctx, conversation).await;
         staged_state.extend(reaction.state);
-        context.extend(reaction.context);
+        context.extend(reaction.messages);
     }
     context
 }
@@ -1492,29 +1409,12 @@ async fn resume_delegation(
         Err(err) => ResumeResult::ToolResult(ToolOutput::error(&call_id, err.to_string())),
     };
 
-    let mut transcript = reader.committed_messages(thread_id);
-    let mut store = store_from_commands(reader.committed_state(thread_id));
-    let (resumed, seed_state) =
-        resume_into_messages(runtime, env, ticket, synthetic, &store, context).await;
-    for command in &seed_state {
-        store.apply(command);
-    }
-    transcript.extend(resumed.iter().cloned());
-    let checkpoint = drive(
-        runtime,
-        resolved,
-        env,
-        run_id,
-        thread_id,
-        context,
-        transcript,
-        resumed,
-        RESUME_STEP_BASE,
-        store,
-        seed_state,
+    // The delegate's step, folded back as the delegate tool's replayed result,
+    // rebuilds committed truth and drives on — the same glue as a direct resume.
+    drive_resumed(
+        runtime, resolved, env, run_id, thread_id, ticket, synthetic, reader, context,
     )
-    .await?;
-    finalize(context, thread_id, run_id.clone(), checkpoint).await
+    .await
 }
 
 /// Turn a resumed result into the tool/user message(s) and any staged state.

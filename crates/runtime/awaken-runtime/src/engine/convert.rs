@@ -8,7 +8,7 @@
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, ChatRole, ToolCall, ToolSchema};
+use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, ChatRole, ToolCall};
 use awaken_runtime_contract::resolved::{ContextPolicy, ResolvedSpec, ToolDescriptor};
 use awaken_runtime_contract::tool::ToolOutput;
 
@@ -50,13 +50,9 @@ pub(crate) fn build_chat_request(
         .collect();
     // `model_tools` applies the alias/description overrides, withholds deferred tools the
     // model has not yet opened this run, and appends the `tool_open` meta-tool listing
-    // whatever stays deferred (absent when nothing is deferred).
-    let tools = spec
-        .tool_presentation
-        .model_tools(&combined, opened)
-        .iter()
-        .map(to_tool_schema)
-        .collect();
+    // whatever stays deferred (absent when nothing is deferred). Its descriptors go to
+    // the request as-is — one tool type end to end, no lossy projection into a schema.
+    let tools = spec.tool_presentation.model_tools(&combined, opened);
     ChatRequest {
         model_binding: spec.model_binding.clone(),
         messages,
@@ -113,17 +109,6 @@ pub(crate) fn to_chat_role(role: &Role) -> ChatRole {
         Role::User => ChatRole::User,
         Role::Assistant => ChatRole::Assistant,
         Role::Tool => ChatRole::Tool,
-    }
-}
-
-/// Project a pinned descriptor into the model-visible schema. The real
-/// description and JSON Schema travel to the model, so it can call tools with
-/// arguments; the descriptor's `content_hash` stays internal (G3/G8).
-pub(crate) fn to_tool_schema(descriptor: &ToolDescriptor) -> ToolSchema {
-    ToolSchema {
-        id: descriptor.id.clone(),
-        description: descriptor.description.clone(),
-        parameters: descriptor.parameters.clone(),
     }
 }
 

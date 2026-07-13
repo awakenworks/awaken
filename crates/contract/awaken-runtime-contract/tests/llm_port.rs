@@ -5,9 +5,8 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatMessage, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
-    ToolSchema,
 };
-use awaken_runtime_contract::resolved::ModelBinding;
+use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 
 fn sample_request() -> ChatRequest {
     ChatRequest {
@@ -20,11 +19,12 @@ fn sample_request() -> ChatRequest {
             role: ChatRole::User,
             content: vec![ContentBlock::text("hello")],
         }],
-        tools: vec![ToolSchema {
-            id: "echo".to_string(),
-            description: "echo back".to_string(),
-            parameters: serde_json::json!({"type": "object"}),
-        }],
+        tools: vec![ToolDescriptor::pinned(
+            "test",
+            "echo",
+            "echo back",
+            serde_json::json!({"type": "object"}),
+        )],
     }
 }
 
