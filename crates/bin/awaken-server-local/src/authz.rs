@@ -80,23 +80,31 @@
 //! **What P1 defers**: custom roles, org-level scopes, group rosters,
 //! entitlements, and approval discharge.
 //!
-//! **iam-host (ADR-0048) — engine shared, PEP intentionally local.** The
-//! authorization *engine* is already the shared one: this module composes
+//! **iam-host (ADR-0048) — engine shared, PEP + embed intentionally local.**
+//! The authorization *engine* is already the shared one: this module composes
 //! `awaken-iam-core` (mint/directory/policy/repos), `awaken-iam-server`
 //! (`SqlStore` + migrations), and `awaken-iam-preset` (role catalog + seed) —
-//! there is no second policy engine to fold in. What is *not* adopted is
-//! `awaken-iam-host`'s `IamGate` + `auth_layer` PEP, because at the pinned rev
-//! it would regress this plane's behavior in three cited ways: (1) `auth_layer`
-//! authorizes at a hard-coded `ScopeRef::Global` and derives the action from
-//! `(method, path)` only — it has no per-request scope, so it cannot reproduce
-//! [`management_guard`]'s workspace-path tenancy fence (dropping it is a
-//! security regression); (2) `IamGate::authorize` is private (middleware-only),
-//! so the fenced *direct*-authorize this guard performs is unreachable; (3)
-//! `embed_local` hard-codes the bootstrap identity (`wrkspc_admin` /
-//! `iam-admin-token`), non-overridable via `HostConfig`, breaking the
-//! `wrkspc_default` / `admin-token` contract the tests encode. The assembly is
-//! still validated against our rev in `tests/iam_host_embed.rs`; adoption
-//! reopens only if host grows a scope-deriving PEP.
+//! there is no second policy engine to fold in. iam-host was *extended* (rev
+//! `fe7eb6c`) to make its PEP adoptable in principle — `RouteActions::scope_for`
+//! removed the hard-coded `ScopeRef::Global`, and `IamGate::from_local_authz`
+//! lets a product wrap its own embed — but this plane still keeps its own
+//! `IamGate`-free guard and embed, because the swap remains a *net regression*
+//! for the Managed surface and this module's invariants:
+//!   1. `auth_layer` reads only `Authorization: Bearer`; this guard also accepts
+//!      `x-api-key` (what the Anthropic SDK sends for `apiKey`) — [`bearer_token`].
+//!   2. `auth_layer` renders its own problem+json error; this plane must answer
+//!      401/403 in the Managed [`ErrorResponse`] envelope SDK clients parse.
+//!   3. `IamGate::authenticate_bearer` returns only the principal, but this
+//!      plane authorizes a *workspace-less* route at the **token's** home
+//!      workspace and needs that binding for token views/roles — [`authenticate`]
+//!      returns `(principal, workspace)`.
+//!   4. `from_local_authz` holds the directory and policy behind **two** mutexes;
+//!      mint here takes **one** lock over both so the row + binding writes cannot
+//!      interleave (see [`ManagementAuthz::state`]) — the two-mutex shape would
+//!      break that atomicity.
+//! The extensions are the right response to "adopt iam-host": they make the host
+//! PEP tenancy-capable and gate-wrappable for consumers that fit it. The assembly
+//! is validated against our rev in `tests/iam_host_embed.rs`.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};

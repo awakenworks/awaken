@@ -8,23 +8,19 @@
 //!   2. **Fail-closed authn** — no credential and a bogus credential both fail to
 //!      resolve a principal; only the real ephemeral admin authenticates.
 //!
-//! **Adoption outcome (ADR-0048, decided at this rev): PEP not adopted.** The
+//! **Adoption outcome (ADR-0048): engine shared; PEP + embed stay local.** The
 //! authn/authz *core* validated here is sound and the *engine* is already shared
-//! (`authz.rs` composes iam-core/-server/-preset directly). But swapping the
-//! server-local PEP for host's `auth_layer` would regress behavior in three cited
-//! ways, so it stays local — see the `authz.rs` module doc ("iam-host (ADR-0048)"):
-//!   - `auth_layer` authorizes at a hard-coded `ScopeRef::Global`, action from
-//!     `(method, path)` only — it cannot reproduce `management_guard`'s
-//!     workspace-path tenancy fence (dropping it is a security regression).
-//!   - `IamGate::authorize` is private (middleware-only) — the fenced *direct*
-//!     authorize the guard performs is unreachable.
-//!   - `embed_local` hard-codes the bootstrap identity (`wrkspc_admin` /
-//!     `iam-admin-token`), non-overridable via `HostConfig` — it breaks the
-//!     `wrkspc_default` / `admin-token` contract the black-box tests encode.
-//! Additionally, `auth_layer(gate, actions)` does not `.layer()` directly onto our
-//! `axum::Router` (the `IamAuthService` bounds want the inner service's exact
-//! `Response`/`Error`). This test keeps host's assembly regression-checked so the
-//! decision reopens automatically if a future rev grows a scope-deriving PEP.
+//! (`authz.rs` composes iam-core/-server/-preset directly). Two of the original
+//! blockers were *fixed by extending host* at rev `fe7eb6c`:
+//! `RouteActions::scope_for` removed the hard-coded `ScopeRef::Global` (so the PEP
+//! can now enforce per-workspace tenancy), and `IamGate::from_local_authz` lets a
+//! product wrap its own embed (identity + grants) instead of `embed_local`'s fixed
+//! grant-less default. The swap still stays out of this plane because it remains a
+//! net regression for the Managed surface — `x-api-key` auth, the Managed
+//! `ErrorResponse` envelope, token-home-workspace authz for workspace-less routes,
+//! and the single-lock mint invariant (see the `authz.rs` module doc, "iam-host
+//! (ADR-0048)"). This test keeps host's assembly regression-checked against our
+//! rev so a future consumer that fits the PEP can adopt it.
 
 use awaken_iam_contract::{PrincipalRef, Timestamp};
 use awaken_iam_host::{HostConfig, embed_local};
