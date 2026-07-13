@@ -26,6 +26,7 @@ use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_agent_contract::stream::event::{Event as StreamEvent, Kind as StreamKind};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::agent_resolver::{AgentRequest, AgentStep};
+use awaken_runtime_contract::boundary::{BoundaryOutcome, evaluate_boundary};
 use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatMessage, ChatRequest, ChatResponse, ChatRole, DeltaSink, StopReason,
@@ -781,13 +782,37 @@ async fn drive(
         // preempts any guard's end-of-run verdict, exactly as if it had arrived
         // one turn earlier.
         if calls.is_empty() {
-            let injected = drain_live_inbox(context, run_id, &transcript);
-            if !injected.is_empty() {
-                for message in injected {
-                    transcript.push(message.clone());
-                    new_messages.push(message);
+            // The safe loop boundary (ADR-0054): drain queued live input, honour an
+            // operator pause, else fall through to the run-end guard. Shared with
+            // every executor via the kernel `evaluate_boundary`.
+            match evaluate_boundary(context, run_id, &transcript) {
+                BoundaryOutcome::Continue { fold } => {
+                    for message in fold {
+                        transcript.push(message.clone());
+                        new_messages.push(message);
+                    }
+                    continue;
                 }
-                continue;
+                BoundaryOutcome::Park { fold, reason } => {
+                    // Commit the drained input first (so an in-flight steer is not
+                    // lost), then park on a no-tool ticket — an operator pause,
+                    // resumed by an explicit resume, not a tool result.
+                    for message in fold {
+                        transcript.push(message.clone());
+                        new_messages.push(message);
+                    }
+                    end = Some(End::Parked(Box::new(pause_ticket(resolved, run_id, reason))));
+                    emit(
+                        context,
+                        run_id,
+                        StreamKind::Waiting {
+                            reason: "manual_pause".to_string(),
+                        },
+                    )
+                    .await;
+                    break;
+                }
+                BoundaryOutcome::Idle => {}
             }
             // The runtime owns *when* the loop stops; a guard supplies the
             // predicate and any feedback. Its `detail` is opaque
@@ -1346,43 +1371,22 @@ fn feedback_message(run_id: &RunId, nth: usize, feedback: String) -> Message {
     }
 }
 
-/// The id prefix shared by a run's live-inbox injections — same discipline as
-/// `steer_id_prefix`: run-scoped, so counting committed messages with this
-/// prefix keeps ids unique across a park/resume of the same run.
-fn inbox_id_prefix(run_id: &RunId) -> String {
-    format!("{}-inbox-", run_id.0)
-}
-
-/// Take everything queued on the attempt's live inbox and re-identify it for
-/// the transcript. Content and role pass through untouched; only the id is
-/// replaced, because caller-supplied ids carry no uniqueness promise inside
-/// the committed thread. Empty (or absent) inbox means no messages.
-fn drain_live_inbox(
-    context: &RuntimeRunContext,
-    run_id: &RunId,
-    transcript: &[Message],
-) -> Vec<Message> {
-    let Some(inbox) = context.live_inbox.as_ref() else {
-        return Vec::new();
-    };
-    let drained = inbox.drain_at_boundary();
-    if drained.is_empty() {
-        return Vec::new();
+/// A no-tool waiting ticket for an operator pause (ADR-0054): the run parks with
+/// no pending tool and no call id, correlated by run id, resumed by an explicit
+/// operator resume rather than a tool result. The drain/re-identify discipline
+/// this used to sit next to now lives in `awaken-runtime-contract::boundary`.
+fn pause_ticket(resolved: &ResolvedRun, run_id: &RunId, reason: WaitingReason) -> WaitingTicket {
+    WaitingTicket {
+        correlation_id: run_id.0.clone(),
+        run_id: run_id.clone(),
+        thread_id: ThreadId(String::new()), // filled in finish via the commit thread id
+        snapshot_id: resolved.snapshot_id.0.clone(),
+        catalog_fingerprint: resolved.spec.catalog_fingerprint.0.clone(),
+        reason,
+        call_id: None,
+        pending_tool: None,
+        deadline_ms: None,
     }
-    let prefix = inbox_id_prefix(run_id);
-    let base = transcript
-        .iter()
-        .filter(|message| message.id.0.starts_with(&prefix))
-        .count();
-    drained
-        .into_iter()
-        .enumerate()
-        .map(|(nth, entry)| Message {
-            id: MessageId(format!("{prefix}{}", base + nth)),
-            role: entry.message.role,
-            content: entry.message.content,
-        })
-        .collect()
 }
 
 /// Build the committed ticket for a parked tool call. `handle` carries opaque
