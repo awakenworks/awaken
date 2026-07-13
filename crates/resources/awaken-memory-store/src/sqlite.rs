@@ -18,13 +18,22 @@ pub enum StoreError {
     Migrate(String),
 }
 
-fn open_migrated(conn: Connection) -> Result<Arc<Mutex<Connection>>, StoreError> {
+/// Apply the `memory_store` scoped migration bundle to `conn` (idempotent).
+/// Shared by both SQLite stores, since they live under one scope.
+fn migrate_conn(conn: &Connection) -> Result<(), StoreError> {
     let bundle = memory_store_bundle().map_err(|e| StoreError::Migrate(e.to_string()))?;
     awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
         .map_err(|e| StoreError::Migrate(e.to_string()))?
-        .run_bundle(&conn, &bundle)
+        .run_bundle(conn, &bundle)
         .map_err(|e| StoreError::Migrate(e.to_string()))?;
-    Ok(Arc::new(Mutex::new(conn)))
+    Ok(())
+}
+
+fn migrate_guarded(conn: &Arc<Mutex<Connection>>) -> Result<(), StoreError> {
+    let guard = conn
+        .lock()
+        .map_err(|_| StoreError::Migrate("memory_store connection poisoned".into()))?;
+    migrate_conn(&guard)
 }
 
 fn storage(err: impl std::fmt::Display) -> MemoryStoreError {
@@ -51,20 +60,35 @@ pub struct SqliteMemoryBlobStore {
 }
 
 impl SqliteMemoryBlobStore {
-    /// Open (or create) a database file and apply the memory-store migrations.
+    /// Open (or create) a database file and apply the memory-store migrations
+    /// (one-step convenience for a store-owned database).
     pub fn open(path: &str) -> Result<Self, StoreError> {
         let conn = Connection::open(path).map_err(|e| StoreError::Open(e.to_string()))?;
-        Ok(Self {
-            conn: open_migrated(conn)?,
-        })
+        let store = Self::over(conn);
+        store.ensure_schema()?;
+        Ok(store)
     }
 
     /// Open a private in-memory database (tests / ephemeral).
     pub fn open_in_memory() -> Result<Self, StoreError> {
         let conn = Connection::open_in_memory().map_err(|e| StoreError::Open(e.to_string()))?;
-        Ok(Self {
-            conn: open_migrated(conn)?,
-        })
+        let store = Self::over(conn);
+        store.ensure_schema()?;
+        Ok(store)
+    }
+
+    /// Wrap an existing connection **without migrating**. Call
+    /// [`Self::ensure_schema`], or let a unified migration pipeline own the
+    /// `memory_store` scope so this store shares the caller's database.
+    pub fn over(conn: Connection) -> Self {
+        Self {
+            conn: Arc::new(Mutex::new(conn)),
+        }
+    }
+
+    /// Apply the `memory_store` scoped migration bundle (idempotent). Optional.
+    pub fn ensure_schema(&self) -> Result<(), StoreError> {
+        migrate_guarded(&self.conn)
     }
 }
 
@@ -168,20 +192,34 @@ pub struct SqliteMemoryFs {
 }
 
 impl SqliteMemoryFs {
-    /// Open (or create) a database file and apply the memory-store migrations.
+    /// Open (or create) a database file and apply the memory-store migrations
+    /// (one-step convenience for a store-owned database).
     pub fn open(path: &str) -> Result<Self, StoreError> {
         let conn = Connection::open(path).map_err(|e| StoreError::Open(e.to_string()))?;
-        Ok(Self {
-            conn: open_migrated(conn)?,
-        })
+        let store = Self::over(conn);
+        store.ensure_schema()?;
+        Ok(store)
     }
 
     /// Open a private in-memory database (tests / ephemeral).
     pub fn open_in_memory() -> Result<Self, StoreError> {
         let conn = Connection::open_in_memory().map_err(|e| StoreError::Open(e.to_string()))?;
-        Ok(Self {
-            conn: open_migrated(conn)?,
-        })
+        let store = Self::over(conn);
+        store.ensure_schema()?;
+        Ok(store)
+    }
+
+    /// Wrap an existing connection **without migrating** (see
+    /// [`SqliteMemoryBlobStore::over`] for the single-DB reuse rationale).
+    pub fn over(conn: Connection) -> Self {
+        Self {
+            conn: Arc::new(Mutex::new(conn)),
+        }
+    }
+
+    /// Apply the `memory_store` scoped migration bundle (idempotent). Optional.
+    pub fn ensure_schema(&self) -> Result<(), StoreError> {
+        migrate_guarded(&self.conn)
     }
 }
 
@@ -478,6 +516,36 @@ impl MemoryFs for SqliteMemoryFs {
             Ok(())
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod migration_seam_tests {
+    use super::*;
+
+    /// `over` wraps a connection without migrating; the store only works once the
+    /// caller opts into the `memory_store` scope via `ensure_schema`. Proven on the
+    /// blob store and the memfs store — both share the one scope.
+    #[tokio::test]
+    async fn over_does_not_migrate_but_ensure_schema_does() {
+        let blob = SqliteMemoryBlobStore::over(Connection::open_in_memory().unwrap());
+        assert!(blob.create("ws").await.is_err());
+        blob.ensure_schema().unwrap();
+        let id = blob.create("ws").await.unwrap();
+        blob.put("ws", &id, b"x").await.unwrap();
+        assert_eq!(blob.get("ws", &id).await.unwrap(), Some(b"x".to_vec()));
+
+        let fs = SqliteMemoryFs::over(Connection::open_in_memory().unwrap());
+        assert!(fs.create("s", "/a.md", "alpha").await.is_err());
+        fs.ensure_schema().unwrap();
+        assert_eq!(
+            fs.create("s", "/a.md", "alpha")
+                .await
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("alpha")
+        );
     }
 }
 

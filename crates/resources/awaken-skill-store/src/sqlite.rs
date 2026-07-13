@@ -18,13 +18,17 @@ pub enum StoreError {
     Migrate(String),
 }
 
-fn open_migrated(conn: Connection) -> Result<Arc<Mutex<Connection>>, StoreError> {
+/// Apply the `skill_store` scoped migration bundle to the guarded connection.
+fn migrate_guarded(conn: &Arc<Mutex<Connection>>) -> Result<(), StoreError> {
+    let guard = conn
+        .lock()
+        .map_err(|_| StoreError::Migrate("skill_store connection poisoned".into()))?;
     let bundle = skill_store_bundle().map_err(|e| StoreError::Migrate(e.to_string()))?;
     awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
         .map_err(|e| StoreError::Migrate(e.to_string()))?
-        .run_bundle(&conn, &bundle)
+        .run_bundle(&guard, &bundle)
         .map_err(|e| StoreError::Migrate(e.to_string()))?;
-    Ok(Arc::new(Mutex::new(conn)))
+    Ok(())
 }
 
 fn storage(err: impl std::fmt::Display) -> SkillStoreError {
@@ -51,20 +55,35 @@ pub struct SqliteSkillStore {
 }
 
 impl SqliteSkillStore {
-    /// Open (or create) a database file and apply the skill-store migrations.
+    /// Open (or create) a database file and apply the skill-store migrations
+    /// (one-step convenience for a store-owned database).
     pub fn open(path: &str) -> Result<Self, StoreError> {
         let conn = Connection::open(path).map_err(|e| StoreError::Open(e.to_string()))?;
-        Ok(Self {
-            conn: open_migrated(conn)?,
-        })
+        let store = Self::over(conn);
+        store.ensure_schema()?;
+        Ok(store)
     }
 
     /// Open a private in-memory database (tests / ephemeral).
     pub fn open_in_memory() -> Result<Self, StoreError> {
         let conn = Connection::open_in_memory().map_err(|e| StoreError::Open(e.to_string()))?;
-        Ok(Self {
-            conn: open_migrated(conn)?,
-        })
+        let store = Self::over(conn);
+        store.ensure_schema()?;
+        Ok(store)
+    }
+
+    /// Wrap an existing connection **without migrating**. Call
+    /// [`Self::ensure_schema`], or let a unified migration pipeline own the
+    /// `skill_store` scope so this store shares the caller's database.
+    pub fn over(conn: Connection) -> Self {
+        Self {
+            conn: Arc::new(Mutex::new(conn)),
+        }
+    }
+
+    /// Apply the `skill_store` scoped migration bundle (idempotent). Optional.
+    pub fn ensure_schema(&self) -> Result<(), StoreError> {
+        migrate_guarded(&self.conn)
     }
 }
 
@@ -141,5 +160,24 @@ impl SkillStore for SqliteSkillStore {
             Ok(n > 0)
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `over` wraps a connection without migrating; the store only works once the
+    /// caller opts into the `skill_store` scope via `ensure_schema`.
+    #[tokio::test]
+    async fn over_does_not_migrate_but_ensure_schema_does() {
+        let store = SqliteSkillStore::over(Connection::open_in_memory().unwrap());
+        assert!(store.put("ws", "greet", "hi").await.is_err());
+
+        store.ensure_schema().unwrap();
+        let id = store.put("ws", "greet", "hi").await.unwrap();
+        assert_eq!(store.get("ws", &id).await.unwrap().as_deref(), Some("hi"));
+
+        store.ensure_schema().unwrap(); // idempotent
     }
 }

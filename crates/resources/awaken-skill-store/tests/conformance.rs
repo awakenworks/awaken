@@ -125,7 +125,8 @@ mod postgres {
         let Some(pool) = schema_pool("t_skill").await else {
             return;
         };
-        let store = PgSkillStore::with_pool(pool).await.unwrap();
+        let store = PgSkillStore::with_pool(pool);
+        store.ensure_schema().await.unwrap();
         put_get_list_delete_and_scope_by_workspace(&store).await;
     }
 }

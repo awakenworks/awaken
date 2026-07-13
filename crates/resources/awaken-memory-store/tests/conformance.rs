@@ -114,7 +114,8 @@ mod postgres {
         let Some(pool) = schema_pool("t_memory").await else {
             return;
         };
-        let store = PgMemoryBlobStore::with_pool(pool).await.unwrap();
+        let store = PgMemoryBlobStore::with_pool(pool);
+        store.ensure_schema().await.unwrap();
         create_put_get_exists_and_scope_by_workspace(&store).await;
     }
 }

@@ -18,14 +18,16 @@ pub enum PgStoreError {
     Migrate(String),
 }
 
-async fn pool_migrated(pool: PgPool) -> Result<PgPool, PgStoreError> {
+/// Apply the `memory_store` scoped migration bundle to `pool` (idempotent).
+/// Shared by both Postgres stores, since they live under one scope.
+async fn run_migrations(pool: &PgPool) -> Result<(), PgStoreError> {
     let bundle = memory_store_bundle().map_err(|e| PgStoreError::Migrate(e.to_string()))?;
     awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
         .map_err(|e| PgStoreError::Migrate(e.to_string()))?
         .run_bundle(&bundle)
         .await
         .map_err(|e| PgStoreError::Migrate(e.to_string()))?;
-    Ok(pool)
+    Ok(())
 }
 
 fn storage(err: impl std::fmt::Display) -> MemoryStoreError {
@@ -38,21 +40,28 @@ pub struct PgMemoryBlobStore {
 }
 
 impl PgMemoryBlobStore {
-    /// Connect and apply the memory-store migrations under the `memory_store` namespace.
+    /// Connect and apply the memory-store migrations under the `memory_store`
+    /// namespace (one-step convenience for a store-owned database).
     pub async fn connect(url: &str) -> Result<Self, PgStoreError> {
         let pool = PgPool::connect(url)
             .await
             .map_err(|e| PgStoreError::Connect(e.to_string()))?;
-        Ok(Self {
-            pool: pool_migrated(pool).await?,
-        })
+        let store = Self::with_pool(pool);
+        store.ensure_schema().await?;
+        Ok(store)
     }
 
-    /// Build from an existing pool: apply the memory-store migrations.
-    pub async fn with_pool(pool: PgPool) -> Result<Self, PgStoreError> {
-        Ok(Self {
-            pool: pool_migrated(pool).await?,
-        })
+    /// Wrap an existing pool **without migrating**. Call [`Self::ensure_schema`],
+    /// or let a unified migration pipeline own the `memory_store` scope so this
+    /// store reuses the caller's single database instead of a parallel schema.
+    pub fn with_pool(pool: PgPool) -> Self {
+        Self { pool }
+    }
+
+    /// Apply the `memory_store` scoped migration bundle (idempotent). Optional:
+    /// skip it when the schema is owned externally.
+    pub async fn ensure_schema(&self) -> Result<(), PgStoreError> {
+        run_migrations(&self.pool).await
     }
 }
 
@@ -129,21 +138,25 @@ pub struct PgMemoryFs {
 }
 
 impl PgMemoryFs {
-    /// Connect and apply the memory-store migrations.
+    /// Connect and apply the memory-store migrations (one-step convenience).
     pub async fn connect(url: &str) -> Result<Self, PgStoreError> {
         let pool = PgPool::connect(url)
             .await
             .map_err(|e| PgStoreError::Connect(e.to_string()))?;
-        Ok(Self {
-            pool: pool_migrated(pool).await?,
-        })
+        let store = Self::with_pool(pool);
+        store.ensure_schema().await?;
+        Ok(store)
     }
 
-    /// Build from an existing pool.
-    pub async fn with_pool(pool: PgPool) -> Result<Self, PgStoreError> {
-        Ok(Self {
-            pool: pool_migrated(pool).await?,
-        })
+    /// Wrap an existing pool **without migrating** (see
+    /// [`PgMemoryBlobStore::with_pool`] for the single-DB reuse rationale).
+    pub fn with_pool(pool: PgPool) -> Self {
+        Self { pool }
+    }
+
+    /// Apply the `memory_store` scoped migration bundle (idempotent). Optional.
+    pub async fn ensure_schema(&self) -> Result<(), PgStoreError> {
+        run_migrations(&self.pool).await
     }
 }
 
