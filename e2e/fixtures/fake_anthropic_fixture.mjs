@@ -422,7 +422,13 @@ function emitStream(res, { id, model, reply }) {
     ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: FAKE_USAGE.output_tokens } });
   } else {
     ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
-    ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: reply.text } });
+    // Chunk the assistant text across several `text_delta` events exactly as
+    // Anthropic streams incremental text, so the live channel carries true
+    // token-level deltas (not one whole-text frame). Every text consumer
+    // concatenates the deltas, so the assembled message is identical.
+    for (const part of chunkString(reply.text, 4)) {
+      ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: part } });
+    }
     ev('content_block_stop', { type: 'content_block_stop', index: 0 });
     ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: FAKE_USAGE.output_tokens } });
   }
