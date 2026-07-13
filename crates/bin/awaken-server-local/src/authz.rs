@@ -79,6 +79,24 @@
 //!
 //! **What P1 defers**: custom roles, org-level scopes, group rosters,
 //! entitlements, and approval discharge.
+//!
+//! **iam-host (ADR-0048) — engine shared, PEP intentionally local.** The
+//! authorization *engine* is already the shared one: this module composes
+//! `awaken-iam-core` (mint/directory/policy/repos), `awaken-iam-server`
+//! (`SqlStore` + migrations), and `awaken-iam-preset` (role catalog + seed) —
+//! there is no second policy engine to fold in. What is *not* adopted is
+//! `awaken-iam-host`'s `IamGate` + `auth_layer` PEP, because at the pinned rev
+//! it would regress this plane's behavior in three cited ways: (1) `auth_layer`
+//! authorizes at a hard-coded `ScopeRef::Global` and derives the action from
+//! `(method, path)` only — it has no per-request scope, so it cannot reproduce
+//! [`management_guard`]'s workspace-path tenancy fence (dropping it is a
+//! security regression); (2) `IamGate::authorize` is private (middleware-only),
+//! so the fenced *direct*-authorize this guard performs is unreachable; (3)
+//! `embed_local` hard-codes the bootstrap identity (`wrkspc_admin` /
+//! `iam-admin-token`), non-overridable via `HostConfig`, breaking the
+//! `wrkspc_default` / `admin-token` contract the tests encode. The assembly is
+//! still validated against our rev in `tests/iam_host_embed.rs`; adoption
+//! reopens only if host grows a scope-deriving PEP.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};

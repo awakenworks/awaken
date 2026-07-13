@@ -525,8 +525,10 @@ async fn a_legacy_hand_rolled_iam_layout_is_imported_once_on_boot() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_oversize_request_body_is_413() {
     // The guard buffers the body (to run the workspace fence over it); a body past
-    // the 2 MiB buffer is refused with 413 rather than read unboundedly. Black-box
-    // contract the iam-host adoption must preserve.
+    // the 2 MiB buffer is refused with 413 rather than read unboundedly. This
+    // body-buffering workspace fence is exactly what iam-host's `auth_layer` (Global
+    // scope, no per-request tenancy) cannot reproduce — it is why the PEP stays
+    // local (ADR-0048; see the authz.rs module doc).
     let dir = tempfile::tempdir().unwrap();
     let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
     let token = admin_token(dir.path());

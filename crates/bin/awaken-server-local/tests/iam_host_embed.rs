@@ -1,6 +1,5 @@
 //! ADR-0048 assembly validation: prove `awaken-iam-host` (the single-PDP `IamGate`
-//! with `auth_layer` PEP) works against our pinned iam rev, ahead of adopting it in
-//! place of the hand-rolled `ManagementAuthz` / `EnforceEngine`.
+//! + `auth_layer` PEP) works against our pinned iam rev.
 //!
 //! What this locks:
 //!   1. **Zero-config Local embed** — `HostConfig::local_in_memory()` boots with no
@@ -9,12 +8,23 @@
 //!   2. **Fail-closed authn** — no credential and a bogus credential both fail to
 //!      resolve a principal; only the real ephemeral admin authenticates.
 //!
-//! Caveat for the actual adoption: `auth_layer(gate, actions)` (the tower PEP)
-//! does not `.layer()` directly onto our `axum::Router` — the `IamAuthService`
-//! bounds want the inner service's exact `Response`/`Error`, so the HTTP wiring
-//! will go through an `axum::middleware::from_fn` adapter around the gate rather
-//! than the raw layer. That wiring lands with the real engine replacement; here we
-//! validate the assembly's authn/authz core against our pinned rev.
+//! **Adoption outcome (ADR-0048, decided at this rev): PEP not adopted.** The
+//! authn/authz *core* validated here is sound and the *engine* is already shared
+//! (`authz.rs` composes iam-core/-server/-preset directly). But swapping the
+//! server-local PEP for host's `auth_layer` would regress behavior in three cited
+//! ways, so it stays local — see the `authz.rs` module doc ("iam-host (ADR-0048)"):
+//!   - `auth_layer` authorizes at a hard-coded `ScopeRef::Global`, action from
+//!     `(method, path)` only — it cannot reproduce `management_guard`'s
+//!     workspace-path tenancy fence (dropping it is a security regression).
+//!   - `IamGate::authorize` is private (middleware-only) — the fenced *direct*
+//!     authorize the guard performs is unreachable.
+//!   - `embed_local` hard-codes the bootstrap identity (`wrkspc_admin` /
+//!     `iam-admin-token`), non-overridable via `HostConfig` — it breaks the
+//!     `wrkspc_default` / `admin-token` contract the black-box tests encode.
+//! Additionally, `auth_layer(gate, actions)` does not `.layer()` directly onto our
+//! `axum::Router` (the `IamAuthService` bounds want the inner service's exact
+//! `Response`/`Error`). This test keeps host's assembly regression-checked so the
+//! decision reopens automatically if a future rev grows a scope-deriving PEP.
 
 use awaken_iam_contract::{PrincipalRef, Timestamp};
 use awaken_iam_host::{HostConfig, embed_local};
