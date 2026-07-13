@@ -32,6 +32,18 @@ use awaken_runtime_contract::snapshot::{
 };
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 
+use std::sync::atomic::AtomicBool;
+
+use awaken_agent_contract::agent::run::Record as RunRecord;
+use awaken_agent_contract::agent::waiting::WaitingTicket;
+use awaken_agent_contract::commit::coordinator::{
+    Coordinator as CommitCoordinator, Error as CommitError,
+};
+use awaken_agent_contract::commit::staged::{CommitRecord, ThreadCommit};
+use awaken_agent_contract::store::run_store::RunStore;
+use awaken_agent_contract::store::thread_reader::ThreadReader;
+use awaken_runtime_contract::metrics::{InferenceMetric, MetricsRecorder};
+
 pub const FP: &str = "catalog-a";
 pub const SNAP: &str = "snapshot-1";
 pub const THREAD: &str = "thread-1";
@@ -378,6 +390,304 @@ pub fn activation_on(run: &str, thread: &str) -> RunActivation {
             content: vec![ContentBlock::text("go")],
         }],
         trace: Default::default(),
+    }
+}
+
+/// A model that emits a `echo` tool call for its first `n` inferences, then ends
+/// with text. Paired with [`ScheduleGate`] it lets a run commit *several*
+/// consecutive ScheduledAction parks, so a test can drive the worker's
+/// perform-scheduled while-loop across more than one hop.
+struct ToolNThenText {
+    remaining: AtomicUsize,
+}
+#[async_trait::async_trait]
+impl LlmExecutor for ToolNThenText {
+    async fn infer(&self, _r: ChatRequest) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let left = self.remaining.load(Ordering::SeqCst);
+        let output = if left > 0 {
+            self.remaining.fetch_sub(1, Ordering::SeqCst);
+            AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: format!("call-{left}"),
+                tool_id: "echo".to_string(),
+                arguments: serde_json::json!({"text": "ping"}),
+            }])
+        } else {
+            AssistantOutput::text("all done".to_string())
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+/// A runtime whose gate defers *every* tool call as a ScheduledAction, and whose
+/// model schedules `n` tool calls before ending — so a single durable drive parks
+/// and performs `n` consecutive ScheduledActions in one `drive_claimed`, exercising
+/// the worker's chained perform-scheduled loop. Returns the tool-run counter.
+pub fn schedule_n_runtime(n: usize) -> (Arc<Runtime>, Arc<AtomicUsize>) {
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = Arc::new(
+        Runtime::new()
+            .with_llm(Arc::new(ToolNThenText {
+                remaining: AtomicUsize::new(n),
+            }))
+            .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
+            .with_gate(Arc::new(ScheduleGate)),
+    );
+    install(&runtime);
+    (runtime, ran)
+}
+
+/// A commit boundary that rejects every `commit` while `fail` is set, delegating
+/// all *reads* (run record, transcript, waiting ticket) to a shared inner
+/// [`MemoryCommitCoordinator`]. It is the fault-injection seam for the worker's
+/// genuine-drive-failure path: a real storage failure during `execute`/`resume`/
+/// `perform_scheduled` makes the drive return `Err` while committed truth still
+/// shows the run non-terminal, so the worker must re-raise (not swallow) and leave
+/// the dispatch un-settled for a later retry.
+#[derive(Clone)]
+pub struct FailingCommit {
+    inner: Arc<awaken_runtime::memory::MemoryCommitCoordinator>,
+    fail: Arc<AtomicBool>,
+}
+
+impl FailingCommit {
+    /// Wrap `inner`; commits fail immediately when `fail` is true.
+    pub fn new(inner: Arc<awaken_runtime::memory::MemoryCommitCoordinator>, fail: bool) -> Self {
+        Self {
+            inner,
+            fail: Arc::new(AtomicBool::new(fail)),
+        }
+    }
+
+    /// Flip the injected commit failure on or off.
+    pub fn set_failing(&self, failing: bool) {
+        self.fail.store(failing, Ordering::SeqCst);
+    }
+}
+
+#[async_trait::async_trait]
+impl CommitCoordinator for FailingCommit {
+    async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, CommitError> {
+        if self.fail.load(Ordering::SeqCst) {
+            return Err(CommitError::Rejected("injected commit failure".to_string()));
+        }
+        self.inner.commit(commit).await
+    }
+}
+
+impl RunStore for FailingCommit {
+    fn get(&self, id: &RunId) -> Option<RunRecord> {
+        self.inner.get(id)
+    }
+}
+
+impl ThreadReader for FailingCommit {
+    fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
+        self.inner.committed_messages(thread_id)
+    }
+    fn waiting_ticket(&self, run_id: &RunId) -> Option<WaitingTicket> {
+        self.inner.waiting_ticket(run_id)
+    }
+    fn committed_state(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Vec<awaken_agent_contract::agent::state::Command> {
+        self.inner.committed_state(thread_id)
+    }
+}
+
+/// A `MetricsRecorder` that counts every dispatch-lifecycle callback, so a test can
+/// assert the worker meters a claim, a drive-duration, and a settle (labelled by
+/// outcome) exactly once on every drive exit path.
+#[derive(Default)]
+pub struct RecordingMetrics {
+    pub claimed: AtomicUsize,
+    pub drives: AtomicUsize,
+    pub settled_done: AtomicUsize,
+    pub settled_parked: AtomicUsize,
+}
+
+impl MetricsRecorder for RecordingMetrics {
+    fn record_inference(&self, _metric: InferenceMetric<'_>) {}
+    fn record_tool(&self, _tool: &str, _outcome: &str, _duration: std::time::Duration) {}
+    fn record_dispatch_claimed(&self) {
+        self.claimed.fetch_add(1, Ordering::SeqCst);
+    }
+    fn record_dispatch_settled(&self, outcome: &str) {
+        match outcome {
+            "done" => self.settled_done.fetch_add(1, Ordering::SeqCst),
+            "parked" => self.settled_parked.fetch_add(1, Ordering::SeqCst),
+            _ => 0,
+        };
+    }
+    fn record_dispatch_drive(&self, _duration: std::time::Duration) {
+        self.drives.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// A dispatch store that injects transient `claim` failures: while `fail_claims` is
+/// positive each `claim` decrements it and returns an error, then normal service
+/// resumes. Every other operation delegates to the inner [`MemoryDispatchStore`].
+/// The seam for proving a daemon/pool drain loop swallows a transient store error
+/// and recovers on a later tick rather than dying.
+pub struct FlakyDispatchStore {
+    inner: Arc<awaken_run_ingress::MemoryDispatchStore>,
+    fail_claims: AtomicUsize,
+}
+
+impl FlakyDispatchStore {
+    /// Wrap a fresh in-memory store that fails its first `fail_claims` claims.
+    pub fn new(fail_claims: usize) -> Self {
+        Self {
+            inner: Arc::new(awaken_run_ingress::MemoryDispatchStore::new()),
+            fail_claims: AtomicUsize::new(fail_claims),
+        }
+    }
+
+    /// How many injected claim failures remain (test introspection).
+    pub fn remaining_failures(&self) -> usize {
+        self.fail_claims.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_run_ingress::DispatchQueue for FlakyDispatchStore {
+    async fn enqueue_with(
+        &self,
+        request: awaken_run_ingress::RunExecutionRequest,
+        options: awaken_run_ingress::SubmitOptions,
+    ) -> Result<(), awaken_run_ingress::DispatchError> {
+        self.inner.enqueue_with(request, options).await
+    }
+    async fn claim(
+        &self,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<awaken_run_ingress::Claimed>, awaken_run_ingress::DispatchError> {
+        if self.fail_claims.load(Ordering::SeqCst) > 0 {
+            self.fail_claims.fetch_sub(1, Ordering::SeqCst);
+            return Err(awaken_run_ingress::DispatchError::Rejected(
+                "injected transient claim failure".to_string(),
+            ));
+        }
+        self.inner.claim(owner, lease_ms, now_ms).await
+    }
+    async fn renew_lease(
+        &self,
+        run_id: &RunId,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<bool, awaken_run_ingress::DispatchError> {
+        self.inner
+            .renew_lease(run_id, owner, lease_ms, now_ms)
+            .await
+    }
+    async fn renew_owned_leases(
+        &self,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<usize, awaken_run_ingress::DispatchError> {
+        self.inner.renew_owned_leases(owner, lease_ms, now_ms).await
+    }
+    async fn settle(
+        &self,
+        run_id: &RunId,
+        outcome: awaken_run_ingress::DispatchOutcome,
+        consumed: &[String],
+    ) -> Result<(), awaken_run_ingress::DispatchError> {
+        self.inner.settle(run_id, outcome, consumed).await
+    }
+    async fn reap(
+        &self,
+        max_attempts: u64,
+        now_ms: u64,
+    ) -> Result<usize, awaken_run_ingress::DispatchError> {
+        self.inner.reap(max_attempts, now_ms).await
+    }
+    async fn dead_letters(&self) -> Result<Vec<RunId>, awaken_run_ingress::DispatchError> {
+        self.inner.dead_letters().await
+    }
+    async fn requeue(&self, run_id: &RunId) -> Result<bool, awaken_run_ingress::DispatchError> {
+        self.inner.requeue(run_id).await
+    }
+    async fn cancel(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<ThreadId>, awaken_run_ingress::DispatchError> {
+        self.inner.cancel(run_id).await
+    }
+    async fn parked_run(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Option<RunId>, awaken_run_ingress::DispatchError> {
+        self.inner.parked_run(thread_id).await
+    }
+    async fn purge_dead_letters(&self) -> Result<usize, awaken_run_ingress::DispatchError> {
+        self.inner.purge_dead_letters().await
+    }
+    async fn purge_dead_letters_before(
+        &self,
+        cutoff_ms: u64,
+    ) -> Result<usize, awaken_run_ingress::DispatchError> {
+        self.inner.purge_dead_letters_before(cutoff_ms).await
+    }
+    async fn superseded(&self) -> Result<Vec<RunId>, awaken_run_ingress::DispatchError> {
+        self.inner.superseded().await
+    }
+    async fn list_dispatches(
+        &self,
+    ) -> Result<Vec<awaken_run_ingress::DispatchSummary>, awaken_run_ingress::DispatchError> {
+        self.inner.list_dispatches().await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_run_ingress::Inbox for FlakyDispatchStore {
+    async fn append(
+        &self,
+        input: awaken_run_ingress::PendingInput,
+    ) -> Result<bool, awaken_run_ingress::DispatchError> {
+        self.inner.append(input).await
+    }
+    async fn list(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<awaken_run_ingress::PendingRecord>, awaken_run_ingress::DispatchError> {
+        self.inner.list(thread_id).await
+    }
+    async fn retract(
+        &self,
+        message_id: &str,
+        expected_revision: u64,
+    ) -> Result<awaken_run_ingress::CasOutcome, awaken_run_ingress::DispatchError> {
+        self.inner.retract(message_id, expected_revision).await
+    }
+    async fn edit(
+        &self,
+        message_id: &str,
+        expected_revision: u64,
+        result: ResumeResult,
+    ) -> Result<awaken_run_ingress::CasOutcome, awaken_run_ingress::DispatchError> {
+        self.inner.edit(message_id, expected_revision, result).await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_run_ingress::Outbox for FlakyDispatchStore {
+    async fn stage(
+        &self,
+        input: awaken_run_ingress::PendingInput,
+    ) -> Result<bool, awaken_run_ingress::DispatchError> {
+        self.inner.stage(input).await
+    }
+    async fn relay(&self) -> Result<usize, awaken_run_ingress::DispatchError> {
+        self.inner.relay().await
     }
 }
 
