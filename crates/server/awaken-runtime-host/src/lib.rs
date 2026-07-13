@@ -26,6 +26,7 @@ mod data_subject_api;
 mod delegate;
 mod dispatch_backend;
 mod dispatch_transport;
+mod dispatch_transport_client;
 mod durable_ops;
 mod files;
 mod host;
@@ -97,6 +98,7 @@ pub use crate::tool_catalog::{
 };
 // The per-plane resource routers the composition root merges over one host.
 pub use crate::dispatch_transport::dispatch_transport_router;
+pub use crate::dispatch_transport_client::HttpDispatchQueue;
 pub use crate::durable_ops::durable_ops_router;
 pub use crate::files::files_router;
 pub use crate::memory_store_api::memory_stores_router;
