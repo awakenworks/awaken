@@ -630,4 +630,148 @@ mod shred_tests {
             "only Secret mounts are shredded"
         );
     }
+
+    #[tokio::test]
+    async fn resolve_source_handles_every_mount_variant() {
+        let mut blobs = HashMap::new();
+        blobs.insert("f1".to_string(), b"file".to_vec());
+        blobs.insert("r1".to_string(), b"res".to_vec());
+        let none_store: Option<Arc<dyn pc::BlobSource>> = None;
+
+        let file = MountSource::File {
+            file_id: "f1".into(),
+            content_hash: None,
+        };
+        assert_eq!(
+            resolve_source(&file, &blobs, &none_store).await,
+            Some(b"file".to_vec())
+        );
+        let resource = MountSource::Resource {
+            resource_id: "r1".into(),
+            content_hash: None,
+        };
+        assert_eq!(
+            resolve_source(&resource, &blobs, &none_store).await,
+            Some(b"res".to_vec())
+        );
+        // Inline `Other({content})` short-circuits before any store hit.
+        let inline = MountSource::Other(serde_json::json!({ "content": "inline" }));
+        assert_eq!(
+            resolve_source(&inline, &blobs, &none_store).await,
+            Some(b"inline".to_vec())
+        );
+        // A memory store is not byte-resolvable through this path.
+        let mem = MountSource::MemoryStore {
+            store_id: "m".into(),
+        };
+        assert_eq!(resolve_source(&mem, &blobs, &none_store).await, None);
+        // An unknown id resolves to nothing.
+        let missing = MountSource::File {
+            file_id: "nope".into(),
+            content_hash: None,
+        };
+        assert_eq!(resolve_source(&missing, &blobs, &none_store).await, None);
+    }
+
+    #[test]
+    fn declared_hash_and_verify_are_fail_closed_per_variant() {
+        assert_eq!(
+            declared_hash(&MountSource::Resource {
+                resource_id: "r".into(),
+                content_hash: Some("h".into()),
+            }),
+            Some("h")
+        );
+        // Non-hashable variants have no declared hash.
+        assert_eq!(
+            declared_hash(&MountSource::MemoryStore {
+                store_id: "m".into(),
+            }),
+            None
+        );
+
+        let src = MountSource::File {
+            file_id: "f".into(),
+            content_hash: Some(content_fingerprint(b"right")),
+        };
+        assert!(verify(&src, b"right").is_ok());
+        assert!(verify(&src, b"wrong").is_err());
+        // No declared hash → nothing to verify against.
+        assert!(verify(&MountSource::Other(serde_json::json!({})), b"any").is_ok());
+    }
+
+    fn bare_spec(scope: &str) -> SandboxSpec {
+        let mut s = secret_spec(scope);
+        s.mounts = Vec::new();
+        s
+    }
+
+    #[tokio::test]
+    async fn a_nested_resolvable_mount_and_an_optional_unresolvable_one_both_realize() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = LocalProvider::new(tmp.path()).with_blob("data-x", b"payload".to_vec());
+        let mut spec = bare_spec("t-mounts");
+        spec.mounts = vec![
+            // Resolvable at a nested path → parent dirs are created (Some branch).
+            MountRequirement {
+                mount_id: "data".into(),
+                source: MountSource::File {
+                    file_id: "data-x".into(),
+                    content_hash: None,
+                },
+                mount_path: "/workspace/deep/data.bin".into(),
+                access: MountAccess::ReadWrite,
+                lifetime: MountLifetime::PerRun,
+                required: true,
+            },
+            // Optional + unresolvable → an empty placeholder (None branch).
+            MountRequirement {
+                mount_id: "opt".into(),
+                source: MountSource::File {
+                    file_id: "absent".into(),
+                    content_hash: None,
+                },
+                mount_path: "/workspace/deep2/opt.bin".into(),
+                access: MountAccess::ReadWrite,
+                lifetime: MountLifetime::PerRun,
+                required: false,
+            },
+        ];
+        let sandbox = provider.create_sandbox(&spec).await.unwrap();
+        let realized = sandbox.realized();
+        assert_eq!(realized.len(), 2);
+        let opt = realized.iter().find(|m| m.mount_id == "opt").unwrap();
+        assert_eq!(opt.content_hash, None, "the placeholder carries no hash");
+        let data = realized.iter().find(|m| m.mount_id == "data").unwrap();
+        assert!(data.content_hash.is_some());
+    }
+
+    #[tokio::test]
+    async fn build_command_honors_cwd_and_inline_env_and_rejects_empty_argv() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = LocalProvider::new(tmp.path());
+        let sandbox = provider.create_sandbox(&bare_spec("t-cmd")).await.unwrap();
+
+        let mut cmd = pc::Command::new(["/bin/true"]);
+        cmd.cwd = "/work".into();
+        cmd.env = vec![pc::EnvVar {
+            name: "K".into(),
+            value: pc::EnvValue::Inline { value: "V".into() },
+            visibility: pc::EnvVisibility::Process,
+        }];
+        assert!(sandbox.build_command(&cmd).is_ok());
+
+        let empty = pc::Command::new(Vec::<String>::new());
+        assert!(sandbox.build_command(&empty).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_spawned_local_process_reports_its_pid_and_reaps() {
+        use awaken_provisioning_contract::ProcessHandle;
+        let child = TokioCommand::new("true").spawn().unwrap();
+        let proc = LocalProcess::spawned(child);
+        assert!(!proc.id().is_empty());
+        let status = proc.wait().await.unwrap();
+        assert_eq!(status.code, Some(0));
+    }
 }
