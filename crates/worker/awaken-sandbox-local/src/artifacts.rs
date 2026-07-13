@@ -55,3 +55,42 @@ pub(crate) fn scan_outputs(
     out.sort_by(|a, b| a.0.path.cmp(&b.0.path));
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_outputs_dir_scans_to_empty() {
+        let missing = std::path::Path::new("/no/such/awaken/outputs/dir");
+        assert!(scan_outputs(missing, "/mnt/session/outputs").unwrap().is_empty());
+    }
+
+    #[test]
+    fn it_recurses_subdirs_and_sorts_by_sandbox_path_addressing_by_rel_path() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("sub")).unwrap();
+        std::fs::write(root.path().join("b.txt"), b"bbb").unwrap();
+        std::fs::write(root.path().join("sub/a.txt"), b"aa").unwrap();
+
+        let arts = scan_outputs(root.path(), "/mnt/session/outputs/").unwrap();
+        assert_eq!(arts.len(), 2);
+        // Sorted by the sandbox path string: "b.txt" < "sub/a.txt".
+        assert_eq!(arts[0].0.path, "/mnt/session/outputs/b.txt");
+        assert_eq!(arts[1].0.path, "/mnt/session/outputs/sub/a.txt");
+        assert_eq!(arts[0].0.size_bytes, 3);
+        // The id is derived from the sandbox-relative path so read_artifact can match.
+        assert_eq!(arts[0].0.id, content_fingerprint(b"b.txt"));
+        // The returned host path points back at the real file.
+        assert_eq!(arts[1].1, root.path().join("sub/a.txt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_entry_surfaces_a_sandbox_error() {
+        // A dangling symlink is listed by read_dir but fails to read → the err() path.
+        let root = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink("/no/such/target", root.path().join("dangling")).unwrap();
+        assert!(scan_outputs(root.path(), "/mnt/session/outputs").is_err());
+    }
+}
