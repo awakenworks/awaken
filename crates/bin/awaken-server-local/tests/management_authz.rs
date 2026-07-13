@@ -521,3 +521,24 @@ async fn a_legacy_hand_rolled_iam_layout_is_imported_once_on_boot() {
     let (s, _) = call(&app, "GET", "/v1/config/catalog", Some(&cleartext), None).await;
     assert_eq!(s, StatusCode::OK);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_oversize_request_body_is_413() {
+    // The guard buffers the body (to run the workspace fence over it); a body past
+    // the 2 MiB buffer is refused with 413 rather than read unboundedly. Black-box
+    // contract the iam-host adoption must preserve.
+    let dir = tempfile::tempdir().unwrap();
+    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let token = admin_token(dir.path());
+    let big = "x".repeat(3 * 1024 * 1024);
+    let body = json!({ "workspace_id": BOOTSTRAP_WORKSPACE, "blob": big });
+    let (s, _) = call(
+        &app,
+        "POST",
+        "/v1/config/credentials",
+        Some(token.as_str()),
+        Some(body),
+    )
+    .await;
+    assert_eq!(s, StatusCode::PAYLOAD_TOO_LARGE);
+}
