@@ -1,20 +1,19 @@
 // Cross-protocol upstream-fault e2e (scenarios #90/#91 on non-managed wires): the
-// runtime's retry / backoff / circuit-breaker handling is protocol neutral, but the
-// existing fault tests only drive the MANAGED wire. This drives the same fault paths
-// through the AI-SDK, AG-UI, and Managed adapters and pins the real behavior:
+// runtime's retry / backoff / circuit-breaker + terminal-fault handling is protocol
+// neutral, but the existing fault tests only drove the MANAGED wire. This drives the
+// same fault paths through the AI-SDK, AG-UI, and Managed adapters:
 //   • a retryable upstream failure is retried and the turn RECOVERS (transparent) on
 //     both AI-SDK and AG-UI;
-//   • a persistent failure EXHAUSTS retries and never fabricates a reply. It closes
-//     the AI-SDK / AG-UI stream cleanly (finish / RUN_FINISHED) — note these wires do
-//     NOT surface the terminal inference fault in-band (see FINDING below);
-//   • the SAME fault DOES surface on the Managed wire as `session.error` — the
-//     documented asymmetry (`to_turn_outcome` carries a `TurnFailure`; the
-//     `ProtocolRuntime` twin's `to_step_outcome` has no failure field).
+//   • a persistent failure EXHAUSTS retries and never fabricates a reply, and now
+//     SURFACES as the wire's terminal error frame (AI-SDK `error` + `finish("error")`,
+//     AG-UI `RUN_ERROR`) — not a silent empty finish;
+//   • the SAME fault surfaces on the Managed wire as `session.error`.
 //
-// FINDING (reported, not fixed here — it reshapes the StepOutcome contract + 3
-// adapters): AI-SDK/AG-UI/A2A silently swallow a run that ended in
-// `EndCause::Error`; a streaming client sees a clean finish with no content,
-// indistinguishable from an empty reply. Only Managed emits `session.error`.
+// This exercises the fix that carries a terminal `EndCause::Error` through the
+// `StepOutcome.failure` field (the neutral twin of Managed's `TurnFailure`), which
+// each adapter renders via its `AgentEvent::RunFailed` transcoder mapping. Before the
+// fix, the ProtocolRuntime twin (`to_step_outcome`) dropped the fault and the three
+// non-managed wires closed the stream cleanly with no content.
 //
 // Hermetic (fake upstream, no live key). Run: (from e2e/) node cross_protocol_upstream_fault_e2e.mjs
 
@@ -110,30 +109,30 @@ async function main() {
   });
   pass('AG-UI: a retryable upstream failure is retried and the turn recovers');
 
-  // Arm 3: AI-SDK — a persistent failure exhausts. No fabricated reply; the stream
-  // closes cleanly (finish). The terminal inference fault is NOT surfaced in-band
-  // (the documented gap): there is no `error` frame, so a client sees an empty turn.
+  // Arm 3: AI-SDK — a persistent failure exhausts and SURFACES as an error frame.
   await withFaultyUpstream({ alwaysFail: true }, BASE_PORT + 2, async (base, upstream) => {
     const { status, evs, reply } = await aiSdkTurn(base, `xf-ai-err-${randomBytes(2).toString('hex')}`, TEXT);
-    assert.equal(status, 200, 'ai-sdk stream opened');
+    assert.equal(status, 200, 'ai-sdk stream opened (the error rides in-band)');
     assert.ok(!reply.includes('FAKE:'), 'a permanently-failing upstream does not fabricate a reply');
-    assert.ok(evs.some((e) => e.type === 'finish'), `AI-SDK closes the stream (finish): ${JSON.stringify(evs.map((e) => e.type))}`);
+    assert.ok(evs.some((e) => e.type === 'error'), `AI-SDK surfaces an error frame: ${JSON.stringify(evs.map((e) => e.type))}`);
+    assert.ok(
+      evs.some((e) => e.type === 'finish' && e.finishReason === 'error'),
+      `AI-SDK closes with finish("error"): ${JSON.stringify(evs.filter((e) => e.type === 'finish'))}`,
+    );
     assert.ok(upstream.attempts >= 2, `retries were attempted before giving up (attempts=${upstream.attempts})`);
-    // Pin the CURRENT behavior: no in-band error frame (the gap). If this ever
-    // starts failing, the fix below landed — flip the assertion.
-    assert.ok(!evs.some((e) => e.type === 'error'), 'AI-SDK currently emits NO error frame on a terminal inference fault (documented gap)');
   });
-  pass('AI-SDK: exhausted upstream -> no fabricated reply, clean finish (no in-band error frame: documented gap)');
+  pass('AI-SDK: exhausted upstream -> error frame + finish("error"), no fabricated reply');
 
-  // Arm 4: AG-UI — a persistent failure exhausts. Clean RUN_FINISHED, no RUN_ERROR.
+  // Arm 4: AG-UI — a persistent failure exhausts and SURFACES as RUN_ERROR.
   await withFaultyUpstream({ alwaysFail: true }, BASE_PORT + 3, async (base, upstream) => {
     const { status, evs, reply } = await agUiTurn(base, `xf-ag-err-${randomBytes(2).toString('hex')}`, TEXT);
     assert.equal(status, 200, 'ag-ui stream opened');
     assert.ok(!reply.includes('FAKE:'), 'AG-UI does not fabricate a reply on persistent failure');
     assert.ok(upstream.attempts >= 2, `retries were attempted (attempts=${upstream.attempts})`);
-    assert.ok(!evs.some((e) => e.type === 'RUN_ERROR'), 'AG-UI currently emits NO RUN_ERROR on a terminal inference fault (documented gap)');
+    assert.ok(evs.some((e) => e.type === 'RUN_ERROR'), `AG-UI surfaces RUN_ERROR: ${JSON.stringify(evs.map((e) => e.type))}`);
+    assert.ok(!evs.some((e) => e.type === 'TEXT_MESSAGE_CONTENT'), 'AG-UI emitted no content on a failed run');
   });
-  pass('AG-UI: exhausted upstream -> no fabricated reply, no RUN_ERROR (documented gap)');
+  pass('AG-UI: exhausted upstream -> RUN_ERROR, no fabricated reply');
 
   // Arm 5: the SAME fault on the MANAGED wire DOES surface — `session.error`. This
   // proves the failure is real and pins the cross-protocol asymmetry.

@@ -8,7 +8,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
 use awaken_protocol_a2a::router;
-use awaken_protocol_transport::{DriverError, Pending, ProtocolRuntime, Resume, StepOutcome};
+use awaken_protocol_transport::{
+    DriverError, Pending, ProtocolRuntime, Resume, StepOutcome, Terminal,
+};
 use axum::body::Body;
 use axum::http::Request;
 use http_body_util::BodyExt;
@@ -31,9 +33,9 @@ impl ProtocolRuntime for ParkedRuntime {
     ) -> Result<StepOutcome, DriverError> {
         Ok(StepOutcome {
             new_messages: Vec::new(),
-            waiting: true,
-            exhausted: false,
-            pending: Some(pending()),
+            terminal: Terminal::Waiting {
+                pending: Some(pending()),
+            },
         })
     }
 
@@ -48,9 +50,7 @@ impl ProtocolRuntime for ParkedRuntime {
         }
         Ok(StepOutcome {
             new_messages: Vec::new(),
-            waiting: false,
-            exhausted: false,
-            pending: None,
+            terminal: Terminal::Finished,
         })
     }
 

@@ -7,7 +7,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
 use awaken_protocol_a2a::router;
-use awaken_protocol_transport::{DriverError, Pending, ProtocolRuntime, Resume, StepOutcome};
+use awaken_protocol_transport::{
+    DriverError, Pending, ProtocolRuntime, Resume, StepOutcome, Terminal,
+};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -30,9 +32,7 @@ impl ProtocolRuntime for NoopRuntime {
                 awaken_agent_contract::agent::message::Role::Assistant,
                 "done",
             )],
-            waiting: false,
-            exhausted: false,
-            pending: None,
+            terminal: Terminal::Finished,
         })
     }
 

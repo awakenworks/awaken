@@ -16,7 +16,9 @@ use axum::routing::{get, post};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use awaken_protocol_transport::{DriverError, Pending, ProtocolRuntime, Resume, StepOutcome};
+use awaken_protocol_transport::{
+    DriverError, Pending, ProtocolRuntime, Resume, StepOutcome, Terminal,
+};
 
 use crate::encoder::encode_task;
 use crate::request::process;
@@ -131,9 +133,11 @@ async fn get_task(rt: &Runtime, id: &str) -> Task {
     let history = rt.history(&thread).await;
     let outcome = StepOutcome {
         new_messages: Vec::new(),
-        waiting: pending.is_some(),
-        exhausted: false,
-        pending,
+        terminal: if pending.is_some() {
+            Terminal::Waiting { pending }
+        } else {
+            Terminal::Finished
+        },
     };
     encode_task(&thread, &history, &outcome)
 }
@@ -166,9 +170,7 @@ async fn cancel_task(rt: &Runtime, id: &str) -> Task {
         &history,
         &StepOutcome {
             new_messages: Vec::new(),
-            waiting: false,
-            exhausted: false,
-            pending: None,
+            terminal: Terminal::Finished,
         },
     );
     if was_parked {

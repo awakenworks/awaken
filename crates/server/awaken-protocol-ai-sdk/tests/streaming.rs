@@ -9,7 +9,9 @@ use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::stream::event::{Event, Kind};
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
-use awaken_protocol_transport::{DriverError, Pending, ProtocolRuntime, Resume, StepOutcome};
+use awaken_protocol_transport::{
+    DriverError, Pending, ProtocolRuntime, Resume, StepOutcome, Terminal,
+};
 use axum::body::{Body, to_bytes};
 use axum::http::Request;
 use serde_json::{Value, json};
@@ -105,14 +107,14 @@ fn committed() -> StepOutcome {
                 input: json!({"path": "x"}),
             }],
         }],
-        waiting: true,
-        exhausted: false,
-        pending: Some(Pending {
-            tool_use_id: "c1".into(),
-            name: "read".into(),
-            input: json!({"path": "x"}),
-            client_executed: true,
-        }),
+        terminal: Terminal::Waiting {
+            pending: Some(Pending {
+                tool_use_id: "c1".into(),
+                name: "read".into(),
+                input: json!({"path": "x"}),
+                client_executed: true,
+            }),
+        },
     }
 }
 
@@ -198,9 +200,7 @@ async fn falls_back_to_full_projection_when_nothing_streamed() {
         ) -> Result<StepOutcome, DriverError> {
             Ok(StepOutcome {
                 new_messages: vec![Message::text(Id("a1".into()), Role::Assistant, "hello")],
-                waiting: false,
-                exhausted: false,
-                pending: None,
+                terminal: Terminal::Finished,
             })
         }
         async fn resume(
