@@ -318,8 +318,9 @@ async fn settle_done_clears_pending_and_dispatch() {
         ))
         .await
         .unwrap();
+    // Never claimed, so the row's fence epoch is the default 0; settle under it.
     store
-        .settle(&RunId("run-1".to_string()), DispatchOutcome::Done, &[])
+        .settle(&RunId("run-1".to_string()), 0, DispatchOutcome::Done, &[])
         .await
         .unwrap();
     assert_eq!(store.dispatch_count(), 0);
@@ -826,6 +827,16 @@ async fn send_message_to_an_idle_thread_feeds_the_next_run() {
 #[tokio::test]
 async fn supersession_store_spec() {
     harness::assert_supersession(&MemoryDispatchStore::new()).await;
+}
+
+#[tokio::test]
+async fn settle_fences_stale_epoch_store_spec() {
+    harness::assert_settle_fences_stale_epoch(&MemoryDispatchStore::new()).await;
+}
+
+#[tokio::test]
+async fn parked_settle_fences_stale_epoch_store_spec() {
+    harness::assert_parked_settle_fences_stale_epoch(&MemoryDispatchStore::new()).await;
 }
 
 #[tokio::test]

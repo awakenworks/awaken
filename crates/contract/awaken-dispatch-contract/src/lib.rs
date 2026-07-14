@@ -12,6 +12,7 @@ pub mod request;
 
 pub use dispatch::{
     CasOutcome, Claimed, Dispatch, DispatchError, DispatchOutcome, DispatchQueue, DispatchStatus,
-    DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, SubmitOptions,
+    DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, SettleOutcome,
+    SubmitOptions,
 };
 pub use request::RunExecutionRequest;
