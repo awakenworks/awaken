@@ -36,19 +36,19 @@ fn instructions_lead_the_request_as_a_system_message() {
         &Default::default(),
     );
     assert_eq!(request.messages.len(), 2);
-    assert!(matches!(request.messages[0].role, ChatRole::System));
+    assert!(matches!(request.messages[0].role, Role::System));
     assert_eq!(
         request.messages[0].content,
         vec![ContentBlock::text("be helpful")]
     );
-    assert!(matches!(request.messages[1].role, ChatRole::User));
+    assert!(matches!(request.messages[1].role, Role::User));
 }
 
 #[test]
 fn empty_instructions_contribute_no_system_message() {
     let request = build_chat_request(&spec(""), &[], &[user_message()], &[], &Default::default());
     assert_eq!(request.messages.len(), 1);
-    assert!(matches!(request.messages[0].role, ChatRole::User));
+    assert!(matches!(request.messages[0].role, Role::User));
 }
 
 fn numbered(n: usize) -> Message {
@@ -67,7 +67,7 @@ fn user_texts(request: &ChatRequest) -> Vec<String> {
     request
         .messages
         .iter()
-        .filter(|m| matches!(m.role, ChatRole::User))
+        .filter(|m| matches!(m.role, Role::User))
         .map(|m| {
             m.content
                 .iter()
@@ -105,7 +105,7 @@ fn keep_last_keeps_system_prefix_plus_the_last_n() {
         &Default::default(),
     );
     // system stays; only the last 2 user messages survive.
-    assert!(matches!(request.messages[0].role, ChatRole::System));
+    assert!(matches!(request.messages[0].role, Role::System));
     assert_eq!(user_texts(&request), vec!["3".to_string(), "4".to_string()]);
 }
 
@@ -133,7 +133,7 @@ fn keep_last_zero_keeps_only_the_system_prefix() {
         &Default::default(),
     );
     assert_eq!(request.messages.len(), 1);
-    assert!(matches!(request.messages[0].role, ChatRole::System));
+    assert!(matches!(request.messages[0].role, Role::System));
 }
 
 #[test]
@@ -152,17 +152,17 @@ fn prelude_is_injected_after_instructions_before_the_transcript() {
         &Default::default(),
     );
     assert_eq!(request.messages.len(), 3);
-    assert!(matches!(request.messages[0].role, ChatRole::System));
+    assert!(matches!(request.messages[0].role, Role::System));
     assert_eq!(
         request.messages[0].content,
         vec![ContentBlock::text("be helpful")]
     );
-    assert!(matches!(request.messages[1].role, ChatRole::System));
+    assert!(matches!(request.messages[1].role, Role::System));
     assert_eq!(
         request.messages[1].content,
         vec![ContentBlock::text("recalled context")]
     );
-    assert!(matches!(request.messages[2].role, ChatRole::User));
+    assert!(matches!(request.messages[2].role, Role::User));
 }
 
 // --- mid-stream interruption recovery (R1–R3) + durable checkpoints ---
@@ -310,7 +310,7 @@ fn one_turn_request() -> ChatRequest {
             backend_ref: "b".to_string(),
         },
         messages: vec![ChatMessage {
-            role: ChatRole::User,
+            role: Role::User,
             content: vec![ContentBlock::text("q")],
         }],
         tools: Vec::new(),
@@ -327,7 +327,7 @@ fn assistant_prefixes(request: &ChatRequest) -> Vec<String> {
     request
         .messages
         .iter()
-        .filter(|m| matches!(m.role, ChatRole::Assistant))
+        .filter(|m| matches!(m.role, Role::Assistant))
         .map(|m| {
             m.content
                 .iter()
@@ -405,7 +405,7 @@ async fn interrupted_text_stream_is_continued_from_the_partial() {
     );
     // ... followed by a continuation prompt as the final user message.
     let last = requests[1].messages.last().unwrap();
-    assert!(matches!(last.role, ChatRole::User));
+    assert!(matches!(last.role, Role::User));
     assert!(
         matches!(&last.content[0], ContentBlock::Text { text } if text.contains("interrupted"))
     );

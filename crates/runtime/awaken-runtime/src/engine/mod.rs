@@ -29,8 +29,8 @@ use awaken_runtime_contract::agent_resolver::{AgentRequest, AgentStep};
 use awaken_runtime_contract::boundary::{BoundaryOutcome, evaluate_boundary};
 use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatMessage, ChatRequest, ChatResponse, ChatRole, DeltaSink, StopReason,
-    ThreadUsage, ThreadUsageKey, ToolCall,
+    AssistantOutput, ChatMessage, ChatRequest, ChatResponse, DeltaSink, StopReason, ThreadUsage,
+    ThreadUsageKey, ToolCall,
 };
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
 use awaken_runtime_contract::plugin::{
@@ -393,19 +393,12 @@ impl Checkpoint {
 /// Build the audit draft for one gated tool call (ADR-0030). The decision label
 /// is the permission-relevant view of the gate outcome.
 fn permission_audit(call: &ToolCall, outcome: &GateOutcome) -> EventDraft {
-    let decision = match outcome {
-        GateOutcome::Allow => "allow",
-        GateOutcome::Block { .. } => "deny",
-        GateOutcome::Suspend { .. } => "ask",
-        GateOutcome::SetResult(_) => "set_result",
-        GateOutcome::Schedule { .. } => "schedule",
-    };
     EventDraft {
         kind: EventKind::PermissionDecided,
         payload: serde_json::json!({
             "tool_id": call.tool_id,
             "call_id": call.call_id,
-            "decision": decision,
+            "decision": outcome.decision_label(),
         }),
     }
 }
@@ -731,11 +724,13 @@ async fn drive(
     // Recovered from the committed transcript by counting this run's own steer
     // feedback messages, so the count (and thus the guard's budget) survives a
     // park/resume mid-loop rather than restarting at zero.
-    let steer_prefix = steer_id_prefix(run_id);
+    // Recover the run's forced-continuation count from committed truth: the steer
+    // messages already in the transcript. The id type classifies its own kind, so
+    // the loop reads a fact rather than matching an id-string convention by hand.
     let mut forced_continuations = ledger
         .transcript
         .iter()
-        .filter(|message| message.id.0.starts_with(&steer_prefix))
+        .filter(|message| message.id.is_steer_of(run_id))
         .count();
 
     // The agent's configured ceiling guards against a non-terminating tool cycle;
@@ -968,7 +963,7 @@ async fn drive(
                         context,
                         run_id,
                         StreamKind::Waiting {
-                            reason: "manual_pause".to_string(),
+                            reason: WaitingReason::ManualPause.as_stream_str().to_string(),
                         },
                     )
                     .await;
@@ -1417,17 +1412,11 @@ fn continuation_event(detail: &serde_json::Value) -> EventDraft {
     }
 }
 
-/// The id prefix shared by a run's steer-feedback messages. Counting committed
-/// messages with this prefix recovers `forced_continuations` after a resume.
-fn steer_id_prefix(run_id: &RunId) -> String {
-    format!("{}-steer-", run_id.0)
-}
-
 /// The user message a steered continuation injects before looping. Its id is
 /// run-scoped and distinct from the step-based assistant/tool message ids.
 fn feedback_message(run_id: &RunId, nth: usize, feedback: String) -> Message {
     Message {
-        id: MessageId(format!("{}{nth}", steer_id_prefix(run_id))),
+        id: MessageId::steer(run_id, nth),
         role: Role::User,
         content: vec![ContentBlock::text(feedback)],
     }
@@ -1626,7 +1615,7 @@ async fn resume_into_messages(
         }
         ResumeResult::Input(text) => (
             vec![Message::text(
-                MessageId(format!("resume-input-{call_id}")),
+                MessageId::resume_input(&call_id),
                 Role::User,
                 text,
             )],

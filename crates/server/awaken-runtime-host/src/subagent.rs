@@ -179,7 +179,7 @@ mod tests {
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
     use awaken_runtime_contract::llm::{
-        AssistantOutput, ChatRequest, ChatResponse, ChatRole, Result as LlmResult,
+        AssistantOutput, ChatRequest, ChatResponse, Result as LlmResult,
     };
     use awaken_runtime_contract::resolved::ModelBinding;
     use awaken_runtime_contract::runnable::RunnableConfig;
@@ -194,7 +194,7 @@ mod tests {
             let system = request
                 .messages
                 .iter()
-                .find(|m| m.role == ChatRole::System)
+                .find(|m| m.role == Role::System)
                 .map(|m| {
                     m.content
                         .iter()

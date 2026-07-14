@@ -5,8 +5,9 @@
 //! composition roots).
 
 use awaken_agent_contract::agent::content::{ContentBlock, ImageSource};
+use awaken_agent_contract::agent::message::Role;
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
+    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
 
 use awaken_runtime_host::block_text;
@@ -26,7 +27,7 @@ impl LlmExecutor for EchoModel {
             .messages
             .iter()
             .rev()
-            .find(|m| m.role == ChatRole::User)
+            .find(|m| m.role == Role::User)
             .map(|m| block_text(&m.content))
             .unwrap_or_default();
         Ok(ChatResponse {
@@ -54,7 +55,7 @@ impl LlmExecutor for ErrorModel {
             .messages
             .iter()
             .rev()
-            .find(|m| m.role == ChatRole::User)
+            .find(|m| m.role == Role::User)
             .map(|m| block_text(&m.content))
             .unwrap_or_default();
         if last_user.contains("BOOM") {
@@ -86,7 +87,7 @@ impl LlmExecutor for LabelModel {
             .messages
             .iter()
             .rev()
-            .find(|m| m.role == ChatRole::User)
+            .find(|m| m.role == Role::User)
             .map(|m| block_text(&m.content))
             .unwrap_or_default();
         Ok(ChatResponse {
@@ -113,13 +114,13 @@ impl LlmExecutor for MemoryProbeModel {
         let system_text: String = request
             .messages
             .iter()
-            .filter(|m| m.role == ChatRole::System)
+            .filter(|m| m.role == Role::System)
             .map(|m| block_text(&m.content))
             .collect::<Vec<_>>()
             .join(" | ");
         // The extractor sub-run: save one deterministic memory, then finish.
         if system_text.contains("memory extraction sub-agent") {
-            let already_saved = request.messages.iter().any(|m| m.role == ChatRole::Tool);
+            let already_saved = request.messages.iter().any(|m| m.role == Role::Tool);
             if already_saved {
                 return Ok(ChatResponse {
                     output: AssistantOutput::text("memory saved"),
@@ -165,7 +166,7 @@ impl LlmExecutor for MemoryProbeModel {
             .messages
             .iter()
             .rev()
-            .find(|m| m.role == ChatRole::User)
+            .find(|m| m.role == Role::User)
             .map(|m| block_text(&m.content))
             .unwrap_or_default();
         Ok(ChatResponse {
@@ -188,11 +189,7 @@ impl LlmExecutor for VisionProbeModel {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        let last_user = request
-            .messages
-            .iter()
-            .rev()
-            .find(|m| m.role == ChatRole::User);
+        let last_user = request.messages.iter().rev().find(|m| m.role == Role::User);
         let mut medias = Vec::new();
         let mut text = String::new();
         if let Some(message) = last_user {
@@ -234,12 +231,12 @@ impl LlmExecutor for ProbeModel {
         let tool_results = request
             .messages
             .iter()
-            .filter(|m| m.role == ChatRole::Tool)
+            .filter(|m| m.role == Role::Tool)
             .count();
         let user_text = request
             .messages
             .iter()
-            .find(|m| m.role == ChatRole::User)
+            .find(|m| m.role == Role::User)
             .map(|m| block_text(&m.content))
             .unwrap_or_default();
         let output = match tool_results {
@@ -277,12 +274,12 @@ impl LlmExecutor for MemoryResourceModel {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        let wrote = request.messages.iter().any(|m| m.role == ChatRole::Tool);
+        let wrote = request.messages.iter().any(|m| m.role == Role::Tool);
         let user_text = request
             .messages
             .iter()
             .rev()
-            .find(|m| m.role == ChatRole::User)
+            .find(|m| m.role == Role::User)
             .map(|m| block_text(&m.content))
             .unwrap_or_default();
         let output = if wrote {
@@ -318,7 +315,7 @@ impl LlmExecutor for GitRepoModel {
         let tool_results = request
             .messages
             .iter()
-            .filter(|m| m.role == ChatRole::Tool)
+            .filter(|m| m.role == Role::Tool)
             .count();
         let output = match tool_results {
             0 => AssistantOutput::from_tool_calls(vec![ToolCall {
@@ -400,7 +397,7 @@ impl LlmExecutor for StateMachineModel {
         let steps = request
             .messages
             .iter()
-            .filter(|m| m.role == ChatRole::Tool)
+            .filter(|m| m.role == Role::Tool)
             .count();
         let glob = |call_id: &str| {
             AssistantOutput::from_tool_calls(vec![ToolCall {
@@ -437,7 +434,7 @@ impl LlmExecutor for InstructionEchoModel {
             .messages
             .iter()
             .rev()
-            .find(|m| m.role == ChatRole::System)
+            .find(|m| m.role == Role::System)
             .map(|m| block_text(&m.content))
             .unwrap_or_default();
         Ok(ChatResponse {
@@ -462,7 +459,7 @@ impl LlmExecutor for ReviseModel {
             .messages
             .iter()
             .rev()
-            .find(|m| m.role == ChatRole::User)
+            .find(|m| m.role == Role::User)
             .map(|m| block_text(&m.content))
             .unwrap_or_default();
         let reply = if last_user.contains("did not meet the goal") {
@@ -491,7 +488,7 @@ impl LlmExecutor for CustomToolModel {
         let tool_results = request
             .messages
             .iter()
-            .filter(|m| m.role == ChatRole::Tool)
+            .filter(|m| m.role == Role::Tool)
             .count();
         let output = if tool_results == 0 {
             AssistantOutput::from_tool_calls(vec![ToolCall {
@@ -504,7 +501,7 @@ impl LlmExecutor for CustomToolModel {
                 .messages
                 .iter()
                 .rev()
-                .find(|m| m.role == ChatRole::Tool)
+                .find(|m| m.role == Role::Tool)
                 .map(|m| {
                     m.content
                         .iter()
@@ -543,7 +540,7 @@ impl LlmExecutor for McpToolModel {
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         // A tool result came back: report it (`result: <text>`), ending the turn.
         if let Some(last) = request.messages.last()
-            && last.role == ChatRole::Tool
+            && last.role == Role::Tool
         {
             let result: String = last
                 .content
@@ -563,7 +560,7 @@ impl LlmExecutor for McpToolModel {
             .messages
             .iter()
             .rev()
-            .find(|m| m.role == ChatRole::User)
+            .find(|m| m.role == Role::User)
             .map(|m| block_text(&m.content))
             .unwrap_or_default();
         // `add <a> <b>` (two integers) → call the MCP calculator.
@@ -613,13 +610,13 @@ impl LlmExecutor for DelegatingModel {
         let tool_results = request
             .messages
             .iter()
-            .filter(|m| m.role == ChatRole::Tool)
+            .filter(|m| m.role == Role::Tool)
             .count();
         let output = if tool_results == 0 {
             let user = request
                 .messages
                 .iter()
-                .find(|m| m.role == ChatRole::User)
+                .find(|m| m.role == Role::User)
                 .map(|m| block_text(&m.content))
                 .unwrap_or_default();
             let agent_id = if user.contains("ghost") {
@@ -637,7 +634,7 @@ impl LlmExecutor for DelegatingModel {
                 .messages
                 .iter()
                 .rev()
-                .find(|m| m.role == ChatRole::Tool)
+                .find(|m| m.role == Role::Tool)
                 .map(|m| {
                     m.content
                         .iter()
@@ -673,14 +670,14 @@ impl LlmExecutor for CompactionModel {
         let system_text: String = request
             .messages
             .iter()
-            .filter(|m| m.role == ChatRole::System)
+            .filter(|m| m.role == Role::System)
             .map(|m| block_text(&m.content))
             .collect::<Vec<_>>()
             .join(" | ");
         let joined_user: String = request
             .messages
             .iter()
-            .filter(|m| m.role == ChatRole::User)
+            .filter(|m| m.role == Role::User)
             .map(|m| block_text(&m.content))
             .collect::<Vec<_>>()
             .join(" ");
@@ -695,7 +692,7 @@ impl LlmExecutor for CompactionModel {
             .messages
             .iter()
             .rev()
-            .find(|m| m.role == ChatRole::User)
+            .find(|m| m.role == Role::User)
             .map(|m| block_text(&m.content))
             .unwrap_or_default();
         Ok(ChatResponse {

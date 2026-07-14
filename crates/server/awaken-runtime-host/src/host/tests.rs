@@ -1,7 +1,8 @@
 use super::*;
 use crate::config::block_text;
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, ChatRole};
+use awaken_agent_contract::agent::message::Role;
+use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};
 use std::sync::atomic::AtomicUsize;
 
 /// A model that blocks on its second inference (the first revision round) until
@@ -88,16 +89,16 @@ impl LlmExecutor for MemoryHostModel {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        use awaken_runtime_contract::llm::{ChatRole, ToolCall};
+        use awaken_runtime_contract::llm::ToolCall;
         let is_extractor = request.messages.iter().any(|m| {
-            m.role == ChatRole::System
+            m.role == Role::System
                 && m.content.iter().any(|b| match b {
                     ContentBlock::Text { text } => text.contains("memory extraction sub-agent"),
                     _ => false,
                 })
         });
         let output = if is_extractor {
-            if request.messages.iter().any(|m| m.role == ChatRole::Tool) {
+            if request.messages.iter().any(|m| m.role == Role::Tool) {
                 AssistantOutput::text("saved 1 memory")
             } else {
                 AssistantOutput::from_tool_calls(vec![ToolCall {
@@ -134,7 +135,7 @@ impl LlmExecutor for CompactHostModel {
         let system_text: String = request
             .messages
             .iter()
-            .filter(|m| m.role == ChatRole::System)
+            .filter(|m| m.role == Role::System)
             .flat_map(|m| m.content.iter())
             .filter_map(|b| match b {
                 ContentBlock::Text { text } => Some(text.clone()),
@@ -197,11 +198,11 @@ impl LlmExecutor for MemLoopModel {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        use awaken_runtime_contract::llm::{ChatRole, ToolCall};
+        use awaken_runtime_contract::llm::ToolCall;
         let system_text: String = request
             .messages
             .iter()
-            .filter(|m| m.role == ChatRole::System)
+            .filter(|m| m.role == Role::System)
             .flat_map(|m| m.content.iter())
             .filter_map(|b| match b {
                 ContentBlock::Text { text } => Some(text.clone()),
@@ -211,7 +212,7 @@ impl LlmExecutor for MemLoopModel {
             .join("\n");
         if system_text.contains("memory extraction sub-agent") {
             let already = request.messages.iter().any(|m| {
-                m.role == ChatRole::Tool
+                m.role == Role::Tool
                     && m.content.iter().any(|b| match b {
                         ContentBlock::ToolResult { content, .. } => {
                             block_text(content).contains("saved memory")
@@ -297,12 +298,12 @@ impl LlmExecutor for ResumeMemModel {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        use awaken_runtime_contract::llm::{ChatRole, ToolCall};
-        let saw_tool = request.messages.iter().any(|m| m.role == ChatRole::Tool);
+        use awaken_runtime_contract::llm::ToolCall;
+        let saw_tool = request.messages.iter().any(|m| m.role == Role::Tool);
         // The extractor's own write_memory succeeded (its result text), distinct
         // from the main turn's `write` result that is also in its seeded context.
         let saved_memory = request.messages.iter().any(|m| {
-            m.role == ChatRole::Tool
+            m.role == Role::Tool
                 && m.content.iter().any(|b| match b {
                     ContentBlock::ToolResult { content, .. } => {
                         block_text(content).contains("saved memory")
@@ -311,7 +312,7 @@ impl LlmExecutor for ResumeMemModel {
                 })
         });
         let is_extractor = request.messages.iter().any(|m| {
-            m.role == ChatRole::System
+            m.role == Role::System
                 && m.content.iter().any(|b| match b {
                     ContentBlock::Text { text } => text.contains("memory extraction sub-agent"),
                     _ => false,
@@ -397,9 +398,9 @@ impl LlmExecutor for CursorModel {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        use awaken_runtime_contract::llm::{ChatRole, ToolCall};
+        use awaken_runtime_contract::llm::ToolCall;
         let is_extractor = request.messages.iter().any(|m| {
-            m.role == ChatRole::System
+            m.role == Role::System
                 && m.content.iter().any(|b| match b {
                     ContentBlock::Text { text } => text.contains("memory extraction sub-agent"),
                     _ => false,
@@ -412,7 +413,7 @@ impl LlmExecutor for CursorModel {
                 stop_reason: None,
             });
         }
-        if request.messages.iter().any(|m| m.role == ChatRole::Tool) {
+        if request.messages.iter().any(|m| m.role == Role::Tool) {
             return Ok(ChatResponse {
                 output: AssistantOutput::text("extracted"),
                 usage: None,
@@ -423,7 +424,7 @@ impl LlmExecutor for CursorModel {
         let seen: Vec<String> = request
             .messages
             .iter()
-            .filter(|m| m.role == ChatRole::User)
+            .filter(|m| m.role == Role::User)
             .map(|m| block_text(&m.content))
             .filter(|t| !t.contains("Extract durable memories"))
             .collect();
@@ -790,7 +791,7 @@ impl LlmExecutor for ParkOnWriteModel {
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         use awaken_runtime_contract::llm::ToolCall;
-        let saw_tool = request.messages.iter().any(|m| m.role == ChatRole::Tool);
+        let saw_tool = request.messages.iter().any(|m| m.role == Role::Tool);
         let output = if saw_tool {
             AssistantOutput::text("done")
         } else {
@@ -823,7 +824,7 @@ impl LlmExecutor for ClientLookupModel {
         let tool_text = request
             .messages
             .iter()
-            .filter(|m| m.role == ChatRole::Tool)
+            .filter(|m| m.role == Role::Tool)
             .flat_map(|m| m.content.iter())
             .filter_map(|b| match b {
                 ContentBlock::ToolResult { content, .. } => Some(block_text(content)),

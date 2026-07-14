@@ -55,17 +55,18 @@ pub(crate) fn render_chat_messages(messages: &[ChatMessage]) -> String {
 mod tests {
     use super::render_chat_messages;
     use awaken_agent_contract::agent::content::ContentBlock;
-    use awaken_runtime_contract::llm::{ChatMessage, ChatRole};
+    use awaken_agent_contract::agent::message::Role;
+    use awaken_runtime_contract::llm::ChatMessage;
 
     #[test]
     fn render_chat_messages_joins_role_and_text() {
         let msgs = vec![
             ChatMessage {
-                role: ChatRole::System,
+                role: Role::System,
                 content: vec![ContentBlock::text("be nice")],
             },
             ChatMessage {
-                role: ChatRole::User,
+                role: Role::User,
                 content: vec![ContentBlock::text("hi there")],
             },
         ];

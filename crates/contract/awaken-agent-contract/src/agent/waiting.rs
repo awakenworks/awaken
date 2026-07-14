@@ -28,6 +28,25 @@ pub enum WaitingReason {
     Delegation,
 }
 
+impl WaitingReason {
+    /// The stable snake_case token emitted on the `Waiting` stream event. Kept
+    /// beside the enum so the wire vocabulary has one authoritative source and a
+    /// new reason variant forces its token here, not at each park site.
+    #[must_use]
+    pub fn as_stream_str(&self) -> &'static str {
+        match self {
+            WaitingReason::ToolPermission => "tool_permission",
+            WaitingReason::UserInput => "user_input",
+            WaitingReason::BackgroundTasks => "background_tasks",
+            WaitingReason::ExternalEvent => "external_event",
+            WaitingReason::RateLimit => "rate_limit",
+            WaitingReason::ManualPause => "manual_pause",
+            WaitingReason::ScheduledAction => "scheduled_action",
+            WaitingReason::Delegation => "delegation",
+        }
+    }
+}
+
 /// The committed correlation for one same-run pause. A resume is accepted only
 /// when its correlation, run/thread, executable snapshot, and catalog
 /// fingerprint all match, and the deadline (if any) has not passed.

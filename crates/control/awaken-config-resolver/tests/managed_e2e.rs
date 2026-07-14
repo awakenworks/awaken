@@ -170,7 +170,8 @@ async fn managed_full_chain_resolves_secret_free_snapshot_and_credential() {
 #[ignore = "requires network and ANTHROPIC_API_KEY"]
 async fn managed_full_chain_calls_real_model() {
     use awaken_agent_contract::agent::content::ContentBlock;
-    use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, ChatRole, LlmExecutor};
+    use awaken_agent_contract::agent::message::Role;
+    use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, LlmExecutor};
     use awaken_runtime_contract::resolved::ModelBinding;
 
     let api_key = std::env::var("ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY");
@@ -191,7 +192,7 @@ async fn managed_full_chain_calls_real_model() {
             backend_ref: "genai".into(),
         },
         messages: vec![ChatMessage {
-            role: ChatRole::User,
+            role: Role::User,
             content: vec![ContentBlock::text("Reply with the single word: pong")],
         }],
         tools: Vec::new(),

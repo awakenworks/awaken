@@ -66,7 +66,7 @@ pub(super) async fn run_tool_calls(
                             context,
                             run_id,
                             StreamKind::Waiting {
-                                reason: "delegation".to_string(),
+                                reason: ticket.reason.as_stream_str().to_string(),
                             },
                         )
                         .await;
@@ -94,7 +94,7 @@ pub(super) async fn run_tool_calls(
                         context,
                         run_id,
                         StreamKind::Waiting {
-                            reason: "tool_permission".to_string(),
+                            reason: ticket.reason.as_stream_str().to_string(),
                         },
                     )
                     .await;
@@ -126,7 +126,7 @@ pub(super) async fn run_tool_calls(
                         context,
                         run_id,
                         StreamKind::Waiting {
-                            reason: "scheduled_action".to_string(),
+                            reason: ticket.reason.as_stream_str().to_string(),
                         },
                     )
                     .await;

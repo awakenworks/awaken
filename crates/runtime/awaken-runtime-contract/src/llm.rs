@@ -8,6 +8,7 @@
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
+use awaken_agent_contract::agent::message::Role;
 use awaken_agent_contract::agent::state::{MergePolicy, Scope, StateKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -30,18 +31,10 @@ pub struct ChatRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatMessage {
-    pub role: ChatRole,
+    pub role: Role,
     /// Multimodal content blocks (text, image). The adapter maps each block onto
     /// the provider's content representation.
     pub content: Vec<ContentBlock>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ChatRole {
-    System,
-    User,
-    Assistant,
-    Tool,
 }
 
 /// A model's request to invoke one tool. `tool_id` is the resolved descriptor

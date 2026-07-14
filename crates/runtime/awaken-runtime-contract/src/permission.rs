@@ -60,6 +60,22 @@ pub enum GateOutcome {
     },
 }
 
+impl GateOutcome {
+    /// The permission-relevant decision label for this outcome — the single
+    /// authoritative vocabulary the audit trail (ADR-0030) records. Kept beside
+    /// the type so a new outcome variant forces a label here, not in each caller.
+    #[must_use]
+    pub fn decision_label(&self) -> &'static str {
+        match self {
+            GateOutcome::Allow => "allow",
+            GateOutcome::Block { .. } => "deny",
+            GateOutcome::Suspend { .. } => "ask",
+            GateOutcome::SetResult(_) => "set_result",
+            GateOutcome::Schedule { .. } => "schedule",
+        }
+    }
+}
+
 /// The final invocation gate. The loop calls this for every tool call; only an
 /// `Allow` reaches the executor. The loop consults the host gate first, then any
 /// plugin-contributed gates in dependency order; a call runs only if every gate

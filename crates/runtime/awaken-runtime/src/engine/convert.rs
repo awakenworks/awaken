@@ -8,7 +8,7 @@
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, ChatRole, ToolCall};
+use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, ToolCall};
 use awaken_runtime_contract::resolved::{ContextPolicy, ResolvedSpec, ToolDescriptor};
 use awaken_runtime_contract::tool::ToolOutput;
 
@@ -28,7 +28,7 @@ pub(crate) fn build_chat_request(
     let mut messages = Vec::with_capacity(transcript.len() + prelude.len() + 1);
     if !spec.instructions.is_empty() {
         messages.push(ChatMessage {
-            role: ChatRole::System,
+            role: Role::System,
             content: vec![ContentBlock::text(spec.instructions.clone())],
         });
     }
@@ -73,10 +73,7 @@ pub(crate) fn apply_context_policy(
         ContextPolicy::KeepAll => return messages,
         ContextPolicy::KeepLast { keep_last } => *keep_last,
     };
-    let conversational = messages
-        .iter()
-        .filter(|m| m.role != ChatRole::System)
-        .count();
+    let conversational = messages.iter().filter(|m| m.role != Role::System).count();
     if conversational <= keep_last {
         return messages;
     }
@@ -84,7 +81,7 @@ pub(crate) fn apply_context_policy(
     messages
         .into_iter()
         .filter(|m| {
-            if m.role == ChatRole::System {
+            if m.role == Role::System {
                 return true;
             }
             if to_drop > 0 {
@@ -98,17 +95,8 @@ pub(crate) fn apply_context_policy(
 
 pub(crate) fn to_chat_message(message: &Message) -> ChatMessage {
     ChatMessage {
-        role: to_chat_role(&message.role),
+        role: message.role,
         content: message.content.clone(),
-    }
-}
-
-pub(crate) fn to_chat_role(role: &Role) -> ChatRole {
-    match role {
-        Role::System => ChatRole::System,
-        Role::User => ChatRole::User,
-        Role::Assistant => ChatRole::Assistant,
-        Role::Tool => ChatRole::Tool,
     }
 }
 
@@ -127,7 +115,7 @@ pub(crate) fn truncated_assistant_message(
     blocks: Vec<ContentBlock>,
 ) -> Message {
     Message {
-        id: MessageId(format!("{}-assistant-{step}-truncated-{nth}", run_id.0)),
+        id: MessageId::assistant_truncated(run_id, step, nth),
         role: Role::Assistant,
         content: blocks,
     }
@@ -136,7 +124,7 @@ pub(crate) fn truncated_assistant_message(
 /// The user message that asks a truncated turn to continue where it left off.
 pub(crate) fn continuation_message(run_id: &RunId, step: usize, nth: usize) -> Message {
     Message {
-        id: MessageId(format!("{}-continuation-{step}-{nth}", run_id.0)),
+        id: MessageId::continuation(run_id, step, nth),
         role: Role::User,
         content: vec![ContentBlock::text(CONTINUATION_PROMPT)],
     }
@@ -147,7 +135,7 @@ pub(crate) fn continuation_message(run_id: &RunId, step: usize, nth: usize) -> M
 /// called.
 pub(crate) fn assistant_message(run_id: &RunId, step: usize, blocks: Vec<ContentBlock>) -> Message {
     Message {
-        id: MessageId(format!("{}-assistant-{step}", run_id.0)),
+        id: MessageId::assistant(run_id, step),
         role: Role::Assistant,
         content: blocks,
     }
@@ -161,7 +149,7 @@ pub(crate) fn tool_result_message(call: &ToolCall, output: &ToolOutput) -> Messa
 /// originating call, so the model sees a real tool result rather than loose text.
 pub(crate) fn tool_result_message_from(call_id: &str, text: &str) -> Message {
     Message {
-        id: MessageId(format!("tool-{call_id}")),
+        id: MessageId::tool_result(call_id),
         role: Role::Tool,
         content: vec![ContentBlock::tool_result(
             call_id.to_string(),

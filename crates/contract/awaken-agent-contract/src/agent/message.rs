@@ -5,7 +5,63 @@ use crate::agent::content::{ContentBlock, extract_text};
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Id(pub String);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The authoritative minting scheme for run-scoped message ids. Every committed
+/// message's id is produced here so the id vocabulary has one owner instead of
+/// `format!` templates scattered across the engine (each kind is distinct so ids
+/// never collide within a run).
+impl Id {
+    /// A committed assistant turn: `{run}-assistant-{step}`.
+    #[must_use]
+    pub fn assistant(run: &crate::agent::run::Id, step: usize) -> Self {
+        Self(format!("{}-assistant-{step}", run.0))
+    }
+
+    /// The partial text of a `MaxTokens`-truncated turn: `{run}-assistant-{step}-truncated-{nth}`.
+    #[must_use]
+    pub fn assistant_truncated(run: &crate::agent::run::Id, step: usize, nth: usize) -> Self {
+        Self(format!("{}-assistant-{step}-truncated-{nth}", run.0))
+    }
+
+    /// The user message asking a truncated turn to continue: `{run}-continuation-{step}-{nth}`.
+    #[must_use]
+    pub fn continuation(run: &crate::agent::run::Id, step: usize, nth: usize) -> Self {
+        Self(format!("{}-continuation-{step}-{nth}", run.0))
+    }
+
+    /// A tool-role result addressed to `call_id`: `tool-{call_id}`.
+    #[must_use]
+    pub fn tool_result(call_id: &str) -> Self {
+        Self(format!("tool-{call_id}"))
+    }
+
+    /// A steer-feedback continuation message: `{run}-steer-{nth}`.
+    #[must_use]
+    pub fn steer(run: &crate::agent::run::Id, nth: usize) -> Self {
+        Self(format!("{}-steer-{nth}", run.0))
+    }
+
+    /// The id prefix shared by a run's steer messages: `{run}-steer-`.
+    #[must_use]
+    pub fn steer_prefix(run: &crate::agent::run::Id) -> String {
+        format!("{}-steer-", run.0)
+    }
+
+    /// Whether this id is a steer-feedback message minted for `run`. The id type
+    /// owns its own classification so recovering a run's continuation count reads
+    /// as a fact over the committed transcript, not a raw string match in the loop.
+    #[must_use]
+    pub fn is_steer_of(&self, run: &crate::agent::run::Id) -> bool {
+        self.0.starts_with(&Self::steer_prefix(run))
+    }
+
+    /// A resume-input message replying to `call_id`: `resume-input-{call_id}`.
+    #[must_use]
+    pub fn resume_input(call_id: &str) -> Self {
+        Self(format!("resume-input-{call_id}"))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Role {
     System,
     User,

@@ -137,7 +137,8 @@ async fn full_chain_live_model_call() {
     );
 
     use awaken_agent_contract::agent::content::ContentBlock;
-    use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, ChatRole, LlmExecutor};
+    use awaken_agent_contract::agent::message::Role;
+    use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, LlmExecutor};
     use awaken_runtime_contract::resolved::ModelBinding;
 
     let request = ChatRequest {
@@ -147,7 +148,7 @@ async fn full_chain_live_model_call() {
             backend_ref: "genai".to_string(),
         },
         messages: vec![ChatMessage {
-            role: ChatRole::User,
+            role: Role::User,
             content: vec![ContentBlock::text("Reply with the single word: pong")],
         }],
         tools: Vec::new(),

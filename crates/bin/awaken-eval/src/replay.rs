@@ -19,8 +19,7 @@ use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatMessage, ChatRequest, ChatResponse, ChatRole, LlmExecutor, StopReason,
-    ToolCall,
+    AssistantOutput, ChatMessage, ChatRequest, ChatResponse, LlmExecutor, StopReason, ToolCall,
 };
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
@@ -265,7 +264,7 @@ impl Evaluator {
         let request = ChatRequest {
             model_binding: ModelBinding::new("eval", "judge", "genai"),
             messages: vec![ChatMessage {
-                role: ChatRole::User,
+                role: Role::User,
                 content: vec![ContentBlock::text(prompt)],
             }],
             tools: Vec::new(),

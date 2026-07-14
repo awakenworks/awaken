@@ -4,11 +4,12 @@
 
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::message::Role;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_runtime_contract::agent_resolver::{AgentError, AgentRequest, AgentResolver, AgentStep};
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor, THREAD_USAGE_STATE_KEY,
-    ThreadUsage, TokenUsage, ToolCall,
+    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, THREAD_USAGE_STATE_KEY, ThreadUsage,
+    TokenUsage, ToolCall,
 };
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_examples::prelude::*;
@@ -26,7 +27,7 @@ impl LlmExecutor for CoordinatorLlm {
         let tool_results = request
             .messages
             .iter()
-            .filter(|m| m.role == ChatRole::Tool)
+            .filter(|m| m.role == Role::Tool)
             .count();
         let output = if tool_results == 0 {
             AssistantOutput::from_tool_calls(vec![ToolCall {
@@ -40,7 +41,7 @@ impl LlmExecutor for CoordinatorLlm {
                 .messages
                 .iter()
                 .rev()
-                .find(|m| m.role == ChatRole::Tool)
+                .find(|m| m.role == Role::Tool)
                 .map(|m| m.content.iter().map(block_text).collect::<String>())
                 .unwrap_or_default();
             AssistantOutput::text(format!("coordinator: {reply}"))

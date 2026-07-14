@@ -5,8 +5,9 @@
 use std::time::Duration;
 
 use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::message::Role;
 use awaken_provider_genai::GenaiExecutor;
-use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, ChatRole, DeltaSink, LlmExecutor};
+use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, DeltaSink, LlmExecutor};
 use awaken_runtime_contract::resolved::ModelBinding;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -68,7 +69,7 @@ async fn stalled_stream_times_out_as_a_retryable_timeout() {
             backend_ref: "b".to_string(),
         },
         messages: vec![ChatMessage {
-            role: ChatRole::User,
+            role: Role::User,
             content: vec![ContentBlock::text("hi")],
         }],
         tools: Vec::new(),

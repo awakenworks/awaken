@@ -9,8 +9,9 @@
 //! ```
 
 use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::message::Role;
 use awaken_provider_genai::GenaiExecutor;
-use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, ChatRole, LlmExecutor};
+use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, LlmExecutor};
 use awaken_runtime_contract::resolved::ModelBinding;
 
 #[tokio::test]
@@ -29,7 +30,7 @@ async fn gemini_on_vertex_with_oauth_bearer() {
             backend_ref: "genai".into(),
         },
         messages: vec![ChatMessage {
-            role: ChatRole::User,
+            role: Role::User,
             content: vec![ContentBlock::text(
                 "Reply with exactly the single word: pong",
             )],

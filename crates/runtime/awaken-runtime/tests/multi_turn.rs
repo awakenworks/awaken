@@ -15,9 +15,7 @@ use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor,
-};
+use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
 };
@@ -37,7 +35,7 @@ impl LlmExecutor for EchoUserLlm {
         let seen = r
             .messages
             .iter()
-            .filter(|m| matches!(m.role, ChatRole::User))
+            .filter(|m| matches!(m.role, Role::User))
             .flat_map(|m| m.content.iter())
             .filter_map(|b| match b {
                 ContentBlock::Text { text } => Some(text.clone()),

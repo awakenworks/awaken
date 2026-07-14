@@ -12,8 +12,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::message::Role;
 use awaken_agent_contract::agent::waiting::WaitingReason;
-use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, ChatRole};
+use awaken_runtime_contract::llm::{ChatMessage, ChatRequest};
 use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_runtime_examples::coding_agent::model::build_executor;
 use awaken_runtime_examples::coding_agent::{
@@ -32,7 +33,7 @@ async fn minimax_endpoint_authenticates_and_reaches_the_model() {
     let request = ChatRequest {
         model_binding: ModelBinding::new("default", model, "default"),
         messages: vec![ChatMessage {
-            role: ChatRole::User,
+            role: Role::User,
             content: vec![ContentBlock::text("Reply with the single word: ready")],
         }],
         tools: Vec::new(),

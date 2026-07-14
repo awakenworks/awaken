@@ -20,7 +20,7 @@ use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
+    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
 use awaken_runtime_contract::resolved::{
@@ -195,7 +195,7 @@ impl LlmExecutor for EchoInputLlm {
         let echoed = r
             .messages
             .iter()
-            .filter(|m| matches!(m.role, ChatRole::User))
+            .filter(|m| matches!(m.role, Role::User))
             .flat_map(|m| m.content.iter())
             .filter_map(|b| match b {
                 ContentBlock::Text { text } => Some(text.clone()),
@@ -288,7 +288,7 @@ struct ToolUntilResult;
 #[async_trait::async_trait]
 impl LlmExecutor for ToolUntilResult {
     async fn infer(&self, r: ChatRequest) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        let has_tool_result = r.messages.iter().any(|m| matches!(m.role, ChatRole::Tool));
+        let has_tool_result = r.messages.iter().any(|m| matches!(m.role, Role::Tool));
         let output = if has_tool_result {
             AssistantOutput::text("all done".to_string())
         } else {
