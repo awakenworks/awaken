@@ -526,7 +526,12 @@ mod tests {
         // byte-identical runnable (so a delegation `description` edit is not a republish).
         let tools = vec![tool("echo")];
         let base = config(&["echo"]);
-        let base_fp = compile(&base, &tools).unwrap().snapshot().fingerprint.0.clone();
+        let base_fp = compile(&base, &tools)
+            .unwrap()
+            .snapshot()
+            .fingerprint
+            .0
+            .clone();
 
         let mut labeled = base.clone();
         labeled.description = Some("routes research questions".to_string());
@@ -534,7 +539,12 @@ mod tests {
         labeled
             .metadata
             .insert("team".to_string(), "research".to_string());
-        let labeled_fp = compile(&labeled, &tools).unwrap().snapshot().fingerprint.0.clone();
+        let labeled_fp = compile(&labeled, &tools)
+            .unwrap()
+            .snapshot()
+            .fingerprint
+            .0
+            .clone();
         assert_eq!(
             base_fp, labeled_fp,
             "name/description/metadata are excluded from the content-address"
@@ -543,8 +553,16 @@ mod tests {
         // A genuinely behavioral change still moves the fingerprint.
         let mut rebehaved = base.clone();
         rebehaved.instructions = "be terse".to_string();
-        let rebehaved_fp = compile(&rebehaved, &tools).unwrap().snapshot().fingerprint.0.clone();
-        assert_ne!(base_fp, rebehaved_fp, "instructions still enter the fingerprint");
+        let rebehaved_fp = compile(&rebehaved, &tools)
+            .unwrap()
+            .snapshot()
+            .fingerprint
+            .0
+            .clone();
+        assert_ne!(
+            base_fp, rebehaved_fp,
+            "instructions still enter the fingerprint"
+        );
     }
 
     #[test]

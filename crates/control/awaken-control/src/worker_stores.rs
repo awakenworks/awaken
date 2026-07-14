@@ -31,10 +31,10 @@ pub async fn open_shared_config_stores(
     key: &[u8; 32],
 ) -> SharedConfigStores {
     fn ensure_parent(backend: &StoreBackend) {
-        if let StoreBackend::Sqlite(path) = backend {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).expect("create control-store directory");
-            }
+        if let StoreBackend::Sqlite(path) = backend
+            && let Some(parent) = path.parent()
+        {
+            std::fs::create_dir_all(parent).expect("create control-store directory");
         }
     }
     let path = |p: &Path| p.to_string_lossy().into_owned();

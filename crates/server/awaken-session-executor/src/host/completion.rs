@@ -155,6 +155,20 @@ impl Drop for WaiterGuard {
     }
 }
 
+impl CompletionSink for CompletionRegistry {
+    fn settled(&self, run_id: &RunId, phase: &Phase) {
+        if let Some(tx) = self
+            .waiters
+            .lock()
+            .expect("completion registry poisoned")
+            .remove(&run_id.0)
+        {
+            // The receiver may have already gone (timed out) — a dropped send is fine.
+            let _ = tx.send(phase.clone());
+        }
+    }
+}
+
 #[cfg(test)]
 mod completion_tests {
     use super::{CompletionRegistry, RunId};
@@ -186,19 +200,5 @@ mod completion_tests {
         registry.settled(&RunId("r".into()), &Phase::Waiting);
         assert!(matches!(rx.await, Ok(Phase::Waiting)));
         assert!(registry.waiters.lock().unwrap().is_empty());
-    }
-}
-
-impl CompletionSink for CompletionRegistry {
-    fn settled(&self, run_id: &RunId, phase: &Phase) {
-        if let Some(tx) = self
-            .waiters
-            .lock()
-            .expect("completion registry poisoned")
-            .remove(&run_id.0)
-        {
-            // The receiver may have already gone (timed out) — a dropped send is fine.
-            let _ = tx.send(phase.clone());
-        }
     }
 }
