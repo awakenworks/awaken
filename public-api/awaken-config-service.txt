@@ -1,0 +1,131 @@
+pub mod awaken_config_service
+pub enum awaken_config_service::PublishError
+pub awaken_config_service::PublishError::Compile(alloc::string::String)
+pub awaken_config_service::PublishError::NotStored(alloc::string::String)
+pub awaken_config_service::PublishError::Store(alloc::string::String)
+pub awaken_config_service::PublishError::Unresolvable(alloc::string::String)
+impl core::error::Error for awaken_config_service::PublishError
+impl core::fmt::Debug for awaken_config_service::PublishError
+pub fn awaken_config_service::PublishError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_config_service::PublishError
+pub fn awaken_config_service::PublishError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_config_service::PublishError
+impl core::marker::Send for awaken_config_service::PublishError
+impl core::marker::Sync for awaken_config_service::PublishError
+impl core::marker::Unpin for awaken_config_service::PublishError
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_config_service::PublishError
+impl core::panic::unwind_safe::UnwindSafe for awaken_config_service::PublishError
+pub struct awaken_config_service::ConfigPlane
+impl awaken_config_service::ConfigPlane
+pub fn awaken_config_service::ConfigPlane::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
+pub async fn awaken_config_service::ConfigPlane::get(&self, &awaken_tenancy::ScopeId, &str) -> core::result::Result<core::option::Option<awaken_config_store::config::AgentConfig>, alloc::string::String>
+pub async fn awaken_config_service::ConfigPlane::list(&self, &awaken_tenancy::ScopeId) -> core::result::Result<alloc::vec::Vec<awaken_config_store::config::AgentConfig>, alloc::string::String>
+pub fn awaken_config_service::ConfigPlane::new(alloc::sync::Arc<awaken_config_service::ConfigService>, alloc::sync::Arc<dyn awaken_config_store::store::ScopedConfigRegistry>, alloc::sync::Arc<dyn awaken_config_service::ToolCatalogSource>) -> Self
+pub async fn awaken_config_service::ConfigPlane::publish(&self, &awaken_tenancy::ScopeId, &str) -> core::result::Result<awaken_config_store::store::StoredPublication, awaken_config_service::PublishError>
+pub async fn awaken_config_service::ConfigPlane::put(&self, &awaken_tenancy::ScopeId, &awaken_config_store::config::AgentConfig) -> core::result::Result<(), alloc::string::String>
+pub async fn awaken_config_service::ConfigPlane::reconcile(&self, &awaken_tenancy::ScopeId, &str) -> core::result::Result<bool, alloc::string::String>
+pub fn awaken_config_service::ConfigPlane::registry_for(&self, &awaken_tenancy::ScopeId) -> awaken_config_store::store::ScopedConfig<dyn awaken_config_store::store::ScopedConfigRegistry>
+pub fn awaken_config_service::ConfigPlane::service(&self) -> &alloc::sync::Arc<awaken_config_service::ConfigService>
+pub fn awaken_config_service::ConfigPlane::validate(&self, &awaken_tenancy::ScopeId, &awaken_config_store::config::AgentConfig) -> core::result::Result<(), alloc::string::String>
+impl core::clone::Clone for awaken_config_service::ConfigPlane
+pub fn awaken_config_service::ConfigPlane::clone(&self) -> awaken_config_service::ConfigPlane
+impl core::marker::Freeze for awaken_config_service::ConfigPlane
+impl core::marker::Send for awaken_config_service::ConfigPlane
+impl core::marker::Sync for awaken_config_service::ConfigPlane
+impl core::marker::Unpin for awaken_config_service::ConfigPlane
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_config_service::ConfigPlane
+impl !core::panic::unwind_safe::UnwindSafe for awaken_config_service::ConfigPlane
+pub struct awaken_config_service::ConfigService
+impl awaken_config_service::ConfigService
+pub async fn awaken_config_service::ConfigService::get(&self, &dyn awaken_config_store::store::ConfigRegistry, &str) -> core::result::Result<core::option::Option<awaken_config_store::config::AgentConfig>, alloc::string::String>
+pub fn awaken_config_service::ConfigService::installed(&self, &str) -> core::option::Option<awaken_runtime_contract::runnable::RunnableConfig>
+pub async fn awaken_config_service::ConfigService::list(&self, &dyn awaken_config_store::store::ConfigRegistry) -> core::result::Result<alloc::vec::Vec<awaken_config_store::config::AgentConfig>, alloc::string::String>
+pub fn awaken_config_service::ConfigService::new() -> Self
+pub async fn awaken_config_service::ConfigService::publish(&self, &dyn awaken_config_store::store::ConfigRegistry, &str, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> core::result::Result<awaken_config_store::store::StoredPublication, awaken_config_service::PublishError>
+pub async fn awaken_config_service::ConfigService::put(&self, &dyn awaken_config_store::store::ConfigRegistry, &awaken_config_store::config::AgentConfig) -> core::result::Result<(), alloc::string::String>
+pub async fn awaken_config_service::ConfigService::reconcile(&self, &dyn awaken_config_store::store::ConfigRegistry, &str, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> core::result::Result<bool, alloc::string::String>
+pub fn awaken_config_service::ConfigService::validate(&self, &awaken_config_store::config::AgentConfig, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> core::result::Result<(), alloc::string::String>
+pub async fn awaken_config_service::ConfigService::warm_install(&self, &dyn awaken_config_store::store::ScopedConfigRegistry, &awaken_tenancy::ScopeId) -> usize
+pub fn awaken_config_service::ConfigService::with_model_resolver(self, alloc::sync::Arc<dyn awaken_config_service::ModelResolver>) -> Self
+pub fn awaken_config_service::ConfigService::with_resources(self, alloc::sync::Arc<dyn awaken_config_resolver::stores::ResourceStore>) -> Self
+impl core::default::Default for awaken_config_service::ConfigService
+pub fn awaken_config_service::ConfigService::default() -> awaken_config_service::ConfigService
+impl !core::marker::Freeze for awaken_config_service::ConfigService
+impl core::marker::Send for awaken_config_service::ConfigService
+impl core::marker::Sync for awaken_config_service::ConfigService
+impl core::marker::Unpin for awaken_config_service::ConfigService
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_config_service::ConfigService
+impl !core::panic::unwind_safe::UnwindSafe for awaken_config_service::ConfigService
+pub struct awaken_config_service::ConfigServiceAgentSource(pub alloc::sync::Arc<awaken_config_service::ConfigService>)
+impl awaken_protocol_managed::routes::agents_registry::AgentConfigSource for awaken_config_service::ConfigServiceAgentSource
+pub fn awaken_config_service::ConfigServiceAgentSource::agent_view(&self, &str) -> core::option::Option<awaken_protocol_managed::routes::agents_registry::AgentConfigView>
+impl core::marker::Freeze for awaken_config_service::ConfigServiceAgentSource
+impl core::marker::Send for awaken_config_service::ConfigServiceAgentSource
+impl core::marker::Sync for awaken_config_service::ConfigServiceAgentSource
+impl core::marker::Unpin for awaken_config_service::ConfigServiceAgentSource
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_config_service::ConfigServiceAgentSource
+impl !core::panic::unwind_safe::UnwindSafe for awaken_config_service::ConfigServiceAgentSource
+pub struct awaken_config_service::ConfigServiceReconciler
+impl awaken_config_service::ConfigServiceReconciler
+pub fn awaken_config_service::ConfigServiceReconciler::new(awaken_config_service::ConfigPlane, impl core::convert::Into<awaken_tenancy::ScopeId>, alloc::vec::Vec<alloc::string::String>) -> Self
+impl awaken_config_service::AssistantBindingReconciler for awaken_config_service::ConfigServiceReconciler
+pub fn awaken_config_service::ConfigServiceReconciler::reconcile<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl core::marker::Freeze for awaken_config_service::ConfigServiceReconciler
+impl core::marker::Send for awaken_config_service::ConfigServiceReconciler
+impl core::marker::Sync for awaken_config_service::ConfigServiceReconciler
+impl core::marker::Unpin for awaken_config_service::ConfigServiceReconciler
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_config_service::ConfigServiceReconciler
+impl !core::panic::unwind_safe::UnwindSafe for awaken_config_service::ConfigServiceReconciler
+pub struct awaken_config_service::ResolvedModel
+pub awaken_config_service::ResolvedModel::candidates: alloc::vec::Vec<awaken_runtime_contract::resolved::ModelBinding>
+pub awaken_config_service::ResolvedModel::primary: awaken_runtime_contract::resolved::ModelBinding
+impl core::clone::Clone for awaken_config_service::ResolvedModel
+pub fn awaken_config_service::ResolvedModel::clone(&self) -> awaken_config_service::ResolvedModel
+impl core::cmp::Eq for awaken_config_service::ResolvedModel
+impl core::cmp::PartialEq for awaken_config_service::ResolvedModel
+pub fn awaken_config_service::ResolvedModel::eq(&self, &awaken_config_service::ResolvedModel) -> bool
+impl core::fmt::Debug for awaken_config_service::ResolvedModel
+pub fn awaken_config_service::ResolvedModel::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_config_service::ResolvedModel
+impl core::marker::Freeze for awaken_config_service::ResolvedModel
+impl core::marker::Send for awaken_config_service::ResolvedModel
+impl core::marker::Sync for awaken_config_service::ResolvedModel
+impl core::marker::Unpin for awaken_config_service::ResolvedModel
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_config_service::ResolvedModel
+impl core::panic::unwind_safe::UnwindSafe for awaken_config_service::ResolvedModel
+pub struct awaken_config_service::ScopedToolCatalog
+impl awaken_config_service::ScopedToolCatalog
+pub fn awaken_config_service::ScopedToolCatalog::new(alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>, impl core::convert::Into<awaken_tenancy::ScopeId>, alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>) -> Self
+impl awaken_config_service::ToolCatalogSource for awaken_config_service::ScopedToolCatalog
+pub fn awaken_config_service::ScopedToolCatalog::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
+impl core::marker::Freeze for awaken_config_service::ScopedToolCatalog
+impl core::marker::Send for awaken_config_service::ScopedToolCatalog
+impl core::marker::Sync for awaken_config_service::ScopedToolCatalog
+impl core::marker::Unpin for awaken_config_service::ScopedToolCatalog
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_config_service::ScopedToolCatalog
+impl core::panic::unwind_safe::UnwindSafe for awaken_config_service::ScopedToolCatalog
+pub struct awaken_config_service::StaticToolCatalog(pub alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>)
+impl awaken_config_service::ToolCatalogSource for awaken_config_service::StaticToolCatalog
+pub fn awaken_config_service::StaticToolCatalog::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
+impl core::marker::Freeze for awaken_config_service::StaticToolCatalog
+impl core::marker::Send for awaken_config_service::StaticToolCatalog
+impl core::marker::Sync for awaken_config_service::StaticToolCatalog
+impl core::marker::Unpin for awaken_config_service::StaticToolCatalog
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_config_service::StaticToolCatalog
+impl core::panic::unwind_safe::UnwindSafe for awaken_config_service::StaticToolCatalog
+pub const awaken_config_service::RESERVED_ADMIN_SCOPE: &str
+pub trait awaken_config_service::AssistantBindingReconciler: core::marker::Send + core::marker::Sync
+pub fn awaken_config_service::AssistantBindingReconciler::reconcile<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl awaken_config_service::AssistantBindingReconciler for awaken_config_service::ConfigServiceReconciler
+pub fn awaken_config_service::ConfigServiceReconciler::reconcile<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait awaken_config_service::ModelResolver: core::marker::Send + core::marker::Sync
+pub fn awaken_config_service::ModelResolver::resolve_auto(&self) -> core::result::Result<awaken_config_service::ResolvedModel, alloc::string::String>
+pub trait awaken_config_service::ToolCatalogSource: core::marker::Send + core::marker::Sync
+pub fn awaken_config_service::ToolCatalogSource::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
+impl awaken_config_service::ToolCatalogSource for awaken_config_service::ScopedToolCatalog
+pub fn awaken_config_service::ScopedToolCatalog::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
+impl awaken_config_service::ToolCatalogSource for awaken_config_service::StaticToolCatalog
+pub fn awaken_config_service::StaticToolCatalog::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
+pub fn awaken_config_service::capabilities_router(alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>) -> axum::routing::Router
+pub fn awaken_config_service::config_router(awaken_config_service::ConfigPlane) -> axum::routing::Router
+pub fn awaken_config_service::needs_resolution(&awaken_config_store::config::ModelSelection) -> bool

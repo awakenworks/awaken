@@ -39,6 +39,9 @@ awaken-store-sqlite = { workspace = true }
 awaken-store-fs = { workspace = true }
 awaken-store-postgres = { workspace = true }
 awaken-config-store = { workspace = true }
+# The config-authoring plane, extracted so awaken-control can share it without
+# depending on this execution host. Re-exported below for the composition root.
+awaken-config-service = { workspace = true }
 awaken-tenancy = { workspace = true }
 awaken-run-ingress = { workspace = true }
 awaken-run-executor-acp = { workspace = true }

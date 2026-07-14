@@ -10,11 +10,11 @@ use awaken_admin_assistant::{
     ADMIN_ASSISTANT_AGENT_ID, CapabilityReader, DraftValidator, PlatformCapabilities, PluginInfo,
     admin_assistant_config,
 };
+use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
 use awaken_config_store::AgentConfig;
 use awaken_model_catalog::ProviderCatalog;
 use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_host::{ConfigPlane, RESERVED_ADMIN_SCOPE};
 use awaken_tenancy::ScopeId;
 
 /// Publish the management assistant into the reserved scope through the ordinary
@@ -111,13 +111,13 @@ impl DraftValidator for ConfigServiceDraftValidator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_config_store::{DEFAULT_SCOPE, ModelSelection, SqliteConfigStore};
-    use awaken_model_catalog::{ApiDialect, Offering, ProtocolEndpointId, Provider, ProviderId};
-    use awaken_runtime_contract::resolved::ModelBinding;
-    use awaken_runtime_host::{
+    use awaken_config_service::{
         ConfigPlane, ConfigService, ModelResolver, ResolvedModel, ScopedToolCatalog,
         StaticToolCatalog,
     };
+    use awaken_config_store::{DEFAULT_SCOPE, ModelSelection, SqliteConfigStore};
+    use awaken_model_catalog::{ApiDialect, Offering, ProtocolEndpointId, Provider, ProviderId};
+    use awaken_runtime_contract::resolved::ModelBinding;
     use std::collections::BTreeMap;
     use std::sync::Arc;
 

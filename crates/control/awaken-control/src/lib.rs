@@ -45,6 +45,9 @@ use awaken_admin_config_api::{
     AdminState, CredentialProbe, InferenceProfileStore, McpStore, WebhookStore, admin_router,
 };
 use awaken_config_resolver::ResourceStore;
+use awaken_config_service::{
+    ConfigPlane, ConfigService, ConfigServiceAgentSource, capabilities_router, config_router,
+};
 use awaken_credential_vault::SecretStore;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_model_catalog::repo::CatalogRepo;
@@ -53,9 +56,6 @@ use awaken_protocol_managed::{
     agents_router, deployments_router, environments_router, user_profiles_router, vault_router,
 };
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_host::{
-    ConfigPlane, ConfigService, ConfigServiceAgentSource, capabilities_router, config_router,
-};
 use awaken_webhook_managed::{WebhookLifecycleSink, assemble};
 use axum::Router;
 

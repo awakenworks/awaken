@@ -1,0 +1,31 @@
+[package]
+name = "awaken-config-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The config-authoring plane (ADR-0036/slice A), extracted from the data-plane host
+# so BOTH planes can share it without the authoring/authz plane (awaken-control)
+# depending on the execution host: the config service + its CRUD router, the
+# advertised-capabilities router, the model-binding resolver, and the scoped tool
+# catalog. It is pure config-plane logic — it knows nothing of SharedHost or run
+# execution (the control ⊥ execution invariant). The data-plane host re-exports it
+# for the composition root; awaken-control depends on it directly.
+[dependencies]
+awaken-runtime-contract.workspace = true
+awaken-ext-memory = { workspace = true }
+awaken-ext-compact = { workspace = true }
+awaken-ext-permission = { workspace = true }
+awaken-ext-state-machine = { workspace = true, features = ["schema"] }
+awaken-config-store = { workspace = true }
+awaken-tenancy = { workspace = true }
+awaken-config-resolver = { workspace = true }
+awaken-protocol-managed = { workspace = true }
+async-trait.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
+axum = { version = "0.8", features = ["multipart"] }
+
+[lints]
+workspace = true

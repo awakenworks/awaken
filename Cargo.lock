@@ -367,6 +367,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-config-service"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-config-resolver",
+ "awaken-config-store",
+ "awaken-ext-compact",
+ "awaken-ext-memory",
+ "awaken-ext-permission",
+ "awaken-ext-state-machine",
+ "awaken-protocol-managed",
+ "awaken-runtime-contract",
+ "awaken-tenancy",
+ "axum",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-config-store"
 version = "1.0.0-dev"
 dependencies = [
@@ -419,6 +439,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-authz-enforce",
  "awaken-config-resolver",
+ "awaken-config-service",
  "awaken-config-store",
  "awaken-credential-vault",
  "awaken-data-subject",
@@ -430,7 +451,6 @@ dependencies = [
  "awaken-model-catalog",
  "awaken-protocol-managed",
  "awaken-runtime-contract",
- "awaken-runtime-host",
  "awaken-tenancy",
  "awaken-webhook-managed",
  "axum",
@@ -1080,6 +1100,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-config-resolver",
+ "awaken-config-service",
  "awaken-config-store",
  "awaken-credential-vault",
  "awaken-data-subject",

@@ -1,9 +1,23 @@
 pub mod awaken_runtime_host
+pub use awaken_runtime_host::AssistantBindingReconciler
+pub use awaken_runtime_host::ConfigPlane
+pub use awaken_runtime_host::ConfigService
+pub use awaken_runtime_host::ConfigServiceAgentSource
+pub use awaken_runtime_host::ConfigServiceReconciler
 pub use awaken_runtime_host::HttpTransport
+pub use awaken_runtime_host::ModelResolver
+pub use awaken_runtime_host::PublishError
+pub use awaken_runtime_host::RESERVED_ADMIN_SCOPE
+pub use awaken_runtime_host::ResolvedModel
 pub use awaken_runtime_host::Response
+pub use awaken_runtime_host::ScopedToolCatalog
 pub use awaken_runtime_host::SkillContext
 pub use awaken_runtime_host::SkillSpec
+pub use awaken_runtime_host::StaticToolCatalog
+pub use awaken_runtime_host::ToolCatalogSource
 pub use awaken_runtime_host::Transport
+pub use awaken_runtime_host::capabilities_router
+pub use awaken_runtime_host::config_router
 pub use awaken_runtime_host::content_fingerprint
 pub use awaken_runtime_host::parse_skill_md
 pub enum awaken_runtime_host::AcpStop
@@ -56,22 +70,6 @@ impl core::marker::Sync for awaken_runtime_host::HostResume
 impl core::marker::Unpin for awaken_runtime_host::HostResume
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::HostResume
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::HostResume
-pub enum awaken_runtime_host::PublishError
-pub awaken_runtime_host::PublishError::Compile(alloc::string::String)
-pub awaken_runtime_host::PublishError::NotStored(alloc::string::String)
-pub awaken_runtime_host::PublishError::Store(alloc::string::String)
-pub awaken_runtime_host::PublishError::Unresolvable(alloc::string::String)
-impl core::error::Error for awaken_runtime_host::PublishError
-impl core::fmt::Debug for awaken_runtime_host::PublishError
-pub fn awaken_runtime_host::PublishError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for awaken_runtime_host::PublishError
-pub fn awaken_runtime_host::PublishError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_runtime_host::PublishError
-impl core::marker::Send for awaken_runtime_host::PublishError
-impl core::marker::Sync for awaken_runtime_host::PublishError
-impl core::marker::Unpin for awaken_runtime_host::PublishError
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::PublishError
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::PublishError
 pub enum awaken_runtime_host::StoreKind
 pub awaken_runtime_host::StoreKind::Fs
 pub awaken_runtime_host::StoreKind::Postgres
@@ -153,67 +151,6 @@ impl core::marker::Sync for awaken_runtime_host::AcpTurn
 impl core::marker::Unpin for awaken_runtime_host::AcpTurn
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::AcpTurn
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::AcpTurn
-pub struct awaken_runtime_host::ConfigPlane
-impl awaken_runtime_host::ConfigPlane
-pub fn awaken_runtime_host::ConfigPlane::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
-pub async fn awaken_runtime_host::ConfigPlane::get(&self, &awaken_tenancy::ScopeId, &str) -> core::result::Result<core::option::Option<awaken_config_store::config::AgentConfig>, alloc::string::String>
-pub async fn awaken_runtime_host::ConfigPlane::list(&self, &awaken_tenancy::ScopeId) -> core::result::Result<alloc::vec::Vec<awaken_config_store::config::AgentConfig>, alloc::string::String>
-pub fn awaken_runtime_host::ConfigPlane::new(alloc::sync::Arc<awaken_runtime_host::ConfigService>, alloc::sync::Arc<dyn awaken_config_store::store::ScopedConfigRegistry>, alloc::sync::Arc<dyn awaken_runtime_host::ToolCatalogSource>) -> Self
-pub async fn awaken_runtime_host::ConfigPlane::publish(&self, &awaken_tenancy::ScopeId, &str) -> core::result::Result<awaken_config_store::store::StoredPublication, awaken_runtime_host::PublishError>
-pub async fn awaken_runtime_host::ConfigPlane::put(&self, &awaken_tenancy::ScopeId, &awaken_config_store::config::AgentConfig) -> core::result::Result<(), alloc::string::String>
-pub async fn awaken_runtime_host::ConfigPlane::reconcile(&self, &awaken_tenancy::ScopeId, &str) -> core::result::Result<bool, alloc::string::String>
-pub fn awaken_runtime_host::ConfigPlane::registry_for(&self, &awaken_tenancy::ScopeId) -> awaken_config_store::store::ScopedConfig<dyn awaken_config_store::store::ScopedConfigRegistry>
-pub fn awaken_runtime_host::ConfigPlane::service(&self) -> &alloc::sync::Arc<awaken_runtime_host::ConfigService>
-pub fn awaken_runtime_host::ConfigPlane::validate(&self, &awaken_tenancy::ScopeId, &awaken_config_store::config::AgentConfig) -> core::result::Result<(), alloc::string::String>
-impl core::clone::Clone for awaken_runtime_host::ConfigPlane
-pub fn awaken_runtime_host::ConfigPlane::clone(&self) -> awaken_runtime_host::ConfigPlane
-impl core::marker::Freeze for awaken_runtime_host::ConfigPlane
-impl core::marker::Send for awaken_runtime_host::ConfigPlane
-impl core::marker::Sync for awaken_runtime_host::ConfigPlane
-impl core::marker::Unpin for awaken_runtime_host::ConfigPlane
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::ConfigPlane
-impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::ConfigPlane
-pub struct awaken_runtime_host::ConfigService
-impl awaken_runtime_host::ConfigService
-pub async fn awaken_runtime_host::ConfigService::get(&self, &dyn awaken_config_store::store::ConfigRegistry, &str) -> core::result::Result<core::option::Option<awaken_config_store::config::AgentConfig>, alloc::string::String>
-pub fn awaken_runtime_host::ConfigService::installed(&self, &str) -> core::option::Option<awaken_runtime_contract::runnable::RunnableConfig>
-pub async fn awaken_runtime_host::ConfigService::list(&self, &dyn awaken_config_store::store::ConfigRegistry) -> core::result::Result<alloc::vec::Vec<awaken_config_store::config::AgentConfig>, alloc::string::String>
-pub fn awaken_runtime_host::ConfigService::new() -> Self
-pub async fn awaken_runtime_host::ConfigService::publish(&self, &dyn awaken_config_store::store::ConfigRegistry, &str, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> core::result::Result<awaken_config_store::store::StoredPublication, awaken_runtime_host::PublishError>
-pub async fn awaken_runtime_host::ConfigService::put(&self, &dyn awaken_config_store::store::ConfigRegistry, &awaken_config_store::config::AgentConfig) -> core::result::Result<(), alloc::string::String>
-pub async fn awaken_runtime_host::ConfigService::reconcile(&self, &dyn awaken_config_store::store::ConfigRegistry, &str, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> core::result::Result<bool, alloc::string::String>
-pub fn awaken_runtime_host::ConfigService::validate(&self, &awaken_config_store::config::AgentConfig, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> core::result::Result<(), alloc::string::String>
-pub async fn awaken_runtime_host::ConfigService::warm_install(&self, &dyn awaken_config_store::store::ScopedConfigRegistry, &awaken_tenancy::ScopeId) -> usize
-pub fn awaken_runtime_host::ConfigService::with_model_resolver(self, alloc::sync::Arc<dyn awaken_runtime_host::ModelResolver>) -> Self
-pub fn awaken_runtime_host::ConfigService::with_resources(self, alloc::sync::Arc<dyn awaken_config_resolver::stores::ResourceStore>) -> Self
-impl core::default::Default for awaken_runtime_host::ConfigService
-pub fn awaken_runtime_host::ConfigService::default() -> awaken_runtime_host::ConfigService
-impl !core::marker::Freeze for awaken_runtime_host::ConfigService
-impl core::marker::Send for awaken_runtime_host::ConfigService
-impl core::marker::Sync for awaken_runtime_host::ConfigService
-impl core::marker::Unpin for awaken_runtime_host::ConfigService
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::ConfigService
-impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::ConfigService
-pub struct awaken_runtime_host::ConfigServiceAgentSource(pub alloc::sync::Arc<awaken_runtime_host::ConfigService>)
-impl awaken_protocol_managed::routes::agents_registry::AgentConfigSource for awaken_runtime_host::ConfigServiceAgentSource
-pub fn awaken_runtime_host::ConfigServiceAgentSource::agent_view(&self, &str) -> core::option::Option<awaken_protocol_managed::routes::agents_registry::AgentConfigView>
-impl core::marker::Freeze for awaken_runtime_host::ConfigServiceAgentSource
-impl core::marker::Send for awaken_runtime_host::ConfigServiceAgentSource
-impl core::marker::Sync for awaken_runtime_host::ConfigServiceAgentSource
-impl core::marker::Unpin for awaken_runtime_host::ConfigServiceAgentSource
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::ConfigServiceAgentSource
-impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::ConfigServiceAgentSource
-pub struct awaken_runtime_host::ConfigServiceReconciler
-impl awaken_runtime_host::ConfigServiceReconciler
-pub fn awaken_runtime_host::ConfigServiceReconciler::new(awaken_runtime_host::ConfigPlane, impl core::convert::Into<awaken_tenancy::ScopeId>, alloc::vec::Vec<alloc::string::String>) -> Self
-impl awaken_runtime_host::AssistantBindingReconciler for awaken_runtime_host::ConfigServiceReconciler
-pub fn awaken_runtime_host::ConfigServiceReconciler::reconcile<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-impl core::marker::Freeze for awaken_runtime_host::ConfigServiceReconciler
-impl core::marker::Send for awaken_runtime_host::ConfigServiceReconciler
-impl core::marker::Sync for awaken_runtime_host::ConfigServiceReconciler
-impl core::marker::Unpin for awaken_runtime_host::ConfigServiceReconciler
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::ConfigServiceReconciler
-impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::ConfigServiceReconciler
 pub struct awaken_runtime_host::DeploymentConfig
 pub awaken_runtime_host::DeploymentConfig::database_url: core::option::Option<alloc::string::String>
 pub awaken_runtime_host::DeploymentConfig::disable_local_pool: bool
@@ -420,23 +357,6 @@ impl core::marker::Sync for awaken_runtime_host::RemoteCoordinator
 impl core::marker::Unpin for awaken_runtime_host::RemoteCoordinator
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::RemoteCoordinator
 impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::RemoteCoordinator
-pub struct awaken_runtime_host::ResolvedModel
-pub awaken_runtime_host::ResolvedModel::candidates: alloc::vec::Vec<awaken_runtime_contract::resolved::ModelBinding>
-pub awaken_runtime_host::ResolvedModel::primary: awaken_runtime_contract::resolved::ModelBinding
-impl core::clone::Clone for awaken_runtime_host::ResolvedModel
-pub fn awaken_runtime_host::ResolvedModel::clone(&self) -> awaken_runtime_host::ResolvedModel
-impl core::cmp::Eq for awaken_runtime_host::ResolvedModel
-impl core::cmp::PartialEq for awaken_runtime_host::ResolvedModel
-pub fn awaken_runtime_host::ResolvedModel::eq(&self, &awaken_runtime_host::ResolvedModel) -> bool
-impl core::fmt::Debug for awaken_runtime_host::ResolvedModel
-pub fn awaken_runtime_host::ResolvedModel::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_runtime_host::ResolvedModel
-impl core::marker::Freeze for awaken_runtime_host::ResolvedModel
-impl core::marker::Send for awaken_runtime_host::ResolvedModel
-impl core::marker::Sync for awaken_runtime_host::ResolvedModel
-impl core::marker::Unpin for awaken_runtime_host::ResolvedModel
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::ResolvedModel
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::ResolvedModel
 pub struct awaken_runtime_host::SandboxChannelSource
 impl awaken_runtime_host::SandboxChannelSource
 pub fn awaken_runtime_host::SandboxChannelSource::new(impl core::convert::Into<std::path::PathBuf>, awaken_run_executor_acp::subprocess::AcpLaunch) -> Self
@@ -450,17 +370,6 @@ impl core::marker::Sync for awaken_runtime_host::SandboxChannelSource
 impl core::marker::Unpin for awaken_runtime_host::SandboxChannelSource
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::SandboxChannelSource
 impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::SandboxChannelSource
-pub struct awaken_runtime_host::ScopedToolCatalog
-impl awaken_runtime_host::ScopedToolCatalog
-pub fn awaken_runtime_host::ScopedToolCatalog::new(alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>, impl core::convert::Into<awaken_tenancy::ScopeId>, alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>) -> Self
-impl awaken_runtime_host::ToolCatalogSource for awaken_runtime_host::ScopedToolCatalog
-pub fn awaken_runtime_host::ScopedToolCatalog::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
-impl core::marker::Freeze for awaken_runtime_host::ScopedToolCatalog
-impl core::marker::Send for awaken_runtime_host::ScopedToolCatalog
-impl core::marker::Sync for awaken_runtime_host::ScopedToolCatalog
-impl core::marker::Unpin for awaken_runtime_host::ScopedToolCatalog
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::ScopedToolCatalog
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::ScopedToolCatalog
 pub struct awaken_runtime_host::SharedHost
 impl awaken_runtime_host::SharedHost
 pub fn awaken_runtime_host::SharedHost::acp_launch_observer(&self) -> alloc::sync::Arc<dyn awaken_protocol_acp::LaunchObserver>
@@ -497,7 +406,7 @@ pub fn awaken_runtime_host::SharedHost::with_capture_sink(self, alloc::sync::Arc
 pub fn awaken_runtime_host::SharedHost::with_client_tools(self, std::collections::hash::set::HashSet<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_compaction(self, usize, usize) -> Self
 pub fn awaken_runtime_host::SharedHost::with_compaction_tokens(self, u32, f64, usize) -> Self
-pub fn awaken_runtime_host::SharedHost::with_config_service(self, alloc::sync::Arc<awaken_runtime_host::ConfigService>) -> Self
+pub fn awaken_runtime_host::SharedHost::with_config_service(self, alloc::sync::Arc<awaken_config_service::config_plane::ConfigService>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_delegates(self, std::collections::hash::set::HashSet<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_executor_provider(self, alloc::sync::Arc<dyn awaken_runtime_host::ExecutorProvider>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_gate_override(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>) -> Self
@@ -555,15 +464,6 @@ impl core::marker::Sync for awaken_runtime_host::SqliteManagedSessionRepository
 impl core::marker::Unpin for awaken_runtime_host::SqliteManagedSessionRepository
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::SqliteManagedSessionRepository
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::SqliteManagedSessionRepository
-pub struct awaken_runtime_host::StaticToolCatalog(pub alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>)
-impl awaken_runtime_host::ToolCatalogSource for awaken_runtime_host::StaticToolCatalog
-pub fn awaken_runtime_host::StaticToolCatalog::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
-impl core::marker::Freeze for awaken_runtime_host::StaticToolCatalog
-impl core::marker::Send for awaken_runtime_host::StaticToolCatalog
-impl core::marker::Sync for awaken_runtime_host::StaticToolCatalog
-impl core::marker::Unpin for awaken_runtime_host::StaticToolCatalog
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::StaticToolCatalog
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::StaticToolCatalog
 pub struct awaken_runtime_host::ThreadEgress(_)
 impl awaken_runtime_host::ThreadEgress
 pub fn awaken_runtime_host::ThreadEgress::denies(&self, &str) -> bool
@@ -603,28 +503,13 @@ impl core::marker::Sync for awaken_runtime_host::VaultRefresher
 impl core::marker::Unpin for awaken_runtime_host::VaultRefresher
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::VaultRefresher
 impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::VaultRefresher
-pub const awaken_runtime_host::RESERVED_ADMIN_SCOPE: &str
-pub trait awaken_runtime_host::AssistantBindingReconciler: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_host::AssistantBindingReconciler::reconcile<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-impl awaken_runtime_host::AssistantBindingReconciler for awaken_runtime_host::ConfigServiceReconciler
-pub fn awaken_runtime_host::ConfigServiceReconciler::reconcile<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_runtime_host::ExecutorProvider: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_host::ExecutorProvider::executor_for(&self, &str) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
 pub trait awaken_runtime_host::GatewayExecutorFactory: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_host::GatewayExecutorFactory::build(&self, &awaken_runtime_contract::model_access::ResolvedModelEndpoint) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
-pub trait awaken_runtime_host::ModelResolver: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_host::ModelResolver::resolve_auto(&self) -> core::result::Result<awaken_runtime_host::ResolvedModel, alloc::string::String>
-pub trait awaken_runtime_host::ToolCatalogSource: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_host::ToolCatalogSource::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
-impl awaken_runtime_host::ToolCatalogSource for awaken_runtime_host::ScopedToolCatalog
-pub fn awaken_runtime_host::ScopedToolCatalog::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
-impl awaken_runtime_host::ToolCatalogSource for awaken_runtime_host::StaticToolCatalog
-pub fn awaken_runtime_host::StaticToolCatalog::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub fn awaken_runtime_host::advertised_tools(&std::collections::hash::set::HashSet<alloc::string::String>, &std::collections::hash::set::HashSet<alloc::string::String>, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub fn awaken_runtime_host::block_text(&[awaken_agent_contract::agent::content::ContentBlock]) -> alloc::string::String
-pub fn awaken_runtime_host::capabilities_router(alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>) -> axum::routing::Router
 pub fn awaken_runtime_host::commit_ingest_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> axum::routing::Router
-pub fn awaken_runtime_host::config_router(awaken_runtime_host::ConfigPlane) -> axum::routing::Router
 pub fn awaken_runtime_host::consent_router(alloc::sync::Arc<dyn awaken_data_subject::DataSubjectRepo>) -> axum::routing::Router
 pub fn awaken_runtime_host::default_models() -> alloc::vec::Vec<awaken_runtime_host::ModelEntry>
 pub fn awaken_runtime_host::dispatch_transport_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> axum::routing::Router

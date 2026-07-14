@@ -93,6 +93,7 @@ awaken-store-schema = { path = "crates/stores/awaken-store-schema" }
 awaken-store-sqlite = { path = "crates/stores/awaken-store-sqlite" }
 awaken-store-postgres = { path = "crates/stores/awaken-store-postgres" }
 awaken-config-store = { path = "crates/control/awaken-config-store" }
+awaken-config-service = { path = "crates/control/awaken-config-service" }
 awaken-provisioning-contract = { path = "crates/worker/awaken-provisioning-contract" }
 awaken-agent-channel = { path = "crates/worker/awaken-agent-channel" }
 awaken-connection-plan = { path = "crates/worker/awaken-connection-plan" }

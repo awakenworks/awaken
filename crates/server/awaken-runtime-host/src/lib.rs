@@ -16,13 +16,10 @@ mod acp_provision;
 mod acp_serve;
 mod agent_catalog;
 mod background;
-mod binding_resolver;
-mod capabilities;
 mod commit_backend;
 mod commit_ingest;
 mod compact;
 mod config;
-mod config_plane;
 mod data_subject_api;
 mod delegate;
 mod deployment_config;
@@ -34,8 +31,6 @@ mod files;
 mod gateway_executor;
 mod host;
 mod hub;
-#[cfg(test)]
-mod test_support;
 mod judge;
 mod live_inbox;
 mod mcp;
@@ -52,8 +47,18 @@ mod skills;
 mod skills_api;
 mod store;
 mod subagent;
-mod tool_catalog;
+#[cfg(test)]
+mod test_support;
 mod worker_http;
+
+// The config-authoring plane now lives in the shared `awaken-config-service` crate
+// (control ⊥ execution: `awaken-control` depends on it directly, not on this host).
+// These thin aliases keep the historical `crate::{config_plane,binding_resolver,…}`
+// module paths resolving for this host's internal consumers and the re-exports below.
+use awaken_config_service as config_plane;
+use awaken_config_service as binding_resolver;
+use awaken_config_service as tool_catalog;
+use awaken_config_service as capabilities;
 
 use std::sync::Arc;
 
