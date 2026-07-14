@@ -27,6 +27,7 @@ mod dispatch_backend;
 mod dispatch_transport;
 mod dispatch_transport_client;
 mod durable_ops;
+mod env_store;
 mod files;
 mod gateway_executor;
 mod host;
@@ -113,6 +114,7 @@ pub use crate::deployment_config::{DeploymentConfig, DispatchBackend, StoreKind,
 pub use crate::dispatch_transport::dispatch_transport_router;
 pub use crate::dispatch_transport_client::{HttpDispatchQueue, worker_dispatch_store};
 pub use crate::durable_ops::durable_ops_router;
+pub use crate::env_store::{PostgresEnvRegistry, SqliteEnvRegistry};
 pub use crate::files::files_router;
 pub use crate::memory_store_api::memory_stores_router;
 pub use crate::models::{ModelEntry, default_models, models_router};
