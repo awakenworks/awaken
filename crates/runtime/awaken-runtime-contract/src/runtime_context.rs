@@ -75,6 +75,14 @@ pub struct RuntimeRunContext {
     /// present routes every already-gated call through this port — e.g. a remote
     /// hand. The kernel never learns placement; it calls the port either way.
     pub tool_executor: Option<Arc<dyn crate::tool::ToolExecutor>>,
+    /// The model executor to use for THIS attempt, overriding the runtime's bound
+    /// default (ADR-0004). Absent means use the runtime's session-resolved executor.
+    /// Present routes this attempt's inference through the given executor — e.g. a
+    /// gateway-dialing executor built from the run's `ModelAccessGrant`, so a
+    /// secretless worker honors a per-run cloud-managed grant without a local
+    /// provider credential. Symmetric with `tool_executor`: a per-run egress override
+    /// the kernel consults without learning why it was chosen.
+    pub model_executor: Option<Arc<dyn crate::llm::LlmExecutor>>,
     /// The content-capture wiring for this attempt (ADR-0050 D5): the resolved
     /// decision (level + redactor) gating what prompt/completion/tool content the
     /// engine records, plus the subject + sink it is attributed to and written to.
@@ -139,6 +147,15 @@ impl RuntimeRunContext {
     #[must_use]
     pub fn with_tool_executor(mut self, executor: Arc<dyn crate::tool::ToolExecutor>) -> Self {
         self.tool_executor = Some(executor);
+        self
+    }
+
+    /// Override this attempt's model executor (e.g. a gateway-dialing executor built
+    /// from the run's `ModelAccessGrant`), instead of the runtime's bound default
+    /// (ADR-0004). The single per-run egress seam a secretless worker uses.
+    #[must_use]
+    pub fn with_model_executor(mut self, executor: Arc<dyn crate::llm::LlmExecutor>) -> Self {
+        self.model_executor = Some(executor);
         self
     }
 

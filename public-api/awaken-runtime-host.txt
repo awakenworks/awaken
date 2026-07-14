@@ -515,6 +515,7 @@ pub fn awaken_runtime_host::SharedHost::with_config_service(self, alloc::sync::A
 pub fn awaken_runtime_host::SharedHost::with_delegates(self, std::collections::hash::set::HashSet<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_executor_provider(self, alloc::sync::Arc<dyn awaken_runtime_host::ExecutorProvider>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_gate_override(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>) -> Self
+pub fn awaken_runtime_host::SharedHost::with_gateway_executor_factory(self, alloc::sync::Arc<dyn awaken_runtime_host::GatewayExecutorFactory>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_judge(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_memory(self, impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_remote_a2a(self, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_protocol_a2a::client::Transport>) -> Self
@@ -607,6 +608,8 @@ impl awaken_runtime_host::AssistantBindingReconciler for awaken_runtime_host::Co
 pub fn awaken_runtime_host::ConfigServiceReconciler::reconcile<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_runtime_host::ExecutorProvider: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_host::ExecutorProvider::executor_for(&self, &str) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
+pub trait awaken_runtime_host::GatewayExecutorFactory: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_host::GatewayExecutorFactory::build(&self, &awaken_runtime_contract::model_access::ResolvedModelEndpoint) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
 pub trait awaken_runtime_host::ModelResolver: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_host::ModelResolver::resolve_auto(&self) -> core::result::Result<awaken_runtime_host::ResolvedModel, alloc::string::String>
 pub trait awaken_runtime_host::ToolCatalogSource: core::marker::Send + core::marker::Sync

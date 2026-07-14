@@ -31,6 +31,7 @@ mod dispatch_transport;
 mod dispatch_transport_client;
 mod durable_ops;
 mod files;
+mod gateway_executor;
 mod host;
 mod hub;
 mod judge;
@@ -111,6 +112,7 @@ pub use crate::session_store::{PostgresManagedSessionRepository, SqliteManagedSe
 pub use crate::skills_api::skills_router;
 // The model-route seam (R1/R2/R5): a composition root supplies its own
 // `ExecutorProvider` to map a session's model ref to a labeled executor.
+pub use crate::gateway_executor::GatewayExecutorFactory;
 pub use crate::model_route::ExecutorProvider;
 // The managed-vault OAuth seams (ADR-0043): the transport-level refresher, its
 // prepared configuration, and the live MCP credential probe.

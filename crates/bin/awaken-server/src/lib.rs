@@ -317,3 +317,117 @@ fn genai_adapter(adapter_kind: &str) -> Option<awaken_provider_genai::AdapterKin
         _ => return None,
     })
 }
+
+/// Map a cloud-managed grant's `dialect` (a free-form wire name carried in the
+/// `ModelAccessGrant::CloudManagedGateway`) to a genai adapter. More lenient than
+/// [`genai_adapter`] because the dialect is authored on the grant side, not our
+/// catalog: match case-insensitively on the provider family (`AnthropicMessages`,
+/// `anthropic`, `openai-compatible`, …). Unknown → `None`, so the factory fails
+/// closed rather than dialing a wire it cannot speak.
+fn gateway_dialect_adapter(dialect: &str) -> Option<awaken_provider_genai::AdapterKind> {
+    use awaken_provider_genai::AdapterKind;
+    let d = dialect.to_ascii_lowercase();
+    Some(if d.contains("anthropic") {
+        AdapterKind::Anthropic
+    } else if d.contains("gemini") || d.contains("google") {
+        AdapterKind::Gemini
+    } else if d.contains("openai") {
+        AdapterKind::OpenAI
+    } else {
+        return None;
+    })
+}
+
+/// The genai implementation of the [`GatewayExecutorFactory`](awaken_runtime_host::GatewayExecutorFactory)
+/// port (ADR-0004): builds a `GenaiExecutor` that dials a materialized cloud-managed
+/// gateway endpoint. The `bearer` (a short-lived lease token) is presented on egress
+/// as the API key — the gateway validates the lease and injects the real provider
+/// credential out of this process, so the worker holds no provider secret. The base
+/// URL is the gateway (never an arbitrary provider), so a gateway run can never be
+/// pointed at a raw provider endpoint. Composition roots (serve, worker) install this
+/// so the native path honors gateway grants; the closed awaken-cloud layer may inject
+/// its own factory instead — the host depends only on the port.
+#[derive(Default)]
+pub struct GenaiGatewayExecutorFactory;
+
+impl awaken_runtime_host::GatewayExecutorFactory for GenaiGatewayExecutorFactory {
+    fn build(
+        &self,
+        endpoint: &awaken_runtime_contract::model_access::ResolvedModelEndpoint,
+    ) -> Option<Arc<dyn LlmExecutor>> {
+        // A gateway endpoint always carries base_url + bearer (structurally `Some`);
+        // an unknown/absent dialect fails closed.
+        let base_url = endpoint.base_url.clone()?;
+        let bearer = endpoint.bearer.clone()?;
+        let adapter = gateway_dialect_adapter(endpoint.dialect.as_deref()?)?;
+        Some(Arc::new(GenaiExecutor::from_resolved(
+            adapter,
+            Some(base_url),
+            bearer,
+        )))
+    }
+}
+
+#[cfg(test)]
+mod gateway_factory_tests {
+    use super::{GenaiGatewayExecutorFactory, gateway_dialect_adapter};
+    use awaken_provider_genai::AdapterKind;
+    use awaken_runtime_contract::model_access::{ModelAccessGrant, ResolvedModelEndpoint};
+    use awaken_runtime_host::GatewayExecutorFactory;
+
+    #[test]
+    fn dialect_maps_case_insensitively_by_provider_family() {
+        // Free-form grant dialects normalize to a genai adapter by family.
+        assert_eq!(gateway_dialect_adapter("anthropic"), Some(AdapterKind::Anthropic));
+        assert_eq!(
+            gateway_dialect_adapter("AnthropicMessages"),
+            Some(AdapterKind::Anthropic)
+        );
+        assert_eq!(gateway_dialect_adapter("OpenAI"), Some(AdapterKind::OpenAI));
+        assert_eq!(
+            gateway_dialect_adapter("openai-compatible"),
+            Some(AdapterKind::OpenAI)
+        );
+        assert_eq!(gateway_dialect_adapter("gemini"), Some(AdapterKind::Gemini));
+        assert_eq!(gateway_dialect_adapter("google-gemini"), Some(AdapterKind::Gemini));
+        // Unknown dialect fails closed.
+        assert_eq!(gateway_dialect_adapter("cohere"), None);
+        assert_eq!(gateway_dialect_adapter(""), None);
+    }
+
+    #[test]
+    fn factory_builds_an_executor_for_a_materialized_gateway_grant() {
+        let endpoint = ModelAccessGrant::CloudManagedGateway {
+            gateway_base_url: "https://gw.internal".into(),
+            dialect: "AnthropicMessages".into(),
+            model_ref: "claude".into(),
+            lease_token: "lease-abc".into(), // awaken-allow: secret
+        }
+        .materialize();
+        assert!(
+            GenaiGatewayExecutorFactory.build(&endpoint).is_some(),
+            "a gateway endpoint with a known dialect yields an executor"
+        );
+    }
+
+    #[test]
+    fn factory_fails_closed_on_unknown_dialect_and_on_a_local_endpoint() {
+        // Unknown dialect → None (fail closed, never dial a wire we can't speak).
+        let unknown = ResolvedModelEndpoint {
+            base_url: Some("https://gw.internal".into()),
+            model_ref: Some("m".into()),
+            bearer: Some("lease".into()),
+            dialect: Some("cohere".into()),
+        };
+        assert!(GenaiGatewayExecutorFactory.build(&unknown).is_none());
+
+        // A local grant materializes to None base_url/bearer → not buildable as a
+        // gateway executor (the factory only serves gateway endpoints).
+        let local = ModelAccessGrant::LocalSelfCredentialed {
+            model_ref: Some("m".into()),
+            provider_ref: None,
+        }
+        .materialize();
+        assert!(GenaiGatewayExecutorFactory.build(&local).is_none());
+    }
+}

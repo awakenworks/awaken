@@ -623,6 +623,13 @@ async fn management_router_over(
                     exec_secrets,
                     awaken_control::BOOTSTRAP_WORKSPACE,
                 ),
+            ))
+            // Honor a per-run cloud-managed gateway grant (ADR-0004) on the direct
+            // path: build a genai executor that dials the gateway with the run's
+            // lease token, so the real provider key is injected at the gateway, not
+            // held here. Absent a grant, runs use the config-plane executor above.
+            .with_gateway_executor_factory(Arc::new(
+                awaken_server::GenaiGatewayExecutorFactory,
             )),
     );
     let managed_state = Arc::new(
