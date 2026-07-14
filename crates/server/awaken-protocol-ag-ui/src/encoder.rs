@@ -7,7 +7,6 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_agent_contract::project::{
     AgentEvent, HistorySink, ToolUseRef, Transcoder, project_history, project_messages,
-    terminal_waiting,
 };
 use awaken_protocol_transport::{StepOutcome, blocks_text};
 use serde_json::{Value, json};
@@ -105,18 +104,13 @@ impl Transcoder for AgUiEncoder {
 /// `RUN_FINISHED`).
 pub fn encode_step(outcome: &StepOutcome, thread_id: &str, run_id: &str) -> Vec<AgUiEvent> {
     let pending = outcome
-        .pending
-        .as_ref()
+        .pending()
         .map(|p| (p.tool_use_id.as_str(), p.client_executed));
     let mut events = vec![AgentEvent::RunStarted];
     events.extend(project_messages(&outcome.new_messages, pending));
-    events.push(if outcome.waiting {
-        terminal_waiting(outcome.pending.as_ref().map(|p| p.tool_use_id.as_str()))
-    } else {
-        AgentEvent::RunFinished {
-            exhausted: outcome.exhausted,
-        }
-    });
+    // The terminal event owns the failed / parked / finished distinction — a fault
+    // becomes `RunFailed`, which transcodes to `RUN_ERROR` instead of `RUN_FINISHED`.
+    events.push(outcome.terminal_event());
     AgUiEncoder::new(thread_id, run_id).transcode_all(&events)
 }
 
@@ -129,8 +123,7 @@ pub fn encode_step(outcome: &StepOutcome, thread_id: &str, run_id: &str) -> Vec<
 /// `RUN_FINISHED`. The live prefix plus this tail form one well-formed run.
 pub fn encode_close(outcome: &StepOutcome, thread_id: &str, run_id: &str) -> Vec<AgUiEvent> {
     let pending = outcome
-        .pending
-        .as_ref()
+        .pending()
         .map(|p| (p.tool_use_id.as_str(), p.client_executed));
     let events = project_messages(&outcome.new_messages, pending);
     let mut out = Vec::new();
@@ -154,10 +147,9 @@ pub fn encode_close(outcome: &StepOutcome, thread_id: &str, run_id: &str) -> Vec
             _ => {}
         }
     }
-    out.push(AgUiEvent::RunFinished {
-        thread_id: thread_id.to_string(),
-        run_id: run_id.to_string(),
-    });
+    // The terminal event (`RUN_FINISHED`, or `RUN_ERROR` on a fault) transcoded the
+    // same way `encode_step` closes; the live prefix already carried `RUN_STARTED`.
+    out.extend(AgUiEncoder::new(thread_id, run_id).transcode(&outcome.terminal_event()));
     out
 }
 
@@ -244,16 +236,43 @@ mod tests {
     use super::*;
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_agent_contract::agent::message::{Id, Message, Role};
-    use awaken_protocol_transport::Pending;
+    use awaken_protocol_transport::{Pending, StepFailure, Terminal};
     use serde_json::json;
+
+    #[test]
+    fn terminal_failure_surfaces_run_error() {
+        let outcome = StepOutcome {
+            terminal: Terminal::Failed(StepFailure {
+                code: "inference_failed".into(),
+                message: "upstream is down".into(),
+            }),
+            ..Default::default()
+        };
+        let step = encode_step(&outcome, "t1", "r1");
+        assert!(
+            step.iter().any(|e| matches!(e, AgUiEvent::RunError { .. })),
+            "RUN_ERROR: {step:?}"
+        );
+        assert!(
+            !step
+                .iter()
+                .any(|e| matches!(e, AgUiEvent::RunFinished { .. })),
+            "a failed run does not also RUN_FINISHED: {step:?}",
+        );
+        let close = encode_close(&outcome, "t1", "r1");
+        assert!(
+            close
+                .iter()
+                .any(|e| matches!(e, AgUiEvent::RunError { .. })),
+            "close RUN_ERROR: {close:?}"
+        );
+    }
 
     #[test]
     fn plain_turn_brackets_with_run_events() {
         let outcome = StepOutcome {
             new_messages: vec![Message::text(Id("a1".into()), Role::Assistant, "hello")],
-            waiting: false,
-            exhausted: false,
-            pending: None,
+            terminal: Terminal::Finished,
         };
         let events = encode_step(&outcome, "t1", "r1");
         assert_eq!(
@@ -292,14 +311,14 @@ mod tests {
                     }],
                 },
             ],
-            waiting: true,
-            exhausted: false,
-            pending: Some(Pending {
-                tool_use_id: "c1".into(),
-                name: "read".into(),
-                input: json!({"path": "x"}),
-                client_executed: true,
-            }),
+            terminal: Terminal::Waiting {
+                pending: Some(Pending {
+                    tool_use_id: "c1".into(),
+                    name: "read".into(),
+                    input: json!({"path": "x"}),
+                    client_executed: true,
+                }),
+            },
         };
         let events = encode_close(&outcome, "t1", "r1");
         // No start/text/args — those were streamed live.
@@ -335,14 +354,14 @@ mod tests {
                     input: json!({"q": 1}),
                 }],
             }],
-            waiting: true,
-            exhausted: false,
-            pending: Some(Pending {
-                tool_use_id: "c1".into(),
-                name: "submit".into(),
-                input: json!({"q": 1}),
-                client_executed: true,
-            }),
+            terminal: Terminal::Waiting {
+                pending: Some(Pending {
+                    tool_use_id: "c1".into(),
+                    name: "submit".into(),
+                    input: json!({"q": 1}),
+                    client_executed: true,
+                }),
+            },
         };
         let events = encode_step(&outcome, "t1", "r1");
         assert!(events.iter().any(|e| matches!(e, AgUiEvent::ToolCallStart { tool_call_id, tool_call_name } if tool_call_id == "c1" && tool_call_name == "submit")));

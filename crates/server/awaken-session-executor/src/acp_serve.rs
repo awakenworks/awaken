@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_protocol_transport::{DriverError, ProtocolRuntime};
+use awaken_protocol_transport::{DriverError, ProtocolRuntime, Terminal};
 
 /// The ACP stop reason a served turn ended on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,20 +85,20 @@ impl AcpServeHost {
         );
         let outcome = self.runtime.run(session, agent, vec![user]).await?;
         Ok(AcpTurn {
-            stop: map_stop(outcome.waiting, outcome.exhausted),
+            stop: map_stop(&outcome.terminal),
             messages: outcome.new_messages,
         })
     }
 }
 
 /// Map a run's terminal flags onto the ACP stop reason (a pure decision).
-fn map_stop(waiting: bool, exhausted: bool) -> AcpStop {
-    if waiting {
-        AcpStop::RequiresAction
-    } else if exhausted {
-        AcpStop::MaxTurns
-    } else {
-        AcpStop::EndTurn
+fn map_stop(terminal: &Terminal) -> AcpStop {
+    match terminal {
+        Terminal::Waiting { .. } => AcpStop::RequiresAction,
+        Terminal::Exhausted => AcpStop::MaxTurns,
+        // A natural end or a terminal fault both close the ACP turn (ACP has no
+        // distinct fault stop reason; the failure rides the committed record).
+        Terminal::Finished | Terminal::Failed(_) => AcpStop::EndTurn,
     }
 }
 
@@ -173,10 +173,17 @@ mod tests {
 
     #[test]
     fn stop_reason_mapping_is_total() {
-        assert_eq!(map_stop(false, false), AcpStop::EndTurn);
-        assert_eq!(map_stop(true, false), AcpStop::RequiresAction);
-        assert_eq!(map_stop(false, true), AcpStop::MaxTurns);
-        // waiting takes precedence over exhausted.
-        assert_eq!(map_stop(true, true), AcpStop::RequiresAction);
+        use awaken_protocol_transport::StepFailure;
+        assert_eq!(map_stop(&Terminal::Finished), AcpStop::EndTurn);
+        assert_eq!(
+            map_stop(&Terminal::Waiting { pending: None }),
+            AcpStop::RequiresAction
+        );
+        assert_eq!(map_stop(&Terminal::Exhausted), AcpStop::MaxTurns);
+        // A terminal fault closes the ACP turn (no distinct fault stop reason).
+        assert_eq!(
+            map_stop(&Terminal::Failed(StepFailure::default())),
+            AcpStop::EndTurn
+        );
     }
 }

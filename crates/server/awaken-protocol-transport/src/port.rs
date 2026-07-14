@@ -10,11 +10,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
+use awaken_agent_contract::project::{AgentEvent, terminal_waiting};
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use serde_json::Value;
 
 /// A tool a run parked on.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Pending {
     pub tool_use_id: String,
     pub name: String,
@@ -24,17 +25,77 @@ pub struct Pending {
     pub client_executed: bool,
 }
 
-/// The result of one step (a turn or a resume).
-#[derive(Debug, Clone)]
+/// A run that ended in a terminal fault, classified (code + message) — the neutral
+/// twin of the Managed `TurnFailure`. Carried so every wire adapter can surface a
+/// failed run instead of projecting a silent, empty finish.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StepFailure {
+    /// The fault code (e.g. `inference_failed`), stable across wires.
+    pub code: String,
+    /// A human-readable message describing the fault.
+    pub message: String,
+}
+
+/// How a step ended — the single terminal-state authority. A step reaches exactly
+/// one of these, and the parked tool (if any) lives *inside* [`Terminal::Waiting`],
+/// so both "waiting *and* failed" and "a pending tool on a finished run" are
+/// unrepresentable.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum Terminal {
+    /// The run reached its natural end.
+    #[default]
+    Finished,
+    /// The run stopped by exhausting its step budget.
+    Exhausted,
+    /// The run parked awaiting a decision / client result. `pending` names the tool
+    /// it parked on, or `None` when it awaits non-tool input (e.g. a user message).
+    Waiting { pending: Option<Pending> },
+    /// The run ended in a terminal fault (`EndCause::Error`). Adapters render it as
+    /// their error frame (AI-SDK `error`, AG-UI `RUN_ERROR`, A2A a `failed` Task)
+    /// rather than a silent, empty finish.
+    Failed(StepFailure),
+}
+
+/// The result of one step (a turn or a resume): the messages it committed and how
+/// it ended. `new_messages` is common to every ending, so it stays on the struct;
+/// the variant-specific terminal data lives in [`Terminal`].
+#[derive(Debug, Clone, Default)]
 pub struct StepOutcome {
     /// Messages committed during this step, in order.
     pub new_messages: Vec<Message>,
-    /// True when the run parked (awaiting a decision / client result).
-    pub waiting: bool,
-    /// True when the run stopped by exhausting its step budget.
-    pub exhausted: bool,
-    /// The tool the run parked on, when `waiting`.
-    pub pending: Option<Pending>,
+    /// How the step ended.
+    pub terminal: Terminal,
+}
+
+impl StepOutcome {
+    /// The tool the run parked on, if it parked on one. `Some` only when
+    /// `terminal` is [`Terminal::Waiting`] with a tool — the type makes a pending
+    /// tool on any other ending impossible. Also drives the last tool call's
+    /// disposition in the message projection.
+    pub fn pending(&self) -> Option<&Pending> {
+        match &self.terminal {
+            Terminal::Waiting { pending } => pending.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// The neutral terminal event this step closes with — the single owner of the
+    /// failed / parked / finished distinction. Event-stream adapters (AI-SDK,
+    /// AG-UI) transcode it; the request/response A2A adapter maps the same states
+    /// onto a `Task` state directly.
+    pub fn terminal_event(&self) -> AgentEvent {
+        match &self.terminal {
+            Terminal::Failed(failure) => AgentEvent::RunFailed {
+                code: failure.code.clone(),
+                message: failure.message.clone(),
+            },
+            Terminal::Waiting { pending } => {
+                terminal_waiting(pending.as_ref().map(|p| p.tool_use_id.as_str()))
+            }
+            Terminal::Exhausted => AgentEvent::RunFinished { exhausted: true },
+            Terminal::Finished => AgentEvent::RunFinished { exhausted: false },
+        }
+    }
 }
 
 /// A resume command targeting the pending tool.
@@ -134,9 +195,7 @@ mod tests {
             self.runs.fetch_add(1, Ordering::SeqCst);
             Ok(StepOutcome {
                 new_messages: Vec::new(),
-                waiting: false,
-                exhausted: false,
-                pending: None,
+                terminal: Terminal::Finished,
             })
         }
 
@@ -181,7 +240,7 @@ mod tests {
             .run_streaming("t1", None, Vec::new(), Arc::new(NoopSink))
             .await
             .unwrap();
-        assert!(!outcome.waiting);
+        assert_eq!(outcome.terminal, Terminal::Finished);
         assert_eq!(rt.runs.load(Ordering::SeqCst), 1);
     }
 }

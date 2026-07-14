@@ -59,7 +59,8 @@ use awaken_protocol_managed::{
     TurnFailure, TurnOutcome,
 };
 use awaken_protocol_transport::{
-    DriverError, Pending as PortPending, ProtocolRuntime, Resume as PortResume, StepOutcome,
+    DriverError, Pending as PortPending, ProtocolRuntime, Resume as PortResume, StepFailure,
+    StepOutcome, Terminal,
 };
 use awaken_runtime_contract::live_inbox::{EditError, LiveInboxMessageId, MessageOrigin, Offer};
 
@@ -711,23 +712,24 @@ impl SessionRuntime for ManagedHost {
         // config injects the prompt, this injects the mount. Skip a mount path the
         // wire set already claimed (an explicit per-session override wins).
         if let Some(store) = &self.resources
-            && let Some(cfg) = store.get_agent_resource(&init.agent_id) {
-                let taken: std::collections::HashSet<String> = init
-                    .resources
-                    .iter()
-                    .map(|r| r.mount_path.trim_start_matches('/').to_string())
-                    .collect();
-                for b in &cfg.resources {
-                    if taken.contains(b.mount_path.trim_start_matches('/')) {
-                        continue;
-                    }
-                    let res = binding_as_session_resource(b);
-                    let one = self.stage_one_resource(&res).await?;
-                    all.mounts.extend(one.mounts);
-                    all.memory_mounts.extend(one.memory_mounts);
-                    all.repos.extend(one.repos);
+            && let Some(cfg) = store.get_agent_resource(&init.agent_id)
+        {
+            let taken: std::collections::HashSet<String> = init
+                .resources
+                .iter()
+                .map(|r| r.mount_path.trim_start_matches('/').to_string())
+                .collect();
+            for b in &cfg.resources {
+                if taken.contains(b.mount_path.trim_start_matches('/')) {
+                    continue;
                 }
+                let res = binding_as_session_resource(b);
+                let one = self.stage_one_resource(&res).await?;
+                all.mounts.extend(one.mounts);
+                all.memory_mounts.extend(one.memory_mounts);
+                all.repos.extend(one.repos);
             }
+        }
         if !all.mounts.is_empty()
             || !all.prompts.is_empty()
             || !all.repos.is_empty()
@@ -900,11 +902,24 @@ fn to_port_pending(pending: Option<PendingTool>) -> Option<PortPending> {
 }
 
 fn to_step_outcome(result: RunResult) -> StepOutcome {
+    // The run's terminal `Phase` maps to exactly one `Terminal`. A `Phase::Ended(Error)`
+    // becomes `Terminal::Failed` — the neutral twin of `to_turn_outcome`'s `TurnFailure`
+    // — so the wire adapter can surface a failed run (it is a successful `RunResult`,
+    // not a `HostError`, so it never reaches the adapter as a `DriverError`).
+    let terminal = match &result.phase {
+        Phase::Waiting => Terminal::Waiting {
+            pending: to_port_pending(result.pending),
+        },
+        Phase::Ended(EndCause::MaxSteps) => Terminal::Exhausted,
+        Phase::Ended(EndCause::Error(fault)) => Terminal::Failed(StepFailure {
+            code: fault.code().to_string(),
+            message: fault.message(),
+        }),
+        _ => Terminal::Finished,
+    };
     StepOutcome {
-        waiting: matches!(result.phase, Phase::Waiting),
-        exhausted: matches!(result.phase, Phase::Ended(EndCause::MaxSteps)),
         new_messages: result.new_messages,
-        pending: to_port_pending(result.pending),
+        terminal,
     }
 }
 
