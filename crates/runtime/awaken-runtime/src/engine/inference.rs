@@ -15,11 +15,11 @@ use awaken_runtime_contract::resilience::Classify;
 fn continuation_request(request: &ChatRequest, prefix: &str) -> ChatRequest {
     let mut messages = request.messages.clone();
     messages.push(ChatMessage {
-        role: ChatRole::Assistant,
+        role: Role::Assistant,
         content: vec![ContentBlock::text(prefix.to_string())],
     });
     messages.push(ChatMessage {
-        role: ChatRole::User,
+        role: Role::User,
         content: vec![ContentBlock::text(STREAM_CONTINUATION_PROMPT.to_string())],
     });
     ChatRequest {

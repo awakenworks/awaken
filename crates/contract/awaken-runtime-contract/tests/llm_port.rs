@@ -3,8 +3,9 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
+use awaken_agent_contract::agent::message::Role;
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatMessage, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
+    AssistantOutput, ChatMessage, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
 use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 
@@ -16,7 +17,7 @@ fn sample_request() -> ChatRequest {
             backend_ref: "backend-1".to_string(),
         },
         messages: vec![ChatMessage {
-            role: ChatRole::User,
+            role: Role::User,
             content: vec![ContentBlock::text("hello")],
         }],
         tools: vec![ToolDescriptor::pinned(

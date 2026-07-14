@@ -11,11 +11,12 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::message::Role;
 use awaken_config_resolver::ResolvedInference;
 use awaken_protocol_managed::ManagedState;
 use awaken_provider_genai::GenaiExecutor;
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
+    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
 use axum::Router;
 
@@ -1064,12 +1065,12 @@ impl LlmExecutor for SkillDrivingModel {
             .collect::<Vec<_>>()
             .join("");
         let output = match last.role {
-            ChatRole::User => AssistantOutput::from_tool_calls(vec![ToolCall {
+            Role::User => AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "l".into(),
                 tool_id: "list_skills".into(),
                 arguments: serde_json::json!({}),
             }]),
-            ChatRole::Tool if last_text.contains("\"skills\"") => {
+            Role::Tool if last_text.contains("\"skills\"") => {
                 // The catalog came back — activate the offered `greet` skill.
                 AssistantOutput::from_tool_calls(vec![ToolCall {
                     call_id: "s".into(),
@@ -1077,7 +1078,7 @@ impl LlmExecutor for SkillDrivingModel {
                     arguments: serde_json::json!({ "skill": "greet" }),
                 }])
             }
-            ChatRole::Tool => AssistantOutput::text(format!("USED-SKILL: {last_text}")),
+            Role::Tool => AssistantOutput::text(format!("USED-SKILL: {last_text}")),
             _ => AssistantOutput::text("hmm"),
         };
         Ok(ChatResponse {

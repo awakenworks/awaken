@@ -10,8 +10,9 @@
 use std::sync::Mutex;
 
 use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::message::Role;
 use awaken_provider_genai::GenaiExecutor;
-use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, ChatRole, DeltaSink, LlmExecutor};
+use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, DeltaSink, LlmExecutor};
 use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 use genai::adapter::AdapterKind;
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
@@ -60,7 +61,7 @@ fn user(blocks: Vec<ContentBlock>) -> ChatRequest {
     ChatRequest {
         model_binding: binding(),
         messages: vec![ChatMessage {
-            role: ChatRole::User,
+            role: Role::User,
             content: blocks,
         }],
         tools: Vec::new(),
@@ -169,7 +170,7 @@ async fn minimax_streaming_tool_call_accumulates_arguments() {
     let request = ChatRequest {
         model_binding: binding(),
         messages: vec![ChatMessage {
-            role: ChatRole::User,
+            role: Role::User,
             content: vec![ContentBlock::text(
                 "Use the get_weather tool to look up the weather in Paris. \
                  Call the tool; do not answer in prose.",

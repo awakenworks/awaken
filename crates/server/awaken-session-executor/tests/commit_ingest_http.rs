@@ -44,7 +44,6 @@ fn thread_commit() -> ThreadCommit {
         )],
         state: vec![],
         events: vec![],
-        outbox: vec![],
         waiting: None,
     }
 }

@@ -45,7 +45,7 @@ impl LlmExecutor for EchoLlm {
             .messages
             .iter()
             .rev()
-            .find(|m| matches!(m.role, awaken_runtime_contract::llm::ChatRole::User))
+            .find(|m| matches!(m.role, awaken_agent_contract::agent::message::Role::User))
             .map(|m| {
                 m.content
                     .iter()

@@ -33,7 +33,6 @@ fn checkpoint(thread: &ThreadId, run: &RunId, text: &str, phase: Phase) -> Threa
             kind: EventKind::MessageCommitted,
             payload: serde_json::json!({ "text": text }),
         }],
-        outbox: Vec::new(),
         waiting: None,
     }
 }

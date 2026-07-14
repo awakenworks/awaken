@@ -193,7 +193,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use awaken_runtime_contract::llm::{
-        AssistantOutput, ChatRequest, ChatResponse, ChatRole, Result as LlmResult, ToolCall,
+        AssistantOutput, ChatRequest, ChatResponse, Result as LlmResult, ToolCall,
     };
 
     /// A stub extractor model: first turn emits a write_memory call; once it sees
@@ -203,7 +203,7 @@ mod tests {
     #[async_trait]
     impl LlmExecutor for ExtractorModel {
         async fn infer(&self, request: ChatRequest) -> LlmResult<ChatResponse> {
-            let saw_tool_result = request.messages.iter().any(|m| m.role == ChatRole::Tool);
+            let saw_tool_result = request.messages.iter().any(|m| m.role == Role::Tool);
             let output = if saw_tool_result {
                 AssistantOutput::text("saved 1 memory")
             } else {
@@ -303,7 +303,7 @@ mod tests {
     impl LlmExecutor for SeedEchoModel {
         async fn infer(&self, request: ChatRequest) -> LlmResult<ChatResponse> {
             let saved = request.messages.iter().any(|m| {
-                m.role == ChatRole::Tool
+                m.role == Role::Tool
                     && m.content.iter().any(|b| match b {
                         awaken_agent_contract::agent::content::ContentBlock::ToolResult {
                             content,
@@ -322,7 +322,7 @@ mod tests {
             let seen: Vec<String> = request
                 .messages
                 .iter()
-                .filter(|m| m.role == ChatRole::User || m.role == ChatRole::System)
+                .filter(|m| m.role == Role::User || m.role == Role::System)
                 .map(|m| crate::config::block_text(&m.content))
                 .filter(|t| !t.contains("Extract durable memories"))
                 .collect();

@@ -10,8 +10,9 @@
 
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::message::Role;
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
+    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
 use awaken_scenario_host::build_router_with_skills;
 use awaken_server::{SkillContext, SkillSpec};
@@ -159,7 +160,7 @@ impl LlmExecutor for FullFlowModel {
         let last = request.messages.last().expect("a message");
         let last_text = text_of(last);
         let output = match last.role {
-            ChatRole::User => {
+            Role::User => {
                 if last_text.contains("FORK-REVIEW-BODY") {
                     // This is the forked sub-agent's turn (its input is the body).
                     AssistantOutput::text("FORK-DONE")
@@ -180,7 +181,7 @@ impl LlmExecutor for FullFlowModel {
                     AssistantOutput::text("hmm")
                 }
             }
-            ChatRole::Tool => {
+            Role::Tool => {
                 if last_text == "FORK-DONE" {
                     AssistantOutput::text("FORKED")
                 } else if last_text.contains("\"skills\"") {
@@ -281,8 +282,8 @@ impl LlmExecutor for PathProbeModel {
         let last = request.messages.last().expect("a message");
         let last_text = text_of(last);
         let output = match last.role {
-            ChatRole::User => tool("l1", "list_skills", serde_json::json!({})),
-            ChatRole::Tool => {
+            Role::User => tool("l1", "list_skills", serde_json::json!({})),
+            Role::Tool => {
                 if last_text.contains("\"skills\"") {
                     // A catalog: `rusty` appears only after the read touched a match.
                     if last_text.contains("rusty") {

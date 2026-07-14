@@ -5,7 +5,7 @@
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Message, Role};
-use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, ChatRole, LlmExecutor};
+use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, LlmExecutor};
 use awaken_runtime_contract::resolved::ModelBinding;
 
 use crate::localfs::Entry;
@@ -127,11 +127,11 @@ pub async fn select_relevant(
         model_binding: model.clone(),
         messages: vec![
             ChatMessage {
-                role: ChatRole::System,
+                role: Role::System,
                 content: vec![ContentBlock::text(SELECT_SYSTEM)],
             },
             ChatMessage {
-                role: ChatRole::User,
+                role: Role::User,
                 content: vec![ContentBlock::text(prompt)],
             },
         ],

@@ -8,9 +8,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::{ContentBlock, ImageSource, extract_text};
+use awaken_agent_contract::agent::message::Role;
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, ChatRole, Error, LlmExecutor, Result, StopReason,
-    TokenUsage, ToolCall,
+    AssistantOutput, ChatRequest, ChatResponse, Error, LlmExecutor, Result, StopReason, TokenUsage,
+    ToolCall,
 };
 use genai::Client;
 use genai::chat::{
@@ -428,7 +429,7 @@ pub async fn probe_credential(
             backend_ref: "genai".into(),
         },
         messages: vec![awaken_runtime_contract::llm::ChatMessage {
-            role: ChatRole::User,
+            role: Role::User,
             content: vec![ContentBlock::text("ping")],
         }],
         tools: Vec::new(),
@@ -464,13 +465,13 @@ pub fn to_genai_request(request: &ChatRequest) -> GenaiChatRequest {
     for message in &request.messages {
         let parts: Vec<ContentPart> = message.content.iter().map(to_genai_part).collect();
         let genai_message = match message.role {
-            ChatRole::System => ChatMessage::system(parts),
-            ChatRole::Assistant => ChatMessage::assistant(parts),
-            ChatRole::User => ChatMessage::user(parts),
+            Role::System => ChatMessage::system(parts),
+            Role::Assistant => ChatMessage::assistant(parts),
+            Role::User => ChatMessage::user(parts),
             // A tool result must be a tool-role message correlated by tool-call id,
             // or a strict provider rejects the turn ("tool_call_ids did not have
             // response messages").
-            ChatRole::Tool => ChatMessage::tool(parts),
+            Role::Tool => ChatMessage::tool(parts),
         };
         messages.push(genai_message);
     }

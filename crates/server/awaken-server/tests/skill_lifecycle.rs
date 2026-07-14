@@ -14,8 +14,9 @@
 
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::message::Role;
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
+    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
 use awaken_scenario_host::{build_router, build_router_with_skills};
 use awaken_server::SkillSpec;
@@ -121,7 +122,7 @@ impl LlmExecutor for SkillUserModel {
         let tool_results = request
             .messages
             .iter()
-            .filter(|m| m.role == ChatRole::Tool)
+            .filter(|m| m.role == Role::Tool)
             .count();
         match tool_results {
             0 => {
