@@ -630,10 +630,11 @@ impl awaken_run_ingress::DispatchQueue for FlakyDispatchStore {
     async fn settle(
         &self,
         run_id: &RunId,
+        epoch: u64,
         outcome: awaken_run_ingress::DispatchOutcome,
         consumed: &[String],
-    ) -> Result<(), awaken_run_ingress::DispatchError> {
-        self.inner.settle(run_id, outcome, consumed).await
+    ) -> Result<awaken_run_ingress::SettleOutcome, awaken_run_ingress::DispatchError> {
+        self.inner.settle(run_id, epoch, outcome, consumed).await
     }
     async fn reap(
         &self,
@@ -878,7 +879,7 @@ pub async fn assert_scheduled_due<S: awaken_run_ingress::Dispatch>(store: &S) {
     // Claim the fresh run, then park it so it can be woken by a delivery.
     assert!(store.claim("w", 1_000, 0).await.unwrap().is_some());
     store
-        .settle(&run, DispatchOutcome::Parked, &[])
+        .settle(&run, 1, DispatchOutcome::Parked, &[])
         .await
         .unwrap();
 
@@ -988,6 +989,7 @@ pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
     store
         .settle(
             &RunId("run-2".to_string()),
+            1,
             awaken_run_ingress::DispatchOutcome::Done,
             &[],
         )
@@ -1005,6 +1007,7 @@ pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
     store
         .settle(
             &RunId("run-3".to_string()),
+            1,
             awaken_run_ingress::DispatchOutcome::Parked,
             &[],
         )
@@ -1062,11 +1065,11 @@ pub async fn assert_priority_dedupe_gc<S: awaken_run_ingress::Dispatch>(store: &
         "low"
     );
     store
-        .settle(&RunId("high".to_string()), DispatchOutcome::Done, &[])
+        .settle(&RunId("high".to_string()), 1, DispatchOutcome::Done, &[])
         .await
         .unwrap();
     store
-        .settle(&RunId("low".to_string()), DispatchOutcome::Done, &[])
+        .settle(&RunId("low".to_string()), 1, DispatchOutcome::Done, &[])
         .await
         .unwrap();
 
@@ -1093,7 +1096,7 @@ pub async fn assert_priority_dedupe_gc<S: awaken_run_ingress::Dispatch>(store: &
         "the duplicate was not enqueued"
     );
     store
-        .settle(&RunId("d1".to_string()), DispatchOutcome::Done, &[])
+        .settle(&RunId("d1".to_string()), 1, DispatchOutcome::Done, &[])
         .await
         .unwrap();
 
@@ -1235,7 +1238,7 @@ pub async fn assert_supersession<S: awaken_run_ingress::Dispatch>(store: &S) {
         .unwrap();
     assert!(store.claim("w", 1_000, 0).await.unwrap().is_some());
     store
-        .settle(&RunId("old".to_string()), DispatchOutcome::Parked, &[])
+        .settle(&RunId("old".to_string()), 1, DispatchOutcome::Parked, &[])
         .await
         .unwrap();
 
@@ -1295,6 +1298,7 @@ pub async fn assert_idle_thread_inbox<S: awaken_run_ingress::Dispatch>(store: &S
     store
         .settle(
             &RunId("run-1".to_string()),
+            1,
             DispatchOutcome::Done,
             &["u1".to_string()],
         )
@@ -1341,5 +1345,114 @@ pub async fn assert_lease_renewal<S: awaken_run_ingress::Dispatch>(store: &S) {
             .unwrap()
             .map(|c| c.lease.owner),
         Some("owner-b".to_string())
+    );
+}
+
+/// Shared spec (every backend must match): the fencing token. A claim bumps the
+/// lease epoch monotonically; a settle applies only under the current epoch. A
+/// stale owner whose lease lapsed and was re-claimed cannot settle the dispatch out
+/// from under the reclaimer — its settle is fenced and changes nothing.
+pub async fn assert_settle_fences_stale_epoch<S: awaken_run_ingress::Dispatch>(store: &S) {
+    use awaken_run_ingress::{DispatchOutcome, RunExecutionRequest, SettleOutcome};
+    let run = RunId("run-1".to_string());
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .unwrap();
+
+    // Owner A claims: the fresh row's epoch bumps 0 -> 1.
+    let a = store.claim("owner-a", 100, 0).await.unwrap().expect("A claims");
+    assert_eq!(a.lease.epoch, 1, "the first claim bumps the fence to 1");
+
+    // A's lease lapses; owner B recovers it — the epoch bumps 1 -> 2.
+    let b = store
+        .claim("owner-b", 100, 200)
+        .await
+        .unwrap()
+        .expect("B reclaims the expired lease");
+    assert_eq!(b.lease.owner, "owner-b");
+    assert_eq!(b.lease.epoch, 2, "the recovery re-claim bumps the fence to 2");
+
+    // A wakes and tries to settle under its STALE epoch 1: fenced, nothing changes.
+    assert_eq!(
+        store
+            .settle(&run, a.lease.epoch, DispatchOutcome::Done, &[])
+            .await
+            .unwrap(),
+        SettleOutcome::Fenced,
+        "the stale owner's settle is rejected by the fence"
+    );
+    // The dispatch is untouched — B (the current owner) still holds a live claim, so
+    // a fresh claim before B's lease expires finds nothing runnable.
+    assert!(
+        store.claim("owner-c", 100, 250).await.unwrap().is_none(),
+        "the fenced settle did not delete the row B is running"
+    );
+
+    // B settles under the CURRENT epoch 2: applied, the dispatch is removed.
+    assert_eq!(
+        store
+            .settle(&run, b.lease.epoch, DispatchOutcome::Done, &[])
+            .await
+            .unwrap(),
+        SettleOutcome::Applied,
+        "the current owner's settle applies"
+    );
+    assert!(
+        store.claim("owner-c", 100, 300).await.unwrap().is_none(),
+        "the run is gone after the applied settle"
+    );
+
+    // A re-settle by B (now a stale epoch against a deleted row) is a fenced no-op —
+    // idempotent, never a spurious change.
+    assert_eq!(
+        store
+            .settle(&run, b.lease.epoch, DispatchOutcome::Done, &[])
+            .await
+            .unwrap(),
+        SettleOutcome::Fenced,
+        "settling an already-removed dispatch is fenced, not an error"
+    );
+}
+
+/// Shared spec: a `Parked` settle is fenced the same way — a stale owner cannot
+/// re-park (and reset the crash-retry budget / clear the lease) behind a reclaimer.
+pub async fn assert_parked_settle_fences_stale_epoch<S: awaken_run_ingress::Dispatch>(store: &S) {
+    use awaken_run_ingress::{DispatchOutcome, RunExecutionRequest, SettleOutcome};
+    let run = RunId("run-1".to_string());
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .unwrap();
+
+    let a = store.claim("owner-a", 100, 0).await.unwrap().expect("A claims");
+    let b = store
+        .claim("owner-b", 100, 200)
+        .await
+        .unwrap()
+        .expect("B reclaims");
+    assert!(b.lease.epoch > a.lease.epoch);
+
+    // A's stale Parked settle is fenced: it must not clear B's lease or reset the
+    // attempt budget of the row B is actively running.
+    assert_eq!(
+        store
+            .settle(&run, a.lease.epoch, DispatchOutcome::Parked, &[])
+            .await
+            .unwrap(),
+        SettleOutcome::Fenced,
+    );
+    assert!(
+        store.claim("owner-c", 100, 250).await.unwrap().is_none(),
+        "the fenced Parked settle left B's running claim intact"
+    );
+
+    // B parks under the current epoch: applied, and the run is now wakeable.
+    assert_eq!(
+        store
+            .settle(&run, b.lease.epoch, DispatchOutcome::Parked, &[])
+            .await
+            .unwrap(),
+        SettleOutcome::Applied,
     );
 }

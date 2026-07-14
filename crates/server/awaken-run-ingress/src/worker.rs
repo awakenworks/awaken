@@ -25,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::Error;
-use crate::dispatch::{Claimed, Dispatch, DispatchOutcome, PendingInput};
+use crate::dispatch::{Claimed, Dispatch, DispatchOutcome, PendingInput, SettleOutcome};
 use crate::request::RunExecutionContext;
 
 /// Default lease: how long a claimed dispatch is owned before it is reclaimable.
@@ -184,6 +184,10 @@ impl<S: Dispatch> DispatchWorker<S> {
         let _drive_timer = DriveTimer::new(self.runtime.metrics());
 
         let run_id = claimed.request.run_id().clone();
+        // The fence token this drive holds. Every settle below carries it so a stale
+        // owner (whose lease lapsed and was re-claimed under a higher epoch) is
+        // rejected and abandons instead of clobbering the reclaimer's dispatch.
+        let lease_epoch = claimed.lease.epoch;
         // Continue the admitting request's trace across the durable queue boundary:
         // this `wake.dispatch` span's remote parent is the persisted traceparent, so
         // the run driven below (`runtime.run` → …) nests under the trace that
@@ -208,7 +212,7 @@ impl<S: Dispatch> DispatchWorker<S> {
                     Ok(phase) => phase,
                     Err(err) => {
                         return self
-                            .settle_if_terminal_or_raise(&run_id, &all_pending, err)
+                            .settle_if_terminal_or_raise(&run_id, lease_epoch, &all_pending, err)
                             .await;
                     }
                 }
@@ -236,7 +240,7 @@ impl<S: Dispatch> DispatchWorker<S> {
                             Ok(phase) => phase,
                             Err(err) => {
                                 return self
-                                    .settle_if_terminal_or_raise(&run_id, &all_pending, err)
+                                    .settle_if_terminal_or_raise(&run_id, lease_epoch, &all_pending, err)
                                     .await;
                             }
                         }
@@ -244,9 +248,11 @@ impl<S: Dispatch> DispatchWorker<S> {
                     None => {
                         // No input answers the current ticket; drop stale input
                         // and leave the run parked for a later wake.
-                        self.settle(&run_id, DispatchOutcome::Parked, &all_pending)
-                            .await?;
-                        return Ok(Some((run_id, Phase::Waiting)));
+                        return Ok(self
+                            .settle(&run_id, lease_epoch, DispatchOutcome::Parked, &all_pending)
+                            .await?
+                            .applied()
+                            .then_some((run_id, Phase::Waiting)));
                     }
                 }
             }
@@ -285,9 +291,11 @@ impl<S: Dispatch> DispatchWorker<S> {
                         })
                         .map(|input| input.message_id);
                     all_pending.extend(consumed_unbound);
-                    self.settle(&run_id, DispatchOutcome::Done, &all_pending)
-                        .await?;
-                    return Ok(Some((run_id, record.phase)));
+                    return Ok(self
+                        .settle(&run_id, lease_epoch, DispatchOutcome::Done, &all_pending)
+                        .await?
+                        .applied()
+                        .then_some((run_id, record.phase)));
                 }
                 _ => {
                     // Drain the thread inbox: input addressed to this thread with
@@ -333,7 +341,7 @@ impl<S: Dispatch> DispatchWorker<S> {
                         Ok(phase) => phase,
                         Err(err) => {
                             return self
-                                .settle_if_terminal_or_raise(&run_id, &all_pending, err)
+                                .settle_if_terminal_or_raise(&run_id, lease_epoch, &all_pending, err)
                                 .await;
                         }
                     }
@@ -351,7 +359,7 @@ impl<S: Dispatch> DispatchWorker<S> {
                         Ok(phase) => phase,
                         Err(err) => {
                             return self
-                                .settle_if_terminal_or_raise(&run_id, &all_pending, err)
+                                .settle_if_terminal_or_raise(&run_id, lease_epoch, &all_pending, err)
                                 .await;
                         }
                     };
@@ -361,8 +369,11 @@ impl<S: Dispatch> DispatchWorker<S> {
         }
 
         let outcome = settle_outcome(&phase)?;
-        self.settle(&run_id, outcome, &all_pending).await?;
-        Ok(Some((run_id, phase)))
+        Ok(self
+            .settle(&run_id, lease_epoch, outcome, &all_pending)
+            .await?
+            .applied()
+            .then_some((run_id, phase)))
     }
 
     /// Settle a claimed dispatch and record the operational `runs.settled` counter
@@ -372,16 +383,16 @@ impl<S: Dispatch> DispatchWorker<S> {
     async fn settle(
         &self,
         run_id: &RunId,
+        epoch: u64,
         outcome: DispatchOutcome,
         consumed: &[String],
-    ) -> Result<(), Error> {
+    ) -> Result<SettleOutcome, Error> {
         let label = match outcome {
             DispatchOutcome::Done => "done",
             DispatchOutcome::Parked => "parked",
         };
         self.runtime.metrics().record_dispatch_settled(label);
-        self.store.settle(run_id, outcome, consumed).await?;
-        Ok(())
+        Ok(self.store.settle(run_id, epoch, outcome, consumed).await?)
     }
 
     /// Convert a runtime-drive failure into a benign already-done when committed
@@ -402,14 +413,16 @@ impl<S: Dispatch> DispatchWorker<S> {
     async fn settle_if_terminal_or_raise(
         &self,
         run_id: &RunId,
+        epoch: u64,
         consumed: &[String],
         err: impl Into<Error>,
     ) -> Result<Option<(RunId, Phase)>, Error> {
         match self.runs.get(run_id) {
-            Some(record) if matches!(record.phase, Phase::Ended(_)) => {
-                self.settle(run_id, DispatchOutcome::Done, consumed).await?;
-                Ok(Some((run_id.clone(), record.phase)))
-            }
+            Some(record) if matches!(record.phase, Phase::Ended(_)) => Ok(self
+                .settle(run_id, epoch, DispatchOutcome::Done, consumed)
+                .await?
+                .applied()
+                .then_some((run_id.clone(), record.phase))),
             _ => Err(err.into()),
         }
     }

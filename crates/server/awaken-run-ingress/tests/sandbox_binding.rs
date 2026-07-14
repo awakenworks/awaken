@@ -57,8 +57,10 @@ fn req(run: &str, thread: &str) -> RunExecutionRequest {
 async fn binding_survives_a_recovery_claim(store: &dyn DispatchQueue) {
     let run = RunId("run-1".into());
     // Settle any leftover run-1 from a prior run on a shared schema (idempotent), so
-    // single-writer-per-thread (ADR-0022) does not see a stale in-flight run here.
-    let _ = store.settle(&run, DispatchOutcome::Done, &[]).await;
+    // single-writer-per-thread (ADR-0022) does not see a stale in-flight run here. A
+    // leftover un-reclaimed row is at epoch 1 (claimed once by the crashed prior
+    // run); a clean schema has no row and the settle is a benign fenced no-op.
+    let _ = store.settle(&run, 1, DispatchOutcome::Done, &[]).await;
     store.enqueue(req("run-1", "thread-1")).await.unwrap();
 
     // First claim: no sandbox yet.
@@ -82,8 +84,11 @@ async fn binding_survives_a_recovery_claim(store: &dyn DispatchQueue) {
         Some("docker:abc123"),
         "the sandbox binding survives crash recovery"
     );
-    // Clean up so a re-run on a shared schema starts fresh.
-    let _ = store.settle(&run, DispatchOutcome::Done, &[]).await;
+    // Clean up so a re-run on a shared schema starts fresh. The recovery re-claim
+    // holds the current fence epoch, so settle under it.
+    let _ = store
+        .settle(&run, recovered.lease.epoch, DispatchOutcome::Done, &[])
+        .await;
 }
 
 #[tokio::test]

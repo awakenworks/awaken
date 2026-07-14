@@ -142,6 +142,10 @@ async fn renew_owned(
 #[derive(Deserialize)]
 struct SettleReq {
     run_id: String,
+    /// The fence token from `Claimed.lease.epoch`. A stale worker's settle carrying
+    /// a superseded epoch is fenced server-side (see `DispatchQueue::settle`).
+    #[serde(default)]
+    epoch: u64,
     outcome: DispatchOutcome,
     #[serde(default)]
     consumed: Vec<String>,
@@ -152,11 +156,13 @@ async fn settle(
     Json(req): Json<SettleReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        store()?
-            .settle(&RunId(req.run_id), req.outcome, &req.consumed)
+        let outcome = store()?
+            .settle(&RunId(req.run_id), req.epoch, req.outcome, &req.consumed)
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
-        Ok(json!({ "settled": true }))
+        // `settled` is the fence verdict: `true` = applied, `false` = the worker's
+        // epoch was stale (re-claimed) and nothing changed, so it must abandon.
+        Ok(json!({ "settled": outcome.applied() }))
     }
     .await;
     respond(result)

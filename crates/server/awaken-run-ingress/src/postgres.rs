@@ -19,7 +19,8 @@ use sqlx::types::Json;
 
 use crate::dispatch::{
     CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchQueue, DispatchStatus,
-    DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, SubmitOptions,
+    DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, SettleOutcome,
+    SubmitOptions,
 };
 use crate::dispatch_schema::dispatch_bundle;
 use crate::request::RunExecutionRequest;
@@ -249,27 +250,33 @@ impl DispatchQueue for PostgresDispatchStore {
         let sandbox: Option<String> = row.try_get("sandbox").map_err(reject)?;
 
         let expires = now_ms + lease_ms;
-        let claimed = sqlx::query(&format!(
+        // Bump the fence token on every claim (fresh, wake, recovery) and read it
+        // back, so the returned lease carries the epoch the holder settles under.
+        let claimed = sqlx::query_scalar::<_, i64>(&format!(
             "UPDATE {p}_dispatch SET status = 'running', lease_owner = $1, lease_until = $2, \
-             attempt_count = attempt_count + $3 WHERE run_id = $4"
+             attempt_count = attempt_count + $3, lease_epoch = lease_epoch + 1 \
+             WHERE run_id = $4 RETURNING lease_epoch"
         ))
         .bind(owner)
         .bind(expires as i64)
         .bind(i64::from(recovery_pick))
         .bind(&run_id)
-        .execute(&mut *tx)
+        .fetch_one(&mut *tx)
         .await;
         // The V0012 one-running-per-thread unique index is the topology-independent
         // backstop: if a concurrent claimer already made another run of this thread
         // running, this UPDATE hits the unique violation. That claim simply lost the
         // race — roll back and report "nothing claimed", the pool retries next tick.
-        if let Err(err) = claimed {
-            if err.as_database_error().and_then(|e| e.code()).as_deref() == Some("23505") {
-                let _ = tx.rollback().await;
-                return Ok(None);
+        let lease_epoch = match claimed {
+            Ok(epoch) => epoch,
+            Err(err) => {
+                if err.as_database_error().and_then(|e| e.code()).as_deref() == Some("23505") {
+                    let _ = tx.rollback().await;
+                    return Ok(None);
+                }
+                return Err(reject(err));
             }
-            return Err(reject(err));
-        }
+        };
 
         // Hand the run's current pending input to the worker. It is not removed
         // here: settle removes exactly what the worker reports it consumed, so a
@@ -310,6 +317,7 @@ impl DispatchQueue for PostgresDispatchStore {
                 run_id: RunId(run_id),
                 owner: owner.to_string(),
                 expires_ms: expires,
+                epoch: lease_epoch as u64,
             },
             pending,
         }))
@@ -376,11 +384,44 @@ impl DispatchQueue for PostgresDispatchStore {
     async fn settle(
         &self,
         run_id: &RunId,
+        epoch: u64,
         outcome: DispatchOutcome,
         consumed: &[String],
-    ) -> Result<(), DispatchError> {
+    ) -> Result<SettleOutcome, DispatchError> {
         let p = NS;
         let mut tx = self.pool.begin().await.map_err(reject)?;
+        // Fence first: mutate the dispatch row ONLY while the caller still holds the
+        // current epoch. A stale owner (lower epoch) affects zero rows, so its settle
+        // touches neither the dispatch nor its pending — the reclaimer's in-flight
+        // state is inviolate.
+        let dispatch_rows = match outcome {
+            DispatchOutcome::Done => sqlx::query(&format!(
+                "DELETE FROM {p}_dispatch WHERE run_id = $1 AND lease_epoch = $2"
+            ))
+            .bind(&run_id.0)
+            .bind(epoch as i64)
+            .execute(&mut *tx)
+            .await
+            .map_err(reject)?
+            .rows_affected(),
+            DispatchOutcome::Parked => sqlx::query(&format!(
+                "UPDATE {p}_dispatch SET status = 'parked', lease_owner = NULL, \
+                 lease_until = NULL, attempt_count = 0 WHERE run_id = $1 AND lease_epoch = $2"
+            ))
+            .bind(&run_id.0)
+            .bind(epoch as i64)
+            .execute(&mut *tx)
+            .await
+            .map_err(reject)?
+            .rows_affected(),
+        };
+        if dispatch_rows == 0 {
+            // Fenced: the run was re-claimed under a higher epoch (or already gone).
+            // Change nothing and report the loss so the stale caller abandons.
+            let _ = tx.rollback().await;
+            return Ok(SettleOutcome::Fenced);
+        }
+        // The fence held; now reconcile the run's pending input.
         match outcome {
             DispatchOutcome::Done => {
                 // Drop the run's own pending and anything else consumed this
@@ -393,11 +434,6 @@ impl DispatchQueue for PostgresDispatchStore {
                 .execute(&mut *tx)
                 .await
                 .map_err(reject)?;
-                sqlx::query(&format!("DELETE FROM {p}_dispatch WHERE run_id = $1"))
-                    .bind(&run_id.0)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(reject)?;
             }
             DispatchOutcome::Parked => {
                 sqlx::query(&format!(
@@ -407,18 +443,10 @@ impl DispatchQueue for PostgresDispatchStore {
                 .execute(&mut *tx)
                 .await
                 .map_err(reject)?;
-                sqlx::query(&format!(
-                    "UPDATE {p}_dispatch SET status = 'parked', lease_owner = NULL, \
-                     lease_until = NULL, attempt_count = 0 WHERE run_id = $1"
-                ))
-                .bind(&run_id.0)
-                .execute(&mut *tx)
-                .await
-                .map_err(reject)?;
             }
         }
         tx.commit().await.map_err(reject)?;
-        Ok(())
+        Ok(SettleOutcome::Applied)
     }
 
     async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError> {

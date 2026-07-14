@@ -394,6 +394,28 @@ async fn supersession_on_postgres() {
 }
 
 #[tokio::test]
+async fn settle_fences_stale_epoch_on_postgres() {
+    let Some(pool) = harness::schema_pool("t_pg_fence").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
+        .await
+        .expect("dispatch");
+    harness::assert_settle_fences_stale_epoch(&store).await;
+}
+
+#[tokio::test]
+async fn parked_settle_fences_stale_epoch_on_postgres() {
+    let Some(pool) = harness::schema_pool("t_pg_fence_park").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
+        .await
+        .expect("dispatch");
+    harness::assert_parked_settle_fences_stale_epoch(&store).await;
+}
+
+#[tokio::test]
 async fn dead_letter_ttl_gc_on_postgres() {
     let Some(pool) = harness::schema_pool("t_pg_ttlgc").await else {
         return;

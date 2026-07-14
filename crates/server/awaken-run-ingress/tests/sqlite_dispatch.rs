@@ -177,6 +177,18 @@ async fn supersession_on_sqlite() {
 }
 
 #[tokio::test]
+async fn settle_fences_stale_epoch_on_sqlite() {
+    let store = SqliteDispatchStore::open_in_memory().expect("open");
+    harness::assert_settle_fences_stale_epoch(&store).await;
+}
+
+#[tokio::test]
+async fn parked_settle_fences_stale_epoch_on_sqlite() {
+    let store = SqliteDispatchStore::open_in_memory().expect("open");
+    harness::assert_parked_settle_fences_stale_epoch(&store).await;
+}
+
+#[tokio::test]
 async fn dead_letter_ttl_gc_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory().expect("open");
     harness::assert_dead_letter_ttl_gc(&store).await;

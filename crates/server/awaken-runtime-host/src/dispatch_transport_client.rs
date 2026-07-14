@@ -15,7 +15,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_run_ingress::{
     CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchQueue, DispatchSummary, Inbox,
-    Outbox, PendingInput, PendingRecord, RunExecutionRequest, SubmitOptions,
+    Outbox, PendingInput, PendingRecord, RunExecutionRequest, SettleOutcome, SubmitOptions,
 };
 use awaken_runtime_contract::resume::ResumeResult;
 
@@ -143,15 +143,22 @@ impl DispatchQueue for HttpDispatchQueue {
     async fn settle(
         &self,
         run_id: &RunId,
+        epoch: u64,
         outcome: DispatchOutcome,
         consumed: &[String],
-    ) -> Result<(), DispatchError> {
-        self.post(
-            "/v1/worker/dispatch/settle",
-            json!({ "run_id": run_id.0, "outcome": outcome, "consumed": consumed }),
-        )
-        .await?;
-        Ok(())
+    ) -> Result<SettleOutcome, DispatchError> {
+        let v = self
+            .post(
+                "/v1/worker/dispatch/settle",
+                json!({ "run_id": run_id.0, "epoch": epoch, "outcome": outcome, "consumed": consumed }),
+            )
+            .await?;
+        // `settled` is the server's fence verdict: applied vs. stale-epoch fenced.
+        Ok(if v.get("settled").and_then(|s| s.as_bool()).unwrap_or(true) {
+            SettleOutcome::Applied
+        } else {
+            SettleOutcome::Fenced
+        })
     }
 
     // --- server-local operational verbs: the SERVER owns dead-letter/recovery GC.

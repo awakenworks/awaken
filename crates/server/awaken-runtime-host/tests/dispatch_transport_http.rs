@@ -119,6 +119,11 @@ async fn a_db_less_worker_claims_renews_and_settles_over_http() {
         v["claimed"]["lease"]["owner"], "worker-1",
         "the lease is owned: {v}"
     );
+    // Capture the fence epoch the claim assigned — the settle must carry it.
+    let epoch = v["claimed"]["lease"]["epoch"]
+        .as_u64()
+        .expect("claim returns a lease epoch");
+    assert_eq!(epoch, 1, "the first claim assigns fence epoch 1: {v}");
 
     // renew the lease: still owned → true.
     let (s, v) = post(
@@ -142,11 +147,25 @@ async fn a_db_less_worker_claims_renews_and_settles_over_http() {
         "a leased run is not double-claimed: {v}"
     );
 
-    // settle Done: the dispatch is finished and removed.
+    // a settle carrying a non-current epoch is fenced over the wire — nothing
+    // changes (a stale owner past its lease cannot settle behind a reclaimer).
     let (s, v) = post(
         &router,
         "/v1/worker/dispatch/settle",
-        json!({ "run_id": "run-A", "outcome": "Done", "consumed": [] }),
+        json!({ "run_id": "run-A", "epoch": 99, "outcome": "Done", "consumed": [] }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        v["settled"], false,
+        "a non-current-epoch settle is fenced, not applied: {v}"
+    );
+
+    // settle Done under the current epoch: the dispatch is finished and removed.
+    let (s, v) = post(
+        &router,
+        "/v1/worker/dispatch/settle",
+        json!({ "run_id": "run-A", "epoch": epoch, "outcome": "Done", "consumed": [] }),
     )
     .await;
     assert_eq!(s, StatusCode::OK);

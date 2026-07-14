@@ -58,6 +58,16 @@ pub struct Lease {
     pub run_id: RunId,
     pub owner: String,
     pub expires_ms: u64,
+    /// Monotonic fence token, bumped on every claim of this run (fresh, wake, or
+    /// recovery). The holder passes it back on [`settle`](DispatchQueue::settle) so
+    /// a *stale* owner — one whose lease lapsed and was re-claimed by another node
+    /// under a higher epoch — cannot settle the dispatch out from under the current
+    /// owner: the store rejects a settle whose epoch is not the row's current one.
+    /// This is the canonical fencing token (Kleppmann): owner strings can collide
+    /// or be reused, but a monotone epoch cannot, so the fence is topology- and
+    /// owner-name-independent. A row that has never been claimed has epoch 0.
+    #[serde(default)]
+    pub epoch: u64,
 }
 
 /// A claimed, ready-to-run dispatch and the run's undelivered pending input.
@@ -86,6 +96,26 @@ pub enum DispatchOutcome {
     Done,
     /// The run parked on a waiting ticket; keep the dispatch for a later wake.
     Parked,
+}
+
+/// Whether a [`settle`](DispatchQueue::settle) was applied or fenced off as stale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SettleOutcome {
+    /// The caller still held the current lease (its epoch matched the row's); the
+    /// settle was applied.
+    Applied,
+    /// The caller's lease epoch is stale — the run was re-claimed under a higher
+    /// epoch (another node recovered the lapsed lease). NOTHING was changed, so the
+    /// current owner's in-flight dispatch is untouched. The stale caller has lost
+    /// the lease and must abandon the run.
+    Fenced,
+}
+
+impl SettleOutcome {
+    /// Whether the settle was applied (vs. fenced off as a stale owner's).
+    pub fn applied(self) -> bool {
+        matches!(self, SettleOutcome::Applied)
+    }
 }
 
 /// The lifecycle status of a dispatch, for the operational query surface.
@@ -207,17 +237,26 @@ pub trait DispatchQueue: Send + Sync {
         now_ms: u64,
     ) -> Result<usize, DispatchError>;
 
-    /// Settle a claimed dispatch. `Done` removes it and all its pending input;
-    /// `Parked` returns it to the waiting state and drops only the `consumed`
-    /// pending (by `message_id`), leaving input that arrived mid-attempt for the
-    /// next wake. `Parked` also resets the crash-retry budget — a run that
-    /// reaches a checkpoint refreshes its attempts.
+    /// Settle a claimed dispatch, fenced by the lease `epoch` the caller holds (from
+    /// [`Claimed`]`.lease.epoch`). The settle applies only when `epoch` is still the
+    /// row's current epoch; if the run was re-claimed under a higher epoch (a
+    /// reclaimer took the lapsed lease), the settle is rejected as
+    /// [`SettleOutcome::Fenced`] and NOTHING is changed — a stale owner can never
+    /// clobber the current owner's in-flight dispatch (reset its lease, re-park it,
+    /// or delete it out from under an active drive).
+    ///
+    /// When applied: `Done` removes the dispatch and all its pending input; `Parked`
+    /// returns it to the waiting state and drops only the `consumed` pending (by
+    /// `message_id`), leaving input that arrived mid-attempt for the next wake.
+    /// `Parked` also resets the crash-retry budget — a run that reaches a checkpoint
+    /// refreshes its attempts.
     async fn settle(
         &self,
         run_id: &RunId,
+        epoch: u64,
         outcome: DispatchOutcome,
         consumed: &[String],
-    ) -> Result<(), DispatchError>;
+    ) -> Result<SettleOutcome, DispatchError>;
 
     /// Dead-letter every *crashed* dispatch — one whose lease expired without a
     /// settle — that has used up its crash-retry budget (`attempt_count >=
@@ -437,10 +476,19 @@ mod tests {
             run_id: RunId("run-1".into()),
             owner: "host-7-42".into(),
             expires_ms: 9_999,
+            epoch: 3,
         };
         let back: Lease = serde_json::from_str(&serde_json::to_string(&lease).expect("serializes"))
             .expect("deserializes");
         assert_eq!(back, lease);
+
+        // A pre-fence lease row (no `epoch` key) loads with epoch 0 — the neutral
+        // value a never-claimed row carries, so an old persisted/wire lease is not
+        // rejected (the fence only fires when a HIGHER epoch supersedes it).
+        let mut v = serde_json::to_value(&lease).expect("to value");
+        v.as_object_mut().expect("object").remove("epoch");
+        let legacy: Lease = serde_json::from_value(v).expect("legacy lease loads");
+        assert_eq!(legacy.epoch, 0);
 
         for outcome in [DispatchOutcome::Done, DispatchOutcome::Parked] {
             let back: DispatchOutcome =

@@ -104,14 +104,49 @@ async fn db_less_worker_drives_runs_over_real_http() {
         "the owner renews its live lease"
     );
 
-    queue
-        .settle(&RunId("run-A".into()), DispatchOutcome::Done, &[])
+    // The fence crosses the wire: after the lease lapses, a recovery claim by another
+    // worker bumps the epoch, so the original owner's settle carrying its now-stale
+    // epoch is fenced server-side and changes nothing.
+    let reclaimed = queue
+        .claim("worker-2", 30_000, 40_000)
         .await
-        .expect("settle over http");
+        .expect("reclaim over http")
+        .expect("the lapsed lease is reclaimable");
+    assert!(
+        reclaimed.lease.epoch > claimed.lease.epoch,
+        "the recovery re-claim bumped the fence epoch"
+    );
+    assert_eq!(
+        queue
+            .settle(
+                &RunId("run-A".into()),
+                claimed.lease.epoch,
+                DispatchOutcome::Done,
+                &[],
+            )
+            .await
+            .expect("settle over http"),
+        awaken_run_ingress::SettleOutcome::Fenced,
+        "the stale owner's settle is fenced over the wire"
+    );
+    // The current owner settles under the fresh epoch: applied, the run is removed.
+    assert_eq!(
+        queue
+            .settle(
+                &RunId("run-A".into()),
+                reclaimed.lease.epoch,
+                DispatchOutcome::Done,
+                &[],
+            )
+            .await
+            .expect("settle over http"),
+        awaken_run_ingress::SettleOutcome::Applied,
+        "the current owner's settle applies over the wire"
+    );
 
     assert!(
         queue
-            .claim("worker-1", 30_000, 2_000)
+            .claim("worker-1", 30_000, 60_000)
             .await
             .expect("claim over http")
             .is_none(),

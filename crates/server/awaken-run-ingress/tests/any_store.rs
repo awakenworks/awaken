@@ -125,7 +125,12 @@ async fn any_serializes_one_thread_across_workers() {
 
     // Once run-1 settles, the thread frees up and run-2 is claimable.
     store
-        .settle(first.request.run_id(), DispatchOutcome::Done, &[])
+        .settle(
+            first.request.run_id(),
+            first.lease.epoch,
+            DispatchOutcome::Done,
+            &[],
+        )
         .await
         .unwrap();
     let second = store
