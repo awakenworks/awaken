@@ -49,31 +49,10 @@ impl SharedHost {
             ctx.close_live_inbox();
             return result;
         }
-        // A cloud-managed gateway grant (ADR-0004): materialize it and build the
-        // executor that dials the gateway with the lease token, injected as this
-        // run's per-run model executor. The real provider credential is injected at
-        // the gateway, out of this process — so a secretless worker honors the grant
-        // without a local credential. The build stays fail-closed: with no factory
-        // installed, or a dialect the factory cannot serve, we reject rather than
-        // degrade to local credentials (the custody the grant exists to enforce).
-        let gateway_executor = if activation.model_access.is_gateway() {
-            let endpoint = activation.model_access.materialize();
-            let executor = self
-                .gateway_executor_factory
-                .as_ref()
-                .and_then(|factory| factory.build(&endpoint));
-            match executor {
-                Some(executor) => Some(executor),
-                None => {
-                    return Err(HostError::bad_request(
-                        "cannot honor a cloud-managed gateway grant: no gateway egress \
-                         is configured for this runtime, or its dialect is unsupported",
-                    ));
-                }
-            }
-        } else {
-            None
-        };
+        // A cloud-managed gateway grant (ADR-0004): build the per-run executor that
+        // dials the gateway with the lease token (fail-closed on no factory / an
+        // unservable dialect); a local grant yields `None`.
+        let gateway_executor = self.gateway_model_executor(&activation.model_access)?;
         // The gateway grant is honored on BOTH paths: the direct path uses the
         // per-run executor built above; the durable path enqueues, and the pool
         // worker rebuilds the same executor from the session's gateway builder
@@ -114,5 +93,123 @@ impl SharedHost {
             ctx.close_live_inbox();
             result
         }
+    }
+
+    /// Build the per-run model executor for a run's access grant (ADR-0004). A
+    /// gateway grant is materialized and dialed through the installed gateway
+    /// factory; a local grant yields `None` (use the runtime's bound executor). A
+    /// gateway grant with no factory installed, or a dialect the factory cannot
+    /// serve, is rejected — fail closed, never degrading to local credentials.
+    fn gateway_model_executor(
+        &self,
+        grant: &awaken_runtime_contract::model_access::ModelAccessGrant,
+    ) -> Result<Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>, HostError> {
+        if !grant.is_gateway() {
+            return Ok(None);
+        }
+        let endpoint = grant.materialize();
+        self.gateway_executor_factory
+            .as_ref()
+            .and_then(|factory| factory.build(&endpoint))
+            .map(Some)
+            .ok_or_else(|| {
+                HostError::bad_request(
+                    "cannot honor a cloud-managed gateway grant: no gateway egress \
+                     is configured for this runtime, or its dialect is unsupported",
+                )
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use awaken_runtime_contract::llm::{
+        AssistantOutput, ChatRequest, ChatResponse, LlmExecutor,
+    };
+    use awaken_runtime_contract::model_access::{ModelAccessGrant, ResolvedModelEndpoint};
+
+    use crate::gateway_executor::GatewayExecutorFactory;
+    use crate::host::SharedHost;
+
+    struct StubModel;
+    #[async_trait::async_trait]
+    impl LlmExecutor for StubModel {
+        async fn infer(
+            &self,
+            _r: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            Ok(ChatResponse {
+                output: AssistantOutput::text("stub"),
+                usage: None,
+                stop_reason: None,
+            })
+        }
+    }
+
+    /// A factory that serves any endpoint (returns a stub executor).
+    struct AlwaysFactory;
+    impl GatewayExecutorFactory for AlwaysFactory {
+        fn build(&self, _e: &ResolvedModelEndpoint) -> Option<Arc<dyn LlmExecutor>> {
+            Some(Arc::new(StubModel))
+        }
+    }
+
+    /// A factory that cannot serve the dialect (returns None).
+    struct NeverFactory;
+    impl GatewayExecutorFactory for NeverFactory {
+        fn build(&self, _e: &ResolvedModelEndpoint) -> Option<Arc<dyn LlmExecutor>> {
+            None
+        }
+    }
+
+    fn gateway_grant() -> ModelAccessGrant {
+        ModelAccessGrant::CloudManagedGateway {
+            gateway_base_url: "https://gw.internal".into(),
+            dialect: "anthropic".into(),
+            model_ref: "claude".into(),
+            lease_token: "lease".into(), // awaken-allow: secret
+        }
+    }
+
+    #[test]
+    fn a_local_grant_yields_no_gateway_executor() {
+        let host = SharedHost::new(Arc::new(StubModel), "t");
+        // Default (local) grant → None, whether or not a factory is installed.
+        assert!(
+            host.gateway_model_executor(&ModelAccessGrant::default())
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_gateway_grant_with_a_factory_builds_an_executor() {
+        let host = SharedHost::new(Arc::new(StubModel), "t")
+            .with_gateway_executor_factory(Arc::new(AlwaysFactory));
+        assert!(
+            host.gateway_model_executor(&gateway_grant())
+                .unwrap()
+                .is_some(),
+            "a gateway grant + a serving factory yields an executor"
+        );
+    }
+
+    #[test]
+    fn a_gateway_grant_fails_closed_with_no_factory_or_an_unservable_dialect() {
+        // No factory installed → reject.
+        let bare = SharedHost::new(Arc::new(StubModel), "t");
+        assert!(
+            bare.gateway_model_executor(&gateway_grant()).is_err(),
+            "a gateway grant with no factory fails closed"
+        );
+        // A factory that cannot serve the dialect → reject.
+        let host = SharedHost::new(Arc::new(StubModel), "t")
+            .with_gateway_executor_factory(Arc::new(NeverFactory));
+        assert!(
+            host.gateway_model_executor(&gateway_grant()).is_err(),
+            "a gateway grant whose dialect the factory cannot serve fails closed"
+        );
     }
 }
