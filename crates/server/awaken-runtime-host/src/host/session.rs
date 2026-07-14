@@ -93,15 +93,26 @@ impl SharedHost {
         // Every session's worker shares this queue; the process-level `DispatchPool`
         // is its sole claimer and routes each run back to its owning session.
         let store = crate::dispatch_backend::shared_durable_store(self.store_dir.as_deref())?;
+        // Carry the host's cloud-managed-gateway builder into the worker so a
+        // worker-driven run honors a per-run gateway grant credential-free (ADR-0004,
+        // the durable-path half of the secretless worker). `None` when no factory is
+        // installed → a gateway-granted run fails closed on this worker.
+        let gateway: Option<awaken_run_ingress::GatewayExecutorFn> =
+            self.gateway_executor_factory.clone().map(|factory| {
+                let build: awaken_run_ingress::GatewayExecutorFn =
+                    Arc::new(move |endpoint| factory.build(endpoint));
+                build
+            });
         // The recovered dispatch a crash left mid-flight is re-executed by this
         // worker; giving it the same checkpoint store lets that re-execution resume
         // the interrupted step from its flushed partial (Phase 3 cross-process).
-        let ingress = Arc::new(DurableRunIngress::with_owner(
+        let ingress = Arc::new(DurableRunIngress::with_owner_and_gateway(
             runtime,
             store,
             commit,
             crate::dispatch_backend::dispatch_owner(),
             Some(stream_checkpoint),
+            gateway,
         ));
         // No per-session recovery sweep here: this session's worker shares one queue
         // with every other, so a claim would grab foreign threads' runs. The

@@ -74,18 +74,12 @@ impl SharedHost {
         } else {
             None
         };
-        // A gateway grant is honored only on the direct path, where the per-run model
-        // executor built above reaches the engine. The durable path enqueues and a
-        // pool worker drives the run from a context rebuilt without this override, so
-        // the grant would be silently lost — reject rather than degrade to local
-        // credentials (fail closed). This mirrors the altitude at which per-run
-        // placement is honored today (direct path only).
-        if gateway_executor.is_some() && (supersede || ctx.durable) {
-            return Err(HostError::bad_request(
-                "a cloud-managed gateway grant currently requires the direct (non-durable) \
-                 run path; durable/worker-driven gateway egress is not yet wired",
-            ));
-        }
+        // The gateway grant is honored on BOTH paths: the direct path uses the
+        // per-run executor built above; the durable path enqueues, and the pool
+        // worker rebuilds the same executor from the session's gateway builder
+        // (ADR-0004, the durable-path half of the secretless worker). The early build
+        // above also validates — a gateway grant with no factory or an unservable
+        // dialect fails closed here, before the run is enqueued.
         if supersede {
             // Durable + superseding: enqueue (marking prior pending superseded) and
             // let the process pool drive it on this session's worker (O2).
