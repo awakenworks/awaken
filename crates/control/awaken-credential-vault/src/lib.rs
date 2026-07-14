@@ -30,7 +30,7 @@ pub use oauth::{CommandTokenSource, TokenSource};
 #[cfg(feature = "postgres")]
 pub use postgres::{PostgresCredentialRepo, PostgresSealedBlobStore};
 #[cfg(feature = "sealed-aead")]
-pub use sealed::SealedAeadSecretStore;
+pub use sealed::{SealedAeadSecretStore, parse_seal_key, resolve_seal_key_hex};
 #[cfg(feature = "sqlite")]
 pub use sqlite::{SqliteCredentialRepo, SqliteSealedBlobStore};
 
