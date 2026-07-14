@@ -36,6 +36,9 @@ mod routes;
 /// from neutral domain state lives in [`project`] and [`state`].
 pub mod types;
 
+/// The self-hosted environment registry as a port ([`env_registry::EnvRegistry`]),
+/// with an in-memory default; durable (sqlite/postgres) backends fold in behind it.
+pub mod env_registry;
 mod preview;
 mod session_repo;
 mod state;
@@ -43,6 +46,7 @@ mod state;
 /// with an in-memory default; durable (sqlite/postgres) backends fold in behind it.
 pub mod work_queue;
 
+pub use env_registry::{EnvItem, EnvRegistry, EnvUpdate, InMemoryEnvRegistry};
 pub use routes::agents_registry::{
     AgentConfigSource, AgentConfigView, AgentRegistryState, agents_router,
 };

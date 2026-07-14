@@ -127,7 +127,7 @@ async fn deny_egress_reflects_the_networking_policy() {
         json!({ "type": "cloud", "networking": { "type": "limited" } }),
     )
     .await;
-    assert!(state.deny_egress(&limited), "limited → egress denied");
+    assert!(state.deny_egress(&limited).await, "limited → egress denied");
 
     let unrestricted = make(
         &app,
@@ -135,18 +135,18 @@ async fn deny_egress_reflects_the_networking_policy() {
     )
     .await;
     assert!(
-        !state.deny_egress(&unrestricted),
+        !state.deny_egress(&unrestricted).await,
         "unrestricted → host network"
     );
 
     let self_hosted = make(&app, json!({ "type": "self_hosted" })).await;
     assert!(
-        !state.deny_egress(&self_hosted),
+        !state.deny_egress(&self_hosted).await,
         "no networking → host network"
     );
 
     assert!(
-        !state.deny_egress("env_nonexistent"),
+        !state.deny_egress("env_nonexistent").await,
         "unknown env → host network"
     );
 }
