@@ -83,6 +83,12 @@ async function main() {
         });
         assert.ok(acked.acknowledged_at, 'the worker acked the session work');
 
+        // Snapshot the queue before driving the session: work is a session-lifecycle
+        // signal (create / dormant wake), so the message turns below must NOT add new
+        // work items (that is dispatch's job, not the work queue's).
+        const beforeDrive = await drain(client.beta.environments.work.list(env.id, { betas: BETAS }));
+        const sessionWorkBefore = beforeDrive.filter((w) => w.data.type === 'session').length;
+
         const hb = await client.beta.environments.work.heartbeat(work.id, {
           environment_id: env.id,
           betas: BETAS,
@@ -114,6 +120,18 @@ async function main() {
           `the worker's tool result reached the model, replies: ${JSON.stringify(replies)}`,
         );
         pass('worker runs the parked tool call and posts the result back');
+
+        // The two turns above (user.message + user.tool_result) drove the session
+        // through the events API — they must NOT have enqueued any new work: the queue
+        // still holds exactly the one `session` work item it had before the turns.
+        const afterDrive = await drain(client.beta.environments.work.list(env.id, { betas: BETAS }));
+        const sessionWorkAfter = afterDrive.filter((w) => w.data.type === 'session').length;
+        assert.equal(
+          sessionWorkAfter,
+          sessionWorkBefore,
+          'driving the session with messages must not enqueue new work (work != dispatch)',
+        );
+        pass('session message turns do not re-enqueue work (work is a per-session-creation signal)');
 
         // Finish: stop the work item (the worker releases the session).
         const stopped = await client.beta.environments.work.stop(work.id, {
