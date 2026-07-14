@@ -39,6 +39,9 @@ pub mod types;
 mod preview;
 mod session_repo;
 mod state;
+/// The self-hosted environment work queue as a port ([`work_queue::WorkQueue`]),
+/// with an in-memory default; durable (sqlite/postgres) backends fold in behind it.
+pub mod work_queue;
 
 pub use routes::agents_registry::{
     AgentConfigSource, AgentConfigView, AgentRegistryState, agents_router,
@@ -60,3 +63,4 @@ pub use state::{
     RunError, RunErrorKind, SessionInit, SessionLifecycleSink, SessionResource, SessionRuntime,
     SessionUsage, StateError, TurnFailure, TurnOutcome,
 };
+pub use work_queue::{InMemoryWorkQueue, WorkItem, WorkQueue, WorkState};
