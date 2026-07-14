@@ -60,7 +60,6 @@ fn empty_commit(thread: &str, fact: RunFact, waiting: Option<WaitingTicket>) -> 
         messages: vec![],
         state: vec![],
         events: vec![],
-        outbox: vec![],
         waiting,
     }
 }
@@ -84,7 +83,6 @@ async fn commit_persists_facts_messages_and_serves_reads() {
             kind: EventKind::MessageCommitted,
             payload: serde_json::json!({"n": 1}),
         }],
-        outbox: Vec::new(),
         waiting: None,
     };
 
@@ -166,7 +164,6 @@ async fn projection_rehydrates_from_a_file_after_reopen() {
                 messages: vec![message("m1", "persisted")],
                 state: vec![],
                 events: vec![],
-                outbox: Vec::new(),
                 waiting: Some(ticket("run-1", "thread-1")),
             })
             .await
@@ -216,7 +213,6 @@ async fn g13_failed_commit_leaves_no_partial_state() {
             messages: vec![],
             state: vec![],
             events: vec![],
-            outbox: Vec::new(),
             waiting: None,
         })
         .await;

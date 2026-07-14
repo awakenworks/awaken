@@ -34,7 +34,6 @@ fn checkpoint(thread: &ThreadId, run: &RunId, text: &str) -> ThreadCommit {
             kind: EventKind::MessageCommitted,
             payload: serde_json::Value::Null,
         }],
-        outbox: Vec::new(),
         waiting: None,
     }
 }

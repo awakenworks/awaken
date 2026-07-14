@@ -60,7 +60,6 @@ async fn reopen_file_resumes_from_committed_facts() {
                     kind: EventKind::MessageCommitted,
                     payload: serde_json::Value::Null,
                 }],
-                outbox: Vec::new(),
                 waiting: None,
             })
             .await

@@ -61,7 +61,6 @@ pub async fn commit_run(
             messages,
             state,
             events,
-            outbox: Vec::new(),
             waiting,
         })
         .await

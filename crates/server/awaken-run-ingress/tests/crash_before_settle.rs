@@ -692,7 +692,6 @@ async fn commit_is_atomic_and_survives_replay_with_no_orphans() {
                 )],
                 state: Vec::new(),
                 events: Vec::new(),
-                outbox: Vec::new(),
                 waiting: None,
             },
         )

@@ -16,7 +16,7 @@ pub use agent::run::{Id as RunId, Record as RunRecord};
 pub use agent::state::Key as StateKey;
 pub use agent::thread::Id as ThreadId;
 pub use commit::coordinator::Coordinator as CommitCoordinator;
-pub use commit::staged::{OutboxIntent, ThreadCommit};
+pub use commit::staged::ThreadCommit;
 pub use event::record::Record as EventRecord;
 pub use model_spec::ModelSpec;
 pub use secret::RedactedString;
