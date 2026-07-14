@@ -6,7 +6,8 @@
 //     both AI-SDK and AG-UI;
 //   • a persistent failure EXHAUSTS retries and never fabricates a reply, and now
 //     SURFACES as the wire's terminal error frame (AI-SDK `error` + `finish("error")`,
-//     AG-UI `RUN_ERROR`) — not a silent empty finish;
+//     AG-UI `RUN_ERROR`, A2A a `failed` Task carrying the fault message) — not a
+//     silent empty finish / falsely `completed` task;
 //   • the SAME fault surfaces on the Managed wire as `session.error`.
 //
 // This exercises the fix that carries a terminal `EndCause::Error` through the
@@ -73,6 +74,36 @@ async function agUiTurn(base, thread, text) {
   const evs = frames(await res.text());
   const reply = evs.filter((e) => e.type === 'TEXT_MESSAGE_CONTENT').map((e) => e.delta).join('');
   return { status: res.status, evs, reply };
+}
+
+// A2A message/send (JSON-RPC): returns the whole Task, so a terminal fault reads
+// back as `Task.status.state === 'failed'` carrying the fault message.
+async function a2aSend(base, context, text) {
+  const res = await fetch(`${base}/v1/a2a`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'message/send',
+      params: {
+        message: {
+          messageId: `m-${randomBytes(4).toString('hex')}`,
+          contextId: context,
+          role: 'user',
+          kind: 'message',
+          parts: [{ kind: 'text', text }],
+        },
+      },
+    }),
+  });
+  const body = await res.json();
+  const task = body.result;
+  const statusText = (task?.status?.message?.parts ?? [])
+    .filter((p) => p.kind === 'text')
+    .map((p) => p.text)
+    .join('');
+  return { status: res.status, error: body.error, state: task?.status?.state, statusText };
 }
 
 // Run `fn(base)` against a `real`-mode server pointed at a fault-injected upstream.
@@ -161,7 +192,22 @@ async function main() {
   });
   pass('Managed: the SAME fault DOES surface (session.error / send error) — the asymmetry vs AI-SDK/AG-UI');
 
-  console.log('E2E PASS: cross-protocol upstream-fault handling (retry-recover on AI-SDK/AG-UI; terminal-fault surfacing asymmetry pinned).');
+  // Arm 6: A2A — a persistent failure reads back as a `failed` Task (not a falsely
+  // `completed` one), carrying the fault message. Closes the wire-symmetry gap.
+  await withFaultyUpstream({ alwaysFail: true }, BASE_PORT + 5, async (base, upstream) => {
+    const r = await a2aSend(base, `xf-a2a-err-${randomBytes(2).toString('hex')}`, TEXT);
+    assert.equal(r.status, 200, 'a2a transport ok (the fault rides in the Task, not the transport)');
+    assert.ok(!r.error, `a2a message/send is not a JSON-RPC error: ${JSON.stringify(r.error)}`);
+    assert.equal(r.state, 'failed', `A2A terminal fault -> Task.state=failed (got ${r.state})`);
+    // The failed Task carries the fault message (my fix routes `Terminal::Failed`'s
+    // message into the Task status) rather than a fabricated agent reply.
+    assert.ok(r.statusText.length > 0, `A2A failed Task carries the fault message (got ${JSON.stringify(r.statusText)})`);
+    assert.ok(!r.statusText.includes('FAKE:'), 'the status is the fault, not a fabricated model reply');
+    assert.ok(upstream.attempts >= 2, `retries were attempted (attempts=${upstream.attempts})`);
+  });
+  pass('A2A: exhausted upstream -> failed Task (not falsely completed), no fabricated reply');
+
+  console.log('E2E PASS: cross-protocol upstream-fault handling (retry-recover on AI-SDK/AG-UI; terminal fault surfaces on all four wires).');
 }
 
 main().catch((err) => {
