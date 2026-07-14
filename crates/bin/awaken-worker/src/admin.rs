@@ -37,11 +37,7 @@ async fn livez() -> impl IntoResponse {
 }
 
 async fn readyz(State(host): State<Arc<SharedHost>>) -> impl IntoResponse {
-    if host.pool_accepting_work() {
-        (StatusCode::OK, "ready\n")
-    } else {
-        (StatusCode::SERVICE_UNAVAILABLE, "draining\n")
-    }
+    awaken_server::admin::readyz(host.pool_accepting_work())
 }
 
 async fn drain(State(host): State<Arc<SharedHost>>) -> impl IntoResponse {
@@ -50,11 +46,11 @@ async fn drain(State(host): State<Arc<SharedHost>>) -> impl IntoResponse {
 }
 
 async fn metrics(State(host): State<Arc<SharedHost>>) -> impl IntoResponse {
-    let draining = u8::from(!host.pool_accepting_work());
-    let body = format!(
-        "# HELP awaken_worker_draining 1 when the worker is draining for scale-in.\n\
-         # TYPE awaken_worker_draining gauge\n\
-         awaken_worker_draining {draining}\n"
+    let draining = u64::from(!host.pool_accepting_work());
+    let body = awaken_server::admin::prometheus_gauge(
+        "awaken_worker_draining",
+        "1 when the worker is draining for scale-in.",
+        draining,
     );
     (StatusCode::OK, body)
 }
