@@ -28,7 +28,9 @@ pub(crate) fn session_usage_value(usage: SessionUsage) -> Usage {
 }
 
 /// Concatenate the text of a content-block list.
-pub(crate) fn content_text(content: &[awaken_agent_contract::agent::content::ContentBlock]) -> String {
+pub(crate) fn content_text(
+    content: &[awaken_agent_contract::agent::content::ContentBlock],
+) -> String {
     use awaken_agent_contract::agent::content::ContentBlock;
     content
         .iter()

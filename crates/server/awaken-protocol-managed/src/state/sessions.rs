@@ -245,7 +245,11 @@ impl ManagedState {
     /// otherwise (a session created before the repo existed, or a purely in-memory
     /// deployment) it falls back to the runtime's advertised surface with
     /// placeholder agent/title/metadata — the pre-repo behavior.
-    pub(crate) fn rehydrated_session(&self, id: &str, persisted: Option<PersistedSession>) -> Session {
+    pub(crate) fn rehydrated_session(
+        &self,
+        id: &str,
+        persisted: Option<PersistedSession>,
+    ) -> Session {
         let caps = self.runtime.capabilities();
         let (agent_id, model, environment_id, title, metadata, mcp_servers) = match persisted {
             Some(p) => (

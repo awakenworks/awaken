@@ -39,10 +39,10 @@ impl LlmExecutor for OkModel {
 }
 
 fn activation(run: &str, thread: &str) -> RunActivation {
-    RunActivation {
-        run_id: RunId(run.into()),
-        thread_id: ThreadId(thread.into()),
-        snapshot: ExecutableAgentSnapshot {
+    RunActivation::new(
+        RunId(run.into()),
+        ThreadId(thread.into()),
+        ExecutableAgentSnapshot {
             id: ExecutableAgentSnapshotId("snap".into()),
             root_agent_id: AgentId("agent".into()),
             resolved_spec: ResolvedSpec {
@@ -59,9 +59,8 @@ fn activation(run: &str, thread: &str) -> RunActivation {
             },
             fingerprint: CatalogFingerprint("fp".into()),
         },
-        input: vec![Message::text(MessageId("u1".into()), Role::User, "go")],
-        trace: Default::default(),
-    }
+        vec![Message::text(MessageId("u1".into()), Role::User, "go")],
+    )
 }
 
 async fn post(router: &Router, uri: &str, body: Value) -> (StatusCode, Value) {

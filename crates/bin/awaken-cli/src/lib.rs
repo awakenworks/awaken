@@ -156,10 +156,10 @@ async fn open_management_stores(
 
     // Create the parent directory for any SQLite path (a bundle dir or a custom path).
     fn ensure_parent(backend: &StoreBackend) {
-        if let StoreBackend::Sqlite(path) = backend {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).expect("create control-store directory");
-            }
+        if let StoreBackend::Sqlite(path) = backend
+            && let Some(parent) = path.parent()
+        {
+            std::fs::create_dir_all(parent).expect("create control-store directory");
         }
     }
     let path = |p: &std::path::Path| p.to_string_lossy().into_owned();

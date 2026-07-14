@@ -310,7 +310,7 @@ is to make them realize it, and to fill the currently-stubbed `Sandbox::attach`
   moved to the **worker tier**; the providers resolve mount bytes through an injected
   `BlobSource` port and realize memory stores through an injected `MemoryMounter` port,
   linking no durable **commit** store (`worker → resources` is allowed: resources is
-  the common foundation config defines and worker materializes; the A-G17 exclusion is
+  the common foundation config defines and worker materializes; the G17 exclusion is
   the commit-log tier only).
 - **Contract-provider realization — delivered (item 1).** `LocalProvider` (Workdir)
   and `NamespaceProvider` (bwrap) realize `MountSource::MemoryStore` through the

@@ -61,6 +61,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-protocol-managed",
         "awaken-authz-enforce",
         "awaken-webhook",
+        # dev-only: the e2e stands up a real axum receiver (tower util + body reading).
+        "tower",
+        "http-body-util",
         # Subscriptions are a config resource: the read-side WebhookStore port + the
         # secret-free WebhookEndpointDef, and the vault SecretStore the whsec_ key is
         # sealed behind (RedactedString at the seam). All open, port-only — the durable
@@ -283,6 +286,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-run-ingress-contract": {
         "awaken-agent-contract",
         "awaken-runtime-contract",
+        # Serializable claim/settle payloads (the durable-persistence serde contract).
+        "serde_json",
         "async-trait",
         "serde",
         "thiserror",
@@ -621,6 +626,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # it constructs no runtime. It is a product adapter, not a neutral crate.
     "awaken-protocol-managed": {
         "awaken-agent-contract",
+        # Live SSE previews stream agent.message deltas over an SSE body;
+        # form_urlencoded parses the managed wire's cursor/query params.
+        "async-stream",
+        "form_urlencoded",
         # Tenancy edge aspect (ADR-0051): the opaque `ScopeId` bound by the
         # `ScopedRepo` decorator so session persistence is tenant-isolable.
         "awaken-tenancy",
@@ -954,6 +963,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-agent-contract",
         "awaken-runtime-contract",
         "awaken-runtime",
+        # Oneshot-forwarding + the worker-facing HTTP dispatch-transport middleware.
+        "tower",
         # The OTel-backed metrics recorder injected into each per-thread runtime
         # (#2), so a server with OTLP configured exports model/tool metrics.
         "awaken-observability",

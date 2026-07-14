@@ -46,11 +46,7 @@ pub struct PageQuery {
 /// tolerant auto-paginator. Stays in the adapter's typed vocabulary — no `Value`
 /// round-trip — so the anti-corruption boundary is not blurred.
 #[must_use]
-pub fn paginate<T: Clone>(
-    data: Vec<T>,
-    query: &PageQuery,
-    id_of: impl Fn(&T) -> &str,
-) -> Page<T> {
+pub fn paginate<T: Clone>(data: Vec<T>, query: &PageQuery, id_of: impl Fn(&T) -> &str) -> Page<T> {
     match paginate_by_id(&data, query.page.as_deref(), query.limit, id_of) {
         Ok(page) => Page {
             data: page.items.to_vec(),
