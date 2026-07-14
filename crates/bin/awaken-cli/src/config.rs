@@ -95,14 +95,20 @@ impl AwakenConfig {
             if let Some(v) = lookup(key) {
                 return Some(v);
             }
-            let legacy = ALIASES.iter().find(|(new, _)| *new == key).map(|(_, l)| *l)?;
+            let legacy = ALIASES
+                .iter()
+                .find(|(new, _)| *new == key)
+                .map(|(_, l)| *l)?;
             lookup(legacy)
         };
         let read_warned = |key: &str, deps: &mut Vec<String>| -> Option<String> {
             if let Some(v) = lookup(key) {
                 return Some(v);
             }
-            let legacy = ALIASES.iter().find(|(new, _)| *new == key).map(|(_, l)| *l)?;
+            let legacy = ALIASES
+                .iter()
+                .find(|(new, _)| *new == key)
+                .map(|(_, l)| *l)?;
             let v = lookup(legacy)?;
             deps.push(format!(
                 "{legacy} is deprecated; use {key} (honored this release)"
@@ -250,14 +256,20 @@ mod tests {
             "AWAKEN_RUNTIME_DISPATCH_DATABASE_URL",
             "postgres://db/awaken",
         )]));
-        assert!(pg.postgres_dispatch, "a DSN selects postgres, no separate enum");
+        assert!(
+            pg.postgres_dispatch,
+            "a DSN selects postgres, no separate enum"
+        );
     }
 
     #[test]
     fn a_worker_without_a_server_url_is_refused() {
         let bad = AwakenConfig::from_lookup(map_lookup(&[("AWAKEN_ROLE", "worker")]));
         let errs = bad.validate().unwrap_err();
-        assert!(errs.iter().any(|e| e.contains("AWAKEN_WORKER_SERVE_URL")), "{errs:?}");
+        assert!(
+            errs.iter().any(|e| e.contains("AWAKEN_WORKER_SERVE_URL")),
+            "{errs:?}"
+        );
 
         let ok = AwakenConfig::from_lookup(map_lookup(&[
             ("AWAKEN_ROLE", "worker"),
@@ -270,17 +282,22 @@ mod tests {
     #[test]
     fn coordinator_without_a_shared_queue_is_refused() {
         // run_local_pool=false but no postgres dispatch → nobody drains → refused.
-        let bad = AwakenConfig::from_lookup(map_lookup(&[(
-            "AWAKEN_SERVER_RUN_LOCAL_POOL",
-            "false",
-        )]));
+        let bad =
+            AwakenConfig::from_lookup(map_lookup(&[("AWAKEN_SERVER_RUN_LOCAL_POOL", "false")]));
         let errs = bad.validate().unwrap_err();
-        assert!(errs.iter().any(|e| e.contains("shared Postgres dispatch queue")), "{errs:?}");
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("shared Postgres dispatch queue")),
+            "{errs:?}"
+        );
 
         // With a shared queue, the coordinator is valid.
         let ok = AwakenConfig::from_lookup(map_lookup(&[
             ("AWAKEN_SERVER_RUN_LOCAL_POOL", "false"),
-            ("AWAKEN_RUNTIME_DISPATCH_DATABASE_URL", "postgres://db/awaken"),
+            (
+                "AWAKEN_RUNTIME_DISPATCH_DATABASE_URL",
+                "postgres://db/awaken",
+            ),
         ]));
         assert!(ok.validate().is_ok());
     }
@@ -314,11 +331,26 @@ mod tests {
         ]));
         assert_eq!(cfg.serve_url.as_deref(), Some("http://serve:8080"));
         assert_eq!(cfg.data_dir.as_deref(), Some("/var/lib/awaken"));
-        assert!(!cfg.run_local_pool, "the negated legacy boolean maps to false");
+        assert!(
+            !cfg.run_local_pool,
+            "the negated legacy boolean maps to false"
+        );
         // Every legacy key read produced a deprecation warning.
-        assert!(cfg.deprecations.iter().any(|d| d.contains("AWAKEN_UPSTREAM_URL")));
-        assert!(cfg.deprecations.iter().any(|d| d.contains("AWAKEN_MGMT_DIR")));
-        assert!(cfg.deprecations.iter().any(|d| d.contains("AWAKEN_DISABLE_LOCAL_POOL")));
+        assert!(
+            cfg.deprecations
+                .iter()
+                .any(|d| d.contains("AWAKEN_UPSTREAM_URL"))
+        );
+        assert!(
+            cfg.deprecations
+                .iter()
+                .any(|d| d.contains("AWAKEN_MGMT_DIR"))
+        );
+        assert!(
+            cfg.deprecations
+                .iter()
+                .any(|d| d.contains("AWAKEN_DISABLE_LOCAL_POOL"))
+        );
     }
 
     #[test]
@@ -329,13 +361,20 @@ mod tests {
         ]));
         assert_eq!(cfg.serve_url.as_deref(), Some("http://new:8080"));
         // The new name read cleanly — no deprecation warning for the alias.
-        assert!(!cfg.deprecations.iter().any(|d| d.contains("AWAKEN_UPSTREAM_URL")));
+        assert!(
+            !cfg.deprecations
+                .iter()
+                .any(|d| d.contains("AWAKEN_UPSTREAM_URL"))
+        );
     }
 
     #[test]
     fn summary_reads_as_a_deployment_shape() {
         let cfg = AwakenConfig::from_lookup(map_lookup(&[
-            ("AWAKEN_RUNTIME_DISPATCH_DATABASE_URL", "postgres://db/awaken"),
+            (
+                "AWAKEN_RUNTIME_DISPATCH_DATABASE_URL",
+                "postgres://db/awaken",
+            ),
             ("AWAKEN_SERVER_RUN_LOCAL_POOL", "false"),
         ]));
         let s = cfg.summary();

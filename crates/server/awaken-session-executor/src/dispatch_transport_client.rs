@@ -154,11 +154,13 @@ impl DispatchQueue for HttpDispatchQueue {
             )
             .await?;
         // `settled` is the server's fence verdict: applied vs. stale-epoch fenced.
-        Ok(if v.get("settled").and_then(|s| s.as_bool()).unwrap_or(true) {
-            SettleOutcome::Applied
-        } else {
-            SettleOutcome::Fenced
-        })
+        Ok(
+            if v.get("settled").and_then(|s| s.as_bool()).unwrap_or(true) {
+                SettleOutcome::Applied
+            } else {
+                SettleOutcome::Fenced
+            },
+        )
     }
 
     // --- server-local operational verbs: the SERVER owns dead-letter/recovery GC.
