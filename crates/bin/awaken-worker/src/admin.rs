@@ -45,14 +45,12 @@ async fn drain(State(host): State<Arc<SharedHost>>) -> impl IntoResponse {
     (StatusCode::OK, "draining\n")
 }
 
-async fn metrics(State(host): State<Arc<SharedHost>>) -> impl IntoResponse {
-    let draining = u64::from(!host.pool_accepting_work());
-    let body = awaken_server::admin::prometheus_gauge(
-        "awaken_worker_draining",
-        "1 when the worker is draining for scale-in.",
-        draining,
-    );
-    (StatusCode::OK, body)
+/// The worker's Prometheus scrape: the whole process's OTel metrics (the
+/// `awaken.dispatch.*` throughput its runs record, plus model/tool metrics). The
+/// worker's load signal is that throughput; whether it is draining is the `/readyz`
+/// 503, not a metric.
+async fn metrics() -> impl IntoResponse {
+    (StatusCode::OK, awaken_observability::render_prometheus())
 }
 
 #[cfg(test)]
@@ -93,9 +91,12 @@ mod tests {
         assert_eq!(call(&app, "GET", "/livez").await.0, StatusCode::OK);
         // The drain endpoint is idempotent and safe even with no pool.
         assert_eq!(call(&app, "POST", "/admin/drain").await.0, StatusCode::OK);
-        // Metrics report draining=1 (not accepting work).
-        let (status, body) = call(&app, "GET", "/metrics").await;
+        // /metrics renders the process's Prometheus scrape (the global OTel registry).
+        // In this unit test no meter provider is installed, so it is an empty 200 —
+        // the render path is exercised at the observability level. The worker's real
+        // load signal is its `awaken.dispatch.*` throughput, exposed once the process
+        // has installed the meter provider via `awaken_observability::init`.
+        let (status, _body) = call(&app, "GET", "/metrics").await;
         assert_eq!(status, StatusCode::OK);
-        assert!(body.contains("awaken_worker_draining 1"), "{body}");
     }
 }

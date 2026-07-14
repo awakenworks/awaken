@@ -83,6 +83,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // keeps only the connection metric. Otherwise the admin routes merge onto the one
     // business port (backward-compatible single-port default).
     let ctrl = awaken_cli::DrainController::new();
+    // Register the connection-load gauge on the global OTel meter (installed by
+    // `init()` above), so `/metrics` exposes `awaken_brain_active_streams` alongside
+    // the business metrics. Held for the process lifetime so the callback stays live.
+    let _active_streams_gauge = awaken_cli::register_active_streams_gauge(ctrl.clone());
     let admin_addr = std::env::var("AWAKEN_SERVER_ADMIN_LISTEN")
         .ok()
         .filter(|v| !v.is_empty());
