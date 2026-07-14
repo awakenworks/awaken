@@ -43,7 +43,6 @@ const PROCESSED_AT: &str = "2026-01-01T00:00:00Z";
 const MEMORY_CREATE_ONLY: &str = "memory stores can only be attached at session creation time; \
      adding or removing one from a running session is not supported";
 
-
 mod events;
 mod helpers;
 mod resource;
@@ -52,9 +51,9 @@ mod sessions;
 mod threads;
 mod types;
 
+pub(crate) use helpers::{content_text, rubric_text, session_usage_value};
 pub use resource::SessionResource;
 pub(crate) use resource::{parse_session_resource, resource_dto};
-pub(crate) use helpers::{content_text, rubric_text, session_usage_value};
 pub use types::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, McpServerBinding, OutcomeIteration, OutcomeReport, Pending, RunError,

@@ -98,17 +98,17 @@ mod completion;
 mod run;
 mod session;
 mod session_ctx;
-mod types;
-mod worker_resolver;
 #[cfg(test)]
 mod tests;
+mod types;
+mod worker_resolver;
 
+pub(crate) use completion::CompletionRegistry;
+pub(crate) use session_ctx::{SessionCtx, SessionState};
 pub use types::{
     HostError, HostErrorKind, HostOutcomeIteration, HostOutcomeReport, HostResume, PendingTool,
     RunResult,
 };
-pub(crate) use completion::CompletionRegistry;
-pub(crate) use session_ctx::{SessionCtx, SessionState};
 pub(crate) use worker_resolver::HostWorkerResolver;
 
 /// The protocol-neutral, thread-keyed session substrate shared by every adapter.

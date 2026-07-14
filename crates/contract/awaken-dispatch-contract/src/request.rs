@@ -57,10 +57,10 @@ mod tests {
     };
 
     fn activation() -> RunActivation {
-        RunActivation {
-            run_id: RunId("run-1".into()),
-            thread_id: ThreadId("thrd-1".into()),
-            snapshot: ExecutableAgentSnapshot {
+        RunActivation::new(
+            RunId("run-1".into()),
+            ThreadId("thrd-1".into()),
+            ExecutableAgentSnapshot {
                 id: ExecutableAgentSnapshotId("snap".into()),
                 root_agent_id: AgentId("agent".into()),
                 resolved_spec: ResolvedSpec {
@@ -77,9 +77,8 @@ mod tests {
                 },
                 fingerprint: CatalogFingerprint("fp".into()),
             },
-            input: vec![Message::text(MessageId("u1".into()), Role::User, "go")],
-            trace: Default::default(),
-        }
+            vec![Message::text(MessageId("u1".into()), Role::User, "go")],
+        )
     }
 
     /// The request a durable queue persists and replays must survive a

@@ -26,7 +26,11 @@ impl ManagedState {
 
     /// A subagent child thread: a `session_thread` whose parent is the primary and
     /// whose `agent` is a minimal snapshot of the delegate `agent_name`.
-    pub(crate) fn child_thread(session: &Session, thread_id: &str, agent_name: &str) -> serde_json::Value {
+    pub(crate) fn child_thread(
+        session: &Session,
+        thread_id: &str,
+        agent_name: &str,
+    ) -> serde_json::Value {
         // Reuse the one `SessionAgent` shape rather than rebuild the agent object
         // inline; the delegate's config is unknown here, so it is a minimal snapshot.
         let agent = SessionAgent {

@@ -211,9 +211,7 @@ impl ProtocolRuntime for HangupProbe {
         self.finished.notify_one();
         Ok(StepOutcome {
             new_messages: Vec::new(),
-            waiting: false,
-            exhausted: false,
-            pending: None,
+            terminal: Terminal::Finished,
         })
     }
 

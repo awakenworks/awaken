@@ -55,10 +55,10 @@ async fn commit_ingest(
         // return success without re-applying, so a worker's retry is a no-op instead
         // of a rejected double-commit. A parked (`Waiting`) run is not terminal: a
         // later commit is its wake, so it is applied normally.
-        if let Some(existing) = RunStore::get(&*ctx.commit, &commit.run_fact.run_id) {
-            if matches!(existing.phase, Phase::Ended(_)) {
-                return Ok(json!({ "sequence": 0 }));
-            }
+        if let Some(existing) = RunStore::get(&*ctx.commit, &commit.run_fact.run_id)
+            && matches!(existing.phase, Phase::Ended(_))
+        {
+            return Ok(json!({ "sequence": 0 }));
         }
         let record = ctx
             .commit
