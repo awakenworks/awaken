@@ -31,8 +31,13 @@ awaken-server = { workspace = true }
 # bin depends on this worker crate.
 awaken-control = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
+# The cloud-native admin surface (readyz / livez / metrics / drain) on a separate
+# port, so an orchestrator can gate routing and drain the worker gracefully.
+axum = { workspace = true }
 
 [dev-dependencies]
+# The admin router tests drive the axum router directly (oneshot).
+tower = { version = "0.5", features = ["util"] }
 # The resolution test builds a ConfigExecutorProvider over in-memory stores and
 # asserts a configured model_ref resolves to a real executor (and falls back
 # otherwise) — proving no-mock per-run model resolution.
