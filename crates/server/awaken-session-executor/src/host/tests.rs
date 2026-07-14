@@ -1082,3 +1082,66 @@ async fn supersede_run_without_durable_ingress_fails_closed() {
         err.message
     );
 }
+
+#[tokio::test]
+async fn a_cloud_gateway_grant_on_the_native_path_is_rejected_fail_closed() {
+    // A `CloudManagedGateway` grant needs the mediated egress an ACP CLI in a
+    // sandbox gets; the native in-process provider builds its executor from the
+    // catalog, not the per-run grant, so it MUST reject rather than degrade to local
+    // credentials (which would defeat the secret custody the grant enforces, #74).
+    use awaken_runtime_contract::activation::RunActivation;
+    use awaken_runtime_contract::model_access::ModelAccessGrant;
+    use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
+    use awaken_runtime_contract::snapshot::{
+        AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
+    };
+
+    // No ACP backend wired → every thread is native.
+    let host = SharedHost::new(Arc::new(OkModel), "native");
+    let ctx = host.ctx_for("t-gw", None).await.expect("session builds");
+
+    let snapshot = ExecutableAgentSnapshot {
+        id: ExecutableAgentSnapshotId("snap".into()),
+        root_agent_id: AgentId("agent".into()),
+        resolved_spec: ResolvedSpec {
+            model_candidates: Vec::new(),
+            catalog_fingerprint: CatalogFingerprint("fp".into()),
+            instructions: "be helpful".into(),
+            max_steps: 8,
+            model_binding: ModelBinding::new("prov", "model", "native"),
+            tool_descriptors: Vec::new(),
+            plugin_ids: Vec::new(),
+            plugin_config: Default::default(),
+            context_policy: Default::default(),
+            tool_presentation: Default::default(),
+        },
+        fingerprint: CatalogFingerprint("fp".into()),
+    };
+    let activation = RunActivation::new(
+        RunId("r-gw".into()),
+        ThreadId("t-gw".into()),
+        snapshot,
+        Vec::new(),
+    )
+    .with_model_access(ModelAccessGrant::CloudManagedGateway {
+        gateway_base_url: "https://gw.internal/anthropic".into(),
+        dialect: "anthropic".into(),
+        model_ref: "claude".into(),
+        lease_token: "lease-x".into(),
+    });
+
+    let err = host
+        .execute_activation(&ctx, "t-gw", activation, false, None)
+        .await
+        .expect_err("the native path must reject a cloud-managed gateway grant");
+    assert!(
+        matches!(err.kind, HostErrorKind::BadRequest),
+        "a gateway grant on native is a bad_request, got {:?}",
+        err.kind
+    );
+    assert!(
+        err.message.contains("gateway"),
+        "the rejection names the gateway grant: {}",
+        err.message
+    );
+}
