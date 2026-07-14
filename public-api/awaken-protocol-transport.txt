@@ -36,6 +36,27 @@ impl core::marker::Sync for awaken_protocol_transport::Resume
 impl core::marker::Unpin for awaken_protocol_transport::Resume
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_transport::Resume
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_transport::Resume
+pub enum awaken_protocol_transport::Terminal
+pub awaken_protocol_transport::Terminal::Exhausted
+pub awaken_protocol_transport::Terminal::Failed(awaken_protocol_transport::StepFailure)
+pub awaken_protocol_transport::Terminal::Finished
+pub awaken_protocol_transport::Terminal::Waiting
+pub awaken_protocol_transport::Terminal::Waiting::pending: core::option::Option<awaken_protocol_transport::Pending>
+impl core::clone::Clone for awaken_protocol_transport::Terminal
+pub fn awaken_protocol_transport::Terminal::clone(&self) -> awaken_protocol_transport::Terminal
+impl core::cmp::PartialEq for awaken_protocol_transport::Terminal
+pub fn awaken_protocol_transport::Terminal::eq(&self, &awaken_protocol_transport::Terminal) -> bool
+impl core::default::Default for awaken_protocol_transport::Terminal
+pub fn awaken_protocol_transport::Terminal::default() -> awaken_protocol_transport::Terminal
+impl core::fmt::Debug for awaken_protocol_transport::Terminal
+pub fn awaken_protocol_transport::Terminal::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_protocol_transport::Terminal
+impl core::marker::Freeze for awaken_protocol_transport::Terminal
+impl core::marker::Send for awaken_protocol_transport::Terminal
+impl core::marker::Sync for awaken_protocol_transport::Terminal
+impl core::marker::Unpin for awaken_protocol_transport::Terminal
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_transport::Terminal
+impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_transport::Terminal
 pub struct awaken_protocol_transport::ChannelStreamSink
 impl awaken_protocol_transport::ChannelStreamSink
 pub fn awaken_protocol_transport::ChannelStreamSink::new(tokio::sync::mpsc::unbounded::UnboundedSender<awaken_agent_contract::stream::event::Kind>) -> Self
@@ -54,21 +75,46 @@ pub awaken_protocol_transport::Pending::name: alloc::string::String
 pub awaken_protocol_transport::Pending::tool_use_id: alloc::string::String
 impl core::clone::Clone for awaken_protocol_transport::Pending
 pub fn awaken_protocol_transport::Pending::clone(&self) -> awaken_protocol_transport::Pending
+impl core::cmp::PartialEq for awaken_protocol_transport::Pending
+pub fn awaken_protocol_transport::Pending::eq(&self, &awaken_protocol_transport::Pending) -> bool
 impl core::fmt::Debug for awaken_protocol_transport::Pending
 pub fn awaken_protocol_transport::Pending::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_protocol_transport::Pending
 impl core::marker::Freeze for awaken_protocol_transport::Pending
 impl core::marker::Send for awaken_protocol_transport::Pending
 impl core::marker::Sync for awaken_protocol_transport::Pending
 impl core::marker::Unpin for awaken_protocol_transport::Pending
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_transport::Pending
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_transport::Pending
+pub struct awaken_protocol_transport::StepFailure
+pub awaken_protocol_transport::StepFailure::code: alloc::string::String
+pub awaken_protocol_transport::StepFailure::message: alloc::string::String
+impl core::clone::Clone for awaken_protocol_transport::StepFailure
+pub fn awaken_protocol_transport::StepFailure::clone(&self) -> awaken_protocol_transport::StepFailure
+impl core::cmp::Eq for awaken_protocol_transport::StepFailure
+impl core::cmp::PartialEq for awaken_protocol_transport::StepFailure
+pub fn awaken_protocol_transport::StepFailure::eq(&self, &awaken_protocol_transport::StepFailure) -> bool
+impl core::default::Default for awaken_protocol_transport::StepFailure
+pub fn awaken_protocol_transport::StepFailure::default() -> awaken_protocol_transport::StepFailure
+impl core::fmt::Debug for awaken_protocol_transport::StepFailure
+pub fn awaken_protocol_transport::StepFailure::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_protocol_transport::StepFailure
+impl core::marker::Freeze for awaken_protocol_transport::StepFailure
+impl core::marker::Send for awaken_protocol_transport::StepFailure
+impl core::marker::Sync for awaken_protocol_transport::StepFailure
+impl core::marker::Unpin for awaken_protocol_transport::StepFailure
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_transport::StepFailure
+impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_transport::StepFailure
 pub struct awaken_protocol_transport::StepOutcome
-pub awaken_protocol_transport::StepOutcome::exhausted: bool
 pub awaken_protocol_transport::StepOutcome::new_messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
-pub awaken_protocol_transport::StepOutcome::pending: core::option::Option<awaken_protocol_transport::Pending>
-pub awaken_protocol_transport::StepOutcome::waiting: bool
+pub awaken_protocol_transport::StepOutcome::terminal: awaken_protocol_transport::Terminal
+impl awaken_protocol_transport::StepOutcome
+pub fn awaken_protocol_transport::StepOutcome::pending(&self) -> core::option::Option<&awaken_protocol_transport::Pending>
+pub fn awaken_protocol_transport::StepOutcome::terminal_event(&self) -> awaken_agent_contract::project::AgentEvent
 impl core::clone::Clone for awaken_protocol_transport::StepOutcome
 pub fn awaken_protocol_transport::StepOutcome::clone(&self) -> awaken_protocol_transport::StepOutcome
+impl core::default::Default for awaken_protocol_transport::StepOutcome
+pub fn awaken_protocol_transport::StepOutcome::default() -> awaken_protocol_transport::StepOutcome
 impl core::fmt::Debug for awaken_protocol_transport::StepOutcome
 pub fn awaken_protocol_transport::StepOutcome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for awaken_protocol_transport::StepOutcome
