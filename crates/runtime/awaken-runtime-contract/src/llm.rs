@@ -201,6 +201,26 @@ impl ThreadUsage {
             .copied()
             .fold(TokenUsage::default(), TokenUsage::saturating_add)
     }
+
+    /// Recover a thread's committed usage by scanning its committed state for the
+    /// last `Set` on [`THREAD_USAGE_STATE_KEY`]. The single reader of the usage
+    /// cell — shared by the host's session-usage read and the sub-agent rollup —
+    /// so the scan lives beside the key, not copied at each call site.
+    #[must_use]
+    pub fn from_committed_state(commands: &[awaken_agent_contract::agent::state::Command]) -> Self {
+        use awaken_agent_contract::agent::state::{Action, Scope};
+        let mut usage = ThreadUsage::default();
+        for cmd in commands {
+            if cmd.scope == Scope::Thread
+                && cmd.key.0 == THREAD_USAGE_STATE_KEY
+                && let Action::Set(value) = &cmd.action
+                && let Ok(parsed) = serde_json::from_value::<ThreadUsage>(value.clone())
+            {
+                usage = parsed;
+            }
+        }
+        usage
+    }
 }
 
 /// The thread-scoped committed-state key under which the run loop accumulates a

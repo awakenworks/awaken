@@ -29,7 +29,8 @@ use serde_json::{Value, json};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
 
-use crate::host::{BASE_SEQ, HostError, HostErrorKind, SharedHost};
+use crate::host::{BASE_SEQ, HostError, SharedHost};
+use crate::worker_http::respond;
 
 impl SharedHost {
     /// Cancel a run by id through the durable live-control seam (ADR-0018, slice E
@@ -115,19 +116,6 @@ pub fn durable_ops_router(host: Arc<SharedHost>) -> Router {
             post(purge),
         )
         .with_state(host)
-}
-
-fn respond(result: Result<Value, HostError>) -> (StatusCode, Json<Value>) {
-    match result {
-        Ok(value) => (StatusCode::OK, Json(value)),
-        Err(error) => {
-            let status = match error.kind {
-                HostErrorKind::BadRequest => StatusCode::BAD_REQUEST,
-                HostErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
-            };
-            (status, Json(json!({ "error": error.message })))
-        }
-    }
 }
 
 async fn submit_background(

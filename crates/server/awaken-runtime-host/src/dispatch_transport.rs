@@ -25,7 +25,8 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_run_ingress::{DispatchOutcome, DispatchQueue, RunExecutionRequest, SubmitOptions};
 
 use crate::dispatch_backend::shared_durable_store;
-use crate::host::{HostError, HostErrorKind, SharedHost};
+use crate::host::{HostError, SharedHost};
+use crate::worker_http::respond;
 
 /// The worker-facing dispatch transport router. Mount it alongside
 /// `durable_ops_router` on a cell server; a database-less worker points its
@@ -38,19 +39,6 @@ pub fn dispatch_transport_router(host: Arc<SharedHost>) -> Router {
         .route("/v1/worker/dispatch/renew_owned", post(renew_owned))
         .route("/v1/worker/dispatch/settle", post(settle))
         .with_state(host)
-}
-
-fn respond(result: Result<Value, HostError>) -> (StatusCode, Json<Value>) {
-    match result {
-        Ok(value) => (StatusCode::OK, Json(value)),
-        Err(error) => {
-            let status = match error.kind {
-                HostErrorKind::BadRequest => StatusCode::BAD_REQUEST,
-                HostErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
-            };
-            (status, Json(json!({ "error": error.message })))
-        }
-    }
 }
 
 /// The one process-shared durable store the co-located pool also drains, so a

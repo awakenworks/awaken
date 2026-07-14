@@ -877,19 +877,12 @@ async fn drive(
         // records the fact without naming any wire, and it survives a restart. A step
         // whose provider reported no usage records nothing.
         if let Some(step_usage) = response.usage {
-            // Fail closed on a drift: never overwrite a persisted tally we cannot
-            // read (that would silently reset the accumulated total, ADR-0055).
-            match ThreadUsageKey::load(&store) {
-                Ok(mut usage) => {
-                    usage.record(&resolved.spec.model_binding.model_ref, step_usage);
-                    let usage_cmd = ThreadUsageKey::write(&usage);
-                    store.apply(&usage_cmd);
-                    ledger.staged_state.push(usage_cmd);
-                }
-                Err(error) => {
-                    tracing::error!(%error, "thread usage state drifted; skipping record");
-                }
-            }
+            fold_thread_usage(
+                &mut store,
+                &mut ledger.staged_state,
+                "thread usage state drifted; skipping record",
+                |usage| usage.record(&resolved.spec.model_binding.model_ref, step_usage),
+            );
         }
 
         run_phase_hooks(
@@ -1568,19 +1561,8 @@ async fn resume_into_messages(
     };
     match result {
         ResumeResult::ToolResult(output) => {
-            let mut state = output.state.clone();
-            let mut messages = vec![tool_result_message_from(&call_id, &output.content)];
-            if let Some(call) = pending_call(&output) {
-                let mut work = store.clone();
-                for command in &output.state {
-                    work.apply(command);
-                }
-                let (reactions, reminders) =
-                    collect_tool_reactions(env, run_id, 0, &call, &output, &work).await;
-                state.extend(reactions);
-                messages.extend(reminders);
-            }
-            (messages, state)
+            let call = pending_call(&output);
+            fold_resume_tool_output(env, run_id, &call_id, call, &output, store).await
         }
         ResumeResult::Decision { allow, note } => {
             if allow && let Some(pending) = &ticket.pending_tool {
@@ -1590,17 +1572,7 @@ async fn resume_into_messages(
                     arguments: pending.arguments.clone(),
                 };
                 let output = execute_tool(runtime, None, &call, context).await;
-                let mut state = output.state.clone();
-                let mut messages = vec![tool_result_message_from(&call_id, &output.content)];
-                let mut work = store.clone();
-                for command in &output.state {
-                    work.apply(command);
-                }
-                let (reactions, reminders) =
-                    collect_tool_reactions(env, run_id, 0, &call, &output, &work).await;
-                state.extend(reactions);
-                messages.extend(reminders);
-                (messages, state)
+                fold_resume_tool_output(env, run_id, &call_id, Some(call), &output, store).await
             } else {
                 let reason = note.unwrap_or_else(|| "denied".to_string());
                 (
@@ -1667,6 +1639,35 @@ fn store_from_commands(commands: Vec<StateCommand>) -> Store {
     Store::rebuild(&kept)
 }
 
+/// Fold a resumed tool result into `(messages, state)` off a throwaway store copy
+/// (the resume paths return staged effects rather than mutating the live store).
+/// The result message is minted from `call_id`; when a `call` is present (the
+/// replayed call the hooks advance on) its output state is applied to a `work`
+/// clone and the `AfterTool` reactions/reminders are folded in. The one home for
+/// the resume arms' outcome folding (`ToolResult` and an allowed `Decision`).
+async fn fold_resume_tool_output(
+    env: &ResolvedExecutionEnv,
+    run_id: &RunId,
+    call_id: &str,
+    call: Option<ToolCall>,
+    output: &ToolOutput,
+    store: &Store,
+) -> (Vec<Message>, Vec<StateCommand>) {
+    let mut state = output.state.clone();
+    let mut messages = vec![tool_result_message_from(call_id, &output.content)];
+    if let Some(call) = call {
+        let mut work = store.clone();
+        for command in &output.state {
+            work.apply(command);
+        }
+        let (reactions, reminders) =
+            collect_tool_reactions(env, run_id, 0, &call, output, &work).await;
+        state.extend(reactions);
+        messages.extend(reminders);
+    }
+    (messages, state)
+}
+
 /// Consult the `AfterTool` phase hooks for one executed call (ADR-0055 folds the
 /// former `ToolOutcomeHook` into the phase-hook model). `state` must already
 /// reflect the tool's own output state; each hook reads the folded state and the
@@ -1727,6 +1728,28 @@ async fn run_delegation(
 /// the staged batch, exactly like the per-step inference recording — so the parent
 /// thread's usage (and thus a session's) counts sub-agent tokens. A no-op when the
 /// delegate reported none (a remote delegate or a deterministic model).
+/// Load-merge-store the thread-usage cell fail-closed (ADR-0055): read the
+/// committed tally, apply `mutate`, write it back to the live `store` and stage
+/// the command. On a shape drift it logs `drift` and leaves the tally untouched
+/// (never resets an accumulated total). The one place the usage cell is folded —
+/// both per-step recording and sub-agent rollup go through here.
+fn fold_thread_usage(
+    store: &mut Store,
+    staged_state: &mut Vec<StateCommand>,
+    drift: &str,
+    mutate: impl FnOnce(&mut ThreadUsage),
+) {
+    match ThreadUsageKey::load(store) {
+        Ok(mut usage) => {
+            mutate(&mut usage);
+            let usage_cmd = ThreadUsageKey::write(&usage);
+            store.apply(&usage_cmd);
+            staged_state.push(usage_cmd);
+        }
+        Err(error) => tracing::error!(%error, "{drift}"),
+    }
+}
+
 fn merge_thread_usage(
     store: &mut Store,
     staged_state: &mut Vec<StateCommand>,
@@ -1735,18 +1758,12 @@ fn merge_thread_usage(
     if delta.is_empty() {
         return;
     }
-    // Fail closed on a drift rather than resetting the accumulated tally (ADR-0055).
-    let mut usage = match ThreadUsageKey::load(store) {
-        Ok(usage) => usage,
-        Err(error) => {
-            tracing::error!(%error, "thread usage state drifted; skipping sub-agent rollup");
-            return;
-        }
-    };
-    usage.merge(delta);
-    let usage_cmd = ThreadUsageKey::write(&usage);
-    store.apply(&usage_cmd);
-    staged_state.push(usage_cmd);
+    fold_thread_usage(
+        store,
+        staged_state,
+        "thread usage state drifted; skipping sub-agent rollup",
+        |usage| usage.merge(delta),
+    );
 }
 
 /// Invoke an authorized tool, turning a missing tool or a tool error into a

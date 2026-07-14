@@ -14,13 +14,12 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use awaken_agent_contract::agent::state::{Action, Scope};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_runtime::RunInput;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::CancellationToken;
-use awaken_runtime_contract::llm::{LlmExecutor, THREAD_USAGE_STATE_KEY, ThreadUsage};
+use awaken_runtime_contract::llm::{LlmExecutor, ThreadUsage};
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::tool::RawTool;
@@ -118,20 +117,10 @@ pub(crate) async fn run_configured_subrun(
 
 /// Read a finished sub-run's accumulated [`ThreadUsage`] out of its committed
 /// thread state. The run loop writes the running cumulative under
-/// [`THREAD_USAGE_STATE_KEY`] each step, so the last `Set` is the whole tally
+/// `THREAD_USAGE_STATE_KEY` each step, so the last `Set` is the whole tally
 /// (mirrors `SharedHost::thread_usage`, but over the sub-run's isolated commit).
 fn usage_from_committed(commit: &MemoryCommitCoordinator, thread_id: &ThreadId) -> ThreadUsage {
-    let mut usage = ThreadUsage::default();
-    for cmd in commit.committed_state(thread_id) {
-        if cmd.scope == Scope::Thread
-            && cmd.key.0 == THREAD_USAGE_STATE_KEY
-            && let Action::Set(value) = &cmd.action
-            && let Ok(parsed) = serde_json::from_value::<ThreadUsage>(value.clone())
-        {
-            usage = parsed;
-        }
-    }
-    usage
+    ThreadUsage::from_committed_state(&commit.committed_state(thread_id))
 }
 
 /// Run a default `assistant` sub-agent named `name` with `input` to completion and
