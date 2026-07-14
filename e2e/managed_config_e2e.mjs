@@ -18,16 +18,17 @@ const BETAS = ['managed-agents-2026-04-01'];
 
 const AGENT = 'greeter';
 const GREETING = 'HELLO-FROM-CONFIG';
+// The config-plane agent endpoints parse the managed-shaped agent object
+// (agent_config_from_managed): instructions live under `system`, the model under
+// `model`, tool references under `tools`. Author the draft in that shape so the
+// stored config truth carries the model/instructions the projection asserts below.
 const agentConfig = {
   id: AGENT,
-  instructions: GREETING,
+  system: GREETING,
   max_steps: 4,
-  model_binding: { provider_identity_ref: 'default', model_ref: 'config-model', backend_ref: 'default' },
-  tool_ids: [],
-  // A glob selector over the catalog: matched at compile against the advertised
-  // hand tools (a pattern that matches nothing would not be an error).
-  tool_patterns: ['*'],
-  plugin_ids: [],
+  model: { id: 'config-model' },
+  tools: [],
+  plugins: [],
   plugin_config: {},
 };
 
@@ -55,8 +56,12 @@ async function main() {
     pass('config validated (compiles)');
 
     // Reject a bad config (unknown tool) — the validation path fails closed.
-    const bad = await json('POST', `/v1/config/agents/${AGENT}/validate`, { ...agentConfig, tool_ids: ['no_such_tool'] });
+    // The validate endpoint parses the managed-shaped body (agent_config_from_managed),
+    // so tool references live under `tools`; a name absent from the catalog fails
+    // closed with UnknownTool (config_plane D3).
+    const bad = await json('POST', `/v1/config/agents/${AGENT}/validate`, { id: AGENT, system: GREETING, tools: ['no_such_tool'] });
     assert.equal(bad.status, 400, 'bad config rejected');
+    assert.equal(bad.body.valid, false, 'valid=false on unknown tool');
     pass('invalid config rejected (unknown tool)');
 
     // Publish (compile → store publication → install).
