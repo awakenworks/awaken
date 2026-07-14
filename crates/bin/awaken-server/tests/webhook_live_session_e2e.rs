@@ -79,7 +79,9 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
         disabled: false,
         secret_ref: SecretRef("whsec:wh_live".into()),
     });
-    let (sink, _crud) = webhooks::assemble(store, secrets, None);
+    // The guarded production posture would refuse this loopback receiver (SSRF
+    // pin/admission), so use the loopback assembly for the in-process e2e.
+    let (sink, _crud) = webhooks::assemble_loopback(store, secrets, None);
 
     // 3. A managed surface with the sink, wrapped: guard (resolves + publishes the
     // owning workspace) → stamp_workspace_scope (maps it to WorkspaceScope).

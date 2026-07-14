@@ -88,7 +88,9 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
     // workspace onto the CRUD router as the guarded edge would.
     let store = Arc::new(InMemoryWebhookStore::new());
     let secrets = Arc::new(InMemorySecretStore::new());
-    let (sink, crud) = webhooks::assemble(store, secrets, None);
+    // The guarded production posture would refuse this loopback receiver (SSRF
+    // pin/admission), so use the loopback assembly for the in-process e2e.
+    let (sink, crud) = webhooks::assemble_loopback(store, secrets, None);
     let crud = crud.layer(axum::middleware::from_fn(stamp_local));
 
     // 3. Register a subscription through the REAL CRUD route; the secret comes back once.

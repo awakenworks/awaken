@@ -100,7 +100,11 @@ async fn echo_turn_end_to_end() {
     let list = send_message(&app, &id, "hi there").await;
     assert_eq!(
         event_types(&list),
-        vec!["agent.message", "session.status_idle"]
+        vec![
+            "session.status_running",
+            "agent.message",
+            "session.status_idle"
+        ]
     );
     let msg = list["data"]
         .as_array()
@@ -183,7 +187,11 @@ async fn hitl_write_parks_then_confirms_and_reads_rooted() {
     let list = send_message(&app, &id, "HELLO-SANDBOX").await;
     assert_eq!(
         event_types(&list),
-        vec!["agent.tool_use", "session.status_idle"]
+        vec![
+            "session.status_running",
+            "agent.tool_use",
+            "session.status_idle"
+        ]
     );
     let idle = list["data"].as_array().unwrap().last().unwrap();
     assert_eq!(idle["stop_reason"]["type"], "requires_action");
@@ -363,7 +371,11 @@ async fn custom_tool_use_through_real_kernel() {
     let list = send_message(&app, &id, "solve it").await;
     assert_eq!(
         event_types(&list),
-        vec!["agent.custom_tool_use", "session.status_idle"]
+        vec![
+            "session.status_running",
+            "agent.custom_tool_use",
+            "session.status_idle"
+        ]
     );
     let custom = list["data"]
         .as_array()

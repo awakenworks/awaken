@@ -66,7 +66,7 @@ async function main() {
       kind: 'vault',
       provider_id: 'openai',
       env_key: 'OPENAI_API_KEY',
-      secret: 'sk-openai-xxxxx',
+      secret: 'sk-openai-xxxxx', // awaken-allow: secret
     });
     assert.equal(foreign.status, 201, 'foreign credential created');
     const foreignId = foreign.body.id;
@@ -94,7 +94,7 @@ async function main() {
       kind: 'vault',
       provider_id: 'anthropic',
       env_key: 'ANTHROPIC_API_KEY',
-      secret: 'sk-anthropic-xxxxx',
+      secret: 'sk-anthropic-xxxxx', // awaken-allow: secret
     });
     assert.equal(good.status, 201, 'compatible credential created');
     const okResolve = await cfg('POST', '/v1/config/inference/resolve', {
@@ -117,7 +117,7 @@ async function main() {
       workspace_id: WS,
       kind: 'vault',
       env_key: 'ANY_KEY',
-      secret: 'sk-unscoped-xxxxx',
+      secret: 'sk-unscoped-xxxxx', // awaken-allow: secret
     });
     assert.equal(unscoped.status, 201, 'unscoped credential created');
     const anyResolve = await cfg('POST', '/v1/config/inference/resolve', {
