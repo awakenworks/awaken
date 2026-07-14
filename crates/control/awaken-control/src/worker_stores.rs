@@ -129,94 +129,20 @@ pub async fn open_shared_config_stores_from_env() -> SharedConfigStores {
     }
 }
 
-/// Parse `AWAKEN_MGMT_SEAL_KEY`: exactly 64 hex characters (a 32-byte AEAD key).
-fn parse_seal_key(hex: &str) -> Result<[u8; 32], String> {
-    let hex = hex.trim();
-    if hex.len() != 64 || !hex.is_ascii() {
-        return Err(format!(
-            "expected 64 hex characters (a 32-byte key), got {} characters",
-            hex.len()
-        ));
-    }
-    let mut key = [0u8; 32];
-    for (i, byte) in key.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16)
-            .map_err(|_| format!("not hex at position {}", 2 * i))?;
-    }
-    Ok(key)
-}
-
-/// Pure resolution of the seal-key hex from its two possible sources (inline env or a
-/// file path), so the precedence + mutual-exclusion rules are testable without the
-/// environment or filesystem. Mirrors the composition root's resolution exactly.
-fn resolve_seal_key_hex(
-    inline: Option<String>,
-    file_path: Option<String>,
-    read_file: impl Fn(&str) -> std::io::Result<String>,
-) -> Result<String, String> {
-    let inline = inline.filter(|v| !v.trim().is_empty());
-    let file_path = file_path.filter(|v| !v.trim().is_empty());
-    match (inline, file_path) {
-        (Some(_), Some(_)) => Err(
-            "both AWAKEN_MGMT_SEAL_KEY and AWAKEN_MGMT_SEAL_KEY_FILE are set; they are \
-             mutually exclusive — set exactly one"
-                .to_string(),
-        ),
-        (Some(hex), None) => Ok(hex),
-        (None, Some(path)) => read_file(&path)
-            .map_err(|e| format!("AWAKEN_MGMT_SEAL_KEY_FILE={path} could not be read: {e}")),
-        (None, None) => Err(
-            "AWAKEN_MGMT_DIR is set but neither AWAKEN_MGMT_SEAL_KEY nor \
-             AWAKEN_MGMT_SEAL_KEY_FILE is set. A durable management store needs a stable \
-             AEAD key (64 hex characters = 32 bytes); sealing under an ephemeral key \
-             would brick every restart"
-                .to_string(),
-        ),
-    }
-}
-
 /// The AEAD key for the durable shared stores, from `AWAKEN_MGMT_SEAL_KEY` (inline)
 /// or `AWAKEN_MGMT_SEAL_KEY_FILE` (a path). Exactly one must be set. Panics loudly
 /// when unset, both-set, unreadable, or malformed — the same fail-closed behavior as
 /// the Serve composition (a worker that sealed nothing or read a wrong key is worse
-/// than one that refuses to start).
+/// than one that refuses to start). The pure resolution lives once in
+/// `awaken_credential_vault` (shared with the Serve root); this only wires the env.
 fn mgmt_seal_key_from_env() -> [u8; 32] {
-    let hex = resolve_seal_key_hex(
+    let hex = awaken_credential_vault::resolve_seal_key_hex(
         std::env::var("AWAKEN_MGMT_SEAL_KEY").ok(),
         std::env::var("AWAKEN_MGMT_SEAL_KEY_FILE").ok(),
         |p| std::fs::read_to_string(p),
     )
     .unwrap_or_else(|reason| panic!("{reason}."));
-    parse_seal_key(&hex).unwrap_or_else(|reason| {
+    awaken_credential_vault::parse_seal_key(&hex).unwrap_or_else(|reason| {
         panic!("the management seal key is malformed: {reason}. Provide 64 hex characters (a 32-byte key).")
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::resolve_seal_key_hex;
-
-    fn no_read(_: &str) -> std::io::Result<String> {
-        panic!("read_file should not be called");
-    }
-
-    #[test]
-    fn inline_key_is_used_verbatim() {
-        assert_eq!(
-            resolve_seal_key_hex(Some("abc".into()), None, no_read).unwrap(),
-            "abc"
-        );
-    }
-
-    #[test]
-    fn both_sources_set_is_a_hard_error() {
-        let err = resolve_seal_key_hex(Some("abc".into()), Some("/p".into()), no_read).unwrap_err();
-        assert!(err.contains("mutually exclusive"), "{err}");
-    }
-
-    #[test]
-    fn neither_source_set_is_the_brick_on_restart_error() {
-        let err = resolve_seal_key_hex(None, None, no_read).unwrap_err();
-        assert!(err.contains("neither AWAKEN_MGMT_SEAL_KEY"), "{err}");
-    }
 }
