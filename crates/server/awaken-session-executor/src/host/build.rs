@@ -498,4 +498,25 @@ impl SharedHost {
         };
         let _ = self.dispatch_pool.set(Arc::new(pool));
     }
+
+    /// Begin a graceful drain of the dispatch pool (scale-in / SIGTERM): stop
+    /// claiming new runs while the in-flight ones finish. A no-op when no pool is
+    /// running (a direct/non-durable host, or a worker whose pool never started).
+    /// Idempotent. The admin surface calls this on `POST /admin/drain`.
+    pub async fn begin_pool_drain(&self) {
+        if let Some(pool) = self.dispatch_pool.get() {
+            pool.begin_drain().await;
+        }
+    }
+
+    /// Whether the dispatch pool is up and still claiming work — the worker's
+    /// readiness signal. `false` before the pool starts or once it is draining, so a
+    /// readiness probe reports 503 in exactly the states where the worker should not
+    /// receive (or keep being routed) new work.
+    #[must_use]
+    pub fn pool_accepting_work(&self) -> bool {
+        self.dispatch_pool
+            .get()
+            .is_some_and(|pool| !pool.is_draining())
+    }
 }

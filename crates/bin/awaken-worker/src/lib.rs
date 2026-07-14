@@ -20,6 +20,8 @@
 
 use std::sync::Arc;
 
+mod admin;
+
 use awaken_server::SharedHost;
 use awaken_server::config_executor::ConfigExecutorProvider;
 use awaken_server::no_model::NoModelConfiguredExecutor;
@@ -73,20 +75,99 @@ pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
         "awaken-worker draining from {upstream} (per-run model resolution from the config plane)"
     );
 
-    // Drain in the background; block until asked to stop. SIGINT is a developer's
-    // foreground stop; SIGTERM is what an orchestrator sends first before SIGKILL.
+    // The cloud-native admin surface on a SEPARATE port from any data path: an
+    // orchestrator gates routing on `/readyz` and calls `POST /admin/drain` in a
+    // `preStop` hook before SIGTERM. Best-effort — a bind failure is logged but does
+    // not stop the worker draining runs (the core job).
+    let admin_addr = std::env::var("AWAKEN_WORKER_ADMIN_LISTEN")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "0.0.0.0:9090".to_string());
+    match tokio::net::TcpListener::bind(&admin_addr).await {
+        Ok(listener) => {
+            let router = admin::worker_admin_router(host.clone());
+            eprintln!("awaken-worker admin surface on {admin_addr} (/readyz /metrics /admin/drain)");
+            tokio::spawn(async move {
+                if let Err(err) = axum::serve(listener, router).await {
+                    eprintln!("awaken-worker admin server exited: {err}");
+                }
+            });
+        }
+        Err(err) => eprintln!("awaken-worker admin surface disabled (bind {admin_addr}: {err})"),
+    }
+
+    // Block until asked to stop. SIGINT is a developer's foreground stop (exit
+    // promptly after draining); SIGTERM is what an orchestrator sends first before
+    // SIGKILL (drain, then let in-flight runs finish within the grace window).
     #[cfg(unix)]
-    {
+    let graceful = {
         use tokio::signal::unix::{SignalKind, signal};
         let mut term = signal(SignalKind::terminate())?;
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
-            _ = term.recv() => {}
+            _ = tokio::signal::ctrl_c() => false,
+            _ = term.recv() => true,
         }
-    }
+    };
     #[cfg(not(unix))]
-    {
+    let graceful = {
         let _ = tokio::signal::ctrl_c().await;
+        false
+    };
+
+    // Stop claiming immediately so no NEW run is taken; the in-flight ones finish
+    // within the grace window before the process exits.
+    host.begin_pool_drain().await;
+    let grace = drain_grace(graceful);
+    if !grace.is_zero() {
+        eprintln!("awaken-worker draining: finishing in-flight runs (≤{}s)", grace.as_secs());
+        tokio::time::sleep(grace).await;
     }
     Ok(())
+}
+
+/// The graceful-drain window: how long to let in-flight runs finish after we stop
+/// claiming. Reads `AWAKEN_WORKER_DRAIN_GRACE_SECS` and delegates to the pure
+/// [`grace_window`] so the policy is unit-testable without touching the environment.
+fn drain_grace(graceful: bool) -> std::time::Duration {
+    let configured = std::env::var("AWAKEN_WORKER_DRAIN_GRACE_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok());
+    grace_window(graceful, configured)
+}
+
+/// The grace policy (pure): a SIGTERM (orchestrator scale-in) waits `configured` or
+/// the 20s default so in-flight runs finish; a SIGINT (developer ctrl-c) exits
+/// promptly (zero) so the foreground stop is snappy.
+fn grace_window(graceful: bool, configured_secs: Option<u64>) -> std::time::Duration {
+    if !graceful {
+        return std::time::Duration::ZERO;
+    }
+    std::time::Duration::from_secs(configured_secs.unwrap_or(20))
+}
+
+#[cfg(test)]
+mod grace_tests {
+    use super::grace_window;
+
+    #[test]
+    fn sigint_exits_promptly_sigterm_waits() {
+        assert!(
+            grace_window(false, None).is_zero(),
+            "ctrl-c drains then exits at once"
+        );
+        assert!(
+            grace_window(false, Some(99)).is_zero(),
+            "a configured grace never delays a foreground ctrl-c"
+        );
+        assert_eq!(
+            grace_window(true, None).as_secs(),
+            20,
+            "SIGTERM default grace is 20s"
+        );
+        assert_eq!(
+            grace_window(true, Some(5)).as_secs(),
+            5,
+            "the grace window is configurable"
+        );
+    }
 }
