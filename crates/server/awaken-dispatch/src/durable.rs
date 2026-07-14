@@ -67,11 +67,34 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
     where
         C: CommitCoordinator + ThreadReader + RunStore + Send + Sync + 'static,
     {
+        Self::with_owner_and_gateway(runtime, store, commit, owner, stream_checkpoint, None)
+    }
+
+    /// Like [`with_owner`](Self::with_owner) but also installs the cloud-managed
+    /// gateway executor builder (ADR-0004), so this ingress's worker honors a per-run
+    /// gateway grant credential-free (the secretless-worker path). `None` leaves the
+    /// worker unable to honor a gateway grant (it fails closed on one).
+    pub fn with_owner_and_gateway<C>(
+        runtime: Arc<Runtime>,
+        store: Arc<S>,
+        commit: Arc<C>,
+        owner: impl Into<String>,
+        stream_checkpoint: Option<
+            Arc<dyn awaken_agent_contract::store::stream_checkpoint::StreamCheckpointStore>,
+        >,
+        gateway: Option<crate::request::GatewayExecutorFn>,
+    ) -> Self
+    where
+        C: CommitCoordinator + ThreadReader + RunStore + Send + Sync + 'static,
+    {
         let live_inbox = awaken_runtime_contract::live_inbox::LiveInbox::new();
         let mut worker =
             DispatchWorker::new(runtime, store, commit, owner).with_live_inbox(live_inbox.clone());
         if let Some(store) = stream_checkpoint {
             worker = worker.with_stream_checkpoint(store);
+        }
+        if let Some(gateway) = gateway {
+            worker = worker.with_gateway_executor(gateway);
         }
         Self {
             worker: Arc::new(worker),
