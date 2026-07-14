@@ -18,7 +18,7 @@ use awaken_runtime_contract::resume::ResumeResult;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::dispatch::{
-    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchQueue, DispatchStatus,
+    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchQueue, DispatchStatus, SettleOutcome,
     DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, SubmitOptions,
 };
 use crate::dispatch_schema::dispatch_bundle;
@@ -248,14 +248,25 @@ impl DispatchQueue for SqliteDispatchStore {
                 serde_json::from_str(&request_json).map_err(json_err)?;
 
             let expires = now_ms + lease_ms;
+            // Bump the fence token on every claim (fresh, wake, recovery); read it
+            // back within the same IMMEDIATE tx so the lease carries the epoch the
+            // holder will settle under.
             tx.execute(
                 &format!(
                     "UPDATE {p}_dispatch SET status = 'running', lease_owner = ?1, \
-                     lease_until = ?2, attempt_count = attempt_count + ?3 WHERE run_id = ?4"
+                     lease_until = ?2, attempt_count = attempt_count + ?3, \
+                     lease_epoch = lease_epoch + 1 WHERE run_id = ?4"
                 ),
                 params![owner, expires as i64, i64::from(recovery_pick), run_id],
             )
             .map_err(reject)?;
+            let lease_epoch: i64 = tx
+                .query_row(
+                    &format!("SELECT lease_epoch FROM {p}_dispatch WHERE run_id = ?1"),
+                    params![run_id],
+                    |r| r.get(0),
+                )
+                .map_err(reject)?;
 
             // Hand the run's current pending input to the worker (not removed
             // here: settle removes exactly what the worker reports it consumed).
@@ -303,6 +314,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     run_id: RunId(run_id),
                     owner,
                     expires_ms: expires,
+                    epoch: lease_epoch as u64,
                 },
                 pending,
                 sandbox,
@@ -381,15 +393,44 @@ impl DispatchQueue for SqliteDispatchStore {
     async fn settle(
         &self,
         run_id: &RunId,
+        epoch: u64,
         outcome: DispatchOutcome,
         consumed: &[String],
-    ) -> Result<(), DispatchError> {
+    ) -> Result<SettleOutcome, DispatchError> {
         let run_id = run_id.0.clone();
         let consumed = consumed.to_vec();
         self.with_conn(move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(reject)?;
+            // Fence first: mutate the dispatch row ONLY while the caller still holds
+            // the current epoch. A stale owner (lower epoch) affects zero rows, so
+            // its settle touches neither the dispatch nor its pending.
+            let dispatch_rows = match outcome {
+                DispatchOutcome::Done => tx
+                    .execute(
+                        &format!("DELETE FROM {p}_dispatch WHERE run_id = ?1 AND lease_epoch = ?2"),
+                        params![run_id, epoch as i64],
+                    )
+                    .map_err(reject)?,
+                DispatchOutcome::Parked => tx
+                    .execute(
+                        &format!(
+                            "UPDATE {p}_dispatch SET status = 'parked', lease_owner = NULL, \
+                             lease_until = NULL, attempt_count = 0 \
+                             WHERE run_id = ?1 AND lease_epoch = ?2"
+                        ),
+                        params![run_id, epoch as i64],
+                    )
+                    .map_err(reject)?,
+            };
+            if dispatch_rows == 0 {
+                // Fenced: re-claimed under a higher epoch (or already gone). Change
+                // nothing and report the loss so the stale caller abandons.
+                let _ = tx.rollback();
+                return Ok(SettleOutcome::Fenced);
+            }
+            // The fence held; now reconcile the run's pending input.
             match outcome {
                 DispatchOutcome::Done => {
                     tx.execute(
@@ -406,11 +447,6 @@ impl DispatchQueue for SqliteDispatchStore {
                         )
                         .map_err(reject)?;
                     }
-                    tx.execute(
-                        &format!("DELETE FROM {p}_dispatch WHERE run_id = ?1"),
-                        params![run_id],
-                    )
-                    .map_err(reject)?;
                 }
                 DispatchOutcome::Parked => {
                     for message_id in &consumed {
@@ -420,18 +456,10 @@ impl DispatchQueue for SqliteDispatchStore {
                         )
                         .map_err(reject)?;
                     }
-                    tx.execute(
-                        &format!(
-                            "UPDATE {p}_dispatch SET status = 'parked', lease_owner = NULL, \
-                             lease_until = NULL, attempt_count = 0 WHERE run_id = ?1"
-                        ),
-                        params![run_id],
-                    )
-                    .map_err(reject)?;
                 }
             }
             tx.commit().map_err(reject)?;
-            Ok(())
+            Ok(SettleOutcome::Applied)
         })
         .await
     }

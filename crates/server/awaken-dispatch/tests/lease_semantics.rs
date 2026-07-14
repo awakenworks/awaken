@@ -332,8 +332,12 @@ async fn mid_flight_reclaim_keeps_the_committed_log_exactly_once() {
 
     // Release A so it unwinds. Its re-drive re-runs the tool, then tries to commit
     // a duplicate transcript over the now-terminal run — terminal-is-final REJECTS
-    // that commit, and the worker absorbs it as an already-done settle, so A's tick
-    // resolves cleanly (no panic, no stranded dispatch) reporting the run terminal.
+    // that commit, and the worker absorbs it as an already-done settle. That settle
+    // now carries A's STALE lease epoch, so the dispatch fence rejects it too: B
+    // already settled the run under a higher epoch and removed the row. A's tick
+    // therefore resolves cleanly (no panic, no stranded dispatch) but reports
+    // `None` — it durably settled nothing, because B won the lease. This is the
+    // fence doing its job: the stale owner cannot re-settle behind the reclaimer.
     release.add_permits(1);
     let a_result = tokio::time::timeout(Duration::from_secs(5), a_handle)
         .await
@@ -341,9 +345,9 @@ async fn mid_flight_reclaim_keeps_the_committed_log_exactly_once() {
         .expect("A's task did not panic")
         .expect("A's drive resolved without a fatal error");
     assert_eq!(
-        a_result,
-        Some((run.clone(), Phase::Ended(EndCause::NaturalEnd))),
-        "the stale owner's rejected re-drive settles as already-done, not a fault"
+        a_result, None,
+        "the stale owner's re-drive is fenced (B settled under a higher epoch): it \
+         settles nothing and abandons, rather than reporting a completion it did not own"
     );
 
     // Residual (documented): the tool side effect ran twice.

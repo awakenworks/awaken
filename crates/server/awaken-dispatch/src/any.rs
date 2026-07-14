@@ -22,7 +22,7 @@ use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
     CasOutcome, Claimed, Dispatch, DispatchError, DispatchOutcome, DispatchQueue, DispatchSummary,
-    Inbox, Outbox, PendingInput, PendingRecord, SubmitOptions,
+    Inbox, Outbox, PendingInput, PendingRecord, SettleOutcome, SubmitOptions,
 };
 use crate::postgres::PostgresDispatchStore;
 use crate::request::RunExecutionRequest;
@@ -167,10 +167,11 @@ impl DispatchQueue for AnyDispatchStore {
     async fn settle(
         &self,
         run_id: &RunId,
+        epoch: u64,
         outcome: DispatchOutcome,
         consumed: &[String],
-    ) -> Result<(), DispatchError> {
-        delegate!(self, settle(run_id, outcome, consumed))
+    ) -> Result<SettleOutcome, DispatchError> {
+        delegate!(self, settle(run_id, epoch, outcome, consumed))
     }
 
     async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError> {

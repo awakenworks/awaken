@@ -14,7 +14,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
-    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchQueue, DispatchStatus,
+    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchQueue, DispatchStatus, SettleOutcome,
     DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, SubmitOptions,
 };
 use crate::request::RunExecutionRequest;
@@ -49,6 +49,9 @@ struct Row {
     attempt_count: u64,
     priority: i64,
     epoch: i64,
+    /// Monotone fence token bumped on every claim; the lease carries it and settle
+    /// fences on it (mirrors the SQL backends' `lease_epoch` column).
+    lease_epoch: u64,
     dedupe_key: Option<String>,
     /// When the run was dead-lettered (epoch ms), for time-windowed GC.
     dead_lettered_at: Option<u64>,
@@ -238,6 +241,7 @@ impl DispatchQueue for MemoryDispatchStore {
                 attempt_count: 0,
                 priority: options.priority,
                 epoch,
+                lease_epoch: 0,
                 dedupe_key: options.dedupe_key,
                 dead_lettered_at: None,
                 sandbox: None,
@@ -259,25 +263,28 @@ impl DispatchQueue for MemoryDispatchStore {
             return Ok(None);
         };
 
-        let lease = Lease {
-            run_id: run_id.clone(),
-            owner: owner.to_string(),
-            expires_ms: now_ms + lease_ms,
-        };
         // A recovery pick (an expired-lease running row) spends one crash-retry;
         // a fresh or wake pick does not.
         let was_recovery = matches!(
             state.rows.get(&run_id).map(|r| r.status),
             Some(Status::Running)
         );
-        let (request, sandbox) = {
+        let (request, sandbox, lease) = {
             let row = state.rows.get_mut(&run_id).expect("picked row exists");
+            // Bump the fence token on every claim; the lease carries the new epoch.
+            row.lease_epoch += 1;
+            let lease = Lease {
+                run_id: run_id.clone(),
+                owner: owner.to_string(),
+                expires_ms: now_ms + lease_ms,
+                epoch: row.lease_epoch,
+            };
             row.status = Status::Running;
             row.lease = Some(lease.clone());
             if was_recovery {
                 row.attempt_count += 1;
             }
-            (row.request.clone(), row.sandbox.clone())
+            (row.request.clone(), row.sandbox.clone(), lease)
         };
 
         // Hand the run's current pending input to the worker. It is not removed
@@ -358,10 +365,18 @@ impl DispatchQueue for MemoryDispatchStore {
     async fn settle(
         &self,
         run_id: &RunId,
+        epoch: u64,
         outcome: DispatchOutcome,
         consumed: &[String],
-    ) -> Result<(), DispatchError> {
+    ) -> Result<SettleOutcome, DispatchError> {
         let mut state = lock(&self.state)?;
+        // Fence: apply only while the caller still holds the current epoch. A stale
+        // owner (lower epoch, or a gone row) changes nothing — the reclaimer's
+        // in-flight state is inviolate.
+        let current = state.rows.get(run_id).map(|r| r.lease_epoch);
+        if current != Some(epoch) {
+            return Ok(SettleOutcome::Fenced);
+        }
         match outcome {
             DispatchOutcome::Done => {
                 state.rows.remove(run_id);
@@ -386,7 +401,7 @@ impl DispatchQueue for MemoryDispatchStore {
                     .retain(|p| !consumed.contains(&p.input.message_id));
             }
         }
-        Ok(())
+        Ok(SettleOutcome::Applied)
     }
 
     async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError> {

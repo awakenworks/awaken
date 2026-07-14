@@ -168,7 +168,7 @@ async fn assert_bound_pending_survives_claim_without_settle<S: Dispatch>(store: 
         .unwrap();
     assert!(store.claim("w", LEASE, 0).await.unwrap().is_some());
     store
-        .settle(&run, DispatchOutcome::Parked, &[])
+        .settle(&run, 1, DispatchOutcome::Parked, &[])
         .await
         .unwrap();
 
@@ -207,9 +207,15 @@ async fn assert_bound_pending_survives_claim_without_settle<S: Dispatch>(store: 
         "the crash left the pending to be re-delivered on the next claim"
     );
 
-    // Only a settle that names it consumes it.
+    // Only a settle that names it consumes it. The recovery re-claim bumped the
+    // fence, so settle under the epoch the recovery holds.
     store
-        .settle(&run, DispatchOutcome::Done, &["good".to_string()])
+        .settle(
+            &run,
+            recovered.lease.epoch,
+            DispatchOutcome::Done,
+            &["good".to_string()],
+        )
         .await
         .unwrap();
     assert!(
@@ -551,7 +557,7 @@ async fn assert_unbound_consumed_on_settle_not_on_read<S: Dispatch>(store: &S) {
         .unwrap();
     assert!(store.claim("w", LEASE, 0).await.unwrap().is_some());
     store
-        .settle(&RunId("run-1".to_string()), DispatchOutcome::Done, &[])
+        .settle(&RunId("run-1".to_string()), 1, DispatchOutcome::Done, &[])
         .await
         .unwrap();
     assert!(
@@ -568,6 +574,7 @@ async fn assert_unbound_consumed_on_settle_not_on_read<S: Dispatch>(store: &S) {
     store
         .settle(
             &RunId("run-2".to_string()),
+            1,
             DispatchOutcome::Done,
             &["u1".to_string()],
         )
