@@ -21,6 +21,7 @@ pub mod config_executor;
 mod hand_server;
 pub mod model_resolver;
 pub mod no_model;
+pub mod dynamic_placement;
 pub mod placement;
 pub mod resource_owner;
 pub mod webhooks;
