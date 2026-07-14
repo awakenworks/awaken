@@ -15,7 +15,7 @@
 // Run: (from e2e/)  node ag_ui_persistence_e2e.mjs
 
 import assert from 'node:assert/strict';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv, streamedText } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38193);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -31,7 +31,7 @@ async function runTurn(id, content) {
   });
   assert.equal(res.status, 200, `run "${content}" accepted`);
   const text = await res.text();
-  assert.ok(text.includes(`Echo: ${content}`), `run "${content}" streamed the reply`);
+  assert.ok(streamedText(text).includes(`Echo: ${content}`), `run "${content}" streamed the reply`);
 }
 
 async function messages(query = '') {

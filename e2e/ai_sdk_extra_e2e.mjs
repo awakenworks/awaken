@@ -6,7 +6,7 @@
 // Run: (from e2e/)  node ai_sdk_extra_e2e.mjs
 
 import assert from 'node:assert/strict';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv, streamedText } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38186);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -36,7 +36,7 @@ async function main() {
     // from the path; the reply streams back as text-delta events.
     const scoped = await postStream('/v1/ai-sdk/agents/assistant/runs', body('AGENT-SCOPED', 'aiextra'));
     assert.equal(scoped.status, 200, 'agent-scoped run accepted');
-    assert.ok(scoped.text.includes('Echo: AGENT-SCOPED'), 'agent-scoped run streamed the reply');
+    assert.ok(streamedText(scoped.text).includes('Echo: AGENT-SCOPED'), 'agent-scoped run streamed the reply');
     pass('agent-scoped run route streamed a reply (chat_agent_scoped)');
 
     // Thread history GET: projects committed truth to the AI SDK history shape.
@@ -64,7 +64,7 @@ async function main() {
     // Plain `/chat` route (no thread/agent in the path).
     const plain = await postStream('/v1/ai-sdk/chat', body('PLAIN-CHAT', 'aichat'));
     assert.equal(plain.status, 200, 'plain chat accepted');
-    assert.ok(plain.text.includes('Echo: PLAIN-CHAT'), 'plain chat streamed the reply');
+    assert.ok(streamedText(plain.text).includes('Echo: PLAIN-CHAT'), 'plain chat streamed the reply');
     pass('plain /chat route streamed a reply (chat)');
 
     // Malformed body → the JSON extractor fails closed with an error stream, not a
