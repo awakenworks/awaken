@@ -1361,7 +1361,11 @@ pub async fn assert_settle_fences_stale_epoch<S: awaken_run_ingress::Dispatch>(s
         .unwrap();
 
     // Owner A claims: the fresh row's epoch bumps 0 -> 1.
-    let a = store.claim("owner-a", 100, 0).await.unwrap().expect("A claims");
+    let a = store
+        .claim("owner-a", 100, 0)
+        .await
+        .unwrap()
+        .expect("A claims");
     assert_eq!(a.lease.epoch, 1, "the first claim bumps the fence to 1");
 
     // A's lease lapses; owner B recovers it — the epoch bumps 1 -> 2.
@@ -1371,7 +1375,10 @@ pub async fn assert_settle_fences_stale_epoch<S: awaken_run_ingress::Dispatch>(s
         .unwrap()
         .expect("B reclaims the expired lease");
     assert_eq!(b.lease.owner, "owner-b");
-    assert_eq!(b.lease.epoch, 2, "the recovery re-claim bumps the fence to 2");
+    assert_eq!(
+        b.lease.epoch, 2,
+        "the recovery re-claim bumps the fence to 2"
+    );
 
     // A wakes and tries to settle under its STALE epoch 1: fenced, nothing changes.
     assert_eq!(
@@ -1425,7 +1432,11 @@ pub async fn assert_parked_settle_fences_stale_epoch<S: awaken_run_ingress::Disp
         .await
         .unwrap();
 
-    let a = store.claim("owner-a", 100, 0).await.unwrap().expect("A claims");
+    let a = store
+        .claim("owner-a", 100, 0)
+        .await
+        .unwrap()
+        .expect("A claims");
     let b = store
         .claim("owner-b", 100, 200)
         .await

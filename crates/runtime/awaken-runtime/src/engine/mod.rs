@@ -684,7 +684,7 @@ async fn drive(
     seed_state: Vec<StateCommand>,
 ) -> Result<Checkpoint> {
     // The per-run model executor override (ADR-0004) wins over the runtime's bound
-    // default: a run carrying a cloud-managed gateway grant is routed through a
+    // default: a run carrying a cloud gateway grant is routed through a
     // gateway-dialing executor the host built for this attempt, so a secretless
     // worker honors the grant without a local provider credential. Absent → the
     // runtime's session-resolved executor.

@@ -349,14 +349,8 @@ mod tests {
     #[tokio::test]
     async fn provider_places_a_run_and_resolves_the_workers_channel() {
         let registry = WorkerRegistry::new();
-        registry.register(
-            worker("w1", &[], None, 3),
-            Arc::new(TaggedExecutor("W1")),
-        );
-        registry.register(
-            worker("w2", &[], None, 0),
-            Arc::new(TaggedExecutor("W2")),
-        );
+        registry.register(worker("w1", &[], None, 3), Arc::new(TaggedExecutor("W1")));
+        registry.register(worker("w2", &[], None, 0), Arc::new(TaggedExecutor("W2")));
         let provider =
             DynamicToolExecutorProvider::new(registry.clone(), Arc::new(LeastLoadedPlacement));
 
@@ -397,7 +391,10 @@ mod tests {
 
         // A `WorkerEntry` is Debug (its executor is elided) — useful in placement logs.
         let dbg = format!("{:?}", registry.snapshot()[0]);
-        assert!(dbg.contains("WorkerEntry") && dbg.contains("attrs"), "{dbg}");
+        assert!(
+            dbg.contains("WorkerEntry") && dbg.contains("attrs"),
+            "{dbg}"
+        );
 
         // Deregistering a worker removes exactly it (a lapsed lease / drained hand).
         registry.deregister("w1");
@@ -416,15 +413,17 @@ mod tests {
     async fn no_eligible_worker_returns_none_so_the_kernel_runs_in_process() {
         let registry = WorkerRegistry::new();
         // One worker, but the run requires a capability it lacks.
-        registry.register(worker("w1", &["cpu"], None, 0), Arc::new(TaggedExecutor("W1")));
+        registry.register(
+            worker("w1", &["cpu"], None, 0),
+            Arc::new(TaggedExecutor("W1")),
+        );
         let extractor: AgentAttrsExtractor = Arc::new(|_a: &RunActivation| AgentAttrs {
             agent_id: "a".into(),
             required_capabilities: caps(&["gpu"]),
             affinity: None,
         });
-        let provider =
-            DynamicToolExecutorProvider::new(registry, Arc::new(LeastLoadedPlacement))
-                .with_extractor(extractor);
+        let provider = DynamicToolExecutorProvider::new(registry, Arc::new(LeastLoadedPlacement))
+            .with_extractor(extractor);
         assert!(
             provider.provide(&activation_for("agent")).await.is_none(),
             "no worker offers gpu → None → in-process LocalToolExecutor"

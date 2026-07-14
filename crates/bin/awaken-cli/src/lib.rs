@@ -584,9 +584,7 @@ async fn management_router_over(
             // path: build a genai executor that dials the gateway with the run's
             // lease token, so the real provider key is injected at the gateway, not
             // held here. Absent a grant, runs use the config-plane executor above.
-            .with_gateway_executor_factory(Arc::new(
-                awaken_server::GenaiGatewayExecutorFactory,
-            )),
+            .with_gateway_executor_factory(Arc::new(awaken_server::GenaiGatewayExecutorFactory)),
     );
     let managed_state = Arc::new(
         ManagedState::new(

@@ -270,14 +270,23 @@ impl<S: Dispatch> DispatchWorker<S> {
                         let command = ResumeCommand::from_ticket(&ticket, input.result, now_ms);
                         match self
                             .runtime
-                            .resume(command, self.reader.as_ref(), self.execution_context_with(&gateway))
+                            .resume(
+                                command,
+                                self.reader.as_ref(),
+                                self.execution_context_with(&gateway),
+                            )
                             .instrument(dispatch.clone())
                             .await
                         {
                             Ok(phase) => phase,
                             Err(err) => {
                                 return self
-                                    .settle_if_terminal_or_raise(&run_id, lease_epoch, &all_pending, err)
+                                    .settle_if_terminal_or_raise(
+                                        &run_id,
+                                        lease_epoch,
+                                        &all_pending,
+                                        err,
+                                    )
                                     .await;
                             }
                         }
@@ -378,7 +387,12 @@ impl<S: Dispatch> DispatchWorker<S> {
                         Ok(phase) => phase,
                         Err(err) => {
                             return self
-                                .settle_if_terminal_or_raise(&run_id, lease_epoch, &all_pending, err)
+                                .settle_if_terminal_or_raise(
+                                    &run_id,
+                                    lease_epoch,
+                                    &all_pending,
+                                    err,
+                                )
                                 .await;
                         }
                     }
@@ -396,7 +410,12 @@ impl<S: Dispatch> DispatchWorker<S> {
                         Ok(phase) => phase,
                         Err(err) => {
                             return self
-                                .settle_if_terminal_or_raise(&run_id, lease_epoch, &all_pending, err)
+                                .settle_if_terminal_or_raise(
+                                    &run_id,
+                                    lease_epoch,
+                                    &all_pending,
+                                    err,
+                                )
                                 .await;
                         }
                     };

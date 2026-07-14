@@ -100,6 +100,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "opentelemetry",
         "opentelemetry_sdk",
         "opentelemetry-otlp",
+        # The Prometheus scrape exporter (#4): one SdkMeterProvider feeds both an
+        # OTLP push reader and a Prometheus pull reader over the shared registry.
+        "opentelemetry-prometheus",
+        "prometheus",
         # The neutral MetricsRecorder port (#2): the OTel-backed recorder impl
         # lives here beside the Meter it feeds. A foundation contract leaf — no
         # domain capability travels, only the structure-only metric vocabulary.
@@ -173,6 +177,27 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "sqlx",
         # dev-only: reopen-from-file persistence tests.
         "tempfile",
+    },
+    # The config-authoring plane (ADR-0036/slice A), extracted from awaken-runtime-host
+    # so both the authoring plane (awaken-control) and the data plane (the host) can
+    # share it without control depending on the execution host. Pure config-plane logic:
+    # the config service + CRUD/capabilities routers, the model-binding resolver, and the
+    # scoped tool catalog — it names neither SharedHost nor run execution.
+    "awaken-config-service": {
+        "awaken-runtime-contract",
+        "awaken-protocol-managed",
+        "awaken-config-store",
+        "awaken-config-resolver",
+        "awaken-tenancy",
+        "awaken-ext-memory",
+        "awaken-ext-compact",
+        "awaken-ext-permission",
+        "awaken-ext-state-machine",
+        "async-trait",
+        "serde_json",
+        "thiserror",
+        "tokio",
+        "axum",
     },
     "awaken-config-resolver": {
         "awaken-agent-contract",
@@ -998,6 +1023,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # (the horizontal-scaling fan-out ABOVE this store port), not the DB driver.
         "awaken-store-postgres",
         "awaken-config-store",
+        # The config-authoring plane, extracted to a shared crate; the host re-exports
+        # it (config service + routers + resolver + tool catalog) for the composition
+        # root while depending on it like any other config-domain crate.
+        "awaken-config-service",
         # Tenancy edge aspect (ADR-0051/0052): the opaque `ScopeId` the scope-keyed
         # tool catalog and the scoped config plane are keyed by.
         "awaken-tenancy",
@@ -1171,7 +1200,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # them. It names the Managed wire (protocol-managed) + host ports (runtime-host) +
     # the webhook bridge it constructs the authoring routers over.
     "awaken-control": {
-        "awaken-runtime-host",
+        # The shared config-authoring plane (config service + routers + resolver +
+        # tool catalog), extracted from awaken-runtime-host so control ⊥ execution:
+        # control names this, NOT the data-plane host.
+        "awaken-config-service",
         "awaken-admin-assistant",
         "awaken-tenancy",
         "awaken-authz-enforce",
@@ -1208,6 +1240,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-worker",
         "awaken-runtime-host",
         "awaken-observability",
+        # The composition root registers the brain's active-streams connection-load
+        # gauge on the global OTel meter after init (#4), so it names opentelemetry.
+        "opentelemetry",
         "awaken-protocol-managed",
         "awaken-model-catalog",
         "awaken-credential-vault",
@@ -1246,6 +1281,11 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-server",
         "awaken-control",
         "tokio",
+        # The cloud-native admin surface (ADR-0022 D7): an axum router serving
+        # /livez /readyz /admin/drain + the process Prometheus scrape.
+        "awaken-observability",
+        "axum",
+        "tower",
         # dev-only: the ConfigExecutorProvider resolution test authors an in-memory
         # catalog + credential and asserts a configured model_ref resolves to a real
         # executor (and falls back otherwise).

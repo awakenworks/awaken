@@ -73,7 +73,9 @@ mod tests {
             .await
             .unwrap();
         let status = resp.status();
-        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 16).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 16)
+            .await
+            .unwrap();
         (status, String::from_utf8(bytes.to_vec()).unwrap())
     }
 
@@ -86,7 +88,10 @@ mod tests {
             "worker-test",
         ));
         let app = worker_admin_router(host);
-        assert_eq!(call(&app, "GET", "/readyz").await.0, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            call(&app, "GET", "/readyz").await.0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
         // Liveness is independent of readiness — the process is up.
         assert_eq!(call(&app, "GET", "/livez").await.0, StatusCode::OK);
         // The drain endpoint is idempotent and safe even with no pool.

@@ -79,7 +79,7 @@ pub struct RuntimeRunContext {
     /// default (ADR-0004). Absent means use the runtime's session-resolved executor.
     /// Present routes this attempt's inference through the given executor — e.g. a
     /// gateway-dialing executor built from the run's `ModelAccessGrant`, so a
-    /// secretless worker honors a per-run cloud-managed grant without a local
+    /// secretless worker honors a per-run cloud gateway grant without a local
     /// provider credential. Symmetric with `tool_executor`: a per-run egress override
     /// the kernel consults without learning why it was chosen.
     pub model_executor: Option<Arc<dyn crate::llm::LlmExecutor>>,

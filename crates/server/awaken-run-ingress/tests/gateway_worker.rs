@@ -55,9 +55,8 @@ async fn a_gateway_granted_run_is_driven_through_the_gateway_executor() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     // The runtime's BOUND executor replies "done"; the gateway builder returns one
     // that replies "GATEWAY". If the grant is honored, the transcript carries GATEWAY.
-    let gateway: GatewayExecutorFn = Arc::new(|_endpoint| {
-        Some(Arc::new(MarkerLlm("GATEWAY")) as Arc<dyn LlmExecutor>)
-    });
+    let gateway: GatewayExecutorFn =
+        Arc::new(|_endpoint| Some(Arc::new(MarkerLlm("GATEWAY")) as Arc<dyn LlmExecutor>));
     let worker = DispatchWorker::new(text_runtime(), store.clone(), commit.clone(), "w")
         .with_gateway_executor(gateway);
 
@@ -97,7 +96,11 @@ async fn a_gateway_grant_with_no_builder_fails_closed() {
     );
     // Nothing was committed for the run — it did not execute.
     assert!(
-        commit.committed().messages.iter().all(|m| m.text_content() != "done"),
+        commit
+            .committed()
+            .messages
+            .iter()
+            .all(|m| m.text_content() != "done"),
         "the run never fell back to the bound executor"
     );
 }
@@ -121,7 +124,12 @@ async fn durable_ingress_wires_the_gateway_builder_into_its_worker() {
     );
 
     store.enqueue(gateway_activation("run-gw")).await.unwrap();
-    ingress.worker().tick(0).await.expect("drive").expect("a run");
+    ingress
+        .worker()
+        .tick(0)
+        .await
+        .expect("drive")
+        .expect("a run");
     assert!(
         commit
             .committed()
@@ -139,9 +147,8 @@ async fn durable_ingress_wires_the_gateway_builder_into_its_worker() {
 async fn a_local_grant_still_uses_the_bound_executor() {
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let gateway: GatewayExecutorFn = Arc::new(|_endpoint| {
-        Some(Arc::new(MarkerLlm("GATEWAY")) as Arc<dyn LlmExecutor>)
-    });
+    let gateway: GatewayExecutorFn =
+        Arc::new(|_endpoint| Some(Arc::new(MarkerLlm("GATEWAY")) as Arc<dyn LlmExecutor>));
     let worker = DispatchWorker::new(text_runtime(), store.clone(), commit.clone(), "w")
         .with_gateway_executor(gateway);
 

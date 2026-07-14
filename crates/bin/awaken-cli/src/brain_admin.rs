@@ -227,8 +227,10 @@ mod tests {
         let _gauge = register_active_streams_gauge(ctrl.clone());
         let scrape = awaken_observability::render_prometheus();
         assert!(
-            scrape.lines().any(|l| l.starts_with("awaken_brain_active_streams")
-                && l.trim_end().ends_with(" 0")),
+            scrape
+                .lines()
+                .any(|l| l.starts_with("awaken_brain_active_streams")
+                    && l.trim_end().ends_with(" 0")),
             "the connection-load gauge reads 0: {scrape}"
         );
         // Draining is NOT a metric — it is the `/readyz` 503 signal (#4).

@@ -85,9 +85,7 @@ pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         "per-run model resolution from the config plane"
     };
-    eprintln!(
-        "awaken-worker draining from {upstream} ({posture})"
-    );
+    eprintln!("awaken-worker draining from {upstream} ({posture})");
 
     // The cloud-native admin surface on a SEPARATE port from any data path: an
     // orchestrator gates routing on `/readyz` and calls `POST /admin/drain` in a
@@ -100,7 +98,9 @@ pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
     match tokio::net::TcpListener::bind(&admin_addr).await {
         Ok(listener) => {
             let router = admin::worker_admin_router(host.clone());
-            eprintln!("awaken-worker admin surface on {admin_addr} (/readyz /metrics /admin/drain)");
+            eprintln!(
+                "awaken-worker admin surface on {admin_addr} (/readyz /metrics /admin/drain)"
+            );
             tokio::spawn(async move {
                 if let Err(err) = axum::serve(listener, router).await {
                     eprintln!("awaken-worker admin server exited: {err}");
@@ -133,7 +133,10 @@ pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
     host.begin_pool_drain().await;
     let grace = drain_grace(graceful);
     if !grace.is_zero() {
-        eprintln!("awaken-worker draining: finishing in-flight runs (≤{}s)", grace.as_secs());
+        eprintln!(
+            "awaken-worker draining: finishing in-flight runs (≤{}s)",
+            grace.as_secs()
+        );
         tokio::time::sleep(grace).await;
     }
     Ok(())

@@ -79,6 +79,10 @@ wrappers = [
     "awaken-run-executor-acp",
     "awaken-run-executor-a2a",
     "awaken-eval",
+    # ADR-0048 / S10: the managed webhook bridge speaks the neutral value objects.
+    "awaken-webhook-managed",
+    # Stage A: the test-only scenario host carries the e2e mocks + fixtures.
+    "awaken-scenario-host",
 ]
 reason = "base contract; nothing may pull it upward (no downward dep of its own)"
 
@@ -123,6 +127,12 @@ wrappers = [
     "awaken-tool-relay",
     # #4: the eval harness replays cases through the RunExecutor port.
     "awaken-eval",
+    # The config-authoring plane (extracted from runtime-host) + its consumers.
+    "awaken-config-service",
+    "awaken-admin-assistant",
+    "awaken-admin-config-api",
+    # Stage A: the test-only scenario host.
+    "awaken-scenario-host",
 ]
 reason = "contract layer; agent-contract must not depend on it (no upward edge)"
 
@@ -140,6 +150,8 @@ wrappers = [
     "awaken-server",
     # #4: the eval harness runs recorded cases on the real kernel.
     "awaken-eval",
+    # Stage A: the test-only scenario host runs cases on the real kernel.
+    "awaken-scenario-host",
 ]
 reason = "runtime core; contracts must not depend on the kernel (G2, G18)"
 
@@ -154,5 +166,7 @@ wrappers = [
     "awaken-sandbox-local",
     # ADR-0044 remote-hand mode: server-local builds the hand's toolset directly.
     "awaken-server",
+    # Stage A: the test-only scenario host builds the hand's toolset for e2e.
+    "awaken-scenario-host",
 ]
 reason = "extensions sit on top; the runtime core must stay extension-agnostic (G2)"

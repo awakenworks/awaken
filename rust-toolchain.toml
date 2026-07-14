@@ -1,0 +1,6 @@
+# The workspace requires rustc 1.96 (the awaken-iam-* crates set that floor, and
+# awaken-scoped-migration is pinned to it). Pin it so every contributor — and the
+# lefthook rust checks — build with the same toolchain instead of whatever the
+# machine's default `stable` happens to be.
+[toolchain]
+channel = "1.96.0"

@@ -17,12 +17,12 @@
 //! (the host, the two port adapters, the per-plane resource routers) lives in
 //! `awaken-runtime-host`.
 
+pub mod admin;
 pub mod config_executor;
+pub mod dynamic_placement;
 mod hand_server;
 pub mod model_resolver;
 pub mod no_model;
-pub mod admin;
-pub mod dynamic_placement;
 pub mod placement;
 pub mod resource_owner;
 pub mod webhooks;
@@ -382,7 +382,10 @@ mod gateway_factory_tests {
     #[test]
     fn dialect_maps_case_insensitively_by_provider_family() {
         // Free-form grant dialects normalize to a genai adapter by family.
-        assert_eq!(gateway_dialect_adapter("anthropic"), Some(AdapterKind::Anthropic));
+        assert_eq!(
+            gateway_dialect_adapter("anthropic"),
+            Some(AdapterKind::Anthropic)
+        );
         assert_eq!(
             gateway_dialect_adapter("AnthropicMessages"),
             Some(AdapterKind::Anthropic)
@@ -393,7 +396,10 @@ mod gateway_factory_tests {
             Some(AdapterKind::OpenAI)
         );
         assert_eq!(gateway_dialect_adapter("gemini"), Some(AdapterKind::Gemini));
-        assert_eq!(gateway_dialect_adapter("google-gemini"), Some(AdapterKind::Gemini));
+        assert_eq!(
+            gateway_dialect_adapter("google-gemini"),
+            Some(AdapterKind::Gemini)
+        );
         // Unknown dialect fails closed.
         assert_eq!(gateway_dialect_adapter("cohere"), None);
         assert_eq!(gateway_dialect_adapter(""), None);

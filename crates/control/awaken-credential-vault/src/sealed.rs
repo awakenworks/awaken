@@ -145,7 +145,10 @@ mod seal_key_tests {
 
     #[test]
     fn parse_requires_exactly_64_hex_chars() {
-        assert!(parse_seal_key(&"ab".repeat(32)).is_ok(), "64 hex chars parse");
+        assert!(
+            parse_seal_key(&"ab".repeat(32)).is_ok(),
+            "64 hex chars parse"
+        );
         assert!(parse_seal_key("abc").is_err(), "too short");
         assert!(parse_seal_key(&"zz".repeat(32)).is_err(), "non-hex");
     }

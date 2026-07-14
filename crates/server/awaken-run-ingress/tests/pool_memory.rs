@@ -927,10 +927,8 @@ async fn begin_drain_stops_claiming_new_work() {
     tokio::time::sleep(Duration::from_millis(150)).await;
     let summaries = store.list_dispatches().await.unwrap();
     assert!(
-        summaries
-            .iter()
-            .any(|s| s.run_id.0 == "run-after"
-                && matches!(s.status, awaken_run_ingress::DispatchStatus::Pending)),
+        summaries.iter().any(|s| s.run_id.0 == "run-after"
+            && matches!(s.status, awaken_run_ingress::DispatchStatus::Pending)),
         "the post-drain run stays PENDING (never claimed); got {summaries:?}"
     );
 

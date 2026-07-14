@@ -403,6 +403,9 @@ mod gateway_builder_tests {
             .with_gateway_executor_factory(Arc::new(ServingFactory));
         let builder = host.worker_gateway_builder().expect("a builder");
         let endpoint = gateway_grant().materialize();
-        assert!(builder(&endpoint).is_some(), "the builder delegates to the factory");
+        assert!(
+            builder(&endpoint).is_some(),
+            "the builder delegates to the factory"
+        );
     }
 }

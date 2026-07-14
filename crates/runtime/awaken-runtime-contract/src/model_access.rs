@@ -124,7 +124,7 @@ impl ModelAccessGrant {
     }
 }
 
-/// A cloud-managed gateway grant could not be honored — no egress builder is
+/// A cloud gateway grant could not be honored — no egress builder is
 /// installed, or its dialect is one the builder cannot dial. Callers fail closed on
 /// this (rejecting the run) rather than degrading to local credentials, so the
 /// secret custody the grant exists to enforce holds (ADR-0004).
@@ -134,7 +134,7 @@ pub struct GatewayUnservable;
 impl std::fmt::Display for GatewayUnservable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(
-            "cannot honor a cloud-managed gateway grant: no gateway egress is configured, \
+            "cannot honor a cloud gateway grant: no gateway egress is configured, \
              or its dialect is unsupported",
         )
     }
