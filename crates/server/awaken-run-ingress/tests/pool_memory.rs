@@ -883,3 +883,56 @@ where
     }
     cond().await
 }
+
+/// Graceful drain (P2): `begin_drain` stops the pool CLAIMING new work without
+/// consuming the pool. A run submitted after the drain begins is never claimed — it
+/// stays queued — so the worker can be scaled in while its in-flight runs finish.
+#[tokio::test]
+async fn begin_drain_stops_claiming_new_work() {
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = worker_over(text_runtime(), store.clone(), commit.clone());
+    let resolver = Arc::new(MapResolver {
+        workers: HashMap::from([("thread-d".to_string(), worker)]),
+    });
+    let pool = DispatchPool::spawn(
+        store.clone(),
+        Arc::new(SystemClock),
+        "pool",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig::default(),
+        resolver,
+        2,
+    );
+
+    // A run submitted while the pool is live drains normally.
+    pool.submit(activation_on("run-live", "thread-d"))
+        .await
+        .unwrap();
+    assert!(
+        wait_for(|| commit.commit_count() >= 1).await,
+        "the pre-drain run drained"
+    );
+
+    // Begin draining: the pool reports draining and its claim loops stop.
+    assert!(!pool.is_draining(), "not draining before the request");
+    pool.begin_drain().await;
+    assert!(pool.is_draining(), "draining after begin_drain");
+
+    // A run submitted AFTER the drain is never claimed — it sits in the queue.
+    pool.submit(activation_on("run-after", "thread-d"))
+        .await
+        .unwrap();
+    // Give the (now-stopped) drain loops ample time to (not) pick it up.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let summaries = store.list_dispatches().await.unwrap();
+    assert!(
+        summaries
+            .iter()
+            .any(|s| s.run_id.0 == "run-after"
+                && matches!(s.status, awaken_run_ingress::DispatchStatus::Pending)),
+        "the post-drain run stays PENDING (never claimed); got {summaries:?}"
+    );
+
+    pool.shutdown().await;
+}

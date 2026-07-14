@@ -1464,7 +1464,9 @@ dependencies = [
  "awaken-model-catalog",
  "awaken-runtime-host",
  "awaken-server",
+ "axum",
  "tokio",
+ "tower",
 ]
 
 [[package]]

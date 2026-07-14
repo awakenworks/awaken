@@ -480,28 +480,14 @@ pub async fn awaken_runtime_host::SharedHost::run(&self, core::option::Option<&s
 pub async fn awaken_runtime_host::SharedHost::run_streaming(&self, core::option::Option<&str>, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::result::Result<awaken_runtime_host::host::types::RunResult, awaken_runtime_host::host::types::HostError>
 pub async fn awaken_runtime_host::SharedHost::thread_usage(&self, &str) -> awaken_runtime_contract::llm::ThreadUsage
 impl awaken_runtime_host::SharedHost
-pub fn awaken_runtime_host::SharedHost::builtin_tools(&self) -> alloc::vec::Vec<(alloc::string::String, bool)>
-pub async fn awaken_runtime_host::SharedHost::create_memory_store(&self) -> alloc::string::String
-pub fn awaken_runtime_host::SharedHost::custom_tools(&self) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
-pub fn awaken_runtime_host::SharedHost::delegate_ids(&self) -> alloc::vec::Vec<alloc::string::String>
-pub fn awaken_runtime_host::SharedHost::file_store(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::FileStore>
-pub async fn awaken_runtime_host::SharedHost::harvest_thread_memory(&self, &str)
-pub async fn awaken_runtime_host::SharedHost::harvest_thread_repo(&self, &str)
-pub fn awaken_runtime_host::SharedHost::has_skill_store(&self) -> bool
-pub async fn awaken_runtime_host::SharedHost::memory_get(&self, &str) -> core::option::Option<alloc::vec::Vec<u8>>
-pub async fn awaken_runtime_host::SharedHost::reload_skill_cache(&self)
-pub async fn awaken_runtime_host::SharedHost::session_artifacts(&self, &str) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
-pub fn awaken_runtime_host::SharedHost::skill_cache_snapshot(&self) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
-pub fn awaken_runtime_host::SharedHost::skill_ids(&self) -> alloc::vec::Vec<alloc::string::String>
-pub async fn awaken_runtime_host::SharedHost::skill_store_list(&self) -> alloc::vec::Vec<alloc::string::String>
-pub async fn awaken_runtime_host::SharedHost::skill_store_put(&self, &str, &str) -> core::option::Option<alloc::string::String>
-impl awaken_runtime_host::SharedHost
+pub async fn awaken_runtime_host::SharedHost::begin_pool_drain(&self)
 pub fn awaken_runtime_host::SharedHost::client_tools(&self) -> &std::collections::hash::set::HashSet<alloc::string::String>
 pub async fn awaken_runtime_host::SharedHost::drain_memory(&self, core::time::Duration) -> bool
 pub fn awaken_runtime_host::SharedHost::ensure_dispatch_pool(&alloc::sync::Arc<Self>)
 pub fn awaken_runtime_host::SharedHost::hub(&self) -> &alloc::sync::Arc<awaken_runtime_host::ThreadEventHub>
 pub fn awaken_runtime_host::SharedHost::model(&self) -> alloc::string::String
 pub fn awaken_runtime_host::SharedHost::new(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_host::SharedHost::pool_accepting_work(&self) -> bool
 pub fn awaken_runtime_host::SharedHost::register_thread_egress(&self, &str, bool)
 pub fn awaken_runtime_host::SharedHost::register_thread_mcp(&self, &str, alloc::vec::Vec<awaken_runtime_host::mcp::PreparedMcpServer>)
 pub fn awaken_runtime_host::SharedHost::register_thread_model(&self, &str, impl core::convert::Into<alloc::string::String>)
@@ -528,6 +514,22 @@ pub fn awaken_runtime_host::SharedHost::with_state_machine(self, serde_json::val
 pub fn awaken_runtime_host::SharedHost::with_store_dir(self, impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_tool_executor_provider(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutorProvider>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_upstream(self, impl core::convert::Into<alloc::string::String>) -> Self
+impl awaken_runtime_host::SharedHost
+pub fn awaken_runtime_host::SharedHost::builtin_tools(&self) -> alloc::vec::Vec<(alloc::string::String, bool)>
+pub async fn awaken_runtime_host::SharedHost::create_memory_store(&self) -> alloc::string::String
+pub fn awaken_runtime_host::SharedHost::custom_tools(&self) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
+pub fn awaken_runtime_host::SharedHost::delegate_ids(&self) -> alloc::vec::Vec<alloc::string::String>
+pub fn awaken_runtime_host::SharedHost::file_store(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::FileStore>
+pub async fn awaken_runtime_host::SharedHost::harvest_thread_memory(&self, &str)
+pub async fn awaken_runtime_host::SharedHost::harvest_thread_repo(&self, &str)
+pub fn awaken_runtime_host::SharedHost::has_skill_store(&self) -> bool
+pub async fn awaken_runtime_host::SharedHost::memory_get(&self, &str) -> core::option::Option<alloc::vec::Vec<u8>>
+pub async fn awaken_runtime_host::SharedHost::reload_skill_cache(&self)
+pub async fn awaken_runtime_host::SharedHost::session_artifacts(&self, &str) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub fn awaken_runtime_host::SharedHost::skill_cache_snapshot(&self) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub fn awaken_runtime_host::SharedHost::skill_ids(&self) -> alloc::vec::Vec<alloc::string::String>
+pub async fn awaken_runtime_host::SharedHost::skill_store_list(&self) -> alloc::vec::Vec<alloc::string::String>
+pub async fn awaken_runtime_host::SharedHost::skill_store_put(&self, &str, &str) -> core::option::Option<alloc::string::String>
 impl awaken_runtime_host::SharedHost
 pub async fn awaken_runtime_host::SharedHost::live_inbox(&self, &str) -> core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
 impl awaken_runtime_host::SharedHost

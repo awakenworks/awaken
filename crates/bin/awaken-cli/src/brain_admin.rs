@@ -99,19 +99,35 @@ async fn metrics(State(ctrl): State<Arc<DrainController>>) -> impl IntoResponse 
     (StatusCode::OK, body)
 }
 
-/// Layer the Brain admin surface onto a router: the connection-count metric for
-/// autoscaling, and the drain endpoint + readiness for graceful scale-in.
+/// Layer the connection-count metric onto the business router — the autoscaling
+/// signal. Kept separate from the admin routes so an operator can serve the admin
+/// surface on its own port (see [`brain_admin_router`]) without the probe traffic
+/// inflating the gauge, while the metric still wraps only real business traffic.
+pub fn with_connection_metric(base: Router, ctrl: Arc<DrainController>) -> Router {
+    base.layer(middleware::from_fn_with_state(ctrl, count_active))
+}
+
+/// The Brain admin routes (drain + readiness + metrics), with their own state.
+/// Mount this on a SEPARATE admin port (cloud-native: probes/metrics/drain go to a
+/// management port, not the business Ingress) or, for a single-port deployment,
+/// merge it via [`with_brain_admin`].
+pub fn brain_admin_router(ctrl: Arc<DrainController>) -> Router {
+    Router::new()
+        .route("/admin/drain", post(drain))
+        .route("/readyz", get(readyz))
+        .route("/metrics", get(metrics))
+        .with_state(ctrl)
+}
+
+/// Layer the Brain admin surface onto a single router (one-port deployment): the
+/// connection-count metric for autoscaling, and the drain endpoint + readiness for
+/// graceful scale-in. For a split admin port, use [`with_connection_metric`] on the
+/// business router and serve [`brain_admin_router`] on the admin listener instead.
 pub fn with_brain_admin(base: Router, ctrl: Arc<DrainController>) -> Router {
     // Count only real traffic — the admin probes (/metrics, /readyz, /admin/drain)
     // are frequent short polls and must not inflate the connection gauge (nor let
     // a /metrics scrape count itself).
-    let counted = base.layer(middleware::from_fn_with_state(ctrl.clone(), count_active));
-    let admin = Router::new()
-        .route("/admin/drain", post(drain))
-        .route("/readyz", get(readyz))
-        .route("/metrics", get(metrics))
-        .with_state(ctrl);
-    counted.merge(admin)
+    with_connection_metric(base, ctrl.clone()).merge(brain_admin_router(ctrl))
 }
 
 #[cfg(test)]
@@ -157,6 +173,38 @@ mod tests {
         assert_eq!(drained.status(), StatusCode::OK);
         assert_eq!(
             get(&app, "/readyz").await.0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[tokio::test]
+    async fn split_admin_router_serves_probes_without_the_business_routes() {
+        // The admin router on its own port serves the probes; the business router,
+        // wrapped with only the connection metric, does NOT expose the admin routes
+        // (they live on the separate admin port).
+        let ctrl = DrainController::new();
+        let admin = brain_admin_router(ctrl.clone());
+        assert_eq!(get(&admin, "/readyz").await.0, StatusCode::OK);
+        assert_eq!(get(&admin, "/metrics").await.1.contains("awaken_brain_"), true);
+
+        let business = with_connection_metric(Router::new(), ctrl.clone());
+        // The business router has no /readyz (it's on the admin port) → 404.
+        assert_eq!(get(&business, "/readyz").await.0, StatusCode::NOT_FOUND);
+
+        // Draining via the admin router flips the shared controller the business
+        // router's metric also reads.
+        admin
+            .clone()
+            .oneshot(
+                HttpRequest::post("/admin/drain")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(ctrl.is_draining());
+        assert_eq!(
+            get(&admin, "/readyz").await.0,
             StatusCode::SERVICE_UNAVAILABLE
         );
     }

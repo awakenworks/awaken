@@ -271,6 +271,25 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
         let _ = self.wake.publish().await;
     }
 
+    /// Begin a graceful drain WITHOUT consuming the pool: cancel the drain tasks so
+    /// each finishes the run it is currently driving and then stops claiming, and
+    /// nudge them so they notice immediately rather than at the next poll. The
+    /// scale-in half of cloud-native lifecycle — a `preStop`/SIGTERM asks the worker
+    /// to stop taking new work while its in-flight runs complete. Idempotent: a
+    /// second call is a no-op (the token is already cancelled). Unlike
+    /// [`shutdown`](Self::shutdown) it does not await the tasks (the caller owns the
+    /// grace period), and it takes `&self` so a live handle (e.g. behind an `Arc` in
+    /// the host) can trigger it.
+    pub async fn begin_drain(&self) {
+        self.shutdown.cancel();
+        let _ = self.wake.publish().await;
+    }
+
+    /// Whether a drain has been requested (the drain tasks are stopping/stopped).
+    pub fn is_draining(&self) -> bool {
+        self.shutdown.is_cancelled()
+    }
+
     /// Stop every task and wait for the in-flight drains to finish.
     pub async fn shutdown(self) {
         self.shutdown.cancel();

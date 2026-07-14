@@ -61,11 +61,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // that real model.
     let app = awaken_cli::build_management_router().await;
     // The brain admin surface (connection-count metric + /admin/drain + /readyz) so a
-    // graceful, stream-preserving scale-in works; wraps the served router.
-    let app = awaken_cli::with_brain_admin(app, awaken_cli::DrainController::new());
+    // graceful, stream-preserving scale-in works. When AWAKEN_SERVER_ADMIN_LISTEN is
+    // set, serve the admin routes on that SEPARATE port (cloud-native: probes/metrics/
+    // drain reach a management port, never the business Ingress); the business router
+    // keeps only the connection metric. Otherwise the admin routes merge onto the one
+    // business port (backward-compatible single-port default).
+    let ctrl = awaken_cli::DrainController::new();
+    let admin_addr = std::env::var("AWAKEN_SERVER_ADMIN_LISTEN")
+        .ok()
+        .filter(|v| !v.is_empty());
+    let app = match &admin_addr {
+        Some(_) => awaken_cli::with_connection_metric(app, ctrl.clone()),
+        None => awaken_cli::with_brain_admin(app, ctrl.clone()),
+    };
     // Root every request span in the ingress middleware (extracts the inbound
     // traceparent); the whole request→inference path nests under it.
     let app = app.layer(axum::middleware::from_fn(awaken_observability::trace_http));
+
+    // Serve the split admin surface on its own port, if configured.
+    if let Some(admin_addr) = admin_addr {
+        match tokio::net::TcpListener::bind(&admin_addr).await {
+            Ok(listener) => {
+                let admin = awaken_cli::brain_admin_router(ctrl);
+                eprintln!(
+                    "awaken admin surface on http://{admin_addr} (/readyz /metrics /admin/drain)"
+                );
+                tokio::spawn(async move {
+                    if let Err(err) = axum::serve(listener, admin).await {
+                        eprintln!("awaken admin server exited: {err}");
+                    }
+                });
+            }
+            Err(err) => {
+                eprintln!("awaken admin surface disabled (bind {admin_addr}: {err})");
+            }
+        }
+    }
 
     let addr = std::env::var("AWAKEN_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
