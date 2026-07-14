@@ -388,6 +388,30 @@ mod tests {
         assert_eq!(out.content, "W1", "placement followed the live load");
     }
 
+    #[test]
+    fn registry_deregisters_a_worker_and_entries_are_debuggable() {
+        let registry = WorkerRegistry::new();
+        registry.register(worker("w1", &[], None, 0), Arc::new(TaggedExecutor("W1")));
+        registry.register(worker("w2", &[], None, 0), Arc::new(TaggedExecutor("W2")));
+        assert_eq!(registry.snapshot().len(), 2);
+
+        // A `WorkerEntry` is Debug (its executor is elided) — useful in placement logs.
+        let dbg = format!("{:?}", registry.snapshot()[0]);
+        assert!(dbg.contains("WorkerEntry") && dbg.contains("attrs"), "{dbg}");
+
+        // Deregistering a worker removes exactly it (a lapsed lease / drained hand).
+        registry.deregister("w1");
+        let ids: Vec<_> = registry
+            .snapshot()
+            .into_iter()
+            .map(|w| w.attrs.worker_id)
+            .collect();
+        assert_eq!(ids, vec!["w2".to_string()], "only w1 was removed");
+        // Deregistering an unknown id is a harmless no-op.
+        registry.deregister("nope");
+        assert_eq!(registry.snapshot().len(), 1);
+    }
+
     #[tokio::test]
     async fn no_eligible_worker_returns_none_so_the_kernel_runs_in_process() {
         let registry = WorkerRegistry::new();
