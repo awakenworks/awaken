@@ -196,17 +196,30 @@ pub fn compose_instructions(base: &str, resource_prompts: &[String]) -> String {
     out
 }
 
-/// The canonical fingerprint: sha256 of the config serialization, extended by the
-/// resource prompts when present. Empty prompts hash exactly the config bytes, so a
-/// bare compile keeps its prior content address; a non-empty prompt set changes it
-/// (a different effective system prompt is a different runnable). The config has no
-/// maps, so serialization is deterministic across runs.
+/// The canonical fingerprint: sha256 of the **behavioral** config serialization,
+/// extended by the resource prompts when present. Empty prompts hash exactly the
+/// behavioral config bytes, so a bare compile keeps its prior content address; a
+/// non-empty prompt set changes it (a different effective system prompt is a
+/// different runnable). The config has no maps in its behavioral subset, so
+/// serialization is deterministic across runs.
+///
+/// The Managed-Agent wire-identity metadata (`name` / `description` / `metadata`) is
+/// **excluded**: it is authoring metadata the runtime never consumes (the runnable is
+/// compiled only from instructions/model/tools/plugins/policy), so it must not enter
+/// the content-address. Otherwise editing a display `name` or a delegation
+/// `description` would mint a new fingerprint for a byte-identical runnable —
+/// polluting the "same fingerprint ⇒ same behavior" contract. A config that never set
+/// these fields hashes byte-identically to before (they `skip_serializing_if`-empty).
 fn fingerprint_of(
     config: &AgentConfig,
     resource_prompts: &[String],
 ) -> Result<String, CompileError> {
+    let mut behavioral = config.clone();
+    behavioral.name = None;
+    behavioral.description = None;
+    behavioral.metadata.clear();
     let mut bytes =
-        serde_json::to_vec(config).map_err(|err| CompileError::Serialize(err.to_string()))?;
+        serde_json::to_vec(&behavioral).map_err(|err| CompileError::Serialize(err.to_string()))?;
     if !resource_prompts.is_empty() {
         let extra = serde_json::to_vec(resource_prompts)
             .map_err(|err| CompileError::Serialize(err.to_string()))?;
@@ -504,6 +517,34 @@ mod tests {
             with.snapshot().fingerprint.0,
             compile(&cfg, &[]).unwrap().snapshot().fingerprint.0
         );
+    }
+
+    #[test]
+    fn wire_identity_metadata_is_excluded_from_the_fingerprint() {
+        // name / description / metadata are authoring metadata the runtime never
+        // consumes — editing them must NOT mint a new content-address for a
+        // byte-identical runnable (so a delegation `description` edit is not a republish).
+        let tools = vec![tool("echo")];
+        let base = config(&["echo"]);
+        let base_fp = compile(&base, &tools).unwrap().snapshot().fingerprint.0.clone();
+
+        let mut labeled = base.clone();
+        labeled.description = Some("routes research questions".to_string());
+        labeled.name = Some("Researcher".to_string());
+        labeled
+            .metadata
+            .insert("team".to_string(), "research".to_string());
+        let labeled_fp = compile(&labeled, &tools).unwrap().snapshot().fingerprint.0.clone();
+        assert_eq!(
+            base_fp, labeled_fp,
+            "name/description/metadata are excluded from the content-address"
+        );
+
+        // A genuinely behavioral change still moves the fingerprint.
+        let mut rebehaved = base.clone();
+        rebehaved.instructions = "be terse".to_string();
+        let rebehaved_fp = compile(&rebehaved, &tools).unwrap().snapshot().fingerprint.0.clone();
+        assert_ne!(base_fp, rebehaved_fp, "instructions still enter the fingerprint");
     }
 
     #[test]
