@@ -81,18 +81,12 @@ async fn readyz(State(ctrl): State<Arc<DrainController>>) -> impl IntoResponse {
     awaken_server::admin::readyz(!ctrl.is_draining())
 }
 
-async fn metrics(State(ctrl): State<Arc<DrainController>>) -> impl IntoResponse {
-    use awaken_server::admin::prometheus_gauge;
-    let body = prometheus_gauge(
-        "awaken_brain_active_streams",
-        "In-flight requests (dominated by long-lived streams).",
-        ctrl.active_streams() as u64,
-    ) + &prometheus_gauge(
-        "awaken_brain_draining",
-        "1 when the Brain is draining for scale-in.",
-        u64::from(ctrl.is_draining()),
-    );
-    (StatusCode::OK, body)
+/// The Brain's Prometheus scrape: the whole process's OTel metrics — the
+/// `awaken_brain_active_streams` connection-load gauge (registered on the global
+/// meter at startup) plus the business `gen_ai.*`/`awaken.*` metrics. Whether the
+/// Brain is draining is the `/readyz` 503, not a metric.
+async fn metrics() -> impl IntoResponse {
+    (StatusCode::OK, awaken_observability::render_prometheus())
 }
 
 /// Layer the connection-count metric onto the business router — the autoscaling
@@ -113,6 +107,21 @@ pub fn brain_admin_router(ctrl: Arc<DrainController>) -> Router {
         .route("/readyz", get(readyz))
         .route("/metrics", get(metrics))
         .with_state(ctrl)
+}
+
+/// Register the `awaken_brain_active_streams` connection-load gauge on the global
+/// OTel meter, reading `ctrl` at scrape time (the `/metrics` autoscaling signal).
+/// Call once at the composition root, AFTER `awaken_observability::init`, and keep the
+/// returned handle for the process lifetime so the observable callback stays live.
+#[must_use]
+pub fn register_active_streams_gauge(
+    ctrl: Arc<DrainController>,
+) -> opentelemetry::metrics::ObservableGauge<u64> {
+    opentelemetry::global::meter("awaken-brain")
+        .u64_observable_gauge("awaken_brain_active_streams")
+        .with_description("In-flight requests (dominated by long-lived streams).")
+        .with_callback(move |obs| obs.observe(ctrl.active_streams() as u64, &[]))
+        .build()
 }
 
 /// Layer the Brain admin surface onto a single router (one-port deployment): the
@@ -181,7 +190,9 @@ mod tests {
         let ctrl = DrainController::new();
         let admin = brain_admin_router(ctrl.clone());
         assert_eq!(get(&admin, "/readyz").await.0, StatusCode::OK);
-        assert_eq!(get(&admin, "/metrics").await.1.contains("awaken_brain_"), true);
+        // /metrics renders the global Prometheus scrape (200); its content is the
+        // process's OTel metrics, exercised at the observability + e2e level.
+        assert_eq!(get(&admin, "/metrics").await.0, StatusCode::OK);
 
         let business = with_connection_metric(Router::new(), ctrl.clone());
         // The business router has no /readyz (it's on the admin port) → 404.
@@ -205,19 +216,22 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn metrics_expose_active_streams_and_drain_state() {
-        let (app, ctrl) = app();
-        let (status, body) = get(&app, "/metrics").await;
-        assert_eq!(status, StatusCode::OK);
-        // The counter is back to zero once /metrics itself returns (its own in-flight
-        // increment/decrement has balanced), and drain starts at 0.
-        assert!(body.contains("awaken_brain_active_streams 0"), "{body}");
-        assert!(body.contains("awaken_brain_draining 0"), "{body}");
-        assert_eq!(ctrl.active_streams(), 0);
-
-        ctrl.begin_drain();
-        let (_, body) = get(&app, "/metrics").await;
-        assert!(body.contains("awaken_brain_draining 1"), "{body}");
+    #[test]
+    fn active_streams_gauge_is_registered_on_the_global_meter_and_scrapeable() {
+        // The connection-load gauge is a composition-root concern (registered on the
+        // global OTel meter), rendered via the process Prometheus scrape — not
+        // embedded in the router. Install a Prometheus-only provider, register it, and
+        // confirm the scrape reflects the controller's live value.
+        awaken_observability::init_meters(&awaken_observability::OtelConfig::default()).ok();
+        let ctrl = DrainController::new();
+        let _gauge = register_active_streams_gauge(ctrl.clone());
+        let scrape = awaken_observability::render_prometheus();
+        assert!(
+            scrape.lines().any(|l| l.starts_with("awaken_brain_active_streams")
+                && l.trim_end().ends_with(" 0")),
+            "the connection-load gauge reads 0: {scrape}"
+        );
+        // Draining is NOT a metric — it is the `/readyz` 503 signal (#4).
+        assert!(!scrape.contains("awaken_brain_draining"), "{scrape}");
     }
 }

@@ -87,7 +87,8 @@ impl !core::panic::unwind_safe::UnwindSafe for awaken_observability::OtelMetrics
 pub fn awaken_observability::current_traceparent() -> core::option::Option<alloc::string::String>
 pub fn awaken_observability::dispatch_span(core::option::Option<&str>) -> tracing::span::Span
 pub fn awaken_observability::init()
-pub fn awaken_observability::init_otlp_meter(&awaken_observability::OtelConfig) -> core::result::Result<opentelemetry_sdk::metrics::meter_provider::SdkMeterProvider, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
+pub fn awaken_observability::init_meters(&awaken_observability::OtelConfig) -> core::result::Result<opentelemetry_sdk::metrics::meter_provider::SdkMeterProvider, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
 pub fn awaken_observability::init_otlp_tracer(&awaken_observability::OtelConfig) -> core::result::Result<(opentelemetry_sdk::trace::provider::SdkTracerProvider, opentelemetry_sdk::trace::tracer::SdkTracer), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
+pub fn awaken_observability::render_prometheus() -> alloc::string::String
 pub fn awaken_observability::shutdown()
 pub async fn awaken_observability::trace_http(axum_core::extract::Request, axum::middleware::from_fn::Next) -> axum_core::response::Response

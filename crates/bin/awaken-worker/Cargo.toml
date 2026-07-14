@@ -34,6 +34,9 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
 # The cloud-native admin surface (readyz / livez / metrics / drain) on a separate
 # port, so an orchestrator can gate routing and drain the worker gracefully.
 axum = { workspace = true }
+# The admin `/metrics` scrape renders the process's OTel metrics (via the Prometheus
+# exporter installed by `awaken_observability::init`).
+awaken-observability = { workspace = true }
 
 [dev-dependencies]
 # The admin router tests drive the axum router directly (oneshot).
