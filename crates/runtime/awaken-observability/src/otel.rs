@@ -109,12 +109,24 @@ pub fn init_otlp_tracer(
 }
 
 /// Flush and shut down the exporter, if one was installed, so buffered spans are
-/// delivered before the process exits.
+/// delivered before the process exits. Like the meter's [`shutdown_meter`], the
+/// flush + shutdown run on a detached OS thread with a bounded wait: a stalled OTLP
+/// export (e.g. a collector that vanished at teardown) must never hang process
+/// exit. Freeing the calling thread also lets the runtime's workers drive the async
+/// batch export, so a reachable collector still receives the final spans.
+///
+/// [`shutdown_meter`]: crate::metrics::shutdown_meter
 pub(crate) fn shutdown() {
-    if let Some(provider) = PROVIDER.get() {
+    let Some(provider) = PROVIDER.get().cloned() else {
+        return;
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let _ = provider.force_flush();
         let _ = provider.shutdown();
-    }
+        let _ = tx.send(());
+    });
+    let _ = rx.recv_timeout(std::time::Duration::from_secs(3));
 }
 
 /// A collector-free `SpanExporter` that appends each finished span to a file as one
