@@ -14,9 +14,6 @@ use crate::agent::thread::Id as ThreadId;
 use crate::agent::waiting::WaitingTicket;
 use crate::commit::coordinator::{Coordinator, Error};
 use crate::commit::staged::{CommitRecord, ThreadCommit};
-use crate::event::draft::Draft;
-use crate::event::kind::Kind;
-use crate::fact::run::Fact as RunFact;
 
 /// Commit a run's terminal facts — its produced messages, final phase, and any
 /// committed state — through the single commit boundary (G1/G13). The one place a
@@ -38,30 +35,18 @@ pub async fn commit_run(
     waiting: Option<WaitingTicket>,
     state: Vec<StateCommand>,
 ) -> Result<CommitRecord, Error> {
-    let mut events = Vec::new();
-    if !state.is_empty() {
-        events.push(Draft {
-            kind: Kind::StateChanged,
-            payload: serde_json::json!({ "commands": state.len() }),
-        });
-    }
-    if waiting.is_some() {
-        events.push(Draft {
-            kind: Kind::RunWaiting,
-            payload: serde_json::json!({ "run_id": run_id.0 }),
-        });
-    }
+    // A projected turn always transitions phase (it ended or parked), so it emits
+    // `RunPhaseChanged` like the native loop — one assembler, one fact trail.
     coordinator
-        .commit(ThreadCommit {
-            thread_id: thread_id.clone(),
-            run_fact: RunFact {
-                run_id: run_id.clone(),
-                phase,
-            },
+        .commit(ThreadCommit::assemble(
+            thread_id.clone(),
+            run_id.clone(),
+            phase,
+            true,
             messages,
             state,
-            events,
             waiting,
-        })
+            Vec::new(),
+        ))
         .await
 }

@@ -18,7 +18,6 @@ use awaken_agent_contract::agent::waiting::{PendingTool, WaitingReason, WaitingT
 use awaken_agent_contract::commit::staged::ThreadCommit;
 use awaken_agent_contract::event::draft::Draft as EventDraft;
 use awaken_agent_contract::event::kind::Kind as EventKind;
-use awaken_agent_contract::fact::run::Fact as RunFact;
 use awaken_agent_contract::store::stream_checkpoint::{
     PartialToolCall, StreamCheckpoint, StreamCheckpointStore,
 };
@@ -1076,34 +1075,19 @@ async fn commit_step_delta(
     let Some(coordinator) = &context.commit else {
         return Ok(());
     };
-    let mut events = Vec::with_capacity(audit.len() + 2);
-    if first {
-        events.push(EventDraft {
-            kind: EventKind::RunPhaseChanged,
-            payload: serde_json::json!({ "phase": Phase::Running }),
-        });
-    }
-    // Mirror the finish boundary: state riding a commit is announced by a
-    // StateChanged event, whichever boundary commits it.
-    if !state.is_empty() {
-        events.push(EventDraft {
-            kind: EventKind::StateChanged,
-            payload: serde_json::json!({ "commands": state.len() }),
-        });
-    }
-    events.extend(audit);
+    // `first` is the per-step boundary's phase transition (nothing → Running); a
+    // later increment stays Running and emits no RunPhaseChanged.
     coordinator
-        .commit(ThreadCommit {
-            thread_id: thread_id.clone(),
-            run_fact: RunFact {
-                run_id: run_id.clone(),
-                phase: Phase::Running,
-            },
+        .commit(ThreadCommit::assemble(
+            thread_id.clone(),
+            run_id.clone(),
+            Phase::Running,
+            first,
             messages,
             state,
-            events,
-            waiting: None,
-        })
+            None,
+            audit,
+        ))
         .await
         .map_err(|err| Error::Commit(err.to_string()))?;
     Ok(())
@@ -1894,35 +1878,18 @@ async fn finish(
     };
 
     if let Some(coordinator) = &context.commit {
-        let mut events = vec![EventDraft {
-            kind: EventKind::RunPhaseChanged,
-            payload: serde_json::json!({ "phase": phase }),
-        }];
-        if !staged_state.is_empty() {
-            events.push(EventDraft {
-                kind: EventKind::StateChanged,
-                payload: serde_json::json!({ "commands": staged_state.len() }),
-            });
-        }
-        if waiting.is_some() {
-            events.push(EventDraft {
-                kind: EventKind::RunWaiting,
-                payload: serde_json::json!({ "run_id": run_id.0 }),
-            });
-        }
-        // Permission-audit drafts ride the same commit as the run's facts (G1).
-        events.extend(audit);
-        let commit = ThreadCommit {
-            thread_id: thread_id.clone(),
-            run_fact: RunFact {
-                run_id: run_id.clone(),
-                phase: phase.clone(),
-            },
-            messages: new_messages,
-            state: staged_state,
-            events,
+        // The finish boundary always transitions phase (to Ended/Waiting); the
+        // permission-audit drafts ride the same commit as the run's facts (G1).
+        let commit = ThreadCommit::assemble(
+            thread_id.clone(),
+            run_id.clone(),
+            phase.clone(),
+            true,
+            new_messages,
+            staged_state,
             waiting,
-        };
+            audit,
+        );
         coordinator
             .commit(commit)
             .await
