@@ -120,7 +120,7 @@ impl ManagedState {
         if let Some(envs) = self.environments.as_ref()
             && envs.is_self_hosted(&environment_id)
         {
-            envs.enqueue_session_work(&environment_id, &id);
+            envs.enqueue_session_work(&environment_id, &id).await;
         }
         // Enumerate the runtime's provisioned surface so the agent object reports what
         // the run can actually do (built-in toolset, custom tools, skills, delegates),

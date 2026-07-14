@@ -26,12 +26,12 @@ use serde_json::{Value, json};
 use crate::routes::ManagedJson;
 use crate::types::environment::{
     DeletedEnvironment, Environment, EnvironmentCreateParams, EnvironmentUpdateParams, Work,
-    WorkData, WorkHeartbeat, WorkQueueStats, WorkUpdateParams,
+    WorkHeartbeat, WorkQueueStats, WorkUpdateParams,
 };
 use crate::types::{ErrorResponse, Page, PageQuery, paginate};
+use crate::work_queue::{InMemoryWorkQueue, WorkQueue};
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
-const HEARTBEAT_TTL_SECONDS: u64 = 60;
 
 #[derive(Clone)]
 struct EnvRecord {
@@ -91,53 +91,40 @@ impl EnvRecord {
     }
 }
 
-#[derive(Clone)]
-struct WorkRecord {
-    environment_id: String,
-    data: WorkData,
-    metadata: BTreeMap<String, String>,
-    /// `queued` | `starting` | `active` | `stopping` | `stopped`.
-    state: &'static str,
-    acknowledged_at: Option<String>,
-    latest_heartbeat_at: Option<String>,
-    started_at: Option<String>,
-    stop_requested_at: Option<String>,
-    stopped_at: Option<String>,
-}
-
-impl WorkRecord {
-    fn project(&self, id: &str) -> Work {
-        Work {
-            id: id.to_string(),
-            object_type: "work",
-            environment_id: self.environment_id.clone(),
-            data: self.data.clone(),
-            metadata: self.metadata.clone(),
-            state: self.state,
-            secret: None,
-            acknowledged_at: self.acknowledged_at.clone(),
-            latest_heartbeat_at: self.latest_heartbeat_at.clone(),
-            created_at: OBJECT_AT.to_string(),
-            started_at: self.started_at.clone(),
-            stop_requested_at: self.stop_requested_at.clone(),
-            stopped_at: self.stopped_at.clone(),
-        }
-    }
-}
-
-/// The environments + work-queue state.
-#[derive(Default)]
+/// The environments registry + the work-queue port. The registry stays in-process
+/// (env config is small and re-derivable); the work queue is behind [`WorkQueue`]
+/// so a durable backend serves standalone and distributed deployments unchanged.
 pub struct EnvironmentState {
     envs: Mutex<BTreeMap<String, EnvRecord>>,
-    works: Mutex<BTreeMap<String, WorkRecord>>,
     env_seq: AtomicU64,
-    work_seq: AtomicU64,
+    work: Arc<dyn WorkQueue>,
+}
+
+impl Default for EnvironmentState {
+    fn default() -> Self {
+        Self {
+            envs: Mutex::default(),
+            env_seq: AtomicU64::default(),
+            work: Arc::new(InMemoryWorkQueue::new()),
+        }
+    }
 }
 
 impl EnvironmentState {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Install a durable work queue (sqlite/postgres) in place of the in-memory
+    /// default; the same routes then serve a standalone or distributed deployment.
+    #[must_use]
+    pub fn with_work_queue(work: Arc<dyn WorkQueue>) -> Self {
+        Self {
+            envs: Mutex::default(),
+            env_seq: AtomicU64::default(),
+            work,
+        }
     }
 
     /// Whether the local bwrap sandbox must deny egress for `env_id`. bwrap is a
@@ -167,26 +154,8 @@ impl EnvironmentState {
     /// the control plane enqueues a session assigned to a self-hosted environment
     /// (`BetaSessionWorkData`), so a worker polling the environment can claim and run
     /// it. Returns the new work id.
-    pub fn enqueue_session_work(&self, env_id: &str, session_id: &str) -> String {
-        let n = self.work_seq.fetch_add(1, Ordering::SeqCst);
-        let work_id = format!("work_{n:016}");
-        self.works.lock().unwrap().insert(
-            work_id.clone(),
-            WorkRecord {
-                environment_id: env_id.to_string(),
-                data: WorkData::Session {
-                    id: session_id.to_string(),
-                },
-                metadata: BTreeMap::new(),
-                state: "queued",
-                acknowledged_at: None,
-                latest_heartbeat_at: None,
-                started_at: None,
-                stop_requested_at: None,
-                stopped_at: None,
-            },
-        );
-        work_id
+    pub async fn enqueue_session_work(&self, env_id: &str, session_id: &str) -> String {
+        self.work.enqueue_session(env_id, session_id).await
     }
 }
 
@@ -249,25 +218,8 @@ async fn create_env(
     };
     let n = state.env_seq.fetch_add(1, Ordering::SeqCst);
     let id = format!("env_{n:016}");
-    // Seed one healthcheck work item so the queue is exercisable.
-    let w = state.work_seq.fetch_add(1, Ordering::SeqCst);
-    let work_id = format!("work_{w:016}");
-    state.works.lock().unwrap().insert(
-        work_id.clone(),
-        WorkRecord {
-            environment_id: id.clone(),
-            data: WorkData::HealthCheck {
-                id: work_id.clone(),
-            },
-            metadata: BTreeMap::new(),
-            state: "queued",
-            acknowledged_at: None,
-            latest_heartbeat_at: None,
-            started_at: None,
-            stop_requested_at: None,
-            stopped_at: None,
-        },
-    );
+    // Seed one healthcheck work item so the queue is exercisable end to end.
+    state.work.enqueue_healthcheck(&id).await;
     let projected = record.project(&id);
     state.envs.lock().unwrap().insert(id, record);
     Ok(Json(projected))
@@ -334,11 +286,7 @@ async fn delete_env(
     if state.envs.lock().unwrap().remove(&id).is_none() {
         return Err(not_found("environment"));
     }
-    state
-        .works
-        .lock()
-        .unwrap()
-        .retain(|_, w| w.environment_id != id);
+    state.work.remove_env(&id).await;
     Ok(Json(DeletedEnvironment {
         id,
         object_type: "environment_deleted",
@@ -372,11 +320,12 @@ async fn list_work(
     Query(page): Query<PageQuery>,
 ) -> Result<Json<Page<Work>>, WireError> {
     require_env(&state, &id)?;
-    let works = state.works.lock().unwrap();
-    let data: Vec<Work> = works
+    let data: Vec<Work> = state
+        .work
+        .list(&id)
+        .await
         .iter()
-        .filter(|(_, w)| w.environment_id == id)
-        .map(|(wid, w)| w.project(wid))
+        .map(|w| w.project())
         .collect();
     Ok(Json(paginate(data, &page, |w| w.id.as_str())))
 }
@@ -389,29 +338,7 @@ async fn poll_work(
     Path(id): Path<String>,
 ) -> Result<Json<Option<Work>>, WireError> {
     require_env(&state, &id)?;
-    let mut works = state.works.lock().unwrap();
-    // Single active lease per environment (the open-tier single-worker cap).
-    let has_active = works
-        .values()
-        .any(|w| w.environment_id == id && w.state == "active");
-    if has_active {
-        return Ok(Json(None));
-    }
-    // Lease the oldest queued item (ascending id == enqueue order).
-    let next = works
-        .iter()
-        .filter(|(_, w)| w.environment_id == id && w.state == "queued")
-        .map(|(wid, _)| wid.clone())
-        .min();
-    match next {
-        Some(wid) => {
-            let work = works.get_mut(&wid).expect("just found");
-            work.state = "active";
-            work.started_at = Some(OBJECT_AT.to_string());
-            Ok(Json(Some(work.project(&wid))))
-        }
-        None => Ok(Json(None)),
-    }
+    Ok(Json(state.work.claim(&id).await.map(|w| w.project())))
 }
 
 /// `GET /v1/environments/:id/work/stats` — the queue's depth + pending count.
@@ -420,42 +347,20 @@ async fn work_stats(
     Path(id): Path<String>,
 ) -> Result<Json<WorkQueueStats>, WireError> {
     require_env(&state, &id)?;
-    let works = state.works.lock().unwrap();
-    let in_env: Vec<&WorkRecord> = works.values().filter(|w| w.environment_id == id).collect();
-    // `depth` = items waiting to be claimed; `pending` = items a worker has claimed
-    // and is currently processing (per the SDK's queue-stats semantics).
-    let queued = in_env.iter().filter(|w| w.state == "queued").count();
-    let pending = in_env
-        .iter()
-        .filter(|w| matches!(w.state, "starting" | "active" | "stopping"))
-        .count();
-    let workers_polling = i64::from(in_env.iter().any(|w| w.state == "active"));
-    Ok(Json(WorkQueueStats {
-        object_type: "work_queue_stats",
-        depth: queued,
-        pending,
-        oldest_queued_at: (queued > 0).then(|| OBJECT_AT.to_string()),
-        workers_polling,
-    }))
-}
-
-/// Find the work item under `id`/`wid` or 404 (both the env and the membership).
-fn work_belongs(state: &EnvironmentState, id: &str, wid: &str) -> Result<(), WireError> {
-    require_env(state, id)?;
-    let works = state.works.lock().unwrap();
-    match works.get(wid) {
-        Some(w) if w.environment_id == id => Ok(()),
-        _ => Err(not_found("work")),
-    }
+    Ok(Json(state.work.stats(&id).await))
 }
 
 async fn retrieve_work(
     State(state): State<Arc<EnvironmentState>>,
     Path((id, wid)): Path<(String, String)>,
 ) -> Result<Json<Work>, WireError> {
-    work_belongs(&state, &id, &wid)?;
-    let works = state.works.lock().unwrap();
-    Ok(Json(works[&wid].project(&wid)))
+    require_env(&state, &id)?;
+    let work = state
+        .work
+        .get(&id, &wid)
+        .await
+        .ok_or_else(|| not_found("work"))?;
+    Ok(Json(work.project()))
 }
 
 async fn update_work(
@@ -463,13 +368,13 @@ async fn update_work(
     Path((id, wid)): Path<(String, String)>,
     ManagedJson(params): ManagedJson<WorkUpdateParams>,
 ) -> Result<Json<Work>, WireError> {
-    work_belongs(&state, &id, &wid)?;
-    let mut works = state.works.lock().unwrap();
-    let work = works.get_mut(&wid).expect("belongs");
-    if let Some(patch) = params.metadata {
-        work.metadata.extend(patch);
-    }
-    Ok(Json(work.project(&wid)))
+    require_env(&state, &id)?;
+    let work = state
+        .work
+        .update_metadata(&id, &wid, params.metadata.unwrap_or_default())
+        .await
+        .ok_or_else(|| not_found("work"))?;
+    Ok(Json(work.project()))
 }
 
 /// `POST …/work/:wid/ack` — the worker acknowledges it picked up the item.
@@ -477,14 +382,13 @@ async fn ack_work(
     State(state): State<Arc<EnvironmentState>>,
     Path((id, wid)): Path<(String, String)>,
 ) -> Result<Json<Work>, WireError> {
-    work_belongs(&state, &id, &wid)?;
-    let mut works = state.works.lock().unwrap();
-    let work = works.get_mut(&wid).expect("belongs");
-    work.acknowledged_at = Some(OBJECT_AT.to_string());
-    if work.state == "queued" {
-        work.state = "starting";
-    }
-    Ok(Json(work.project(&wid)))
+    require_env(&state, &id)?;
+    let work = state
+        .work
+        .ack(&id, &wid)
+        .await
+        .ok_or_else(|| not_found("work"))?;
+    Ok(Json(work.project()))
 }
 
 /// `POST …/work/:wid/heartbeat` — extend the lease; returns the TTL.
@@ -492,17 +396,13 @@ async fn heartbeat_work(
     State(state): State<Arc<EnvironmentState>>,
     Path((id, wid)): Path<(String, String)>,
 ) -> Result<Json<WorkHeartbeat>, WireError> {
-    work_belongs(&state, &id, &wid)?;
-    let mut works = state.works.lock().unwrap();
-    let work = works.get_mut(&wid).expect("belongs");
-    work.latest_heartbeat_at = Some(OBJECT_AT.to_string());
-    Ok(Json(WorkHeartbeat {
-        object_type: "work_heartbeat",
-        last_heartbeat: OBJECT_AT,
-        lease_extended: true,
-        state: work.state,
-        ttl_seconds: HEARTBEAT_TTL_SECONDS,
-    }))
+    require_env(&state, &id)?;
+    let hb = state
+        .work
+        .heartbeat(&id, &wid)
+        .await
+        .ok_or_else(|| not_found("work"))?;
+    Ok(Json(hb))
 }
 
 /// `POST …/work/:wid/stop` — request the worker stop the item.
@@ -510,13 +410,13 @@ async fn stop_work(
     State(state): State<Arc<EnvironmentState>>,
     Path((id, wid)): Path<(String, String)>,
 ) -> Result<Json<Work>, WireError> {
-    work_belongs(&state, &id, &wid)?;
-    let mut works = state.works.lock().unwrap();
-    let work = works.get_mut(&wid).expect("belongs");
-    work.stop_requested_at = Some(OBJECT_AT.to_string());
-    work.stopped_at = Some(OBJECT_AT.to_string());
-    work.state = "stopped";
-    Ok(Json(work.project(&wid)))
+    require_env(&state, &id)?;
+    let work = state
+        .work
+        .stop(&id, &wid)
+        .await
+        .ok_or_else(|| not_found("work"))?;
+    Ok(Json(work.project()))
 }
 
 #[cfg(test)]
