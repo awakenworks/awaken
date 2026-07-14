@@ -112,7 +112,7 @@ async fn ai_sdk_history_reflects_committed_turn() {
     .await;
     assert_eq!(status, StatusCode::OK);
     let payload: Value = serde_json::from_str(&body).unwrap();
-    let messages = payload["messages"].as_array().unwrap();
+    let messages = payload["items"].as_array().unwrap();
 
     assert!(
         messages
@@ -196,7 +196,7 @@ async fn ai_sdk_parks_then_managed_resumes_same_thread() {
     )
     .await;
     let payload: Value = serde_json::from_str(&body).unwrap();
-    let messages = payload["messages"].as_array().unwrap();
+    let messages = payload["items"].as_array().unwrap();
     assert!(
         messages.iter().any(|m| m["role"] == "assistant"
             && m["parts"].as_array().unwrap().iter().any(|p| p["text"]
@@ -300,7 +300,7 @@ async fn ag_ui_parks_then_managed_resumes_visible_via_ai_sdk() {
     )
     .await;
     let payload: Value = serde_json::from_str(&body).unwrap();
-    let messages = payload["messages"].as_array().unwrap();
+    let messages = payload["items"].as_array().unwrap();
     assert!(
         messages.iter().any(|m| m["role"] == "assistant"
             && m["parts"].as_array().unwrap().iter().any(|p| p["text"]
