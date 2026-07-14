@@ -95,10 +95,10 @@ impl ManagedState {
             .environment_id
             .clone()
             .unwrap_or_else(|| "env_local".to_string());
-        let deny_egress = self
-            .environments
-            .as_ref()
-            .is_some_and(|e| e.deny_egress(&environment_id));
+        let deny_egress = match self.environments.as_ref() {
+            Some(e) => e.deny_egress(&environment_id).await,
+            None => false,
+        };
         self.runtime
             .prepare_session(
                 &id,
@@ -118,7 +118,7 @@ impl ManagedState {
         // for an external worker to claim and run (the session still exists here; the
         // work item is how a polling worker discovers and drives it).
         if let Some(envs) = self.environments.as_ref()
-            && envs.is_self_hosted(&environment_id)
+            && envs.is_self_hosted(&environment_id).await
         {
             envs.enqueue_session_work(&environment_id, &id).await;
         }
