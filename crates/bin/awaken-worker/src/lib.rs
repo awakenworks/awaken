@@ -49,30 +49,44 @@ pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
         upstream,
     ));
 
-    // The shared control-plane stores this worker resolves models from — opened the
-    // same way the Serve composition opens them (durable under AWAKEN_MGMT_DIR, else
-    // in-memory). A worker shares the same per-component databases (Option A).
-    let stores = awaken_control::open_shared_config_stores_from_env().await;
+    // The base host: honors a per-run cloud-managed gateway grant (ADR-0004) by
+    // dialing the gateway with the run's lease token — the genai implementation of
+    // the gateway egress port. This is the durable-path secretless seam: a gateway
+    // run needs no local provider credential.
+    let mut host = SharedHost::new(Arc::new(NoModelConfiguredExecutor), "worker")
+        .with_upstream(upstream)
+        .with_gateway_executor_factory(Arc::new(awaken_server::GenaiGatewayExecutorFactory));
 
-    // Resolve each run's model_ref to a real executor from the live catalog + the
-    // workspace's credential. This is the seam the host's run loop consults per run;
-    // an unpublished/unresolvable model falls back to the NoModelConfiguredExecutor
-    // default below (a clear guidance message, never a mock).
-    let config_exec_provider = ConfigExecutorProvider::new(
-        stores.catalog,
-        stores.credentials,
-        stores.secrets,
-        awaken_control::BOOTSTRAP_WORKSPACE,
-    );
+    // Gateway-only mode (`AWAKEN_WORKER_GATEWAY_ONLY=1`): a genuinely SECRETLESS
+    // worker. It opens no credential vault and needs no seal key — every run must
+    // carry a cloud-managed gateway grant; a local-credentialed run has no executor
+    // and falls back to the NoModelConfiguredExecutor guidance. Otherwise (the
+    // default) the worker also resolves local-grant runs from the shared control
+    // plane, which requires the vault + seal key.
+    let gateway_only = std::env::var("AWAKEN_WORKER_GATEWAY_ONLY").as_deref() == Ok("1");
+    if !gateway_only {
+        // The shared control-plane stores this worker resolves local-grant models from
+        // — opened the same way the Serve composition opens them (durable under
+        // AWAKEN_MGMT_DIR, else in-memory; needs the seal key to unseal credentials).
+        let stores = awaken_control::open_shared_config_stores_from_env().await;
+        let config_exec_provider = ConfigExecutorProvider::new(
+            stores.catalog,
+            stores.credentials,
+            stores.secrets,
+            awaken_control::BOOTSTRAP_WORKSPACE,
+        );
+        host = host.with_executor_provider(Arc::new(config_exec_provider));
+    }
 
-    let host = Arc::new(
-        SharedHost::new(Arc::new(NoModelConfiguredExecutor), "worker")
-            .with_upstream(upstream)
-            .with_executor_provider(Arc::new(config_exec_provider)),
-    );
+    let host = Arc::new(host);
     host.ensure_dispatch_pool();
+    let posture = if gateway_only {
+        "secretless (gateway-only; no vault/seal key)"
+    } else {
+        "per-run model resolution from the config plane"
+    };
     eprintln!(
-        "awaken-worker draining from {upstream} (per-run model resolution from the config plane)"
+        "awaken-worker draining from {upstream} ({posture})"
     );
 
     // The cloud-native admin surface on a SEPARATE port from any data path: an

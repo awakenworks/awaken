@@ -102,6 +102,16 @@ impl<S: Dispatch> DispatchWorker<S> {
         self
     }
 
+    /// Install the cloud-managed-gateway executor builder (ADR-0004), so a
+    /// worker-driven run carrying a gateway grant dials the gateway with its lease
+    /// token instead of resolving a local provider credential — the secretless
+    /// worker path. Without it, a gateway-granted run fails closed.
+    #[must_use]
+    pub fn with_gateway_executor(mut self, build: crate::request::GatewayExecutorFn) -> Self {
+        self.exec = self.exec.with_gateway_executor(build);
+        self
+    }
+
     /// Override the lease duration.
     #[must_use]
     pub fn with_lease_ms(mut self, lease_ms: u64) -> Self {
@@ -133,14 +143,33 @@ impl<S: Dispatch> DispatchWorker<S> {
         self.exec.runtime_context(CancellationToken::new())
     }
 
-    /// Perform a committed ScheduledAction in-process (ADR-0020).
-    async fn perform_scheduled(&self, run_id: &RunId, now_ms: u64) -> Result<Phase, Error> {
+    /// A run context that routes this attempt's inference through `gateway` when a
+    /// gateway grant resolved one (ADR-0004), else the runtime's bound executor.
+    fn execution_context_with(
+        &self,
+        gateway: &Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>,
+    ) -> RuntimeRunContext {
+        let ctx = self.execution_context();
+        match gateway {
+            Some(exec) => ctx.with_model_executor(exec.clone()),
+            None => ctx,
+        }
+    }
+
+    /// Perform a committed ScheduledAction in-process (ADR-0020), routing any
+    /// inference it triggers through the run's gateway executor when one applies.
+    async fn perform_scheduled(
+        &self,
+        run_id: &RunId,
+        now_ms: u64,
+        gateway: &Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>,
+    ) -> Result<Phase, Error> {
         Ok(self
             .runtime
             .perform_scheduled_action(
                 run_id,
                 self.reader.as_ref(),
-                self.execution_context(),
+                self.execution_context_with(gateway),
                 now_ms,
             )
             .await?)
@@ -188,6 +217,14 @@ impl<S: Dispatch> DispatchWorker<S> {
         // owner (whose lease lapsed and was re-claimed under a higher epoch) is
         // rejected and abandons instead of clobbering the reclaimer's dispatch.
         let lease_epoch = claimed.lease.epoch;
+        // Honor a per-run cloud-managed gateway grant (ADR-0004): resolve it once,
+        // before the activation is consumed, and route every inference in this drive
+        // through the gateway executor. A gateway grant this worker cannot dial fails
+        // the drive closed here (never degrading to local credentials); a local grant
+        // yields `None` and the runtime's bound executor drives the run as before.
+        let gateway = self
+            .exec
+            .resolve_gateway(&claimed.request.activation.model_access)?;
         // Continue the admitting request's trace across the durable queue boundary:
         // this `wake.dispatch` span's remote parent is the persisted traceparent, so
         // the run driven below (`runtime.run` → …) nests under the trace that
@@ -205,7 +242,7 @@ impl<S: Dispatch> DispatchWorker<S> {
             // crash recovery of a scheduled park (no pending input is expected).
             Some(ticket) if ticket.reason == WaitingReason::ScheduledAction => {
                 match self
-                    .perform_scheduled(&run_id, now_ms)
+                    .perform_scheduled(&run_id, now_ms, &gateway)
                     .instrument(dispatch.clone())
                     .await
                 {
@@ -233,7 +270,7 @@ impl<S: Dispatch> DispatchWorker<S> {
                         let command = ResumeCommand::from_ticket(&ticket, input.result, now_ms);
                         match self
                             .runtime
-                            .resume(command, self.reader.as_ref(), self.execution_context())
+                            .resume(command, self.reader.as_ref(), self.execution_context_with(&gateway))
                             .instrument(dispatch.clone())
                             .await
                         {
@@ -334,7 +371,7 @@ impl<S: Dispatch> DispatchWorker<S> {
                     all_pending.extend(unbound.into_iter().map(|input| input.message_id));
                     match self
                         .runtime
-                        .execute(activation, self.execution_context())
+                        .execute(activation, self.execution_context_with(&gateway))
                         .instrument(dispatch.clone())
                         .await
                     {
@@ -355,7 +392,7 @@ impl<S: Dispatch> DispatchWorker<S> {
         while phase == Phase::Waiting {
             match self.reader.waiting_ticket(&run_id) {
                 Some(ticket) if ticket.reason == WaitingReason::ScheduledAction => {
-                    phase = match self.perform_scheduled(&run_id, now_ms).await {
+                    phase = match self.perform_scheduled(&run_id, now_ms, &gateway).await {
                         Ok(phase) => phase,
                         Err(err) => {
                             return self
