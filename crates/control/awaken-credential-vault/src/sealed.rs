@@ -84,6 +84,116 @@ impl SecretStore for SealedAeadSecretStore {
     }
 }
 
+/// Parse a seal-key hex string into the 32-byte AEAD key
+/// [`SealedAeadSecretStore`] uses: exactly 64 hex characters. The single home for
+/// this so the Serve composition root and the worker share one implementation.
+pub fn parse_seal_key(hex: &str) -> Result<[u8; 32], String> {
+    let hex = hex.trim();
+    if hex.len() != 64 || !hex.is_ascii() {
+        return Err(format!(
+            "expected 64 hex characters (a 32-byte key), got {} characters",
+            hex.len()
+        ));
+    }
+    let mut key = [0u8; 32];
+    for (i, byte) in key.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16)
+            .map_err(|_| format!("not hex at position {}", 2 * i))?;
+    }
+    Ok(key)
+}
+
+/// Pure resolution of the seal-key hex from its two possible sources — an inline
+/// value or a file path — so the precedence + mutual-exclusion rules are testable
+/// without the environment or filesystem. `read_file` is injected (real:
+/// `std::fs::read_to_string`). Exactly one source must be set: both is ambiguous,
+/// neither is a brick-on-restart error (a durable store must not seal under an
+/// ephemeral key). The single home shared by the Serve root and the worker.
+pub fn resolve_seal_key_hex(
+    inline: Option<String>,
+    file_path: Option<String>,
+    read_file: impl Fn(&str) -> std::io::Result<String>,
+) -> Result<String, String> {
+    let inline = inline.filter(|v| !v.trim().is_empty());
+    let file_path = file_path.filter(|v| !v.trim().is_empty());
+    match (inline, file_path) {
+        (Some(_), Some(_)) => Err(
+            "both AWAKEN_MGMT_SEAL_KEY and AWAKEN_MGMT_SEAL_KEY_FILE are set; they are \
+             mutually exclusive — set exactly one"
+                .to_string(),
+        ),
+        (Some(hex), None) => Ok(hex),
+        (None, Some(path)) => read_file(&path)
+            .map_err(|e| format!("AWAKEN_MGMT_SEAL_KEY_FILE={path} could not be read: {e}")),
+        (None, None) => Err(
+            "AWAKEN_MGMT_DIR is set but neither AWAKEN_MGMT_SEAL_KEY nor \
+             AWAKEN_MGMT_SEAL_KEY_FILE is set. A durable management store needs a stable \
+             AEAD key (64 hex characters = 32 bytes); sealing under an ephemeral key \
+             would brick every restart"
+                .to_string(),
+        ),
+    }
+}
+
+#[cfg(test)]
+mod seal_key_tests {
+    use super::{parse_seal_key, resolve_seal_key_hex};
+
+    fn no_read(_p: &str) -> std::io::Result<String> {
+        Err(std::io::Error::other("no file read expected"))
+    }
+
+    #[test]
+    fn parse_requires_exactly_64_hex_chars() {
+        assert!(parse_seal_key(&"ab".repeat(32)).is_ok(), "64 hex chars parse");
+        assert!(parse_seal_key("abc").is_err(), "too short");
+        assert!(parse_seal_key(&"zz".repeat(32)).is_err(), "non-hex");
+    }
+
+    #[test]
+    fn inline_wins_alone_file_read_alone_both_and_neither_error() {
+        // Inline alone → returned as-is.
+        assert_eq!(
+            resolve_seal_key_hex(Some("abc".into()), None, no_read).unwrap(),
+            "abc"
+        );
+        // File alone → read via the injected reader.
+        assert_eq!(
+            resolve_seal_key_hex(None, Some("/p".into()), |_| Ok("fromfile".into())).unwrap(),
+            "fromfile"
+        );
+        // Both set → ambiguous, rejected.
+        assert!(
+            resolve_seal_key_hex(Some("abc".into()), Some("/p".into()), no_read)
+                .unwrap_err()
+                .contains("mutually exclusive")
+        );
+        // Neither → the brick-on-restart refusal.
+        assert!(
+            resolve_seal_key_hex(None, None, no_read)
+                .unwrap_err()
+                .contains("brick every restart")
+        );
+        // Empty strings are treated as unset.
+        assert!(resolve_seal_key_hex(Some("  ".into()), None, no_read).is_err());
+    }
+
+    #[test]
+    fn an_unreadable_file_reports_the_path() {
+        let err = resolve_seal_key_hex(None, Some("/nope".into()), |_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no such file",
+            ))
+        })
+        .unwrap_err();
+        assert!(
+            err.contains("/nope") && err.contains("could not be read"),
+            "{err}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
