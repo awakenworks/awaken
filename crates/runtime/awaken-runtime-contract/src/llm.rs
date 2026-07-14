@@ -233,9 +233,36 @@ impl StateKey for ThreadUsageKey {
 
 #[cfg(test)]
 mod thread_usage_key_tests {
-    use awaken_agent_contract::agent::state::{StateKey, Store};
+    use awaken_agent_contract::agent::state::{Command, MergePolicy, Scope, StateKey, Store};
 
     use super::*;
+
+    #[test]
+    fn a_drifted_usage_cell_fails_closed_instead_of_resetting_the_tally() {
+        // ADR-0055 / audit #96: the accumulated tally must NEVER be silently reset.
+        // A persisted `__usage` value that no longer deserializes into `ThreadUsage`
+        // (a shape drift) makes `load` return Err — not the `Default` (a zeroed
+        // tally). Both callers (the step loop and `merge_thread_usage`) match this
+        // Err and SKIP the record rather than overwrite the drifted cell, so the
+        // committed total survives. `load_or_default` is the opt-in lenient read.
+        let mut store = Store::new();
+        store.apply(&Command::set(
+            Scope::Thread,
+            MergePolicy::Commutative,
+            THREAD_USAGE_STATE_KEY,
+            serde_json::json!("this is not a ThreadUsage object"),
+        ));
+        let read = ThreadUsageKey::load(&store);
+        assert!(
+            read.is_err(),
+            "a drifted usage cell must fail closed, got {read:?}"
+        );
+        // The opt-in lenient path is the ONLY one that resets — named at its call site.
+        assert_eq!(
+            ThreadUsageKey::load_or_default(&store),
+            ThreadUsage::default()
+        );
+    }
 
     #[test]
     fn record_then_write_reads_back_typed() {

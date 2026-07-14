@@ -25,7 +25,8 @@ use awaken_runtime_contract::permission::{
     PermissionContext, PermissionDecision, PermissionPolicy,
 };
 use awaken_runtime_contract::resolved::{
-    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
+    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor, ToolFacet,
+    ToolPresentation,
 };
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -253,4 +254,118 @@ async fn ask_parks_then_a_resumed_allow_runs_the_tool() {
         .expect("resume");
     assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(Ordering::SeqCst), 1, "the approved tool ran once");
+}
+
+/// A model that calls a tool by its MODEL-FACING ALIAS, not the canonical id.
+struct CallsAlias {
+    calls: AtomicUsize,
+}
+#[async_trait::async_trait]
+impl LlmExecutor for CallsAlias {
+    async fn infer(&self, _r: ChatRequest) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        let output = if n == 0 {
+            AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "call-1".to_string(),
+                tool_id: "safe_echo".to_string(), // the ALIAS, not "echo"
+                arguments: serde_json::json!({"text": "ping"}),
+            }])
+        } else {
+            AssistantOutput::text("done".to_string())
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+/// A policy that records every tool id the gate hands it and denies ONLY the
+/// canonical `echo`. If the reverse-map runs before the gate, it sees `echo` and
+/// denies; if the alias leaked, it would see `safe_echo`, not match, and allow.
+struct RecordingDenyCanonical {
+    seen: Arc<std::sync::Mutex<Vec<String>>>,
+}
+#[async_trait::async_trait]
+impl PermissionPolicy for RecordingDenyCanonical {
+    async fn decide(&self, ctx: &PermissionContext) -> PermissionDecision {
+        self.seen.lock().unwrap().push(ctx.tool_id.clone());
+        if ctx.tool_id == "echo" {
+            PermissionDecision::Deny {
+                reason: "canonical echo denied".to_string(),
+            }
+        } else {
+            PermissionDecision::Allow
+        }
+    }
+}
+
+fn snapshot_aliased() -> ExecutableAgentSnapshot {
+    let mut snap = snapshot();
+    // Present the canonical `echo` to the model as `safe_echo`.
+    snap.resolved_spec.tool_presentation = ToolPresentation::from_facets([(
+        "echo".to_string(),
+        ToolFacet {
+            alias: Some("safe_echo".to_string()),
+            description: None,
+            defer: false,
+        },
+    )]);
+    snap
+}
+
+#[tokio::test]
+async fn a_tool_alias_reverse_maps_to_canonical_before_the_permission_gate() {
+    // ADR-0053 / audit #85: the presentation alias must be reversed to the canonical
+    // id at the single ingress BEFORE the permission gate — so a policy keyed on the
+    // canonical id governs the aliased call and the alias never leaks to the gate.
+    let ran = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(CallsAlias {
+            calls: AtomicUsize::new(0),
+        }))
+        .with_tool(Arc::new(EchoTool { ran: ran.clone() })) // canonical id "echo"
+        .with_gate(Arc::new(PermissionGate::new(Arc::new(
+            RecordingDenyCanonical { seen: seen.clone() },
+        ))));
+    let fp = CatalogFingerprint(FP.to_string());
+    runtime
+        .install_catalog(RuntimeCatalogInstall {
+            publication_id: "pub-1".to_string(),
+            fingerprint: fp.clone(),
+            source_revisions: vec!["rev-1".to_string()],
+            capabilities: RuntimeCapabilityCatalog {
+                catalog_fingerprint: fp,
+                runtime_version: "test".to_string(),
+                tools: Vec::new(),
+                plugins: Vec::new(),
+            },
+        })
+        .expect("installs");
+    runtime.register_snapshot(snapshot_aliased());
+
+    let mut act = activation();
+    act.snapshot = snapshot_aliased();
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let phase = runtime.execute(act, context(&commit)).await.expect("runs");
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+
+    // The gate received the CANONICAL id and denied it, so the aliased call never ran.
+    let seen = seen.lock().unwrap();
+    assert!(
+        seen.iter().any(|id| id == "echo"),
+        "the gate saw the canonical id: {seen:?}"
+    );
+    assert!(
+        !seen.iter().any(|id| id == "safe_echo"),
+        "the alias must never reach the gate: {seen:?}"
+    );
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        0,
+        "the canonical deny rule blocked the aliased call"
+    );
+    assert_eq!(audited_decisions(&commit), vec!["deny"]);
 }

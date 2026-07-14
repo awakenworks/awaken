@@ -634,3 +634,45 @@ async fn a_persisted_completed_tool_call_resumes_without_calling_the_model() {
         "the model was not called"
     );
 }
+
+#[test]
+fn merge_thread_usage_fails_closed_and_does_not_reset_a_drifted_tally() {
+    // Audit #96: the delegate-rollup path must not silently reset a persisted tally
+    // it cannot read. A drifted `__usage` cell → skip the rollup, leave the cell
+    // untouched (never overwrite it with a fresh, partial tally).
+    use awaken_agent_contract::agent::state::{Key, MergePolicy};
+    use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, ThreadUsage, TokenUsage};
+
+    let mut store = Store::new();
+    let corrupt = serde_json::json!("corrupt-not-a-usage");
+    store.apply(&StateCommand::set(
+        Scope::Thread,
+        MergePolicy::Commutative,
+        THREAD_USAGE_STATE_KEY,
+        corrupt.clone(),
+    ));
+
+    // A non-empty delta that WOULD merge if the cell were readable.
+    let mut delta = ThreadUsage::default();
+    delta.record(
+        "m",
+        TokenUsage {
+            prompt_tokens: 7,
+            completion_tokens: 3,
+            ..Default::default()
+        },
+    );
+
+    let mut staged: Vec<StateCommand> = Vec::new();
+    merge_thread_usage(&mut store, &mut staged, &delta);
+
+    assert!(
+        staged.is_empty(),
+        "a drifted cell must not stage a usage rollup"
+    );
+    assert_eq!(
+        store.get(Scope::Thread, &Key(THREAD_USAGE_STATE_KEY.to_string())),
+        Some(&corrupt),
+        "the drifted usage cell is left untouched, never reset"
+    );
+}
