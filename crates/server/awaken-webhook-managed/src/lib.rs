@@ -21,7 +21,7 @@ use awaken_credential_vault::{SecretRef, SecretStore};
 use awaken_protocol_managed::{SessionLifecycleSink, WorkspaceScope};
 use awaken_webhook::{
     ReqwestSender, ResolvedSubscription, SubscriptionSource, WebhookDispatcher, WebhookEvent,
-    generate_secret,
+    WebhookSender, generate_secret,
 };
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -175,6 +175,17 @@ pub fn webhook_config_router(
     store: Arc<dyn WebhookStore>,
     secrets: Arc<dyn SecretStore>,
 ) -> Router {
+    webhook_config_router_with_policy(store, secrets, strict_endpoint_url_policy())
+}
+
+/// [`webhook_config_router`] with an injectable endpoint-URL admission `policy`, so a
+/// loopback e2e can register its `127.0.0.1` receiver. Production goes through
+/// [`webhook_config_router`] (the strict SSRF policy).
+fn webhook_config_router_with_policy(
+    store: Arc<dyn WebhookStore>,
+    secrets: Arc<dyn SecretStore>,
+    validate_url: EndpointUrlPolicy,
+) -> Router {
     Router::new()
         .route("/v1/config/webhook-subscriptions", get(list_subscriptions))
         .route(
@@ -183,13 +194,29 @@ pub fn webhook_config_router(
                 .get(get_subscription)
                 .delete(delete_subscription),
         )
-        .with_state(WebhookCrudState { store, secrets })
+        .with_state(WebhookCrudState {
+            store,
+            secrets,
+            validate_url,
+        })
+}
+
+/// The endpoint-URL admission policy: `Ok(())` to admit, `Err(message)` to reject at
+/// `PUT` time. Production is the SSRF check ([`strict_endpoint_url_policy`]); a
+/// loopback e2e swaps in a permissive one.
+type EndpointUrlPolicy = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+
+/// The production SSRF admission policy: reject a non-https scheme or a
+/// private/loopback/metadata host (never stored, never fetched).
+fn strict_endpoint_url_policy() -> EndpointUrlPolicy {
+    Arc::new(|url| awaken_webhook::validate_endpoint_url(url).map_err(|e| e.to_string()))
 }
 
 #[derive(Clone)]
 struct WebhookCrudState {
     store: Arc<dyn WebhookStore>,
     secrets: Arc<dyn SecretStore>,
+    validate_url: EndpointUrlPolicy,
 }
 
 /// The seeded scope an unscoped (single-tenant / flat) request resolves to, kept in
@@ -235,12 +262,13 @@ async fn put_subscription(
     };
     // Fail closed on an SSRF-shaped endpoint: the dispatcher fetches this URL
     // server-side, so a non-https scheme or a private/loopback/metadata host is
-    // rejected at admission (never stored, never fetched).
-    if let Err(rejected) = awaken_webhook::validate_endpoint_url(&url) {
+    // rejected at admission (never stored, never fetched). The policy is a seam —
+    // production wires the strict SSRF check; a loopback e2e permits its receiver.
+    if let Err(rejected) = (state.validate_url)(&url) {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error": { "type": "invalid_request_error", "message": rejected.to_string() }
+                "error": { "type": "invalid_request_error", "message": rejected }
             })),
         );
     }
@@ -366,18 +394,55 @@ pub fn assemble(
     secrets: Arc<dyn SecretStore>,
     org_id: Option<String>,
 ) -> (Arc<WebhookLifecycleSink>, Router) {
+    // The production posture: the sender enforces the delivery-time SSRF /
+    // DNS-rebinding guard (resolve-and-pin to globally-routable addresses), and the
+    // CRUD front door rejects a non-https / private / loopback endpoint at admission.
+    assemble_with(
+        store,
+        secrets,
+        org_id,
+        Arc::new(ReqwestSender::guarded()),
+        strict_endpoint_url_policy(),
+    )
+}
+
+/// [`assemble`] for delivery to a **loopback** receiver: the permissive
+/// [`ReqwestSender::default`] plus an admission policy that admits any URL. The
+/// guarded production posture pins to globally-routable addresses and rejects a
+/// `127.0.0.1` endpoint at both admission and delivery, so an in-process e2e (its
+/// receiver is a real loopback axum server) wires this instead. Never the production
+/// path — [`assemble`] is.
+pub fn assemble_loopback(
+    store: Arc<dyn WebhookStore>,
+    secrets: Arc<dyn SecretStore>,
+    org_id: Option<String>,
+) -> (Arc<WebhookLifecycleSink>, Router) {
+    assemble_with(
+        store,
+        secrets,
+        org_id,
+        Arc::new(ReqwestSender::default()),
+        Arc::new(|_url| Ok(())),
+    )
+}
+
+fn assemble_with(
+    store: Arc<dyn WebhookStore>,
+    secrets: Arc<dyn SecretStore>,
+    org_id: Option<String>,
+    sender: Arc<dyn WebhookSender>,
+    url_policy: EndpointUrlPolicy,
+) -> (Arc<WebhookLifecycleSink>, Router) {
     let source = Arc::new(ConfigPlaneSubscriptionSource::new(
         store.clone(),
         secrets.clone(),
     ));
-    // The production sender enforces the delivery-time SSRF / DNS-rebinding guard:
-    // it resolves-and-pins each endpoint to globally-routable addresses only.
-    let dispatcher = Arc::new(WebhookDispatcher::new(
-        source,
-        Arc::new(ReqwestSender::guarded()),
-    ));
+    let dispatcher = Arc::new(WebhookDispatcher::new(source, sender));
     let sink = Arc::new(WebhookLifecycleSink::new(dispatcher, org_id));
-    (sink, webhook_config_router(store, secrets))
+    (
+        sink,
+        webhook_config_router_with_policy(store, secrets, url_policy),
+    )
 }
 
 #[cfg(test)]
