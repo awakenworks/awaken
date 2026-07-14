@@ -17,7 +17,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::{PendingTool, WaitingReason, WaitingTicket};
 use awaken_agent_contract::commit::staged::ThreadCommit;
 use awaken_agent_contract::event::draft::Draft as EventDraft;
-use awaken_agent_contract::event::kind::Kind as EventKind;
+use awaken_agent_contract::event::run_event::RunEvent;
 use awaken_agent_contract::store::stream_checkpoint::{
     PartialToolCall, StreamCheckpoint, StreamCheckpointStore,
 };
@@ -392,14 +392,12 @@ impl Checkpoint {
 /// Build the audit draft for one gated tool call (ADR-0030). The decision label
 /// is the permission-relevant view of the gate outcome.
 fn permission_audit(call: &ToolCall, outcome: &GateOutcome) -> EventDraft {
-    EventDraft {
-        kind: EventKind::PermissionDecided,
-        payload: serde_json::json!({
-            "tool_id": call.tool_id,
-            "call_id": call.call_id,
-            "decision": outcome.decision_label(),
-        }),
+    RunEvent::PermissionDecided {
+        tool_id: call.tool_id.clone(),
+        call_id: call.call_id.clone(),
+        decision: outcome.decision_label().to_string(),
     }
+    .into()
 }
 
 /// Handle a call to the reserved `tool_open` meta-tool (ADR-0053): mark the requested
@@ -1382,10 +1380,10 @@ async fn consult_run_end(
 /// forwarded verbatim (the kernel never interprets it, G2); committing it makes
 /// the round history durable truth the host projects, not a best-effort stream.
 fn continuation_event(detail: &serde_json::Value) -> EventDraft {
-    EventDraft {
-        kind: EventKind::Continuation,
-        payload: detail.clone(),
+    RunEvent::Continuation {
+        detail: detail.clone(),
     }
+    .into()
 }
 
 /// The user message a steered continuation injects before looping. Its id is

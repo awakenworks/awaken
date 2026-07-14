@@ -44,26 +44,31 @@ impl ThreadCommit {
         waiting: Option<crate::agent::waiting::WaitingTicket>,
         extra_events: Vec<crate::event::draft::Draft>,
     ) -> Self {
-        use crate::event::draft::Draft;
-        use crate::event::kind::Kind;
+        use crate::event::run_event::RunEvent;
         let mut events = Vec::with_capacity(extra_events.len() + 3);
         if phase_changed {
-            events.push(Draft {
-                kind: Kind::RunPhaseChanged,
-                payload: serde_json::json!({ "phase": phase }),
-            });
+            events.push(
+                RunEvent::RunPhaseChanged {
+                    phase: phase.clone(),
+                }
+                .into(),
+            );
         }
         if !state.is_empty() {
-            events.push(Draft {
-                kind: Kind::StateChanged,
-                payload: serde_json::json!({ "commands": state.len() }),
-            });
+            events.push(
+                RunEvent::StateChanged {
+                    commands: state.len(),
+                }
+                .into(),
+            );
         }
         if waiting.is_some() {
-            events.push(Draft {
-                kind: Kind::RunWaiting,
-                payload: serde_json::json!({ "run_id": run_id.0 }),
-            });
+            events.push(
+                RunEvent::RunWaiting {
+                    run_id: run_id.0.clone(),
+                }
+                .into(),
+            );
         }
         events.extend(extra_events);
         Self {
