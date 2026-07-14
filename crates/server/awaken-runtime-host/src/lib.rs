@@ -34,6 +34,8 @@ mod files;
 mod gateway_executor;
 mod host;
 mod hub;
+#[cfg(test)]
+mod test_support;
 mod judge;
 mod live_inbox;
 mod mcp;

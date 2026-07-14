@@ -86,21 +86,17 @@ impl RunExecutionContext {
         &self,
         grant: &ModelAccessGrant,
     ) -> Result<Option<Arc<dyn LlmExecutor>>, crate::Error> {
-        if !grant.is_gateway() {
-            return Ok(None);
-        }
-        let endpoint = grant.materialize();
-        let built = self
-            .gateway_executor
-            .as_ref()
-            .and_then(|build| build(&endpoint));
-        built.map(Some).ok_or_else(|| {
-            crate::Error::Execution(awaken_runtime_contract::execution::Error::Execution(
-                "cannot honor a cloud-managed gateway grant: no gateway egress is configured \
-                 for this worker, or its dialect is unsupported"
-                    .to_string(),
-            ))
-        })
+        grant
+            .resolve_executor(|endpoint| {
+                self.gateway_executor
+                    .as_ref()
+                    .and_then(|build| build(endpoint))
+            })
+            .map_err(|unservable| {
+                crate::Error::Execution(awaken_runtime_contract::execution::Error::Execution(
+                    unservable.to_string(),
+                ))
+            })
     }
 
     /// Provide the per-session live inbox so worker-driven runs drain mid-run

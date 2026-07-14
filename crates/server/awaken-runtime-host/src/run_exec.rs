@@ -104,20 +104,13 @@ impl SharedHost {
         &self,
         grant: &awaken_runtime_contract::model_access::ModelAccessGrant,
     ) -> Result<Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>, HostError> {
-        if !grant.is_gateway() {
-            return Ok(None);
-        }
-        let endpoint = grant.materialize();
-        self.gateway_executor_factory
-            .as_ref()
-            .and_then(|factory| factory.build(&endpoint))
-            .map(Some)
-            .ok_or_else(|| {
-                HostError::bad_request(
-                    "cannot honor a cloud-managed gateway grant: no gateway egress \
-                     is configured for this runtime, or its dialect is unsupported",
-                )
+        grant
+            .resolve_executor(|endpoint| {
+                self.gateway_executor_factory
+                    .as_ref()
+                    .and_then(|factory| factory.build(endpoint))
             })
+            .map_err(|unservable| HostError::bad_request(unservable.to_string()))
     }
 }
 
@@ -125,53 +118,10 @@ impl SharedHost {
 mod tests {
     use std::sync::Arc;
 
-    use awaken_runtime_contract::llm::{
-        AssistantOutput, ChatRequest, ChatResponse, LlmExecutor,
-    };
-    use awaken_runtime_contract::model_access::{ModelAccessGrant, ResolvedModelEndpoint};
+    use awaken_runtime_contract::model_access::ModelAccessGrant;
 
-    use crate::gateway_executor::GatewayExecutorFactory;
     use crate::host::SharedHost;
-
-    struct StubModel;
-    #[async_trait::async_trait]
-    impl LlmExecutor for StubModel {
-        async fn infer(
-            &self,
-            _r: ChatRequest,
-        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-            Ok(ChatResponse {
-                output: AssistantOutput::text("stub"),
-                usage: None,
-                stop_reason: None,
-            })
-        }
-    }
-
-    /// A factory that serves any endpoint (returns a stub executor).
-    struct AlwaysFactory;
-    impl GatewayExecutorFactory for AlwaysFactory {
-        fn build(&self, _e: &ResolvedModelEndpoint) -> Option<Arc<dyn LlmExecutor>> {
-            Some(Arc::new(StubModel))
-        }
-    }
-
-    /// A factory that cannot serve the dialect (returns None).
-    struct NeverFactory;
-    impl GatewayExecutorFactory for NeverFactory {
-        fn build(&self, _e: &ResolvedModelEndpoint) -> Option<Arc<dyn LlmExecutor>> {
-            None
-        }
-    }
-
-    fn gateway_grant() -> ModelAccessGrant {
-        ModelAccessGrant::CloudManagedGateway {
-            gateway_base_url: "https://gw.internal".into(),
-            dialect: "anthropic".into(),
-            model_ref: "claude".into(),
-            lease_token: "lease".into(), // awaken-allow: secret
-        }
-    }
+    use crate::test_support::{ServingFactory, StubModel, UnservingFactory, gateway_grant};
 
     #[test]
     fn a_local_grant_yields_no_gateway_executor() {
@@ -187,7 +137,7 @@ mod tests {
     #[test]
     fn a_gateway_grant_with_a_factory_builds_an_executor() {
         let host = SharedHost::new(Arc::new(StubModel), "t")
-            .with_gateway_executor_factory(Arc::new(AlwaysFactory));
+            .with_gateway_executor_factory(Arc::new(ServingFactory));
         assert!(
             host.gateway_model_executor(&gateway_grant())
                 .unwrap()
@@ -206,7 +156,7 @@ mod tests {
         );
         // A factory that cannot serve the dialect → reject.
         let host = SharedHost::new(Arc::new(StubModel), "t")
-            .with_gateway_executor_factory(Arc::new(NeverFactory));
+            .with_gateway_executor_factory(Arc::new(UnservingFactory));
         assert!(
             host.gateway_model_executor(&gateway_grant()).is_err(),
             "a gateway grant whose dialect the factory cannot serve fails closed"

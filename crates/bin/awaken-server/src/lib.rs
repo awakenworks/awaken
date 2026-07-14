@@ -326,17 +326,19 @@ fn genai_adapter(adapter_kind: &str) -> Option<awaken_provider_genai::AdapterKin
 /// `anthropic`, `openai-compatible`, …). Unknown → `None`, so the factory fails
 /// closed rather than dialing a wire it cannot speak.
 fn gateway_dialect_adapter(dialect: &str) -> Option<awaken_provider_genai::AdapterKind> {
-    use awaken_provider_genai::AdapterKind;
+    // Normalize the free-form grant dialect to a canonical provider token, then reuse
+    // the one catalog adapter table (`genai_adapter`) — no second AdapterKind mapping.
     let d = dialect.to_ascii_lowercase();
-    Some(if d.contains("anthropic") {
-        AdapterKind::Anthropic
+    let canonical = if d.contains("anthropic") {
+        "anthropic"
     } else if d.contains("gemini") || d.contains("google") {
-        AdapterKind::Gemini
+        "gemini"
     } else if d.contains("openai") {
-        AdapterKind::OpenAI
+        "openai"
     } else {
         return None;
-    })
+    };
+    genai_adapter(canonical)
 }
 
 /// The genai implementation of the [`GatewayExecutorFactory`](awaken_runtime_host::GatewayExecutorFactory)
