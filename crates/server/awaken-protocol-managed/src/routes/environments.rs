@@ -368,4 +368,26 @@ mod tests {
         // Unknown environment shares the host network (no record → false).
         assert!(!state.deny_egress("env_missing").await);
     }
+
+    #[tokio::test]
+    async fn with_stores_selects_self_hosted_and_handles_missing() {
+        let state = EnvironmentState::with_stores(
+            Arc::new(InMemoryEnvRegistry::new()),
+            Arc::new(InMemoryWorkQueue::new()),
+        );
+        let e = state
+            .envs
+            .create(
+                "e".into(),
+                String::new(),
+                BTreeMap::new(),
+                json!({ "type": "self_hosted" }),
+            )
+            .await;
+        assert!(state.is_self_hosted(&e.id).await);
+        assert!(
+            !state.is_self_hosted("missing").await,
+            "unknown env is not self-hosted"
+        );
+    }
 }
