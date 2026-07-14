@@ -49,6 +49,7 @@ mod store;
 mod subagent;
 #[cfg(test)]
 mod test_support;
+mod work_store;
 mod worker_http;
 
 // The config-authoring plane now lives in the shared `awaken-config-service` crate
@@ -117,6 +118,7 @@ pub use crate::memory_store_api::memory_stores_router;
 pub use crate::models::{ModelEntry, default_models, models_router};
 pub use crate::session_store::{PostgresManagedSessionRepository, SqliteManagedSessionRepository};
 pub use crate::skills_api::skills_router;
+pub use crate::work_store::SqliteWorkQueue;
 // The model-route seam (R1/R2/R5): a composition root supplies its own
 // `ExecutorProvider` to map a session's model ref to a labeled executor.
 pub use crate::gateway_executor::GatewayExecutorFactory;
