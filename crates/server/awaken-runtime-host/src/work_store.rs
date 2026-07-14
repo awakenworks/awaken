@@ -18,6 +18,8 @@ use awaken_protocol_managed::types::environment::{WorkData, WorkHeartbeat, WorkQ
 use awaken_protocol_managed::work_queue::{WorkItem, WorkQueue, WorkState};
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use sqlx::Row;
+use sqlx::postgres::{PgPool, PgRow};
 
 /// The frozen presence timestamp the managed wire uses (parity with the in-memory
 /// queue — timestamps carry presence, not wall time, in the open-tier projection).
@@ -38,8 +40,8 @@ fn work_bundle() -> Result<MigrationBundle, MigrationError> {
             1,
             "self-hosted environment work queue: one row per work item",
             "CREATE TABLE {prefix}_item (\
-             seq                 INTEGER PRIMARY KEY AUTOINCREMENT, \
-             work_id             TEXT NOT NULL UNIQUE, \
+             work_id             TEXT PRIMARY KEY, \
+             seq                 BIGINT NOT NULL, \
              environment_id      TEXT NOT NULL, \
              data_type           TEXT NOT NULL, \
              data_id             TEXT NOT NULL, \
@@ -125,22 +127,25 @@ impl SqliteWorkQueue {
         let tx = guard
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .expect("begin immediate");
-        tx.execute(
-            "INSERT INTO work_queue_item \
-                (work_id, environment_id, data_type, data_id, metadata_json, state) \
-             VALUES ('', ?1, ?2, '', '{}', 'queued')",
-            params![environment_id, data_type],
-        )
-        .expect("insert work row");
-        let seq = tx.last_insert_rowid();
-        let work_id = format!("work_{seq:016}");
+        // A portable monotonic order key (no backend-specific autoincrement): the
+        // next seq under the write lock, so ids are enqueue-ordered on both stores.
+        let next: i64 = tx
+            .query_row(
+                "SELECT COALESCE(MAX(seq), -1) + 1 FROM work_queue_item",
+                [],
+                |r| r.get(0),
+            )
+            .expect("next seq");
+        let work_id = format!("work_{next:016}");
         // A session carries the session id; a healthcheck references itself.
         let data_id = session_id.unwrap_or(&work_id);
         tx.execute(
-            "UPDATE work_queue_item SET work_id = ?1, data_id = ?2 WHERE seq = ?3",
-            params![work_id, data_id, seq],
+            "INSERT INTO work_queue_item \
+                (work_id, seq, environment_id, data_type, data_id, metadata_json, state) \
+             VALUES (?1, ?2, ?3, ?4, ?5, '{}', 'queued')",
+            params![work_id, next, environment_id, data_type, data_id],
         )
-        .expect("stamp work id");
+        .expect("insert work row");
         tx.commit().expect("commit enqueue");
         work_id
     }
@@ -339,6 +344,263 @@ impl WorkQueue for SqliteWorkQueue {
             params![env_id],
         )
         .expect("purge env work");
+    }
+}
+
+fn pg_row_to_item(row: &PgRow) -> WorkItem {
+    let metadata_json: String = row.get("metadata_json");
+    WorkItem {
+        id: row.get("work_id"),
+        environment_id: row.get("environment_id"),
+        data: data_of(&row.get::<String, _>("data_type"), row.get("data_id")),
+        metadata: serde_json::from_str(&metadata_json).unwrap_or_default(),
+        state: state_from_wire(&row.get::<String, _>("state")),
+        acknowledged_at: row.get("acknowledged_at"),
+        latest_heartbeat_at: row.get("latest_heartbeat_at"),
+        started_at: row.get("started_at"),
+        stop_requested_at: row.get("stop_requested_at"),
+        stopped_at: row.get("stopped_at"),
+    }
+}
+
+/// A Postgres-backed [`WorkQueue`] — the network-DB sibling over the same
+/// `work_queue` migration scope, for distributed deployments. Claims run in a
+/// transaction that mirrors the SQLite semantics (the single-active-per-env cap);
+/// multi-worker fan-out (`FOR UPDATE SKIP LOCKED`, no cap) is the later step.
+pub struct PostgresWorkQueue {
+    pool: PgPool,
+}
+
+impl PostgresWorkQueue {
+    /// Connect and apply the work-queue migrations under the `work_queue` namespace.
+    pub async fn connect(url: &str) -> Result<Self, String> {
+        let pool = PgPool::connect(url).await.map_err(|e| e.to_string())?;
+        Self::with_pool(pool).await
+    }
+
+    /// Build from an existing pool: apply the work-queue migrations.
+    pub async fn with_pool(pool: PgPool) -> Result<Self, String> {
+        let bundle = work_bundle().map_err(|e| e.to_string())?;
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .map_err(|e| e.to_string())?
+            .run_bundle(&bundle)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(Self { pool })
+    }
+
+    async fn insert(&self, env_id: &str, data_type: &str, session_id: Option<&str>) -> String {
+        let mut tx = self.pool.begin().await.expect("begin");
+        let next: i64 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(seq), -1) + 1 FROM work_queue_item")
+                .fetch_one(&mut *tx)
+                .await
+                .expect("next seq");
+        let work_id = format!("work_{next:016}");
+        let data_id = session_id.unwrap_or(&work_id).to_string();
+        sqlx::query(
+            "INSERT INTO work_queue_item \
+                (work_id, seq, environment_id, data_type, data_id, metadata_json, state) \
+             VALUES ($1, $2, $3, $4, $5, '{}', 'queued')",
+        )
+        .bind(&work_id)
+        .bind(next)
+        .bind(env_id)
+        .bind(data_type)
+        .bind(&data_id)
+        .execute(&mut *tx)
+        .await
+        .expect("insert work row");
+        tx.commit().await.expect("commit enqueue");
+        work_id
+    }
+
+    async fn fetch_owned(&self, env_id: &str, wid: &str) -> Option<WorkItem> {
+        sqlx::query(&format!(
+            "SELECT {COLS} FROM work_queue_item WHERE work_id = $1 AND environment_id = $2"
+        ))
+        .bind(wid)
+        .bind(env_id)
+        .fetch_optional(&self.pool)
+        .await
+        .expect("read work row")
+        .map(|r| pg_row_to_item(&r))
+    }
+}
+
+#[async_trait]
+impl WorkQueue for PostgresWorkQueue {
+    async fn enqueue_session(&self, env_id: &str, session_id: &str) -> String {
+        self.insert(env_id, "session", Some(session_id)).await
+    }
+
+    async fn enqueue_healthcheck(&self, env_id: &str) -> String {
+        self.insert(env_id, "healthcheck", None).await
+    }
+
+    async fn list(&self, env_id: &str) -> Vec<WorkItem> {
+        sqlx::query(&format!(
+            "SELECT {COLS} FROM work_queue_item WHERE environment_id = $1 ORDER BY seq ASC"
+        ))
+        .bind(env_id)
+        .fetch_all(&self.pool)
+        .await
+        .expect("query list")
+        .iter()
+        .map(pg_row_to_item)
+        .collect()
+    }
+
+    async fn get(&self, env_id: &str, wid: &str) -> Option<WorkItem> {
+        self.fetch_owned(env_id, wid).await
+    }
+
+    async fn claim(&self, env_id: &str) -> Option<WorkItem> {
+        let mut tx = self.pool.begin().await.expect("begin");
+        // Single active lease per environment (the open-tier single-worker cap).
+        let active: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = $1 AND state = 'active'",
+        )
+        .bind(env_id)
+        .fetch_one(&mut *tx)
+        .await
+        .expect("count active");
+        if active > 0 {
+            return None;
+        }
+        // Lease the oldest queued item, locking the chosen row.
+        let wid: Option<String> = sqlx::query_scalar(
+            "SELECT work_id FROM work_queue_item \
+             WHERE environment_id = $1 AND state = 'queued' \
+             ORDER BY seq ASC LIMIT 1 FOR UPDATE SKIP LOCKED",
+        )
+        .bind(env_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .expect("find queued");
+        let wid = wid?;
+        sqlx::query(
+            "UPDATE work_queue_item SET state = 'active', started_at = $1 WHERE work_id = $2",
+        )
+        .bind(OBJECT_AT)
+        .bind(&wid)
+        .execute(&mut *tx)
+        .await
+        .expect("lease");
+        tx.commit().await.expect("commit claim");
+        self.fetch_owned(env_id, &wid).await
+    }
+
+    async fn ack(&self, env_id: &str, wid: &str) -> Option<WorkItem> {
+        let current = self.fetch_owned(env_id, wid).await?;
+        let next = if current.state == WorkState::Queued {
+            "starting"
+        } else {
+            current.state.as_str()
+        };
+        sqlx::query(
+            "UPDATE work_queue_item SET acknowledged_at = $1, state = $2 \
+             WHERE work_id = $3 AND environment_id = $4",
+        )
+        .bind(OBJECT_AT)
+        .bind(next)
+        .bind(wid)
+        .bind(env_id)
+        .execute(&self.pool)
+        .await
+        .expect("ack");
+        self.fetch_owned(env_id, wid).await
+    }
+
+    async fn heartbeat(&self, env_id: &str, wid: &str) -> Option<WorkHeartbeat> {
+        let current = self.fetch_owned(env_id, wid).await?;
+        sqlx::query(
+            "UPDATE work_queue_item SET latest_heartbeat_at = $1 \
+             WHERE work_id = $2 AND environment_id = $3",
+        )
+        .bind(OBJECT_AT)
+        .bind(wid)
+        .bind(env_id)
+        .execute(&self.pool)
+        .await
+        .expect("heartbeat");
+        Some(WorkHeartbeat {
+            object_type: "work_heartbeat",
+            last_heartbeat: OBJECT_AT,
+            lease_extended: true,
+            state: current.state.as_str(),
+            ttl_seconds: HEARTBEAT_TTL_SECONDS,
+        })
+    }
+
+    async fn stop(&self, env_id: &str, wid: &str) -> Option<WorkItem> {
+        self.fetch_owned(env_id, wid).await?;
+        sqlx::query(
+            "UPDATE work_queue_item SET stop_requested_at = $1, stopped_at = $1, state = 'stopped' \
+             WHERE work_id = $2 AND environment_id = $3",
+        )
+        .bind(OBJECT_AT)
+        .bind(wid)
+        .bind(env_id)
+        .execute(&self.pool)
+        .await
+        .expect("stop");
+        self.fetch_owned(env_id, wid).await
+    }
+
+    async fn update_metadata(
+        &self,
+        env_id: &str,
+        wid: &str,
+        patch: BTreeMap<String, String>,
+    ) -> Option<WorkItem> {
+        let mut current = self.fetch_owned(env_id, wid).await?;
+        current.metadata.extend(patch);
+        let metadata_json = serde_json::to_string(&current.metadata).expect("metadata serializes");
+        sqlx::query(
+            "UPDATE work_queue_item SET metadata_json = $1 WHERE work_id = $2 AND environment_id = $3",
+        )
+        .bind(metadata_json)
+        .bind(wid)
+        .bind(env_id)
+        .execute(&self.pool)
+        .await
+        .expect("update metadata");
+        self.fetch_owned(env_id, wid).await
+    }
+
+    async fn stats(&self, env_id: &str) -> WorkQueueStats {
+        let count = |clause: &'static str| {
+            let pool = self.pool.clone();
+            let env = env_id.to_string();
+            async move {
+                sqlx::query_scalar::<_, i64>(&format!(
+                    "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = $1 AND {clause}"
+                ))
+                .bind(env)
+                .fetch_one(&pool)
+                .await
+                .expect("count") as usize
+            }
+        };
+        let depth = count("state = 'queued'").await;
+        let pending = count("state IN ('starting', 'active', 'stopping')").await;
+        let workers_polling = i64::from(count("state = 'active'").await > 0);
+        WorkQueueStats {
+            object_type: "work_queue_stats",
+            depth,
+            pending,
+            oldest_queued_at: (depth > 0).then(|| OBJECT_AT.to_string()),
+            workers_polling,
+        }
+    }
+
+    async fn remove_env(&self, env_id: &str) {
+        sqlx::query("DELETE FROM work_queue_item WHERE environment_id = $1")
+            .bind(env_id)
+            .execute(&self.pool)
+            .await
+            .expect("purge env work");
     }
 }
 
