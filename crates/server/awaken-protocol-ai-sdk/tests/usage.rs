@@ -4,7 +4,9 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::{Id, Message, Role};
-use awaken_protocol_transport::{DriverError, Pending, ProtocolRuntime, Resume, StepOutcome};
+use awaken_protocol_transport::{
+    DriverError, Pending, ProtocolRuntime, Resume, StepOutcome, Terminal,
+};
 use axum::body::{Body, to_bytes};
 use axum::http::Request;
 use serde_json::{Value, json};
@@ -22,9 +24,7 @@ impl ProtocolRuntime for UsageRuntime {
     ) -> Result<StepOutcome, DriverError> {
         Ok(StepOutcome {
             new_messages: vec![Message::text(Id("a1".into()), Role::Assistant, "hi")],
-            waiting: false,
-            exhausted: false,
-            pending: None,
+            terminal: Terminal::Finished,
         })
     }
 

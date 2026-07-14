@@ -9,7 +9,7 @@
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Message as AgentMessage, Role};
 
-use awaken_protocol_transport::StepOutcome;
+use awaken_protocol_transport::{StepOutcome, Terminal};
 
 use crate::types::{Message, MessageRole, Part, Task, TaskState, TaskStatus};
 
@@ -21,26 +21,32 @@ pub fn encode_task(thread: &str, history: &[AgentMessage], outcome: &StepOutcome
         .filter_map(|m| to_a2a_message(thread, m))
         .collect();
 
-    let state = if outcome.waiting {
-        TaskState::InputRequired
-    } else if outcome.exhausted {
-        TaskState::Failed
-    } else {
-        TaskState::Completed
+    let state = match &outcome.terminal {
+        Terminal::Waiting { .. } => TaskState::InputRequired,
+        Terminal::Failed(_) | Terminal::Exhausted => TaskState::Failed,
+        Terminal::Finished => TaskState::Completed,
     };
 
-    // The status message is what the agent last said. When parked on a tool, it is
-    // the prompt for the input the task now requires.
-    let status_message = match (&state, outcome.pending.as_ref()) {
-        (TaskState::InputRequired, Some(pending)) => Some(Message::agent_text(
+    // The status message is what the agent last said. A terminal fault carries its
+    // message so the task explains why it failed; when parked on a tool, it is the
+    // prompt for the input the task now requires.
+    let status_message = if let Terminal::Failed(failure) = &outcome.terminal {
+        Some(Message::agent_text(
             format!("{thread}-status"),
-            format!("input required for tool `{}`", pending.name),
-        )),
-        _ => messages
-            .iter()
-            .rev()
-            .find(|m| m.role == MessageRole::Agent)
-            .cloned(),
+            failure.message.clone(),
+        ))
+    } else {
+        match (&state, outcome.pending()) {
+            (TaskState::InputRequired, Some(pending)) => Some(Message::agent_text(
+                format!("{thread}-status"),
+                format!("input required for tool `{}`", pending.name),
+            )),
+            _ => messages
+                .iter()
+                .rev()
+                .find(|m| m.role == MessageRole::Agent)
+                .cloned(),
+        }
     };
 
     Task {
@@ -93,18 +99,48 @@ fn block_text(content: &[ContentBlock]) -> String {
 mod tests {
     use super::*;
     use awaken_agent_contract::agent::message::Id as MessageId;
-    use awaken_protocol_transport::Pending;
+    use awaken_protocol_transport::{Pending, StepFailure};
 
     fn msg(id: &str, role: Role, text: &str) -> AgentMessage {
         AgentMessage::text(MessageId(id.into()), role, text)
     }
 
+    #[test]
+    fn terminal_failure_yields_a_failed_task_with_the_fault_message() {
+        let outcome = StepOutcome {
+            terminal: Terminal::Failed(StepFailure {
+                code: "inference_failed".into(),
+                message: "upstream is down".into(),
+            }),
+            ..Default::default()
+        };
+        let task = encode_task("th", &[], &outcome);
+        assert_eq!(task.status.state, TaskState::Failed);
+        let text = task
+            .status
+            .message
+            .as_ref()
+            .map(|m| {
+                m.parts
+                    .iter()
+                    .filter_map(|p| p.text.as_deref())
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        assert!(
+            text.contains("upstream is down"),
+            "status carries the fault: {text}"
+        );
+    }
+
     fn outcome(waiting: bool, pending: Option<Pending>) -> StepOutcome {
         StepOutcome {
             new_messages: Vec::new(),
-            waiting,
-            exhausted: false,
-            pending,
+            terminal: if waiting {
+                Terminal::Waiting { pending }
+            } else {
+                Terminal::Finished
+            },
         }
     }
 
@@ -153,9 +189,7 @@ mod tests {
         ];
         let exhausted = StepOutcome {
             new_messages: Vec::new(),
-            waiting: false,
-            exhausted: true,
-            pending: None,
+            terminal: Terminal::Exhausted,
         };
         let task = encode_task("t", &history, &exhausted);
         assert_eq!(task.status.state, TaskState::Failed);

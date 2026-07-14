@@ -18,5 +18,5 @@ pub use page::paginate_history;
 pub use awaken_agent_contract::page::{
     CursorParams, DEFAULT_PAGE_LIMIT, HistoryPage, MAX_PAGE_LIMIT, UnknownCursor, paginate_by_id,
 };
-pub use port::{DriverError, Pending, ProtocolRuntime, Resume, StepOutcome};
+pub use port::{DriverError, Pending, ProtocolRuntime, Resume, StepFailure, StepOutcome, Terminal};
 pub use stream::ChannelStreamSink;

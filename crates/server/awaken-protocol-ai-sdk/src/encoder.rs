@@ -7,7 +7,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_agent_contract::project::{
     AgentEvent, HistorySink, ToolDisposition, ToolUseRef, Transcoder, project_history,
-    project_messages, terminal_waiting,
+    project_messages,
 };
 use awaken_protocol_transport::{StepOutcome, blocks_text};
 use serde_json::Value;
@@ -91,18 +91,13 @@ impl Transcoder for AiSdkEncoder {
 /// self-contained stream: `start` … `finish`.
 pub fn encode_step(outcome: &StepOutcome) -> Vec<UIStreamEvent> {
     let pending = outcome
-        .pending
-        .as_ref()
+        .pending()
         .map(|p| (p.tool_use_id.as_str(), p.client_executed));
     let mut events = vec![AgentEvent::RunStarted];
     events.extend(project_messages(&outcome.new_messages, pending));
-    events.push(if outcome.waiting {
-        terminal_waiting(outcome.pending.as_ref().map(|p| p.tool_use_id.as_str()))
-    } else {
-        AgentEvent::RunFinished {
-            exhausted: outcome.exhausted,
-        }
-    });
+    // The terminal event owns the failed / parked / finished distinction — a fault
+    // becomes `RunFailed`, which transcodes to `error` + `finish("error")`.
+    events.push(outcome.terminal_event());
     AiSdkEncoder.transcode_all(&events)
 }
 
@@ -115,17 +110,12 @@ pub fn encode_step(outcome: &StepOutcome) -> Vec<UIStreamEvent> {
 /// prefix plus this tail form one well-formed UI Message Stream.
 pub fn encode_close(outcome: &StepOutcome) -> Vec<UIStreamEvent> {
     let pending = outcome
-        .pending
-        .as_ref()
+        .pending()
         .map(|p| (p.tool_use_id.as_str(), p.client_executed));
     let mut events = project_messages(&outcome.new_messages, pending);
-    events.push(if outcome.waiting {
-        terminal_waiting(outcome.pending.as_ref().map(|p| p.tool_use_id.as_str()))
-    } else {
-        AgentEvent::RunFinished {
-            exhausted: outcome.exhausted,
-        }
-    });
+    // Same terminal event as `encode_step` (a fault closes with `error` +
+    // `finish("error")`); the live prefix already carried `start`/`start-step`.
+    events.push(outcome.terminal_event());
     // The live channel already carried `start`/`start-step` and every text delta;
     // emitting them again would double the stream. Keep only tool + finish frames.
     events.retain(|e| !matches!(e, AgentEvent::AssistantMessage { .. }));
@@ -214,8 +204,38 @@ impl HistorySink for AiSdkHistorySink {
 mod tests {
     use super::*;
     use awaken_agent_contract::agent::message::Id;
-    use awaken_protocol_transport::Pending;
+    use awaken_protocol_transport::{Pending, StepFailure, Terminal};
     use serde_json::json;
+
+    #[test]
+    fn terminal_failure_surfaces_an_error_frame() {
+        let outcome = StepOutcome {
+            terminal: Terminal::Failed(StepFailure {
+                code: "inference_failed".into(),
+                message: "upstream is down".into(),
+            }),
+            ..Default::default()
+        };
+        // A fresh (non-streamed) step: opened stream + error + finish("error").
+        let step = encode_step(&outcome);
+        assert!(
+            step.iter()
+                .any(|e| matches!(e, UIStreamEvent::Error { .. })),
+            "error frame: {step:?}"
+        );
+        assert!(
+            step.iter().any(|e| matches!(e, UIStreamEvent::Finish { finish_reason: Some(r), .. } if r == "error")),
+            "finish(error): {step:?}",
+        );
+        // A streamed step's tail: error + finish("error") (prefix already emitted).
+        let close = encode_close(&outcome);
+        assert!(
+            close
+                .iter()
+                .any(|e| matches!(e, UIStreamEvent::Error { .. })),
+            "close error: {close:?}"
+        );
+    }
 
     fn assistant_tool(id: &str, call: &str, name: &str, args: Value) -> Message {
         Message {
@@ -233,14 +253,14 @@ mod tests {
     fn client_pending_tool_is_not_provider_executed() {
         let outcome = StepOutcome {
             new_messages: vec![assistant_tool("a1", "c1", "submit_answer", json!({}))],
-            waiting: true,
-            exhausted: false,
-            pending: Some(Pending {
-                tool_use_id: "c1".into(),
-                name: "submit_answer".into(),
-                input: json!({}),
-                client_executed: true,
-            }),
+            terminal: Terminal::Waiting {
+                pending: Some(Pending {
+                    tool_use_id: "c1".into(),
+                    name: "submit_answer".into(),
+                    input: json!({}),
+                    client_executed: true,
+                }),
+            },
         };
         let events = encode_step(&outcome);
         let tool = events
@@ -260,9 +280,7 @@ mod tests {
     fn plain_assistant_turn_finishes_stop() {
         let outcome = StepOutcome {
             new_messages: vec![Message::text(Id("a1".into()), Role::Assistant, "hello")],
-            waiting: false,
-            exhausted: false,
-            pending: None,
+            terminal: Terminal::Finished,
         };
         let events = encode_step(&outcome);
         assert!(events.contains(&UIStreamEvent::finish("stop")));
@@ -280,14 +298,14 @@ mod tests {
                 Message::text(Id("a1".into()), Role::Assistant, "let me read"),
                 assistant_tool("a2", "c1", "read", json!({"path": "x"})),
             ],
-            waiting: true,
-            exhausted: false,
-            pending: Some(Pending {
-                tool_use_id: "c1".into(),
-                name: "read".into(),
-                input: json!({"path": "x"}),
-                client_executed: true,
-            }),
+            terminal: Terminal::Waiting {
+                pending: Some(Pending {
+                    tool_use_id: "c1".into(),
+                    name: "read".into(),
+                    input: json!({"path": "x"}),
+                    client_executed: true,
+                }),
+            },
         };
         let events = encode_close(&outcome);
         // No start/step/text — those were streamed live.
