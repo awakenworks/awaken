@@ -78,6 +78,8 @@ struct ManagementStores {
     /// management console authors directly, and their publications. Scoped so a
     /// workspace's config is fenced from another's (ADR-0051).
     config: Arc<dyn awaken_config_store::ScopedConfigRegistry>,
+    /// Self-hosted environments registry + work queue, durable per deployment mode.
+    environments: Arc<awaken_protocol_managed::EnvironmentState>,
 }
 
 /// Ephemeral management stores: everything in process memory (dev / e2e default).
@@ -93,6 +95,7 @@ fn in_memory_management_stores() -> ManagementStores {
         config: Arc::new(
             awaken_config_store::SqliteConfigStore::open_in_memory().expect("open config store"),
         ),
+        environments: Arc::new(EnvironmentState::new()),
     }
 }
 
@@ -143,6 +146,18 @@ fn durable_management_stores(dir: &std::path::Path, key: &[u8; 32]) -> Managemen
             awaken_config_store::SqliteConfigStore::open(&db("config.db"))
                 .expect("open config.db under AWAKEN_MGMT_DIR"),
         ),
+        // Self-hosted env registry + work queue, their own sqlite files beside the
+        // session store (durable so a self-hosted worker survives a restart).
+        environments: Arc::new(EnvironmentState::with_stores(
+            Arc::new(
+                awaken_runtime_host::SqliteEnvRegistry::open(&db("environments.db"))
+                    .expect("open environments.db under AWAKEN_MGMT_DIR"),
+            ),
+            Arc::new(
+                awaken_runtime_host::SqliteWorkQueue::open(&db("work_queue.db"))
+                    .expect("open work_queue.db under AWAKEN_MGMT_DIR"),
+            ),
+        )),
     }
 }
 
@@ -279,6 +294,37 @@ async fn open_management_stores(
         ),
     };
 
+    // Self-hosted env registry + work queue follow the session store's backend kind
+    // (their own table namespaces, so a shared DB is fine).
+    let environments: Arc<EnvironmentState> = match &cfg.sessions {
+        StoreBackend::Sqlite(sp) => Arc::new(EnvironmentState::with_stores(
+            Arc::new(
+                awaken_runtime_host::SqliteEnvRegistry::open(&path(
+                    &sp.with_file_name("environments.db"),
+                ))
+                .expect("open environments sqlite"),
+            ),
+            Arc::new(
+                awaken_runtime_host::SqliteWorkQueue::open(&path(
+                    &sp.with_file_name("work_queue.db"),
+                ))
+                .expect("open work_queue sqlite"),
+            ),
+        )),
+        StoreBackend::Postgres(url) => Arc::new(EnvironmentState::with_stores(
+            Arc::new(
+                awaken_runtime_host::PostgresEnvRegistry::connect(url)
+                    .await
+                    .expect("connect environments postgres"),
+            ),
+            Arc::new(
+                awaken_runtime_host::PostgresWorkQueue::connect(url)
+                    .await
+                    .expect("connect work_queue postgres"),
+            ),
+        )),
+    };
+
     ManagementStores {
         catalog,
         credentials,
@@ -288,6 +334,7 @@ async fn open_management_stores(
         webhooks: admin_webhooks,
         sessions,
         config,
+        environments,
     }
 }
 
@@ -450,6 +497,7 @@ async fn management_router_over(
         webhooks: webhook_store,
         sessions,
         config,
+        environments,
     } = stores;
     // Clones for the config-plane executor provider (M2): it resolves a session's
     // model to a real executor from the live catalog + the workspace's credential.
@@ -472,7 +520,7 @@ async fn management_router_over(
     );
     // Environments + work queue, shared with the session state so `POST /v1/sessions`
     // resolves an environment's networking policy (egress on/off) at creation.
-    let env_state = std::sync::Arc::new(EnvironmentState::new());
+    let env_state = environments;
 
     // The server's default model for the window before a publish; and the seed
     // catalog carrying it so the assistant's `Auto` selection resolves at seed/publish.
