@@ -97,12 +97,7 @@ impl SharedHost {
         // worker-driven run honors a per-run gateway grant credential-free (ADR-0004,
         // the durable-path half of the secretless worker). `None` when no factory is
         // installed → a gateway-granted run fails closed on this worker.
-        let gateway: Option<awaken_run_ingress::GatewayExecutorFn> =
-            self.gateway_executor_factory.clone().map(|factory| {
-                let build: awaken_run_ingress::GatewayExecutorFn =
-                    Arc::new(move |endpoint| factory.build(endpoint));
-                build
-            });
+        let gateway = self.worker_gateway_builder();
         // The recovered dispatch a crash left mid-flight is re-executed by this
         // worker; giving it the same checkpoint store lets that re-execution resume
         // the interrupted step from its flushed partial (Phase 3 cross-process).
@@ -120,6 +115,18 @@ impl SharedHost {
         // routes it to the session (this one included) that owns its thread.
         let boxed: Arc<dyn RunIngress> = ingress.clone();
         Ok((boxed, Some(ingress)))
+    }
+
+    /// Wrap this host's cloud-managed-gateway factory (if installed) into the neutral
+    /// `endpoint → executor` closure a worker's `RunExecutionContext` carries, so a
+    /// worker-driven run honors a gateway grant (ADR-0004). `None` when no factory is
+    /// installed — a gateway-granted run then fails closed on the worker.
+    pub(crate) fn worker_gateway_builder(&self) -> Option<awaken_run_ingress::GatewayExecutorFn> {
+        self.gateway_executor_factory.clone().map(|factory| {
+            let build: awaken_run_ingress::GatewayExecutorFn =
+                Arc::new(move |endpoint| factory.build(endpoint));
+            build
+        })
     }
 
     pub(crate) async fn ctx_for(
@@ -374,5 +381,61 @@ impl SharedHost {
             }
         }
         Ok(ctx)
+    }
+}
+
+#[cfg(test)]
+mod gateway_builder_tests {
+    use std::sync::Arc;
+
+    use awaken_runtime_contract::llm::{
+        AssistantOutput, ChatRequest, ChatResponse, LlmExecutor,
+    };
+    use awaken_runtime_contract::model_access::{ModelAccessGrant, ResolvedModelEndpoint};
+
+    use crate::gateway_executor::GatewayExecutorFactory;
+    use crate::host::SharedHost;
+
+    struct StubModel;
+    #[async_trait::async_trait]
+    impl LlmExecutor for StubModel {
+        async fn infer(
+            &self,
+            _r: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            Ok(ChatResponse {
+                output: AssistantOutput::text("stub"),
+                usage: None,
+                stop_reason: None,
+            })
+        }
+    }
+
+    struct Factory;
+    impl GatewayExecutorFactory for Factory {
+        fn build(&self, _e: &ResolvedModelEndpoint) -> Option<Arc<dyn LlmExecutor>> {
+            Some(Arc::new(StubModel))
+        }
+    }
+
+    #[test]
+    fn worker_gateway_builder_wraps_the_factory_or_is_none() {
+        // No factory installed → no builder (a gateway run fails closed on the worker).
+        let bare = SharedHost::new(Arc::new(StubModel), "t");
+        assert!(bare.worker_gateway_builder().is_none());
+
+        // Factory installed → a builder that delegates to it: materializing a gateway
+        // grant and running the closure yields the factory's executor.
+        let host = SharedHost::new(Arc::new(StubModel), "t")
+            .with_gateway_executor_factory(Arc::new(Factory));
+        let builder = host.worker_gateway_builder().expect("a builder");
+        let endpoint = ModelAccessGrant::CloudManagedGateway {
+            gateway_base_url: "https://gw.internal".into(),
+            dialect: "anthropic".into(),
+            model_ref: "claude".into(),
+            lease_token: "lease".into(), // awaken-allow: secret
+        }
+        .materialize();
+        assert!(builder(&endpoint).is_some(), "the builder delegates to the factory");
     }
 }

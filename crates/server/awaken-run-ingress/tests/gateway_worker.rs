@@ -10,7 +10,8 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::{EndCause, Phase};
 use awaken_run_ingress::{
-    DispatchQueue, DispatchWorker, GatewayExecutorFn, MemoryDispatchStore, RunExecutionRequest,
+    DispatchQueue, DispatchWorker, DurableRunIngress, GatewayExecutorFn, MemoryDispatchStore,
+    RunExecutionRequest,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
@@ -98,6 +99,36 @@ async fn a_gateway_grant_with_no_builder_fails_closed() {
     assert!(
         commit.committed().messages.iter().all(|m| m.text_content() != "done"),
         "the run never fell back to the bound executor"
+    );
+}
+
+/// `DurableRunIngress::with_owner_and_gateway` wires the gateway builder into the
+/// ingress's worker, so a run driven through the ingress honors a gateway grant —
+/// the composition path the host uses to make a worker secretless.
+#[tokio::test]
+async fn durable_ingress_wires_the_gateway_builder_into_its_worker() {
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let gateway: GatewayExecutorFn =
+        Arc::new(|_endpoint| Some(Arc::new(MarkerLlm("GATEWAY")) as Arc<dyn LlmExecutor>));
+    let ingress = DurableRunIngress::with_owner_and_gateway(
+        text_runtime(),
+        store.clone(),
+        commit.clone(),
+        "node-1",
+        None,
+        Some(gateway),
+    );
+
+    store.enqueue(gateway_activation("run-gw")).await.unwrap();
+    ingress.worker().tick(0).await.expect("drive").expect("a run");
+    assert!(
+        commit
+            .committed()
+            .messages
+            .iter()
+            .any(|m| m.text_content() == "GATEWAY"),
+        "the ingress's worker honored the gateway grant via the wired builder"
     );
 }
 
