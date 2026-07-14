@@ -12,6 +12,7 @@
 //! The `awaken` binary ([`main`](../main.rs)) is a thin shell over this library.
 
 mod brain_admin;
+pub mod config;
 
 use std::collections::HashSet;
 use std::sync::Arc;
