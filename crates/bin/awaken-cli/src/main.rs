@@ -25,6 +25,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Install tracing + optional OTLP / trace-file export before anything is served.
     awaken_observability::init();
 
+    // Validate the unified deployment configuration up front, for every role: a
+    // role-aware, fail-closed check that refuses a contradictory deployment at boot
+    // (rather than a confusing runtime behaviour later), and surfaces any legacy
+    // env-name usage as a deprecation warning.
+    let deployment = awaken_cli::config::AwakenConfig::from_env();
+    for warning in &deployment.deprecations {
+        eprintln!("awaken config: {warning}");
+    }
+    if let Err(errors) = deployment.validate() {
+        for error in &errors {
+            eprintln!("awaken config error: {error}");
+        }
+        return Err(format!("refusing to start: {} configuration error(s)", errors.len()).into());
+    }
+    eprintln!("awaken config: {}", deployment.summary());
+
     // The single role axis. Hand and Worker are execution endpoints that never serve
     // HTTP; Serve is the default single-machine / coordinator command.
     match awaken_server::deployment_role() {
