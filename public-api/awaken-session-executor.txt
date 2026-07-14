@@ -1,9 +1,23 @@
 pub mod awaken_session_executor
+pub use awaken_session_executor::AssistantBindingReconciler
+pub use awaken_session_executor::ConfigPlane
+pub use awaken_session_executor::ConfigService
+pub use awaken_session_executor::ConfigServiceAgentSource
+pub use awaken_session_executor::ConfigServiceReconciler
 pub use awaken_session_executor::HttpTransport
+pub use awaken_session_executor::ModelResolver
+pub use awaken_session_executor::PublishError
+pub use awaken_session_executor::RESERVED_ADMIN_SCOPE
+pub use awaken_session_executor::ResolvedModel
 pub use awaken_session_executor::Response
+pub use awaken_session_executor::ScopedToolCatalog
 pub use awaken_session_executor::SkillContext
 pub use awaken_session_executor::SkillSpec
+pub use awaken_session_executor::StaticToolCatalog
+pub use awaken_session_executor::ToolCatalogSource
 pub use awaken_session_executor::Transport
+pub use awaken_session_executor::capabilities_router
+pub use awaken_session_executor::config_router
 pub use awaken_session_executor::content_fingerprint
 pub use awaken_session_executor::parse_skill_md
 pub enum awaken_session_executor::AcpStop
@@ -56,22 +70,6 @@ impl core::marker::Sync for awaken_session_executor::HostResume
 impl core::marker::Unpin for awaken_session_executor::HostResume
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_session_executor::HostResume
 impl core::panic::unwind_safe::UnwindSafe for awaken_session_executor::HostResume
-pub enum awaken_session_executor::PublishError
-pub awaken_session_executor::PublishError::Compile(alloc::string::String)
-pub awaken_session_executor::PublishError::NotStored(alloc::string::String)
-pub awaken_session_executor::PublishError::Store(alloc::string::String)
-pub awaken_session_executor::PublishError::Unresolvable(alloc::string::String)
-impl core::error::Error for awaken_session_executor::PublishError
-impl core::fmt::Debug for awaken_session_executor::PublishError
-pub fn awaken_session_executor::PublishError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for awaken_session_executor::PublishError
-pub fn awaken_session_executor::PublishError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_session_executor::PublishError
-impl core::marker::Send for awaken_session_executor::PublishError
-impl core::marker::Sync for awaken_session_executor::PublishError
-impl core::marker::Unpin for awaken_session_executor::PublishError
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_session_executor::PublishError
-impl core::panic::unwind_safe::UnwindSafe for awaken_session_executor::PublishError
 pub enum awaken_session_executor::StoreKind
 pub awaken_session_executor::StoreKind::Fs
 pub awaken_session_executor::StoreKind::Postgres
@@ -153,67 +151,6 @@ impl core::marker::Sync for awaken_session_executor::AcpTurn
 impl core::marker::Unpin for awaken_session_executor::AcpTurn
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_session_executor::AcpTurn
 impl core::panic::unwind_safe::UnwindSafe for awaken_session_executor::AcpTurn
-pub struct awaken_session_executor::ConfigPlane
-impl awaken_session_executor::ConfigPlane
-pub fn awaken_session_executor::ConfigPlane::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
-pub async fn awaken_session_executor::ConfigPlane::get(&self, &awaken_tenancy::ScopeId, &str) -> core::result::Result<core::option::Option<awaken_config_store::config::AgentConfig>, alloc::string::String>
-pub async fn awaken_session_executor::ConfigPlane::list(&self, &awaken_tenancy::ScopeId) -> core::result::Result<alloc::vec::Vec<awaken_config_store::config::AgentConfig>, alloc::string::String>
-pub fn awaken_session_executor::ConfigPlane::new(alloc::sync::Arc<awaken_session_executor::ConfigService>, alloc::sync::Arc<dyn awaken_config_store::store::ScopedConfigRegistry>, alloc::sync::Arc<dyn awaken_session_executor::ToolCatalogSource>) -> Self
-pub async fn awaken_session_executor::ConfigPlane::publish(&self, &awaken_tenancy::ScopeId, &str) -> core::result::Result<awaken_config_store::store::StoredPublication, awaken_session_executor::PublishError>
-pub async fn awaken_session_executor::ConfigPlane::put(&self, &awaken_tenancy::ScopeId, &awaken_config_store::config::AgentConfig) -> core::result::Result<(), alloc::string::String>
-pub async fn awaken_session_executor::ConfigPlane::reconcile(&self, &awaken_tenancy::ScopeId, &str) -> core::result::Result<bool, alloc::string::String>
-pub fn awaken_session_executor::ConfigPlane::registry_for(&self, &awaken_tenancy::ScopeId) -> awaken_config_store::store::ScopedConfig<dyn awaken_config_store::store::ScopedConfigRegistry>
-pub fn awaken_session_executor::ConfigPlane::service(&self) -> &alloc::sync::Arc<awaken_session_executor::ConfigService>
-pub fn awaken_session_executor::ConfigPlane::validate(&self, &awaken_tenancy::ScopeId, &awaken_config_store::config::AgentConfig) -> core::result::Result<(), alloc::string::String>
-impl core::clone::Clone for awaken_session_executor::ConfigPlane
-pub fn awaken_session_executor::ConfigPlane::clone(&self) -> awaken_session_executor::ConfigPlane
-impl core::marker::Freeze for awaken_session_executor::ConfigPlane
-impl core::marker::Send for awaken_session_executor::ConfigPlane
-impl core::marker::Sync for awaken_session_executor::ConfigPlane
-impl core::marker::Unpin for awaken_session_executor::ConfigPlane
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_session_executor::ConfigPlane
-impl !core::panic::unwind_safe::UnwindSafe for awaken_session_executor::ConfigPlane
-pub struct awaken_session_executor::ConfigService
-impl awaken_session_executor::ConfigService
-pub async fn awaken_session_executor::ConfigService::get(&self, &dyn awaken_config_store::store::ConfigRegistry, &str) -> core::result::Result<core::option::Option<awaken_config_store::config::AgentConfig>, alloc::string::String>
-pub fn awaken_session_executor::ConfigService::installed(&self, &str) -> core::option::Option<awaken_runtime_contract::runnable::RunnableConfig>
-pub async fn awaken_session_executor::ConfigService::list(&self, &dyn awaken_config_store::store::ConfigRegistry) -> core::result::Result<alloc::vec::Vec<awaken_config_store::config::AgentConfig>, alloc::string::String>
-pub fn awaken_session_executor::ConfigService::new() -> Self
-pub async fn awaken_session_executor::ConfigService::publish(&self, &dyn awaken_config_store::store::ConfigRegistry, &str, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> core::result::Result<awaken_config_store::store::StoredPublication, awaken_session_executor::PublishError>
-pub async fn awaken_session_executor::ConfigService::put(&self, &dyn awaken_config_store::store::ConfigRegistry, &awaken_config_store::config::AgentConfig) -> core::result::Result<(), alloc::string::String>
-pub async fn awaken_session_executor::ConfigService::reconcile(&self, &dyn awaken_config_store::store::ConfigRegistry, &str, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> core::result::Result<bool, alloc::string::String>
-pub fn awaken_session_executor::ConfigService::validate(&self, &awaken_config_store::config::AgentConfig, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> core::result::Result<(), alloc::string::String>
-pub async fn awaken_session_executor::ConfigService::warm_install(&self, &dyn awaken_config_store::store::ScopedConfigRegistry, &awaken_tenancy::ScopeId) -> usize
-pub fn awaken_session_executor::ConfigService::with_model_resolver(self, alloc::sync::Arc<dyn awaken_session_executor::ModelResolver>) -> Self
-pub fn awaken_session_executor::ConfigService::with_resources(self, alloc::sync::Arc<dyn awaken_config_resolver::stores::ResourceStore>) -> Self
-impl core::default::Default for awaken_session_executor::ConfigService
-pub fn awaken_session_executor::ConfigService::default() -> awaken_session_executor::ConfigService
-impl !core::marker::Freeze for awaken_session_executor::ConfigService
-impl core::marker::Send for awaken_session_executor::ConfigService
-impl core::marker::Sync for awaken_session_executor::ConfigService
-impl core::marker::Unpin for awaken_session_executor::ConfigService
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_session_executor::ConfigService
-impl !core::panic::unwind_safe::UnwindSafe for awaken_session_executor::ConfigService
-pub struct awaken_session_executor::ConfigServiceAgentSource(pub alloc::sync::Arc<awaken_session_executor::ConfigService>)
-impl awaken_protocol_managed::routes::agents_registry::AgentConfigSource for awaken_session_executor::ConfigServiceAgentSource
-pub fn awaken_session_executor::ConfigServiceAgentSource::agent_view(&self, &str) -> core::option::Option<awaken_protocol_managed::routes::agents_registry::AgentConfigView>
-impl core::marker::Freeze for awaken_session_executor::ConfigServiceAgentSource
-impl core::marker::Send for awaken_session_executor::ConfigServiceAgentSource
-impl core::marker::Sync for awaken_session_executor::ConfigServiceAgentSource
-impl core::marker::Unpin for awaken_session_executor::ConfigServiceAgentSource
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_session_executor::ConfigServiceAgentSource
-impl !core::panic::unwind_safe::UnwindSafe for awaken_session_executor::ConfigServiceAgentSource
-pub struct awaken_session_executor::ConfigServiceReconciler
-impl awaken_session_executor::ConfigServiceReconciler
-pub fn awaken_session_executor::ConfigServiceReconciler::new(awaken_session_executor::ConfigPlane, impl core::convert::Into<awaken_tenancy::ScopeId>, alloc::vec::Vec<alloc::string::String>) -> Self
-impl awaken_session_executor::AssistantBindingReconciler for awaken_session_executor::ConfigServiceReconciler
-pub fn awaken_session_executor::ConfigServiceReconciler::reconcile<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-impl core::marker::Freeze for awaken_session_executor::ConfigServiceReconciler
-impl core::marker::Send for awaken_session_executor::ConfigServiceReconciler
-impl core::marker::Sync for awaken_session_executor::ConfigServiceReconciler
-impl core::marker::Unpin for awaken_session_executor::ConfigServiceReconciler
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_session_executor::ConfigServiceReconciler
-impl !core::panic::unwind_safe::UnwindSafe for awaken_session_executor::ConfigServiceReconciler
 pub struct awaken_session_executor::DeploymentConfig
 pub awaken_session_executor::DeploymentConfig::database_url: core::option::Option<alloc::string::String>
 pub awaken_session_executor::DeploymentConfig::disable_local_pool: bool
@@ -420,23 +357,6 @@ impl core::marker::Sync for awaken_session_executor::RemoteCoordinator
 impl core::marker::Unpin for awaken_session_executor::RemoteCoordinator
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_session_executor::RemoteCoordinator
 impl !core::panic::unwind_safe::UnwindSafe for awaken_session_executor::RemoteCoordinator
-pub struct awaken_session_executor::ResolvedModel
-pub awaken_session_executor::ResolvedModel::candidates: alloc::vec::Vec<awaken_runtime_contract::resolved::ModelBinding>
-pub awaken_session_executor::ResolvedModel::primary: awaken_runtime_contract::resolved::ModelBinding
-impl core::clone::Clone for awaken_session_executor::ResolvedModel
-pub fn awaken_session_executor::ResolvedModel::clone(&self) -> awaken_session_executor::ResolvedModel
-impl core::cmp::Eq for awaken_session_executor::ResolvedModel
-impl core::cmp::PartialEq for awaken_session_executor::ResolvedModel
-pub fn awaken_session_executor::ResolvedModel::eq(&self, &awaken_session_executor::ResolvedModel) -> bool
-impl core::fmt::Debug for awaken_session_executor::ResolvedModel
-pub fn awaken_session_executor::ResolvedModel::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_session_executor::ResolvedModel
-impl core::marker::Freeze for awaken_session_executor::ResolvedModel
-impl core::marker::Send for awaken_session_executor::ResolvedModel
-impl core::marker::Sync for awaken_session_executor::ResolvedModel
-impl core::marker::Unpin for awaken_session_executor::ResolvedModel
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_session_executor::ResolvedModel
-impl core::panic::unwind_safe::UnwindSafe for awaken_session_executor::ResolvedModel
 pub struct awaken_session_executor::SandboxChannelSource
 impl awaken_session_executor::SandboxChannelSource
 pub fn awaken_session_executor::SandboxChannelSource::new(impl core::convert::Into<std::path::PathBuf>, awaken_run_executor_acp::subprocess::AcpLaunch) -> Self
@@ -450,17 +370,6 @@ impl core::marker::Sync for awaken_session_executor::SandboxChannelSource
 impl core::marker::Unpin for awaken_session_executor::SandboxChannelSource
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_session_executor::SandboxChannelSource
 impl !core::panic::unwind_safe::UnwindSafe for awaken_session_executor::SandboxChannelSource
-pub struct awaken_session_executor::ScopedToolCatalog
-impl awaken_session_executor::ScopedToolCatalog
-pub fn awaken_session_executor::ScopedToolCatalog::new(alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>, impl core::convert::Into<awaken_tenancy::ScopeId>, alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>) -> Self
-impl awaken_session_executor::ToolCatalogSource for awaken_session_executor::ScopedToolCatalog
-pub fn awaken_session_executor::ScopedToolCatalog::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
-impl core::marker::Freeze for awaken_session_executor::ScopedToolCatalog
-impl core::marker::Send for awaken_session_executor::ScopedToolCatalog
-impl core::marker::Sync for awaken_session_executor::ScopedToolCatalog
-impl core::marker::Unpin for awaken_session_executor::ScopedToolCatalog
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_session_executor::ScopedToolCatalog
-impl core::panic::unwind_safe::UnwindSafe for awaken_session_executor::ScopedToolCatalog
 pub struct awaken_session_executor::SharedHost
 impl awaken_session_executor::SharedHost
 pub fn awaken_session_executor::SharedHost::acp_launch_observer(&self) -> alloc::sync::Arc<dyn awaken_protocol_acp::LaunchObserver>
@@ -497,7 +406,7 @@ pub fn awaken_session_executor::SharedHost::with_capture_sink(self, alloc::sync:
 pub fn awaken_session_executor::SharedHost::with_client_tools(self, std::collections::hash::set::HashSet<alloc::string::String>) -> Self
 pub fn awaken_session_executor::SharedHost::with_compaction(self, usize, usize) -> Self
 pub fn awaken_session_executor::SharedHost::with_compaction_tokens(self, u32, f64, usize) -> Self
-pub fn awaken_session_executor::SharedHost::with_config_service(self, alloc::sync::Arc<awaken_session_executor::ConfigService>) -> Self
+pub fn awaken_session_executor::SharedHost::with_config_service(self, alloc::sync::Arc<awaken_config_service::config_plane::ConfigService>) -> Self
 pub fn awaken_session_executor::SharedHost::with_delegates(self, std::collections::hash::set::HashSet<alloc::string::String>) -> Self
 pub fn awaken_session_executor::SharedHost::with_executor_provider(self, alloc::sync::Arc<dyn awaken_session_executor::ExecutorProvider>) -> Self
 pub fn awaken_session_executor::SharedHost::with_gate_override(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>) -> Self
@@ -555,15 +464,6 @@ impl core::marker::Sync for awaken_session_executor::SqliteManagedSessionReposit
 impl core::marker::Unpin for awaken_session_executor::SqliteManagedSessionRepository
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_session_executor::SqliteManagedSessionRepository
 impl core::panic::unwind_safe::UnwindSafe for awaken_session_executor::SqliteManagedSessionRepository
-pub struct awaken_session_executor::StaticToolCatalog(pub alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>)
-impl awaken_session_executor::ToolCatalogSource for awaken_session_executor::StaticToolCatalog
-pub fn awaken_session_executor::StaticToolCatalog::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
-impl core::marker::Freeze for awaken_session_executor::StaticToolCatalog
-impl core::marker::Send for awaken_session_executor::StaticToolCatalog
-impl core::marker::Sync for awaken_session_executor::StaticToolCatalog
-impl core::marker::Unpin for awaken_session_executor::StaticToolCatalog
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_session_executor::StaticToolCatalog
-impl core::panic::unwind_safe::UnwindSafe for awaken_session_executor::StaticToolCatalog
 pub struct awaken_session_executor::ThreadEgress(_)
 impl awaken_session_executor::ThreadEgress
 pub fn awaken_session_executor::ThreadEgress::denies(&self, &str) -> bool
@@ -603,28 +503,13 @@ impl core::marker::Sync for awaken_session_executor::VaultRefresher
 impl core::marker::Unpin for awaken_session_executor::VaultRefresher
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_session_executor::VaultRefresher
 impl !core::panic::unwind_safe::UnwindSafe for awaken_session_executor::VaultRefresher
-pub const awaken_session_executor::RESERVED_ADMIN_SCOPE: &str
-pub trait awaken_session_executor::AssistantBindingReconciler: core::marker::Send + core::marker::Sync
-pub fn awaken_session_executor::AssistantBindingReconciler::reconcile<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-impl awaken_session_executor::AssistantBindingReconciler for awaken_session_executor::ConfigServiceReconciler
-pub fn awaken_session_executor::ConfigServiceReconciler::reconcile<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_session_executor::ExecutorProvider: core::marker::Send + core::marker::Sync
 pub fn awaken_session_executor::ExecutorProvider::executor_for(&self, &str) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
 pub trait awaken_session_executor::GatewayExecutorFactory: core::marker::Send + core::marker::Sync
 pub fn awaken_session_executor::GatewayExecutorFactory::build(&self, &awaken_runtime_contract::model_access::ResolvedModelEndpoint) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
-pub trait awaken_session_executor::ModelResolver: core::marker::Send + core::marker::Sync
-pub fn awaken_session_executor::ModelResolver::resolve_auto(&self) -> core::result::Result<awaken_session_executor::ResolvedModel, alloc::string::String>
-pub trait awaken_session_executor::ToolCatalogSource: core::marker::Send + core::marker::Sync
-pub fn awaken_session_executor::ToolCatalogSource::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
-impl awaken_session_executor::ToolCatalogSource for awaken_session_executor::ScopedToolCatalog
-pub fn awaken_session_executor::ScopedToolCatalog::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
-impl awaken_session_executor::ToolCatalogSource for awaken_session_executor::StaticToolCatalog
-pub fn awaken_session_executor::StaticToolCatalog::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub fn awaken_session_executor::advertised_tools(&std::collections::hash::set::HashSet<alloc::string::String>, &std::collections::hash::set::HashSet<alloc::string::String>, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub fn awaken_session_executor::block_text(&[awaken_agent_contract::agent::content::ContentBlock]) -> alloc::string::String
-pub fn awaken_session_executor::capabilities_router(alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>) -> axum::routing::Router
 pub fn awaken_session_executor::commit_ingest_router(alloc::sync::Arc<awaken_session_executor::SharedHost>) -> axum::routing::Router
-pub fn awaken_session_executor::config_router(awaken_session_executor::ConfigPlane) -> axum::routing::Router
 pub fn awaken_session_executor::consent_router(alloc::sync::Arc<dyn awaken_data_subject::DataSubjectRepo>) -> axum::routing::Router
 pub fn awaken_session_executor::default_models() -> alloc::vec::Vec<awaken_session_executor::ModelEntry>
 pub fn awaken_session_executor::dispatch_transport_router(alloc::sync::Arc<awaken_session_executor::SharedHost>) -> axum::routing::Router
