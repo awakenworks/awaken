@@ -6,7 +6,7 @@
 // Run: (from e2e/)  node ag_ui_extra_e2e.mjs
 
 import assert from 'node:assert/strict';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv, streamedText } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38187);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -27,7 +27,7 @@ async function main() {
     });
     assert.equal(res.status, 200, 'non-scoped run accepted');
     const text = await res.text();
-    assert.ok(text.includes('Echo: AG-PLAIN'), 'the non-scoped run streamed the reply');
+    assert.ok(streamedText(text).includes('Echo: AG-PLAIN'), 'the non-scoped run streamed the reply');
     assert.ok(text.includes('RUN_STARTED') || text.includes('RunStarted') || text.includes('TEXT_MESSAGE'), 'AG-UI lifecycle events present');
     pass('non-scoped /v1/ag-ui run streamed a reply (run_agent, plain-string content)');
 

@@ -192,3 +192,27 @@ export function stopServer(server) {
 export function pass(msg) {
   console.log(`  ok: ${msg}`);
 }
+
+// Reassemble the assistant's text from a streamed SSE body the way a real client
+// (`useChat`, `HttpAgent`) does: concatenate the `delta` field of every `data:`
+// frame that carries one. Both wire shapes chunk the reply across many frames —
+// AI SDK `text-delta` and AG-UI `TEXT_MESSAGE_CONTENT` both use `delta` — so a
+// raw `body.includes("Echo: X")` never sees the contiguous phrase. This yields
+// the joined text to assert against instead.
+export function streamedText(body) {
+  let out = '';
+  for (const line of body.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('data:')) continue;
+    const payload = trimmed.slice(5).trim();
+    if (payload === '[DONE]') continue;
+    let frame;
+    try {
+      frame = JSON.parse(payload);
+    } catch {
+      continue; // non-JSON keep-alive / comment lines
+    }
+    if (typeof frame.delta === 'string') out += frame.delta;
+  }
+  return out;
+}
