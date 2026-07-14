@@ -57,6 +57,61 @@ async fn run_installs_and_executes_in_one_call() {
 }
 
 #[tokio::test]
+async fn per_run_model_executor_override_wins_over_the_runtime_default() {
+    // ADR-0004: a run whose context carries a `model_executor` override (e.g. a
+    // gateway-dialing executor built from its access grant) routes its inference
+    // through that executor, NOT the runtime's bound default. This is the seam a
+    // secretless worker uses to honor a per-run cloud-managed grant.
+    let runtime = Runtime::new().with_llm(Arc::new(TextLlm("DEFAULT")));
+    let config = RunnableConfig::builder("assistant")
+        .model(ModelBinding::new("demo", "stub", "stub"))
+        .build();
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ctx = RuntimeRunContext::new()
+        .with_commit(commit.clone())
+        // The per-run override: this attempt must use OVERRIDE, not DEFAULT.
+        .with_model_executor(Arc::new(TextLlm("OVERRIDE")));
+
+    let phase = runtime.run(&config, "go", ctx).await.expect("run");
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+
+    let messages = commit.committed().messages;
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.role == Role::Assistant && m.text_content() == "OVERRIDE"),
+        "the run used the per-run override executor, not the runtime default"
+    );
+    assert!(
+        !messages.iter().any(|m| m.text_content() == "DEFAULT"),
+        "the runtime's bound default executor was never invoked"
+    );
+}
+
+#[tokio::test]
+async fn without_an_override_the_run_uses_the_runtime_default() {
+    // The override is opt-in: absent it, the runtime's bound executor drives the run
+    // exactly as before (no regression for the common single-model path).
+    let runtime = Runtime::new().with_llm(Arc::new(TextLlm("DEFAULT")));
+    let config = RunnableConfig::builder("assistant")
+        .model(ModelBinding::new("demo", "stub", "stub"))
+        .build();
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ctx = RuntimeRunContext::new().with_commit(commit.clone());
+
+    runtime.run(&config, "go", ctx).await.expect("run");
+    assert!(
+        commit
+            .committed()
+            .messages
+            .iter()
+            .any(|m| m.text_content() == "DEFAULT"),
+        "the runtime default drives the run when no per-run override is set"
+    );
+}
+
+#[tokio::test]
 async fn run_to_completion_drives_an_ungated_run_without_asking() {
     // No gate → no park → `decide` is never called; the run reaches a terminal
     // phase in one shot. (The gated park→resume path is covered by the coding-agent

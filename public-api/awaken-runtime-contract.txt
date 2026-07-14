@@ -136,30 +136,6 @@ impl core::marker::Sync for awaken_runtime_contract::capability::PluginCapabilit
 impl core::marker::Unpin for awaken_runtime_contract::capability::PluginCapability
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::capability::PluginCapability
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::capability::PluginCapability
-pub struct awaken_runtime_contract::capability::PluginGovernancePolicy
-pub awaken_runtime_contract::capability::PluginGovernancePolicy::denied_plugin_ids: alloc::vec::Vec<alloc::string::String>
-pub awaken_runtime_contract::capability::PluginGovernancePolicy::deny_tool_gates: bool
-impl awaken_runtime_contract::capability::PluginGovernancePolicy
-pub fn awaken_runtime_contract::capability::PluginGovernancePolicy::permits(&self, &awaken_runtime_contract::capability::PluginCapability) -> bool
-impl core::clone::Clone for awaken_runtime_contract::capability::PluginGovernancePolicy
-pub fn awaken_runtime_contract::capability::PluginGovernancePolicy::clone(&self) -> awaken_runtime_contract::capability::PluginGovernancePolicy
-impl core::cmp::PartialEq for awaken_runtime_contract::capability::PluginGovernancePolicy
-pub fn awaken_runtime_contract::capability::PluginGovernancePolicy::eq(&self, &awaken_runtime_contract::capability::PluginGovernancePolicy) -> bool
-impl core::default::Default for awaken_runtime_contract::capability::PluginGovernancePolicy
-pub fn awaken_runtime_contract::capability::PluginGovernancePolicy::default() -> awaken_runtime_contract::capability::PluginGovernancePolicy
-impl core::fmt::Debug for awaken_runtime_contract::capability::PluginGovernancePolicy
-pub fn awaken_runtime_contract::capability::PluginGovernancePolicy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_runtime_contract::capability::PluginGovernancePolicy
-impl serde_core::ser::Serialize for awaken_runtime_contract::capability::PluginGovernancePolicy
-pub fn awaken_runtime_contract::capability::PluginGovernancePolicy::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::capability::PluginGovernancePolicy
-pub fn awaken_runtime_contract::capability::PluginGovernancePolicy::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_runtime_contract::capability::PluginGovernancePolicy
-impl core::marker::Send for awaken_runtime_contract::capability::PluginGovernancePolicy
-impl core::marker::Sync for awaken_runtime_contract::capability::PluginGovernancePolicy
-impl core::marker::Unpin for awaken_runtime_contract::capability::PluginGovernancePolicy
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::capability::PluginGovernancePolicy
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::capability::PluginGovernancePolicy
 pub struct awaken_runtime_contract::capability::RuntimeCapabilityCatalog
 pub awaken_runtime_contract::capability::RuntimeCapabilityCatalog::catalog_fingerprint: awaken_runtime_contract::resolved::CatalogFingerprint
 pub awaken_runtime_contract::capability::RuntimeCapabilityCatalog::plugins: alloc::vec::Vec<awaken_runtime_contract::capability::PluginCapability>
@@ -718,30 +694,6 @@ impl core::marker::Unpin for awaken_runtime_contract::live_inbox::LiveInboxMessa
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::live_inbox::LiveInboxMessageId
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::live_inbox::LiveInboxMessageId
 pub mod awaken_runtime_contract::llm
-pub enum awaken_runtime_contract::llm::ChatRole
-pub awaken_runtime_contract::llm::ChatRole::Assistant
-pub awaken_runtime_contract::llm::ChatRole::System
-pub awaken_runtime_contract::llm::ChatRole::Tool
-pub awaken_runtime_contract::llm::ChatRole::User
-impl core::clone::Clone for awaken_runtime_contract::llm::ChatRole
-pub fn awaken_runtime_contract::llm::ChatRole::clone(&self) -> awaken_runtime_contract::llm::ChatRole
-impl core::cmp::Eq for awaken_runtime_contract::llm::ChatRole
-impl core::cmp::PartialEq for awaken_runtime_contract::llm::ChatRole
-pub fn awaken_runtime_contract::llm::ChatRole::eq(&self, &awaken_runtime_contract::llm::ChatRole) -> bool
-impl core::fmt::Debug for awaken_runtime_contract::llm::ChatRole
-pub fn awaken_runtime_contract::llm::ChatRole::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_runtime_contract::llm::ChatRole
-impl core::marker::StructuralPartialEq for awaken_runtime_contract::llm::ChatRole
-impl serde_core::ser::Serialize for awaken_runtime_contract::llm::ChatRole
-pub fn awaken_runtime_contract::llm::ChatRole::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::llm::ChatRole
-pub fn awaken_runtime_contract::llm::ChatRole::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_runtime_contract::llm::ChatRole
-impl core::marker::Send for awaken_runtime_contract::llm::ChatRole
-impl core::marker::Sync for awaken_runtime_contract::llm::ChatRole
-impl core::marker::Unpin for awaken_runtime_contract::llm::ChatRole
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::ChatRole
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::ChatRole
 pub enum awaken_runtime_contract::llm::Error
 pub awaken_runtime_contract::llm::Error::Binding(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::ContentFiltered(alloc::string::String)
@@ -831,7 +783,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::A
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::AssistantOutput
 pub struct awaken_runtime_contract::llm::ChatMessage
 pub awaken_runtime_contract::llm::ChatMessage::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
-pub awaken_runtime_contract::llm::ChatMessage::role: awaken_runtime_contract::llm::ChatRole
+pub awaken_runtime_contract::llm::ChatMessage::role: awaken_agent_contract::agent::message::Role
 impl core::clone::Clone for awaken_runtime_contract::llm::ChatMessage
 pub fn awaken_runtime_contract::llm::ChatMessage::clone(&self) -> awaken_runtime_contract::llm::ChatMessage
 impl core::cmp::PartialEq for awaken_runtime_contract::llm::ChatMessage
@@ -894,6 +846,7 @@ impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::Chat
 pub struct awaken_runtime_contract::llm::ThreadUsage
 pub awaken_runtime_contract::llm::ThreadUsage::by_model: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_runtime_contract::llm::TokenUsage>
 impl awaken_runtime_contract::llm::ThreadUsage
+pub fn awaken_runtime_contract::llm::ThreadUsage::from_committed_state(&[awaken_agent_contract::agent::state::Command]) -> Self
 pub fn awaken_runtime_contract::llm::ThreadUsage::is_empty(&self) -> bool
 pub fn awaken_runtime_contract::llm::ThreadUsage::merge(&mut self, &awaken_runtime_contract::llm::ThreadUsage)
 pub fn awaken_runtime_contract::llm::ThreadUsage::record(&mut self, &str, awaken_runtime_contract::llm::TokenUsage)
@@ -1050,6 +1003,7 @@ pub awaken_runtime_contract::model_access::ModelAccessGrant::LocalSelfCredential
 impl awaken_runtime_contract::model_access::ModelAccessGrant
 pub fn awaken_runtime_contract::model_access::ModelAccessGrant::is_gateway(&self) -> bool
 pub fn awaken_runtime_contract::model_access::ModelAccessGrant::materialize(&self) -> awaken_runtime_contract::model_access::ResolvedModelEndpoint
+pub fn awaken_runtime_contract::model_access::ModelAccessGrant::resolve_executor<F>(&self, F) -> core::result::Result<core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>, awaken_runtime_contract::model_access::GatewayUnservable> where F: core::ops::function::FnOnce(&awaken_runtime_contract::model_access::ResolvedModelEndpoint) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
 impl core::clone::Clone for awaken_runtime_contract::model_access::ModelAccessGrant
 pub fn awaken_runtime_contract::model_access::ModelAccessGrant::clone(&self) -> awaken_runtime_contract::model_access::ModelAccessGrant
 impl core::cmp::Eq for awaken_runtime_contract::model_access::ModelAccessGrant
@@ -1070,6 +1024,25 @@ impl core::marker::Sync for awaken_runtime_contract::model_access::ModelAccessGr
 impl core::marker::Unpin for awaken_runtime_contract::model_access::ModelAccessGrant
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::model_access::ModelAccessGrant
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::model_access::ModelAccessGrant
+pub struct awaken_runtime_contract::model_access::GatewayUnservable
+impl core::clone::Clone for awaken_runtime_contract::model_access::GatewayUnservable
+pub fn awaken_runtime_contract::model_access::GatewayUnservable::clone(&self) -> awaken_runtime_contract::model_access::GatewayUnservable
+impl core::cmp::Eq for awaken_runtime_contract::model_access::GatewayUnservable
+impl core::cmp::PartialEq for awaken_runtime_contract::model_access::GatewayUnservable
+pub fn awaken_runtime_contract::model_access::GatewayUnservable::eq(&self, &awaken_runtime_contract::model_access::GatewayUnservable) -> bool
+impl core::error::Error for awaken_runtime_contract::model_access::GatewayUnservable
+impl core::fmt::Debug for awaken_runtime_contract::model_access::GatewayUnservable
+pub fn awaken_runtime_contract::model_access::GatewayUnservable::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_runtime_contract::model_access::GatewayUnservable
+pub fn awaken_runtime_contract::model_access::GatewayUnservable::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_runtime_contract::model_access::GatewayUnservable
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::model_access::GatewayUnservable
+impl core::marker::Freeze for awaken_runtime_contract::model_access::GatewayUnservable
+impl core::marker::Send for awaken_runtime_contract::model_access::GatewayUnservable
+impl core::marker::Sync for awaken_runtime_contract::model_access::GatewayUnservable
+impl core::marker::Unpin for awaken_runtime_contract::model_access::GatewayUnservable
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::model_access::GatewayUnservable
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::model_access::GatewayUnservable
 pub struct awaken_runtime_contract::model_access::ResolvedModelEndpoint
 pub awaken_runtime_contract::model_access::ResolvedModelEndpoint::base_url: core::option::Option<alloc::string::String>
 pub awaken_runtime_contract::model_access::ResolvedModelEndpoint::bearer: core::option::Option<alloc::string::String>
@@ -1116,6 +1089,8 @@ pub awaken_runtime_contract::permission::GateOutcome::Schedule::correlation_id: 
 pub awaken_runtime_contract::permission::GateOutcome::SetResult(awaken_runtime_contract::tool::ToolOutput)
 pub awaken_runtime_contract::permission::GateOutcome::Suspend
 pub awaken_runtime_contract::permission::GateOutcome::Suspend::ticket_id: alloc::string::String
+impl awaken_runtime_contract::permission::GateOutcome
+pub fn awaken_runtime_contract::permission::GateOutcome::decision_label(&self) -> &'static str
 impl core::clone::Clone for awaken_runtime_contract::permission::GateOutcome
 pub fn awaken_runtime_contract::permission::GateOutcome::clone(&self) -> awaken_runtime_contract::permission::GateOutcome
 impl core::cmp::PartialEq for awaken_runtime_contract::permission::GateOutcome
@@ -1996,6 +1971,7 @@ pub awaken_runtime_contract::runtime_context::RuntimeRunContext::cancellation: c
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::capture: awaken_runtime_contract::runtime_context::CaptureContext
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::commit: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::commit::coordinator::Coordinator>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::live_inbox: core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
+pub awaken_runtime_contract::runtime_context::RuntimeRunContext::model_executor: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::pause: core::option::Option<awaken_runtime_contract::pause::PauseSignal>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::store::thread_reader::ThreadReader>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::stream_checkpoint: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::store::stream_checkpoint::StreamCheckpointStore>>
@@ -2011,6 +1987,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_capture
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_capture_sink(self, awaken_runtime_contract::data_subject::DataSubjectId, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_commit(self, alloc::sync::Arc<dyn awaken_agent_contract::commit::coordinator::Coordinator>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_live_inbox(self, awaken_runtime_contract::live_inbox::LiveInbox) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_pause(self, awaken_runtime_contract::pause::PauseSignal) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(self, alloc::sync::Arc<dyn awaken_agent_contract::store::thread_reader::ThreadReader>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_checkpoint(self, alloc::sync::Arc<dyn awaken_agent_contract::store::stream_checkpoint::StreamCheckpointStore>) -> Self
@@ -2333,6 +2310,8 @@ pub awaken_runtime_contract::GateOutcome::Schedule::correlation_id: alloc::strin
 pub awaken_runtime_contract::GateOutcome::SetResult(awaken_runtime_contract::tool::ToolOutput)
 pub awaken_runtime_contract::GateOutcome::Suspend
 pub awaken_runtime_contract::GateOutcome::Suspend::ticket_id: alloc::string::String
+impl awaken_runtime_contract::permission::GateOutcome
+pub fn awaken_runtime_contract::permission::GateOutcome::decision_label(&self) -> &'static str
 impl core::clone::Clone for awaken_runtime_contract::permission::GateOutcome
 pub fn awaken_runtime_contract::permission::GateOutcome::clone(&self) -> awaken_runtime_contract::permission::GateOutcome
 impl core::cmp::PartialEq for awaken_runtime_contract::permission::GateOutcome
@@ -2388,6 +2367,7 @@ pub awaken_runtime_contract::ModelAccessGrant::LocalSelfCredentialed::provider_r
 impl awaken_runtime_contract::model_access::ModelAccessGrant
 pub fn awaken_runtime_contract::model_access::ModelAccessGrant::is_gateway(&self) -> bool
 pub fn awaken_runtime_contract::model_access::ModelAccessGrant::materialize(&self) -> awaken_runtime_contract::model_access::ResolvedModelEndpoint
+pub fn awaken_runtime_contract::model_access::ModelAccessGrant::resolve_executor<F>(&self, F) -> core::result::Result<core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>, awaken_runtime_contract::model_access::GatewayUnservable> where F: core::ops::function::FnOnce(&awaken_runtime_contract::model_access::ResolvedModelEndpoint) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
 impl core::clone::Clone for awaken_runtime_contract::model_access::ModelAccessGrant
 pub fn awaken_runtime_contract::model_access::ModelAccessGrant::clone(&self) -> awaken_runtime_contract::model_access::ModelAccessGrant
 impl core::cmp::Eq for awaken_runtime_contract::model_access::ModelAccessGrant
@@ -3213,6 +3193,7 @@ pub awaken_runtime_contract::RuntimeRunContext::cancellation: core::option::Opti
 pub awaken_runtime_contract::RuntimeRunContext::capture: awaken_runtime_contract::runtime_context::CaptureContext
 pub awaken_runtime_contract::RuntimeRunContext::commit: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::commit::coordinator::Coordinator>>
 pub awaken_runtime_contract::RuntimeRunContext::live_inbox: core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
+pub awaken_runtime_contract::RuntimeRunContext::model_executor: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
 pub awaken_runtime_contract::RuntimeRunContext::pause: core::option::Option<awaken_runtime_contract::pause::PauseSignal>
 pub awaken_runtime_contract::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::store::thread_reader::ThreadReader>>
 pub awaken_runtime_contract::RuntimeRunContext::stream_checkpoint: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::store::stream_checkpoint::StreamCheckpointStore>>
@@ -3228,6 +3209,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_capture
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_capture_sink(self, awaken_runtime_contract::data_subject::DataSubjectId, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_commit(self, alloc::sync::Arc<dyn awaken_agent_contract::commit::coordinator::Coordinator>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_live_inbox(self, awaken_runtime_contract::live_inbox::LiveInbox) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_pause(self, awaken_runtime_contract::pause::PauseSignal) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(self, alloc::sync::Arc<dyn awaken_agent_contract::store::thread_reader::ThreadReader>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_checkpoint(self, alloc::sync::Arc<dyn awaken_agent_contract::store::stream_checkpoint::StreamCheckpointStore>) -> Self

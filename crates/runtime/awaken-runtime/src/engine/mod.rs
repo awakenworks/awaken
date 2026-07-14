@@ -683,9 +683,18 @@ async fn drive(
     mut store: Store,
     seed_state: Vec<StateCommand>,
 ) -> Result<Checkpoint> {
-    let llm = runtime.llm().ok_or_else(|| {
-        Error::Execution("no model provider configured for this runtime".to_string())
-    })?;
+    // The per-run model executor override (ADR-0004) wins over the runtime's bound
+    // default: a run carrying a cloud-managed gateway grant is routed through a
+    // gateway-dialing executor the host built for this attempt, so a secretless
+    // worker honors the grant without a local provider credential. Absent → the
+    // runtime's session-resolved executor.
+    let llm = context
+        .model_executor
+        .clone()
+        .or_else(|| runtime.llm().cloned())
+        .ok_or_else(|| {
+            Error::Execution("no model provider configured for this runtime".to_string())
+        })?;
 
     // The attempt's durable-progress accumulator; it owns the step-commit
     // watermark invariant, so only the tail beyond a watermark is ever returned
@@ -810,7 +819,7 @@ async fn drive(
         };
         let checkpoint_ref = checkpoint_ctx.as_ref();
         let infer_turn = infer_step_turn(
-            llm,
+            &llm,
             runtime,
             resolved,
             env,
