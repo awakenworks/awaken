@@ -78,23 +78,19 @@ async fn drain(State(ctrl): State<Arc<DrainController>>) -> impl IntoResponse {
 }
 
 async fn readyz(State(ctrl): State<Arc<DrainController>>) -> impl IntoResponse {
-    if ctrl.is_draining() {
-        (StatusCode::SERVICE_UNAVAILABLE, "draining\n")
-    } else {
-        (StatusCode::OK, "ready\n")
-    }
+    awaken_server::admin::readyz(!ctrl.is_draining())
 }
 
 async fn metrics(State(ctrl): State<Arc<DrainController>>) -> impl IntoResponse {
-    let body = format!(
-        "# HELP awaken_brain_active_streams In-flight requests (dominated by long-lived streams).\n\
-         # TYPE awaken_brain_active_streams gauge\n\
-         awaken_brain_active_streams {}\n\
-         # HELP awaken_brain_draining 1 when the Brain is draining for scale-in.\n\
-         # TYPE awaken_brain_draining gauge\n\
-         awaken_brain_draining {}\n",
-        ctrl.active_streams(),
-        u8::from(ctrl.is_draining()),
+    use awaken_server::admin::prometheus_gauge;
+    let body = prometheus_gauge(
+        "awaken_brain_active_streams",
+        "In-flight requests (dominated by long-lived streams).",
+        ctrl.active_streams() as u64,
+    ) + &prometheus_gauge(
+        "awaken_brain_draining",
+        "1 when the Brain is draining for scale-in.",
+        u64::from(ctrl.is_draining()),
     );
     (StatusCode::OK, body)
 }
