@@ -4,6 +4,14 @@
 //! carries the process-local handles for one execution attempt — the stream
 //! sink, the commit coordinator, and the cancellation token (runtime-behavior.md
 //! role catalog; G2/G3). None of these may appear in `RunActivation`.
+//!
+//! This type belongs in the contract, not an implementation crate, because it is
+//! the *parameter object* of the `RunExecutor` port (`execution::RunExecutor`):
+//! every executor — native, ACP, A2A — receives one by value. Relocating it would
+//! make the contract depend on the implementation crate through its own port
+//! signature (a cycle). Its handles (including `live_inbox`) are neutral
+//! in-process mechanism, never external infrastructure — so keeping them here is
+//! a port carrying its own vocabulary, not a leak.
 
 use std::sync::Arc;
 

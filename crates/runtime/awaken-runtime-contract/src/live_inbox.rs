@@ -19,6 +19,14 @@
 //! Everything here is process-local and best-effort: entries still queued when
 //! the attempt closes are returned to the closer to route or drop, and the
 //! durable pending-input path stays the at-least-once channel for parked runs.
+//!
+//! `LiveInbox` stays in the contract as a field of `RuntimeRunContext`
+//! (`runtime_context::RuntimeRunContext`) — the parameter object of the
+//! `RunExecutor` port. Its `Mutex`/`Notify` are process-local coordination, not
+//! external infrastructure, so it is a contract citizen by virtue of that port,
+//! not machinery that leaked in. (It cannot move to the engine without either
+//! cycling the contract through its own port signature or introducing a
+//! `dyn`-inbox port, which the design deliberately avoids.)
 
 use std::collections::VecDeque;
 use std::pin::pin;
