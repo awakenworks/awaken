@@ -515,6 +515,7 @@ pub fn awaken_session_executor::SharedHost::with_config_service(self, alloc::syn
 pub fn awaken_session_executor::SharedHost::with_delegates(self, std::collections::hash::set::HashSet<alloc::string::String>) -> Self
 pub fn awaken_session_executor::SharedHost::with_executor_provider(self, alloc::sync::Arc<dyn awaken_session_executor::ExecutorProvider>) -> Self
 pub fn awaken_session_executor::SharedHost::with_gate_override(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>) -> Self
+pub fn awaken_session_executor::SharedHost::with_gateway_executor_factory(self, alloc::sync::Arc<dyn awaken_session_executor::GatewayExecutorFactory>) -> Self
 pub fn awaken_session_executor::SharedHost::with_judge(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_session_executor::SharedHost::with_memory(self, impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn awaken_session_executor::SharedHost::with_remote_a2a(self, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_protocol_a2a::client::Transport>) -> Self
@@ -607,6 +608,8 @@ impl awaken_session_executor::AssistantBindingReconciler for awaken_session_exec
 pub fn awaken_session_executor::ConfigServiceReconciler::reconcile<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_session_executor::ExecutorProvider: core::marker::Send + core::marker::Sync
 pub fn awaken_session_executor::ExecutorProvider::executor_for(&self, &str) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
+pub trait awaken_session_executor::GatewayExecutorFactory: core::marker::Send + core::marker::Sync
+pub fn awaken_session_executor::GatewayExecutorFactory::build(&self, &awaken_runtime_contract::model_access::ResolvedModelEndpoint) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
 pub trait awaken_session_executor::ModelResolver: core::marker::Send + core::marker::Sync
 pub fn awaken_session_executor::ModelResolver::resolve_auto(&self) -> core::result::Result<awaken_session_executor::ResolvedModel, alloc::string::String>
 pub trait awaken_session_executor::ToolCatalogSource: core::marker::Send + core::marker::Sync

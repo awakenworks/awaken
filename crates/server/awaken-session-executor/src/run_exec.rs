@@ -49,17 +49,41 @@ impl SharedHost {
             ctx.close_live_inbox();
             return result;
         }
-        // Fail closed: a cloud-managed gateway grant needs the mediated egress an ACP
-        // CLI in a sandbox gets. The native in-process provider path builds its
-        // `LlmExecutor` from the catalog, not the per-run grant, so it cannot honor a
-        // gateway grant — and must reject rather than degrade to local credentials,
-        // which would defeat the secret-custody the grant exists to enforce (ADR-0004).
-        // (When the native path learns to dial the grant's endpoint, this becomes a
-        // materialize-and-honor instead of a rejection.)
-        if activation.model_access.is_gateway() {
+        // A cloud-managed gateway grant (ADR-0004): materialize it and build the
+        // executor that dials the gateway with the lease token, injected as this
+        // run's per-run model executor. The real provider credential is injected at
+        // the gateway, out of this process — so a secretless worker honors the grant
+        // without a local credential. The build stays fail-closed: with no factory
+        // installed, or a dialect the factory cannot serve, we reject rather than
+        // degrade to local credentials (the custody the grant exists to enforce).
+        let gateway_executor = if activation.model_access.is_gateway() {
+            let endpoint = activation.model_access.materialize();
+            let executor = self
+                .gateway_executor_factory
+                .as_ref()
+                .and_then(|factory| factory.build(&endpoint));
+            match executor {
+                Some(executor) => Some(executor),
+                None => {
+                    return Err(HostError::bad_request(
+                        "cannot honor a cloud-managed gateway grant: no gateway egress \
+                         is configured for this runtime, or its dialect is unsupported",
+                    ));
+                }
+            }
+        } else {
+            None
+        };
+        // A gateway grant is honored only on the direct path, where the per-run model
+        // executor built above reaches the engine. The durable path enqueues and a
+        // pool worker drives the run from a context rebuilt without this override, so
+        // the grant would be silently lost — reject rather than degrade to local
+        // credentials (fail closed). This mirrors the altitude at which per-run
+        // placement is honored today (direct path only).
+        if gateway_executor.is_some() && (supersede || ctx.durable) {
             return Err(HostError::bad_request(
-                "native runtime cannot honor a cloud-managed gateway grant; \
-                 select an ACP runtime for gateway-mediated egress",
+                "a cloud-managed gateway grant currently requires the direct (non-durable) \
+                 run path; durable/worker-driven gateway egress is not yet wired",
             ));
         }
         if supersede {
@@ -80,6 +104,11 @@ impl SharedHost {
                 .context_for(&activation)
                 .await
                 .with_live_inbox(ctx.open_live_inbox());
+            // Route this run's inference through the gateway executor built from its
+            // grant (ADR-0004), overriding the session's bound model for this attempt.
+            if let Some(gateway_executor) = gateway_executor {
+                context = context.with_model_executor(gateway_executor);
+            }
             if let Some(sink) = sink {
                 context = context.with_stream_sink(sink);
             }

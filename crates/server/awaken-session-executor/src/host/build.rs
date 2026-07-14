@@ -83,6 +83,7 @@ impl SharedHost {
             completion: Arc::new(CompletionRegistry::default()),
             remote_hand: None,
             tool_executor_provider: None,
+            gateway_executor_factory: None,
             capture_sink: None,
             admin_tools: Vec::new(),
         }
@@ -391,6 +392,21 @@ impl SharedHost {
     /// self-hosted brain–hand split — or a host's own richer policy — plugs into.
     pub fn with_tool_executor_provider(mut self, provider: Arc<dyn ToolExecutorProvider>) -> Self {
         self.tool_executor_provider = Some(provider);
+        self
+    }
+
+    /// Install the cloud-managed-gateway egress builder (ADR-0004). With it, a run
+    /// carrying a `ModelAccessGrant::CloudManagedGateway` is honored natively: the
+    /// grant is materialized and `factory` builds the executor that dials the gateway
+    /// with the lease token (the real provider credential is injected at the gateway,
+    /// out of this process). Without it, a gateway grant fails closed on the native
+    /// path. This is the seam a secretless worker — or the closed awaken-cloud layer —
+    /// plugs its provider stack into; the host stays provider-agnostic.
+    pub fn with_gateway_executor_factory(
+        mut self,
+        factory: Arc<dyn crate::gateway_executor::GatewayExecutorFactory>,
+    ) -> Self {
+        self.gateway_executor_factory = Some(factory);
         self
     }
 
