@@ -353,7 +353,12 @@ export default function AgentEditorSurface() {
             </div>
             <TextField
               label={app.t("Description", "描述")}
+              hint={app.t(
+                "Shown to other agents / the orchestrator for delegation — what this agent does. Not part of the system prompt; editing it never republishes the agent.",
+                "给其他 agent / 编排器看,用于委派——说明这个 agent 做什么。不进系统提示;改它不会重新发布 agent。",
+              )}
               value={cfg.description ?? ""}
+              placeholder={app.t("Researches and summarizes technical docs", "检索并综述技术文档")}
               onChange={(e) => patch({ description: e.target.value })}
             />
             <TextField
@@ -367,6 +372,10 @@ export default function AgentEditorSurface() {
             />
             <TextAreaField
               label={app.t("System instructions", "系统指令")}
+              hint={app.t(
+                "The agent's own behavior — the system prompt it runs with. Bound-resource guidance is appended automatically at publish (see the Resources tab).",
+                "agent 自己的行为——它运行时的系统提示。绑定资源的说明会在发布时自动追加(见资源标签页)。",
+              )}
               mono
               rows={8}
               value={cfg.system ?? ""}
