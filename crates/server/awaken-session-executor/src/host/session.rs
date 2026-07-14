@@ -388,35 +388,8 @@ impl SharedHost {
 mod gateway_builder_tests {
     use std::sync::Arc;
 
-    use awaken_runtime_contract::llm::{
-        AssistantOutput, ChatRequest, ChatResponse, LlmExecutor,
-    };
-    use awaken_runtime_contract::model_access::{ModelAccessGrant, ResolvedModelEndpoint};
-
-    use crate::gateway_executor::GatewayExecutorFactory;
     use crate::host::SharedHost;
-
-    struct StubModel;
-    #[async_trait::async_trait]
-    impl LlmExecutor for StubModel {
-        async fn infer(
-            &self,
-            _r: ChatRequest,
-        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-            Ok(ChatResponse {
-                output: AssistantOutput::text("stub"),
-                usage: None,
-                stop_reason: None,
-            })
-        }
-    }
-
-    struct Factory;
-    impl GatewayExecutorFactory for Factory {
-        fn build(&self, _e: &ResolvedModelEndpoint) -> Option<Arc<dyn LlmExecutor>> {
-            Some(Arc::new(StubModel))
-        }
-    }
+    use crate::test_support::{ServingFactory, StubModel, gateway_grant};
 
     #[test]
     fn worker_gateway_builder_wraps_the_factory_or_is_none() {
@@ -427,15 +400,9 @@ mod gateway_builder_tests {
         // Factory installed → a builder that delegates to it: materializing a gateway
         // grant and running the closure yields the factory's executor.
         let host = SharedHost::new(Arc::new(StubModel), "t")
-            .with_gateway_executor_factory(Arc::new(Factory));
+            .with_gateway_executor_factory(Arc::new(ServingFactory));
         let builder = host.worker_gateway_builder().expect("a builder");
-        let endpoint = ModelAccessGrant::CloudManagedGateway {
-            gateway_base_url: "https://gw.internal".into(),
-            dialect: "anthropic".into(),
-            model_ref: "claude".into(),
-            lease_token: "lease".into(), // awaken-allow: secret
-        }
-        .materialize();
+        let endpoint = gateway_grant().materialize();
         assert!(builder(&endpoint).is_some(), "the builder delegates to the factory");
     }
 }

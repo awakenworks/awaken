@@ -98,7 +98,49 @@ impl ModelAccessGrant {
     pub fn is_gateway(&self) -> bool {
         matches!(self, Self::CloudManagedGateway { .. })
     }
+
+    /// Resolve this grant to a per-run model executor, given a `build` that dials a
+    /// materialized gateway endpoint (ADR-0004). The single place the local-vs-gateway
+    /// fail-closed decision lives, so the direct path and the durable worker path
+    /// share one implementation rather than each re-deriving it:
+    ///
+    /// - `Ok(None)` — a local grant; the caller uses the runtime's bound executor.
+    /// - `Ok(Some(executor))` — a gateway grant `build` could serve.
+    /// - `Err(GatewayUnservable)` — a gateway grant `build` could NOT serve (no builder
+    ///   installed, or a dialect it cannot dial). The caller fails closed (never
+    ///   degrading to local credentials), mapping this to its own error type.
+    pub fn resolve_executor<F>(
+        &self,
+        build: F,
+    ) -> Result<Option<std::sync::Arc<dyn crate::llm::LlmExecutor>>, GatewayUnservable>
+    where
+        F: FnOnce(&ResolvedModelEndpoint) -> Option<std::sync::Arc<dyn crate::llm::LlmExecutor>>,
+    {
+        if !self.is_gateway() {
+            return Ok(None);
+        }
+        let endpoint = self.materialize();
+        build(&endpoint).map(Some).ok_or(GatewayUnservable)
+    }
 }
+
+/// A cloud-managed gateway grant could not be honored — no egress builder is
+/// installed, or its dialect is one the builder cannot dial. Callers fail closed on
+/// this (rejecting the run) rather than degrading to local credentials, so the
+/// secret custody the grant exists to enforce holds (ADR-0004).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GatewayUnservable;
+
+impl std::fmt::Display for GatewayUnservable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "cannot honor a cloud-managed gateway grant: no gateway egress is configured, \
+             or its dialect is unsupported",
+        )
+    }
+}
+
+impl std::error::Error for GatewayUnservable {}
 
 /// A materialized inference endpoint the runtime dials. `bearer` is opaque
 /// handshake material (a lease token, or `None` when local config supplies creds).
@@ -168,6 +210,45 @@ mod tests {
         assert_eq!(ep.base_url.as_deref(), Some("https://gw.internal"));
         assert_eq!(ep.bearer.as_deref(), Some("lease-abc")); // lease, not a key
         assert_eq!(ep.dialect.as_deref(), Some("AnthropicMessages"));
+    }
+
+    #[test]
+    fn resolve_executor_is_the_shared_fail_closed_decision() {
+        use std::sync::Arc;
+        struct M;
+        #[async_trait::async_trait]
+        impl crate::llm::LlmExecutor for M {
+            async fn infer(
+                &self,
+                _r: crate::llm::ChatRequest,
+            ) -> crate::llm::Result<crate::llm::ChatResponse> {
+                unreachable!()
+            }
+        }
+        let gw = ModelAccessGrant::CloudManagedGateway {
+            gateway_base_url: "https://gw".into(),
+            dialect: "anthropic".into(),
+            model_ref: "m".into(),
+            lease_token: "l".into(), // awaken-allow: secret
+        };
+        // Local grant → None (use the bound executor); `build` is never called.
+        assert!(
+            ModelAccessGrant::default()
+                .resolve_executor(|_| unreachable!("local never builds"))
+                .unwrap()
+                .is_none()
+        );
+        // Gateway grant + a serving builder → Some.
+        assert!(
+            gw.resolve_executor(|_ep| Some(Arc::new(M) as Arc<dyn crate::llm::LlmExecutor>))
+                .unwrap()
+                .is_some()
+        );
+        // Gateway grant + a builder that cannot serve → fail closed.
+        assert!(matches!(
+            gw.resolve_executor(|_ep| None),
+            Err(GatewayUnservable)
+        ));
     }
 
     #[test]
