@@ -10,6 +10,17 @@
 //! self-hosted environment enqueues as `session` work; `claim` leases the oldest
 //! queued item only when none is active in the environment (the open-tier
 //! single-worker cap).
+//!
+//! This is deliberately **not** merged with the run-ingress `DispatchQueue`
+//! (`awaken-run-ingress-contract`): different bounded contexts. `DispatchQueue`
+//! dispatches an internal *run* (`RunExecutionRequest` + pending-input inbox/outbox,
+//! sandbox binding, supersede-by-epoch, dead-letters) to a db-less worker we own;
+//! this `WorkQueue` assigns a *session* to an external, Anthropic-SDK-compatible
+//! self-hosted worker (`poll → ack → heartbeat → stop`). Payloads, lease verbs, and
+//! protocol faces don't align, so a shared "leased queue" trait would be speculative
+//! abstraction. The redundancy the design targeted — the former in-memory *stub* —
+//! is gone, replaced by durable sqlite/postgres backends at parity, not by folding
+//! two unlike aggregates into one.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;

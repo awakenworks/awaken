@@ -81,6 +81,33 @@ impl EnvItem {
     pub fn is_self_hosted(&self) -> bool {
         self.config.get("type").and_then(Value::as_str) == Some("self_hosted")
     }
+
+    /// Apply an [`EnvUpdate`] in place: present fields replace, a `metadata` key
+    /// mapped to `null` deletes it. One patch definition shared by every backend
+    /// (in-memory, sqlite, postgres) so the merge semantics can never drift.
+    pub fn apply(&mut self, patch: EnvUpdate) {
+        if let Some(name) = patch.name {
+            self.name = name;
+        }
+        if let Some(description) = patch.description {
+            self.description = description;
+        }
+        if let Some(config) = patch.config.filter(|v| !v.is_null()) {
+            self.config = config;
+        }
+        if let Some(md) = patch.metadata {
+            for (k, v) in md {
+                match v {
+                    Some(s) => {
+                        self.metadata.insert(k, s);
+                    }
+                    None => {
+                        self.metadata.remove(&k);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// A metadata/config update patch: present fields replace; a `metadata` key mapped
@@ -185,27 +212,7 @@ impl EnvRegistry for InMemoryEnvRegistry {
     async fn update(&self, id: &str, patch: EnvUpdate) -> Option<EnvItem> {
         let mut envs = self.envs.lock().unwrap();
         let item = envs.get_mut(id)?;
-        if let Some(name) = patch.name {
-            item.name = name;
-        }
-        if let Some(description) = patch.description {
-            item.description = description;
-        }
-        if let Some(config) = patch.config.filter(|v| !v.is_null()) {
-            item.config = config;
-        }
-        if let Some(md) = patch.metadata {
-            for (k, v) in md {
-                match v {
-                    Some(s) => {
-                        item.metadata.insert(k, s);
-                    }
-                    None => {
-                        item.metadata.remove(&k);
-                    }
-                }
-            }
-        }
+        item.apply(patch);
         Some(item.clone())
     }
 

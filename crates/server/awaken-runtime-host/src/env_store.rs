@@ -92,31 +92,6 @@ fn pg_row(row: &PgRow) -> EnvItem {
     )
 }
 
-/// Apply an [`EnvUpdate`] to an item in place (shared by both backends).
-fn apply_patch(item: &mut EnvItem, patch: EnvUpdate) {
-    if let Some(name) = patch.name {
-        item.name = name;
-    }
-    if let Some(description) = patch.description {
-        item.description = description;
-    }
-    if let Some(config) = patch.config.filter(|v| !v.is_null()) {
-        item.config = config;
-    }
-    if let Some(md) = patch.metadata {
-        for (k, v) in md {
-            match v {
-                Some(s) => {
-                    item.metadata.insert(k, s);
-                }
-                None => {
-                    item.metadata.remove(&k);
-                }
-            }
-        }
-    }
-}
-
 /// SQLite persistence for the environment registry.
 pub struct SqliteEnvRegistry {
     conn: Arc<Mutex<Connection>>,
@@ -226,7 +201,7 @@ impl EnvRegistry for SqliteEnvRegistry {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .expect("begin immediate");
         let mut item = Self::read(&tx, id)?;
-        apply_patch(&mut item, patch);
+        item.apply(patch);
         tx.execute(
             "UPDATE env_registry_env SET name = ?1, description = ?2, metadata_json = ?3, \
              config_json = ?4 WHERE env_id = ?5",
@@ -366,7 +341,7 @@ impl EnvRegistry for PostgresEnvRegistry {
 
     async fn update(&self, id: &str, patch: EnvUpdate) -> Option<EnvItem> {
         let mut item = self.read(id).await?;
-        apply_patch(&mut item, patch);
+        item.apply(patch);
         sqlx::query(
             "UPDATE env_registry_env SET name = $1, description = $2, metadata_json = $3, \
              config_json = $4 WHERE env_id = $5",
