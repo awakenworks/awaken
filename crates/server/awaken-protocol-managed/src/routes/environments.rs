@@ -11,18 +11,15 @@
 //! queue is one in-process store. Every new environment is seeded with one
 //! `healthcheck` work item so the queue is exercisable end to end.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-use awaken_provisioning_contract::NetworkPolicy;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde_json::{Value, json};
+use serde_json::json;
 
+use crate::env_registry::{EnvRegistry, EnvUpdate, InMemoryEnvRegistry};
 use crate::routes::ManagedJson;
 use crate::types::environment::{
     DeletedEnvironment, Environment, EnvironmentCreateParams, EnvironmentUpdateParams, Work,
@@ -31,80 +28,18 @@ use crate::types::environment::{
 use crate::types::{ErrorResponse, Page, PageQuery, paginate};
 use crate::work_queue::{InMemoryWorkQueue, WorkQueue};
 
-const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
-
-#[derive(Clone)]
-struct EnvRecord {
-    name: String,
-    description: String,
-    metadata: BTreeMap<String, String>,
-    /// `BetaCloudConfig | BetaSelfHostedConfig` (defaults to `{type:self_hosted}`).
-    config: Value,
-    archived_at: Option<String>,
-}
-
-impl EnvRecord {
-    /// Project to the official `BetaEnvironment` shape. The ownership coordinate
-    /// (organization / workspace) is credential-implicit and never a data-plane
-    /// field, so the environment carries no `scope` — workspace scoping is enforced
-    /// by the authz layer from the credential, and any awaken tenancy (Project) is
-    /// an ingress concern (`/projects/{slug}/…`), not part of this object.
-    fn project(&self, id: &str) -> Environment {
-        Environment {
-            id: id.to_string(),
-            object_type: "environment",
-            archived_at: self.archived_at.clone(),
-            created_at: OBJECT_AT.to_string(),
-            updated_at: OBJECT_AT.to_string(),
-            name: self.name.clone(),
-            description: self.description.clone(),
-            metadata: self.metadata.clone(),
-            config: self.config.clone(),
-        }
-    }
-
-    /// Map this environment's Anthropic `BetaEnvironment.networking` wire config
-    /// onto the neutral [`NetworkPolicy`] the sandbox understands (the ACL edge):
-    /// `unrestricted → Unrestricted`, `limited{hosts} → Allowlist`, `none → None`.
-    /// Absent networking (incl. `self_hosted`) or an unknown type is `Unrestricted`
-    /// — the host network is shared unless a policy explicitly restricts it.
-    fn network_policy(&self) -> NetworkPolicy {
-        let Some(net) = self.config.get("networking") else {
-            return NetworkPolicy::Unrestricted;
-        };
-        match net.get("type").and_then(Value::as_str) {
-            Some("none") => NetworkPolicy::None,
-            Some("limited") => {
-                let hosts = net
-                    .get("allowed_hosts")
-                    .and_then(Value::as_array)
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|h| h.as_str().map(str::to_string))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                NetworkPolicy::Allowlist { hosts }
-            }
-            _ => NetworkPolicy::Unrestricted,
-        }
-    }
-}
-
-/// The environments registry + the work-queue port. The registry stays in-process
-/// (env config is small and re-derivable); the work queue is behind [`WorkQueue`]
-/// so a durable backend serves standalone and distributed deployments unchanged.
+/// The self-hosted environment registry + work queue, both behind ports so a
+/// durable backend (sqlite/postgres) serves standalone and distributed deployments
+/// unchanged; the default is in-memory.
 pub struct EnvironmentState {
-    envs: Mutex<BTreeMap<String, EnvRecord>>,
-    env_seq: AtomicU64,
+    envs: Arc<dyn EnvRegistry>,
     work: Arc<dyn WorkQueue>,
 }
 
 impl Default for EnvironmentState {
     fn default() -> Self {
         Self {
-            envs: Mutex::default(),
-            env_seq: AtomicU64::default(),
+            envs: Arc::new(InMemoryEnvRegistry::new()),
             work: Arc::new(InMemoryWorkQueue::new()),
         }
     }
@@ -116,44 +51,36 @@ impl EnvironmentState {
         Self::default()
     }
 
-    /// Install a durable work queue (sqlite/postgres) in place of the in-memory
-    /// default; the same routes then serve a standalone or distributed deployment.
+    /// Install durable registry + work-queue backends (sqlite/postgres) in place of
+    /// the in-memory defaults; the same routes then serve any deployment mode.
     #[must_use]
-    pub fn with_work_queue(work: Arc<dyn WorkQueue>) -> Self {
-        Self {
-            envs: Mutex::default(),
-            env_seq: AtomicU64::default(),
-            work,
-        }
+    pub fn with_stores(envs: Arc<dyn EnvRegistry>, work: Arc<dyn WorkQueue>) -> Self {
+        Self { envs, work }
     }
 
     /// Whether the local bwrap sandbox must deny egress for `env_id`. bwrap is a
-    /// binary (on/off) enforcer, so any restricted policy collapses to full deny:
-    /// `limited` (an allowlist bwrap cannot honor → fails closed) and `none` deny;
+    /// binary (on/off) enforcer, so any restricted policy collapses to full deny;
     /// `unrestricted`, absent networking (incl. `self_hosted`), or an unknown
     /// environment share the host network.
-    #[must_use]
-    pub fn deny_egress(&self, env_id: &str) -> bool {
-        let envs = self.envs.lock().unwrap();
-        envs.get(env_id)
+    pub async fn deny_egress(&self, env_id: &str) -> bool {
+        self.envs
+            .get(env_id)
+            .await
             .is_some_and(|rec| rec.network_policy().is_restricted())
     }
 
     /// Whether `env_id` is a self-hosted environment. Sessions assigned to one are
-    /// dispatched through the work queue for an external worker to run (rather than
-    /// executed by Anthropic's — here the local — managed runtime). Unknown envs and
-    /// the default `env_local` are not self-hosted.
-    #[must_use]
-    pub fn is_self_hosted(&self, env_id: &str) -> bool {
-        self.envs.lock().unwrap().get(env_id).is_some_and(|rec| {
-            rec.config.get("type").and_then(Value::as_str) == Some("self_hosted")
-        })
+    /// dispatched through the work queue for an external worker to run.
+    pub async fn is_self_hosted(&self, env_id: &str) -> bool {
+        self.envs
+            .get(env_id)
+            .await
+            .is_some_and(|rec| rec.is_self_hosted())
     }
 
     /// Enqueue a `session` work item for `session_id` on `env_id`'s queue — the way
-    /// the control plane enqueues a session assigned to a self-hosted environment
-    /// (`BetaSessionWorkData`), so a worker polling the environment can claim and run
-    /// it. Returns the new work id.
+    /// the control plane dispatches a session assigned to a self-hosted environment,
+    /// so a worker polling the environment can claim and run it. Returns the work id.
     pub async fn enqueue_session_work(&self, env_id: &str, session_id: &str) -> String {
         self.work.enqueue_session(env_id, session_id).await
     }
@@ -206,43 +133,44 @@ async fn create_env(
         .config
         .filter(|v| !v.is_null())
         .unwrap_or_else(|| json!({ "type": "self_hosted" }));
-    let record = EnvRecord {
-        name: params.name,
-        description: params.description.unwrap_or_default(),
-        metadata: params.metadata,
-        config,
-        // No `scope` on the wire: ownership is credential-implicit (authz enforces
-        // the workspace from the credential) and any awaken tenancy is an ingress
-        // concern — a `scope` sent in the body is ignored, like any non-official field.
-        archived_at: None,
-    };
-    let n = state.env_seq.fetch_add(1, Ordering::SeqCst);
-    let id = format!("env_{n:016}");
+    // No `scope` on the wire: ownership is credential-implicit (authz enforces the
+    // workspace) and any awaken tenancy is an ingress concern.
+    let item = state
+        .envs
+        .create(
+            params.name,
+            params.description.unwrap_or_default(),
+            params.metadata,
+            config,
+        )
+        .await;
     // Seed one healthcheck work item so the queue is exercisable end to end.
-    state.work.enqueue_healthcheck(&id).await;
-    let projected = record.project(&id);
-    state.envs.lock().unwrap().insert(id, record);
-    Ok(Json(projected))
+    state.work.enqueue_healthcheck(&item.id).await;
+    Ok(Json(item.project()))
 }
 
 async fn retrieve_env(
     State(state): State<Arc<EnvironmentState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Environment>, WireError> {
-    let envs = state.envs.lock().unwrap();
-    let record = envs.get(&id).ok_or_else(|| not_found("environment"))?;
-    Ok(Json(record.project(&id)))
+    let item = state
+        .envs
+        .get(&id)
+        .await
+        .ok_or_else(|| not_found("environment"))?;
+    Ok(Json(item.project()))
 }
 
 async fn list_envs(
     State(state): State<Arc<EnvironmentState>>,
     Query(page): Query<PageQuery>,
 ) -> Json<Page<Environment>> {
-    let envs = state.envs.lock().unwrap();
-    let data: Vec<Environment> = envs
+    let data: Vec<Environment> = state
+        .envs
+        .list_active()
+        .await
         .iter()
-        .filter(|(_, e)| e.archived_at.is_none())
-        .map(|(id, e)| e.project(id))
+        .map(|e| e.project())
         .collect();
     Json(paginate(data, &page, |e| e.id.as_str()))
 }
@@ -252,38 +180,25 @@ async fn update_env(
     Path(id): Path<String>,
     ManagedJson(params): ManagedJson<EnvironmentUpdateParams>,
 ) -> Result<Json<Environment>, WireError> {
-    let mut envs = state.envs.lock().unwrap();
-    let record = envs.get_mut(&id).ok_or_else(|| not_found("environment"))?;
-    if let Some(name) = params.name {
-        record.name = name;
-    }
-    if let Some(description) = params.description {
-        record.description = description;
-    }
-    if let Some(config) = params.config.filter(|v| !v.is_null()) {
-        record.config = config;
-    }
-    if let Some(patch) = params.metadata {
-        // A `null` value removes the key; a string upserts it.
-        for (k, v) in patch {
-            match v {
-                Some(s) => {
-                    record.metadata.insert(k, s);
-                }
-                None => {
-                    record.metadata.remove(&k);
-                }
-            }
-        }
-    }
-    Ok(Json(record.project(&id)))
+    let patch = EnvUpdate {
+        name: params.name,
+        description: params.description,
+        config: params.config,
+        metadata: params.metadata,
+    };
+    let item = state
+        .envs
+        .update(&id, patch)
+        .await
+        .ok_or_else(|| not_found("environment"))?;
+    Ok(Json(item.project()))
 }
 
 async fn delete_env(
     State(state): State<Arc<EnvironmentState>>,
     Path(id): Path<String>,
 ) -> Result<Json<DeletedEnvironment>, WireError> {
-    if state.envs.lock().unwrap().remove(&id).is_none() {
+    if !state.envs.delete(&id).await {
         return Err(not_found("environment"));
     }
     state.work.remove_env(&id).await;
@@ -297,16 +212,18 @@ async fn archive_env(
     State(state): State<Arc<EnvironmentState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Environment>, WireError> {
-    let mut envs = state.envs.lock().unwrap();
-    let record = envs.get_mut(&id).ok_or_else(|| not_found("environment"))?;
-    record.archived_at = Some(OBJECT_AT.to_string());
-    Ok(Json(record.project(&id)))
+    let item = state
+        .envs
+        .archive(&id)
+        .await
+        .ok_or_else(|| not_found("environment"))?;
+    Ok(Json(item.project()))
 }
 
 // ---- Work routes -----------------------------------------------------------
 
-fn require_env(state: &EnvironmentState, id: &str) -> Result<(), WireError> {
-    if state.envs.lock().unwrap().contains_key(id) {
+async fn require_env(state: &EnvironmentState, id: &str) -> Result<(), WireError> {
+    if state.envs.exists(id).await {
         Ok(())
     } else {
         Err(not_found("environment"))
@@ -319,7 +236,7 @@ async fn list_work(
     Path(id): Path<String>,
     Query(page): Query<PageQuery>,
 ) -> Result<Json<Page<Work>>, WireError> {
-    require_env(&state, &id)?;
+    require_env(&state, &id).await?;
     let data: Vec<Work> = state
         .work
         .list(&id)
@@ -337,7 +254,7 @@ async fn poll_work(
     State(state): State<Arc<EnvironmentState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Option<Work>>, WireError> {
-    require_env(&state, &id)?;
+    require_env(&state, &id).await?;
     Ok(Json(state.work.claim(&id).await.map(|w| w.project())))
 }
 
@@ -346,7 +263,7 @@ async fn work_stats(
     State(state): State<Arc<EnvironmentState>>,
     Path(id): Path<String>,
 ) -> Result<Json<WorkQueueStats>, WireError> {
-    require_env(&state, &id)?;
+    require_env(&state, &id).await?;
     Ok(Json(state.work.stats(&id).await))
 }
 
@@ -354,7 +271,7 @@ async fn retrieve_work(
     State(state): State<Arc<EnvironmentState>>,
     Path((id, wid)): Path<(String, String)>,
 ) -> Result<Json<Work>, WireError> {
-    require_env(&state, &id)?;
+    require_env(&state, &id).await?;
     let work = state
         .work
         .get(&id, &wid)
@@ -368,7 +285,7 @@ async fn update_work(
     Path((id, wid)): Path<(String, String)>,
     ManagedJson(params): ManagedJson<WorkUpdateParams>,
 ) -> Result<Json<Work>, WireError> {
-    require_env(&state, &id)?;
+    require_env(&state, &id).await?;
     let work = state
         .work
         .update_metadata(&id, &wid, params.metadata.unwrap_or_default())
@@ -382,7 +299,7 @@ async fn ack_work(
     State(state): State<Arc<EnvironmentState>>,
     Path((id, wid)): Path<(String, String)>,
 ) -> Result<Json<Work>, WireError> {
-    require_env(&state, &id)?;
+    require_env(&state, &id).await?;
     let work = state
         .work
         .ack(&id, &wid)
@@ -396,7 +313,7 @@ async fn heartbeat_work(
     State(state): State<Arc<EnvironmentState>>,
     Path((id, wid)): Path<(String, String)>,
 ) -> Result<Json<WorkHeartbeat>, WireError> {
-    require_env(&state, &id)?;
+    require_env(&state, &id).await?;
     let hb = state
         .work
         .heartbeat(&id, &wid)
@@ -410,7 +327,7 @@ async fn stop_work(
     State(state): State<Arc<EnvironmentState>>,
     Path((id, wid)): Path<(String, String)>,
 ) -> Result<Json<Work>, WireError> {
-    require_env(&state, &id)?;
+    require_env(&state, &id).await?;
     let work = state
         .work
         .stop(&id, &wid)
@@ -421,62 +338,34 @@ async fn stop_work(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
-    fn env_with(config: Value) -> EnvRecord {
-        EnvRecord {
-            name: "e".into(),
-            description: String::new(),
-            metadata: BTreeMap::new(),
-            config,
-            archived_at: None,
-        }
-    }
-
-    #[test]
-    fn wire_networking_maps_to_neutral_policy_and_egress() {
-        // unrestricted → shares host network
-        let open = env_with(json!({ "networking": { "type": "unrestricted" } }));
-        assert_eq!(open.network_policy(), NetworkPolicy::Unrestricted);
-        assert!(!open.network_policy().is_restricted());
-
-        // limited{allowed_hosts} → typed Allowlist, denies under bwrap (fail-closed)
-        let limited = env_with(json!({
-            "networking": { "type": "limited", "allowed_hosts": ["api.anthropic.com"] }
-        }));
-        assert_eq!(
-            limited.network_policy(),
-            NetworkPolicy::Allowlist {
-                hosts: vec!["api.anthropic.com".to_string()],
-            }
-        );
-        assert!(limited.network_policy().is_restricted());
-
-        // none → no egress
-        let none = env_with(json!({ "networking": { "type": "none" } }));
-        assert_eq!(none.network_policy(), NetworkPolicy::None);
-        assert!(none.network_policy().is_restricted());
-
-        // absent networking / self_hosted / unknown → Unrestricted (shares host)
-        let self_hosted = env_with(json!({ "type": "self_hosted" }));
-        assert_eq!(self_hosted.network_policy(), NetworkPolicy::Unrestricted);
-        assert!(!self_hosted.network_policy().is_restricted());
-    }
-
-    #[test]
-    fn deny_egress_reads_the_typed_policy_per_environment() {
+    #[tokio::test]
+    async fn deny_egress_reads_the_typed_policy_per_environment() {
         let state = EnvironmentState::new();
-        state.envs.lock().unwrap().insert(
-            "env_open".into(),
-            env_with(json!({ "networking": { "type": "unrestricted" } })),
-        );
-        state.envs.lock().unwrap().insert(
-            "env_closed".into(),
-            env_with(json!({ "networking": { "type": "none" } })),
-        );
-        assert!(!state.deny_egress("env_open"));
-        assert!(state.deny_egress("env_closed"));
+        let open = state
+            .envs
+            .create(
+                "o".into(),
+                String::new(),
+                BTreeMap::new(),
+                json!({ "networking": { "type": "unrestricted" } }),
+            )
+            .await;
+        let closed = state
+            .envs
+            .create(
+                "c".into(),
+                String::new(),
+                BTreeMap::new(),
+                json!({ "networking": { "type": "none" } }),
+            )
+            .await;
+        assert!(!state.deny_egress(&open.id).await);
+        assert!(state.deny_egress(&closed.id).await);
         // Unknown environment shares the host network (no record → false).
-        assert!(!state.deny_egress("env_missing"));
+        assert!(!state.deny_egress("env_missing").await);
     }
 }
