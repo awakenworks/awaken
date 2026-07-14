@@ -34,6 +34,7 @@ impl ThreadCommit {
     /// `(messages, phase, state, waiting)` becomes a `ThreadCommit`, so the native
     /// loop and the ACP/A2A projected executors emit the same fact trail.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn assemble(
         thread_id: crate::agent::thread::Id,
         run_id: crate::agent::run::Id,

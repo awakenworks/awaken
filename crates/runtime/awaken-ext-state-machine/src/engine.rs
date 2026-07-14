@@ -282,7 +282,7 @@ fn emit_op(machine: &str, key: &str, emit: &Emit, tool_args: &Value) -> AdvanceO
         target: emit.target,
         content: emit.content.render_lossy(tool_args),
         cooldown_turns: emit.cooldown_turns,
-        role: emit.role.clone(),
+        role: emit.role,
     }
 }
 

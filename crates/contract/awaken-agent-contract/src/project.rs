@@ -198,7 +198,7 @@ pub fn project_history(messages: &[Message], sink: &mut impl HistorySink) {
                 if text_is_empty(&message.content) {
                     continue;
                 }
-                sink.user_or_system(&message.id.0, message.role.clone(), &message.content);
+                sink.user_or_system(&message.id.0, message.role, &message.content);
             }
             Role::Assistant => {
                 let tools: Vec<ToolUseRef<'_>> = message
