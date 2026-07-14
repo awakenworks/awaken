@@ -452,4 +452,94 @@ mod tests {
         assert!(!r.delete(&e.id).await, "second delete is false");
         assert!(!r.exists(&e.id).await);
     }
+
+    #[tokio::test]
+    async fn file_open_and_pg_connect_entry_points() {
+        let dir = std::env::temp_dir().join(format!("env-cov-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("env.db");
+        let r = SqliteEnvRegistry::open(path.to_str().unwrap()).expect("open file db");
+        let e = r
+            .create("e".into(), String::new(), BTreeMap::new(), json!({}))
+            .await;
+        assert!(r.exists(&e.id).await);
+        std::fs::remove_dir_all(&dir).ok();
+        if let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL")
+            && let Ok(r) = PostgresEnvRegistry::connect(&url).await
+        {
+            let e = r
+                .create("c".into(), String::new(), BTreeMap::new(), json!({}))
+                .await;
+            assert!(r.exists(&e.id).await);
+            r.delete(&e.id).await;
+        }
+    }
+
+    /// Live Postgres parity over the same portable bundle. Skips when no Postgres is
+    /// reachable (`AWAKEN_TEST_DATABASE_URL`), isolated in its own schema.
+    #[tokio::test]
+    async fn postgres_parity_over_a_live_db() {
+        use sqlx::Executor;
+        use sqlx::postgres::{PgPool, PgPoolOptions};
+
+        let url = std::env::var("AWAKEN_TEST_DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://postgres:pw@127.0.0.1:5455/cov".to_string());
+        let Ok(admin) = PgPool::connect(&url).await else {
+            println!("[skip] no Postgres reachable");
+            return;
+        };
+        let _ = admin
+            .execute("DROP SCHEMA IF EXISTS t_env_registry CASCADE")
+            .await;
+        admin
+            .execute("CREATE SCHEMA t_env_registry")
+            .await
+            .expect("schema");
+        admin.close().await;
+        let pool = PgPoolOptions::new()
+            .after_connect(|conn, _| {
+                Box::pin(async move {
+                    conn.execute("SET search_path = t_env_registry").await?;
+                    Ok(())
+                })
+            })
+            .connect(&url)
+            .await
+            .expect("schema pool");
+        let r = PostgresEnvRegistry::with_pool(pool).await.expect("store");
+
+        let e = r
+            .create(
+                "prod".into(),
+                "d".into(),
+                BTreeMap::new(),
+                json!({"networking":{"type":"none"}}),
+            )
+            .await;
+        assert!(r.exists(&e.id).await);
+        assert_eq!(r.get(&e.id).await.expect("get").name, "prod");
+        assert_eq!(r.list_active().await.len(), 1);
+        let up = r
+            .update(
+                &e.id,
+                EnvUpdate {
+                    name: Some("renamed".into()),
+                    metadata: Some(BTreeMap::from([("t".into(), Some("x".into()))])),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("update");
+        assert_eq!(up.name, "renamed");
+        assert!(up.network_policy().is_restricted(), "config round-trips");
+        assert_eq!(up.metadata.get("t").map(String::as_str), Some("x"));
+        r.archive(&e.id).await.expect("archive");
+        assert!(
+            r.list_active().await.is_empty(),
+            "archived drops from active"
+        );
+        assert!(r.get(&e.id).await.is_some(), "still retrievable");
+        assert!(r.delete(&e.id).await);
+        assert!(!r.delete(&e.id).await);
+    }
 }

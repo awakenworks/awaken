@@ -675,4 +675,93 @@ mod tests {
         let ids: Vec<String> = q.list("e").await.into_iter().map(|w| w.id).collect();
         assert_eq!(ids, vec![a, b]);
     }
+
+    #[tokio::test]
+    async fn file_open_and_pg_connect_entry_points() {
+        // The file-backed `open` (not just `open_in_memory`).
+        let dir = std::env::temp_dir().join(format!("wq-cov-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wq.db");
+        let q = SqliteWorkQueue::open(path.to_str().unwrap()).expect("open file db");
+        let id = q.enqueue_session("e", "s").await;
+        assert!(q.get("e", &id).await.is_some());
+        std::fs::remove_dir_all(&dir).ok();
+        // The `connect(url)` path over a live Postgres (skips when unreachable).
+        if let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL")
+            && let Ok(q) = PostgresWorkQueue::connect(&url).await
+        {
+            let id = q.enqueue_healthcheck("cov_env").await;
+            assert!(q.get("cov_env", &id).await.is_some());
+            q.remove_env("cov_env").await;
+        }
+    }
+
+    /// Live Postgres parity over the same portable bundle. Skips when no Postgres is
+    /// reachable (`AWAKEN_TEST_DATABASE_URL`), isolated in its own schema.
+    #[tokio::test]
+    async fn postgres_parity_over_a_live_db() {
+        use sqlx::Executor;
+        use sqlx::postgres::{PgPool, PgPoolOptions};
+
+        let url = std::env::var("AWAKEN_TEST_DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://postgres:pw@127.0.0.1:5455/cov".to_string());
+        let Ok(admin) = PgPool::connect(&url).await else {
+            println!("[skip] no Postgres reachable");
+            return;
+        };
+        let _ = admin
+            .execute("DROP SCHEMA IF EXISTS t_work_queue CASCADE")
+            .await;
+        admin
+            .execute("CREATE SCHEMA t_work_queue")
+            .await
+            .expect("schema");
+        admin.close().await;
+        let pool = PgPoolOptions::new()
+            .after_connect(|conn, _| {
+                Box::pin(async move {
+                    conn.execute("SET search_path = t_work_queue").await?;
+                    Ok(())
+                })
+            })
+            .connect(&url)
+            .await
+            .expect("schema pool");
+        let q = PostgresWorkQueue::with_pool(pool).await.expect("store");
+
+        let hc = q.enqueue_healthcheck("env_a").await;
+        let w1 = q.enqueue_session("env_a", "s1").await;
+        let w2 = q.enqueue_session("env_a", "s2").await;
+        // list is enqueue-ordered
+        let ids: Vec<String> = q.list("env_a").await.into_iter().map(|w| w.id).collect();
+        assert_eq!(ids, vec![hc.clone(), w1.clone(), w2]);
+        // claim leases the oldest + single-active cap
+        assert_eq!(q.claim("env_a").await.expect("lease").id, hc);
+        assert!(q.claim("env_a").await.is_none(), "single active lease");
+        // ack + heartbeat + membership
+        assert_eq!(
+            q.ack("env_a", &w1).await.expect("ack").state,
+            WorkState::Starting
+        );
+        assert!(q.heartbeat("env_a", &w1).await.expect("hb").lease_extended);
+        assert!(q.get("env_b", &w1).await.is_none(), "wrong env → none");
+        assert!(q.heartbeat("env_b", &w1).await.is_none());
+        // stats reflect the active healthcheck + starting w1
+        let st = q.stats("env_a").await;
+        assert!(st.pending >= 1 && st.workers_polling == 1);
+        // metadata + stop + remove_env
+        let patch = BTreeMap::from([("k".to_string(), "v".to_string())]);
+        assert_eq!(
+            q.update_metadata("env_a", &w1, patch)
+                .await
+                .expect("md")
+                .metadata
+                .get("k")
+                .map(String::as_str),
+            Some("v")
+        );
+        assert!(q.stop("env_a", &hc).await.is_some());
+        q.remove_env("env_a").await;
+        assert!(q.list("env_a").await.is_empty(), "remove_env purges");
+    }
 }
