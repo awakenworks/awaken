@@ -8,6 +8,7 @@
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
+use awaken_agent_contract::agent::message::Role;
 use awaken_agent_contract::agent::state::{MergePolicy, Scope, StateKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -30,18 +31,10 @@ pub struct ChatRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatMessage {
-    pub role: ChatRole,
+    pub role: Role,
     /// Multimodal content blocks (text, image). The adapter maps each block onto
     /// the provider's content representation.
     pub content: Vec<ContentBlock>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ChatRole {
-    System,
-    User,
-    Assistant,
-    Tool,
 }
 
 /// A model's request to invoke one tool. `tool_id` is the resolved descriptor
@@ -207,6 +200,26 @@ impl ThreadUsage {
             .values()
             .copied()
             .fold(TokenUsage::default(), TokenUsage::saturating_add)
+    }
+
+    /// Recover a thread's committed usage by scanning its committed state for the
+    /// last `Set` on [`THREAD_USAGE_STATE_KEY`]. The single reader of the usage
+    /// cell — shared by the host's session-usage read and the sub-agent rollup —
+    /// so the scan lives beside the key, not copied at each call site.
+    #[must_use]
+    pub fn from_committed_state(commands: &[awaken_agent_contract::agent::state::Command]) -> Self {
+        use awaken_agent_contract::agent::state::{Action, Scope};
+        let mut usage = ThreadUsage::default();
+        for cmd in commands {
+            if cmd.scope == Scope::Thread
+                && cmd.key.0 == THREAD_USAGE_STATE_KEY
+                && let Action::Set(value) = &cmd.action
+                && let Ok(parsed) = serde_json::from_value::<ThreadUsage>(value.clone())
+            {
+                usage = parsed;
+            }
+        }
+        usage
     }
 }
 

@@ -247,7 +247,7 @@ impl LlmExecutor for CallsTool {
         let answered = request
             .messages
             .iter()
-            .any(|m| matches!(m.role, awaken_runtime_contract::llm::ChatRole::Tool))
+            .any(|m| matches!(m.role, awaken_agent_contract::agent::message::Role::Tool))
             || request.messages.len() > 2;
         let output = if answered {
             AssistantOutput::text("done".to_string())

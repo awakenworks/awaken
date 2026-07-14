@@ -5,8 +5,9 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::message::Role;
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
+    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
 use awaken_scenario_host::{
     EchoModel, build_custom_router, build_delegation_router, build_graded_router, build_router,
@@ -128,12 +129,12 @@ impl LlmExecutor for WriteReadProbe {
         let tool_results = request
             .messages
             .iter()
-            .filter(|m| m.role == ChatRole::Tool)
+            .filter(|m| m.role == Role::Tool)
             .count();
         let user_text = request
             .messages
             .iter()
-            .find(|m| m.role == ChatRole::User)
+            .find(|m| m.role == Role::User)
             .map(|m| {
                 m.content
                     .iter()
@@ -219,7 +220,7 @@ impl LlmExecutor for ReviseModel {
             .messages
             .iter()
             .rev()
-            .find(|m| m.role == ChatRole::User)
+            .find(|m| m.role == Role::User)
             .map(|m| {
                 m.content
                     .iter()
@@ -308,7 +309,7 @@ impl LlmExecutor for GradedModel {
             .messages
             .iter()
             .rev()
-            .find(|m| m.role == ChatRole::User)
+            .find(|m| m.role == Role::User)
             .map(|m| {
                 m.content
                     .iter()
@@ -433,7 +434,7 @@ impl LlmExecutor for SystemEchoModel {
         let system: String = request
             .messages
             .iter()
-            .filter(|m| m.role == ChatRole::System)
+            .filter(|m| m.role == Role::System)
             .map(|m| {
                 m.content
                     .iter()

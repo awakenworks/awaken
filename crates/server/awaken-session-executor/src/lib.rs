@@ -50,6 +50,7 @@ mod skills_api;
 mod store;
 mod subagent;
 mod tool_catalog;
+mod worker_http;
 
 use std::sync::Arc;
 

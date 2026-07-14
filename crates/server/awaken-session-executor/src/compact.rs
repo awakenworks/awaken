@@ -61,7 +61,7 @@ mod tests {
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
     use awaken_ext_compact::COMPACT_AGENT_ID;
     use awaken_runtime_contract::llm::{
-        AssistantOutput, ChatRequest, ChatResponse, ChatRole, Result as LlmResult,
+        AssistantOutput, ChatRequest, ChatResponse, Result as LlmResult,
     };
     use awaken_runtime_contract::subagent_runner::SubagentRequest;
 
@@ -75,7 +75,7 @@ mod tests {
             let user_msgs = request
                 .messages
                 .iter()
-                .filter(|m| m.role == ChatRole::User)
+                .filter(|m| m.role == Role::User)
                 .count();
             Ok(ChatResponse {
                 output: AssistantOutput::text(format!("summary of {user_msgs} messages")),

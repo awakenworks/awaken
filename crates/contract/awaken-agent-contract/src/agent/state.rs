@@ -15,13 +15,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Key(pub String);
 
-/// A materialized state entry (key plus its current JSON value).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Value {
-    pub key: Key,
-    pub value: serde_json::Value,
-}
-
 /// Declaration scope for a state key. The abstract scope (not a concrete id)
 /// keeps a command pure data; binding to a run/thread happens at commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

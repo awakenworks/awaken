@@ -4,11 +4,12 @@
 use std::time::Duration;
 
 use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::message::Role;
 use awaken_provider_genai::{
     GenaiExecutor, classify_error, from_genai_tool_call, map_assistant_output, map_usage,
     to_genai_request,
 };
-use awaken_runtime_contract::llm::{AssistantOutput, ChatMessage, ChatRequest, ChatRole};
+use awaken_runtime_contract::llm::{AssistantOutput, ChatMessage, ChatRequest};
 use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 use genai::chat::{ChatRole as GenaiRole, MessageContent, ToolCall as GenaiToolCall, Usage};
 
@@ -26,15 +27,15 @@ fn maps_roles_and_tools_onto_genai_request() {
         model_binding: binding("gpt-4o-mini"),
         messages: vec![
             ChatMessage {
-                role: ChatRole::System,
+                role: Role::System,
                 content: vec![ContentBlock::text("be brief")],
             },
             ChatMessage {
-                role: ChatRole::User,
+                role: Role::User,
                 content: vec![ContentBlock::text("hi")],
             },
             ChatMessage {
-                role: ChatRole::Assistant,
+                role: Role::Assistant,
                 content: vec![ContentBlock::text("ok")],
             },
         ],
@@ -62,7 +63,7 @@ fn tool_result_maps_to_a_genai_tool_message() {
     let request = ChatRequest {
         model_binding: binding("gpt-4o-mini"),
         messages: vec![ChatMessage {
-            role: ChatRole::Tool,
+            role: Role::Tool,
             content: vec![ContentBlock::tool_result(
                 "call-1",
                 vec![ContentBlock::text("file body")],
@@ -81,7 +82,7 @@ fn image_block_maps_to_a_binary_part() {
     let request = ChatRequest {
         model_binding: binding("gpt-4o-mini"),
         messages: vec![ChatMessage {
-            role: ChatRole::User,
+            role: Role::User,
             content: vec![
                 ContentBlock::text("what is this?"),
                 ContentBlock::image_base64("image/png", "iVBORw0KGgo="),
@@ -104,7 +105,7 @@ fn omits_tools_when_none_are_visible() {
     let request = ChatRequest {
         model_binding: binding("m"),
         messages: vec![ChatMessage {
-            role: ChatRole::User,
+            role: Role::User,
             content: vec![ContentBlock::text("hi")],
         }],
         tools: Vec::new(),

@@ -7,9 +7,7 @@ use std::time::Duration;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor,
-};
+use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_server::SharedHost;
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::timeout;
@@ -30,7 +28,7 @@ impl LlmExecutor for GatedEcho {
         let seen = r
             .messages
             .iter()
-            .filter(|m| matches!(m.role, ChatRole::User))
+            .filter(|m| matches!(m.role, Role::User))
             .flat_map(|m| m.content.iter())
             .filter_map(|b| match b {
                 ContentBlock::Text { text } => Some(text.clone()),
