@@ -26,27 +26,35 @@ use awaken_store_fs::FsCommitCoordinator;
 use awaken_store_postgres::PostgresCommitCoordinator;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
-/// One thread's commit boundary. `Memory` is ephemeral; `Sqlite`, `Fs`, and
-/// `Postgres` are durable (a parked run and its history survive a process restart).
-/// `Postgres` is the SHARED coordinator (keyed by thread internally) so any node
-/// serves any thread's history — the cloud multi-node backend (ADR-0022 D6); the
-/// others are per-thread/per-process.
-// Exactly one `HostCommit` exists per live session (not stored in bulk), so the
-// per-backend size spread is immaterial; boxing would only add an indirection.
-#[allow(clippy::large_enum_variant)]
+/// One thread's commit boundary: either a `Local` read+write store (an
+/// interchangeable memory/sqlite/fs/postgres backend behind `Arc<dyn HostStore>`,
+/// chosen at the composition root) or the write-only `Remote` worker boundary. The
+/// four local backends are polymorphic — the enum only discriminates the one real
+/// distinction (locally readable vs remote write-only), not the backend.
 pub(crate) enum HostCommit {
-    Memory(MemoryCommitCoordinator),
-    Sqlite(SqliteCommitCoordinator),
-    Fs(FsCommitCoordinator),
-    Postgres(Arc<PostgresCommitCoordinator>),
+    /// One of the interchangeable local backends (memory / sqlite / fs / postgres):
+    /// polymorphic implementations of the same read+write store, chosen once at the
+    /// composition root behind a trait object — no per-backend dispatch here.
+    Local(Arc<dyn HostStore>),
     /// The database-less worker's boundary: `commit` posts facts to the cell server
-    /// (the single writer) over HTTP; the committed-truth READS return empty because
-    /// the worker holds no store. This is correct for a **fresh, self-contained run**
-    /// (nothing prior to read — the activation carries the input), which is the cell
-    /// worker's role. A resume/multi-turn run that must read prior committed context
-    /// needs remote reads, which the synchronous `ThreadReader`/`RunStore` traits
-    /// cannot express without blocking — a separate async-reader redesign.
+    /// (the single writer) over HTTP. It is **write-only** — the worker holds no
+    /// store, so it is deliberately NOT a [`HostStore`] and has no reads. Correct
+    /// for a fresh, self-contained run (the activation carries its input); a resume
+    /// needing remote reads is a separate async-reader redesign.
     Remote(crate::commit_ingest::RemoteCoordinator),
+}
+
+/// The host's read+write store over one interchangeable local backend: the commit
+/// boundary plus the fact-derived reads the session substrate needs after a
+/// restart. The four backends implement it; the composition root picks one as
+/// `Arc<dyn HostStore>`. The remote worker boundary is write-only and is not a
+/// `HostStore`.
+pub(crate) trait HostStore: Coordinator + ThreadReader + RunStore + Send + Sync {
+    /// The parked run on `thread`, if any, recovered from committed truth.
+    fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, WaitingTicket)>;
+    /// Payloads of committed `Continuation` (outcome-round) events for `thread`, in
+    /// commit order — projected from durable truth so round history survives a restart.
+    fn continuation_payloads(&self, thread: &ThreadId) -> Vec<serde_json::Value>;
 }
 
 /// Recover the parked position from a durable backend's fact-derived read model
@@ -60,20 +68,70 @@ fn parked_from_reader<R: CheckpointReader>(
     (&ticket.thread_id == thread).then_some((run.id, ticket))
 }
 
+/// Continuation payloads from any `CheckpointReader` (the fs/postgres shape).
+fn continuation_from_reader<R: CheckpointReader>(
+    reader: &R,
+    thread: &ThreadId,
+) -> Vec<serde_json::Value> {
+    reader
+        .list_events(&EventScope::Thread(thread.clone()), None, usize::MAX)
+        .into_iter()
+        .filter(|event| event.kind == Kind::Continuation)
+        .map(|event| event.payload)
+        .collect()
+}
+
+impl HostStore for MemoryCommitCoordinator {
+    fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, WaitingTicket)> {
+        let run = self.committed().latest_run?;
+        let ticket = self.waiting_for(&run.id)?;
+        (&ticket.thread_id == thread).then_some((run.id, ticket))
+    }
+    fn continuation_payloads(&self, _thread: &ThreadId) -> Vec<serde_json::Value> {
+        self.committed()
+            .events
+            .into_iter()
+            .filter(|event| event.kind == Kind::Continuation)
+            .map(|event| event.payload)
+            .collect()
+    }
+}
+
+impl HostStore for SqliteCommitCoordinator {
+    fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, WaitingTicket)> {
+        // Inherent method wins over the trait method in resolution — not recursive.
+        SqliteCommitCoordinator::open_wait_for_thread(self, thread)
+    }
+    fn continuation_payloads(&self, thread: &ThreadId) -> Vec<serde_json::Value> {
+        SqliteCommitCoordinator::continuation_payloads(self, thread)
+    }
+}
+
+impl HostStore for FsCommitCoordinator {
+    fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, WaitingTicket)> {
+        parked_from_reader(self, thread)
+    }
+    fn continuation_payloads(&self, thread: &ThreadId) -> Vec<serde_json::Value> {
+        continuation_from_reader(self, thread)
+    }
+}
+
+impl HostStore for PostgresCommitCoordinator {
+    fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, WaitingTicket)> {
+        parked_from_reader(self, thread)
+    }
+    fn continuation_payloads(&self, thread: &ThreadId) -> Vec<serde_json::Value> {
+        continuation_from_reader(self, thread)
+    }
+}
+
 impl HostCommit {
     /// The parked run on `thread`, if any, recovered from committed truth. After a
     /// restart the durable variants read their hydrated projection, so a rebuilt
     /// session can restore its parked position and be resumed.
     pub(crate) fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, WaitingTicket)> {
         match self {
-            HostCommit::Memory(inner) => {
-                let run = inner.committed().latest_run?;
-                let ticket = inner.waiting_for(&run.id)?;
-                (&ticket.thread_id == thread).then_some((run.id, ticket))
-            }
-            HostCommit::Sqlite(inner) => inner.open_wait_for_thread(thread),
-            HostCommit::Fs(inner) => parked_from_reader(inner, thread),
-            HostCommit::Postgres(inner) => parked_from_reader(inner.as_ref(), thread),
+            HostCommit::Local(store) => store.open_wait_for_thread(thread),
             HostCommit::Remote(_) => None,
         }
     }
@@ -83,26 +141,7 @@ impl HostCommit {
     /// restart.
     pub(crate) fn continuation_payloads(&self, thread: &ThreadId) -> Vec<serde_json::Value> {
         match self {
-            HostCommit::Memory(inner) => inner
-                .committed()
-                .events
-                .into_iter()
-                .filter(|event| event.kind == Kind::Continuation)
-                .map(|event| event.payload)
-                .collect(),
-            HostCommit::Sqlite(inner) => inner.continuation_payloads(thread),
-            HostCommit::Fs(inner) => inner
-                .list_events(&EventScope::Thread(thread.clone()), None, usize::MAX)
-                .into_iter()
-                .filter(|event| event.kind == Kind::Continuation)
-                .map(|event| event.payload)
-                .collect(),
-            HostCommit::Postgres(inner) => inner
-                .list_events(&EventScope::Thread(thread.clone()), None, usize::MAX)
-                .into_iter()
-                .filter(|event| event.kind == Kind::Continuation)
-                .map(|event| event.payload)
-                .collect(),
+            HostCommit::Local(store) => store.continuation_payloads(thread),
             HostCommit::Remote(_) => Vec::new(),
         }
     }
@@ -112,11 +151,8 @@ impl HostCommit {
 impl Coordinator for HostCommit {
     async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
         match self {
-            HostCommit::Memory(inner) => inner.commit(commit).await,
-            HostCommit::Sqlite(inner) => inner.commit(commit).await,
-            HostCommit::Fs(inner) => inner.commit(commit).await,
-            HostCommit::Postgres(inner) => inner.commit(commit).await,
-            HostCommit::Remote(inner) => inner.commit(commit).await,
+            HostCommit::Local(store) => store.commit(commit).await,
+            HostCommit::Remote(remote) => remote.commit(commit).await,
         }
     }
 }
@@ -124,20 +160,14 @@ impl Coordinator for HostCommit {
 impl ThreadReader for HostCommit {
     fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
         match self {
-            HostCommit::Memory(inner) => inner.committed_messages(thread_id),
-            HostCommit::Sqlite(inner) => inner.committed_messages(thread_id),
-            HostCommit::Fs(inner) => inner.committed_messages(thread_id),
-            HostCommit::Postgres(inner) => inner.committed_messages(thread_id),
+            HostCommit::Local(store) => store.committed_messages(thread_id),
             HostCommit::Remote(_) => Vec::new(),
         }
     }
 
     fn waiting_ticket(&self, run_id: &RunId) -> Option<WaitingTicket> {
         match self {
-            HostCommit::Memory(inner) => inner.waiting_ticket(run_id),
-            HostCommit::Sqlite(inner) => inner.waiting_ticket(run_id),
-            HostCommit::Fs(inner) => inner.waiting_ticket(run_id),
-            HostCommit::Postgres(inner) => inner.waiting_ticket(run_id),
+            HostCommit::Local(store) => store.waiting_ticket(run_id),
             HostCommit::Remote(_) => None,
         }
     }
@@ -147,10 +177,7 @@ impl ThreadReader for HostCommit {
         thread_id: &ThreadId,
     ) -> Vec<awaken_agent_contract::agent::state::Command> {
         match self {
-            HostCommit::Memory(inner) => inner.committed_state(thread_id),
-            HostCommit::Sqlite(inner) => inner.committed_state(thread_id),
-            HostCommit::Fs(inner) => inner.committed_state(thread_id),
-            HostCommit::Postgres(inner) => inner.committed_state(thread_id),
+            HostCommit::Local(store) => store.committed_state(thread_id),
             HostCommit::Remote(_) => Vec::new(),
         }
     }
@@ -159,10 +186,7 @@ impl ThreadReader for HostCommit {
 impl RunStore for HostCommit {
     fn get(&self, id: &RunId) -> Option<RunRecord> {
         match self {
-            HostCommit::Memory(inner) => inner.get(id),
-            HostCommit::Sqlite(inner) => inner.get(id),
-            HostCommit::Fs(inner) => inner.get(id),
-            HostCommit::Postgres(inner) => inner.get(id),
+            HostCommit::Local(store) => store.get(id),
             HostCommit::Remote(_) => None,
         }
     }
@@ -187,7 +211,7 @@ fn commit_or_err(
              startup (with AWAKEN_DATABASE_URL)",
         )
     })?;
-    Ok(HostCommit::Postgres(coord))
+    Ok(HostCommit::Local(coord))
 }
 
 /// Whether the shared Postgres commit coordinator holds a committed run for `thread`.
@@ -269,7 +293,7 @@ mod tests {
         // Selecting the postgres backend now yields a HostCommit::Postgres.
         assert!(matches!(
             postgres_commit_or_err().expect("ok after init"),
-            HostCommit::Postgres(_)
+            HostCommit::Local(_)
         ));
         // The thread probe: an unknown thread has no committed run in the shared DB.
         assert!(!durable_thread_exists_postgres(&ThreadId(

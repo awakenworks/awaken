@@ -24,7 +24,9 @@ impl SharedHost {
             return crate::store::postgres_commit_or_err();
         }
         let Some(dir) = &self.store_dir else {
-            return Ok(HostCommit::Memory(MemoryCommitCoordinator::new()));
+            return Ok(HostCommit::Local(std::sync::Arc::new(
+                MemoryCommitCoordinator::new(),
+            )));
         };
         std::fs::create_dir_all(dir).map_err(|e| HostError::internal(e.to_string()))?;
         let fs_backend = self.deployment.store == StoreKind::Fs;
@@ -33,12 +35,12 @@ impl SharedHost {
             let fs = FsCommitCoordinator::open(&thread_dir)
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?;
-            Ok(HostCommit::Fs(fs))
+            Ok(HostCommit::Local(std::sync::Arc::new(fs)))
         } else {
             let path = dir.join(format!("{}.db", sanitize_thread(thread)));
             let sqlite = SqliteCommitCoordinator::open(&path.to_string_lossy())
                 .map_err(|e| HostError::internal(e.to_string()))?;
-            Ok(HostCommit::Sqlite(sqlite))
+            Ok(HostCommit::Local(std::sync::Arc::new(sqlite)))
         }
     }
 
