@@ -27,6 +27,9 @@ awaken-worker = { workspace = true }
 # durable session repositories the composition opens.
 awaken-runtime-host = { workspace = true }
 awaken-observability = { workspace = true }
+# The admin `/metrics` gauges are OTel observable instruments (rendered via the
+# Prometheus exporter in awaken-observability).
+opentelemetry = { version = "0.28", features = ["metrics"] }
 # The Managed wire aggregates the composition builds directly: session repos, the
 # vault + environment state shared across both planes.
 awaken-protocol-managed = { workspace = true }

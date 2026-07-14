@@ -2,7 +2,7 @@
 //! (#2). The recorder feeds structure-only instruments on the global `Meter`; the
 //! engine records at the same `chat`/tool chokepoints as the spans, so metrics and
 //! traces share one instrumentation point. Export is an OTLP metric pipeline
-//! installed by [`init_otlp_meter`], mirroring the tracer wiring in `otel.rs`.
+//! installed by [`init_meters`], mirroring the tracer wiring in `otel.rs`.
 
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -16,10 +16,13 @@ use opentelemetry_sdk::metrics::SdkMeterProvider;
 use crate::config::{OtelConfig, OtelProtocol};
 
 static METER_PROVIDER: OnceLock<SdkMeterProvider> = OnceLock::new();
+/// The Prometheus registry the global meter provider collects into, so
+/// [`render_prometheus`] can encode a scrape of the whole process's metrics.
+static PROM_REGISTRY: OnceLock<prometheus::Registry> = OnceLock::new();
 
 /// Records the runtime's structure-only metrics onto OpenTelemetry instruments
 /// bound to the global `Meter`. Construct it at the composition root **after**
-/// [`init_otlp_meter`] has installed the provider, so the instruments bind to the
+/// [`init_meters`] has installed the provider, so the instruments bind to the
 /// exporting provider rather than the no-op default.
 pub struct OtelMetricsRecorder {
     op_count: Counter<u64>,
@@ -132,11 +135,15 @@ impl MetricsRecorder for OtelMetricsRecorder {
     }
 }
 
-/// Install an OTLP/HTTP metric pipeline as the global meter provider, so
-/// instruments built afterward export. Shares the OTLP endpoint with traces
-/// (single-collector setups). A no-op-safe error is returned if no endpoint is
-/// configured; the caller logs and continues without metric export.
-pub fn init_otlp_meter(
+/// Install the process-global meter provider with BOTH a Prometheus *scrape* reader
+/// (always) and an OTLP *push* reader (when an endpoint is configured). One provider,
+/// one meter: every instrument — the business `gen_ai.*`/`awaken.*` metrics AND a
+/// role's admin gauges — is both scrapeable at `/metrics` (via [`render_prometheus`])
+/// and pushed over OTLP when a collector is set. Idempotent; call once at startup.
+///
+/// Unlike the old OTLP-only path, this ALWAYS installs a provider, so a
+/// Prometheus-only deployment (no OTLP collector) still has working metrics.
+pub fn init_meters(
     config: &OtelConfig,
 ) -> Result<SdkMeterProvider, Box<dyn std::error::Error + Send + Sync>> {
     use opentelemetry_otlp::{MetricExporter, WithExportConfig};
@@ -150,19 +157,6 @@ pub fn init_otlp_meter(
         return Ok(existing.clone());
     }
 
-    // Only HTTP/protobuf is compiled in; a grpc request would need tonic, so use
-    // HTTP either way (mirrors the tracer path).
-    let _ = matches!(config.effective_traces_protocol(), OtelProtocol::Grpc);
-
-    let endpoint = config
-        .effective_traces_endpoint()
-        .ok_or("No OTLP endpoint configured")?;
-
-    let exporter = MetricExporter::builder()
-        .with_http()
-        .with_endpoint(endpoint)
-        .build()?;
-
     let mut resource_attrs = vec![];
     if let Some(name) = &config.service_name {
         resource_attrs.push(KeyValue::new("service.name", name.clone()));
@@ -171,27 +165,63 @@ pub fn init_otlp_meter(
         resource_attrs.push(KeyValue::new("service.version", version.clone()));
     }
 
-    // Export interval: default 60s, overridable via the standard
-    // `OTEL_METRIC_EXPORT_INTERVAL` (milliseconds) so a test/dev can flush quickly
-    // without depending on the shutdown flush.
-    let interval_ms = std::env::var("OTEL_METRIC_EXPORT_INTERVAL")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(60_000);
-    // The async-runtime reader drives the reqwest-based OTLP exporter on the Tokio
-    // runtime (like the tracer's batch processor); the plain std-thread reader
-    // cannot run the async export, so metrics would silently never leave.
-    let reader = PeriodicReader::builder(exporter, runtime::Tokio)
-        .with_interval(std::time::Duration::from_millis(interval_ms))
-        .build();
-    let provider = SdkMeterProvider::builder()
-        .with_reader(reader)
-        .with_resource(Resource::builder().with_attributes(resource_attrs).build())
-        .build();
+    // The Prometheus scrape reader (always): the OSS OTel→Prometheus bridge collects
+    // every instrument into this registry, which `/metrics` encodes on demand.
+    let registry = prometheus::Registry::new();
+    let prom_reader = opentelemetry_prometheus::exporter()
+        .with_registry(registry.clone())
+        .build()?;
+    let mut builder = SdkMeterProvider::builder()
+        .with_reader(prom_reader)
+        .with_resource(Resource::builder().with_attributes(resource_attrs).build());
 
+    // The OTLP push reader (only when an endpoint is configured). Only HTTP/protobuf
+    // is compiled in; a grpc request would need tonic, so use HTTP either way.
+    let _ = matches!(config.effective_traces_protocol(), OtelProtocol::Grpc);
+    if let Some(endpoint) = config.effective_traces_endpoint() {
+        let exporter = MetricExporter::builder()
+            .with_http()
+            .with_endpoint(endpoint)
+            .build()?;
+        // Export interval: default 60s, overridable via the standard
+        // `OTEL_METRIC_EXPORT_INTERVAL` (ms) so a test/dev can flush quickly.
+        let interval_ms = std::env::var("OTEL_METRIC_EXPORT_INTERVAL")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(60_000);
+        // The async-runtime reader drives the reqwest-based OTLP exporter on the
+        // Tokio runtime; the plain std-thread reader cannot run the async export.
+        let reader = PeriodicReader::builder(exporter, runtime::Tokio)
+            .with_interval(std::time::Duration::from_millis(interval_ms))
+            .build();
+        builder = builder.with_reader(reader);
+    }
+
+    let provider = builder.build();
     global::set_meter_provider(provider.clone());
     let _ = METER_PROVIDER.set(provider.clone());
+    let _ = PROM_REGISTRY.set(registry);
     Ok(provider)
+}
+
+/// Render the whole process's metrics in Prometheus text exposition format — a scrape
+/// of the global registry installed by [`init_meters`]. Any observable-gauge callback
+/// fires here (at scrape time). Empty when no provider was installed. This is what a
+/// role's admin `/metrics` endpoint returns.
+#[must_use]
+pub fn render_prometheus() -> String {
+    let Some(registry) = PROM_REGISTRY.get() else {
+        return String::new();
+    };
+    let metric_families = registry.gather();
+    let mut buf = String::new();
+    if prometheus::TextEncoder::new()
+        .encode_utf8(&metric_families, &mut buf)
+        .is_err()
+    {
+        return String::new();
+    }
+    buf
 }
 
 /// Flush and shut down the meter provider, if one was installed, so buffered
@@ -211,4 +241,32 @@ pub(crate) fn shutdown_meter() {
         let _ = tx.send(());
     });
     let _ = rx.recv_timeout(std::time::Duration::from_secs(3));
+}
+
+#[cfg(test)]
+mod meter_tests {
+    use super::*;
+    use opentelemetry::global;
+
+    // Installing a Prometheus-only provider (no OTLP endpoint) makes an observable
+    // gauge on the global meter renderable as Prometheus text at scrape time.
+    #[test]
+    fn init_meters_installs_a_prometheus_scrape_of_the_global_meter() {
+        // No endpoint → Prometheus reader only (no OTLP push). Idempotent install.
+        init_meters(&OtelConfig::default()).expect("install the global meter provider");
+
+        let _gauge = global::meter("awaken-observability-test")
+            .u64_observable_gauge("awaken_meter_test_gauge")
+            .with_description("A test gauge.")
+            .with_callback(|obs| obs.observe(7, &[]))
+            .build();
+
+        let scrape = render_prometheus();
+        assert!(
+            scrape
+                .lines()
+                .any(|l| l.starts_with("awaken_meter_test_gauge") && l.trim_end().ends_with(" 7")),
+            "the global meter's gauge is scrapeable: {scrape}"
+        );
+    }
 }

@@ -26,7 +26,7 @@ mod propagation;
 
 pub use config::{OtelConfig, OtelConfigBuilder, OtelProtocol};
 pub use http::trace_http;
-pub use metrics::{OtelMetricsRecorder, init_otlp_meter};
+pub use metrics::{OtelMetricsRecorder, init_meters, render_prometheus};
 pub use otel::init_otlp_tracer;
 pub use propagation::{current_traceparent, dispatch_span};
 
@@ -62,14 +62,13 @@ pub fn init() {
         subscriber.try_init().ok();
     }
 
-    // Install the OTLP metric pipeline alongside traces (#2) when an endpoint is
-    // configured, so a server with OTLP set exports metrics with no extra wiring.
-    // Best-effort: a metric-export failure must never stop the process.
+    // Install the global meter provider ALWAYS (a Prometheus scrape reader + an OTLP
+    // push reader when configured), so `/metrics` works with or without a collector
+    // and every instrument is exposed both ways (#2). Best-effort: a meter-init
+    // failure must never stop the process.
     let config = config::OtelConfig::from_env();
-    if config.is_configured()
-        && let Err(error) = metrics::init_otlp_meter(&config)
-    {
-        tracing::warn!(%error, "OTLP meter init failed; continuing without metric export");
+    if let Err(error) = metrics::init_meters(&config) {
+        tracing::warn!(%error, "meter init failed; continuing without metrics");
     }
 }
 

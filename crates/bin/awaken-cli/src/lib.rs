@@ -26,7 +26,8 @@ use awaken_runtime_host::{
 use axum::Router;
 
 pub use crate::brain_admin::{
-    DrainController, brain_admin_router, with_brain_admin, with_connection_metric,
+    DrainController, brain_admin_router, register_active_streams_gauge, with_brain_admin,
+    with_connection_metric,
 };
 // Embedded management-plane IAM (ADR-0042/0043 P1) + the mint spec and bootstrap
 // constants a test / operator embedding drives — re-exported from the authoring plane.
