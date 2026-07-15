@@ -26,6 +26,7 @@ impl CapabilityReader for FakeCaps {
             plugins: vec![PluginInfo {
                 id: "state_machine".into(),
                 schema_keys: vec!["state_machine".into()],
+                config_schema: Some(serde_json::json!({ "type": "object" })),
             }],
             skills: vec!["greet".into()],
             mcp_servers: vec![],
@@ -576,7 +577,12 @@ fn seed_config_is_an_ordinary_auto_bound_config_naming_the_four_tools() {
 #[test]
 fn seeded_instructions_are_authorable_and_mention_no_publish() {
     assert!(ADMIN_ASSISTANT_INSTRUCTIONS.contains("management assistant"));
-    assert!(ADMIN_ASSISTANT_INSTRUCTIONS.contains("never publish"));
+    // The no-publish safety invariant (case-insensitive — the prompt may emphasize it).
+    assert!(
+        ADMIN_ASSISTANT_INSTRUCTIONS
+            .to_lowercase()
+            .contains("never publish")
+    );
 }
 
 /// A validator that mimics the real default/tenant-scope catalog projection: the four
