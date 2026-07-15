@@ -13,6 +13,15 @@
 # Proves NO-LOSS recovery. It does NOT prove sandbox re-adoption (unwired; echo has no
 # sandbox state). See deploy/k3d/worker-failover-postgres.yaml.
 #
+# ADR-0056 role: this is the DRIVING-SCENARIO the ADR-0056 G-Y guardrail requires
+# before Container-tier `adopt(handle)`/`process(pid)` reattach may merge — "SandboxPool
+# (Container reuse) … may not merge without an accompanying failing driving-scenario
+# test." Today it asserts the wired guarantee (no-loss over the worker HTTP path). When
+# ADR-0056's Container slice wires adopt-on-recovery, extend it to also assert the
+# reclaimed run continues on the SAME sandbox (same handle, in-flight state preserved),
+# and flip it to a Container-tier image — that is the failing test G-Y wants to see
+# turn green.
+#
 # Requires: k3d, kubectl, docker (daemon up), rustc 1.96 (host build).
 # Usage: e2e/k3d/worker_failover_e2e.sh   (from repo root)
 set -euo pipefail
