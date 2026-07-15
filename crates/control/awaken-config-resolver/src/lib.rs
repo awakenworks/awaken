@@ -1606,3 +1606,115 @@ mod tests {
         assert!(!with_empty.ends_with('\n'));
     }
 }
+
+/// G6 — the agent↔resource binding crosses the config→data plane (and SQLite/PG
+/// persistence) only as serialized bytes, so its wire shape is a compatibility
+/// boundary, not an implementation detail. These pin a lossless round-trip, the
+/// `skip_serializing_if` compaction of the optional `resource_id`/`instructions`, and
+/// — what a self-round-trip cannot catch — that an OLDER writer's payload (missing the
+/// optionals) still loads and a NEWER writer's unknown field is ignored, not rejected.
+#[cfg(test)]
+mod resource_binding_serde_contract {
+    use super::{AgentResourceConfig, ResourceAccess, ResourceBinding, ResourceKind};
+
+    fn cfg() -> AgentResourceConfig {
+        AgentResourceConfig {
+            agent_id: "a".into(),
+            resources: vec![ResourceBinding {
+                kind: ResourceKind::MemoryStore,
+                resource_id: "store-1".into(),
+                mount_path: "/mnt/memory".into(),
+                access: ResourceAccess::ReadWrite,
+                instructions: Some("read it first".into()),
+            }],
+            version: 1,
+        }
+    }
+
+    #[test]
+    fn round_trips_lossless() {
+        let c = cfg();
+        let json = serde_json::to_string(&c).expect("serializes");
+        let back: AgentResourceConfig = serde_json::from_str(&json).expect("deserializes");
+        assert_eq!(back, c, "round-trip is lossless");
+    }
+
+    #[test]
+    fn empty_optionals_are_omitted_on_the_wire() {
+        let c = AgentResourceConfig {
+            agent_id: "a".into(),
+            resources: vec![ResourceBinding {
+                kind: ResourceKind::Outputs,
+                resource_id: String::new(), // omitted
+                mount_path: "/out".into(),
+                access: ResourceAccess::ReadWrite,
+                instructions: None, // omitted
+            }],
+            version: 1,
+        };
+        let json = serde_json::to_string(&c).expect("serializes");
+        assert!(
+            !json.contains("resource_id"),
+            "empty resource_id is not written: {json}"
+        );
+        assert!(
+            !json.contains("instructions"),
+            "a None instructions is not written: {json}"
+        );
+    }
+
+    #[test]
+    fn a_frozen_legacy_binding_still_deserializes_intact() {
+        // A binding an older writer produced: no `resource_id`, no `instructions` keys.
+        // Frozen as bytes so a rename/retype anywhere down the tree breaks THIS test
+        // instead of silently stranding every persisted binding.
+        const LEGACY: &str = r#"{
+          "agent_id": "a",
+          "resources": [
+            { "kind": "memory_store", "mount_path": "/mnt/memory", "access": "read_write" }
+          ],
+          "version": 1
+        }"#;
+        let back: AgentResourceConfig =
+            serde_json::from_str(LEGACY).expect("a persisted legacy binding must still load");
+        assert_eq!(
+            back.resources[0].resource_id, "",
+            "a missing resource_id defaults empty"
+        );
+        assert!(back.resources[0].instructions.is_none());
+        assert_eq!(back.resources[0].kind, ResourceKind::MemoryStore);
+        assert_eq!(back.resources[0].access, ResourceAccess::ReadWrite);
+    }
+
+    #[test]
+    fn todays_writer_still_emits_the_frozen_legacy_shape() {
+        let today = serde_json::to_value(AgentResourceConfig {
+            agent_id: "a".into(),
+            resources: vec![ResourceBinding {
+                kind: ResourceKind::MemoryStore,
+                resource_id: String::new(),
+                mount_path: "/mnt/memory".into(),
+                access: ResourceAccess::ReadWrite,
+                instructions: None,
+            }],
+            version: 1,
+        })
+        .expect("value");
+        let frozen: serde_json::Value = serde_json::from_str(
+            r#"{"agent_id":"a","resources":[{"kind":"memory_store","mount_path":"/mnt/memory","access":"read_write"}],"version":1}"#,
+        )
+        .expect("frozen parses");
+        assert_eq!(
+            today, frozen,
+            "the binding wire shape drifted from the frozen legacy row"
+        );
+    }
+
+    #[test]
+    fn an_unknown_future_field_is_ignored_not_rejected() {
+        let json = r#"{"agent_id":"a","resources":[],"version":1,"a_future_field":42}"#;
+        let back: AgentResourceConfig =
+            serde_json::from_str(json).expect("an unknown field is ignored");
+        assert_eq!(back.agent_id, "a");
+    }
+}
