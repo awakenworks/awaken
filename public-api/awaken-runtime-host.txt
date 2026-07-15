@@ -34,6 +34,13 @@ pub awaken_runtime_host::HostResume::ClientResult::is_error: bool
 pub awaken_runtime_host::HostResume::Confirm
 pub awaken_runtime_host::HostResume::Confirm::allow: bool
 pub awaken_runtime_host::HostResume::Confirm::note: core::option::Option<alloc::string::String>
+pub enum awaken_runtime_host::SandboxTier
+pub awaken_runtime_host::SandboxTier::Docker
+pub awaken_runtime_host::SandboxTier::K8s
+pub awaken_runtime_host::SandboxTier::Namespace
+pub awaken_runtime_host::SandboxTier::Podman
+impl awaken_runtime_host::SandboxTier
+pub fn awaken_runtime_host::SandboxTier::is_container(self) -> bool
 pub enum awaken_runtime_host::StoreKind
 pub awaken_runtime_host::StoreKind::Fs
 pub awaken_runtime_host::StoreKind::Postgres
@@ -74,7 +81,7 @@ pub awaken_runtime_host::DeploymentConfig::dispatch_backend: awaken_runtime_host
 pub awaken_runtime_host::DeploymentConfig::dispatch_owner: alloc::string::String
 pub awaken_runtime_host::DeploymentConfig::durable: bool
 pub awaken_runtime_host::DeploymentConfig::nats_url: core::option::Option<alloc::string::String>
-pub awaken_runtime_host::DeploymentConfig::sandbox_tier: awaken_runtime_host::deployment_config::SandboxTier
+pub awaken_runtime_host::DeploymentConfig::sandbox_tier: awaken_runtime_host::SandboxTier
 pub awaken_runtime_host::DeploymentConfig::storage_dir: core::option::Option<std::path::PathBuf>
 pub awaken_runtime_host::DeploymentConfig::store: awaken_runtime_host::StoreKind
 pub awaken_runtime_host::DeploymentConfig::upstream: core::option::Option<alloc::string::String>
@@ -355,7 +362,7 @@ pub trait awaken_runtime_host::ExecutorProvider: core::marker::Send + core::mark
 pub fn awaken_runtime_host::ExecutorProvider::executor_for(&self, &str) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
 pub fn awaken_runtime_host::advertised_tools(&std::collections::hash::set::HashSet<alloc::string::String>, &std::collections::hash::set::HashSet<alloc::string::String>, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub fn awaken_runtime_host::block_text(&[awaken_agent_contract::agent::content::ContentBlock]) -> alloc::string::String
-pub async fn awaken_runtime_host::build_acp_channel_source(awaken_runtime_host::deployment_config::SandboxTier, core::option::Option<&str>, awaken_run_executor_acp::subprocess::AcpLaunch, awaken_runtime_host::ThreadEgress, std::path::PathBuf) -> core::result::Result<alloc::sync::Arc<dyn awaken_run_executor_acp::AgentChannelSource>, alloc::string::String>
+pub async fn awaken_runtime_host::build_acp_channel_source(awaken_runtime_host::SandboxTier, core::option::Option<&str>, awaken_run_executor_acp::subprocess::AcpLaunch, awaken_runtime_host::ThreadEgress, std::path::PathBuf) -> core::result::Result<alloc::sync::Arc<dyn awaken_run_executor_acp::AgentChannelSource>, alloc::string::String>
 pub fn awaken_runtime_host::commit_ingest_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> axum::routing::Router
 pub fn awaken_runtime_host::consent_router(alloc::sync::Arc<dyn awaken_data_subject::DataSubjectRepo>) -> axum::routing::Router
 pub fn awaken_runtime_host::default_models() -> alloc::vec::Vec<awaken_runtime_host::ModelEntry>

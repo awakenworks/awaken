@@ -26,6 +26,9 @@ awaken-worker = { workspace = true }
 # The service layer: SharedHost / ManagedHost / ConfigService / ConfigPlane and the
 # durable session repositories the composition opens.
 awaken-runtime-host = { workspace = true }
+# The ACP executor (AcpLaunch/AcpRunExecutor) for `acp:*` threads — wired by config
+# (AWAKEN_ACP_ARGV) into the worker's configured sandbox tier.
+awaken-run-executor-acp = { workspace = true }
 awaken-observability = { workspace = true }
 # The admin `/metrics` gauges are OTel observable instruments (rendered via the
 # Prometheus exporter in awaken-observability).
@@ -54,6 +57,13 @@ awaken-runtime-contract = { workspace = true }
 async-trait.workspace = true
 axum = "0.8"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
+
+[features]
+# Container ACP tiers (AWAKEN_SANDBOX_TIER=docker/podman/k8s): enable the backend a
+# deployment runs its agents on. Off by default — the namespace tier needs no feature.
+container-docker = ["awaken-runtime-host/container-docker"]
+container-podman = ["awaken-runtime-host/container-podman"]
+container-k8s = ["awaken-runtime-host/container-k8s"]
 
 [dev-dependencies]
 # The management integration tests moved here from awaken-server (they drive

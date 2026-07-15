@@ -356,6 +356,27 @@ async fn open_management_stores(
 /// be set. Fails loudly when unset, both-set, unreadable, or malformed. The pure
 /// resolution lives once in `awaken_credential_vault` (shared with the worker); this
 /// only wires the env.
+/// The agent-CLI argv for `acp:*` sessions, from `AWAKEN_ACP_ARGV` (whitespace-split,
+/// e.g. `claude --acp`). `None` when unset/blank — the host then serves no ACP backend.
+fn acp_launch_argv() -> Option<Vec<String>> {
+    std::env::var("AWAKEN_ACP_ARGV")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| v.split_whitespace().map(String::from).collect())
+}
+
+/// The base dir the namespace-tier ACP sandbox roots live under (`AWAKEN_SANDBOX_DIR`),
+/// or a per-process temp dir when unset. Ignored by the container tiers.
+fn acp_sandbox_base() -> std::path::PathBuf {
+    std::env::var("AWAKEN_SANDBOX_DIR")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("awaken-acp-sbx-{}", std::process::id()))
+        })
+}
+
 fn mgmt_seal_key_from_env() -> [u8; 32] {
     let hex = awaken_credential_vault::resolve_seal_key_hex(
         std::env::var("AWAKEN_MGMT_SEAL_KEY").ok(),
@@ -718,8 +739,32 @@ async fn management_router_over(
                 awaken_control::BOOTSTRAP_WORKSPACE,
             ),
         ));
-    // Last-mile backend wiring the management plane does not assemble itself (e.g. an
-    // ACP executor for `acp:*` threads), injected by the composition root.
+    // Production ACP wiring (`acp:*` threads): when `AWAKEN_ACP_ARGV` names an agent
+    // CLI, launch it in the worker's configured sandbox tier (`AWAKEN_SANDBOX_TIER` —
+    // the namespace/bwrap tier by default, or a user container image on docker/podman/
+    // k8s). Egress follows each session's policy via the host's shared `ThreadEgress`.
+    // A misconfigured tier (e.g. a container backend whose feature is not compiled in)
+    // fails the process start with a clear message, never a silent fallback.
+    let host_builder = match acp_launch_argv() {
+        Some(argv) => {
+            let dep = awaken_runtime_host::DeploymentConfig::from_env();
+            let launch = awaken_run_executor_acp::AcpLaunch::custom(argv, Vec::new());
+            let source = awaken_runtime_host::build_acp_channel_source(
+                dep.sandbox_tier,
+                dep.container_image.as_deref(),
+                launch,
+                host_builder.thread_egress(),
+                acp_sandbox_base(),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("configure the ACP sandbox tier: {e}"));
+            let acp = std::sync::Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
+            host_builder.with_acp(acp)
+        }
+        None => host_builder,
+    };
+    // Last-mile backend wiring the management plane does not assemble itself, injected
+    // by the composition root (a scenario that serves external-CLI sessions).
     let host_builder = match customize_host {
         Some(customize) => customize(host_builder),
         None => host_builder,

@@ -1272,6 +1272,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # Stage C: the Worker role delegates to the production database-less worker.
         "awaken-worker",
         "awaken-runtime-host",
+        # The ACP executor: the composition root wires an `acp:*` backend into the Serve
+        # host by config (AWAKEN_ACP_ARGV), which the runtime-host plane does not do itself.
+        "awaken-run-executor-acp",
         "awaken-observability",
         # The composition root registers the brain's active-streams connection-load
         # gauge on the global OTel meter after init (#4), so it names opentelemetry.
