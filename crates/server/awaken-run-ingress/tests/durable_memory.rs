@@ -83,6 +83,57 @@ async fn durable_submit_persists_then_runs_to_completion() {
 }
 
 #[tokio::test]
+async fn a_worker_routes_inference_through_the_resolved_model_executor() {
+    // Cause: the worker carries a model resolver that maps the run's binding model_ref
+    // to a labeled executor. Effect: the drive routes inference through THAT executor,
+    // not the runtime's bound default — the committed reply is the resolved model's
+    // ("RESOLVED"), never the runtime default ("done"). This is the per-run provider
+    // seam a database-less worker uses to run the run's own configured model.
+    use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
+
+    struct Labeled;
+    #[async_trait::async_trait]
+    impl LlmExecutor for Labeled {
+        async fn infer(
+            &self,
+            _r: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            Ok(ChatResponse {
+                output: AssistantOutput::text("RESOLVED"),
+                usage: None,
+                stop_reason: None,
+            })
+        }
+    }
+
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let resolver: awaken_run_ingress::ModelResolverFn =
+        Arc::new(|_model_ref| Some(Arc::new(Labeled) as Arc<dyn LlmExecutor>));
+    let ingress = DurableRunIngress::with_owner_and_resolver(
+        text_runtime(), // its bound model would reply "done"
+        store.clone(),
+        commit.clone(),
+        "owner",
+        None,
+        Some(resolver),
+    );
+
+    let phase = ingress
+        .submit_background(activation("run-resolved"))
+        .await
+        .expect("durable submit");
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+
+    let messages = commit.committed().messages;
+    assert_eq!(
+        messages.last().unwrap().text_content(),
+        "RESOLVED",
+        "the worker ran the resolved model, not the runtime's bound default"
+    );
+}
+
+#[tokio::test]
 async fn durable_run_drains_live_inbox_steer_at_the_boundary() {
     // ADR-0054 P2: a steer message offered into the durable ingress's per-session
     // inbox is drained by the worker-driven run at its safe loop boundary — steer

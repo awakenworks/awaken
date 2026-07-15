@@ -51,19 +51,20 @@ pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     // The base host. A run's model is resolved per attempt through the injected
     // ExecutorProvider, which owns how the model is reached (local credentials or a
-    // gateway offering) — the runtime never sees an access grant.
+    // gateway offering) — the runtime only names a model and gets back an executor.
     let mut host =
         SharedHost::new(Arc::new(NoModelConfiguredExecutor), "worker").with_upstream(upstream);
 
     // Gateway-only mode (`AWAKEN_WORKER_GATEWAY_ONLY=1`): a genuinely SECRETLESS
-    // worker. It opens no credential vault and needs no seal key — every run must
-    // carry a cloud-managed gateway grant; a local-credentialed run has no executor
-    // and falls back to the NoModelConfiguredExecutor guidance. Otherwise (the
-    // default) the worker also resolves local-grant runs from the shared control
-    // plane, which requires the vault + seal key.
+    // worker. It opens no credential vault and needs no seal key — every run's model
+    // must resolve without a local secret (a cloud-managed gateway offering); a model
+    // needing local credentials has no executor and falls back to the
+    // NoModelConfiguredExecutor guidance. Otherwise (the default) the worker also
+    // resolves locally-credentialed models from the shared control plane, which
+    // requires the vault + seal key.
     let gateway_only = std::env::var("AWAKEN_WORKER_GATEWAY_ONLY").as_deref() == Ok("1");
     if !gateway_only {
-        // The shared control-plane stores this worker resolves local-grant models from
+        // The shared control-plane stores this worker resolves locally-credentialed models from
         // — opened the same way the Serve composition opens them (durable under
         // AWAKEN_MGMT_DIR, else in-memory; needs the seal key to unseal credentials).
         let stores = awaken_control::open_shared_config_stores_from_env().await;

@@ -683,11 +683,12 @@ async fn drive(
     mut store: Store,
     seed_state: Vec<StateCommand>,
 ) -> Result<Checkpoint> {
-    // The per-run model executor override (ADR-0004) wins over the runtime's bound
-    // default: a run carrying a cloud gateway grant is routed through a
-    // gateway-dialing executor the host built for this attempt, so a secretless
-    // worker honors the grant without a local provider credential. Absent → the
-    // runtime's session-resolved executor.
+    // The per-run model executor (ADR-0004) wins over the runtime's bound default:
+    // the host resolves the run's model ref to an executor for this attempt and
+    // injects it here, so a database-less worker runs the run's own configured model
+    // without a local provider credential. The runtime only uses the executor — it
+    // never learns how the model is reached. Absent → the runtime's session-resolved
+    // executor.
     let llm = context
         .model_executor
         .clone()

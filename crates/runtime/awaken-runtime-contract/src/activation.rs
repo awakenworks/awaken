@@ -20,8 +20,8 @@ pub struct RunActivation {
 impl RunActivation {
     /// A fresh activation carrying only the runtime-core inputs. *How* the run
     /// reaches its model is not here: the resolve seam turns the run's model ref into
-    /// a concrete provider (executor) before execution — the runtime never sees an
-    /// access grant.
+    /// a concrete provider (executor) before execution — the runtime only ever names a
+    /// model and is handed the executor, never learning how the model is reached.
     ///
     /// Distributed *trace* propagation is NOT carried here either: the admitting request's
     /// W3C `traceparent` rides the ingress envelope (`RunExecutionRequest`) across
