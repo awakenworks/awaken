@@ -1,4 +1,4 @@
-# ADR-0056: Sandbox Reuse as Two Orthogonal Volumes — Cache-Volume Warmth Is Application-Owned, Isolation-Instance Reuse Is Runtime-Owned; Share Decisions, Not Orchestration
+# ADR-0056: Sandbox Reuse as Two Orthogonal Volumes — Cache-Volume Warmth Is Product-Plane-Owned, Isolation-Instance Reuse Is Worker-Plane-Owned; Keep Decisions Pure, Orchestration Separate
 
 - Status: Proposed
 - Date: 2026-07-15
@@ -11,10 +11,10 @@
   (`awaken-sandbox-local::lib`); the brain–hand relay and dynamic placement
   registry (ADR-0044/0045/0046); the two existing mount kinds — content-hashed
   read-only `ResourceMount` and harvested read-write memory mount (ADR-0038).
-- Reference: the sibling product `~/Codes/oversight-next` already implements the
-  application half of this decision correctly (work-area lock + mtime GC in its
-  own `oversight-provisioner`, zero coupling to awaken provisioning); the
-  operational shape is validated by DeerFlow's AIO warm-container pool.
+- Reference: the operational shape of an isolation-instance pool is validated by
+  DeerFlow's AIO warm-container pool (deterministic id, release-parks, idle reaper,
+  orphan reconciliation, readiness-probe-before-adopt) — a reference architecture,
+  not a code dependency.
 
 ## Context
 
@@ -30,16 +30,14 @@ no idle reaper. Separately, the resident host still provisions per session
 through the *deprecated* `Environment` cooperating-tool model, one fresh
 environment per session, no reuse.
 
-Two neighbours have already solved the parts we lack:
+The two reuses have well-understood reference shapes:
 
-- **oversight-next** implements durable *directory* reuse end to end: a stable
-  path keyed per work unit, a single-active lock (`create_new` atomic lock file),
-  keep-warm-on-release (drop removes only the lock, the directory stays), and
-  mtime-based idle GC — all in its own `oversight-provisioner`, with the realized
-  path treated as opaque worker state, and **no dependency on awaken's
-  provisioning** (its ADR-0012 keeps `oversight-awaken-binding` the only awaken
-  seam). It also *models but does not implement* a warm-instance pool
-  (`EnvironmentCatalogEntry.max_concurrency` / `persistent_paths`).
+- **Warm directory reuse** is the classic build-cache / checkout pattern: a stable
+  path keyed per work unit, a single-active lock (an atomic `create_new` lock
+  file), keep-warm-on-release (drop removes only the lock, the directory stays),
+  and mtime-based idle GC — with the realized path treated as **opaque worker
+  state**. This is application/product-domain machinery (it assumes "a code
+  project worth keeping warm"), so it lives in the product plane, not the runtime.
 - **DeerFlow** implements the operational shape of an isolation-instance pool for
   Docker/k3s containers: deterministic id `sha256(user:thread)`, release-parks /
   destroy-stops, an idle reaper, cross-process discovery, orphan reconciliation,
@@ -86,11 +84,11 @@ The Cache Volume carries exactly the semantics its volume name implies, and they
 are load-bearing constraints, not documentation:
 
 - **Access mode ReadWriteOnce (RWO).** One active writer at a time, enforced by a
-  single-active lock (oversight's `create_new` lock file is the reference). A
-  concurrent claim for the same key gets a fresh throwaway volume, never a shared
-  writer. The oversight invariant "writable base + `max_concurrency > 1` is
-  forbidden (lost-update)" is precisely the RWO-vs-RWX rule; concurrency means N
-  independent volumes or an explicit RWX volume, never a shared RWO.
+  single-active lock (an atomic `create_new` lock file). A concurrent claim for
+  the same key gets a fresh throwaway volume, never a shared writer. The invariant
+  "a writable base with `max_concurrency > 1` is forbidden (lost-update)" is
+  precisely the RWO-vs-RWX rule; concurrency means N independent volumes or an
+  explicit RWX volume, never a shared RWO.
 - **Reclaim policy Retain-then-reuse.** Release keeps the bytes; only an idle
   horizon (mtime GC, optionally lease-cross-checked) reclaims them.
 - **Cache, not durable data.** Losing a Cache Volume costs a cold rebuild, never
@@ -112,11 +110,12 @@ that. Therefore:
   persistent volume path (the existing `IsolatedRoot` / `AWAKEN_PROJECT_DIR`
   mechanism generalized), mounts it, and treats its warmth/GC as **opaque —
   awaken neither keeps it warm nor reclaims it.**
-- The **application** owns the Cache-Volume lifecycle. oversight already does
-  this in `oversight-provisioner` and must keep owning it; awaken's own hosted
-  product, if it wants directory warmth, owns a Cache-Volume provisioner in its
-  **server/product plane** (`awaken-runtime-host` or above), never in the runtime
-  or the neutral worker contract.
+- The **application / product plane** owns the Cache-Volume lifecycle. Awaken's own
+  hosted product, if it wants directory warmth, owns a Cache-Volume provisioner in
+  its **server/product plane** (`awaken-runtime-host` or above), never in the
+  runtime or the neutral worker contract. Any external consumer that wants directory
+  warmth likewise owns its own provisioner and reaches awaken only through the mount
+  seam below — awaken exposes the substrate, never the warmth policy.
 
 So: **awaken does not build a WorkAreaPool / VolumePool.** That was the wrong
 instinct. Awaken builds the substrate a volume mounts into, and stops.
@@ -170,9 +169,9 @@ hosting trust model is the *floor*, so make the floor a parameter:
 IsolationPolicy { require: IsolationClass, prefer: IsolationClass, on_unmet: FailClosed | DegradeWithConsent }
 ```
 
-- Local single-user (oversight-shaped): `require = Workdir`, soft default.
-- Multi-tenant hosting (awaken-shaped): `require = Namespace|Container`,
-  `on_unmet = FailClosed`, preserving the never-downgrade rule.
+- Local single-user (dev / CI): `require = Workdir`, soft default.
+- Multi-tenant hosting: `require = Namespace|Container`, `on_unmet = FailClosed`,
+  preserving the never-downgrade rule.
 - `DegradeWithConsent` never degrades silently: it emits a structured audit
   event, a metric, and a run-level `isolation_degraded` marker. Degradation
   becomes *representable and logged*, never invisible.
@@ -219,31 +218,31 @@ single-user host). Building all of it now is gold-plating.
    removes an existing conflation that already produces the `attach`/`renew_lease`
    gaps. Splitting genuinely different lifecycles is simplification, not addition.
 
-### Tension B — DRY vs bounded-context autonomy (DDD integration mode)
+### Tension B — pure decision core vs orchestration (simple design: decision/IO split)
 
-The instinct to "extract shared reuse primitives so awaken and oversight don't
-each build them" is a **Shared Kernel** — DDD's most coupling-heavy integration
-mode, demanding co-versioned lockstep evolution. Across two bounded contexts,
-duplication is frequently healthier than that coupling (Separate Ways).
+The reuse *judgements* (`reconcile_adoption`, `LeaseLiveness`, `capped_expiry`) and
+the reuse *orchestration* (the reaper loop, the pool, the Cache-Volume provisioner)
+are different kinds of thing, and mixing them is why `attach`/`renew_lease`/pooling
+are half-built. Keep the two cleanly separated.
 
-**Resolution — share decisions, not orchestration.**
+**Resolution — decisions are a pure kernel; orchestration is the impure shell.**
 
-- **Shared (a thin, pure, product-free kernel):** the *decision* functions and
-  value types only — `reconcile_adoption`, `LeaseLiveness`, `LeaseGrant`,
-  `capped_expiry`, `SandboxHandle`, `IsolationClass`. These are nearly immutable,
-  carry no DTOs, and do no I/O. Awaken **owns** this kernel; oversight may depend
-  on it **one-way** (consistent with oversight ADR-0012: awaken is upstream).
-  Awaken must **never** depend on oversight.
-- **Not shared (each context owns its own):** the pool *orchestration*, the
-  Cache-Volume provisioner, the lock/GC loop. oversight keeps its working
-  `work_area_lock`/`work_area_gc`; awaken builds its own `SandboxManager`. A small
-  amount of parallel orchestration is accepted deliberately, because it buys each
-  context the freedom to evolve its lifecycle independently.
-- The boundary is mechanically enforced (guardrail G-K): the shared crate may
+- **The pure decision kernel:** the *decision* functions and value types only —
+  `reconcile_adoption`, `LeaseLiveness`, `LeaseGrant`, `capped_expiry`,
+  `SandboxHandle`, `IsolationClass`. These are nearly immutable, carry no DTOs, and
+  do no I/O, so they are exhaustively testable with a fake clock and plain values.
+  They live in a thin awaken crate (`awaken-provisioning-contract` today; a
+  dedicated `awaken-provisioning-kernel` if it needs to be depended on without the
+  rest of the contract) and are **self-contained to awaken** — no external product
+  is a design input.
+- **The impure orchestration:** the pool, the reaper/renew loop, the Cache-Volume
+  provisioner. Awaken builds its own `SandboxManager`; it contributes control flow
+  only and delegates every judgement to the pure kernel.
+- The boundary is mechanically enforced (guardrail G-K): the kernel crate may
   export pure functions and value types only — no `async`, no I/O, no product
-  types — so it cannot grow into a de-facto shared runtime.
+  types — so orchestration can never leak into the decision core.
 
-The rule in one line: **share the judgement, not the machinery.**
+The rule in one line: **keep the judgement pure, the machinery separate.**
 
 ## Guardrails (fitness rules)
 
@@ -253,13 +252,11 @@ The rule in one line: **share the judgement, not the machinery.**
   worker layer only mounts a caller-supplied opaque volume path. Enforcer:
   `check_crate_boundaries.py` rule forbidding `mtime`/idle-GC/warm-directory
   symbols in those crates.
-- **G-Dir (dependency direction).** `awaken-*` must not import any `oversight-*`
-  crate. oversight depends on awaken only through the shared pure kernel and
-  `oversight-awaken-binding`. Enforcer: boundary check + `deny.toml`.
-- **G-K (shared kernel purity).** The shared reuse-decision crate exports only
-  pure functions and `Copy`/plain value types — no `async fn`, no `std::io`, no
-  `tokio`, no product DTO. Enforcer: a crate-lint that rejects `async`/IO deps in
-  that crate's `Cargo.toml` and a symbol check.
+- **G-K (decision-kernel purity).** The reuse-decision kernel exports only pure
+  functions and `Copy`/plain value types — no `async fn`, no `std::io`, no
+  `tokio`, no product DTO — so orchestration cannot leak into the decision core.
+  Enforcer: a crate-lint that rejects `async`/IO deps in that crate's `Cargo.toml`
+  and a symbol check.
 - **G-Y (YAGNI scenario gate).** `SandboxPool` (Container reuse) and
   `IsolationPolicy::DegradeWithConsent` may not merge without an accompanying
   failing driving-scenario test (container hosting / multi-tenant degradation).
@@ -288,19 +285,17 @@ The rule in one line: **share the judgement, not the machinery.**
   primitives (Kubernetes PVC + StorageClass, Docker named volumes) instead of
   reinventing storage.
 - Ownership is unambiguous and DDD-clean: runtime core owns nothing here; the
-  worker plane owns isolation + the mount seam; the application owns warmth. The
+  worker plane owns isolation + the mount seam; the product plane owns warmth. The
   dependency graph stays acyclic and one-way.
-- Awaken stops carrying application domain knowledge ("this is a code project");
-  oversight stops being tempted to reach into awaken provisioning; neither
-  rebuilds the other's working half.
+- Awaken stops carrying application domain knowledge ("this is a code project"):
+  the worker contract stays a neutral isolation substrate, and warmth is a
+  product-plane concern reached only through the opaque mount seam.
 - The uncalled decision functions finally get a caller, closing the most glaring
   gap (`reconcile_adoption` with no orchestrator) without re-deriving any
   judgement.
 
 **Negative / accepted costs.**
 
-- A deliberate, bounded amount of parallel orchestration between oversight and
-  awaken (Tension B's price for context autonomy).
 - The Container tier's pool and reattach are real work deferred behind scenario
   gates; until then, container hosting on a bare host degrades to the Workdir
   floor unless a daemon is present (honest, `probe_ready`-gated, never silent).
@@ -320,8 +315,8 @@ The smallest end-to-end proof of the split, zero new isolation risk:
 3. Migrate host `session_artifacts` from the deprecated `Environment` to
    `pc::Sandbox::artifacts()`, leaving the rest of the legacy path under
    `#[cfg(test)]` until later slices.
-4. Provide the shared pure-kernel crate (decision fns + `SandboxHandle`) and point
-   the manager at it; add guardrails G-Own, G-Dir, G-K.
+4. Keep the pure decision kernel (decision fns + `SandboxHandle`) cleanly separated
+   and point the manager at it; add guardrails G-Own, G-K.
 
 No Container pool, no `DegradeWithConsent`, no reattach in this slice — those
 arrive only with their driving scenarios (G-Y).
