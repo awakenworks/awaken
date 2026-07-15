@@ -138,7 +138,7 @@ async fn commit_persists_facts_messages_and_serves_reads() {
             serde_json::json!("v"),
         )],
         events: vec![Draft {
-            kind: EventKind::MessageCommitted,
+            kind: EventKind::RunPhaseChanged,
             payload: serde_json::json!({"n": 1}),
         }],
         waiting: None,

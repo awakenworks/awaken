@@ -63,7 +63,7 @@ async fn reopen_file_resumes_from_committed_facts() {
                 )],
                 state: Vec::new(),
                 events: vec![Draft {
-                    kind: EventKind::MessageCommitted,
+                    kind: EventKind::RunPhaseChanged,
                     payload: serde_json::Value::Null,
                 }],
                 waiting: None,

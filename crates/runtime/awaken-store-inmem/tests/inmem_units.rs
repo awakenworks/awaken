@@ -158,7 +158,7 @@ async fn first_ended_commit_is_allowed_then_post_terminal_is_fenced() {
             "r",
             "first",
             Phase::Ended(EndCause::NaturalEnd),
-            one_event(EventKind::MessageCommitted),
+            one_event(EventKind::RunPhaseChanged),
             vec![],
             None,
         ))
@@ -172,7 +172,7 @@ async fn first_ended_commit_is_allowed_then_post_terminal_is_fenced() {
             "r",
             "dup",
             Phase::Ended(EndCause::NaturalEnd),
-            one_event(EventKind::MessageCommitted),
+            one_event(EventKind::RunPhaseChanged),
             vec![],
             None,
         ))
@@ -284,7 +284,7 @@ async fn event_ids_are_dense_within_a_commit_and_ascending_across_commits() {
                     payload: serde_json::Value::Null,
                 },
                 Draft {
-                    kind: EventKind::MessageCommitted,
+                    kind: EventKind::RunPhaseChanged,
                     payload: serde_json::Value::Null,
                 },
             ],
@@ -300,7 +300,7 @@ async fn event_ids_are_dense_within_a_commit_and_ascending_across_commits() {
             "r",
             "c2",
             Phase::Ended(EndCause::NaturalEnd),
-            one_event(EventKind::MessageCommitted),
+            one_event(EventKind::RunPhaseChanged),
             vec![],
             None,
         ))
@@ -344,7 +344,7 @@ async fn list_events_run_scope_filters_by_run_thread_scope_spans_runs() {
                 run,
                 run,
                 Phase::Ended(EndCause::NaturalEnd),
-                one_event(EventKind::MessageCommitted),
+                one_event(EventKind::RunPhaseChanged),
                 vec![],
                 None,
             ))
