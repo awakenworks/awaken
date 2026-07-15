@@ -381,6 +381,22 @@ impl DispatchQueue for PostgresDispatchStore {
         Ok(result.rows_affected() as usize)
     }
 
+    async fn current_epoch(&self, run_id: &RunId) -> Result<Option<u64>, DispatchError> {
+        // The row's live `lease_epoch` fence token; `None` once the row is gone. The
+        // same column the settle fence below matches on — read here for the commit
+        // fence (a per-node in-process read; cross-node visibility is reconnect-only,
+        // like the rest of this backend's projection).
+        let p = NS;
+        let epoch: Option<i64> = sqlx::query_scalar(&format!(
+            "SELECT lease_epoch FROM {p}_dispatch WHERE run_id = $1"
+        ))
+        .bind(&run_id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(reject)?;
+        Ok(epoch.map(|e| e as u64))
+    }
+
     async fn settle(
         &self,
         run_id: &RunId,

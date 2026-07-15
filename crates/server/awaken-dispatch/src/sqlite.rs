@@ -391,6 +391,25 @@ impl DispatchQueue for SqliteDispatchStore {
         .await
     }
 
+    async fn current_epoch(&self, run_id: &RunId) -> Result<Option<u64>, DispatchError> {
+        // The row's live `lease_epoch` fence token; `None` once the row is gone. The
+        // same column the settle fence below matches on — read here for the commit
+        // fence.
+        let run_id = run_id.0.clone();
+        self.with_conn(move |conn, p| {
+            let epoch: Option<i64> = conn
+                .query_row(
+                    &format!("SELECT lease_epoch FROM {p}_dispatch WHERE run_id = ?1"),
+                    params![run_id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(reject)?;
+            Ok(epoch.map(|e| e as u64))
+        })
+        .await
+    }
+
     async fn settle(
         &self,
         run_id: &RunId,

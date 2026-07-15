@@ -143,8 +143,14 @@ mod tests {
         // `executor_for` at run time).
         let mut binding = ThreadModelBinding::new();
         let mut map: HashMap<String, Arc<dyn LlmExecutor>> = HashMap::new();
-        map.insert("model-a".into(), Arc::new(LabeledModel("a")) as Arc<dyn LlmExecutor>);
-        map.insert("model-b".into(), Arc::new(LabeledModel("b")) as Arc<dyn LlmExecutor>);
+        map.insert(
+            "model-a".into(),
+            Arc::new(LabeledModel("a")) as Arc<dyn LlmExecutor>,
+        );
+        map.insert(
+            "model-b".into(),
+            Arc::new(LabeledModel("b")) as Arc<dyn LlmExecutor>,
+        );
         binding.set_provider(Arc::new(MapProvider(map)));
 
         binding.register("t", "model-a");
