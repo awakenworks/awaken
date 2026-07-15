@@ -267,7 +267,11 @@ impl MemoryFs for InMemoryFs {
 /// cross-node CAS is the postgres slice (ADR-0053 P4).
 pub struct FsMemoryFs {
     root: PathBuf,
+    // Mints dense `mem_<n>` ids; only `create` advances it.
     next: AtomicU64,
+    // Distinct from `next`: names each staged temp file uniquely, so a write never
+    // consumes an id ordinal (that is what keeps minted ids dense).
+    write_seq: AtomicU64,
     write_lock: tokio::sync::Mutex<()>,
 }
 
@@ -296,6 +300,7 @@ impl FsMemoryFs {
         Ok(Self {
             root,
             next: AtomicU64::new(max),
+            write_seq: AtomicU64::new(0),
             write_lock: tokio::sync::Mutex::new(()),
         })
     }
@@ -331,7 +336,7 @@ impl FsMemoryFs {
         let tmp = dir.join(format!(
             ".tmp.{}.{}",
             std::process::id(),
-            self.next.fetch_add(1, Ordering::SeqCst)
+            self.write_seq.fetch_add(1, Ordering::SeqCst)
         ));
         tokio::fs::write(&tmp, &bytes)
             .await
@@ -792,6 +797,24 @@ mod tests {
         let root = temp_root("conf");
         let fs = FsMemoryFs::open(&root).unwrap();
         conformance(&fs).await;
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Minted ids stay dense: N creates yield `mem_1..mem_N` regardless of how many
+    /// updates/renames (each a `write_record`) happen in between — a write must not
+    /// consume an id ordinal.
+    #[tokio::test]
+    async fn fs_mints_dense_ids() {
+        let root = temp_root("dense");
+        let fs = FsMemoryFs::open(&root).unwrap();
+        let a = fs.create("s", "/a.md", "a").await.unwrap();
+        assert_eq!(a.id, "mem_1");
+        // An update writes a record but must not advance the id counter.
+        fs.update("s", &a.id, "a2", &a.content_sha256)
+            .await
+            .unwrap();
+        let b = fs.create("s", "/b.md", "b").await.unwrap();
+        assert_eq!(b.id, "mem_2", "a write between creates does not skip an id");
         std::fs::remove_dir_all(&root).ok();
     }
 
