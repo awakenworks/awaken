@@ -211,6 +211,24 @@ impl PermissionResolver for AllowAll {
     }
 }
 
+/// A neutral MCP server for the ACP `session/new` `mcpServers` param — the protocol-acp
+/// shape the executor projects `McpServerConfig` into (keeping this crate free of the
+/// executor's config vocab), mapped to `agent_client_protocol::McpServer` under
+/// `real-acp`. A stdio child carries `command`+`args`; an HTTP endpoint carries `url`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionMcpServer {
+    pub name: String,
+    /// Stdio transport: the child command + args (`url` is then `None`).
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    /// HTTP transport: the endpoint URL (`command` is then `None`).
+    pub url: Option<String>,
+    /// An `(name, value)` the CLI presents as an auth header (HTTP) or env var (stdio).
+    /// α: a broker reference the gateway resolves; β: a raw secret on a trusted launch.
+    /// `None` for an unauthenticated server.
+    pub auth: Option<(String, String)>,
+}
+
 /// The per-turn cross-cutting inputs the driver needs beyond the prompt, bundled
 /// so a turn threads as one value rather than a widening parameter list. The Acp
 /// codec reads/updates it across the handshake; the newline stand-in ignores all
@@ -219,6 +237,10 @@ pub struct TurnConfig<'a> {
     /// Authorizes the agent's mid-turn tool requests (the neutral `PermissionPolicy`
     /// behind an executor adapter).
     pub resolver: &'a dyn PermissionResolver,
+    /// MCP servers to hand the CLI at `session/new` (the `AcpSession` interface, for
+    /// claude/gemini/opencode). Empty for the newline stand-in and for config-file CLIs
+    /// (codex gets a `config.toml` instead).
+    pub mcp_servers: Vec<SessionMcpServer>,
     /// In: an ACP session id to resume via `session/load` (a relaunched CLI reloads
     /// its own session, so context survives the per-turn relaunch). Out: the id the
     /// turn used — `session/new`'s fresh id when none was given — so the caller can
@@ -242,6 +264,7 @@ impl<'a> TurnConfig<'a> {
     pub fn new(resolver: &'a dyn PermissionResolver) -> Self {
         Self {
             resolver,
+            mcp_servers: Vec::new(),
             session_id: None,
             session_mode: None,
             session_cwd: None,

@@ -172,7 +172,14 @@ pub fn build_compaction_router() -> Router {
     // is the real-model path (a small window trips compaction on large input).
     // Without it, the deterministic message-count trigger (fold after 2 messages).
     let env_u = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<u32>().ok());
-    let host = match env_u("AWAKEN_COMPACT_MAX_TOKENS") {
+    // The token window is a MODEL attribute: an explicit agent override
+    // (`AWAKEN_COMPACT_MAX_TOKENS`) wins, else the model's published context window
+    // (`AWAKEN_MODEL_CONTEXT_WINDOW` — this harness's projection of the catalog's
+    // `ModelSpec.context_window`). This is `CompactConfig::effective_max_tokens`: an
+    // agent that pins nothing inherits token-aware compaction from its model.
+    let window =
+        env_u("AWAKEN_COMPACT_MAX_TOKENS").or_else(|| env_u("AWAKEN_MODEL_CONTEXT_WINDOW"));
+    let host = match window {
         Some(max_tokens) => {
             let ratio = std::env::var("AWAKEN_COMPACT_TRIGGER_RATIO")
                 .ok()
@@ -367,6 +374,123 @@ pub fn build_acp_gateway_router() -> Router {
     mount(Arc::new(
         SharedHost::new(model, model_ref).with_projected_acp(FAKE_ACP_CLI, store_dir),
     ))
+}
+
+/// A fake ACP agent (JSON-RPC, shell builtins only) that reports whether the
+/// `session/new` request it received carried the session's MCP server and, if so,
+/// whether the bearer is the α secretless reference (`session-mcp:<name>`) rather than
+/// the raw vault token. It captures the `session/new` line (`id:2`) and, on the prompt
+/// (`id:3`), classifies it into its agent message: `saw-calc` if the `calc` server name
+/// crossed, `alpha-ref` if a `session-mcp:` reference is the bearer. So the managed-API
+/// e2e can assert the whole D6→D5 chain (session `mcp_servers` → staged → α overlay →
+/// `session/new`) reached the CLI without the raw secret ever leaving the host.
+const FAKE_ACP_MCP_ECHO_SCRIPT: &str = "while IFS= read -r line; do \
+      case \"$line\" in \
+        *'\"id\":1'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}';; \
+        *'\"id\":2'*) SN=\"$line\"; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\"}}';; \
+        *'\"id\":3'*) \
+          N=noname; case \"$SN\" in *calc*) N=saw-calc;; esac; \
+          A=noref; case \"$SN\" in *'session-mcp:'*) A=alpha-ref;; esac; \
+          printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"mcp %s %s\"}}}}\\n' \"$N\" \"$A\"; \
+          printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; \
+          exit 0;; \
+      esac; \
+    done";
+
+/// [`FAKE_ACP_MCP_ECHO_SCRIPT`] wired as an `AcpSession` (session/new delivery) CLI row,
+/// so the projecting launch path hands it the run's staged MCP servers through the
+/// `session/new` request the [`awaken_run_executor_acp::Codec::Acp`] driver builds.
+const FAKE_ACP_MCP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_acp::AcpCli {
+    id: "fake-mcp",
+    command: "/bin/sh",
+    args: &["-c", FAKE_ACP_MCP_ECHO_SCRIPT],
+    model_delivery: awaken_run_executor_acp::ModelDelivery {
+        base_url: "ANTHROPIC_BASE_URL",
+        model: "ANTHROPIC_MODEL",
+        key: "ANTHROPIC_API_KEY",
+        aliases: &[],
+    },
+    mcp_interface: awaken_run_executor_acp::McpInterface::AcpSession,
+    config_home_env: "CLAUDE_CONFIG_DIR",
+    memory_entrypoint: "CLAUDE.md",
+    retained_paths: &[],
+    session_persistence: awaken_run_executor_acp::SessionPersistence::None,
+    context_window_env: None,
+    env: &[],
+};
+
+/// A launch resolver with a fixed (dummy) model: the fake CLI ignores the model env, so
+/// this keeps the scenario off the "model config via env" path — no ANTHROPIC_* need be
+/// exported for the resolver to succeed. Only the MCP/`session/new` wire is under test.
+struct FixedAcpModel;
+impl awaken_run_executor_acp::LaunchResolver for FixedAcpModel {
+    fn model(
+        &self,
+        _activation: &awaken_runtime_contract::activation::RunActivation,
+    ) -> std::result::Result<
+        awaken_run_executor_acp::ResolvedModel,
+        awaken_run_executor_acp::OpenError,
+    > {
+        Ok(awaken_run_executor_acp::ResolvedModel {
+            base_url: "http://fake".into(),
+            model: "fake".into(),
+            api_key: "fake".into(), // awaken-allow: secret
+        })
+    }
+}
+
+/// The managed plane (vault + MCP staging + config plane, via awaken-cli's real
+/// assembly) with an ACP backend wired on: a session that selects `runtime: "acp:*"` and
+/// declares `mcp_servers` (bound to a vault credential) has its staged servers projected
+/// α-secretless into the fake CLI's `session/new`. Proves the D6→D5 chain end to end
+/// through the HTTP managed API. `AWAKEN_MODEL_MODE=acp-managed-mcp`.
+pub async fn build_acp_managed_mcp_router() -> Router {
+    let source = Arc::new(awaken_run_executor_acp::ProjectingChannelSource::new(
+        FAKE_ACP_MCP_CLI,
+        Arc::new(FixedAcpModel),
+    ));
+    let executor = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
+    awaken_cli::build_management_router_with_host_customizer(
+        Arc::new(McpToolModel),
+        "acp-managed-mcp".to_string(),
+        move |host| host.with_acp(executor),
+    )
+    .await
+}
+
+/// The REAL-CLI, REAL-LLM twin of [`build_acp_managed_mcp_router`]: the managed plane
+/// with the **actual** `claude --acp` adapter (the catalog `claude` row, launched via
+/// `npx`) wired as the ACP backend, its model resolved from the operator env (KIMI:
+/// `ANTHROPIC_BASE_URL`/`ANTHROPIC_MODEL`/`ANTHROPIC_API_KEY`), and **β trusted-inline**
+/// MCP delivery so a session's vault-bound MCP token reaches the CLI's own MCP client and
+/// authenticates against the real server. Each thread's config home is isolated under
+/// `AWAKEN_STORAGE_DIR/threads/<t>/config_home` — the CLI never touches the host's real
+/// `~/.claude`. Drives a real dynamic MCP tool call end to end. `AWAKEN_MODEL_MODE=acp-real-mcp`.
+pub async fn build_acp_real_mcp_router() -> Router {
+    let store_dir = std::env::var("AWAKEN_STORAGE_DIR")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from);
+    let cli = *awaken_run_executor_acp::acp_cli("claude").expect("claude is a catalog row");
+    // The host default model_ref mirrors the operator's `ANTHROPIC_MODEL` — the same env
+    // the ACP model-delivery reads — so a session that names no model still hands the CLI
+    // the real model name (not the scenario label). A session may still override it.
+    let model_ref = std::env::var("ANTHROPIC_MODEL")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "acp-real-mcp".to_string());
+    awaken_cli::build_management_router_with_host_customizer(
+        Arc::new(McpToolModel),
+        model_ref,
+        move |host| {
+            // β: this is a trusted-local CLI launch, so a staged MCP server's bearer may
+            // cross to the CLI inline (it must, to authenticate to the real MCP server —
+            // α would hand it an unresolved `session-mcp:` reference).
+            host.with_trusted_acp_mcp(true)
+                .with_projected_acp(cli, store_dir)
+        },
+    )
+    .await
 }
 
 /// [`FAKE_ACP_SCRIPT`]'s sandboxed twin (bash, for `/dev/tcp`), with an OS-egress

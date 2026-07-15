@@ -76,6 +76,7 @@ impl AgentChannelSource for ScriptedSource {
             process: Arc::new(FakeProcess),
             codec: awaken_protocol_acp::Codec::Newline,
             workspace_cwd: None,
+            mcp_session_servers: Vec::new(),
         })
     }
 }
@@ -469,6 +470,7 @@ async fn a_session_persisted_in_one_dir_is_recovered_in_another_through_the_exec
                 process: Arc::new(FakeProcess),
                 codec: awaken_protocol_acp::Codec::Newline,
                 workspace_cwd: Some("/workspace".to_string()),
+                mcp_session_servers: Vec::new(),
             })
         }
     }
@@ -944,6 +946,7 @@ async fn acp_relaunches_the_cli_every_turn_so_a_model_switch_takes_effect() {
                 process: Arc::new(FakeProcess),
                 codec: awaken_protocol_acp::Codec::Newline,
                 workspace_cwd: None,
+                mcp_session_servers: Vec::new(),
             })
         }
     }
@@ -1016,6 +1019,204 @@ fn projecting_source_plans_launch_from_resolved_model_and_host_env() {
     );
 }
 
+/// A resolver that supplies a config-home dir under an arbitrary env key.
+struct ConfigHomeAt {
+    key: &'static str,
+    dir: String,
+}
+impl LaunchResolver for ConfigHomeAt {
+    fn model(&self, _a: &RunActivation) -> std::result::Result<ResolvedModel, OpenError> {
+        Ok(ResolvedModel {
+            base_url: "u".into(),
+            model: "m".into(),
+            api_key: "k".into(), // awaken-allow: secret
+        })
+    }
+    fn extra_env(&self, _a: &RunActivation) -> Vec<(String, String)> {
+        vec![(self.key.to_string(), self.dir.clone())]
+    }
+}
+
+/// End to end through the real launch path: a run that declares an MCP server on its ACP
+/// plugin config (what the host's `overlay_acp_mcp` produces) makes `open()` write the
+/// codex `config.toml` into the config home before it spawns — proving the whole
+/// host→plugin_config→config-file chain, secretlessly (α: a broker reference, never a raw
+/// secret). Uses a cheap spawnable command so no real CLI/creds are needed.
+#[tokio::test]
+async fn open_writes_the_codex_mcp_config_into_the_config_home() {
+    let dir = std::env::temp_dir().join(format!("awaken-acpmcp-e2e-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // A codex row (ConfigFileToml, CODEX_HOME) with a cheap spawnable command.
+    let mut cli = *acp_cli("codex").expect("codex in the catalog");
+    cli.command = "/bin/sh";
+    cli.args = &["-c", "exit 0"];
+    let source = ProjectingChannelSource::new(
+        cli,
+        Arc::new(ConfigHomeAt {
+            key: cli.config_home_env,
+            dir: dir.to_string_lossy().to_string(),
+        }),
+    );
+
+    let mut act = activation();
+    act.snapshot.resolved_spec.plugin_config.insert(
+        "acp".to_string(),
+        serde_json::json!({
+            "mcp_servers": [{
+                "name": "github",
+                "transport": { "kind": "http", "url": "https://mcp.gh" },
+                "credential": { "auth": "reference", "reference": "broker://gh" }
+            }]
+        }),
+    );
+
+    // open() writes the config.toml before spawning the (immediately-exiting) child.
+    let session = source.open(&act).await.expect("open");
+    drop(session); // reap the child
+
+    let written = std::fs::read_to_string(dir.join("config.toml")).expect("config.toml written");
+    assert!(
+        written.contains("[mcp_servers.github]"),
+        "server section present: {written}"
+    );
+    assert!(written.contains("broker://gh"), "α reference present");
+    assert!(
+        !written.contains("\"secret\""),
+        "no raw inline secret (α is secretless)"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A fake ACP agent (JSON-RPC, shell builtins only) that reports whether the
+/// `session/new` request it received carried our MCP server and, if so, whether the
+/// bearer was the α broker reference (secretless) — echoed as its agent message. It
+/// captures the raw `session/new` line (`id:2`) and, on the prompt (`id:3`), classifies
+/// it: `saw-github` if the server name crossed, `alpha-ref` if `broker://gh` (the α
+/// reference) is the bearer. So the test asserts the D5 wire (plugin_config →
+/// `to_session_mcp_server` → `to_acp_mcp_servers` → `session/new`) actually reached the CLI.
+#[cfg(feature = "real-acp")]
+const FAKE_ACP_MCP_ECHO_SCRIPT: &str = "while IFS= read -r line; do \
+      case \"$line\" in \
+        *'\"id\":1'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}';; \
+        *'\"id\":2'*) SN=\"$line\"; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\"}}';; \
+        *'\"id\":3'*) \
+          M=none; case \"$SN\" in *github*) M=saw-github;; esac; \
+          A=noauth; case \"$SN\" in *'broker://gh'*) A=alpha-ref;; esac; \
+          printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"mcp %s %s\"}}}}\\n' \"$M\" \"$A\"; \
+          printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; \
+          exit 0;; \
+      esac; \
+    done";
+
+/// End to end over the REAL ACP JSON-RPC codec: a run that declares an MCP server on
+/// its ACP plugin config (what the host's `overlay_acp_mcp` produces for an `AcpSession`
+/// CLI) makes `open()` stage it as a session server and `drive()` inject it into the
+/// `session/new` request — the D5 seam. The fake agent echoes that it saw the server and
+/// that the bearer is the α broker reference (secretless), proving the whole
+/// host→plugin_config→session/new chain without a raw secret. Gated on `real-acp`: only
+/// the official codec serializes `mcpServers` into `session/new`.
+#[cfg(feature = "real-acp")]
+#[tokio::test]
+async fn open_and_drive_inject_the_mcp_server_into_session_new_for_an_acp_session_cli() {
+    // A claude row (AcpSession, session/new delivery) with a cheap JSON-RPC echo agent.
+    let mut cli = *acp_cli("claude").expect("claude in the catalog");
+    cli.command = "/bin/sh";
+    cli.args = &["-c", FAKE_ACP_MCP_ECHO_SCRIPT];
+    let source = Arc::new(ProjectingChannelSource::new(
+        cli,
+        Arc::new(FixedModel(ResolvedModel {
+            base_url: "u".into(),
+            model: "m".into(),
+            api_key: "k".into(), // awaken-allow: secret
+        })),
+    ));
+    let e = AcpRunExecutor::new(source);
+
+    let mut act = activation();
+    act.snapshot.resolved_spec.plugin_config.insert(
+        "acp".to_string(),
+        serde_json::json!({
+            "mcp_servers": [{
+                "name": "github",
+                "transport": { "kind": "http", "url": "https://mcp.gh" },
+                "credential": { "auth": "reference", "reference": "broker://gh" }
+            }]
+        }),
+    );
+
+    let coord = Arc::new(RecordingCoordinator::default());
+    let phase = e
+        .execute(act, RuntimeRunContext::new().with_commit(coord.clone()))
+        .await
+        .unwrap();
+
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    let commits = coord.commits.lock().unwrap();
+    let reply = commits[0].messages[0].text_content();
+    assert_eq!(
+        reply, "mcp saw-github alpha-ref",
+        "session/new carried the MCP server with the α broker reference as its bearer, got {reply:?}",
+    );
+}
+
+/// The β (trusted-inline) counterpart of the α test: a trusted-local host projects the
+/// staged MCP server with the raw bearer inline (what `overlay_acp_mcp(..., trusted=true)`
+/// produces), and `session/new` carries that secret to the CLI. The fake agent reports the
+/// bearer it received so the test asserts β delivers the raw token (never a reference).
+#[cfg(feature = "real-acp")]
+#[tokio::test]
+async fn open_and_drive_inject_a_trusted_inline_mcp_credential_into_session_new() {
+    // A JSON-RPC echo agent: classifies the `session/new` bearer as `beta-inline` when it
+    // saw the raw secret `sk-trusted`, else `no-secret`.
+    const BETA_ECHO: &str = "while IFS= read -r line; do \
+          case \"$line\" in \
+            *'\"id\":1'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}';; \
+            *'\"id\":2'*) SN=\"$line\"; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\"}}';; \
+            *'\"id\":3'*) \
+              A=no-secret; case \"$SN\" in *sk-trusted*) A=beta-inline;; esac; \
+              printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"mcp %s\"}}}}\\n' \"$A\"; \
+              printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; \
+              exit 0;; \
+          esac; \
+        done";
+    let mut cli = *acp_cli("claude").expect("claude in the catalog");
+    cli.command = "/bin/sh";
+    cli.args = &["-c", BETA_ECHO];
+    let source = Arc::new(ProjectingChannelSource::new(
+        cli,
+        Arc::new(FixedModel(ResolvedModel {
+            base_url: "u".into(),
+            model: "m".into(),
+            api_key: "k".into(), // awaken-allow: secret
+        })),
+    ));
+    let e = AcpRunExecutor::new(source);
+
+    let mut act = activation();
+    act.snapshot.resolved_spec.plugin_config.insert(
+        "acp".to_string(),
+        serde_json::json!({
+            "mcp_servers": [{
+                "name": "github",
+                "transport": { "kind": "http", "url": "https://mcp.gh" },
+                "credential": { "auth": "trusted_inline", "secret": "sk-trusted" } // awaken-allow: secret
+            }]
+        }),
+    );
+
+    let coord = Arc::new(RecordingCoordinator::default());
+    e.execute(act, RuntimeRunContext::new().with_commit(coord.clone()))
+        .await
+        .unwrap();
+    let reply = coord.commits.lock().unwrap()[0].messages[0].text_content();
+    assert_eq!(
+        reply, "mcp beta-inline",
+        "β hands the trusted-local CLI the raw bearer inline on session/new, got {reply:?}",
+    );
+}
+
 #[test]
 fn projecting_source_reads_the_cli_compact_window_from_config() {
     let cli = *acp_cli("claude").expect("claude in the catalog");
@@ -1072,6 +1273,7 @@ async fn a_cancelled_token_ends_the_run_cancelled() {
                 process: Arc::new(FakeProcess),
                 codec: awaken_protocol_acp::Codec::Newline,
                 workspace_cwd: None,
+                mcp_session_servers: Vec::new(),
             })
         }
     }
@@ -1186,6 +1388,7 @@ async fn a_relaunch_open_failure_mid_run_classifies_and_ends() {
                 process: Arc::new(FakeProcess),
                 codec: awaken_protocol_acp::Codec::Newline,
                 workspace_cwd: None,
+                mcp_session_servers: Vec::new(),
             })
         }
     }
