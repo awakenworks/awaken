@@ -241,13 +241,11 @@ impl SharedHost {
         // Realized memory mounts live under `.mnt/<logical>`; `list_files(".mnt")` keys
         // each by its path relative to `.mnt/`, i.e. exactly the mount's logical path.
         let realized = env.list_files(".mnt");
-        for (store_id, logical) in mounts {
-            if let Some((_, bytes)) = realized.iter().find(|(path, _)| *path == logical) {
-                self.memory_stores
-                    .put(HOST_MEMORY_WORKSPACE, &store_id, bytes)
-                    .await
-                    .expect("persist harvested memory write-back");
-            }
+        for (store_id, bytes) in select_memory_writebacks(&mounts, &realized) {
+            self.memory_stores
+                .put(HOST_MEMORY_WORKSPACE, &store_id, &bytes)
+                .await
+                .expect("persist harvested memory write-back");
         }
     }
 
@@ -366,6 +364,77 @@ impl SharedHost {
     /// The delegate agent ids (advertised as the agent's `multiagent` roster).
     pub fn delegate_ids(&self) -> Vec<String> {
         self.delegates.iter().cloned().collect()
+    }
+}
+
+/// Correlate a thread's read-write memory mounts (`(store_id, logical_path)`) with the
+/// files realized under `.mnt/` (`(logical_path, bytes)`), yielding the `(store_id,
+/// bytes)` write-backs `harvest_thread_memory` persists. Only a mount whose logical
+/// path was actually realized contributes — a mount that produced no file yields
+/// nothing, so harvest never overwrites a store with emptiness it did not observe.
+/// Extracted pure so the host-side correlation is tested without a live sandbox
+/// environment (the realize→edit→persist round-trip itself is covered at the sandbox
+/// layer by `awaken-sandbox-local`'s `memory_mount` test).
+fn select_memory_writebacks(
+    mounts: &[(String, String)],
+    realized: &[(String, Vec<u8>)],
+) -> Vec<(String, Vec<u8>)> {
+    mounts
+        .iter()
+        .filter_map(|(store_id, logical)| {
+            realized
+                .iter()
+                .find(|(path, _)| path == logical)
+                .map(|(_, bytes)| (store_id.clone(), bytes.clone()))
+        })
+        .collect()
+}
+
+/// G2 — the host-side harvest correlation (`harvest_thread_memory`'s core). Metamorphic:
+/// what a session realizes under `.mnt/<logical>` is exactly what is written back to the
+/// mount's store id, and a mount that realized nothing writes nothing.
+#[cfg(test)]
+mod memory_writeback_tests {
+    use super::select_memory_writebacks;
+
+    fn m(store: &str, logical: &str) -> (String, String) {
+        (store.into(), logical.into())
+    }
+    fn f(logical: &str, bytes: &str) -> (String, Vec<u8>) {
+        (logical.into(), bytes.as_bytes().to_vec())
+    }
+
+    #[test]
+    fn a_realized_mounts_edited_bytes_are_written_back_to_its_store() {
+        // The round-trip: store `s` mounted at `mem.md`, edited in-session to "v2",
+        // realizes as (`mem.md`, "v2") → write-back is (`s`, "v2").
+        let backs = select_memory_writebacks(&[m("s", "mem.md")], &[f("mem.md", "v2")]);
+        assert_eq!(backs, vec![("s".to_string(), b"v2".to_vec())]);
+    }
+
+    #[test]
+    fn a_mount_that_realized_no_file_writes_nothing() {
+        // The mount's logical path is absent from the realized set (never written), so
+        // harvest must NOT clobber the store with emptiness — it writes nothing.
+        let backs = select_memory_writebacks(&[m("s", "mem.md")], &[f("other.md", "x")]);
+        assert!(backs.is_empty(), "an unrealized mount is not written back");
+    }
+
+    #[test]
+    fn each_mount_maps_to_its_own_store_by_logical_path() {
+        // Two stores, two files: each write-back carries the bytes of ITS logical path,
+        // never crossed — the correlation is keyed by logical path, not order.
+        let backs = select_memory_writebacks(
+            &[m("s1", "a.md"), m("s2", "b.md")],
+            &[f("b.md", "BB"), f("a.md", "AA")], // realized in a different order
+        );
+        assert_eq!(
+            backs,
+            vec![
+                ("s1".to_string(), b"AA".to_vec()),
+                ("s2".to_string(), b"BB".to_vec()),
+            ]
+        );
     }
 }
 
