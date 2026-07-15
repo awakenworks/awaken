@@ -246,12 +246,14 @@ mod tests {
     };
     use std::sync::Mutex as StdMutex;
 
-    /// Records every `dispose` so a test can prove a reap/reconcile actually tore a
-    /// sandbox down (not merely dropped it from tracking).
+    /// Records every `dispose`/`renew` so a test can prove a reap/reconcile actually
+    /// actuated (not merely dropped from tracking); `fail_dispose` makes a chosen
+    /// sandbox's teardown error, to exercise the idempotent-retry path.
     #[derive(Default)]
     struct Recorder {
         disposed: StdMutex<Vec<String>>,
         renewed: StdMutex<Vec<String>>,
+        fail_dispose: StdMutex<std::collections::HashSet<String>>,
     }
 
     struct RecProvider {
@@ -296,6 +298,9 @@ mod tests {
             Ok(())
         }
         async fn dispose(&self) -> Result<(), SandboxError> {
+            if self.rec.fail_dispose.lock().unwrap().contains(&self.id) {
+                return Err(SandboxError::new("dispose failed (test)"));
+            }
             self.rec.disposed.lock().unwrap().push(self.id.clone());
             Ok(())
         }
@@ -476,6 +481,74 @@ mod tests {
             .await;
         assert_eq!(reaped, vec![(href("t-revoked"), ReapCause::Revoked)]);
         assert_eq!(*rec.disposed.lock().unwrap(), vec!["t-revoked".to_string()]);
+        assert_eq!(mgr.tracked_count(), 0);
+    }
+
+    // --- decision-table coverage (test-design pass). The manager's reap/renew tick
+    // delegates to two pure functions; this table pins the manager's actuation of each
+    // decision. decide_reap causes (priority revoked > deadline > transport-lost):
+    //   revoked → Revoked (covered above) · deadline → Expired (covered above)
+    //   transport-lost within deadline → TransportLost (below) · none → keep (below)
+    // LeaseLiveness for renew: Expiring → renew (covered above) · Live → skip (above)
+    //   Reapable → NOT renewed, left for reap (below).
+    // Plus the actuation-failure edge: a failed teardown must retry, never leak.
+
+    #[tokio::test]
+    async fn renew_or_reap_reaps_on_transport_lost_within_deadline() {
+        // The deadline is far off and it is not revoked, but the owner's transport to
+        // the sandbox was lost → decide_reap's third rung fires (TransportLost).
+        let (mgr, rec) = manager();
+        mgr.create(&spec("t-hung"), LeaseGrant::until(10_000))
+            .await
+            .unwrap();
+        let reaped = mgr
+            .renew_or_reap(|_h| LivenessSignals {
+                now_ms: 1,
+                revoked: false,
+                transport_lost: true,
+            })
+            .await;
+        assert_eq!(reaped, vec![(href("t-hung"), ReapCause::TransportLost)]);
+        assert_eq!(*rec.disposed.lock().unwrap(), vec!["t-hung".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn renew_expiring_skips_a_reapable_lease_leaving_it_for_reap() {
+        // A past-deadline lease is Reapable, not Expiring — renew_expiring must NOT
+        // renew it (that is the reaper's job); it stays tracked and un-renewed so the
+        // next reap tick tears it down.
+        let (mgr, rec) = manager();
+        mgr.create(&spec("t-dead"), LeaseGrant::until(100))
+            .await
+            .unwrap();
+        let renewed = mgr.renew_expiring(500, 300, 10_000).await; // now=500: past 100 → Reapable
+        assert!(renewed.is_empty(), "a reapable lease is not renewed");
+        assert!(rec.renewed.lock().unwrap().is_empty());
+        assert_eq!(mgr.tracked_count(), 1, "it stays for the reaper");
+    }
+
+    #[tokio::test]
+    async fn a_failed_reap_leaves_the_handle_tracked_for_a_later_tick() {
+        // decide_reap fires (expired) but the teardown errors → the handle must NOT be
+        // dropped from tracking (idempotent retry), and it is not reported reaped.
+        let (mgr, rec) = manager();
+        rec.fail_dispose
+            .lock()
+            .unwrap()
+            .insert("t-stuck".to_string());
+        mgr.create(&spec("t-stuck"), LeaseGrant::until(100))
+            .await
+            .unwrap();
+        let reaped = mgr.renew_or_reap(alive_signals(500)).await; // expired at now=500
+        assert!(
+            reaped.is_empty(),
+            "a failed teardown is not reported reaped"
+        );
+        assert_eq!(mgr.tracked_count(), 1, "the handle stays tracked for retry");
+        // A later tick with dispose now succeeding tears it down and drops it.
+        rec.fail_dispose.lock().unwrap().clear();
+        let reaped2 = mgr.renew_or_reap(alive_signals(500)).await;
+        assert_eq!(reaped2, vec![(href("t-stuck"), ReapCause::Expired)]);
         assert_eq!(mgr.tracked_count(), 0);
     }
 
