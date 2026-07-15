@@ -68,6 +68,11 @@ struct ManagementStores {
     secrets: Arc<dyn awaken_credential_vault::SecretStore>,
     profiles: Arc<dyn awaken_admin_config_api::InferenceProfileStore>,
     mcp: Arc<dyn awaken_admin_config_api::McpStore>,
+    /// Memory-store identity registry (ADR-0038): the durable id/name/metadata aggregate,
+    /// the same admin store as `mcp`/`profiles`, a distinct port. Injected into the host
+    /// so a store survives a restart, and into the capability inventory so the admin
+    /// assistant can enumerate stores.
+    memory_registry: Arc<dyn awaken_admin_config_api::MemoryStoreRegistry>,
     /// Authored webhook endpoints (ADR-0048), an id-addressed config resource beside
     /// profiles/MCP — the same admin store, a distinct port.
     webhooks: Arc<dyn awaken_admin_config_api::WebhookStore>,
@@ -90,6 +95,7 @@ fn in_memory_management_stores() -> ManagementStores {
         secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
         profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
         mcp: Arc::new(awaken_admin_config_api::InMemoryMcpStore::new()),
+        memory_registry: Arc::new(awaken_admin_config_api::InMemoryMemoryStoreRegistry::new()),
         webhooks: Arc::new(awaken_admin_config_api::InMemoryWebhookStore::new()),
         sessions: Arc::new(awaken_protocol_managed::InMemorySessionRepository::default()),
         config: Arc::new(
@@ -130,6 +136,9 @@ fn durable_management_stores(dir: &std::path::Path, key: &[u8; 32]) -> Managemen
         )),
         profiles: admin.clone(),
         mcp: admin.clone(),
+        // Memory-store identity is one more secret-free table under the `admin` bundle,
+        // so the same admin store serves the registry port (durable across a restart).
+        memory_registry: admin.clone(),
         // Webhook endpoints share admin.db (one more secret-free table under the
         // `admin` bundle) — a config resource like the profiles/MCP defs above.
         webhooks: admin,
@@ -240,6 +249,7 @@ async fn open_management_stores(
     ensure_parent(&cfg.admin);
     let admin_profiles: Arc<dyn awaken_admin_config_api::InferenceProfileStore>;
     let admin_mcp: Arc<dyn awaken_admin_config_api::McpStore>;
+    let admin_memory: Arc<dyn awaken_admin_config_api::MemoryStoreRegistry>;
     let admin_webhooks: Arc<dyn awaken_admin_config_api::WebhookStore>;
     match &cfg.admin {
         StoreBackend::Sqlite(p) => {
@@ -249,6 +259,7 @@ async fn open_management_stores(
             );
             admin_profiles = admin.clone();
             admin_mcp = admin.clone();
+            admin_memory = admin.clone();
             admin_webhooks = admin;
         }
         StoreBackend::Postgres(url) => {
@@ -265,6 +276,7 @@ async fn open_management_stores(
             );
             admin_profiles = admin.clone();
             admin_mcp = admin.clone();
+            admin_memory = admin.clone();
             admin_webhooks = admin;
         }
     }
@@ -331,6 +343,7 @@ async fn open_management_stores(
         secrets,
         profiles: admin_profiles,
         mcp: admin_mcp,
+        memory_registry: admin_memory,
         webhooks: admin_webhooks,
         sessions,
         config,
@@ -531,6 +544,7 @@ async fn management_router_over(
         secrets,
         profiles,
         mcp: mcp_store,
+        memory_registry,
         webhooks: webhook_store,
         sessions,
         config,
@@ -607,6 +621,25 @@ async fn management_router_over(
         RESERVED_ADMIN_SCOPE,
         vec![awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID.to_string()],
     ));
+    // The durable skill catalog under the management storage dir when set, else a
+    // per-process temp dir. Built HERE (not inside the host) so ONE store is shared by
+    // the host (delivered skills) and the capability inventory (skill enumeration).
+    let skill_dir = std::env::var("AWAKEN_MGMT_DIR")
+        .map(|d| std::path::PathBuf::from(d).join("skills"))
+        .unwrap_or_else(|_| {
+            std::env::temp_dir().join(format!("awaken-skills-{}", std::process::id()))
+        });
+    let skill_store: Arc<dyn awaken_skill_store::SkillStore> = Arc::new(
+        awaken_skill_store::FsSkillStore::open(skill_dir).expect("open durable skill store root"),
+    );
+    // The LIVE data-plane resource inventory (ADR-0038): memory-store ids from the durable
+    // registry (the same admin backend the host writes identity through, so this stays
+    // consistent) + skill ids from the shared skill store. Unlike before, this is now
+    // reachable at wire time because both handles are assembled by the composition root.
+    let resource_inventory = Arc::new(awaken_control::HostResourceInventory::new(
+        memory_registry.clone(),
+        skill_store.clone(),
+    ));
     // The management tool executables (ADR-0052 D3/D4): the capability reader reads the
     // shared catalog + advertised tools; the validator runs the publish-time compile
     // check on drafts in the tenant scope; every call is audited.
@@ -624,12 +657,10 @@ async fn management_router_over(
             mcp_store.clone(),
             // The config plane, to list existing agent ids in the tenant scope.
             plane.clone(),
-            // Data-plane inventory (memory stores + skills) is not cleanly reachable at
-            // this wire point (the skill store + memory registry are assembled INSIDE the
-            // SharedHost built below, after these admin execs are consumed by it), so it
-            // stays `None` here — memory_stores/skills come back empty. Models, MCP
-            // servers, and agents are all LIVE.
-            None,
+            // LIVE data-plane inventory: memory-store ids (durable registry) + skill ids
+            // (shared skill store). Both handles are assembled by this composition root
+            // before the host, so the assistant enumerates real memory stores + skills.
+            Some(resource_inventory),
         )),
         Arc::new(awaken_control::ConfigServiceDraftValidator::new(
             plane.clone(),
@@ -668,17 +699,15 @@ async fn management_router_over(
 
     // The data plane: the host runs the server model, resolves a session's agent to
     // its installed config, and carries the management tool executables so the
-    // reserved-scope assistant can call them. A durable skill catalog under the
-    // management storage dir when set, else a per-process temp dir.
-    let skill_dir = std::env::var("AWAKEN_MGMT_DIR")
-        .map(|d| std::path::PathBuf::from(d).join("skills"))
-        .unwrap_or_else(|_| {
-            std::env::temp_dir().join(format!("awaken-skills-{}", std::process::id()))
-        });
+    // reserved-scope assistant can call them. It shares the SAME skill store and
+    // memory-store identity registry the capability inventory reads, so a skill or memory
+    // store the host serves is exactly what the assistant enumerates, and identity
+    // survives a restart.
     let host_builder = SharedHost::new(model, model_ref)
         .with_config_service(config_service.clone())
         .with_admin_tools(admin_execs)
-        .with_skill_store(skill_dir)
+        .with_skill_store_backend(skill_store)
+        .with_memory_registry(memory_registry)
         // Resolve a session's model to a real executor from the config plane (M2):
         // an unconfigured/unresolvable model falls back to the scenario model above.
         .with_executor_provider(Arc::new(

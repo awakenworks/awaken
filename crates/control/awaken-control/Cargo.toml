@@ -21,6 +21,9 @@ awaken-authz-enforce = { workspace = true }
 awaken-protocol-managed = { workspace = true }
 awaken-config-store = { workspace = true }
 awaken-config-resolver = { workspace = true }
+# The data-plane skill catalog port (ADR-0036): the capability inventory lists skill
+# ids through this store without depending on the runtime host.
+awaken-skill-store = { workspace = true }
 awaken-admin-config-api = { workspace = true, features = ["sqlite", "postgres"] }
 awaken-model-catalog = { workspace = true, features = ["sqlite", "postgres"] }
 awaken-credential-vault = { workspace = true, features = ["oauth-command", "sqlite", "sealed-aead", "postgres"] }

@@ -214,6 +214,13 @@ pub struct SharedHost {
     /// source of truth (survives a restart under the storage dir) and is the seam the
     /// write-through FUSE mount projects.
     pub(crate) memory_fs: Arc<dyn awaken_memory_store::MemoryFs>,
+    /// The control-plane registry of memory-store **identity** (id/name/description/
+    /// metadata/archived), ADR-0038. Mirrors the `McpStore` pattern: injected by the
+    /// composition root with the durable admin backend so a store's identity survives a
+    /// restart and the admin assistant can enumerate stores. Defaults to a
+    /// process-lifetime in-memory registry (ephemeral) so tests / scenario hosts keep
+    /// working. Store *content* stays in `memory_stores` / `memory_fs`, not here.
+    pub(crate) memory_registry: Arc<dyn awaken_config_resolver::MemoryStoreRegistry>,
     /// An optional tool gate that replaces the default authorization gate on every
     /// thread's runtime. Used to exercise scheduled actions (ADR-0020, slice E): a
     /// gate that defers tool calls as `ScheduledAction`s so the durable dispatch

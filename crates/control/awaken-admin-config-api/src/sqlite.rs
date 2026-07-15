@@ -17,7 +17,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use awaken_config_resolver::{
     AgentMcpConfig, AgentResourceConfig, InferenceProfile, InferenceProfileStore, McpServerDef,
-    McpStore, ResourceStore, WebhookEndpointDef, WebhookStore,
+    McpStore, MemoryStoreDef, MemoryStoreRegistry, ResourceStore, WebhookEndpointDef, WebhookStore,
 };
 
 use crate::schema::admin_bundle;
@@ -169,6 +169,31 @@ impl McpStore for SqliteAdminStore {
     }
 }
 
+impl MemoryStoreRegistry for SqliteAdminStore {
+    fn put_memory_store(&self, def: MemoryStoreDef) {
+        self.put_row("memory_store", "id", &def.id.clone(), &def);
+    }
+    fn get_memory_store(&self, id: &str) -> Option<MemoryStoreDef> {
+        self.get_row("memory_store", "id", id)
+    }
+    fn list_memory_stores(&self) -> Vec<MemoryStoreDef> {
+        // Non-archived, sorted by id (matching the in-memory registry's contract).
+        let conn = self.conn.lock().expect("admin store");
+        let mut stmt = conn
+            .prepare(&format!("SELECT data FROM {NS}_memory_store ORDER BY id"))
+            .expect("prepare memory-store list");
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("list memory-store rows");
+        rows.map(|data| {
+            serde_json::from_str::<MemoryStoreDef>(&data.expect("read admin row"))
+                .expect("decode admin row")
+        })
+        .filter(|d| !d.archived)
+        .collect()
+    }
+}
+
 impl WebhookStore for SqliteAdminStore {
     fn put(&self, def: WebhookEndpointDef) {
         self.put_row("webhook", "id", &def.id.clone(), &def);
@@ -272,6 +297,60 @@ mod tests {
             config.mcp_server_ids
         );
         assert!(store.get_agent_config("agent-2").is_none());
+    }
+
+    fn mem_def(id: &str, archived: bool) -> MemoryStoreDef {
+        MemoryStoreDef {
+            id: id.to_string(),
+            name: format!("{id} name"),
+            description: "desc".into(),
+            metadata: std::collections::BTreeMap::from([("k".to_string(), "v".to_string())]),
+            archived,
+        }
+    }
+
+    #[test]
+    fn memory_store_round_trip_lists_non_archived_sorted() {
+        let store = SqliteAdminStore::open_in_memory().unwrap();
+        assert!(store.get_memory_store("mem-1").is_none());
+        store.put_memory_store(mem_def("zeta", false));
+        store.put_memory_store(mem_def("alpha", false));
+        store.put_memory_store(mem_def("gamma", true)); // archived → excluded
+        assert_eq!(store.get_memory_store("zeta").unwrap().name, "zeta name");
+        assert_eq!(
+            store.get_memory_store("zeta").unwrap().metadata.get("k"),
+            Some(&"v".to_string())
+        );
+        let ids: Vec<String> = store
+            .list_memory_stores()
+            .into_iter()
+            .map(|d| d.id)
+            .collect();
+        assert_eq!(ids, vec!["alpha".to_string(), "zeta".to_string()]);
+
+        // Upsert (archive) drops it from the listing but keeps it retrievable.
+        store.put_memory_store(mem_def("zeta", true));
+        assert!(store.get_memory_store("zeta").unwrap().archived);
+        let ids: Vec<String> = store
+            .list_memory_stores()
+            .into_iter()
+            .map(|d| d.id)
+            .collect();
+        assert_eq!(ids, vec!["alpha".to_string()]);
+    }
+
+    #[test]
+    fn memory_store_defs_survive_a_reopen_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("admin.db");
+        let path = path.to_str().unwrap();
+        {
+            let store = SqliteAdminStore::open(path).unwrap();
+            store.put_memory_store(mem_def("prefs", false));
+        }
+        let store = SqliteAdminStore::open(path).unwrap();
+        assert_eq!(store.get_memory_store("prefs").unwrap().name, "prefs name");
+        assert_eq!(store.list_memory_stores().len(), 1);
     }
 
     #[test]

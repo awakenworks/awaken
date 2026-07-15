@@ -29,6 +29,7 @@ use axum::{Json, Router};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use awaken_config_resolver::MemoryStoreDef;
 use awaken_memory_store::MemErr;
 
 use crate::host::SharedHost;
@@ -95,36 +96,44 @@ fn project_memory(mem: &awaken_memory_store::Memory, store_id: &str) -> Value {
     })
 }
 
-/// The SDK-side store metadata + an append-only version log. The current head of
-/// each memory lives in the durable [`awaken_memory_store::MemoryFs`]; this log keeps
-/// the version history the `/memory_versions` endpoints surface.
-#[derive(Clone, Default)]
-struct StoreMeta {
-    name: String,
-    description: String,
-    metadata: BTreeMap<String, String>,
-    archived_at: Option<String>,
-    versions: Vec<MemoryVersion>,
+/// Project a durable [`MemoryStoreDef`] (the identity aggregate, source of truth for a
+/// store's name/description/metadata) onto the SDK memory-store object. The
+/// `created_at`/`updated_at` are stable object constants (the def carries no clock);
+/// `archived_at` is stamped from the def's archived flag.
+fn project_def(def: &MemoryStoreDef) -> Value {
+    json!({
+        "id": def.id,
+        "type": "memory_store",
+        "created_at": OBJECT_AT,
+        "updated_at": OBJECT_AT,
+        "name": def.name,
+        "description": def.description,
+        "metadata": def.metadata,
+        "archived_at": if def.archived { Some(OBJECT_AT) } else { None },
+    })
 }
 
-impl StoreMeta {
-    fn project(&self, id: &str) -> Value {
-        json!({
-            "id": id,
-            "type": "memory_store",
-            "created_at": OBJECT_AT,
-            "updated_at": OBJECT_AT,
-            "name": self.name,
-            "description": self.description,
-            "metadata": self.metadata,
-            "archived_at": self.archived_at,
-        })
+/// A default (metadata-empty) def for `id` — used when the durable content blob answers
+/// but the identity registry has no row (e.g. an id minted before the registry existed).
+fn default_def(id: &str) -> MemoryStoreDef {
+    MemoryStoreDef {
+        id: id.to_string(),
+        name: String::new(),
+        description: String::new(),
+        metadata: BTreeMap::new(),
+        archived: false,
     }
 }
 
 struct MemoryStoreApi {
     host: Arc<SharedHost>,
-    registry: Mutex<BTreeMap<String, StoreMeta>>,
+    /// The durable identity registry (id/name/metadata/archived): the control-plane
+    /// aggregate that survives a restart and is enumerable from the admin plane.
+    registry: Arc<dyn awaken_config_resolver::MemoryStoreRegistry>,
+    /// The append-only version log the `/memory_versions` endpoints surface, keyed by
+    /// store id. Version history is *content* history, not identity, and is process-local
+    /// (the durable head lives in `MemoryFs`), so it stays an ephemeral per-process map.
+    versions: Mutex<BTreeMap<String, Vec<MemoryVersion>>>,
     ver_seq: AtomicU64,
 }
 
@@ -134,11 +143,15 @@ impl MemoryStoreApi {
     }
 }
 
-/// Mount the memory-store API over the host's mutable memory stores.
+/// Mount the memory-store API over the host's mutable memory stores. Identity is read
+/// and written through the host's [`MemoryStoreRegistry`](awaken_config_resolver::MemoryStoreRegistry)
+/// (the durable admin backend when the composition root wired one, else ephemeral).
 pub fn memory_stores_router(host: Arc<SharedHost>) -> Router {
+    let registry = host.memory_registry();
     let state = Arc::new(MemoryStoreApi {
         host,
-        registry: Mutex::new(BTreeMap::new()),
+        registry,
+        versions: Mutex::new(BTreeMap::new()),
         ver_seq: AtomicU64::new(0),
     });
     Router::new()
@@ -188,7 +201,8 @@ async fn create_store(State(state): State<Arc<MemoryStoreApi>>, body: Bytes) -> 
         serde_json::from_slice(&body).unwrap_or(Value::Null)
     };
     let id = state.host.create_memory_store().await;
-    let meta = StoreMeta {
+    let def = MemoryStoreDef {
+        id: id.clone(),
         name: parsed
             .get("name")
             .and_then(Value::as_str)
@@ -208,11 +222,11 @@ async fn create_store(State(state): State<Arc<MemoryStoreApi>>, body: Bytes) -> 
                     .collect()
             })
             .unwrap_or_default(),
-        archived_at: None,
-        versions: Vec::new(),
+        archived: false,
     };
-    let projected = meta.project(&id);
-    state.registry.lock().unwrap().insert(id, meta);
+    let projected = project_def(&def);
+    // Persist the identity through the durable registry (survives a restart).
+    state.registry.put_memory_store(def);
     (StatusCode::OK, Json(projected))
 }
 
@@ -225,12 +239,11 @@ async fn get_store(
     Path(id): Path<String>,
 ) -> axum::response::Response {
     let blob = state.host.memory_get(&id).await;
-    let registry = state.registry.lock().unwrap();
-    let meta = registry.get(&id);
-    if blob.is_none() && meta.is_none() {
+    let def = state.registry.get_memory_store(&id);
+    if blob.is_none() && def.is_none() {
         return not_found("memory_store");
     }
-    let mut obj = meta.cloned().unwrap_or_default().project(&id);
+    let mut obj = project_def(&def.unwrap_or_else(|| default_def(&id)));
     // Legacy mount-blob fields (additive; the SDK ignores them).
     let bytes = blob.unwrap_or_default();
     obj["content"] = json!(String::from_utf8_lossy(&bytes));
@@ -239,11 +252,12 @@ async fn get_store(
 }
 
 async fn list_stores(State(state): State<Arc<MemoryStoreApi>>) -> impl IntoResponse {
-    let registry = state.registry.lock().unwrap();
-    let data: Vec<Value> = registry
+    // The registry already returns non-archived defs sorted by id.
+    let data: Vec<Value> = state
+        .registry
+        .list_memory_stores()
         .iter()
-        .filter(|(_, m)| m.archived_at.is_none())
-        .map(|(id, m)| m.project(id))
+        .map(project_def)
         .collect();
     (
         StatusCode::OK,
@@ -256,57 +270,63 @@ async fn update_store(
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> axum::response::Response {
-    let mut registry = state.registry.lock().unwrap();
-    let Some(meta) = registry.get_mut(&id) else {
+    let Some(mut def) = state.registry.get_memory_store(&id) else {
         return not_found("memory_store");
     };
     // `description`: empty string clears it (SDK convention).
     if let Some(desc) = body.get("description") {
-        meta.description = desc.as_str().unwrap_or_default().to_string();
+        def.description = desc.as_str().unwrap_or_default().to_string();
     }
     // `metadata`: patch — string upserts, null deletes, omitted preserves.
     if let Some(patch) = body.get("metadata").and_then(Value::as_object) {
         for (k, v) in patch {
             match v {
                 Value::Null => {
-                    meta.metadata.remove(k);
+                    def.metadata.remove(k);
                 }
                 Value::String(s) => {
-                    meta.metadata.insert(k.clone(), s.clone());
+                    def.metadata.insert(k.clone(), s.clone());
                 }
                 _ => {}
             }
         }
     }
-    (StatusCode::OK, Json(meta.project(&id))).into_response()
+    let projected = project_def(&def);
+    // Persist the merged identity back through the durable registry.
+    state.registry.put_memory_store(def);
+    (StatusCode::OK, Json(projected)).into_response()
 }
 
 async fn delete_store(
     State(state): State<Arc<MemoryStoreApi>>,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let removed = state.registry.lock().unwrap().remove(&id).is_some();
-    if removed {
-        (
-            StatusCode::OK,
-            Json(json!({ "id": id, "type": "memory_store_deleted" })),
-        )
-            .into_response()
-    } else {
-        not_found("memory_store")
-    }
+    // The registry port is put/get/list (no hard delete, mirroring `McpStore`); a delete
+    // is a soft archive on the identity (the durable content blob is never destroyed
+    // here either), so the store drops out of the listing. 404 when the id is unknown.
+    let Some(mut def) = state.registry.get_memory_store(&id) else {
+        return not_found("memory_store");
+    };
+    def.archived = true;
+    state.registry.put_memory_store(def);
+    (
+        StatusCode::OK,
+        Json(json!({ "id": id, "type": "memory_store_deleted" })),
+    )
+        .into_response()
 }
 
 async fn archive_store(
     State(state): State<Arc<MemoryStoreApi>>,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let mut registry = state.registry.lock().unwrap();
-    let Some(meta) = registry.get_mut(&id) else {
+    let Some(mut def) = state.registry.get_memory_store(&id) else {
         return not_found("memory_store");
     };
-    meta.archived_at = Some(OBJECT_AT.to_string());
-    (StatusCode::OK, Json(meta.project(&id))).into_response()
+    def.archived = true;
+    let projected = project_def(&def);
+    state.registry.put_memory_store(def);
+    (StatusCode::OK, Json(projected)).into_response()
 }
 
 // ---- Memory routes ---------------------------------------------------------
@@ -342,9 +362,13 @@ fn record_version(
         path: path.to_string(),
         redacted_at: None,
     };
-    if let Some(meta) = state.registry.lock().unwrap().get_mut(store) {
-        meta.versions.push(ver);
-    }
+    state
+        .versions
+        .lock()
+        .unwrap()
+        .entry(store.to_string())
+        .or_default()
+        .push(ver);
 }
 
 fn memory_conflict() -> axum::response::Response {
@@ -546,22 +570,34 @@ async fn delete_memory(
 
 // ---- Version routes --------------------------------------------------------
 
-/// The store's version log (ascending id).
-fn collect_versions(meta: &StoreMeta) -> Vec<&MemoryVersion> {
-    let mut versions: Vec<&MemoryVersion> = meta.versions.iter().collect();
+/// A store's version log (ascending id). Empty when the store has no recorded versions.
+fn collect_versions(log: &[MemoryVersion]) -> Vec<MemoryVersion> {
+    let mut versions: Vec<MemoryVersion> = log.to_vec();
     versions.sort_by(|a, b| a.id.cmp(&b.id));
     versions
+}
+
+/// Whether a store id exists (durable identity registry, else the durable content blob so
+/// a store minted before the registry existed still answers).
+async fn store_exists(state: &MemoryStoreApi, id: &str) -> bool {
+    state.registry.get_memory_store(id).is_some() || state.host.memory_get(id).await.is_some()
 }
 
 async fn list_versions(
     State(state): State<Arc<MemoryStoreApi>>,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let registry = state.registry.lock().unwrap();
-    let Some(meta) = registry.get(&id) else {
+    if !store_exists(&state, &id).await {
         return not_found("memory_store");
-    };
-    let data: Vec<Value> = collect_versions(meta)
+    }
+    let log = state
+        .versions
+        .lock()
+        .unwrap()
+        .get(&id)
+        .cloned()
+        .unwrap_or_default();
+    let data: Vec<Value> = collect_versions(&log)
         .iter()
         .map(|v| v.project(&id))
         .collect();
@@ -576,11 +612,17 @@ async fn get_version(
     State(state): State<Arc<MemoryStoreApi>>,
     Path((id, vid)): Path<(String, String)>,
 ) -> axum::response::Response {
-    let registry = state.registry.lock().unwrap();
-    let Some(meta) = registry.get(&id) else {
+    if !store_exists(&state, &id).await {
         return not_found("memory_store");
-    };
-    match collect_versions(meta).into_iter().find(|v| v.id == vid) {
+    }
+    let log = state
+        .versions
+        .lock()
+        .unwrap()
+        .get(&id)
+        .cloned()
+        .unwrap_or_default();
+    match collect_versions(&log).into_iter().find(|v| v.id == vid) {
         Some(v) => (StatusCode::OK, Json(v.project(&id))).into_response(),
         None => not_found("memory_version"),
     }
@@ -593,11 +635,11 @@ async fn redact_version(
     Path((id, vid)): Path<(String, String)>,
     _query: Query<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
-    let mut registry = state.registry.lock().unwrap();
-    let Some(meta) = registry.get_mut(&id) else {
-        return not_found("memory_store");
+    let mut versions = state.versions.lock().unwrap();
+    let Some(log) = versions.get_mut(&id) else {
+        return not_found("memory_version");
     };
-    if let Some(version) = meta.versions.iter_mut().find(|v| v.id == vid) {
+    if let Some(version) = log.iter_mut().find(|v| v.id == vid) {
         version.redacted_at = Some(OBJECT_AT.to_string());
         version.content = None;
         return (StatusCode::OK, Json(version.project(&id))).into_response();
