@@ -16,7 +16,7 @@ use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::subagent_runner::{
     SubagentError, SubagentReply, SubagentRequest, SubagentRunner,
 };
-use awaken_sandbox_local::LocalSandboxProvider;
+use awaken_sandbox_local::LocalProvider;
 
 use crate::agent_catalog::AgentCatalog;
 
@@ -45,7 +45,7 @@ pub fn default_judge_agent(model_ref: &str, agent_id: &str, instructions: &str) 
 /// verdict is not biased by the doer's working state.
 pub(crate) struct HostSubagentRunner {
     pub(crate) llm: Arc<dyn LlmExecutor>,
-    pub(crate) provider: LocalSandboxProvider,
+    pub(crate) provider: LocalProvider,
     /// Aux agents (judge, and — as D5 lands — compactor/memory) are resolved by id
     /// from here, so their model/instructions/window are configured per-agent.
     pub(crate) catalog: Arc<AgentCatalog>,

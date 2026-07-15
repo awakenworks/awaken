@@ -22,17 +22,17 @@ use awaken_runtime_contract::subagent_runner::{
     SubagentError, SubagentReply, SubagentRequest, SubagentRunner,
 };
 use awaken_runtime_contract::tool::RawTool;
-use awaken_sandbox_local::{Environment, LocalSandboxProvider};
+use awaken_sandbox_local::{LocalProvider, LocalSandbox};
 
 /// The conventional workspace subdir the agent authors skills under; scanned live
 /// so a skill written this run is discovered (ADR-0036 D8).
 const WORKSPACE_SKILLS_SUBDIR: &str = "skills";
 
-/// Bridges the sandbox [`Environment`] to the [`SkillSource`] port: scans the
+/// Bridges the sandbox [`LocalSandbox`] to the [`SkillSource`] port: scans the
 /// workspace skill dir live, returning neutral file data. The host owns this bridge
 /// so `awaken-ext-skills` stays sandbox-unaware and the root stays hidden.
 struct EnvSkillSource {
-    env: Arc<Environment>,
+    env: Arc<LocalSandbox>,
     subdir: String,
 }
 
@@ -75,7 +75,7 @@ impl SkillSource for SnapshotSkillSource {
 struct ForkRunner {
     llm: Arc<dyn LlmExecutor>,
     model_ref: String,
-    provider: LocalSandboxProvider,
+    provider: LocalProvider,
 }
 
 #[async_trait::async_trait]
@@ -117,7 +117,7 @@ pub(crate) struct SkillWiring {
 pub(crate) fn wire_skills(
     configured: &[SkillSpec],
     delivered: Option<Vec<(String, String)>>,
-    env: Arc<Environment>,
+    env: Arc<LocalSandbox>,
     llm: Arc<dyn LlmExecutor>,
     model_ref: &str,
     session_id: &str,
@@ -172,7 +172,7 @@ pub(crate) fn wire_skills(
     let fork_runner: Arc<dyn SubagentRunner> = Arc::new(ForkRunner {
         llm,
         model_ref: model_ref.to_string(),
-        provider: LocalSandboxProvider::new(fork_base),
+        provider: LocalProvider::new(fork_base),
     });
     let activate: Arc<dyn RawTool> = Arc::new(
         SkillTool::new(registry.clone())
@@ -199,9 +199,8 @@ fn skill_descriptor() -> ToolDescriptor {
 
 #[cfg(test)]
 mod tests {
-    #![allow(deprecated)] // legacy SandboxProvider; host tests still drive it pending the pc::Sandbox rebase.
     use super::*;
-    use awaken_sandbox_local::{SandboxProvider, SandboxSpec};
+    use awaken_provisioning_contract::Sandbox as _;
 
     #[tokio::test]
     async fn durable_store_snapshot_scans_the_catalog_as_delivered_skill_files() {
@@ -246,8 +245,13 @@ mod tests {
         // A skill the agent writes under the workspace this run is discovered live,
         // tagged AgentCreated (ADR-0036 D6/D8), without rebuilding or exposing root.
         let base = std::env::temp_dir().join(format!("awaken-authored-{}", std::process::id()));
-        let provider = LocalSandboxProvider::new(&base);
-        let env = Arc::new(provider.create(&SandboxSpec::new("t")).await.unwrap());
+        let provider = LocalProvider::new(&base);
+        let env = Arc::new(
+            provider
+                .create_sandbox(&crate::provisioning::subrun_sandbox_spec("t"))
+                .await
+                .unwrap(),
+        );
 
         let registry = SourceSkillRegistry::new(
             Arc::new(EnvSkillSource {
@@ -274,6 +278,6 @@ mod tests {
         assert_eq!(found.dir.as_deref(), Some("skills/notes"));
         assert!(found.body.contains("hydrate"));
 
-        provider.teardown("t").await.unwrap();
+        env.dispose().await.unwrap();
     }
 }

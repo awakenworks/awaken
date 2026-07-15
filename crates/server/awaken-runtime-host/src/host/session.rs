@@ -155,14 +155,13 @@ impl SharedHost {
         if let Some(ctx) = sessions.get(thread) {
             return Ok(ctx.clone());
         }
-        #[allow(deprecated)] // legacy SandboxProvider::create; rebased onto pc::Sandbox later.
         let env = Arc::new(
             self.provider
-                .create(&self.sandbox_spec(thread))
+                .create_sandbox(&self.sandbox_spec(thread))
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?,
         );
-        // Clone any staged github_repository resources into the fresh environment,
+        // Clone any staged github_repository resources into the fresh sandbox,
         // host-side (ADR-0038); fail-closed so a bad repo aborts session start.
         self.provision_thread_repos(thread, &env)?;
         let thread_id = ThreadId(thread.to_string());

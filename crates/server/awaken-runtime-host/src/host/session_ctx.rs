@@ -59,7 +59,7 @@ pub(crate) struct SessionCtx {
     pub(crate) thread_id: ThreadId,
     /// The thread's sandbox environment, reused to build a goal-enabled runtime
     /// for `define_outcome` (same tools, same environment).
-    pub(crate) env: Arc<Environment>,
+    pub(crate) env: Arc<LocalSandbox>,
     /// The thread's skill registry (delivered + workspace), used to expand user
     /// `/skill-name` invocations. `None` when skills are not offered.
     pub(crate) skill_registry: Option<Arc<dyn SkillRegistry>>,

@@ -21,7 +21,7 @@ use std::sync::atomic::AtomicU64;
 
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::subagent_runner::SubagentRunner;
-use awaken_sandbox_local::LocalSandboxProvider;
+use awaken_sandbox_local::LocalProvider;
 
 use crate::agent_catalog::AgentCatalog;
 use crate::judge::HostSubagentRunner;
@@ -47,7 +47,7 @@ pub(crate) fn compact_runner(
         .join(format!("{}-compact", std::process::id()));
     Arc::new(HostSubagentRunner {
         llm,
-        provider: LocalSandboxProvider::new(base),
+        provider: LocalProvider::new(base),
         catalog,
         seq: AtomicU64::new(0),
     })
