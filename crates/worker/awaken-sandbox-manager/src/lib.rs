@@ -10,9 +10,10 @@
 //! - **reconcile** a tracked-live set against the set a live run still references
 //!   (`reconcile_adoption` → adopt the referenced, reap the unreferenced, surface the
 //!   orphaned for re-placement);
-//! - **renew-or-reap** each tracked lease by its liveness (`decide_reap`: revoked >
-//!   deadline > transport-lost), the dead-man's switch that stops a vanished owner's
-//!   sandbox lingering.
+//! - **reap** each tracked lease by its signals (`decide_reap`: revoked > deadline >
+//!   transport-lost), the dead-man's switch that stops a vanished owner's sandbox
+//!   lingering; and **renew** the ones in their renew margin (`LeaseLiveness::Expiring`)
+//!   so a live run's sandbox is never reaped out from under it.
 //!
 //! Per ADR-0056 guardrail G-Pure, this crate contributes NO judgement of its own:
 //! every decision stays in the pure functions, which stay exhaustively testable with a
@@ -24,8 +25,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use awaken_provisioning_contract::{
-    LeaseGrant, LivenessSignals, ReapCause, ReconcileOutcome, Sandbox, SandboxError, SandboxHandle,
-    SandboxProvider, SandboxSpec, decide_reap, reconcile_and_apply,
+    LeaseGrant, LeaseLiveness, LivenessSignals, ReapCause, ReconcileOutcome, Sandbox, SandboxError,
+    SandboxHandle, SandboxProvider, SandboxSpec, decide_reap, reconcile_and_apply,
 };
 
 /// The `(provider_kind, sandbox_id)` identity a handle reconciles by — the same key
@@ -152,6 +153,49 @@ impl SandboxManager {
         reaped
     }
 
+    /// The heartbeat half of the renew/reap loop: renew every tracked lease that has
+    /// entered its renew margin (`LeaseLiveness::Expiring`) but is not yet reapable, so
+    /// a live run's sandbox is never reaped out from under it. Reconnects, calls
+    /// `Sandbox::renew_lease`, and extends the tracked deadline to `now + new_ttl_ms`.
+    /// Returns the renewed handles. The judgement (which leases are in-margin) stays in
+    /// the pure `LeaseGrant::liveness`; the manager only actuates.
+    pub async fn renew_expiring(
+        &self,
+        now_ms: u64,
+        renew_margin_ms: u64,
+        new_ttl_ms: u64,
+    ) -> Vec<SandboxHandle> {
+        let expiring: Vec<Tracked> = {
+            let tracked = self.tracked.lock().expect("sandbox manager tracked map");
+            tracked
+                .values()
+                .filter(|t| {
+                    matches!(
+                        t.lease.liveness(now_ms, renew_margin_ms),
+                        LeaseLiveness::Expiring
+                    )
+                })
+                .cloned()
+                .collect()
+        };
+        let mut renewed = Vec::new();
+        for t in expiring {
+            if let Ok(sandbox) = self.provider.adopt(&t.handle).await
+                && sandbox.renew_lease().await.is_ok()
+            {
+                self.tracked
+                    .lock()
+                    .expect("sandbox manager tracked map")
+                    .entry(key(&t.handle))
+                    .and_modify(|tr| {
+                        tr.lease = LeaseGrant::until(now_ms.saturating_add(new_ttl_ms))
+                    });
+                renewed.push(t.handle);
+            }
+        }
+        renewed
+    }
+
     /// The durable handles of every sandbox this manager currently tracks.
     #[must_use]
     pub fn live_handles(&self) -> Vec<SandboxHandle> {
@@ -207,6 +251,7 @@ mod tests {
     #[derive(Default)]
     struct Recorder {
         disposed: StdMutex<Vec<String>>,
+        renewed: StdMutex<Vec<String>>,
     }
 
     struct RecProvider {
@@ -247,6 +292,7 @@ mod tests {
             Ok(SandboxStatus::Ready)
         }
         async fn renew_lease(&self) -> Result<(), SandboxError> {
+            self.rec.renewed.lock().unwrap().push(self.id.clone());
             Ok(())
         }
         async fn dispose(&self) -> Result<(), SandboxError> {
@@ -379,6 +425,38 @@ mod tests {
         assert_eq!(reaped, vec![(href("t-dead"), ReapCause::Expired)]);
         assert_eq!(*rec.disposed.lock().unwrap(), vec!["t-dead".to_string()]);
         assert_eq!(mgr.live_handles(), vec![href("t-live")]);
+    }
+
+    #[tokio::test]
+    async fn renew_expiring_renews_a_lease_in_its_margin_and_extends_its_deadline() {
+        // t-margin's deadline (1000) is within the 300ms renew margin at now=800 →
+        // LeaseLiveness::Expiring → renewed (heartbeat) and its deadline pushed out.
+        // t-fresh (deadline 5000) is Live → untouched. A renewed lease is no longer
+        // Expiring on the next tick, proving the deadline actually moved.
+        let (mgr, rec) = manager();
+        mgr.create(&spec("t-margin"), LeaseGrant::until(1_000))
+            .await
+            .unwrap();
+        mgr.create(&spec("t-fresh"), LeaseGrant::until(5_000))
+            .await
+            .unwrap();
+
+        let renewed = mgr.renew_expiring(800, 300, 10_000).await;
+        assert_eq!(
+            renewed,
+            vec![href("t-margin")],
+            "only the in-margin lease renews"
+        );
+        assert_eq!(*rec.renewed.lock().unwrap(), vec!["t-margin".to_string()]);
+
+        // The renew extended the deadline to now+10_000; it is no longer in-margin.
+        let again = mgr.renew_expiring(800, 300, 10_000).await;
+        assert!(
+            again.is_empty(),
+            "the renewed lease's deadline was extended"
+        );
+        // Nothing was torn down — renew is not reap.
+        assert!(rec.disposed.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
