@@ -141,21 +141,44 @@ impl EnforceEngine {
     }
 
     /// Authorize `principal` performing `action` at `scope`. Fail-closed: an
-    /// unmatched request is [`AuthorizationDecision::Deny`].
+    /// unmatched request is [`SessionDecision::Deny`]. The shared engine's
+    /// three-way decision is collapsed at this single boundary into the session
+    /// surface's two-way outcome — see [`SessionDecision`].
     pub fn authorize(
         &self,
         principal: PrincipalRef,
         action: &ActionKey,
         scope: ScopeRef,
-    ) -> AuthorizationDecision {
+    ) -> SessionDecision {
         let request = AuthorizationRequest::direct(principal, action.clone(), scope);
-        self.state
+        let decision = self
+            .state
             .lock()
             .expect("enforce engine poisoned")
             .policy
             .evaluate(&request)
-            .decision
+            .decision;
+        match decision {
+            AuthorizationDecision::Allow => SessionDecision::Allow,
+            // Fail-closed: a bare `Deny` and an approval requirement both degrade
+            // to `Deny` here. Approval is a management-plane concept the seeded
+            // engine never installs at the session axis, so this arm's second half
+            // is defensive, not reachable through `EnforceEngine::seeded`.
+            AuthorizationDecision::Deny | AuthorizationDecision::RequireApproval => {
+                SessionDecision::Deny
+            }
+        }
     }
+}
+
+/// The session surface's authorization outcome. It has no `RequireApproval`
+/// variant: this in-memory seeded engine installs only Allow grants, so approval —
+/// a management-plane concept — cannot arise here. Mapping the shared engine's
+/// decision at this one boundary makes the illegal-at-this-layer state unrepresentable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionDecision {
+    Allow,
+    Deny,
 }
 
 /// Derive the authorization scope from a request's tenancy. Tenancy is strictly
@@ -222,7 +245,7 @@ pub async fn guard(
     let scope = request_scope(&workspace_id);
     let action = session_action(request.method().as_str());
     match engine.authorize(principal, &action, scope) {
-        AuthorizationDecision::Allow => {
+        SessionDecision::Allow => {
             // Publish the edge-resolved owning workspace so a downstream projection
             // (webhooks/usage) can stamp it — the aspect resolves tenancy, the core
             // never stores it. Idempotent: a project-less deployment has no prior
@@ -232,9 +255,7 @@ pub async fn guard(
                 .insert(RequestTenancy { workspace_id });
             next.run(request).await
         }
-        AuthorizationDecision::Deny | AuthorizationDecision::RequireApproval => {
-            reject(StatusCode::FORBIDDEN, "not authorized for this scope")
-        }
+        SessionDecision::Deny => reject(StatusCode::FORBIDDEN, "not authorized for this scope"),
     }
 }
 
@@ -344,9 +365,9 @@ mod tests {
             &session_action("POST"),
             request_scope(WS),
         );
-        assert_eq!(write, AuthorizationDecision::Allow);
+        assert_eq!(write, SessionDecision::Allow);
         let read = engine.authorize(principal, &session_action("GET"), request_scope(WS));
-        assert_eq!(read, AuthorizationDecision::Allow);
+        assert_eq!(read, SessionDecision::Allow);
     }
 
     #[test]
@@ -357,7 +378,7 @@ mod tests {
             &session_action("POST"),
             request_scope("wrkspc_other"),
         );
-        assert_eq!(cross, AuthorizationDecision::Deny, "the scope fence holds");
+        assert_eq!(cross, SessionDecision::Deny, "the scope fence holds");
     }
 
     #[test]

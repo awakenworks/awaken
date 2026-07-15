@@ -239,6 +239,38 @@ impl ProviderCatalog {
     }
 }
 
+/// A provider catalog whose reference integrity has been checked. The ONLY way
+/// to obtain one is `parse`, so any `ValidCatalog` in hand is guaranteed valid —
+/// the integrity check lives at this single construction boundary, not at every read.
+///
+/// This makes the illegal state (a stored catalog with a dangling reference)
+/// unrepresentable past construction: write paths store a `ValidCatalog` and read
+/// paths hand back its inner without re-validating; a durable backend funnels its
+/// load-time integrity guard (against corrupt rows) through the same `parse`.
+#[derive(Debug, Clone)]
+pub struct ValidCatalog(ProviderCatalog);
+
+impl ValidCatalog {
+    /// Check reference integrity and, on success, seal the catalog behind the type.
+    /// The single construction boundary — the only place the invariant is enforced.
+    pub fn parse(cat: ProviderCatalog) -> Result<Self, CatalogError> {
+        cat.validate()?;
+        Ok(Self(cat))
+    }
+
+    /// Borrow the checked catalog (read path — no re-validation needed).
+    #[must_use]
+    pub fn get(&self) -> &ProviderCatalog {
+        &self.0
+    }
+
+    /// Unwrap the checked catalog by value.
+    #[must_use]
+    pub fn into_inner(self) -> ProviderCatalog {
+        self.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,6 +394,33 @@ mod tests {
             Err(CatalogError::OfferingEndpointUnknown { model, endpoint })
                 if model == "orphan" && endpoint == "ghost"
         ));
+    }
+
+    #[test]
+    fn valid_catalog_parse_rejects_a_dangling_offering() {
+        // The read-path integrity guard, now testable at its single construction
+        // boundary: a catalog carrying an offering that references an unknown
+        // endpoint cannot be sealed into a `ValidCatalog`.
+        let mut c = catalog();
+        c.offerings.push(Offering {
+            model_id: "orphan".into(),
+            provider_id: ProviderId::new("anthropic"),
+            protocol_endpoint_id: ProtocolEndpointId::new("ghost"),
+            dialect: ApiDialect::AnthropicMessages,
+            upstream_model: None,
+        });
+        assert!(matches!(
+            ValidCatalog::parse(c),
+            Err(CatalogError::OfferingEndpointUnknown { model, endpoint })
+                if model == "orphan" && endpoint == "ghost"
+        ));
+    }
+
+    #[test]
+    fn valid_catalog_parse_seals_a_sound_catalog() {
+        let sealed = ValidCatalog::parse(catalog()).expect("sound catalog parses");
+        assert_eq!(sealed.get().offerings.len(), 1);
+        assert_eq!(sealed.into_inner().providers.len(), 1);
     }
 
     #[test]
