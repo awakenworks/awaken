@@ -614,3 +614,40 @@ async fn unrestricted_egress_injects_no_proxy_env() {
     let env = st.created_env.get("cid-run-open").unwrap();
     assert!(env.iter().all(|(k, _)| k != "HTTPS_PROXY"));
 }
+
+#[tokio::test]
+async fn open_agent_creates_the_container_and_returns_its_channel_and_process() {
+    // The host-facing seam: realize the container running the ACP agent and hand back
+    // its channel + process handle (runtime chosen behind the `dyn` by worker config).
+    let rt = Arc::new(FakeRuntime::default());
+    let provider: Box<dyn AgentContainerProvider> = Box::new(provider(rt.clone()));
+    let session = provider.open_agent(&spec("run-oa")).await.unwrap();
+
+    // The process handle IS the container's main process (process-as-container).
+    assert_eq!(session.process.id(), "cid-run-oa");
+    assert_eq!(
+        session.process.poll().await.unwrap(),
+        Some(pc::ExitStatus {
+            code: Some(0),
+            signaled: false,
+        })
+    );
+    // The durable handle carries the container id for reattach.
+    assert_eq!(session.handle.provider_kind, "container");
+    assert_eq!(
+        session
+            .handle
+            .extra
+            .as_ref()
+            .and_then(|v| v.get("container_id"))
+            .and_then(|v| v.as_str()),
+        Some("cid-run-oa")
+    );
+    // A live duplex channel was opened (the ACP bridge would drive it).
+    let _channel = session.channel;
+    // The container was actually created with the agent argv as its command.
+    assert_eq!(
+        rt.st.lock().unwrap().created_command.get("cid-run-oa"),
+        Some(&vec!["claude".to_string(), "--acp".to_string()])
+    );
+}

@@ -846,18 +846,15 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         self.egress_proxy = Some(proxy);
         self
     }
-}
 
-#[async_trait]
-impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R> {
-    fn capabilities(&self) -> pc::SandboxCapabilities {
-        container_capabilities()
-    }
-
-    async fn create(
+    /// Realize a container running the process-as-container agent and return the
+    /// concrete [`ContainerSandbox`], so a caller can open its ACP channel via
+    /// [`AgentTransport`] — the container counterpart of
+    /// `LocalProvider::create_sandbox`. The trait `create` boxes this.
+    pub async fn create_container(
         &self,
         spec: &pc::SandboxSpec,
-    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
+    ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
         // Fail closed against our capabilities before touching the runtime.
         pc::prepare_environment(spec, &container_capabilities())
             .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
@@ -897,13 +894,75 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
                 content_hash: None,
             })
             .collect();
-        Ok(Box::new(ContainerSandbox {
+        Ok(ContainerSandbox {
             runtime: self.runtime.clone(),
             id: spec.scope.clone(),
             container_id,
             outputs_path: spec.outputs_path.clone(),
             realized,
-        }))
+        })
+    }
+}
+
+/// A running process-as-container agent, handed to the host's ACP
+/// [`AgentChannelSource`]: the duplex ACP `channel`, a `process` handle over the
+/// container's main process (the agent), and the durable `handle` for reattach.
+pub struct AgentContainerSession {
+    pub channel: Box<dyn AgentChannel>,
+    pub process: Box<dyn pc::ProcessHandle>,
+    pub handle: pc::SandboxHandle,
+}
+
+/// Object-safe container seam for the host: realize a container running the ACP agent
+/// and open its channel, with the runtime backend (podman / docker / k8s) chosen
+/// behind the `dyn` by **worker config** — so one host binary drives whichever backend
+/// a given worker is configured for. The counterpart of the Workdir/namespace
+/// `spawn_agent` path, for a user-supplied container image.
+#[async_trait]
+pub trait AgentContainerProvider: Send + Sync {
+    /// Create the container from `spec` (image + `spec.extra.command`) and open its
+    /// ACP channel, returning the channel + process handle for one run.
+    async fn open_agent(
+        &self,
+        spec: &pc::SandboxSpec,
+    ) -> Result<AgentContainerSession, pc::SandboxError>;
+}
+
+#[async_trait]
+impl<R: ContainerRuntime + 'static> AgentContainerProvider for ContainerProvider<R> {
+    async fn open_agent(
+        &self,
+        spec: &pc::SandboxSpec,
+    ) -> Result<AgentContainerSession, pc::SandboxError> {
+        let sandbox = self.create_container(spec).await?;
+        let channel = sandbox
+            .open_channel()
+            .await
+            .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
+        let handle = pc::Sandbox::handle(&sandbox);
+        let process: Box<dyn pc::ProcessHandle> = Box::new(ContainerProcess {
+            runtime: self.runtime.clone(),
+            container_id: sandbox.container_id.clone(),
+        });
+        Ok(AgentContainerSession {
+            channel,
+            process,
+            handle,
+        })
+    }
+}
+
+#[async_trait]
+impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R> {
+    fn capabilities(&self) -> pc::SandboxCapabilities {
+        container_capabilities()
+    }
+
+    async fn create(
+        &self,
+        spec: &pc::SandboxSpec,
+    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
+        Ok(Box::new(self.create_container(spec).await?))
     }
 
     async fn adopt(
@@ -936,7 +995,11 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
     }
 }
 
-struct ContainerSandbox<R: ContainerRuntime> {
+/// A realized container running the process-as-container agent. Besides [`pc::Sandbox`]
+/// it implements [`AgentTransport`] ([`open_channel`](AgentTransport::open_channel)),
+/// so the host can attach the ACP bridge to the agent — the container counterpart of
+/// the Workdir/namespace `spawn_agent` seam.
+pub struct ContainerSandbox<R: ContainerRuntime> {
     runtime: Arc<R>,
     id: String,
     container_id: String,
