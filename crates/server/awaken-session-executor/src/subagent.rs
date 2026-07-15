@@ -23,9 +23,7 @@ use awaken_runtime_contract::llm::{LlmExecutor, ThreadUsage};
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::tool::RawTool;
-// Legacy host-altitude provider (deprecated); see awaken_sandbox_local::SandboxProvider.
-#[allow(deprecated)]
-use awaken_sandbox_local::{LocalSandboxProvider, SandboxProvider, SandboxSpec};
+use awaken_sandbox_local::LocalProvider;
 
 use crate::agent_catalog::AgentCatalog;
 use crate::config::{build_runtime, latest_assistant_text, server_config};
@@ -69,7 +67,7 @@ pub(crate) enum UsageRollup {
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_configured_subrun(
     catalog: &AgentCatalog,
-    provider: &LocalSandboxProvider,
+    provider: &LocalProvider,
     llm: Arc<dyn LlmExecutor>,
     agent_id: &str,
     thread: &str,
@@ -82,9 +80,8 @@ pub(crate) async fn run_configured_subrun(
         .resolve(agent_id)
         .ok_or_else(|| format!("unknown agent {agent_id:?}"))?
         .clone();
-    #[allow(deprecated)] // legacy SandboxProvider::create; rebased onto pc::Sandbox later.
     let env = provider
-        .create(&SandboxSpec::new(thread))
+        .create_sandbox(&crate::provisioning::subrun_sandbox_spec(thread))
         .await
         .map_err(|e| e.to_string())?;
     let mut runtime = build_runtime(llm, &env);
@@ -131,7 +128,7 @@ fn usage_from_committed(commit: &MemoryCommitCoordinator, thread_id: &ThreadId) 
 pub(crate) async fn run_subagent(
     llm: Arc<dyn LlmExecutor>,
     model_ref: &str,
-    provider: &LocalSandboxProvider,
+    provider: &LocalProvider,
     name: &str,
     input: impl Into<RunInput>,
     cancellation: Option<CancellationToken>,
@@ -227,7 +224,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let provider = LocalSandboxProvider::new(&base);
+        let provider = LocalProvider::new(&base);
         let catalog = AgentCatalog::new()
             .with_agent(agent("memory-extractor", "MEMORY INSTRUCTIONS"))
             .with_agent(agent("judge", "JUDGE INSTRUCTIONS"));
@@ -294,7 +291,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let provider = LocalSandboxProvider::new(&base);
+        let provider = LocalProvider::new(&base);
         let catalog = AgentCatalog::new().with_agent(agent("worker", "WORK"));
 
         let (_text, usage) = run_configured_subrun(
@@ -339,7 +336,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let provider = LocalSandboxProvider::new(&base);
+        let provider = LocalProvider::new(&base);
         let catalog = AgentCatalog::new().with_agent(agent("worker", "WORK"));
 
         let (_text, usage) = run_configured_subrun(
@@ -367,7 +364,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_agent_is_an_error() {
         let base = std::env::temp_dir().join("awaken-subrun-test-unknown");
-        let provider = LocalSandboxProvider::new(&base);
+        let provider = LocalProvider::new(&base);
         let catalog = AgentCatalog::new().with_agent(agent("assistant", "hi"));
         let err = run_configured_subrun(
             &catalog,

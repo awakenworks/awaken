@@ -7,10 +7,49 @@
 use std::sync::Arc;
 
 use awaken_file_store::FileStore;
+use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_sandbox_local::{Mount, SandboxSpec};
+use awaken_sandbox_local::Mount;
 
 use crate::host::SharedHost;
+
+/// The sandbox-absolute outputs dir (must be absolute for `prepare_environment`);
+/// resolved under the root to `<root>/outputs`, which `list_files("outputs")` reads.
+const OUTPUTS_PATH: &str = "/outputs";
+
+/// A bare Workdir spec for an ephemeral sub-run sandbox (judge / delegate / compact /
+/// skill fork): scoped to the thread, no staged resource mounts, host-shared network.
+pub(crate) fn subrun_sandbox_spec(thread: &str) -> pc::SandboxSpec {
+    pc::SandboxSpec {
+        scope: thread.to_string(),
+        isolation: pc::IsolationClass::Workdir,
+        mounts: Vec::new(),
+        env: Vec::new(),
+        network: pc::NetworkPolicy::Unrestricted,
+        outputs_path: OUTPUTS_PATH.to_string(),
+        limits: pc::ResourceLimits::default(),
+        lease_ttl_secs: None,
+        extra: None,
+    }
+}
+
+/// Project a staged legacy [`Mount`] into the neutral pc [`MountRequirement`] the
+/// Workdir provider realizes. A resource's inline bytes ride `MountSource::Other`
+/// (self-contained — the host already resolved them at staging, `content_hash` is
+/// empty), realized read-write under `.mnt/<logical>` (the Workdir tier cannot
+/// OS-enforce read-only, matching the legacy realization).
+fn mount_to_requirement(mount: &Mount) -> pc::MountRequirement {
+    match mount {
+        Mount::Resource(r) => pc::MountRequirement {
+            mount_id: r.id.clone(),
+            source: pc::MountSource::Other(serde_json::json!({ "content": r.content })),
+            mount_path: format!(".mnt/{}", r.logical_path),
+            access: pc::MountAccess::ReadWrite,
+            lifetime: pc::MountLifetime::PerRun,
+            required: true,
+        },
+    }
+}
 
 /// The single workspace the host addresses its durable skill catalog under. The
 /// `SkillStore` port is workspace-scoped (multi-node/multi-tenant-ready); this host
@@ -53,14 +92,31 @@ impl SharedHost {
     /// The provisioning request for a thread. Skills are not a sandbox mount
     /// (ADR-0036); the environment provisions isolation tools plus the session's
     /// staged resource mounts (ADR-0038), each realized read-only under `.mnt/`.
-    pub(crate) fn sandbox_spec(&self, thread: &str) -> SandboxSpec {
-        let mut spec = SandboxSpec::new(thread).with_deny_egress(self.thread_egress.denies(thread));
-        if let Some(staged) = self.thread_resources.lock().unwrap().get(thread) {
-            for mount in &staged.mounts {
-                spec = spec.with_mount(mount.clone());
-            }
+    pub(crate) fn sandbox_spec(&self, thread: &str) -> pc::SandboxSpec {
+        let mounts = self
+            .thread_resources
+            .lock()
+            .unwrap()
+            .get(thread)
+            .map(|staged| staged.mounts.iter().map(mount_to_requirement).collect())
+            .unwrap_or_default();
+        // Egress denial is a Workdir-tier bwrap convenience (not admission-gated
+        // network isolation, which this tier cannot enforce), so it rides `extra`.
+        let extra = self
+            .thread_egress
+            .denies(thread)
+            .then(|| serde_json::json!({ "deny_egress": true }));
+        pc::SandboxSpec {
+            scope: thread.to_string(),
+            isolation: pc::IsolationClass::Workdir,
+            mounts,
+            env: Vec::new(),
+            network: pc::NetworkPolicy::Unrestricted,
+            outputs_path: OUTPUTS_PATH.to_string(),
+            limits: pc::ResourceLimits::default(),
+            lease_ttl_secs: None,
+            extra,
         }
-        spec
     }
 
     /// Stage a thread's resources (mounts + prompt fragments); consumed by
@@ -256,7 +312,7 @@ impl SharedHost {
     pub(crate) fn provision_thread_repos(
         &self,
         thread: &str,
-        env: &awaken_sandbox_local::Environment,
+        sandbox: &awaken_sandbox_local::LocalSandbox,
     ) -> Result<(), crate::host::HostError> {
         let repos = self
             .thread_resources
@@ -266,13 +322,14 @@ impl SharedHost {
             .map(|s| s.repos.clone())
             .unwrap_or_default();
         for repo in repos {
-            env.provision_repo(
-                &repo.logical,
-                &repo.url,
-                repo.git_ref.as_deref(),
-                repo.token.as_ref().map(|t| t.expose_secret()),
-            )
-            .map_err(|e| crate::host::HostError::internal(e.to_string()))?;
+            sandbox
+                .provision_repo(
+                    &repo.logical,
+                    &repo.url,
+                    repo.git_ref.as_deref(),
+                    repo.token.as_ref().map(|t| t.expose_secret()),
+                )
+                .map_err(|e| crate::host::HostError::internal(e.to_string()))?;
         }
         Ok(())
     }
@@ -476,13 +533,25 @@ mod memory_store_tests {
 /// memory/repo write-back happy paths run in `host::tests` through a real session.
 #[cfg(test)]
 mod provisioning_registry_tests {
-    #![allow(deprecated)] // legacy SandboxProvider; host tests still drive it pending the pc::Sandbox rebase.
     use super::*;
     use crate::host::SharedHost;
     use awaken_runtime_contract::llm::{ChatRequest, ChatResponse};
-    use awaken_sandbox_local::{
-        LocalSandboxProvider, ResourceMount, SandboxProvider, SandboxSpec as LocalSpec,
-    };
+    use awaken_sandbox_local::{LocalProvider, ResourceMount};
+
+    /// The logical path a staged resource realizes under, recovered from a projected
+    /// pc mount (`.mnt/<logical>`) so the registry assertions stay resource-oriented.
+    fn logical_of(m: &pc::MountRequirement) -> &str {
+        m.mount_path.strip_prefix(".mnt/").unwrap_or(&m.mount_path)
+    }
+
+    /// Whether a projected Workdir spec denies egress (carried on the opaque `extra`).
+    fn denies(spec: &pc::SandboxSpec) -> bool {
+        spec.extra
+            .as_ref()
+            .and_then(|v| v.get("deny_egress"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }
 
     struct NoLlm;
     #[async_trait::async_trait]
@@ -602,11 +671,7 @@ mod provisioning_registry_tests {
             .sandbox_spec("t")
             .mounts
             .iter()
-            .filter_map(|m| {
-                m.get("logical_path")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string)
-            })
+            .map(|m| logical_of(m).to_string())
             .collect();
         assert_eq!(mount_paths, vec!["keep.md".to_string()]);
         assert_eq!(host.thread_resource_prompts("t"), vec!["keep-prompt"]);
@@ -628,7 +693,7 @@ mod provisioning_registry_tests {
         let host = host();
         // No registration and no egress: shared network, no mounts.
         let bare = host.sandbox_spec("t");
-        assert!(!bare.deny_egress);
+        assert!(!denies(&bare));
         assert!(bare.mounts.is_empty());
 
         host.register_thread_egress("t", true);
@@ -640,26 +705,20 @@ mod provisioning_registry_tests {
             },
         );
         let spec = host.sandbox_spec("t");
-        assert!(
-            spec.deny_egress,
-            "the thread's deny-egress policy is carried"
-        );
+        assert!(denies(&spec), "the thread's deny-egress policy is carried");
         assert_eq!(spec.mounts.len(), 1);
-        assert_eq!(
-            spec.mounts[0].get("logical_path").and_then(|v| v.as_str()),
-            Some("notes.md")
-        );
+        assert_eq!(logical_of(&spec.mounts[0]), "notes.md");
     }
 
     #[tokio::test]
     async fn provision_thread_repos_fails_closed_on_an_unsafe_repo_path() {
-        // A jail-escaping logical path is rejected by `Environment::provision_repo`
+        // A jail-escaping logical path is rejected by `LocalSandbox::provision_repo`
         // BEFORE any git runs (deterministic, no git binary needed). The fail-closed
         // contract: that SandboxError surfaces as a HostError so a session never
         // starts believing a repo mounted when it did not.
         let tmp = tempfile::tempdir().unwrap();
-        let env = LocalSandboxProvider::new(tmp.path())
-            .create(&LocalSpec::new("s"))
+        let env = LocalProvider::new(tmp.path())
+            .create_sandbox(&subrun_sandbox_spec("s"))
             .await
             .unwrap();
         let host = host();

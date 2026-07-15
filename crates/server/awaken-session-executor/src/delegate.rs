@@ -19,7 +19,7 @@ use awaken_protocol_a2a::{AgentCard, Task, TaskState};
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::agent_resolver::{AgentError, AgentRequest, AgentResolver, AgentStep};
 use awaken_runtime_contract::llm::{LlmExecutor, ThreadUsage};
-use awaken_sandbox_local::LocalSandboxProvider;
+use awaken_sandbox_local::LocalProvider;
 use serde_json::{Value, json};
 
 use crate::host::{BASE_SEQ, HostError, SharedHost};
@@ -136,7 +136,7 @@ async fn remote_run(
 pub(crate) struct DelegationResolver {
     llm: Arc<dyn LlmExecutor>,
     model_ref: String,
-    provider: LocalSandboxProvider,
+    provider: LocalProvider,
     /// Local (native) delegate ids.
     roster: HashSet<String>,
     /// Remote (A2A) delegate ids → transport.
@@ -147,7 +147,7 @@ impl DelegationResolver {
     pub(crate) fn new(
         llm: Arc<dyn LlmExecutor>,
         model_ref: String,
-        provider: LocalSandboxProvider,
+        provider: LocalProvider,
         roster: HashSet<String>,
         remotes: HashMap<String, Arc<dyn Transport>>,
     ) -> Self {

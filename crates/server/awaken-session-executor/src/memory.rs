@@ -22,7 +22,7 @@ use awaken_ext_memory::{
 };
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::subagent_runner::{SubagentRequest, SubagentRunner};
-use awaken_sandbox_local::LocalSandboxProvider;
+use awaken_sandbox_local::LocalProvider;
 
 use crate::agent_catalog::AgentCatalog;
 use crate::background::BackgroundRuns;
@@ -54,7 +54,7 @@ impl AgentSelector {
         Self {
             runner: Arc::new(HostSubagentRunner {
                 llm,
-                provider: LocalSandboxProvider::new(base),
+                provider: LocalProvider::new(base),
                 catalog,
                 seq: AtomicU64::new(0),
             }),
@@ -97,7 +97,7 @@ pub const RECALL_MSG_PREFIX: &str = "mem-recall-";
 /// `awaken-ext-memory` and only orchestrates the sub-run.
 pub struct MemoryExtraction {
     llm: Arc<dyn LlmExecutor>,
-    provider: Arc<LocalSandboxProvider>,
+    provider: Arc<LocalProvider>,
     catalog: Arc<AgentCatalog>,
     background: Arc<BackgroundRuns>,
     store: MemoryDir,
@@ -107,7 +107,7 @@ pub struct MemoryExtraction {
 impl MemoryExtraction {
     pub fn new(
         llm: Arc<dyn LlmExecutor>,
-        provider: Arc<LocalSandboxProvider>,
+        provider: Arc<LocalProvider>,
         catalog: Arc<AgentCatalog>,
         background: Arc<BackgroundRuns>,
         root: impl Into<std::path::PathBuf>,
@@ -274,7 +274,7 @@ mod tests {
         );
         let extraction = MemoryExtraction::new(
             Arc::new(ExtractorModel),
-            Arc::new(LocalSandboxProvider::new(&sandbox_base)),
+            Arc::new(LocalProvider::new(&sandbox_base)),
             catalog,
             Arc::new(BackgroundRuns::new()),
             &mem_root,
@@ -352,7 +352,7 @@ mod tests {
         );
         let extraction = MemoryExtraction::new(
             Arc::new(SeedEchoModel),
-            Arc::new(LocalSandboxProvider::new(&sandbox_base)),
+            Arc::new(LocalProvider::new(&sandbox_base)),
             catalog,
             Arc::new(BackgroundRuns::new()),
             &mem_root,
