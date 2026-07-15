@@ -204,8 +204,8 @@ fn activation(plugin_ids: Vec<String>, max_steps: usize) -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
-        trace: Default::default(),
         model_access: Default::default(),
+        model_ref_override: None,
     }
 }
 

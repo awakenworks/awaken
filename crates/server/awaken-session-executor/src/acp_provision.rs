@@ -300,8 +300,8 @@ mod tests {
                 fingerprint: CatalogFingerprint("fp".into()),
             },
             input: Vec::new(),
-            trace: Default::default(),
             model_access: Default::default(),
+            model_ref_override: None,
         };
         assert_eq!(r.model(&act).unwrap().model, "run-model");
         let env = r.extra_env(&act);

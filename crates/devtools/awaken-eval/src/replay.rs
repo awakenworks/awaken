@@ -160,8 +160,8 @@ async fn replay(case: &Case) -> (String, bool, Vec<String>) {
             role: Role::User,
             content: vec![ContentBlock::text(case.input.clone())],
         }],
-        trace: Default::default(),
         model_access: Default::default(),
+        model_ref_override: None,
     };
 
     let commit = Arc::new(MemoryCommitCoordinator::new());

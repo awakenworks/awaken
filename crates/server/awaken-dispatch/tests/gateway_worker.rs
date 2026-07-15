@@ -121,6 +121,7 @@ async fn durable_ingress_wires_the_gateway_builder_into_its_worker() {
         "node-1",
         None,
         Some(gateway),
+        None,
     );
 
     store.enqueue(gateway_activation("run-gw")).await.unwrap();

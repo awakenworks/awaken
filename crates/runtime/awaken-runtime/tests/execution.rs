@@ -88,8 +88,8 @@ fn activation(fingerprint: &str) -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("hello")],
         }],
-        trace: Default::default(),
         model_access: Default::default(),
+        model_ref_override: None,
     }
 }
 
