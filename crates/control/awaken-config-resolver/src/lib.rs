@@ -1130,4 +1130,402 @@ mod tests {
         assert_eq!(cooldown_deadline(Disposition::Transient, 1_000), None);
         assert_eq!(cooldown_deadline(Disposition::Permanent, 1_000), None);
     }
+
+    // ---- CEG 02: resolve_credential unit cases (R1–R10) ----
+    use awaken_credential_vault::{
+        CredentialPool, CredentialPoolId, CredentialPoolMember, CredentialStatus, SelectionPolicy,
+    };
+
+    /// A lookup exposing individual sources plus one pool (mirrors the tests/ ctx).
+    struct PoolCtx {
+        sources: HashMap<String, CredentialSource>,
+        pool: CredentialPool,
+    }
+    impl SourceLookup for PoolCtx {
+        fn get(&self, id: &str) -> Option<&CredentialSource> {
+            self.sources.get(id)
+        }
+        fn get_pool(&self, id: &str) -> Option<&CredentialPool> {
+            (self.pool.id.0 == id).then_some(&self.pool)
+        }
+    }
+
+    /// A source that exists but is `Disabled` — present for lookup, fails to materialize.
+    fn disabled_source(id: &str) -> CredentialSource {
+        CredentialSource {
+            id: CredentialSourceId(id.into()),
+            workspace_id: "ws".into(),
+            kind: CredentialKind::Vault,
+            provider_id: None,
+            env_key: None,
+            material_ref: None,
+            oauth_command: None,
+            status: CredentialStatus::Disabled,
+            version: 1,
+        }
+    }
+
+    async fn vault_source(
+        store: &InMemorySecretStore,
+        provider: Option<&str>,
+        secret: &str,
+    ) -> CredentialSource {
+        create_source(
+            CredentialCreateParams {
+                workspace_id: "ws".into(),
+                kind: CredentialKind::Vault,
+                provider_id: provider.map(str::to_string),
+                env_key: None,
+                secret: Some(RedactedString::new(secret)),
+                oauth_command: None,
+            },
+            store,
+        )
+        .await
+        .unwrap()
+    }
+
+    fn member(id: &str, ordinal: u32) -> CredentialPoolMember {
+        CredentialPoolMember {
+            credential_source_id: CredentialSourceId(id.into()),
+            ordinal,
+            enabled: true,
+            selection_weight: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_credential_none_binding_yields_no_secret() {
+        // R1: a None binding materializes nothing (even on the provider-gated path).
+        let store = InMemorySecretStore::new();
+        let sources: HashMap<String, CredentialSource> = HashMap::new();
+        let got = resolve_credential(
+            &CredentialBinding::None,
+            &sources,
+            &store,
+            Some("anthropic"),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(got.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_credential_exact_missing_source_is_source_missing() {
+        // R2: Exact naming an absent source fails closed with SourceMissing.
+        let store = InMemorySecretStore::new();
+        let sources: HashMap<String, CredentialSource> = HashMap::new();
+        let err = resolve_credential(
+            &CredentialBinding::Exact {
+                credential_source_id: CredentialSourceId("ghost".into()),
+            },
+            &sources,
+            &store,
+            Some("anthropic"),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ResolveError::SourceMissing(id) if id == "ghost"));
+    }
+
+    #[tokio::test]
+    async fn resolve_credential_exact_materialize_failure_propagates_credential_error() {
+        // R4: the source is present and compatible (unscoped) so the gate passes, but
+        // materialize fails — the vault CredentialError is propagated transparently,
+        // never remapped to SourceMissing / IncompatibleCredential.
+        let store = InMemorySecretStore::new();
+        let mut sources = HashMap::new();
+        sources.insert("s".to_string(), disabled_source("s"));
+        let err = resolve_credential(
+            &CredentialBinding::Exact {
+                credential_source_id: CredentialSourceId("s".into()),
+            },
+            &sources,
+            &store,
+            Some("anthropic"),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ResolveError::Credential(CredentialError::NotActive(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn resolve_credential_exhausted_pool_reports_total_and_zero_cooled() {
+        // R8: every member unusable → NoEligibleCredential; with no ledger, cooled = 0
+        // and total counts the enabled selection order.
+        let store = InMemorySecretStore::new();
+        let mut sources = HashMap::new();
+        sources.insert("a".to_string(), disabled_source("a"));
+        sources.insert("b".to_string(), disabled_source("b"));
+        let ctx = PoolCtx {
+            sources,
+            pool: CredentialPool {
+                id: CredentialPoolId("p".into()),
+                workspace_id: "ws".into(),
+                members: vec![member("a", 0), member("b", 1)],
+                policy: SelectionPolicy::FirstHealthy,
+            },
+        };
+        let err = resolve_credential(
+            &CredentialBinding::OneOfCredentialPool {
+                credential_pool_id: CredentialPoolId("p".into()),
+            },
+            &ctx,
+            &store,
+            Some("anthropic"),
+            None,
+        )
+        .await
+        .unwrap_err();
+        match err {
+            ResolveError::NoEligibleCredential {
+                pool_id,
+                total,
+                cooled,
+                over_capacity,
+            } => {
+                assert_eq!(pool_id, "p");
+                assert_eq!(total, 2);
+                assert_eq!(cooled, 0);
+                assert_eq!(over_capacity, 0);
+            }
+            other => panic!("expected NoEligibleCredential, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_credential_pool_ledger_rotates_past_cooled_and_counts_them() {
+        // R9: with a ledger, a cooled first member is dropped from eligible_order and
+        // the next healthy member is selected; when all are cooled the count surfaces
+        // as `cooled`; past the deadline the first member auto-resumes and wins again.
+        let store = InMemorySecretStore::new();
+        let cold = vault_source(&store, Some("anthropic"), "sk-first").await;
+        let good = vault_source(&store, Some("anthropic"), "sk-second").await;
+        let mut sources = HashMap::new();
+        sources.insert(cold.id.0.clone(), cold.clone());
+        sources.insert(good.id.0.clone(), good.clone());
+        let ctx = PoolCtx {
+            sources,
+            pool: CredentialPool {
+                id: CredentialPoolId("p".into()),
+                workspace_id: "ws".into(),
+                members: vec![member(&cold.id.0, 0), member(&good.id.0, 1)],
+                policy: SelectionPolicy::FirstHealthy,
+            },
+        };
+        let ledger = AvailabilityLedger::new();
+        ledger.cool_down(&CredentialSourceId(cold.id.0.clone()), 10_000);
+
+        let binding = CredentialBinding::OneOfCredentialPool {
+            credential_pool_id: CredentialPoolId("p".into()),
+        };
+
+        // now < deadline: the cooled first member rotates out; the second is chosen.
+        let got = resolve_credential(
+            &binding,
+            &ctx,
+            &store,
+            Some("anthropic"),
+            Some((&ledger, 5_000)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(got.unwrap().expose_secret(), "sk-second");
+
+        // Cool the good one too: nothing eligible, cooled = 2 of total 2.
+        ledger.cool_down(&CredentialSourceId(good.id.0.clone()), 10_000);
+        let err = resolve_credential(
+            &binding,
+            &ctx,
+            &store,
+            Some("anthropic"),
+            Some((&ledger, 5_000)),
+        )
+        .await
+        .unwrap_err();
+        match err {
+            ResolveError::NoEligibleCredential { total, cooled, .. } => {
+                assert_eq!(total, 2);
+                assert_eq!(cooled, 2);
+            }
+            other => panic!("expected NoEligibleCredential, got {other:?}"),
+        }
+
+        // Past the deadline the first member auto-resumes and is preferred again.
+        let resumed = resolve_credential(
+            &binding,
+            &ctx,
+            &store,
+            Some("anthropic"),
+            Some((&ledger, 20_000)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resumed.unwrap().expose_secret(), "sk-first");
+    }
+
+    #[tokio::test]
+    async fn resolve_credential_mcp_path_skips_compat_gate_for_scoped_key() {
+        // R10: offering_provider = None (the MCP-server path) skips can_consume, so a
+        // provider-scoped key materializes regardless of scope.
+        let store = InMemorySecretStore::new();
+        let scoped = vault_source(&store, Some("openai"), "sk-scoped").await;
+        let mut sources = HashMap::new();
+        sources.insert(scoped.id.0.clone(), scoped.clone());
+        let got = resolve_credential(
+            &CredentialBinding::Exact {
+                credential_source_id: CredentialSourceId(scoped.id.0.clone()),
+            },
+            &sources,
+            &store,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(got.unwrap().expose_secret(), "sk-scoped");
+    }
+
+    // ---- CEG 02: resolve_inference_toggled core (A3) ----
+
+    #[tokio::test]
+    async fn resolve_inference_missing_endpoint_is_endpoint_missing() {
+        // A3(b): the offering resolves but its endpoint id is absent from the catalog.
+        let mut cat = catalog();
+        cat.endpoints.clear();
+        let store = InMemorySecretStore::new();
+        let sources: HashMap<String, CredentialSource> = HashMap::new();
+        let err = resolve_inference_toggled(
+            &cat,
+            "claude-opus-4-8",
+            &[],
+            &CredentialBinding::None,
+            &sources,
+            &store,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ResolveError::EndpointMissing(id) if id == "ep1"));
+    }
+
+    #[tokio::test]
+    async fn resolve_inference_uses_upstream_model_id_when_set() {
+        // A3(d): upstream_model overrides the triple's model_id (the wire name sent
+        // upstream may differ from the catalog model id).
+        let mut cat = catalog();
+        cat.offerings[0].upstream_model = Some("claude-opus-4-8-20990101".into());
+        let store = InMemorySecretStore::new();
+        let sources: HashMap<String, CredentialSource> = HashMap::new();
+        let resolved = resolve_inference_toggled(
+            &cat,
+            "claude-opus-4-8",
+            &[],
+            &CredentialBinding::None,
+            &sources,
+            &store,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resolved.triple.model_id, "claude-opus-4-8-20990101");
+        // The catalog-facing endpoint/provider are unchanged by the alias.
+        assert_eq!(resolved.triple.provider_id, "anthropic");
+    }
+
+    #[tokio::test]
+    async fn disabled_sole_endpoint_is_model_unresolved_not_endpoint_missing() {
+        // A3(e) asymmetry: disabling the model's only offering endpoint filters the
+        // offering out *before* endpoint lookup, so the model reads as unresolvable —
+        // ModelUnresolved, NOT EndpointMissing.
+        let cat = catalog();
+        let store = InMemorySecretStore::new();
+        let sources: HashMap<String, CredentialSource> = HashMap::new();
+        let err = resolve_inference_toggled(
+            &cat,
+            "claude-opus-4-8",
+            &["ep1".to_string()],
+            &CredentialBinding::None,
+            &sources,
+            &store,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ResolveError::ModelUnresolved(_)));
+    }
+
+    // ---- CEG 02: AxisBinding empty pool (A5d) ----
+
+    #[test]
+    fn axis_binding_empty_pool_has_no_primary_and_no_candidates() {
+        let empty: AxisBinding<String> = AxisBinding::Pool(Vec::new());
+        assert!(empty.primary().is_none());
+        assert!(empty.candidates().is_empty());
+    }
+
+    // ---- CEG 02: WebhookEndpointDef::wants (A7) ----
+
+    #[test]
+    fn webhook_wants_matches_listed_types_and_empty_means_all() {
+        fn ep(types: &[&str]) -> WebhookEndpointDef {
+            WebhookEndpointDef {
+                id: "e".into(),
+                workspace_id: "ws".into(),
+                url: "https://x/hook".into(),
+                event_types: types.iter().map(|s| (*s).to_string()).collect(),
+                disabled: false,
+                secret_ref: SecretRef("whsec".into()),
+            }
+        }
+        assert!(ep(&[]).wants("run.completed")); // empty = every type
+        assert!(ep(&["run.completed", "run.failed"]).wants("run.failed"));
+        assert!(!ep(&["run.completed"]).wants("run.failed"));
+    }
+
+    // ---- CEG 02: realized_mount_path (A8 c/d/e) ----
+
+    #[test]
+    fn realized_mount_path_roots_mnt_kinds_and_leaves_repo_and_outputs() {
+        // c: file/memory/skill land under .mnt/<logical> (leading slash stripped).
+        assert_eq!(
+            realized_mount_path(ResourceKind::File, "/mnt/data"),
+            ".mnt/mnt/data"
+        );
+        assert_eq!(
+            realized_mount_path(ResourceKind::MemoryStore, "/mem"),
+            ".mnt/mem"
+        );
+        assert_eq!(
+            realized_mount_path(ResourceKind::Skill, "skills/x"),
+            ".mnt/skills/x"
+        );
+        // d: a repo working tree keeps its bare logical path (no .mnt root).
+        assert_eq!(
+            realized_mount_path(ResourceKind::GithubRepository, "/workspace/repo"),
+            "workspace/repo"
+        );
+        // e: outputs keep the mount_path verbatim (leading slash preserved).
+        assert_eq!(
+            realized_mount_path(ResourceKind::Outputs, "/mnt/session/outputs"),
+            "/mnt/session/outputs"
+        );
+    }
+
+    // ---- CEG 02: resource_binding_prompt empty instructions (A8f) ----
+
+    #[test]
+    fn resource_binding_prompt_treats_empty_instructions_as_missing() {
+        let mut b = binding(ResourceKind::File, "/w/a", ResourceAccess::ReadOnly);
+        b.instructions = Some(String::new());
+        let with_empty = resource_binding_prompt(&b);
+        b.instructions = None;
+        // An empty instruction fragment is indistinguishable from an absent one: no
+        // trailing newline, no appended blurb.
+        assert_eq!(with_empty, resource_binding_prompt(&b));
+        assert!(!with_empty.ends_with('\n'));
+    }
 }

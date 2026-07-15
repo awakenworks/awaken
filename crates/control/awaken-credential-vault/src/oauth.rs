@@ -193,6 +193,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_nonzero_exit_surfaces_the_helper_stderr() {
+        // A helper that fails and explains itself on stderr: the diagnostic must ride
+        // out on the OAuth error so an operator sees *why* the refresh failed.
+        let source = CommandTokenSource::new("sh", ["-c", "echo reauth-required >&2; exit 3"]);
+        assert!(matches!(
+            source.access_token().await,
+            Err(CredentialError::OAuth(msg))
+                if msg.contains("reauth-required") && msg.contains("exited with")
+        ));
+    }
+
+    #[tokio::test]
     async fn an_empty_token_is_rejected() {
         // A helper that "succeeds" but emits only whitespace refreshed nothing.
         let source = CommandTokenSource::new("printf", ["  \\n\\t  "]);
@@ -265,6 +277,23 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(token.expose_secret(), "ya29.abc");
+    }
+
+    #[tokio::test]
+    async fn oauth_access_token_reuses_its_per_source_cache_across_calls() {
+        // The process-wide per-source cache means the *first* command minted for an
+        // id wins for the TTL: a second call with a different command for the same id
+        // still returns the originally minted token (the entry is not rebuilt).
+        let id = CredentialSourceId("cred:ws:oauth-cache-reuse".into());
+        let first = oauth_access_token(&id, &["printf".to_string(), "tok-first".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(first.expose_secret(), "tok-first");
+        let second = oauth_access_token(&id, &["printf".to_string(), "tok-second".to_string()])
+            .await
+            .unwrap();
+        // Served from the cached CachingTokenSource, so still the first token.
+        assert_eq!(second.expose_secret(), "tok-first");
     }
 
     #[tokio::test]

@@ -285,3 +285,256 @@ fn seeded_instructions_are_authorable_and_mention_no_publish() {
     assert!(ADMIN_ASSISTANT_INSTRUCTIONS.contains("management assistant"));
     assert!(ADMIN_ASSISTANT_INSTRUCTIONS.contains("never publish"));
 }
+
+// ---- CEG spec 08: additional cases ------------------------------------------------
+
+/// Build the admin toolset over a specific audit sink so a test can inspect what was
+/// recorded, and fetch one tool by id.
+fn tools_with_audit(audit: Arc<CapturingAudit>) -> Vec<Arc<dyn RawTool>> {
+    admin_tools(Arc::new(FakeCaps), Arc::new(FakeValidator), audit)
+}
+
+fn pick(set: &[Arc<dyn RawTool>], id: &str) -> Arc<dyn RawTool> {
+    set.iter()
+        .find(|t| t.id() == id)
+        .expect("tool exists")
+        .clone()
+}
+
+/// A validator that mimics the real default/tenant-scope catalog projection: the four
+/// `admin_*` tools are simply not nameable there, so naming one is `UnknownTool`
+/// (fail-closed). Stands in for the compile-time scope fence (ADR-0052 D3).
+struct ScopeFenceValidator;
+impl DraftValidator for ScopeFenceValidator {
+    fn validate(&self, draft: &AgentConfig) -> Result<(), String> {
+        match draft.tool_ids.iter().find(|t| t.starts_with("admin_")) {
+            Some(t) => Err(format!("unknown tool: {t}")),
+            None => Ok(()),
+        }
+    }
+}
+
+// PL1 — SetPluginConfig: invalid JSON args → soft error, and NOT audited (parse-fail
+// short-circuits before the audit seam).
+#[tokio::test]
+async fn set_plugin_config_bad_arguments_error_without_audit() {
+    let audit = Arc::new(CapturingAudit::default());
+    let set = tools_with_audit(audit.clone());
+    let out = pick(&set, SET_PLUGIN_TOOL)
+        // Missing `plugin_id`/`config`, and `draft` the wrong shape.
+        .invoke(call(SET_PLUGIN_TOOL, serde_json::json!({ "draft": 7 })))
+        .await
+        .unwrap();
+    assert!(out.is_error);
+    assert!(out.content.contains("invalid arguments"));
+    // Parse failure is a soft ToolOutput::error that short-circuits before audit.
+    assert!(audit.0.lock().unwrap().is_empty());
+}
+
+// PL2 — SetPluginConfig: section over 64 KiB → error, and IS audited (audit precedes
+// the size check). Error path covered by `set_plugin_config_size_bounds_the_section`;
+// this asserts the audit-ordering half.
+#[tokio::test]
+async fn set_plugin_config_over_limit_is_audited() {
+    let audit = Arc::new(CapturingAudit::default());
+    let set = tools_with_audit(audit.clone());
+    let draft = serde_json::json!({
+        "id": "support", "instructions": "be helpful", "max_steps": 8,
+        "model_binding": { "mode": "auto" }, "tool_ids": []
+    });
+    let big = "x".repeat(MAX_PLUGIN_CONFIG_BYTES + 1);
+    let out = pick(&set, SET_PLUGIN_TOOL)
+        .invoke(call(
+            SET_PLUGIN_TOOL,
+            serde_json::json!({
+                "draft": draft,
+                "plugin_id": "state_machine",
+                "config": { "blob": big }
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(out.is_error);
+    assert!(out.content.contains("over the"));
+    // A well-formed-but-oversized call is a privileged call: it is audited.
+    let events = audit.0.lock().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].tool, SET_PLUGIN_TOOL);
+}
+
+// PL3 — SetPluginConfig: attaching leaves a draft that does not validate → error.
+#[tokio::test]
+async fn set_plugin_config_reports_validation_failure_after_attach() {
+    let draft = serde_json::json!({
+        "id": "support", "instructions": "be helpful", "max_steps": 8,
+        "model_binding": { "mode": "auto" }, "tool_ids": ["ghost_tool"]
+    });
+    let out = tool(SET_PLUGIN_TOOL)
+        .invoke(call(
+            SET_PLUGIN_TOOL,
+            serde_json::json!({
+                "draft": draft,
+                "plugin_id": "state_machine",
+                "config": { "machines": [] }
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(out.is_error);
+    assert!(out.content.contains("does not validate"));
+    assert!(out.content.contains("unknown tool"));
+}
+
+// existing: PL4 legit attach → emit_draft — `set_plugin_config_attaches_and_validates`.
+
+// CreateAgentDraft (a) — parse failure is a soft error AND is not audited.
+// (existing `create_draft_rejects_bad_arguments_without_aborting` covers the soft error;
+//  this adds the not-audited invariant.)
+#[tokio::test]
+async fn create_draft_parse_failure_is_not_audited() {
+    let audit = Arc::new(CapturingAudit::default());
+    let set = tools_with_audit(audit.clone());
+    let out = pick(&set, CREATE_DRAFT_TOOL)
+        .invoke(call(CREATE_DRAFT_TOOL, serde_json::json!({ "id": "x" })))
+        .await
+        .unwrap();
+    assert!(out.is_error);
+    assert!(audit.0.lock().unwrap().is_empty());
+}
+
+// CreateAgentDraft (c) — missing max_steps defaults to 8.
+#[tokio::test]
+async fn create_draft_defaults_max_steps_to_eight() {
+    let out = tool(CREATE_DRAFT_TOOL)
+        .invoke(call(
+            CREATE_DRAFT_TOOL,
+            serde_json::json!({ "id": "support", "instructions": "be helpful" }),
+        ))
+        .await
+        .unwrap();
+    assert!(!out.is_error);
+    let draft: AgentConfig = serde_json::from_str(&out.content).unwrap();
+    assert_eq!(draft.max_steps, 8);
+    assert!(draft.model_binding.is_auto());
+}
+
+// ValidateAgent (a) — parse failure → soft error.
+#[tokio::test]
+async fn validate_agent_rejects_bad_arguments() {
+    let out = tool(VALIDATE_TOOL)
+        .invoke(call(
+            VALIDATE_TOOL,
+            serde_json::json!({ "draft": "not-a-config" }),
+        ))
+        .await
+        .unwrap();
+    assert!(out.is_error);
+    assert!(out.content.contains("invalid arguments"));
+}
+
+// ValidateAgent (b)/(c) — both a passing and a failing validation return
+// ToolOutput::ok (soft): the {valid:bool} verdict is data, not a tool error.
+// (existing `validate_agent_reports_valid_and_invalid` asserts the verdict bodies;
+//  this asserts the is_error==false half for both outcomes.)
+#[tokio::test]
+async fn validate_agent_is_soft_ok_for_both_verdicts() {
+    let ok_draft = serde_json::json!({
+        "id": "a", "instructions": "hi", "max_steps": 8,
+        "model_binding": { "mode": "auto" }, "tool_ids": ["read"]
+    });
+    let ok = tool(VALIDATE_TOOL)
+        .invoke(call(
+            VALIDATE_TOOL,
+            serde_json::json!({ "draft": ok_draft }),
+        ))
+        .await
+        .unwrap();
+    assert!(!ok.is_error);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&ok.content).unwrap()["valid"],
+        true
+    );
+
+    let bad_draft = serde_json::json!({
+        "id": "a", "instructions": "hi", "max_steps": 8,
+        "model_binding": { "mode": "auto" }, "tool_ids": ["ghost_tool"]
+    });
+    let bad = tool(VALIDATE_TOOL)
+        .invoke(call(
+            VALIDATE_TOOL,
+            serde_json::json!({ "draft": bad_draft }),
+        ))
+        .await
+        .unwrap();
+    // A failed validation is still a successful (soft) tool call — verdict is the body.
+    assert!(!bad.is_error);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&bad.content).unwrap()["valid"],
+        false
+    );
+}
+
+// AA-a — a draft that names an admin tool in a non-reserved scope is correctly
+// rejected by validation (the scope fence surfaces UnknownTool through ValidateAgent).
+#[tokio::test]
+async fn validate_agent_rejects_draft_naming_an_admin_tool() {
+    let set = admin_tools(
+        Arc::new(FakeCaps),
+        Arc::new(ScopeFenceValidator),
+        Arc::new(CapturingAudit::default()),
+    );
+    let draft = serde_json::json!({
+        "id": "sneaky", "instructions": "hi", "max_steps": 8,
+        "model_binding": { "mode": "auto" }, "tool_ids": [CAPABILITIES_TOOL]
+    });
+    let out = pick(&set, VALIDATE_TOOL)
+        .invoke(call(VALIDATE_TOOL, serde_json::json!({ "draft": draft })))
+        .await
+        .unwrap();
+    // Soft ok, but the verdict is a rejection naming the offending tool.
+    assert!(!out.is_error);
+    let parsed: serde_json::Value = serde_json::from_str(&out.content).unwrap();
+    assert_eq!(parsed["valid"], false);
+    let msg = parsed["error"].as_str().unwrap();
+    assert!(msg.contains("unknown tool"));
+    assert!(msg.contains(CAPABILITIES_TOOL));
+}
+
+// AA-b — never-publish invariant: no tool exposes a publish action, and every draft a
+// tool emits stays an unpublished, auto-bound source config (never a compiled/pinned
+// publication). Publication is a console action, never an LLM tool call (ADR-0052 D4).
+#[tokio::test]
+async fn no_tool_call_ever_publishes() {
+    // 1) The toolset carries no publish tool.
+    assert!(tools().iter().all(|t| !t.id().contains("publish")));
+
+    // 2) Draft-emitting tools return an unpublished, auto-bound draft (not a pinned /
+    //    resolved publication).
+    let created = tool(CREATE_DRAFT_TOOL)
+        .invoke(call(
+            CREATE_DRAFT_TOOL,
+            serde_json::json!({ "id": "support", "instructions": "be helpful" }),
+        ))
+        .await
+        .unwrap();
+    let created_draft: AgentConfig = serde_json::from_str(&created.content).unwrap();
+    assert!(created_draft.model_binding.is_auto());
+
+    let amended = tool(SET_PLUGIN_TOOL)
+        .invoke(call(
+            SET_PLUGIN_TOOL,
+            serde_json::json!({
+                "draft": {
+                    "id": "support", "instructions": "be helpful", "max_steps": 8,
+                    "model_binding": { "mode": "auto" }, "tool_ids": []
+                },
+                "plugin_id": "state_machine",
+                "config": { "machines": [] }
+            }),
+        ))
+        .await
+        .unwrap();
+    let amended_draft: AgentConfig = serde_json::from_str(&amended.content).unwrap();
+    // Still Auto after amendment: the tool never resolves/pins/publishes the draft.
+    assert!(amended_draft.model_binding.is_auto());
+}

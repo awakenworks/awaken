@@ -331,6 +331,117 @@ async fn profile_candidates_resolve_the_model_axis_in_order_and_skip_unresolvabl
     assert!(matches!(err, ResolveError::ModelUnresolved(_)));
 }
 
+/// A catalog offering two distinct models on the same endpoint, so a profile axis
+/// can carry two resolvable candidates.
+async fn two_model_catalog() -> ProviderCatalog {
+    let repo = InMemoryCatalogRepo::new();
+    repo.put_provider(Provider {
+        id: ProviderId::new("anthropic"),
+        slug: "anthropic".into(),
+        display_name: "Anthropic".into(),
+        version: 1,
+    })
+    .await
+    .unwrap();
+    repo.put_endpoint(ProtocolEndpoint {
+        id: ProtocolEndpointId::new("ep1"),
+        provider_id: ProviderId::new("anthropic"),
+        dialect: ApiDialect::AnthropicMessages,
+        base_url: Some("https://api.anthropic.com/v1/".into()),
+        timeout_secs: 300,
+        display_name: "prod".into(),
+        version: 1,
+    })
+    .await
+    .unwrap();
+    for model in ["claude-opus-4-8", "claude-haiku"] {
+        repo.put_offering(Offering {
+            model_id: model.into(),
+            provider_id: ProviderId::new("anthropic"),
+            protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
+            dialect: ApiDialect::AnthropicMessages,
+            upstream_model: None,
+        })
+        .await
+        .unwrap();
+    }
+    repo.snapshot().await.unwrap()
+}
+
+#[tokio::test]
+async fn profile_candidates_all_resolvable_preserve_axis_order() {
+    // A4(a): every model in the axis resolves → one candidate each, in axis order.
+    let store = InMemorySecretStore::new();
+    let repo = InMemoryCredentialRepo::new();
+    let good = enter(&store, &repo, "sk-good").await;
+    let mut sources: HashMap<String, CredentialSource> = HashMap::new();
+    sources.insert(
+        good.clone(),
+        repo.get(&CredentialSourceId(good.clone())).await.unwrap(),
+    );
+    let ctx = PoolCtx {
+        sources,
+        pool: CredentialPool {
+            id: CredentialPoolId("unused".into()),
+            workspace_id: "ws".into(),
+            members: vec![],
+            policy: SelectionPolicy::FirstHealthy,
+        },
+    };
+    let profile = InferenceProfile {
+        model_id: "claude-opus-4-8".into(),
+        model_fallbacks: vec!["claude-haiku".into()],
+        credential_binding: CredentialBinding::Exact {
+            credential_source_id: CredentialSourceId(good.clone()),
+        },
+        disabled_endpoint_ids: Vec::new(),
+    };
+    let candidates = resolve_profile_candidates(&two_model_catalog().await, &profile, &ctx, &store)
+        .await
+        .expect("both models resolve");
+    let ids: Vec<_> = candidates
+        .iter()
+        .map(|c| c.triple.model_id.clone())
+        .collect();
+    assert_eq!(ids, vec!["claude-opus-4-8", "claude-haiku"]);
+}
+
+#[tokio::test]
+async fn profile_candidates_mixed_keeps_only_the_resolvable_in_order() {
+    // A4(d): a resolvable primary with an unresolvable fallback keeps the primary
+    // (a per-candidate failure is non-terminal — unlike an MCP batch).
+    let store = InMemorySecretStore::new();
+    let repo = InMemoryCredentialRepo::new();
+    let good = enter(&store, &repo, "sk-good").await;
+    let mut sources: HashMap<String, CredentialSource> = HashMap::new();
+    sources.insert(
+        good.clone(),
+        repo.get(&CredentialSourceId(good.clone())).await.unwrap(),
+    );
+    let ctx = PoolCtx {
+        sources,
+        pool: CredentialPool {
+            id: CredentialPoolId("unused".into()),
+            workspace_id: "ws".into(),
+            members: vec![],
+            policy: SelectionPolicy::FirstHealthy,
+        },
+    };
+    let profile = InferenceProfile {
+        model_id: "claude-opus-4-8".into(),
+        model_fallbacks: vec!["no-such-model".into()],
+        credential_binding: CredentialBinding::Exact {
+            credential_source_id: CredentialSourceId(good.clone()),
+        },
+        disabled_endpoint_ids: Vec::new(),
+    };
+    let candidates = resolve_profile_candidates(&two_model_catalog().await, &profile, &ctx, &store)
+        .await
+        .expect("the resolvable primary survives");
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].triple.model_id, "claude-opus-4-8");
+}
+
 #[tokio::test]
 async fn missing_pool_fails_closed() {
     let store = InMemorySecretStore::new();

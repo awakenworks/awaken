@@ -675,10 +675,11 @@ mod resource_prompt_tests {
     use awaken_config_resolver::{
         AgentResourceConfig, ResourceAccess, ResourceBinding, ResourceKind,
     };
-    use awaken_config_store::SqliteConfigStore;
+    use awaken_config_store::{ConfigStoreError, SqliteConfigStore};
     use awaken_runtime_contract::resolved::ContextPolicy;
 
     use crate::binding_resolver::{ModelResolver, ResolvedModel};
+    use awaken_protocol_managed::WorkspaceScope;
     use awaken_runtime_contract::resolved::ModelBinding;
 
     fn agent_config(id: &str) -> AgentConfig {
@@ -739,6 +740,160 @@ mod resource_prompt_tests {
         )
     }
 
+    // --- store-error paths (CEG P1 / P6 / reconcile-a / F19c / F21b) ----------
+    // A real SqliteConfigStore never fails its ops deterministically, so the
+    // fail-closed error arms need test doubles that return `ConfigStoreError`.
+
+    /// Every operation fails — drives the read-failure arms.
+    struct FailingRegistry;
+    #[async_trait::async_trait]
+    impl ConfigRegistry for FailingRegistry {
+        async fn put_config(&self, _c: &AgentConfig) -> Result<(), ConfigStoreError> {
+            Err(ConfigStoreError("boom".into()))
+        }
+        async fn get_config(&self, _id: &str) -> Result<Option<AgentConfig>, ConfigStoreError> {
+            Err(ConfigStoreError("boom".into()))
+        }
+        async fn list_configs(&self) -> Result<Vec<AgentConfig>, ConfigStoreError> {
+            Err(ConfigStoreError("boom".into()))
+        }
+        async fn put_publication(&self, _p: &StoredPublication) -> Result<(), ConfigStoreError> {
+            Err(ConfigStoreError("boom".into()))
+        }
+        async fn get_publication(
+            &self,
+            _fp: &str,
+        ) -> Result<Option<StoredPublication>, ConfigStoreError> {
+            Err(ConfigStoreError("boom".into()))
+        }
+    }
+
+    /// Reads a stored pinned config fine, but fails when persisting the publication
+    /// — isolates the `put_publication` → `Store` branch (P6).
+    struct PublishFailRegistry;
+    #[async_trait::async_trait]
+    impl ConfigRegistry for PublishFailRegistry {
+        async fn put_config(&self, _c: &AgentConfig) -> Result<(), ConfigStoreError> {
+            Ok(())
+        }
+        async fn get_config(&self, id: &str) -> Result<Option<AgentConfig>, ConfigStoreError> {
+            Ok(Some(agent_config(id)))
+        }
+        async fn list_configs(&self) -> Result<Vec<AgentConfig>, ConfigStoreError> {
+            Ok(vec![])
+        }
+        async fn put_publication(&self, _p: &StoredPublication) -> Result<(), ConfigStoreError> {
+            Err(ConfigStoreError("publication store down".into()))
+        }
+        async fn get_publication(
+            &self,
+            _fp: &str,
+        ) -> Result<Option<StoredPublication>, ConfigStoreError> {
+            Ok(None)
+        }
+    }
+
+    /// A scope-bound registry whose reads and writes fail, so the HTTP handlers hit
+    /// their 500 / 400 error arms (F19c / F21b).
+    struct FailingScopedRegistry;
+    #[async_trait::async_trait]
+    impl ScopedConfigRegistry for FailingScopedRegistry {
+        async fn put_config_scoped(
+            &self,
+            _s: &ScopeId,
+            _c: &AgentConfig,
+        ) -> Result<(), ConfigStoreError> {
+            Err(ConfigStoreError("boom".into()))
+        }
+        async fn get_config_scoped(
+            &self,
+            _s: &ScopeId,
+            _id: &str,
+        ) -> Result<Option<AgentConfig>, ConfigStoreError> {
+            Err(ConfigStoreError("boom".into()))
+        }
+        async fn list_configs_scoped(
+            &self,
+            _s: &ScopeId,
+        ) -> Result<Vec<AgentConfig>, ConfigStoreError> {
+            Err(ConfigStoreError("boom".into()))
+        }
+        async fn put_publication_scoped(
+            &self,
+            _s: &ScopeId,
+            _p: &StoredPublication,
+        ) -> Result<(), ConfigStoreError> {
+            Err(ConfigStoreError("boom".into()))
+        }
+        async fn get_publication_scoped(
+            &self,
+            _s: &ScopeId,
+            _fp: &str,
+        ) -> Result<Option<StoredPublication>, ConfigStoreError> {
+            Err(ConfigStoreError("boom".into()))
+        }
+    }
+
+    fn failing_scoped_plane() -> ConfigPlane {
+        ConfigPlane::new(
+            Arc::new(ConfigService::new()),
+            Arc::new(FailingScopedRegistry),
+            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+        )
+    }
+
+    // P1: a registry read failure on publish surfaces as `PublishError::Store`.
+    #[tokio::test]
+    async fn publish_maps_a_registry_read_failure_to_store() {
+        let err = ConfigService::new()
+            .publish(&FailingRegistry, "a", &[])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PublishError::Store(_)), "got {err:?}");
+    }
+
+    // P6: a publication-persist failure (after a clean read + compile) is `Store`.
+    #[tokio::test]
+    async fn publish_maps_a_publication_persist_failure_to_store() {
+        let err = ConfigService::new()
+            .publish(&PublishFailRegistry, "a", &[])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PublishError::Store(_)), "got {err:?}");
+    }
+
+    // reconcile-a: a registry read failure on reconcile is a returned `Err`.
+    #[tokio::test]
+    async fn reconcile_propagates_a_registry_read_failure() {
+        assert!(
+            ConfigService::new()
+                .reconcile(&FailingRegistry, "a", &[])
+                .await
+                .is_err()
+        );
+    }
+
+    // F19c: the get_config handler returns 500 when the store read fails.
+    #[tokio::test]
+    async fn get_config_handler_returns_500_on_store_error() {
+        let (status, _body) =
+            super::get_config(State(failing_scoped_plane()), Path("a".to_string()), None).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // F21b: the put_config handler returns 400 when the store write fails (body parses).
+    #[tokio::test]
+    async fn put_config_handler_returns_400_on_store_error() {
+        let (status, _body) = super::put_config(
+            State(failing_scoped_plane()),
+            None,
+            Path("a".to_string()),
+            Json(json!({ "model": "gpt" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
     #[test]
     fn resolve_for_compile_defaults_the_compact_window_from_the_model_attribute() {
         struct WindowResolver;
@@ -779,6 +934,32 @@ mod resource_prompt_tests {
         cfg3.model_binding = pin();
         let out3 = service.resolve_for_compile(cfg3).unwrap();
         assert!(!out3.plugin_config.contains_key("compact"));
+    }
+
+    // CEG F11d: a `compact` value that is present but NOT a JSON object (here a
+    // bare string) is a no-op — `apply_default_compact_window` only reaches into an
+    // object, so a malformed section is left byte-identical and no window injected.
+    #[test]
+    fn resolve_for_compile_leaves_a_non_object_compact_untouched() {
+        struct WindowResolver;
+        impl ModelResolver for WindowResolver {
+            fn resolve_auto(&self) -> Result<ResolvedModel, String> {
+                Err("unused".into())
+            }
+            fn context_window(&self, _model_id: &str) -> Option<u32> {
+                Some(200_000)
+            }
+        }
+        let service = ConfigService::new().with_model_resolver(Arc::new(WindowResolver));
+        let mut cfg = agent_config("a4");
+        cfg.model_binding = ModelSelection::Pinned(ModelBinding::new("p", "m-x", "b"));
+        cfg.plugin_config
+            .insert("compact".into(), serde_json::json!("not-an-object"));
+        let out = service.resolve_for_compile(cfg).unwrap();
+        assert_eq!(
+            out.plugin_config["compact"],
+            serde_json::json!("not-an-object")
+        );
     }
 
     #[tokio::test]
@@ -949,5 +1130,259 @@ mod resource_prompt_tests {
             installed.snapshot().resolved_spec.instructions,
             "be helpful"
         );
+    }
+
+    // ==== CEG section 04: extra publish / resolve / handler coverage ====
+
+    /// A resolver whose catalog has no provider-backed model (P4): `resolve_auto`
+    /// fails, so an `Auto` publish is `Unresolvable`.
+    struct ErrResolver;
+    impl ModelResolver for ErrResolver {
+        fn resolve_auto(&self) -> Result<ResolvedModel, String> {
+            Err("no provider-backed model in the catalog".into())
+        }
+    }
+
+    // ---- publish + resolve_for_compile (F8/F10) ----
+
+    #[tokio::test]
+    async fn publish_missing_config_is_not_stored() {
+        // P2: no config stored for the id → NotStored (before any resolve/compile).
+        let plane = static_plane(None);
+        let scope = ScopeId::from(DEFAULT_SCOPE);
+        let err = plane.publish(&scope, "ghost").await.unwrap_err();
+        assert!(matches!(err, PublishError::NotStored(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn publish_is_unresolvable_when_the_catalog_has_no_model() {
+        // P4: Auto + a resolver, but the resolver reports no provider-backed model.
+        let plane = static_plane(Some(Arc::new(ErrResolver)));
+        let scope = ScopeId::from(DEFAULT_SCOPE);
+        plane.put(&scope, &auto_config("mgmt")).await.unwrap();
+        let err = plane.publish(&scope, "mgmt").await.unwrap_err();
+        assert!(matches!(err, PublishError::Unresolvable(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn publish_compile_failure_when_config_names_an_unknown_tool() {
+        // P5: resolve succeeds, compile fails because a named tool is not in the
+        // (empty) catalog → Compile (not Unresolvable).
+        let plane = static_plane(Some(Arc::new(FakeResolver)));
+        let scope = ScopeId::from(DEFAULT_SCOPE);
+        let mut cfg = agent_config("mgmt");
+        cfg.tool_ids = vec!["ghost_tool".to_string()];
+        plane.put(&scope, &cfg).await.unwrap();
+        let err = plane.publish(&scope, "mgmt").await.unwrap_err();
+        assert!(matches!(err, PublishError::Compile(_)), "{err:?}");
+        assert!(err.to_string().contains("ghost_tool"), "{err}");
+    }
+
+    // ---- validate (F12) ----
+
+    #[tokio::test]
+    async fn validate_auto_without_resolver_is_a_model_issue() {
+        // F12a: an Auto binding that cannot resolve is a `model`-field issue.
+        let plane = static_plane(None);
+        let issue = plane
+            .validate(&ScopeId::from(DEFAULT_SCOPE), &auto_config("mgmt"))
+            .unwrap_err();
+        assert_eq!(issue.path, "model");
+    }
+
+    // ---- HTTP request_scope (F17) ----
+
+    #[test]
+    fn request_scope_uses_the_workspace_scope_when_present() {
+        // F17a.
+        let scope = super::request_scope(Some(Extension(WorkspaceScope("wrkspc_acme".into()))));
+        assert_eq!(scope.as_str(), "wrkspc_acme");
+    }
+
+    #[test]
+    fn request_scope_falls_back_to_the_default_scope() {
+        // F17b.
+        let scope = super::request_scope(None);
+        assert_eq!(scope.as_str(), DEFAULT_SCOPE);
+    }
+
+    // ---- get_config handler (F19) ----
+
+    #[tokio::test]
+    async fn get_config_handler_returns_200_when_present() {
+        // F19a.
+        let plane = static_plane(None);
+        let scope = ScopeId::from(DEFAULT_SCOPE);
+        plane.put(&scope, &agent_config("mgmt")).await.unwrap();
+        let (status, Json(body)) =
+            super::get_config(State(plane), Path("mgmt".to_string()), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["id"], "mgmt");
+    }
+
+    #[tokio::test]
+    async fn get_config_handler_returns_404_when_absent() {
+        // F19b: absent (or cross-tenant) → 404, never disclosed.
+        let plane = static_plane(None);
+        let (status, _body) =
+            super::get_config(State(plane), Path("ghost".to_string()), None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    // ---- validate handler (F20) ----
+
+    #[tokio::test]
+    async fn validate_handler_returns_400_on_unparseable_body() {
+        // F20a: a body the projection can't parse is a 400 (the one non-200 case).
+        let plane = static_plane(None);
+        let (status, Json(body)) = super::validate(
+            State(plane),
+            None,
+            Path("mgmt".to_string()),
+            Json(json!({ "context_policy": 123 })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["valid"], json!(false));
+    }
+
+    #[tokio::test]
+    async fn validate_handler_returns_200_valid_true() {
+        // F20b: a parseable, valid config → 200 with valid:true.
+        let plane = static_plane(None);
+        let (status, Json(body)) = super::validate(
+            State(plane),
+            None,
+            Path("mgmt".to_string()),
+            Json(json!({ "model": { "id": "m" } })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["valid"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn validate_handler_returns_200_valid_false_on_compile_failure() {
+        // F20c (the F20 decoupling): validation is a query — an *invalid* config
+        // still succeeds as a request (200) with valid:false + a routed issue.
+        let plane = static_plane(None);
+        let (status, Json(body)) = super::validate(
+            State(plane),
+            None,
+            Path("mgmt".to_string()),
+            Json(json!({ "model": { "id": "m" }, "tools": ["ghost"] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["valid"], json!(false));
+        assert_eq!(body["issues"][0]["path"], "tools");
+    }
+
+    // ---- put_config handler (F21) ----
+
+    #[tokio::test]
+    async fn put_config_handler_returns_400_on_parse_failure() {
+        // F21a.
+        let plane = static_plane(None);
+        let (status, _body) = super::put_config(
+            State(plane),
+            None,
+            Path("mgmt".to_string()),
+            Json(json!({ "context_policy": 123 })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn put_config_handler_returns_200_on_success() {
+        // F21c: a well-formed body is stored → 200, and is then readable.
+        let plane = static_plane(None);
+        let (status, Json(body)) = super::put_config(
+            State(plane.clone()),
+            None,
+            Path("mgmt".to_string()),
+            Json(json!({ "model": { "id": "m" }, "system": "hi" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["id"], "mgmt");
+        let stored = plane
+            .get(&ScopeId::from(DEFAULT_SCOPE), "mgmt")
+            .await
+            .unwrap();
+        assert_eq!(stored.unwrap().instructions, "hi");
+    }
+
+    // ---- agent_config_from_managed (F22) ----
+
+    #[test]
+    fn agent_config_from_managed_reads_the_model_ref() {
+        // F22a/b/c: model as a String, an object {id}, or absent → "".
+        let from_string =
+            super::agent_config_from_managed("a".into(), &json!({ "model": "gpt-x" })).unwrap();
+        assert_eq!(
+            from_string.model_binding.resolved().unwrap().model_ref,
+            "gpt-x"
+        );
+
+        let from_object =
+            super::agent_config_from_managed("a".into(), &json!({ "model": { "id": "claude" } }))
+                .unwrap();
+        assert_eq!(
+            from_object.model_binding.resolved().unwrap().model_ref,
+            "claude"
+        );
+
+        let missing = super::agent_config_from_managed("a".into(), &json!({})).unwrap();
+        assert_eq!(missing.model_binding.resolved().unwrap().model_ref, "");
+    }
+
+    #[test]
+    fn agent_config_from_managed_rejects_unparseable_context_policy() {
+        // F22d.
+        let err = super::agent_config_from_managed("a".into(), &json!({ "context_policy": 123 }))
+            .unwrap_err();
+        assert!(!err.is_empty());
+    }
+
+    #[test]
+    fn agent_config_from_managed_rejects_unparseable_tool_overrides() {
+        // F22e.
+        let err = super::agent_config_from_managed("a".into(), &json!({ "tool_overrides": 123 }))
+            .unwrap_err();
+        assert!(!err.is_empty());
+    }
+
+    // ---- publish handler (F23) ----
+
+    #[tokio::test]
+    async fn publish_handler_returns_200_on_success() {
+        // F23a.
+        let plane = static_plane(None);
+        let scope = ScopeId::from(DEFAULT_SCOPE);
+        plane.put(&scope, &agent_config("mgmt")).await.unwrap();
+        let (status, Json(body)) =
+            super::publish(State(plane), None, Path("mgmt".to_string())).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["installed"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn publish_handler_returns_409_on_unresolvable() {
+        // F23b (the status partition): an unresolvable Auto binding → 409.
+        let plane = static_plane(None);
+        let scope = ScopeId::from(DEFAULT_SCOPE);
+        plane.put(&scope, &auto_config("mgmt")).await.unwrap();
+        let (status, _body) = super::publish(State(plane), None, Path("mgmt".to_string())).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn publish_handler_returns_400_on_other_publish_error() {
+        // F23c: any other publish failure (here NotStored) stays a 400.
+        let plane = static_plane(None);
+        let (status, _body) = super::publish(State(plane), None, Path("ghost".to_string())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 }

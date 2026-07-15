@@ -676,4 +676,151 @@ mod tests {
             .collect();
         assert_eq!(resumed, ["cred:a", "cred:b"]);
     }
+
+    // ---- CEG 05: materialize (F2) ----
+
+    /// M4: a Vault source whose `material_ref` points at a key the store does not
+    /// hold fails closed with the store's own `SecretNotFound` (not swallowed).
+    #[tokio::test]
+    async fn a_vault_ref_absent_from_the_store_is_secret_not_found() {
+        let store = InMemorySecretStore::new();
+        let mut source = bare_source(CredentialKind::Vault);
+        source.material_ref = Some(SecretRef("sec:dangling".into()));
+        assert!(matches!(
+            materialize(&source, &store).await,
+            Err(CredentialError::SecretNotFound(r)) if r == "sec:dangling"
+        ));
+    }
+
+    /// M5: an `Env` source whose `env_key` names a variable that *is* set reads the
+    /// host value at the seam. `PATH` is reliably present in the test process, so no
+    /// env mutation (forbidden here — `unsafe_code = "forbid"`) is needed.
+    #[tokio::test]
+    async fn an_env_source_reads_a_set_host_variable() {
+        let Ok(expected) = std::env::var("PATH") else {
+            // No PATH in this environment — the read path is exercised elsewhere.
+            return;
+        };
+        let store = InMemorySecretStore::new();
+        let mut source = bare_source(CredentialKind::Env);
+        source.env_key = Some("PATH".into());
+        let value = materialize(&source, &store).await.unwrap();
+        assert_eq!(value.expose_secret(), expected);
+    }
+
+    /// M9: with the `oauth-command` feature *off*, an OAuth source cannot mint a
+    /// token and fails closed with an OAuth error naming the disabled feature — the
+    /// cfg gate never silently degrades to a stored/empty secret.
+    #[cfg(not(feature = "oauth-command"))]
+    #[tokio::test]
+    async fn oauth_without_the_feature_fails_closed() {
+        let store = InMemorySecretStore::new();
+        let mut source = bare_source(CredentialKind::Oauth);
+        source.oauth_command = Some(vec!["printf".into(), "tok".into()]);
+        assert!(matches!(
+            materialize(&source, &store).await,
+            Err(CredentialError::OAuth(msg)) if msg.contains("feature is disabled")
+        ));
+    }
+
+    // ---- CEG 05: eligible_order (F1/F10) ----
+
+    /// AV6: `eligible_order` drops a *disabled* member even when the availability
+    /// ledger has no cooldown for it (disabled-ness is a pool fact, not a ledger
+    /// fact) — the disabled member never reaches a selector.
+    #[test]
+    fn eligible_order_drops_a_disabled_member() {
+        use crate::availability::AvailabilityLedger;
+        let member = |id: &str, ordinal: u32, enabled: bool| CredentialPoolMember {
+            credential_source_id: CredentialSourceId(id.into()),
+            ordinal,
+            enabled,
+            selection_weight: 0,
+        };
+        let pool = CredentialPool {
+            id: CredentialPoolId("pool".into()),
+            workspace_id: "ws".into(),
+            members: vec![member("cred:a", 0, false), member("cred:b", 1, true)],
+            policy: SelectionPolicy::FirstHealthy,
+        };
+        let ledger = AvailabilityLedger::new(); // nothing cooled
+        let eligible: Vec<&str> = pool
+            .eligible_order(&ledger, 0)
+            .iter()
+            .map(|m| m.credential_source_id.0.as_str())
+            .collect();
+        assert_eq!(eligible, ["cred:b"]);
+    }
+
+    // ---- CEG 05: create_source (F3) ----
+
+    /// A `SecretStore` whose `put` always fails, so `create_source` surfaces the
+    /// seal/storage error rather than persisting a row that points at nothing.
+    struct FailingPutStore;
+    #[async_trait::async_trait]
+    impl SecretStore for FailingPutStore {
+        async fn put(&self, _r: &SecretRef, _s: RedactedString) -> Result<(), CredentialError> {
+            Err(CredentialError::Storage("put boom".into()))
+        }
+        async fn get(&self, r: &SecretRef) -> Result<RedactedString, CredentialError> {
+            Err(CredentialError::SecretNotFound(r.0.clone()))
+        }
+    }
+
+    /// create_source(b): a `Vault` create whose seal (`put`) fails returns the error
+    /// — no half-created secret-free row escapes with a dangling ref.
+    #[tokio::test]
+    async fn create_vault_propagates_a_put_failure() {
+        let store = FailingPutStore;
+        let err = create_source(
+            CredentialCreateParams {
+                workspace_id: "ws".into(),
+                kind: CredentialKind::Vault,
+                provider_id: None,
+                env_key: None,
+                secret: Some(RedactedString::new("sk")),
+                oauth_command: None,
+            },
+            &store,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, CredentialError::Storage(_)));
+    }
+
+    /// create_source(c): every kind that stores nothing (`Env`, and `Vault` with no
+    /// secret) yields a row with `material_ref = None` — the store is never touched.
+    #[tokio::test]
+    async fn create_without_sealed_material_has_no_ref() {
+        let store = InMemorySecretStore::new();
+        let env = create_source(
+            CredentialCreateParams {
+                workspace_id: "ws".into(),
+                kind: CredentialKind::Env,
+                provider_id: None,
+                env_key: Some("ANTHROPIC_API_KEY".into()),
+                secret: Some(RedactedString::new("dropped")), // Env drops any stray secret.
+                oauth_command: None,
+            },
+            &store,
+        )
+        .await
+        .unwrap();
+        assert_eq!(env.material_ref, None);
+
+        let vault_no_secret = create_source(
+            CredentialCreateParams {
+                workspace_id: "ws".into(),
+                kind: CredentialKind::Vault,
+                provider_id: None,
+                env_key: None,
+                secret: None,
+                oauth_command: None,
+            },
+            &store,
+        )
+        .await
+        .unwrap();
+        assert_eq!(vault_no_secret.material_ref, None);
+    }
 }
