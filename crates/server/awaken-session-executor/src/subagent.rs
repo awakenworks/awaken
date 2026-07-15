@@ -1,9 +1,10 @@
-//! Running a fresh, isolated sub-agent to completion.
+//! Running a sub-agent to completion.
 //!
-//! Both native delegation (`agent_run`) and the goal judge run a sub-agent the
-//! same way: a fresh sandbox, a runtime over the same model with *no* delegation
-//! resolver (so a sub-agent cannot recurse), driven to completion, returning its
-//! last assistant line. This is that one operation.
+//! Native delegation (`agent_run`), the goal judge, and skill forks run a sub-agent
+//! the same way: a sandbox ([shared with the parent by default](SubrunSandbox), or a
+//! fresh isolated one), a runtime over the same model with *no* delegation resolver
+//! (so a sub-agent cannot recurse), driven to completion, returning its last
+//! assistant line. This is that one operation.
 //!
 //! [`run_configured_subrun`] is the parameterized form: it resolves the agent's
 //! own `RunnableConfig` (instructions, model, tools) from an [`AgentCatalog`] by
@@ -23,10 +24,22 @@ use awaken_runtime_contract::llm::{LlmExecutor, ThreadUsage};
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::tool::RawTool;
-use awaken_sandbox_local::LocalProvider;
+use awaken_sandbox_local::{LocalProvider, LocalSandbox};
 
 use crate::agent_catalog::AgentCatalog;
 use crate::config::{build_runtime, latest_assistant_text, server_config};
+
+/// Where a sub-run's tools execute. A subagent **shares the parent agent's sandbox by
+/// default** ([`Shared`](SubrunSandbox::Shared)) — same root, same workspace, so the
+/// two collaborate on one set of files — or runs in a **fresh, isolated** sandbox
+/// ([`Fresh`](SubrunSandbox::Fresh)) when the subagent is configured for isolation or
+/// no parent sandbox exists (out-of-band housekeeping: judge / memory / compaction).
+pub(crate) enum SubrunSandbox<'a> {
+    /// Reuse the parent agent's live sandbox — the default (`与主 agent 共用`).
+    Shared(&'a LocalSandbox),
+    /// Create a fresh, isolated sandbox for this sub-run via the given provider.
+    Fresh(&'a LocalProvider),
+}
 
 /// What becomes of an auxiliary sub-run's token usage. A sub-run commits its usage
 /// to its own isolated store (dropped when the run returns), so the caller must
@@ -48,9 +61,10 @@ pub(crate) enum UsageRollup {
 
 /// Run the agent identified by `agent_id` — its config resolved from `catalog` —
 /// on an isolated `thread`, seeded with `seed`, to completion, returning its last
-/// assistant line **and its accumulated token usage**. The sub-run gets a fresh
-/// sandbox, a runtime over `llm` with no delegation resolver (no recursion), and an
-/// isolated commit store (its history never joins the parent transcript).
+/// assistant line **and its accumulated token usage**. The sub-run runs on `sandbox`
+/// (the parent's, shared, or a fresh one), a runtime over `llm` with no delegation
+/// resolver (no recursion), and an isolated commit store (history never joins the
+/// parent transcript).
 /// `cancellation`, when set, is forwarded so cancelling the parent cancels the
 /// sub-run too.
 ///
@@ -67,7 +81,7 @@ pub(crate) enum UsageRollup {
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_configured_subrun(
     catalog: &AgentCatalog,
-    provider: &LocalProvider,
+    sandbox: SubrunSandbox<'_>,
     llm: Arc<dyn LlmExecutor>,
     agent_id: &str,
     thread: &str,
@@ -80,11 +94,22 @@ pub(crate) async fn run_configured_subrun(
         .resolve(agent_id)
         .ok_or_else(|| format!("unknown agent {agent_id:?}"))?
         .clone();
-    let env = provider
-        .create_sandbox(&crate::provisioning::subrun_sandbox_spec(thread))
-        .await
-        .map_err(|e| e.to_string())?;
-    let mut runtime = build_runtime(llm, &env);
+    // Reuse the parent's sandbox by default; a `Fresh` sub-run gets its own root. The
+    // created sandbox (if any) is bound here so the borrow lives for the whole run.
+    let created = match &sandbox {
+        SubrunSandbox::Fresh(provider) => Some(
+            provider
+                .create_sandbox(&crate::provisioning::subrun_sandbox_spec(thread))
+                .await
+                .map_err(|e| e.to_string())?,
+        ),
+        SubrunSandbox::Shared(_) => None,
+    };
+    let env: &LocalSandbox = match &sandbox {
+        SubrunSandbox::Shared(shared) => shared,
+        SubrunSandbox::Fresh(_) => created.as_ref().expect("a Fresh sub-run created a sandbox"),
+    };
+    let mut runtime = build_runtime(llm, env);
     // Tools the caller provisions on top of the sandbox's own (e.g. a
     // persistent write_memory scoped outside the ephemeral sandbox).
     for tool in extra_tools {
@@ -128,7 +153,7 @@ fn usage_from_committed(commit: &MemoryCommitCoordinator, thread_id: &ThreadId) 
 pub(crate) async fn run_subagent(
     llm: Arc<dyn LlmExecutor>,
     model_ref: &str,
-    provider: &LocalProvider,
+    sandbox: SubrunSandbox<'_>,
     name: &str,
     input: impl Into<RunInput>,
     cancellation: Option<CancellationToken>,
@@ -147,7 +172,7 @@ pub(crate) async fn run_subagent(
     let catalog = AgentCatalog::new().with_agent(config);
     run_configured_subrun(
         &catalog,
-        provider,
+        sandbox,
         llm,
         "assistant",
         name,
@@ -232,7 +257,7 @@ mod tests {
 
         let (mem, _) = run_configured_subrun(
             &catalog,
-            &provider,
+            SubrunSandbox::Fresh(&provider),
             llm.clone(),
             "memory-extractor",
             "t-mem",
@@ -247,7 +272,7 @@ mod tests {
 
         let (judge, _) = run_configured_subrun(
             &catalog,
-            &provider,
+            SubrunSandbox::Fresh(&provider),
             llm.clone(),
             "judge",
             "t-judge",
@@ -296,7 +321,7 @@ mod tests {
 
         let (_text, usage) = run_configured_subrun(
             &catalog,
-            &provider,
+            SubrunSandbox::Fresh(&provider),
             Arc::new(UsageModel),
             "worker",
             "t-usage",
@@ -341,7 +366,7 @@ mod tests {
 
         let (_text, usage) = run_configured_subrun(
             &catalog,
-            &provider,
+            SubrunSandbox::Fresh(&provider),
             Arc::new(UsageModel),
             "worker",
             "t-isolated",
@@ -368,7 +393,7 @@ mod tests {
         let catalog = AgentCatalog::new().with_agent(agent("assistant", "hi"));
         let err = run_configured_subrun(
             &catalog,
-            &provider,
+            SubrunSandbox::Fresh(&provider),
             Arc::new(InstructionEchoModel),
             "nope",
             "t",
@@ -380,5 +405,58 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.contains("unknown agent"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn a_shared_subrun_reuses_the_parent_sandbox_while_fresh_makes_its_own() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parent_base = tmp.path().join("parent");
+        let fresh_base = tmp.path().join("fresh");
+        // The parent agent's live sandbox (root = parent_base/main).
+        let parent = LocalProvider::new(&parent_base)
+            .create_sandbox(&crate::provisioning::subrun_sandbox_spec("main"))
+            .await
+            .unwrap();
+        let catalog = AgentCatalog::new().with_agent(agent("assistant", "hi"));
+        let fresh_provider = LocalProvider::new(&fresh_base);
+
+        // Shared: the sub-run runs on the parent's sandbox — no new root is created
+        // under the fresh provider's base (`默认共用`).
+        run_configured_subrun(
+            &catalog,
+            SubrunSandbox::Shared(&parent),
+            Arc::new(InstructionEchoModel),
+            "assistant",
+            "sub-a",
+            vec![user("go")],
+            Vec::new(),
+            None,
+            UsageRollup::Isolated,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !fresh_base.join("sub-a").exists(),
+            "a shared sub-run must not create its own sandbox root"
+        );
+
+        // Fresh: the sub-run creates its own isolated root under the provider base.
+        run_configured_subrun(
+            &catalog,
+            SubrunSandbox::Fresh(&fresh_provider),
+            Arc::new(InstructionEchoModel),
+            "assistant",
+            "sub-b",
+            vec![user("go")],
+            Vec::new(),
+            None,
+            UsageRollup::Isolated,
+        )
+        .await
+        .unwrap();
+        assert!(
+            fresh_base.join("sub-b").exists(),
+            "a fresh sub-run creates its own isolated sandbox root"
+        );
     }
 }

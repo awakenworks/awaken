@@ -157,7 +157,7 @@ impl MemoryExtraction {
                 // its usage stays isolated (background housekeeping, not turn work).
                 let _ = run_configured_subrun(
                     &catalog,
-                    &provider,
+                    crate::subagent::SubrunSandbox::Fresh(&provider),
                     llm,
                     MEMORY_AGENT_ID,
                     &mem_thread,
