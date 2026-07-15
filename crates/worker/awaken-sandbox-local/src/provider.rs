@@ -28,7 +28,12 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use std::sync::Arc;
 
-use crate::{IsolatedRoot, content_fingerprint};
+use awaken_runtime_contract::tool::RawTool;
+
+use crate::{
+    DiscoveredSkillFile, IsolatedRoot, commit_and_push_at, content_fingerprint, list_files_at,
+    provision_repo_at, rooted_raw_tools, scan_skill_dir_at,
+};
 
 fn err(e: impl ToString) -> pc::SandboxError {
     pc::SandboxError::new(e.to_string())
@@ -169,6 +174,16 @@ impl LocalProvider {
         pc::prepare_environment(spec, &Self::caps()).map_err(err)?;
 
         let mut sandbox = self.build(&spec.scope, &spec.outputs_path);
+        // Best-effort egress denial for the rooted `bash` tool (the Workdir-tier
+        // equivalent of the legacy `deny_egress`). It is a bwrap `--unshare-net`
+        // convenience, NOT admission-gated network isolation (which the Workdir tier
+        // cannot enforce — that is `NetworkPolicy`), so it rides the opaque `extra`.
+        sandbox.deny_egress = spec
+            .extra
+            .as_ref()
+            .and_then(|v| v.get("deny_egress"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         std::fs::create_dir_all(sandbox.root.root()).map_err(err)?;
         // Outputs directory (sandbox-absolute → rejailed host path).
         let host_outputs = sandbox.root.resolve(&spec.outputs_path).map_err(err)?;
@@ -298,6 +313,7 @@ impl LocalProvider {
             id: id.to_string(),
             root: IsolatedRoot::new(dir),
             outputs_path: outputs_path.to_string(),
+            deny_egress: false,
             base_env: Vec::new(),
             realized: Vec::new(),
             secret_paths: Vec::new(),
@@ -339,6 +355,9 @@ pub struct LocalSandbox {
     id: String,
     root: IsolatedRoot,
     outputs_path: String,
+    /// Egress denied for this sandbox's rooted in-process tools (derived from the
+    /// spec's [`NetworkPolicy`](pc::NetworkPolicy)); threaded into [`rooted_tools`].
+    deny_egress: bool,
     base_env: Vec<(String, String)>,
     realized: Vec<pc::RealizedMount>,
     /// Host paths of realized `Secret` mounts, **shredded** (overwritten) at
@@ -430,6 +449,54 @@ impl LocalSandbox {
             .ok_or_else(|| err("agent stdout was not piped"))?;
         let channel: Box<dyn AgentChannel> = Box::new(SplitChannel::new(stdout, stdin));
         Ok((Box::new(LocalProcess::spawned(child)), channel))
+    }
+
+    // --- Host-tier helpers (Workdir tier) -----------------------------------
+    // The trusted, single-machine capability surface the host composes into a run.
+    // These operate on the sandbox's realized root — path fidelity is a lexical
+    // convenience here (`tool_transparent = false`), not an isolation boundary. They
+    // replace the legacy `Environment` methods; OS enforcement is the container tier's.
+
+    /// The full provisioned capability surface (ADR-0035 D8): the sandbox's rooted
+    /// in-process tools as `RawTool`s, jailed to the root with egress per the spec.
+    /// This is what the host registers on the runtime (the pc-model `Environment::tools`).
+    pub fn rooted_tools(&self) -> Vec<Arc<dyn RawTool>> {
+        rooted_raw_tools(self.root.clone(), self.deny_egress)
+    }
+
+    /// Clone a github_repository resource into `<root>/<logical>` host-side (ADR-0038);
+    /// the credential stays out of the jail. Fail-closed on a bad path or git error.
+    pub fn provision_repo(
+        &self,
+        logical: &str,
+        url: &str,
+        git_ref: Option<&str>,
+        token: Option<&str>,
+    ) -> Result<(), pc::SandboxError> {
+        provision_repo_at(&self.root, logical, url, git_ref, token).map_err(err)
+    }
+
+    /// Stage/commit/push the repo at `<root>/<logical>` host-side (ADR-0038 write-back).
+    /// `Ok(true)` when a commit was pushed, `Ok(false)` for a clean tree.
+    pub fn commit_and_push(
+        &self,
+        logical: &str,
+        token: Option<&str>,
+        message: &str,
+    ) -> Result<bool, pc::SandboxError> {
+        commit_and_push_at(&self.root, logical, token, message).map_err(err)
+    }
+
+    /// List regular files under `<root>/<subdir>` as `(logical_path, bytes)` — a
+    /// session's output artifacts or a memory-harvest read. Paths are logical (G3).
+    pub fn list_files(&self, subdir: &str) -> Vec<(String, Vec<u8>)> {
+        list_files_at(&self.root, subdir)
+    }
+
+    /// Scan `<root>/<subdir>/*/SKILL.md` live, returning neutral file data (the host
+    /// parses the skill model). Re-scanned each call so a run-authored skill is seen.
+    pub fn scan_skill_dir(&self, subdir: &str) -> Vec<DiscoveredSkillFile> {
+        scan_skill_dir_at(&self.root, subdir)
     }
 }
 
@@ -822,5 +889,174 @@ mod shred_tests {
         assert!(!proc.id().is_empty());
         let status = proc.wait().await.unwrap();
         assert_eq!(status.code, Some(0));
+    }
+}
+
+/// The Workdir-tier host helpers that replace the legacy `Environment` methods —
+/// rooted tools, repo provisioning/write-back, artifact/skill scanning — exercised
+/// on a `LocalSandbox` built through the pc `SandboxProvider` path.
+#[cfg(test)]
+mod workdir_helper_tests {
+    use super::*;
+    use awaken_provisioning_contract::{
+        IsolationClass, NetworkPolicy, ResourceLimits, SandboxSpec,
+    };
+
+    fn workdir_spec(scope: &str, deny_egress: bool) -> SandboxSpec {
+        SandboxSpec {
+            scope: scope.into(),
+            isolation: IsolationClass::Workdir,
+            mounts: Vec::new(),
+            env: Vec::new(),
+            // The Workdir tier admits only unrestricted network (it cannot enforce
+            // isolation); egress denial for the rooted bash tool rides `extra`.
+            network: NetworkPolicy::Unrestricted,
+            outputs_path: "/mnt/session/outputs".into(),
+            limits: ResourceLimits::default(),
+            lease_ttl_secs: None,
+            extra: deny_egress.then(|| json!({ "deny_egress": true })),
+        }
+    }
+
+    fn git(cwd: &std::path::Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .current_dir(cwd)
+            .args(args)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+
+    #[tokio::test]
+    async fn rooted_tools_are_nonempty_and_egress_tracks_the_network_policy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = LocalProvider::new(tmp.path());
+
+        let open = provider
+            .create_sandbox(&workdir_spec("t-open", false))
+            .await
+            .unwrap();
+        assert!(!open.deny_egress);
+        // The full built-in capability surface is composed as RawTools.
+        assert!(!open.rooted_tools().is_empty());
+
+        let closed = provider
+            .create_sandbox(&workdir_spec("t-closed", true))
+            .await
+            .unwrap();
+        assert!(closed.deny_egress);
+        // Egress denial changes the tool wrapper, not the tool set's size.
+        assert_eq!(open.rooted_tools().len(), closed.rooted_tools().len());
+    }
+
+    #[tokio::test]
+    async fn list_files_and_scan_skill_dir_read_the_realized_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = LocalProvider::new(tmp.path());
+        let sandbox = provider
+            .create_sandbox(&workdir_spec("t-scan", false))
+            .await
+            .unwrap();
+        let root = sandbox.root.root().to_path_buf();
+
+        // Output artifacts are collected as (logical_path, bytes), sorted, recursively.
+        std::fs::create_dir_all(root.join("outputs/sub")).unwrap();
+        std::fs::write(root.join("outputs/a.txt"), b"A").unwrap();
+        std::fs::write(root.join("outputs/sub/b.txt"), b"B").unwrap();
+        assert_eq!(
+            sandbox.list_files("outputs"),
+            vec![
+                ("a.txt".to_string(), b"A".to_vec()),
+                ("sub/b.txt".to_string(), b"B".to_vec()),
+            ]
+        );
+
+        // A SKILL.md-bearing dir surfaces as neutral file data under a logical dir.
+        std::fs::create_dir_all(root.join("skills/greet")).unwrap();
+        std::fs::write(root.join("skills/greet/SKILL.md"), "# greet").unwrap();
+        let skills = sandbox.scan_skill_dir("skills");
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, "greet");
+        assert_eq!(skills[0].dir, "skills/greet");
+        assert_eq!(skills[0].content, "# greet");
+    }
+
+    #[tokio::test]
+    async fn provision_repo_clones_then_commit_and_push_writes_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        // Seed a bare "remote" with one commit.
+        let seed = base.join("seed");
+        std::fs::create_dir_all(&seed).unwrap();
+        git(&seed, &["init", "-q", "-b", "main"]);
+        git(&seed, &["config", "user.email", "seed@t"]);
+        git(&seed, &["config", "user.name", "seed"]);
+        std::fs::write(seed.join("README.md"), "hello").unwrap();
+        git(&seed, &["add", "-A"]);
+        git(&seed, &["commit", "-q", "-m", "seed"]);
+        let bare = base.join("remote.git");
+        git(
+            base,
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                seed.to_str().unwrap(),
+                bare.to_str().unwrap(),
+            ],
+        );
+
+        let provider = LocalProvider::new(base.join("envs"));
+        let sandbox = provider
+            .create_sandbox(&workdir_spec("t-repo", false))
+            .await
+            .unwrap();
+        let root = sandbox.root.root().to_path_buf();
+
+        sandbox
+            .provision_repo("workspace/repo", bare.to_str().unwrap(), None, None)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("workspace/repo/README.md")).unwrap(),
+            "hello"
+        );
+
+        // A clean tree pushes nothing; an edit commits + pushes and reports true.
+        assert!(
+            !sandbox
+                .commit_and_push("workspace/repo", None, "noop")
+                .unwrap()
+        );
+        std::fs::write(root.join("workspace/repo/NEW.txt"), "agent").unwrap();
+        assert!(
+            sandbox
+                .commit_and_push("workspace/repo", None, "add file")
+                .unwrap()
+        );
+
+        // The bare remote now carries the pushed commit.
+        let log = std::process::Command::new("git")
+            .current_dir(&bare)
+            .args(["log", "--oneline"])
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&log.stdout).contains("add file"));
+    }
+
+    #[tokio::test]
+    async fn provision_repo_rejects_a_jail_escape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = LocalProvider::new(tmp.path());
+        let sandbox = provider
+            .create_sandbox(&workdir_spec("t-escape", false))
+            .await
+            .unwrap();
+        assert!(
+            sandbox
+                .provision_repo("../escape", "http://x", None, None)
+                .is_err()
+        );
     }
 }

@@ -294,6 +294,141 @@ pub(crate) fn rooted_hand_tools(root: IsolatedRoot, deny_egress: bool) -> Vec<Ar
         .collect()
 }
 
+/// Resolve a logical path under a realized `root`, fail-closed on escape (G3). The
+/// free-function form of the jail the repo helpers share; `.`/`..` segments and an
+/// empty path are rejected so a mount never lands outside the sandbox root.
+pub(crate) fn jailed_at(root: &IsolatedRoot, logical: &str) -> Result<PathBuf, SandboxError> {
+    let logical = logical.trim_start_matches('/');
+    if logical.is_empty() || logical.split('/').any(|seg| seg == ".." || seg == ".") {
+        return Err(SandboxError(format!("unsafe repo mount path `{logical}`")));
+    }
+    Ok(root.root().join(logical))
+}
+
+/// Clone a git repository into `<root>/<logical>` **host-side** (ADR-0038). The
+/// credential never enters the jail: git runs as a host process, the token is used
+/// only for the clone transport, and the persisted `origin` is rewritten tokenless.
+/// Fail-closed: a bad `logical` or non-zero git exit is an error. Shared by the
+/// legacy `Environment` and the `pc::Sandbox` Workdir tier.
+pub(crate) fn provision_repo_at(
+    root: &IsolatedRoot,
+    logical: &str,
+    url: &str,
+    git_ref: Option<&str>,
+    token: Option<&str>,
+) -> Result<(), SandboxError> {
+    let dest = jailed_at(root, logical)?;
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| SandboxError(e.to_string()))?;
+    }
+    let mut args = vec!["clone".to_string()];
+    if let Some(r) = git_ref {
+        args.push("--branch".into());
+        args.push(r.to_string());
+    }
+    args.push(authed_url(url, token));
+    args.push(dest.to_string_lossy().into_owned());
+    run_git(None, &args)?;
+    if token.is_some() {
+        run_git(Some(&dest), &["remote", "set-url", "origin", url])?;
+    }
+    run_git(Some(&dest), &["config", "user.email", "agent@awaken.local"])?;
+    run_git(Some(&dest), &["config", "user.name", "Awaken Agent"])?;
+    Ok(())
+}
+
+/// Stage, commit, and push the repo at `<root>/<logical>` **host-side** (ADR-0038
+/// write-back). The token is on the push transport only, never persisted. `Ok(true)`
+/// when a commit was pushed, `Ok(false)` for a clean tree. Shared with the Workdir tier.
+pub(crate) fn commit_and_push_at(
+    root: &IsolatedRoot,
+    logical: &str,
+    token: Option<&str>,
+    message: &str,
+) -> Result<bool, SandboxError> {
+    let dest = jailed_at(root, logical)?;
+    run_git(Some(&dest), &["add", "-A"])?;
+    if !git_ok(Some(&dest), &["commit", "-m", message]) {
+        return Ok(false);
+    }
+    let url = git_stdout(Some(&dest), &["remote", "get-url", "origin"])?;
+    let url = url.trim();
+    run_git(Some(&dest), &["push", &authed_url(url, token), "HEAD"])?;
+    Ok(true)
+}
+
+/// List regular files under `<root>/<subdir>` (recursively) as `(logical_path, bytes)`
+/// sorted by path — a session's output artifacts / memory harvest. Paths are logical
+/// (never a host path, G3). Shared with the Workdir tier.
+pub(crate) fn list_files_at(root: &IsolatedRoot, subdir: &str) -> Vec<(String, Vec<u8>)> {
+    let base = root.root().join(subdir);
+    let mut out = Vec::new();
+    let mut stack = vec![base.clone()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(t) if t.is_dir() => stack.push(path),
+                Ok(t) if t.is_file() => {
+                    if let Ok(bytes) = std::fs::read(&path) {
+                        let rel = path
+                            .strip_prefix(&base)
+                            .unwrap_or(&path)
+                            .to_string_lossy()
+                            .replace('\\', "/");
+                        out.push((rel, bytes));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// Scan `<root>/<subdir>/*/SKILL.md` **live** and return neutral file data (the host
+/// parses the skill model). A missing dir / unreadable file / dir without `SKILL.md`
+/// is skipped; `dir` is the logical path `"<subdir>/<id>"`. Shared with the Workdir tier.
+pub(crate) fn scan_skill_dir_at(root: &IsolatedRoot, subdir: &str) -> Vec<DiscoveredSkillFile> {
+    let base = root.root().join(subdir);
+    let Ok(entries) = std::fs::read_dir(&base) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let id = entry.file_name().to_string_lossy().into_owned();
+        let md = entry.path().join("SKILL.md");
+        let Ok(content) = std::fs::read_to_string(&md) else {
+            continue;
+        };
+        out.push(DiscoveredSkillFile {
+            id: id.clone(),
+            content,
+            dir: format!("{subdir}/{id}"),
+        });
+    }
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
+}
+
+/// Build the rooted in-process tools for a Workdir-tier root as `RawTool`s ready for
+/// `Runtime::with_tool` — the full capability surface the host composes (ADR-0035 D8),
+/// path-jailed to `root` with egress optionally denied. The pc-model counterpart of
+/// [`Environment::tools`]; the kernel sees a uniform `RawTool` set with no mount concept.
+pub(crate) fn rooted_raw_tools(root: IsolatedRoot, deny_egress: bool) -> Vec<Arc<dyn RawTool>> {
+    rooted_hand_tools(root, deny_egress)
+        .into_iter()
+        .map(hand_tool_as_raw)
+        .collect()
+}
+
 /// A stable content id over provisioning bytes — the pin identity a mount declares
 /// and the provider verifies. BLAKE3 (the same hash the content-addressed store
 /// assigns), so the id is identical to what that store computes and is
