@@ -71,12 +71,19 @@ async fn a_containerized_agent_speaks_the_wire_over_a_published_port() {
         .status();
 
     let port = 8080;
+    // A per-process scope so parallel/re-runs never collide on the container name; a
+    // best-effort pre-removal reaps any leftover from an interrupted prior run.
+    let scope = format!("docker-e2e-{}", std::process::id());
+    let _ = std::process::Command::new("docker")
+        .args(["rm", "-f", &format!("awaken-{scope}")])
+        .status();
+
     let runtime = DockerRuntime::connect_local(port).expect("docker client");
     let provider = ContainerProvider::new(Arc::new(runtime), "busybox:latest");
 
     // Create the container running the agent; retry the dial while it boots + nc binds.
     let sandbox = provider
-        .create_container(&spec("docker-e2e", port))
+        .create_container(&spec(&scope, port))
         .await
         .expect("create container");
 
