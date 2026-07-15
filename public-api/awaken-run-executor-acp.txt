@@ -74,6 +74,11 @@ pub fn awaken_run_executor_acp::AcpRunExecutor::with_session_mode(self, impl cor
 impl awaken_runtime_contract::execution::RunExecutor for awaken_run_executor_acp::AcpRunExecutor
 pub fn awaken_run_executor_acp::AcpRunExecutor::capabilities(&self) -> awaken_runtime_contract::execution::ExecutorCapabilities
 pub fn awaken_run_executor_acp::AcpRunExecutor::execute<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::Phase>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_run_executor_acp::AcpSettings
+pub awaken_run_executor_acp::AcpSettings::compact_window: core::option::Option<u64>
+pub awaken_run_executor_acp::AcpSettings::mcp_servers: alloc::vec::Vec<awaken_run_executor_acp::McpServerConfig>
+impl awaken_run_executor_acp::AcpSettings
+pub fn awaken_run_executor_acp::AcpSettings::from_plugin_config(&alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>) -> Self
 pub struct awaken_run_executor_acp::AgentSession
 pub awaken_run_executor_acp::AgentSession::channel: alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>
 pub awaken_run_executor_acp::AgentSession::codec: awaken_protocol_acp::Codec
