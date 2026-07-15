@@ -330,22 +330,85 @@ and never enter the snapshot. The runtime still routes via `Backend::from_ref`
 and never learns `AgentKind`. Secrets exist only from `materialize` to injection
 (model client / ACP `model_delivery.key` env last / A2A transport), per ADR-0043.
 
-### D7 — `AcpProvisioning` is a property of the CLI row / deployment, not of an agent
+### D7 — CLI provisioning: the launch command already encodes it; add only the missing pre-launch step
+
+ACP is the only kind that must make a third-party executable *present* before
+launch (Native is compiled in; A2A runs remotely), so a provisioning concern is
+genuinely ACP-specific. But it does **not** warrant a 3-variant enum. "Self-
+installing (npx) vs prebaked (direct binary)" is already the `command`/`args` on
+the `AcpCli` row — exactly what `is_dynamic_install(cli)` derives
+(`command == "npx"`, `acp_cli.rs:419`). The only irreducibly-new concept is a
+pre-launch install step, so add just that:
 
 ```rust
-pub enum AcpProvisioning { OnDemand, Bootstrap { steps: Vec<BootstrapStep> }, Prebaked }
-// local/namespace → OnDemand (npx self-install today); container/prod → Prebaked
-// (image bakes claude-code-acp + claude); Bootstrap is the egress-allowed escape hatch.
+// AcpCli row — ADD one field, default empty (= today's behavior):
+pub bootstrap: Vec<BootstrapStep>,   // idempotent pre-launch install (npm i -g, pip, …)
+// OnDemand  = command is npx (self-installs; is_dynamic_install stays true)
+// Prebaked  = direct-binary command + empty bootstrap (nothing to run)
+// Bootstrap = non-empty steps run before spawn, surfaced as the Installing stage
 ```
 
-Provisioning lives on the `AcpCli` row (worker/deployment-scoped), **not** on
-`AcpSpec`: two agents on the same worker cannot sensibly install the same CLI two
-different ways. It **replaces** the current `is_dynamic_install(cli)` heuristic
-(`command == "npx"`, `acp_cli.rs:419`) with explicit data — one concept, one
-expression. The built-in `AcpCli` rows remain the compile-time default (a
-value-object factory). An optional store-backed `AcpAdapterProfile` overrides
-command/args/`speaks_dialect`/version-pin/env/provisioning and admits custom CLIs
-(YAGNI-deferred until an operator must add a CLI without a release).
+No `AcpProvisioning` enum: OnDemand/Prebaked are *consequences* of which command
+the row carries, not a stored strategy — encoding them twice is the redundancy
+this ADR keeps cutting. The Installing UI stage fires when the command is npx OR
+`bootstrap` is non-empty — one derived predicate replacing the `command == "npx"`
+heuristic. Provisioning is a property of the `AcpCli` row (worker/deployment-
+scoped), never of `AcpSpec`: two agents on one worker cannot install the same CLI
+two ways. Container tier = deployment bakes it (direct command, empty bootstrap),
+outside the process. Built-in rows stay the compile-time default; an optional
+store-backed `AcpAdapterProfile` overrides command/args/`speaks_dialect`/version-
+pin/env/`bootstrap` and admits custom CLIs (YAGNI-deferred).
+
+**"Provisioning" is THREE concerns, and a sandbox sharpens the middle one.**
+(1) *Acquire* = fetch a **third-party** binary (ACP-only; npx/`bootstrap`).
+(2) *Materialize-into-isolation* = make the needed executable + runtime deps
+**present inside the sandbox rootfs** — applies to **anything run under a sandbox
+tier, regardless of whose binary**. (3) *Bring-up* = spawn + get a duplex channel.
+
+Per kind, on the host: Native needs none (compiled in); A2A needs none (remote is
+already up, just dial); ACP needs acquire + bring-up; Hand needs only bring-up
+(it is *our* `Role::Hand` binary — nothing to acquire, `bootstrap` does not apply).
+
+**But under a sandbox tier, concern (2) is unavoidable even for our own binary.**
+A fresh bwrap namespace / container rootfs contains nothing unless bound-in or
+baked-in: the bwrap tier read-only-binds the host userland (`/usr,/bin,/lib,…`,
+`namespace.rs:111`) so host-installed interpreters/CLIs appear, plus the npx cache
+via `retained_paths`; the container tier presents only what the image baked. So a
+**sandboxed** ACP CLI must be host-installed+bound or image-baked, and a
+**sandboxed** Hand — our binary — must likewise be bound/baked. Materialization is
+realized by the tier (bind vs image), not by config.
+
+**Fail-closed rule: acquire-on-demand ⊥ deny-egress.** A deny-egress sandbox
+launches under `--unshare-net` (`namespace.rs:105`) — npx cannot fetch. So the
+`OnDemand` (npx first-run) form is invalid inside a deny-egress sandbox unless the
+package is already in a bound-in warm cache; the launch must fail closed with a
+clear "prebake or warm-cache this CLI" error, never hang on an unreachable
+network. This makes `Prebaked` the default posture for deny-egress isolation
+(the common secure case), and is *why* the container/prod recommendation is
+Prebaked. `bootstrap` still lives on the `AcpCli` row (only ACP acquires a
+third-party binary); materialization and the egress rule live in the sandbox
+tier / channel source, shared by every sandboxed kind.
+
+Bring-up's **substrate** is already partly shared and should be more so. The
+duplex-byte-channel abstraction is **one trait today** —
+`awaken-agent-channel::AgentChannel` (`AsyncRead+AsyncWrite+Unpin+Send`) — produced
+and consumed by BOTH the ACP path (`AgentSession.channel: Box<dyn AgentChannel>`)
+and the Hand/connection-plan path (`ChannelFactory::connect -> Box<dyn
+AgentChannel>`). What is NOT yet shared is the *isolation-spawn* layer: ACP's
+`SandboxChannelSource` spawns under a bwrap/container tier, while Hand's
+`ChannelFactory` does a raw dial with no isolation. The family-7 reuse is to route
+a *sandboxed* Hand spawn through the same tier factory that backs
+`AgentChannelSource` (and `ThreadEgress`, already shared by the native bash-jail
+and the ACP sandbox, extends to it). But the **protocol
+ports** stay three: `AgentChannelSource` (ACP session) / `ChannelFactory`
+(hand-wire channel) / `Transport` (A2A HTTP) return three different things for
+three call sites; one unifying trait would erase the type distinction that makes
+miswiring uncompilable — the same over-unification rejected for the late-binding
+seams (D9). A unified container **image** (prebake the awaken binary + ACP CLIs +
+tool system-packages) is the right *packaging* of "Prebaked everything" for small
+deployments; a per-CLI slim image aligns better with capability-aware claim (H)'s
+heterogeneous fleet — both are `Prebaked`, differing only in packaging
+granularity, a deployment choice this ADR does not fix.
 
 ### D8 — GDPR builds on ADR-0050, adding ACP content-store registration
 
@@ -567,7 +630,7 @@ right column; introducing a parallel type is a defect, not a phase.
 | ACP launch-source selection | publicize the existing `LaunchSource{Fixed,Projected}` | `awaken-runtime-host::sandbox_source` | ~~`AcpLaunchSpec`~~ mirror enum |
 | Model materialization for ACP | `LaunchResolver` as adapter over `resolve_inference` (`ResolvedModel` = its env projection); `EnvLaunchResolver` = db-less fallback | host over `awaken-config-resolver` | a second model-materialization truth |
 | ACP settings codec | ONE `AcpSpec` serde type (= the `plugin_config["acp"]` codec) shared by authoring + executor | shared contract crate | a separate `AcpSettings` duplicating it |
-| CLI install strategy | `AcpProvisioning` on the `AcpCli` row, replacing `is_dynamic_install` | `awaken-run-executor-acp` | per-agent provisioning; keeping the npx heuristic alongside |
+| CLI install strategy | one `bootstrap: Vec<BootstrapStep>` field on the `AcpCli` row (OnDemand/Prebaked are the command itself) | `awaken-run-executor-acp` | an `AcpProvisioning` enum re-encoding the command; per-agent provisioning |
 | Hand transport | `ConnectionPlan` / `DialAddr` | `awaken-connection-plan` | ~~`HandTransport`~~ (alias `DialAddr`) |
 | Hand placement entry | `PlacementEntry` / `ConfigToolExecutorProvider` | `awaken-server::placement` | a second placement registry |
 | GDPR erasure / consent | ADR-0050 eraser fan-out + `consent_ceiling` | `awaken-data-subject` | any new erasure path |
@@ -702,15 +765,18 @@ byte-identical with/without hand.
 Done when: flipping `hand` in config moves tool execution to a `serve_hand`
 process without touching composition-root code.
 
-**G1 `explicit-install`** — *How a CLI installs is data on the CLI row, not a
-heuristic.*
-Adds: `AcpProvisioning` on `AcpCli` (deployment-scoped); container `Prebaked`
-image path.
-Retires: `is_dynamic_install()` (`acp_cli.rs:419`) — the `command == "npx"`
-heuristic.
-Guard: `Prebaked` + missing binary fails launch with a clear error (no silent
-npx fallback).
-Done when: the container image runs with zero first-launch network installs.
+**G1 `explicit-install`** — *A CLI's pre-launch install step is data on the CLI
+row; self-install stays encoded in the command.*
+Adds: `bootstrap: Vec<BootstrapStep>` on `AcpCli` (deployment-scoped); container
+prebaked-image path (direct command + empty bootstrap).
+Retires: the bare `command == "npx"` heuristic as the sole Installing signal
+(`is_dynamic_install`, `acp_cli.rs:419`) → the predicate `npx-command ∨
+non-empty-bootstrap`.
+Guard: a direct-binary row with a missing binary fails launch with a clear error
+(no silent npx fallback); `OnDemand`/npx under a deny-egress sandbox fails closed
+with a "prebake or warm-cache" error (never a network hang).
+Done when: the container image runs with zero first-launch network installs; a
+deny-egress bwrap run with an uncached npx CLI fails fast in e2e.
 
 **G2 `erasable-acp-content`** — *ACP session content joins the ADR-0050
 consent/erasure fan-out.*
@@ -787,7 +853,7 @@ evidence.
 | Env reads only at composition roots | clippy `disallowed-methods` on `std::env::var`, allowed only under `crates/bin/*` | lint error |
 | Container tier without its compiled feature | existing `cfg` fail-closed constructors (kept) | startup error |
 | Data-dependent invariants (capability, dialect, counterparty, cli-match, lifecycle) | **cannot compile-time-check data** — fail-closed errors at the earliest boundary: publish (`CompileError`) > resolve (`ResolveError`) > open (`OpenError`) > ingress (lifecycle) | publish/run rejection |
-| Public enums that will grow (`Backend`, `AcpProvisioning`, `AgentLifecycle`) | `#[non_exhaustive]` + `#[must_use]` on decision fns | downstream compile nudge |
+| Public enums that will grow (`Backend`, `AgentLifecycle`) | `#[non_exhaustive]` + `#[must_use]` on decision fns | downstream compile nudge |
 
 The last rows state the honest limit: the type system hardens *structure*;
 boundaries harden *content*. Configuration is data, so its invariants get the
