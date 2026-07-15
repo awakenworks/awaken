@@ -66,7 +66,7 @@ async fn author_agent(app: &axum::Router, ws: &str, name: &str) -> String {
 
 // --- Angles 1-4, 11, 12: the agents registry -------------------------------
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn angle_agent_cross_tenant_read_is_404() {
     let app = build_management_router().await;
     let id = author_agent(&app, "ws_a", "a").await;
@@ -88,7 +88,7 @@ async fn angle_agent_cross_tenant_read_is_404() {
     assert_eq!(status, StatusCode::NOT_FOUND, "other tenant: 404, not 403");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn angle_agent_cross_tenant_write_is_404() {
     let app = build_management_router().await;
     let id = author_agent(&app, "ws_a", "a").await;
@@ -111,7 +111,7 @@ async fn angle_agent_cross_tenant_write_is_404() {
     assert_eq!(status, StatusCode::OK);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn angle_agent_list_shows_only_the_caller() {
     let app = build_management_router().await;
     let a = author_agent(&app, "ws_a", "a").await;
@@ -130,7 +130,7 @@ async fn angle_agent_list_shows_only_the_caller() {
     assert_eq!(ids(&list_b), vec![b]);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn angle_bare_request_cannot_see_a_scoped_agent() {
     let app = build_management_router().await;
     let id = author_agent(&app, "ws_a", "a").await;
@@ -141,7 +141,7 @@ async fn angle_bare_request_cannot_see_a_scoped_agent() {
 
 // --- Angles 5-7: mcp / inference-profile config resources ------------------
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn angle_inference_profile_is_tenant_fenced() {
     let app = build_management_router().await;
     let body = json!({ "model_id": "kimi", "credential_binding": { "type": "none" } });
@@ -175,7 +175,7 @@ async fn angle_inference_profile_is_tenant_fenced() {
 
 // --- Angles 8-9: D3 path addressing ----------------------------------------
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn angle_d3_path_routes_to_the_flat_handler() {
     let app = build_management_router().await;
     // A workspace-path create reaches the agents handler (200 with an agent body).
@@ -197,7 +197,7 @@ async fn angle_d3_path_routes_to_the_flat_handler() {
 
 // --- Angle 10: catalog is SHARED (org/deployment-level product decision) ----
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn angle_catalog_is_shared_across_workspaces() {
     let app = build_management_router().await;
     // A provider authored under one workspace's path is visible under another's —

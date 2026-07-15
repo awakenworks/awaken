@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 
 use awaken_config_store::{AgentConfig, ModelSelection, compile};
-use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding, ToolDescriptor};
+use awaken_runtime_contract::resolved::ToolDescriptor;
 use serde_json::{Value, json};
 
 /// A representative config authored the way today's plane authors one. `backend`
@@ -103,7 +103,7 @@ fn fingerprint_is_deterministic() {
 /// shape), NOT a tagged variant — every pre-existing config depends on this.
 #[test]
 fn pinned_model_serializes_as_the_flat_triple() {
-    let v: Value = serde_json::to_value(&config("agent-1", "acp:claude")).unwrap();
+    let v: Value = serde_json::to_value(config("agent-1", "acp:claude")).unwrap();
     let mb = &v["model_binding"];
     assert_eq!(mb["provider_identity_ref"], "p");
     assert_eq!(mb["model_ref"], "claude-opus-4-8");
@@ -128,7 +128,7 @@ fn auto_model_serializes_as_mode_auto() {
 /// axes are appended.
 #[test]
 fn empty_optional_axes_are_absent_from_the_wire() {
-    let v: Value = serde_json::to_value(&config("agent-1", "genai")).unwrap();
+    let v: Value = serde_json::to_value(config("agent-1", "genai")).unwrap();
     let obj = v.as_object().unwrap();
     for absent in [
         "tool_patterns",
