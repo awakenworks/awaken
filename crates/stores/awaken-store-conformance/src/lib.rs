@@ -30,7 +30,7 @@ fn checkpoint(thread: &ThreadId, run: &RunId, text: &str, phase: Phase) -> Threa
         )],
         state: Vec::new(),
         events: vec![Draft {
-            kind: EventKind::MessageCommitted,
+            kind: EventKind::RunPhaseChanged,
             payload: serde_json::json!({ "text": text }),
         }],
         waiting: None,
