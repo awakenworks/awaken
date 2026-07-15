@@ -46,6 +46,30 @@ async fn put_get_list_delete_and_scope_by_workspace(store: &dyn SkillStore) {
         store.get("ws2", "greet").await.unwrap().as_deref(),
         Some("HALLO")
     );
+
+    // sanitize fallbacks: an all-illegal id collapses to the "skill" stem; a very long
+    // id is length-bounded. Both round-trip through get (same sanitize on both sides).
+    assert_eq!(store.put("wsS", "***", "B").await.unwrap(), "skill");
+    assert_eq!(
+        store.get("wsS", "skill").await.unwrap().as_deref(),
+        Some("B")
+    );
+    let long_id = store.put("wsS", &"a".repeat(300), "L").await.unwrap();
+    assert!(long_id.len() <= 120, "the id stem is length-bounded");
+    assert_eq!(
+        store.get("wsS", &"a".repeat(300)).await.unwrap().as_deref(),
+        Some("L")
+    );
+
+    // put overwrites in place: the same id twice keeps only the latest content and
+    // produces no duplicate list entry.
+    store.put("wsO", "dup", "first").await.unwrap();
+    store.put("wsO", "dup", "second").await.unwrap();
+    assert_eq!(
+        store.get("wsO", "dup").await.unwrap().as_deref(),
+        Some("second")
+    );
+    assert_eq!(store.list("wsO").await.unwrap().len(), 1);
 }
 
 #[tokio::test]
