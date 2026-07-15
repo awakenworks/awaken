@@ -58,6 +58,14 @@ pub trait MetricsRecorder: Send + Sync {
     fn record_dispatch_drive(&self, duration: Duration) {
         let _ = duration;
     }
+
+    /// A per-model circuit-breaker state transition: `to_state` is `"open"`,
+    /// `"half_open"`, or `"closed"`. Emitted for a transition an operator cannot
+    /// otherwise see — notably an abandoned half-open probe reopening the circuit,
+    /// which produces no inference outcome. Default no-op.
+    fn record_circuit_transition(&self, model: &str, to_state: &str) {
+        let _ = (model, to_state);
+    }
 }
 
 /// Null-object recorder: records nothing. The default for the single-machine /
