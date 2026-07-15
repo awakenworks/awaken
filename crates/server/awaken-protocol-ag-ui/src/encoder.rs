@@ -581,4 +581,87 @@ mod tests {
         ];
         assert!(encode_history(&messages).is_empty());
     }
+
+    // Post the projection change: an assistant message whose only block is an
+    // empty-string Text is dropped by `project_messages`, so the AG-UI stream
+    // brackets the run with RUN_STARTED/RUN_FINISHED and emits no spurious
+    // TEXT_MESSAGE_* frames.
+    #[test]
+    fn an_empty_text_only_assistant_turn_emits_no_text_message() {
+        let outcome = StepOutcome {
+            new_messages: vec![Message::new(
+                Id("a1".into()),
+                Role::Assistant,
+                vec![ContentBlock::text("")],
+            )],
+            terminal: Terminal::Finished,
+        };
+        let events = encode_step(&outcome, "t1", "r1");
+        assert!(
+            events.iter().all(|e| !matches!(
+                e,
+                AgUiEvent::TextMessageStart { .. }
+                    | AgUiEvent::TextMessageContent { .. }
+                    | AgUiEvent::TextMessageEnd { .. }
+            )),
+            "an all-empty-text assistant turn must emit no text message: {events:?}"
+        );
+        assert!(matches!(events.first(), Some(AgUiEvent::RunStarted { .. })));
+        assert!(matches!(events.last(), Some(AgUiEvent::RunFinished { .. })));
+    }
+
+    // encode_close tail for a streamed turn that ran a server tool to completion:
+    // the committed step carries the assistant tool-use *and* its tool-role result.
+    // The live prefix already streamed START+ARGS, so the tail closes the call with
+    // TOOL_CALL_END and emits the TOOL_CALL_RESULT (minted `<run>-tr-0`) before
+    // RUN_FINISHED — the inline-seq path distinct from the streaming transcoder.
+    #[test]
+    fn close_emits_tool_end_then_result_for_a_server_executed_tool() {
+        let outcome = StepOutcome {
+            new_messages: vec![
+                Message {
+                    id: Id("a1".into()),
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::ToolUse {
+                        id: "c1".into(),
+                        name: "read".into(),
+                        input: json!({"path": "x"}),
+                    }],
+                },
+                Message {
+                    id: Id("t1".into()),
+                    role: Role::Tool,
+                    content: vec![ContentBlock::ToolResult {
+                        tool_use_id: "c1".into(),
+                        content: vec![ContentBlock::text("42")],
+                    }],
+                },
+            ],
+            terminal: Terminal::Finished,
+        };
+        let events = encode_close(&outcome, "t1", "r1");
+        // START/ARGS were streamed live; the tail must not re-open them.
+        assert!(events.iter().all(|e| !matches!(
+            e,
+            AgUiEvent::ToolCallStart { .. } | AgUiEvent::ToolCallArgs { .. }
+        )));
+        let end = events
+            .iter()
+            .position(
+                |e| matches!(e, AgUiEvent::ToolCallEnd { tool_call_id } if tool_call_id == "c1"),
+            )
+            .expect("TOOL_CALL_END for the streamed call");
+        let result = events
+            .iter()
+            .position(|e| {
+                matches!(
+                    e,
+                    AgUiEvent::ToolCallResult { message_id, tool_call_id, content }
+                        if message_id == "r1-tr-0" && tool_call_id == "c1" && content == "42"
+                )
+            })
+            .expect("TOOL_CALL_RESULT keyed by the answered call, minted r1-tr-0");
+        assert!(end < result, "END precedes RESULT: {events:?}");
+        assert!(matches!(events.last(), Some(AgUiEvent::RunFinished { .. })));
+    }
 }

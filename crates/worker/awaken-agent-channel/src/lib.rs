@@ -233,4 +233,50 @@ mod tests {
         assert!(matches!(err, ChannelError::NotTransparent));
         assert!(ChannelError::Setup("x".into()).to_string().contains("x"));
     }
+
+    /// Each `ChannelError` arm maps to a distinct, human-readable message — the
+    /// `Setup` arm's was asserted above, but `NotTransparent`'s cause was not.
+    #[test]
+    fn channel_error_display_names_each_cause() {
+        assert!(
+            ChannelError::NotTransparent
+                .to_string()
+                .contains("not tool-transparent"),
+            "the not-transparent arm names why the channel was refused"
+        );
+        assert_eq!(
+            ChannelError::Setup("dial failed".into()).to_string(),
+            "agent channel setup failed: dial failed"
+        );
+    }
+
+    /// `poll_shutdown` delegates only to the write half, so shutting the channel
+    /// closes the outbound direction while the read half keeps delivering inbound
+    /// bytes. The earlier flush/shutdown test only checked the write peer's EOF.
+    #[tokio::test]
+    async fn split_channel_shutdown_closes_only_the_write_half() {
+        let (agent_stdout_w, agent_stdout_r) = tokio::io::duplex(64);
+        let (writer, mut write_peer) = tokio::io::duplex(64);
+        let mut chan = SplitChannel::new(agent_stdout_r, writer);
+
+        // Shut down the outbound (write) direction.
+        chan.shutdown().await.unwrap();
+        // The write peer observes EOF with nothing buffered.
+        let mut drained = Vec::new();
+        write_peer.read_to_end(&mut drained).await.unwrap();
+        assert!(drained.is_empty(), "no bytes were written before shutdown");
+
+        // The read half is untouched by shutdown and still delivers inbound bytes.
+        {
+            let mut w = agent_stdout_w;
+            w.write_all(b"still-up").await.unwrap();
+            w.flush().await.unwrap();
+        }
+        let mut got = vec![0u8; 8];
+        chan.read_exact(&mut got).await.unwrap();
+        assert_eq!(
+            &got, b"still-up",
+            "shutdown is one-directional; the read half survives it"
+        );
+    }
 }

@@ -103,6 +103,41 @@ pub async fn events_ordered_and_paged<S: Coordinator + CheckpointReader>(store: 
     assert_eq!(rest[0].sequence, all[1].sequence, "cursor is exclusive");
 }
 
+/// Terminal-is-final (exactly-once committed log): once a run's committed phase
+/// is terminal, any later commit for that same run is rejected and changes
+/// nothing — the transcript stays exactly-once even under a stale owner's
+/// duplicate post-terminal commit. Every backend enforces this identically
+/// (in-memory scan / SQLite projection / fs pre-check), so it belongs in the
+/// shared suite: a backend that let a second terminal commit through, or mutated
+/// state while rejecting, would diverge here.
+pub async fn terminal_run_is_fenced<S: Coordinator + CheckpointReader>(store: &S) {
+    let thread = ThreadId("conf-fence".to_string());
+    let run = RunId("conf-fence-r".to_string());
+    store
+        .commit(ended_checkpoint(&thread, &run, "final"))
+        .await
+        .expect("first terminal commit lands");
+
+    // A second commit for the already-terminal run is fenced.
+    let fenced = store
+        .commit(ended_checkpoint(&thread, &run, "duplicate"))
+        .await;
+    assert!(fenced.is_err(), "post-terminal commit is rejected");
+
+    // The rejection left no partial state: exactly the one committed message, and
+    // the run's phase is still the original terminal fact.
+    assert_eq!(
+        store.committed_messages(&thread).len(),
+        1,
+        "no duplicate transcript after a fenced commit"
+    );
+    assert_eq!(
+        store.run(&run).map(|record| record.phase),
+        Some(Phase::Ended(EndCause::NaturalEnd)),
+        "phase unchanged by the fenced commit"
+    );
+}
+
 /// Successive commits on a thread accumulate transcript; the latest run wins.
 pub async fn commits_accumulate<S: Coordinator + CheckpointReader>(store: &S) {
     let thread = ThreadId("conf-acc".to_string());

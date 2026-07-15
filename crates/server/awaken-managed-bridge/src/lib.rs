@@ -63,6 +63,11 @@ pub fn decode_model_axis(
     let credential_source_id = axis
         .and_then(|a| a.get("credential_source_id"))
         .and_then(|v| v.as_str())
+        // An empty pin is not a pin: treat `""` the same as absent (`None` =
+        // "resolve by default binding"), mirroring how the empty axis `id` above
+        // is filtered out. Without this an empty wire string becomes `Some("")`,
+        // pinning the resolver to a source id that can never exist.
+        .filter(|s| !s.is_empty())
         .map(str::to_string);
     Ok(ModelRef {
         model_id,
@@ -351,5 +356,97 @@ mod tests {
         let r = decode_model_axis(Some("claude-sonnet-5"), Some(&meta)).unwrap();
         assert_eq!(r.model_id, "claude-sonnet-5");
         assert!(r.credential_source_id.is_none());
+    }
+
+    #[test]
+    fn axis_id_wins_with_no_bare_model_and_no_pin() {
+        // Axis-only definition: the wire omits the bare `model` entirely and the
+        // axis carries just an id. The axis id resolves and no credential is pinned.
+        let meta = serde_json::json!({ "model": { "id": "glm-4.6" } });
+        let r = decode_model_axis(None, Some(&meta)).unwrap();
+        assert_eq!(r.model_id, "glm-4.6");
+        assert!(r.credential_source_id.is_none());
+    }
+
+    #[test]
+    fn a_non_string_axis_id_falls_back_to_the_bare_model() {
+        // A malformed axis whose `id` is not a JSON string (`as_str()` → None) must
+        // not error: it falls through to the bare wire `model`.
+        let meta = serde_json::json!({ "model": { "id": 42 } });
+        let r = decode_model_axis(Some("claude-opus-4-8"), Some(&meta)).unwrap();
+        assert_eq!(r.model_id, "claude-opus-4-8");
+        assert!(r.credential_source_id.is_none());
+    }
+
+    #[test]
+    fn a_model_axis_that_is_not_an_object_uses_the_bare_model() {
+        // `metadata.awaken.model` present but a scalar (not the `{id,...}` object).
+        // `.get("id")` on a string Value is None → the bare wire model is used.
+        let meta = serde_json::json!({ "model": "claude-opus-4-8" });
+        let r = decode_model_axis(Some("claude-sonnet-5"), Some(&meta)).unwrap();
+        assert_eq!(r.model_id, "claude-sonnet-5");
+        assert!(r.credential_source_id.is_none());
+    }
+
+    #[test]
+    fn an_empty_credential_source_id_is_treated_as_no_pin() {
+        // A client that always emits the `credential_source_id` key but leaves it
+        // empty has pinned nothing: it must resolve to `None` (default binding),
+        // never `Some("")` (a source id that can never exist).
+        let meta = serde_json::json!({
+            "model": { "id": "glm-4.6", "credential_source_id": "" }
+        });
+        let r = decode_model_axis(Some("claude-opus-4-8"), Some(&meta)).unwrap();
+        assert_eq!(r.model_id, "glm-4.6");
+        assert!(
+            r.credential_source_id.is_none(),
+            "empty pin must not become Some(\"\")"
+        );
+    }
+
+    #[test]
+    fn managed_view_omits_secret_name_when_the_credential_has_no_env_key() {
+        // A URL-bound credential (static_bearer / mcp_oauth) has no `env_key`, so
+        // the wire projection must omit `secret_name` entirely — not emit null.
+        let source = CredentialSource {
+            id: awaken_credential_vault::CredentialSourceId("cred_1".into()),
+            workspace_id: "ws1".into(),
+            kind: CredentialKind::Vault,
+            provider_id: None,
+            env_key: None,
+            material_ref: None,
+            oauth_command: None,
+            status: awaken_credential_vault::CredentialStatus::Active,
+            version: 1,
+        };
+        let view = to_managed_view(&source);
+        assert!(view.secret_name.is_none());
+        let json = serde_json::to_string(&view).unwrap();
+        assert!(
+            !json.contains("secret_name"),
+            "absent field is omitted: {json}"
+        );
+        assert!(json.contains("environment_variable"));
+        assert!(json.contains("\"type\":\"credential\""));
+    }
+
+    #[test]
+    fn env_var_create_params_map_all_axes_without_a_provider() {
+        // The pure mapping (independent of the store): Vault kind, the wire
+        // `secret_name` becomes the env key, the secret is captured, no provider.
+        let params = env_var_to_create_params(
+            "ws1",
+            None,
+            WireEnvVarCreate {
+                secret_name: "OPENAI_API_KEY".into(),
+                secret_value: "sk-x".into(),
+            },
+        );
+        assert_eq!(params.workspace_id, "ws1");
+        assert_eq!(params.kind, CredentialKind::Vault);
+        assert!(params.provider_id.is_none());
+        assert_eq!(params.env_key.as_deref(), Some("OPENAI_API_KEY"));
+        assert_eq!(params.secret.as_ref().unwrap().expose_secret(), "sk-x");
+        assert!(params.oauth_command.is_none());
     }
 }

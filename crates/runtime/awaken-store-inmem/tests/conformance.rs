@@ -16,3 +16,8 @@ async fn events_ordered_and_paged() {
 async fn commits_accumulate() {
     awaken_store_conformance::commits_accumulate(&MemoryCommitCoordinator::new()).await;
 }
+
+#[tokio::test]
+async fn terminal_run_is_fenced() {
+    awaken_store_conformance::terminal_run_is_fenced(&MemoryCommitCoordinator::new()).await;
+}

@@ -1422,6 +1422,117 @@ pub async fn assert_settle_fences_stale_epoch<S: awaken_run_ingress::Dispatch>(s
     );
 }
 
+/// Shared spec: dedupe suppresses a duplicate only while a *live* dispatch holds
+/// the key — a run that has DEAD-LETTERED no longer blocks a re-submit under the
+/// same key (`status <> 'dead_letter'` in the SQL backends, `status !=
+/// Status::DeadLetter` in memory). Without this a poison run's key would wedge the
+/// work forever: the retry could never be enqueued. Every backend must match.
+pub async fn assert_dedupe_ignores_dead_lettered<S: awaken_run_ingress::Dispatch>(store: &S) {
+    use awaken_run_ingress::{RunExecutionRequest, SubmitOptions};
+    let key = || SubmitOptions {
+        dedupe_key: Some("k".to_string()),
+        ..Default::default()
+    };
+
+    // A first run takes the key, is claimed with a 1ms lease, then reaped (budget 0)
+    // into the dead-letter status once its lease expires.
+    store
+        .enqueue_with(RunExecutionRequest::new(activation("run-1")), key())
+        .await
+        .unwrap();
+    assert!(store.claim("w", 1, 0).await.unwrap().is_some());
+    assert_eq!(store.reap(0, 100).await.unwrap(), 1, "run-1 dead-lettered");
+    assert_eq!(
+        store.dead_letters().await.unwrap(),
+        vec![RunId("run-1".to_string())]
+    );
+
+    // A re-submit under the SAME key is NOT deduped away — the only holder is dead —
+    // so run-2 enqueues and is the claimable work (run-1, dead-lettered, is not).
+    store
+        .enqueue_with(RunExecutionRequest::new(activation("run-2")), key())
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .claim("w", 1_000, 200)
+            .await
+            .unwrap()
+            .expect("the re-submit is claimable, not deduped")
+            .request
+            .run_id()
+            .0,
+        "run-2",
+    );
+}
+
+/// Shared spec (single-writer-per-thread, ADR-0022, on the WAKE path): a parked run
+/// with due input is NOT woken while its own thread already has another run in
+/// flight — waking it would put two concurrent runs on one thread. The suppressed
+/// run becomes claimable only once the in-flight run settles and frees the thread.
+/// Every backend must match.
+pub async fn assert_wake_suppressed_while_thread_running<S: awaken_run_ingress::Dispatch>(
+    store: &S,
+) {
+    use awaken_run_ingress::{DispatchOutcome, RunExecutionRequest};
+    use awaken_runtime_contract::resume::ResumeResult;
+    let thread = ThreadId(THREAD.to_string());
+
+    // run-1 parks on the thread.
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .unwrap();
+    assert!(store.claim("w", 10_000, 0).await.unwrap().is_some());
+    store
+        .settle(&RunId("run-1".to_string()), 1, DispatchOutcome::Parked, &[])
+        .await
+        .unwrap();
+
+    // run-2 (same thread) is claimed and left in flight, so the thread is now busy.
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-2")))
+        .await
+        .unwrap();
+    assert!(
+        store.claim("w", 10_000, 1).await.unwrap().is_some(),
+        "run-2 claims the free thread"
+    );
+
+    // Deliver input that answers run-1's park. run-1 is now wakeable *by input* — but
+    // its thread is running run-2, so a claim must NOT wake it (no second run/thread).
+    assert!(
+        store
+            .append(pending(
+                "m-wake",
+                "run-1",
+                TICKET,
+                ResumeResult::Input("go".into())
+            ))
+            .await
+            .unwrap()
+    );
+    assert!(
+        store.claim("w", 10_000, 2).await.unwrap().is_none(),
+        "the parked run is not woken while its thread already runs another",
+    );
+
+    // run-2 settles Done, freeing the thread; now the wake fires and hands run-1 its
+    // due input. run-2 was claimed exactly once, so its lease epoch is 1.
+    store
+        .settle(&RunId("run-2".to_string()), 1, DispatchOutcome::Done, &[])
+        .await
+        .unwrap();
+    let claimed = store
+        .claim("w", 10_000, 3)
+        .await
+        .unwrap()
+        .expect("the freed thread lets run-1 wake");
+    assert_eq!(claimed.request.run_id().0, "run-1");
+    assert_eq!(claimed.pending.len(), 1);
+    assert_eq!(claimed.pending[0].message_id, "m-wake");
+}
+
 /// G5-T6 (cause-effect graphing): two workers RACE to recover the SAME expired lease.
 /// Exactly one wins the epoch bump; the other finds nothing runnable — never double
 /// ownership. The in-memory store serializes via its mutex, sqlite/postgres via row

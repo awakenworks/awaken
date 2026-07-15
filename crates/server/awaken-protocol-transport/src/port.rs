@@ -243,4 +243,121 @@ mod tests {
         assert_eq!(outcome.terminal, Terminal::Finished);
         assert_eq!(rt.runs.load(Ordering::SeqCst), 1);
     }
+
+    #[tokio::test]
+    async fn default_usage_is_zero_zero() {
+        // A runtime whose provider reports no usage degrades to (0, 0) rather than
+        // fabricating a count.
+        let rt = CountingRuntime::default();
+        assert_eq!(rt.usage("t1").await, (0, 0));
+    }
+
+    fn outcome(terminal: Terminal) -> StepOutcome {
+        StepOutcome {
+            new_messages: Vec::new(),
+            terminal,
+        }
+    }
+
+    fn a_pending() -> Pending {
+        Pending {
+            tool_use_id: "call-7".into(),
+            name: "bash".into(),
+            input: serde_json::json!({ "cmd": "ls" }),
+            client_executed: false,
+        }
+    }
+
+    #[test]
+    fn default_step_outcome_finishes_with_no_messages() {
+        let o = StepOutcome::default();
+        assert!(o.new_messages.is_empty());
+        assert_eq!(o.terminal, Terminal::Finished);
+        assert_eq!(Terminal::default(), Terminal::Finished);
+    }
+
+    #[test]
+    fn finished_projects_to_run_finished_not_exhausted() {
+        assert_eq!(
+            outcome(Terminal::Finished).terminal_event(),
+            AgentEvent::RunFinished { exhausted: false }
+        );
+    }
+
+    #[test]
+    fn exhausted_projects_to_run_finished_exhausted() {
+        // The budget-exhausted terminus is still a *finish*, flagged exhausted — not
+        // a failure. Adapters must not render it as an error frame.
+        assert_eq!(
+            outcome(Terminal::Exhausted).terminal_event(),
+            AgentEvent::RunFinished { exhausted: true }
+        );
+    }
+
+    #[test]
+    fn failed_projects_to_run_failed_carrying_code_and_message() {
+        // The failed terminal must reach the wire as a distinct RunFailed event, not
+        // collapse into a silent empty finish (the dropped-error-channel hazard).
+        let ev = outcome(Terminal::Failed(StepFailure {
+            code: "inference_failed".into(),
+            message: "upstream 503".into(),
+        }))
+        .terminal_event();
+        assert_eq!(
+            ev,
+            AgentEvent::RunFailed {
+                code: "inference_failed".into(),
+                message: "upstream 503".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn waiting_on_a_tool_names_it_in_the_terminal_event() {
+        let ev = outcome(Terminal::Waiting {
+            pending: Some(a_pending()),
+        })
+        .terminal_event();
+        assert_eq!(
+            ev,
+            AgentEvent::Waiting {
+                pending_tool_use_id: Some("call-7".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn waiting_without_a_tool_carries_no_tool_id() {
+        let ev = outcome(Terminal::Waiting { pending: None }).terminal_event();
+        assert_eq!(
+            ev,
+            AgentEvent::Waiting {
+                pending_tool_use_id: None,
+            }
+        );
+    }
+
+    #[test]
+    fn pending_is_some_only_when_waiting_on_a_tool() {
+        assert_eq!(
+            outcome(Terminal::Waiting {
+                pending: Some(a_pending()),
+            })
+            .pending(),
+            Some(&a_pending())
+        );
+        // Waiting on non-tool input, and every non-waiting terminal, has no pending.
+        assert!(
+            outcome(Terminal::Waiting { pending: None })
+                .pending()
+                .is_none()
+        );
+        assert!(outcome(Terminal::Finished).pending().is_none());
+        assert!(outcome(Terminal::Exhausted).pending().is_none());
+        assert!(
+            outcome(Terminal::Failed(StepFailure::default()))
+                .pending()
+                .is_none()
+        );
+    }
 }

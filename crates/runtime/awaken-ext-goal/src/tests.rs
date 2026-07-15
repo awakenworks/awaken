@@ -588,3 +588,151 @@ fn goal_spec_defaults_grader_to_default() {
     .unwrap();
     assert_eq!(parsed.grader, GraderRef::Default);
 }
+
+// ── parse_verdict boundary rows ─────────────────────────────────────────────
+// The judge reply is untrusted text; every non-happy branch of the tolerant
+// parser must land on a `GraderError` (or a well-defined default), never a
+// silent mis-parse into a wrong verdict.
+
+#[test]
+fn parse_verdict_rejects_a_missing_reply() {
+    // The judge produced no text at all.
+    let err = parse_verdict(None).unwrap_err();
+    assert!(err.0.contains("no reply"), "unexpected reason: {}", err.0);
+}
+
+#[test]
+fn parse_verdict_rejects_reversed_braces() {
+    // A closing brace appearing before any opening brace is not a JSON object;
+    // the `start <= end` guard must reject it rather than slice a bad range.
+    let err = parse_verdict(Some("} then {")).unwrap_err();
+    assert!(
+        err.0.contains("no JSON object"),
+        "unexpected reason: {}",
+        err.0
+    );
+}
+
+#[test]
+fn parse_verdict_rejects_braces_wrapping_non_json() {
+    // Braces are present but the slice between them is not valid JSON.
+    let err = parse_verdict(Some("see {this thing}")).unwrap_err();
+    assert!(
+        err.0.contains("unparseable verdict"),
+        "unexpected reason: {}",
+        err.0
+    );
+}
+
+#[test]
+fn parse_verdict_rejects_a_missing_result_field() {
+    let err = parse_verdict(Some(r#"{"explanation": "no result key"}"#)).unwrap_err();
+    assert!(
+        err.0.contains("valid `result`"),
+        "unexpected reason: {}",
+        err.0
+    );
+}
+
+#[test]
+fn parse_verdict_rejects_an_unknown_result_value() {
+    // A `result` token outside the closed {satisfied,needs_revision,failed} set
+    // is not a valid verdict — it must not fall through to a default grade.
+    let err = parse_verdict(Some(r#"{"result": "maybe", "explanation": "x"}"#)).unwrap_err();
+    assert!(
+        err.0.contains("valid `result`"),
+        "unexpected reason: {}",
+        err.0
+    );
+}
+
+#[test]
+fn parse_verdict_defaults_a_missing_explanation_to_empty() {
+    // A valid result with no explanation parses; the rationale defaults to empty
+    // rather than failing the whole verdict.
+    let v = parse_verdict(Some(r#"{"result": "satisfied"}"#)).unwrap();
+    assert_eq!(v.result, GradeResult::Satisfied);
+    assert_eq!(v.explanation, "");
+}
+
+// ── GraderRef wire shape ────────────────────────────────────────────────────
+
+#[test]
+fn grader_ref_agent_round_trips_with_a_type_tag() {
+    // The managed adapter builds goals with this shape; the `type` tag and the
+    // snake_case tokens are the contract.
+    let r = GraderRef::Agent {
+        agent_id: "specialist".into(),
+    };
+    let json = serde_json::to_value(&r).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({"type": "agent", "agent_id": "specialist"})
+    );
+    let back: GraderRef = serde_json::from_value(json).unwrap();
+    assert_eq!(back, r);
+    // The default variant tags as "default".
+    assert_eq!(
+        serde_json::to_value(GraderRef::Default).unwrap(),
+        serde_json::json!({"type": "default"})
+    );
+}
+
+// ── Plugin resolve_configured (config section → spec) ───────────────────────
+
+/// Evaluate a resolved (`dyn`) run-end guard the same way the runtime would.
+async fn evaluate_resolved(
+    guard: &Arc<dyn RunEndGuard>,
+    conversation: &[Message],
+    fc: usize,
+) -> RunEndDecision {
+    let state = awaken_runtime_contract::Store::new();
+    let ctx = RunEndContext {
+        run_id: RunId("run-1".into()),
+        conversation,
+        forced_continuations: fc,
+        cancellation: None,
+        state: &state,
+    };
+    guard.evaluate(&ctx).await
+}
+
+#[test]
+fn resolve_configured_without_config_falls_back_to_the_default_spec() {
+    let plugin = GoalPlugin::new(spec(3), Arc::new(FixedGrader(met("ok"))));
+    let contributions = plugin.resolve_configured(None).expect("no config resolves");
+    assert_eq!(contributions.run_end_guards.len(), 1);
+    assert_eq!(contributions.run_end_guards[0].id(), "goal");
+}
+
+#[tokio::test]
+async fn resolve_configured_applies_the_config_spec_over_the_default() {
+    // The default spec has budget 3, so a met verdict would resolve `satisfied`.
+    // A config that sets max_iterations = 0 must win: the produced guard
+    // short-circuits to max_iterations_reached before the grader is ever called.
+    let plugin = GoalPlugin::new(spec(3), Arc::new(FixedGrader(met("ok"))));
+    let config = serde_json::json!({
+        "description": "configured",
+        "rubric": "R",
+        "max_iterations": 0
+    });
+    let contributions = plugin
+        .resolve_configured(Some(&config))
+        .expect("valid config resolves");
+    assert_eq!(contributions.run_end_guards.len(), 1);
+    let d = evaluate_resolved(&contributions.run_end_guards[0], &[assistant("done")], 0).await;
+    assert_eq!(result_token(&d), "max_iterations_reached");
+}
+
+#[test]
+fn resolve_configured_rejects_a_malformed_config() {
+    let plugin = GoalPlugin::new(spec(3), Arc::new(FixedGrader(met("ok"))));
+    // `max_iterations` must be a number; a string is a hard config error, not a
+    // silent fallback to the default spec.
+    let config = serde_json::json!({
+        "description": "x",
+        "rubric": "y",
+        "max_iterations": "three"
+    });
+    assert!(plugin.resolve_configured(Some(&config)).is_err());
+}

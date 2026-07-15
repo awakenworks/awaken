@@ -714,6 +714,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dollar_zero_and_non_digit_tokens_are_left_literal() {
+        // The substituter treats ONLY `$1`..`$9` and `$ARGUMENTS` as tokens. `$0`
+        // (excluded by `bytes[i+1] != b'0'`) and `$<non-digit>` fall through
+        // untouched — and since no real token fired, the raw args are echoed.
+        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+            "cost",
+            "Cost",
+            "d",
+            "price=$0 flag=$x tail=$",
+        )]));
+        let out = SkillTool::new(registry)
+            .invoke(call(
+                SKILL_TOOL_ID,
+                serde_json::json!({ "skill": "cost", "args": "hi there" }),
+            ))
+            .await
+            .unwrap();
+        assert!(out.content.contains("price=$0"), "{}", out.content);
+        assert!(out.content.contains("flag=$x"), "{}", out.content);
+        assert!(out.content.contains("tail=$"), "{}", out.content);
+        // No positional/ARGUMENTS token was consumed, so the footer echoes the args.
+        assert!(
+            out.content.contains("Arguments: hi there"),
+            "unused-token body still echoes raw args: {}",
+            out.content
+        );
+    }
+
+    #[tokio::test]
+    async fn whitespace_only_args_append_no_footer() {
+        // A body with no token + whitespace-only args must NOT emit an empty
+        // "Arguments:" footer (args are trimmed before the emptiness check).
+        let out = SkillTool::new(registry())
+            .invoke(call(
+                SKILL_TOOL_ID,
+                serde_json::json!({ "skill": "commit", "args": "   " }),
+            ))
+            .await
+            .unwrap();
+        assert!(!out.is_error);
+        assert!(
+            !out.content.contains("Arguments:"),
+            "whitespace-only args must not emit a footer: {}",
+            out.content
+        );
+    }
+
+    #[tokio::test]
+    async fn an_invalid_path_glob_never_panics_and_stays_hidden() {
+        // A skill whose `paths` glob fails to compile must be swallowed (unwrap_or
+        // false) — it stays hidden rather than panicking or fail-open surfacing.
+        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+            "broken", "Broken", "bad glob", "b",
+        )
+        .with_paths(vec!["[".into()])]));
+        let activations = PathActivations::new();
+        activations.record("anything.rs");
+        let out = ListSkillsTool::new(registry)
+            .with_path_activations(activations)
+            .invoke(call(SKILL_LIST_TOOL_ID, serde_json::json!({})))
+            .await
+            .unwrap();
+        assert!(!out.is_error);
+        assert!(
+            !out.content.contains("broken"),
+            "an uncompilable glob stays hidden: {}",
+            out.content
+        );
+    }
+
+    #[tokio::test]
     async fn substitutes_skill_dir_and_session_id() {
         let spec = SkillSpec {
             dir: Some("skills/deploy".into()),
@@ -993,6 +1064,67 @@ mod tests {
         assert_eq!(msg_text(&out[0]), "/secret");
         assert_eq!(msg_text(&out[1]), "/nope");
         assert_eq!(msg_text(&out[2]), "hi");
+    }
+
+    #[test]
+    fn slash_command_leaves_non_user_messages_untouched() {
+        // The `role != User` early return: an assistant message that happens to
+        // start with `/deploy` must NOT be expanded (only user turns invoke skills).
+        let registry = InMemorySkillRegistry::from_specs([SkillSpec::new(
+            "deploy",
+            "Deploy",
+            "d",
+            "checklist for $ARGUMENTS",
+        )]);
+        let assistant = Message::text(
+            awaken_agent_contract::agent::message::Id("a".into()),
+            Role::Assistant,
+            "/deploy prod",
+        );
+        let out = expand_slash_commands(&registry, "sess", vec![assistant]);
+        assert_eq!(
+            msg_text(&out[0]),
+            "/deploy prod",
+            "assistant message is passed through verbatim"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_and_whitespace_query_lists_all_skills() {
+        // An empty/whitespace `query` is filtered to `None`, so it must not filter
+        // anything out — the full model-invocable catalog is returned.
+        let tool = ListSkillsTool::new(registry());
+        for q in ["", "   "] {
+            let out = tool
+                .invoke(call(SKILL_LIST_TOOL_ID, serde_json::json!({ "query": q })))
+                .await
+                .unwrap();
+            let v: serde_json::Value = serde_json::from_str(&out.content).unwrap();
+            assert_eq!(
+                v["skills"].as_array().unwrap().len(),
+                1,
+                "query {q:?} lists all invocable skills"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn list_skills_query_matches_when_to_use_field() {
+        // matches_query folds in `when_to_use`; a query that hits only that field
+        // must still surface the skill (id/name/description don't contain it).
+        let tool = ListSkillsTool::new(registry());
+        let out = tool
+            .invoke(call(
+                SKILL_LIST_TOOL_ID,
+                serde_json::json!({ "query": "recording" }),
+            ))
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("commit"),
+            "when_to_use match surfaces the skill: {}",
+            out.content
+        );
     }
 
     #[tokio::test]

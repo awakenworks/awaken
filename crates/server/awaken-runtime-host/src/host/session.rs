@@ -8,39 +8,55 @@ impl SharedHost {
     /// durable SQLite database (default) or the filesystem append-log backend when
     /// `AWAKEN_STORE=fs`, or an in-memory coordinator when no store dir is set.
     async fn build_commit(&self, thread: &str) -> Result<HostCommit, HostError> {
-        // Database-less worker: every thread commits to the cell server's ingest.
-        if let Some(url) = &self.upstream {
-            let _ = thread;
-            return Ok(HostCommit::Remote(
-                crate::commit_ingest::RemoteCoordinator::new(url.clone()),
-            ));
-        }
-        // Shared Postgres commit backend (ADR-0022 D6): one coordinator keyed by
-        // thread, so any node serves any thread's history. Connected once at startup
-        // (the non-Send sqlx connect stays out of the run loop), independent of a
-        // per-thread store dir.
-        use crate::deployment_config::StoreKind;
-        if self.deployment.store == StoreKind::Postgres {
-            return crate::store::postgres_commit_or_err();
-        }
-        let Some(dir) = &self.store_dir else {
-            return Ok(HostCommit::Local(std::sync::Arc::new(
+        use crate::store::{CommitPlan, plan_commit};
+        // The backend-selection decision is pure config (see `plan_commit`): worker
+        // upstream wins first, then the shared Postgres backend, then the on-disk
+        // fs/sqlite layout. This match only performs the resulting I/O.
+        match plan_commit(
+            self.deployment.store,
+            self.store_dir.as_deref(),
+            self.upstream.as_deref(),
+            thread,
+        ) {
+            // Database-less worker: every thread commits to the cell server's ingest.
+            CommitPlan::Remote(url) => Ok(HostCommit::Remote(
+                crate::commit_ingest::RemoteCoordinator::new(url),
+            )),
+            // Shared Postgres commit backend (ADR-0022 D6): one coordinator keyed by
+            // thread, connected once at startup (the non-Send sqlx connect stays out of
+            // the run loop). Fails closed when uninitialised, independent of a store dir.
+            CommitPlan::Postgres => crate::store::postgres_commit_or_err(),
+            CommitPlan::Memory => Ok(HostCommit::Local(std::sync::Arc::new(
                 MemoryCommitCoordinator::new(),
-            )));
-        };
-        std::fs::create_dir_all(dir).map_err(|e| HostError::internal(e.to_string()))?;
-        let fs_backend = self.deployment.store == StoreKind::Fs;
-        if fs_backend {
-            let thread_dir = dir.join(sanitize_thread(thread));
-            let fs = FsCommitCoordinator::open(&thread_dir)
-                .await
-                .map_err(|e| HostError::internal(e.to_string()))?;
-            Ok(HostCommit::Local(std::sync::Arc::new(fs)))
-        } else {
-            let path = dir.join(format!("{}.db", sanitize_thread(thread)));
-            let sqlite = SqliteCommitCoordinator::open(&path.to_string_lossy())
-                .map_err(|e| HostError::internal(e.to_string()))?;
-            Ok(HostCommit::Local(std::sync::Arc::new(sqlite)))
+            ))),
+            // Fail closed: an explicit fs backend with no storage dir would otherwise
+            // silently degrade to an ephemeral in-memory store and drop committed
+            // history on restart (the filesystem append-log has no in-memory form).
+            CommitPlan::FsNeedsStorageDir => Err(HostError::internal(
+                "AWAKEN_STORE=fs requires AWAKEN_STORAGE_DIR: the filesystem append-log \
+                 backend has no in-memory form, so serving it without a storage dir would \
+                 silently use an ephemeral store and drop committed history on restart. \
+                 Refusing to serve a durable 'fs' store on a volatile backing.",
+            )),
+            CommitPlan::Fs(thread_dir) => {
+                if let Some(parent) = thread_dir.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| HostError::internal(e.to_string()))?;
+                }
+                let fs = FsCommitCoordinator::open(&thread_dir)
+                    .await
+                    .map_err(|e| HostError::internal(e.to_string()))?;
+                Ok(HostCommit::Local(std::sync::Arc::new(fs)))
+            }
+            CommitPlan::Sqlite(path) => {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| HostError::internal(e.to_string()))?;
+                }
+                let sqlite = SqliteCommitCoordinator::open(&path.to_string_lossy())
+                    .map_err(|e| HostError::internal(e.to_string()))?;
+                Ok(HostCommit::Local(std::sync::Arc::new(sqlite)))
+            }
         }
     }
 

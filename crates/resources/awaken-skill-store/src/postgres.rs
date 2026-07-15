@@ -101,7 +101,11 @@ impl SkillStore for PgSkillStore {
 
     async fn list(&self, workspace_id: &str) -> Result<Vec<(String, String)>, SkillStoreError> {
         let rows = sqlx::query(&format!(
-            "SELECT id, content FROM {NS}_skill WHERE workspace_id = $1 ORDER BY id"
+            // COLLATE "C" = raw byte order, matching the fs/in-mem/sqlite backends.
+            // Without it Postgres sorts by the DB's default collation (e.g. en_US),
+            // which reorders mixed-case sanitized stems and breaks the SkillStore
+            // contract that every backend's `list` is byte-for-byte comparable.
+            "SELECT id, content FROM {NS}_skill WHERE workspace_id = $1 ORDER BY id COLLATE \"C\""
         ))
         .bind(workspace_id)
         .fetch_all(&self.pool)

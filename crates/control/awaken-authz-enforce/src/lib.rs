@@ -215,6 +215,13 @@ pub struct RequestTenancy {
 /// method to an action, and authorize — fail-closed. Apply with
 /// `axum::middleware::from_fn_with_state(engine, guard)` over the protocol
 /// router. A missing/invalid credential is 401; a denied decision is 403.
+///
+/// INVARIANT (fail-closed by construction): this MUST be mounted as a **blanket**
+/// layer over the whole router, never as a per-route `.route_layer`. Because the
+/// action is a total function of the HTTP method ([`session_action`]) and the path
+/// is never consulted, there is no "unmapped route" that could default-allow — a
+/// newly mounted route inherits the gate automatically. A refactor to per-route
+/// layering would reintroduce exactly that fail-open, so do not do it.
 pub async fn guard(
     State(engine): State<Arc<EnforceEngine>>,
     mut request: Request,
@@ -663,5 +670,150 @@ mod tests {
         assert_eq!(session_action("get").0, "agent.write");
         assert_eq!(session_action("head").0, "agent.write");
         assert_eq!(session_action("HEAD").0, "agent.read");
+    }
+
+    // --- CEG completeness: authorize seam (grant × action × scope) -----------
+
+    // A non-admin role that carries grants — just none under `agent.*` — is
+    // denied the managed-agent surface at its OWN workspace, for reads and
+    // writes alike. This is the pure-authorize analog of the guard's policy gate:
+    // a scope-clean request still fails default-deny (grant for the wrong
+    // action). `developer` holds `apikey.*` but never the agent verbs.
+    #[test]
+    fn authorize_denies_a_non_admin_at_its_own_workspace() {
+        let (engine, secret) = engine_with_role("developer");
+        let (principal, _ws) = engine.authenticate(&secret).expect("authenticate");
+        assert_eq!(
+            engine.authorize(
+                principal.clone(),
+                &session_action("POST"),
+                request_scope(WS)
+            ),
+            SessionDecision::Deny,
+            "a role without agent.* is denied writes at its own workspace",
+        );
+        assert_eq!(
+            engine.authorize(principal, &session_action("GET"), request_scope(WS)),
+            SessionDecision::Deny,
+            "…and reads too — default-deny is not method-specific",
+        );
+    }
+
+    // Grant-for-the-wrong-action: `billing` holds `billing.*` and nothing else,
+    // so an `agent.write` request finds no matching grant → default deny. Proves
+    // a non-empty grant set in an unrelated namespace never leaks authority.
+    #[test]
+    fn authorize_denies_a_wrong_namespace_role() {
+        let (engine, secret) = engine_with_role("billing");
+        let (principal, _ws) = engine.authenticate(&secret).expect("authenticate");
+        assert_eq!(
+            engine.authorize(principal, &session_action("POST"), request_scope(WS)),
+            SessionDecision::Deny,
+        );
+    }
+
+    // --- CEG completeness: guard gates (fence vs policy, read path, headers) --
+
+    // The scope fence (E3) and the policy engine (E4) are two distinct 403 gates.
+    // A non-admin whose named workspace MATCHES its token passes the fence
+    // (`resolve_scope` → Ok) yet is still denied by the policy engine. Without
+    // this row the developer-deny case could be a fence artifact rather than a
+    // policy decision.
+    #[tokio::test]
+    async fn guard_forbids_a_non_admin_even_at_its_own_named_workspace() {
+        let (engine, secret) = engine_with_role("developer");
+        let tenancy = RequestTenancy {
+            workspace_id: WS.into(),
+        };
+        assert_eq!(
+            call(engine, Method::POST, Some(&secret), Some(tenancy)).await,
+            StatusCode::FORBIDDEN,
+        );
+    }
+
+    // Grant-for-the-wrong-action through the full guard: a `billing` token
+    // authenticates and is scope-clean, but its grants are another namespace → 403.
+    #[tokio::test]
+    async fn guard_forbids_a_wrong_namespace_grant() {
+        let (engine, secret) = engine_with_role("billing");
+        assert_eq!(
+            call(engine, Method::POST, Some(&secret), None).await,
+            StatusCode::FORBIDDEN,
+        );
+    }
+
+    // The read action (GET → `agent.read`) is exercised end-to-end through the
+    // guard, not just at the `session_action` unit. Admin holds `agent.*`, so the
+    // read is allowed.
+    #[tokio::test]
+    async fn guard_allows_an_admin_read() {
+        let (engine, secret) = admin_engine();
+        assert_eq!(
+            call(engine, Method::GET, Some(&secret), None).await,
+            StatusCode::OK,
+        );
+    }
+
+    // The SDK credential header (`x-api-key`) authenticates through the full
+    // guard, not only through the `presented_bearer` unit — a valid admin key in
+    // `x-api-key` reaches the handler.
+    #[tokio::test]
+    async fn guard_authenticates_via_the_x_api_key_header() {
+        let (engine, secret) = admin_engine();
+        let app = Router::new()
+            .fallback(any(|| async { "ok" }))
+            .layer(from_fn_with_state(engine, guard));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/sessions")
+            .header("x-api-key", secret)
+            .body(Body::empty())
+            .expect("request");
+        assert_eq!(
+            app.oneshot(request).await.expect("router call").status(),
+            StatusCode::OK,
+        );
+    }
+
+    // No route is exempt from the guard. The action is derived from the HTTP
+    // method, never the path, so an arbitrary/unknown URI is gated identically:
+    // a non-admin is denied and an admin is allowed on the very same unmapped
+    // path. This closes the "unknown route → default-allow" fail-open: there is
+    // no route allowlist that a new/unmapped path could slip through.
+    #[tokio::test]
+    async fn guard_gates_an_unmapped_route_the_same_as_any_other() {
+        let unknown = "/totally/unknown/route";
+
+        let (deny_engine, dev_secret) = engine_with_role("developer");
+        let deny_app = Router::new()
+            .fallback(any(|| async { "ok" }))
+            .layer(from_fn_with_state(deny_engine, guard));
+        let deny_req = Request::builder()
+            .method(Method::POST)
+            .uri(unknown)
+            .header("authorization", format!("Bearer {dev_secret}"))
+            .body(Body::empty())
+            .expect("request");
+        assert_eq!(
+            deny_app.oneshot(deny_req).await.expect("call").status(),
+            StatusCode::FORBIDDEN,
+            "an unmapped route is still policy-gated for a non-admin",
+        );
+
+        let (allow_engine, admin_secret) = admin_engine();
+        let allow_app = Router::new()
+            .fallback(any(|| async { "ok" }))
+            .layer(from_fn_with_state(allow_engine, guard));
+        let allow_req = Request::builder()
+            .method(Method::POST)
+            .uri(unknown)
+            .header("authorization", format!("Bearer {admin_secret}"))
+            .body(Body::empty())
+            .expect("request");
+        assert_eq!(
+            allow_app.oneshot(allow_req).await.expect("call").status(),
+            StatusCode::OK,
+            "the same unmapped route is reachable for an authorized admin",
+        );
     }
 }

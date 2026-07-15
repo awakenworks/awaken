@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Phase};
 use awaken_protocol_a2a::client::send_message;
-use awaken_protocol_a2a::{HttpTransport, Task, Transport};
+use awaken_protocol_a2a::{HttpTransport, Task, TaskState, Transport};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{
     Cancellation, Error, ExecutorCapabilities, Result, RunExecutor, Wait,
@@ -79,6 +79,26 @@ fn task_reply(task: &Task) -> String {
     task.history.last().map(|m| m.text()).unwrap_or_default()
 }
 
+/// The run's terminus derived from the returned task's lifecycle state. Do not
+/// collapse every returned task to a natural end: a `failed` remote task is an
+/// execution fault and a `canceled` one is a cancellation, while a still-`working`
+/// or `*-required` task is non-terminal and this executor neither polls nor parks
+/// (`Wait::None`), so its outcome is unknown and must never be projected as success
+/// (G26).
+fn end_cause_of(state: &TaskState) -> EndCause {
+    match state {
+        TaskState::Completed => EndCause::NaturalEnd,
+        TaskState::Failed => EndCause::Error(Failure::Inference {
+            code: "a2a_task_failed".to_string(),
+            message: "remote A2A task ended in the failed state".to_string(),
+        }),
+        TaskState::Canceled => EndCause::Cancelled,
+        TaskState::Working | TaskState::InputRequired | TaskState::AuthRequired => {
+            EndCause::Indeterminate
+        }
+    }
+}
+
 #[async_trait]
 impl RunExecutor for A2aRunExecutor {
     fn capabilities(&self) -> ExecutorCapabilities {
@@ -134,13 +154,8 @@ impl RunExecutor for A2aRunExecutor {
                     Role::Assistant,
                     task_reply(&task),
                 )];
-                finish(
-                    &context,
-                    &activation,
-                    messages,
-                    Phase::Ended(EndCause::NaturalEnd),
-                )
-                .await
+                let phase = Phase::Ended(end_cause_of(&task.status.state));
+                finish(&context, &activation, messages, phase).await
             }
             Err(err) => {
                 let messages = vec![Message::text(
@@ -193,6 +208,10 @@ mod tests {
     use awaken_agent_contract::agent::thread::Id as ThreadId;
     use awaken_agent_contract::commit::coordinator::{Coordinator, Error as CommitError};
     use awaken_agent_contract::commit::staged::{CommitRecord, ThreadCommit};
+    use awaken_protocol_a2a::Artifact;
+    use awaken_protocol_a2a::types::{
+        Message as A2aMessage, MessageRole, Part as A2aPart, TaskStatus,
+    };
     use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
     use awaken_runtime_contract::snapshot::{
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
@@ -234,6 +253,123 @@ mod tests {
             trace: Default::default(),
             model_access: Default::default(),
         }
+    }
+
+    // ---- pure translation units (prompt_of / task_reply / end_cause_of) ----
+
+    /// A text agent message for the A2A wire shape (helper for task fixtures).
+    fn a2a_msg(text: &str) -> A2aMessage {
+        A2aMessage {
+            kind: None,
+            task_id: None,
+            context_id: None,
+            message_id: "m".into(),
+            role: MessageRole::Agent,
+            parts: vec![A2aPart::text(text)],
+        }
+    }
+
+    /// A returned task with the given status message, history, and artifacts (each
+    /// artifact is its list of text parts). Every fixture completes; task_reply
+    /// selection is what these exercise.
+    fn task_with(status_msg: Option<&str>, history: &[&str], artifacts: &[&[&str]]) -> Task {
+        Task {
+            kind: None,
+            id: "t".into(),
+            context_id: "c".into(),
+            status: TaskStatus {
+                state: TaskState::Completed,
+                message: status_msg.map(a2a_msg),
+            },
+            history: history.iter().map(|t| a2a_msg(t)).collect(),
+            artifacts: artifacts
+                .iter()
+                .map(|parts| Artifact {
+                    name: None,
+                    parts: parts.iter().map(|t| A2aPart::text(*t)).collect(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn prompt_of_joins_inputs_with_newlines_and_drops_empty_text() {
+        // Multi-turn input: the non-empty texts are joined by "\n"; a message whose
+        // text is empty contributes nothing (not a blank line).
+        let input = vec![
+            Message::text(MessageId("u0".into()), Role::User, "first"),
+            Message::text(MessageId("u1".into()), Role::User, ""),
+            Message::text(MessageId("u2".into()), Role::Assistant, "second"),
+        ];
+        assert_eq!(prompt_of(&input), "first\nsecond");
+    }
+
+    #[test]
+    fn prompt_of_empty_input_is_the_empty_prompt() {
+        assert_eq!(prompt_of(&[]), "");
+    }
+
+    #[test]
+    fn task_reply_joins_multiple_artifacts_with_newlines() {
+        // Two durable artifacts: their texts are the reply, joined by "\n".
+        assert_eq!(
+            task_reply(&task_with(None, &[], &[&["a1"], &["a2"]])),
+            "a1\na2"
+        );
+    }
+
+    #[test]
+    fn task_reply_skips_text_empty_artifacts_and_falls_to_status() {
+        // An artifact with no text parts is not a reply → fall to the status message.
+        assert_eq!(
+            task_reply(&task_with(Some("status body"), &["h"], &[&[]])),
+            "status body"
+        );
+    }
+
+    #[test]
+    fn task_reply_prefers_status_message_over_history() {
+        // No artifacts, but a non-empty status message wins over the last history msg.
+        assert_eq!(
+            task_reply(&task_with(Some("status"), &["h0", "h1"], &[])),
+            "status"
+        );
+    }
+
+    #[test]
+    fn task_reply_empty_status_text_falls_through_to_last_history() {
+        // A status message present but text-empty is not a reply → last history msg.
+        assert_eq!(
+            task_reply(&task_with(Some(""), &["h0", "last"], &[])),
+            "last"
+        );
+    }
+
+    #[test]
+    fn task_reply_of_an_empty_task_is_the_empty_string() {
+        // No artifacts, no status message, no history → empty reply (no panic).
+        assert_eq!(task_reply(&task_with(None, &[], &[])), "");
+    }
+
+    #[test]
+    fn end_cause_maps_each_task_state_honestly() {
+        // Only a completed remote task is a natural end; the rest must not be
+        // projected as success (G26).
+        assert_eq!(end_cause_of(&TaskState::Completed), EndCause::NaturalEnd);
+        assert_eq!(end_cause_of(&TaskState::Canceled), EndCause::Cancelled);
+        assert_eq!(end_cause_of(&TaskState::Working), EndCause::Indeterminate);
+        assert_eq!(
+            end_cause_of(&TaskState::InputRequired),
+            EndCause::Indeterminate
+        );
+        assert_eq!(
+            end_cause_of(&TaskState::AuthRequired),
+            EndCause::Indeterminate
+        );
+        assert!(matches!(
+            end_cause_of(&TaskState::Failed),
+            EndCause::Error(Failure::Inference { ref code, .. }) if code == "a2a_task_failed"
+        ));
     }
 
     /// Drives the real executor against a **real A2A HTTP server** over a real TCP
@@ -503,5 +639,84 @@ mod tests {
             phase,
             Phase::Ended(EndCause::Error(Failure::Inference { ref code, .. })) if code == "a2a_error"
         ));
+    }
+
+    /// With no commit coordinator on the context, `execute` still returns the
+    /// terminal phase (the commit boundary is a no-op, not a failure).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_missing_commit_coordinator_still_returns_the_terminal_phase() {
+        let backend = serve(
+            r#"{"task":{"id":"t","contextId":"c","status":{"state":"completed","message":{"messageId":"m","role":"agent","parts":[{"text":"ok"}]}}}}"#,
+        )
+        .await;
+        // RuntimeRunContext::new() carries no commit coordinator.
+        let phase = A2aRunExecutor::over_http()
+            .execute(activation(&backend), RuntimeRunContext::new())
+            .await
+            .unwrap();
+        assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    }
+
+    /// A remote task returned in the `failed` state is an execution fault, not a
+    /// natural end — regression against silently projecting a remote failure as
+    /// success (G26). The agent's message is still committed for the reader.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_remote_task_ends_in_error_not_success() {
+        let backend = serve(
+            r#"{"task":{"id":"t","contextId":"c","status":{"state":"failed","message":{"messageId":"m","role":"agent","parts":[{"text":"model exploded"}]}}}}"#,
+        )
+        .await;
+        let rec = Arc::new(Rec::default());
+        let phase = A2aRunExecutor::over_http()
+            .execute(
+                activation(&backend),
+                RuntimeRunContext::new().with_commit(rec.clone()),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            phase,
+            Phase::Ended(EndCause::Error(Failure::Inference { ref code, .. }))
+                if code == "a2a_task_failed"
+        ));
+        assert_eq!(
+            rec.0.lock().unwrap()[0].messages[0].text_content(),
+            "model exploded"
+        );
+    }
+
+    /// A remote task returned in the `canceled` state ends as a cancellation, not a
+    /// natural end.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_canceled_remote_task_ends_cancelled() {
+        let backend =
+            serve(r#"{"task":{"id":"t","contextId":"c","status":{"state":"canceled"}}}"#).await;
+        let rec = Arc::new(Rec::default());
+        let phase = A2aRunExecutor::over_http()
+            .execute(
+                activation(&backend),
+                RuntimeRunContext::new().with_commit(rec.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(phase, Phase::Ended(EndCause::Cancelled));
+    }
+
+    /// A still-`working` remote task is non-terminal; this executor neither polls
+    /// nor parks (`Wait::None`), so the outcome is `Indeterminate` — never projected
+    /// as a successful natural end (G26).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_still_working_remote_task_is_indeterminate_not_success() {
+        let backend =
+            serve(r#"{"task":{"id":"t","contextId":"c","status":{"state":"working"}}}"#).await;
+        let rec = Arc::new(Rec::default());
+        let phase = A2aRunExecutor::over_http()
+            .execute(
+                activation(&backend),
+                RuntimeRunContext::new().with_commit(rec.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(phase, Phase::Ended(EndCause::Indeterminate));
     }
 }

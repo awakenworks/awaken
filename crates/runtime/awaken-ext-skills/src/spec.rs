@@ -412,6 +412,43 @@ mod tests {
     }
 
     #[test]
+    fn underscore_key_variants_and_comment_and_blank_lines_are_handled() {
+        // Keys may use underscores (normalized to hyphens), and `#` comments plus
+        // blank lines in the frontmatter are skipped rather than mis-parsed.
+        let md = "---\n# a comment\n\nwhen_to_use: recording\ndisable_model_invocation: yes\nuser_invocable: no\n---\nbody";
+        let spec = parse_skill_md("x", md);
+        assert_eq!(spec.when_to_use.as_deref(), Some("recording"));
+        assert!(!spec.model_invocable, "yes is truthy for disable flag");
+        assert!(!spec.user_invocable, "no is falsy");
+        assert_eq!(spec.body, "body");
+    }
+
+    #[test]
+    fn unknown_context_value_falls_back_to_inline() {
+        // `context` only recognizes `fork` (case-insensitively); any other value —
+        // here a typo — must default to Inline, never error.
+        let spec = parse_skill_md("x", "---\ncontext: subprocess\n---\nb");
+        assert_eq!(spec.context, SkillContext::Inline);
+        let forked = parse_skill_md("y", "---\ncontext: FORK\n---\nb");
+        assert_eq!(
+            forked.context,
+            SkillContext::Fork,
+            "fork is case-insensitive"
+        );
+    }
+
+    #[test]
+    fn a_bom_prefixed_crlf_frontmatter_block_is_parsed() {
+        // A UTF-8 BOM before the opening fence and CRLF line endings must still
+        // parse: BOM is stripped, `\r\n` fences and body separator are honored.
+        let md = "\u{feff}---\r\nname: Win\r\ndescription: crlf\r\n---\r\nbody line\r\n";
+        let spec = parse_skill_md("w", md);
+        assert_eq!(spec.name, "Win");
+        assert_eq!(spec.description, "crlf");
+        assert!(spec.body.starts_with("body line"), "body: {:?}", spec.body);
+    }
+
+    #[test]
     fn an_unterminated_frontmatter_fence_is_treated_as_all_body() {
         // Malformed: an opening `---` with no closing fence must not eat the content —
         // it falls through to "no frontmatter", so the whole input is the body and the

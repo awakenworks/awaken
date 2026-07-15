@@ -176,8 +176,14 @@ pub fn init_meters(
         .with_resource(Resource::builder().with_attributes(resource_attrs).build());
 
     // The OTLP push reader (only when an endpoint is configured). Only HTTP/protobuf
-    // is compiled in; a grpc request would need tonic, so use HTTP either way.
-    let _ = matches!(config.effective_traces_protocol(), OtelProtocol::Grpc);
+    // is compiled in; a grpc request would need tonic, so use HTTP. Surface the
+    // downgrade so a `grpc` misconfiguration is observable instead of silent.
+    if matches!(config.effective_traces_protocol(), OtelProtocol::Grpc) {
+        tracing::warn!(
+            "OTLP protocol 'grpc' requested but only http/protobuf is compiled in; \
+             exporting metrics over HTTP"
+        );
+    }
     if let Some(endpoint) = config.effective_traces_endpoint() {
         let exporter = MetricExporter::builder()
             .with_http()

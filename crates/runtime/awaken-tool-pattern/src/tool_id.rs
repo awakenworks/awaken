@@ -148,4 +148,25 @@ mod tests {
             assert!(validate_tool_id_pattern(p).is_ok(), "should accept {p}");
         }
     }
+
+    #[test]
+    fn multiple_stars_backtrack_correctly() {
+        // Several `*` segments require the star-backtracking loop to work: a
+        // greedy first star must be able to give characters back so a later
+        // literal still lines up.
+        assert!(tool_id_match("a*b*c", "axbyc"));
+        assert!(tool_id_match("mcp:*:*:read", "mcp:a:b:read"));
+        assert!(tool_id_match("*abc", "zabcabc"));
+        assert!(tool_id_match("a*b*c", "abc"));
+        // Negatives: the trailing literal cannot be satisfied.
+        assert!(!tool_id_match("a*b*c", "axbyd"));
+        assert!(!tool_id_match("mcp:*:*:read", "mcp:a:b:write"));
+    }
+
+    #[test]
+    fn trailing_stars_absorb_remaining_pattern() {
+        // Multiple trailing stars collapse to matching the empty rest.
+        assert!(tool_id_match("mcp:**", "mcp:"));
+        assert!(tool_id_match("mcp:**", "mcp:fs/read"));
+    }
 }

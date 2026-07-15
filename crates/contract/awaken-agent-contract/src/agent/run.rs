@@ -95,3 +95,61 @@ pub struct Record {
     pub thread_id: crate::agent::thread::Id,
     pub phase: Phase,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failure_code_is_the_stable_snake_case_classification() {
+        assert_eq!(
+            Failure::Inference {
+                code: "rate_limited".into(),
+                message: "429".into(),
+            }
+            .code(),
+            "rate_limited"
+        );
+        assert_eq!(Failure::CapabilityBound.code(), "capability_bound");
+        assert_eq!(Failure::StateConflict.code(), "state_conflict");
+    }
+
+    #[test]
+    fn failure_message_is_the_provider_text_or_a_fixed_description() {
+        assert_eq!(
+            Failure::Inference {
+                code: "unauthorized".into(),
+                message: "bad api key".into(),
+            }
+            .message(),
+            "bad api key"
+        );
+        assert!(
+            Failure::CapabilityBound
+                .message()
+                .contains("capability bound")
+        );
+        assert!(
+            Failure::StateConflict
+                .message()
+                .contains("exclusive-key conflict")
+        );
+    }
+
+    #[test]
+    fn ended_variants_round_trip_through_serde() {
+        for cause in [
+            EndCause::NaturalEnd,
+            EndCause::MaxSteps,
+            EndCause::Cancelled,
+            EndCause::Stopped("budget".into()),
+            EndCause::Error(Failure::CapabilityBound),
+            EndCause::Indeterminate,
+        ] {
+            let phase = Phase::Ended(cause.clone());
+            let json = serde_json::to_string(&phase).unwrap();
+            let back: Phase = serde_json::from_str(&json).unwrap();
+            assert_eq!(phase, back, "{cause:?} must survive a serde round trip");
+        }
+    }
+}

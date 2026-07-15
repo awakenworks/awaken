@@ -135,6 +135,54 @@ mod tests {
     }
 
     #[test]
+    fn unbound_thread_resolves_the_default_ref_through_the_provider() {
+        // A single-model deployment registers its ONE model under the default ref and
+        // binds no per-thread model. resolve_executor must still route the default ref
+        // through the provider (not blindly return the host fallback), so the config
+        // plane's executor for the default model is used.
+        let host_fallback: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("fallback"));
+        let configured: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("configured-default"));
+        let mut map: HashMap<String, Arc<dyn LlmExecutor>> = HashMap::new();
+        map.insert("default-model".into(), configured.clone());
+        let mut binding = ThreadModelBinding::new();
+        binding.set_provider(Arc::new(MapProvider(map)));
+
+        // No per-thread binding, but the provider resolves the DEFAULT ref → its executor.
+        assert!(Arc::ptr_eq(
+            &binding.resolve_executor("t-unbound", "default-model", &host_fallback),
+            &configured
+        ));
+    }
+
+    #[test]
+    fn re_registering_a_thread_replaces_the_binding() {
+        // The per-turn override re-stages the thread's model: the LAST register wins, so
+        // a turn cannot keep running a stale prior model ref.
+        let default: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("default"));
+        let a: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("a"));
+        let b: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("b"));
+        let mut map: HashMap<String, Arc<dyn LlmExecutor>> = HashMap::new();
+        map.insert("model-a".into(), a.clone());
+        map.insert("model-b".into(), b.clone());
+        let mut binding = ThreadModelBinding::new();
+        binding.set_provider(Arc::new(MapProvider(map)));
+
+        binding.register("t", "model-a");
+        assert_eq!(binding.model_ref("t", "default-model"), "model-a");
+        assert!(Arc::ptr_eq(
+            &binding.resolve_executor("t", "default-model", &default),
+            &a
+        ));
+        // Re-register (per-turn override) → the new ref replaces the old one.
+        binding.register("t", "model-b");
+        assert_eq!(binding.model_ref("t", "default-model"), "model-b");
+        assert!(Arc::ptr_eq(
+            &binding.resolve_executor("t", "default-model", &default),
+            &b
+        ));
+    }
+
+    #[test]
     fn no_provider_means_every_thread_uses_the_default() {
         let default: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("default"));
         let binding = ThreadModelBinding::new();

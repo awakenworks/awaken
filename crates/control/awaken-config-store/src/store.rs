@@ -147,16 +147,20 @@ pub trait ScopedConfigRegistry: Send + Sync {
 
     /// Every **published** publication owned by `scope`, oldest first (ascending by
     /// insertion order), so a warm-load that inserts into an agent-keyed map keeps
-    /// the latest publication per agent. Defaults to empty: only a durable store has
-    /// anything to reload across a process lifetime; the in-memory store rebuilds
-    /// fresh and does not override this.
+    /// the latest publication per agent.
+    ///
+    /// **Required** — deliberately has no default. It once defaulted to
+    /// `Ok(Vec::new())` "because only a durable store reloads across a lifetime,"
+    /// but that let a durable backend that simply *forgot* to override it compile
+    /// clean and silently reload zero agents on restart (exactly what happened to
+    /// the Postgres store). Forcing every implementor to answer means an empty
+    /// reload is now an explicit choice, never an accident. An implementor with
+    /// nothing to reload (a purely ephemeral store) returns `Ok(Vec::new())` on
+    /// purpose.
     async fn list_published_scoped(
         &self,
         scope: &ScopeId,
-    ) -> Result<Vec<StoredPublication>, ConfigStoreError> {
-        let _ = scope;
-        Ok(Vec::new())
-    }
+    ) -> Result<Vec<StoredPublication>, ConfigStoreError>;
 }
 
 /// The decorator that makes tenancy an edge aspect for the config plane: it

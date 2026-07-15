@@ -373,6 +373,70 @@ impl awaken_runtime_host::GatewayExecutorFactory for GenaiGatewayExecutorFactory
 }
 
 #[cfg(test)]
+mod resolved_executor_tests {
+    use super::{ResolvedExecutorError, executor_from_resolved};
+    use awaken_agent_contract::RedactedString;
+    use awaken_config_resolver::{InferenceTriple, ResolvedInference};
+    use awaken_model_catalog::ApiDialect;
+
+    fn triple(dialect: ApiDialect) -> InferenceTriple {
+        InferenceTriple {
+            model_id: "m".into(),
+            provider_id: "p".into(),
+            protocol_endpoint_id: "ep".into(),
+            dialect,
+        }
+    }
+
+    #[test]
+    fn a_supported_adapter_with_a_credential_builds() {
+        // The happy path over a supported dialect (base_url optional — genai has a
+        // default endpoint, which is why the seam never checks for one).
+        let inference = ResolvedInference {
+            triple: triple(ApiDialect::AnthropicMessages),
+            adapter_kind: "anthropic",
+            base_url: None,
+            credential: Some(RedactedString::new("sk-x")), // awaken-allow: secret
+        };
+        assert!(executor_from_resolved(&inference).is_ok());
+    }
+
+    #[test]
+    fn an_adapter_this_build_cannot_serve_fails_closed() {
+        // Defensive branch: the resolver only ever yields anthropic/openai/gemini
+        // (ApiDialect::adapter_kind), so this is unreachable via the catalog — but the
+        // seam still refuses an adapter it cannot serve rather than panicking or
+        // silently dropping the run.
+        let inference = ResolvedInference {
+            triple: triple(ApiDialect::AnthropicMessages),
+            adapter_kind: "cohere",
+            base_url: Some("https://api.cohere.ai".into()),
+            credential: Some(RedactedString::new("sk-x")), // awaken-allow: secret
+        };
+        match executor_from_resolved(&inference) {
+            Err(ResolvedExecutorError::UnsupportedAdapter(a)) => assert_eq!(a, "cohere"),
+            Err(other) => panic!("expected UnsupportedAdapter, got {other:?}"),
+            Ok(_) => panic!("expected UnsupportedAdapter, got an executor"),
+        }
+    }
+
+    #[test]
+    fn a_missing_credential_fails_closed_even_for_a_supported_adapter() {
+        // An unauthenticated run is refused before the executor is built.
+        let inference = ResolvedInference {
+            triple: triple(ApiDialect::OpenAiChat),
+            adapter_kind: "openai",
+            base_url: None,
+            credential: None,
+        };
+        assert!(matches!(
+            executor_from_resolved(&inference),
+            Err(ResolvedExecutorError::MissingCredential)
+        ));
+    }
+}
+
+#[cfg(test)]
 mod gateway_factory_tests {
     use super::{GenaiGatewayExecutorFactory, gateway_dialect_adapter};
     use awaken_provider_genai::AdapterKind;

@@ -1392,6 +1392,82 @@ mod tests {
         assert_eq!(got.unwrap().expose_secret(), "sk-scoped");
     }
 
+    #[tokio::test]
+    async fn resolve_credential_pool_skips_incompatible_member_and_selects_compatible() {
+        // R (pool compat gate): a pool member scoped to a DIFFERENT provider than the
+        // offering is skipped by can_consume, and the next provider-compatible member
+        // is selected — a wrong-provider key never authenticates the run even from a
+        // pool (the in-loop can_consume `continue`, distinct from disabled/absent).
+        let store = InMemorySecretStore::new();
+        let wrong = vault_source(&store, Some("openai"), "sk-openai").await;
+        let right = vault_source(&store, Some("anthropic"), "sk-anthropic").await;
+        let mut sources = HashMap::new();
+        sources.insert(wrong.id.0.clone(), wrong.clone());
+        sources.insert(right.id.0.clone(), right.clone());
+        let ctx = PoolCtx {
+            sources,
+            pool: CredentialPool {
+                id: CredentialPoolId("p".into()),
+                workspace_id: "ws".into(),
+                members: vec![member(&wrong.id.0, 0), member(&right.id.0, 1)],
+                policy: SelectionPolicy::FirstHealthy,
+            },
+        };
+        let got = resolve_credential(
+            &CredentialBinding::OneOfCredentialPool {
+                credential_pool_id: CredentialPoolId("p".into()),
+            },
+            &ctx,
+            &store,
+            Some("anthropic"),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(got.unwrap().expose_secret(), "sk-anthropic");
+    }
+
+    #[tokio::test]
+    async fn resolve_credential_pool_all_incompatible_fails_closed() {
+        // R (pool compat gate, exhausted): every member is scoped to a different
+        // provider than the offering, so none can authenticate it → NoEligibleCredential
+        // (fail closed), never a silent unauthenticated run and never a wrong-provider
+        // key smuggled through the pool. cooled = 0 (no ledger; the exclusion is compat).
+        let store = InMemorySecretStore::new();
+        let a = vault_source(&store, Some("openai"), "sk-1").await;
+        let b = vault_source(&store, Some("cohere"), "sk-2").await;
+        let mut sources = HashMap::new();
+        sources.insert(a.id.0.clone(), a.clone());
+        sources.insert(b.id.0.clone(), b.clone());
+        let ctx = PoolCtx {
+            sources,
+            pool: CredentialPool {
+                id: CredentialPoolId("p".into()),
+                workspace_id: "ws".into(),
+                members: vec![member(&a.id.0, 0), member(&b.id.0, 1)],
+                policy: SelectionPolicy::FirstHealthy,
+            },
+        };
+        let err = resolve_credential(
+            &CredentialBinding::OneOfCredentialPool {
+                credential_pool_id: CredentialPoolId("p".into()),
+            },
+            &ctx,
+            &store,
+            Some("anthropic"),
+            None,
+        )
+        .await
+        .unwrap_err();
+        match err {
+            ResolveError::NoEligibleCredential { total, cooled, .. } => {
+                assert_eq!(total, 2);
+                assert_eq!(cooled, 0);
+            }
+            other => panic!("expected NoEligibleCredential, got {other:?}"),
+        }
+    }
+
     // ---- CEG 02: resolve_inference_toggled core (A3) ----
 
     #[tokio::test]

@@ -191,6 +191,28 @@ mod tests {
     }
 
     #[test]
+    fn a_non_text_agent_message_chunk_has_no_projection() {
+        // An agent message chunk whose content is not text (e.g. an image) has no
+        // neutral text projection — the `text_of` non-text arm returns None, so no
+        // Message event is produced.
+        use agent_client_protocol::ImageContent;
+        let update = SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Image(
+            ImageContent::new("ZGF0YQ==", "image/png"),
+        )));
+        assert_eq!(project_update(&update), None);
+    }
+
+    #[test]
+    fn max_turn_requests_stop_reason_maps_to_timed_out() {
+        // MaxTurnRequests shares the deadline-like `TimedOut` mapping with MaxTokens;
+        // it was the one un-asserted terminal stop reason.
+        assert_eq!(
+            termination_from_stop_reason(StopReason::MaxTurnRequests),
+            TerminationReason::TimedOut
+        );
+    }
+
+    #[test]
     fn stop_reasons_map_to_neutral_terminations() {
         assert_eq!(
             termination_from_stop_reason(StopReason::EndTurn),

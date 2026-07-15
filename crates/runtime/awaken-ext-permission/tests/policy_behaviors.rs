@@ -6,7 +6,7 @@
 //! `actions::` mutation helpers are intentionally out of scope for this crate.
 
 use awaken_ext_permission::{
-    Mode, PermissionRule, PermissionRuleset, ToolCallPattern, ToolPermissionBehavior,
+    Mode, PermissionRule, PermissionRuleset, ToolCallPattern, ToolPermissionBehavior, parse_ruleset,
 };
 use serde_json::json;
 
@@ -200,4 +200,262 @@ fn default_deny_blocks_all_unmatched_but_admits_specific_allow() {
     );
     assert_eq!(set.decide("Bash", &json!({})), ToolPermissionBehavior::Deny);
     assert_eq!(set.decide("Edit", &json!({})), ToolPermissionBehavior::Deny);
+}
+
+// ---------------------------------------------------------------------------
+// Decision cross-product: deny-is-absolute regardless of specificity, mode
+// defaults, and fail-closed edges. These are the security-critical rows —
+// a wrong answer here is a fail-open (a side-effecting call escapes a deny).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn low_specificity_deny_beats_high_specificity_allow() {
+    // The core security invariant: deny is absolute, so a *broad* deny must
+    // still win over a *more specific* allow that also matches. If deny were
+    // ranked by specificity instead of short-circuiting, the specific allow
+    // would fail open here.
+    let set = ruleset(
+        ToolPermissionBehavior::Ask,
+        vec![
+            // High specificity (tool + primary arg) allow.
+            rule("Bash(npm *)", ToolPermissionBehavior::Allow),
+            // Low specificity (bare tool) deny.
+            rule("Bash", ToolPermissionBehavior::Deny),
+        ],
+    );
+    assert_eq!(
+        set.decide("Bash", &json!({"command": "npm install"})),
+        ToolPermissionBehavior::Deny,
+        "a broad deny must override a more specific allow"
+    );
+}
+
+#[test]
+fn deny_wins_irrespective_of_rule_order() {
+    // Deny short-circuits regardless of whether it appears before or after the
+    // allow it overrides — order must not flip a deny into an allow.
+    let deny_first = ruleset(
+        ToolPermissionBehavior::Ask,
+        vec![
+            rule("Bash", ToolPermissionBehavior::Deny),
+            rule("Bash(npm *)", ToolPermissionBehavior::Allow),
+        ],
+    );
+    let allow_first = ruleset(
+        ToolPermissionBehavior::Ask,
+        vec![
+            rule("Bash(npm *)", ToolPermissionBehavior::Allow),
+            rule("Bash", ToolPermissionBehavior::Deny),
+        ],
+    );
+    let call = json!({"command": "npm install"});
+    assert_eq!(
+        deny_first.decide("Bash", &call),
+        ToolPermissionBehavior::Deny
+    );
+    assert_eq!(
+        allow_first.decide("Bash", &call),
+        ToolPermissionBehavior::Deny
+    );
+}
+
+#[test]
+fn bypass_mode_allows_even_a_matching_deny_rule() {
+    // BypassPermissions turns the gate off entirely: it short-circuits *before*
+    // rules are scanned, so even an explicit deny yields allow. This documents
+    // that bypass is a whole-gate escape hatch, not a per-rule default.
+    let set = PermissionRuleset {
+        default_behavior: ToolPermissionBehavior::Deny,
+        mode: Mode::BypassPermissions,
+        rules: vec![rule("Bash(rm *)", ToolPermissionBehavior::Deny)],
+    };
+    assert_eq!(
+        set.decide("Bash", &json!({"command": "rm -rf /"})),
+        ToolPermissionBehavior::Allow
+    );
+}
+
+#[test]
+fn accept_edits_mode_falls_to_default_like_default_mode() {
+    // AcceptEdits has no edit-tool side-effect class in this crate, so an
+    // unmatched call must fall to `default_behavior` (NOT be denied like Plan).
+    let set = PermissionRuleset {
+        default_behavior: ToolPermissionBehavior::Ask,
+        mode: Mode::AcceptEdits,
+        rules: vec![rule("Read", ToolPermissionBehavior::Allow)],
+    };
+    assert_eq!(
+        set.decide("Edit", &json!({"file_path": "src/x.rs"})),
+        ToolPermissionBehavior::Ask,
+        "unmatched under AcceptEdits falls to default, not deny"
+    );
+    assert_eq!(
+        set.decide("Read", &json!({})),
+        ToolPermissionBehavior::Allow
+    );
+}
+
+#[test]
+fn plan_mode_honors_matched_rules_over_its_deny_default() {
+    // Plan denies only *unmatched* calls; a matched allow/ask/deny rule still
+    // decides. A matched ask must NOT be swallowed into the plan deny-default.
+    let set = PermissionRuleset {
+        default_behavior: ToolPermissionBehavior::Allow, // ignored under Plan for unmatched
+        mode: Mode::Plan,
+        rules: vec![
+            rule("Read", ToolPermissionBehavior::Allow),
+            rule("Bash(git *)", ToolPermissionBehavior::Ask),
+            rule("Bash(rm *)", ToolPermissionBehavior::Deny),
+        ],
+    };
+    assert_eq!(
+        set.decide("Read", &json!({})),
+        ToolPermissionBehavior::Allow
+    );
+    assert_eq!(
+        set.decide("Bash", &json!({"command": "git status"})),
+        ToolPermissionBehavior::Ask,
+        "a matched ask is honored, not turned into plan's deny"
+    );
+    assert_eq!(
+        set.decide("Bash", &json!({"command": "rm -rf /"})),
+        ToolPermissionBehavior::Deny
+    );
+    // Unmatched under Plan is denied even though default_behavior is Allow.
+    assert_eq!(
+        set.decide("WebFetch", &json!({})),
+        ToolPermissionBehavior::Deny
+    );
+}
+
+#[test]
+fn default_allow_admits_unmatched_calls() {
+    // A permissive authored config (default_behavior = allow) is honored for an
+    // unmatched call. Documents that the only "silent allow" is an explicit one.
+    let set = ruleset(
+        ToolPermissionBehavior::Allow,
+        vec![rule("Bash(rm *)", ToolPermissionBehavior::Deny)],
+    );
+    assert_eq!(
+        set.decide("WebFetch", &json!({})),
+        ToolPermissionBehavior::Allow
+    );
+    // The deny still fires for its pattern.
+    assert_eq!(
+        set.decide("Bash", &json!({"command": "rm -rf /"})),
+        ToolPermissionBehavior::Deny
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Parse-time rejection of fail-open operators (whole-config path).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_ruleset_rejects_regex_tool_name() {
+    // A `/regex/` tool name is a regex matcher; the glob-only DSL rejects it at
+    // parse time so a deny authored as a regex can't silently match nothing.
+    let err = parse_ruleset(&json!({
+        "rules": [ { "pattern": "/mcp__.*/", "behavior": "deny" } ]
+    }))
+    .unwrap_err();
+    assert!(
+        err.contains("regex tool names"),
+        "error explains the regex tool-name rejection: {err}"
+    );
+}
+
+#[test]
+fn parse_ruleset_rejects_negated_regex_operator() {
+    // `!=~` (negated regex) is equally unsupported and must be rejected, naming
+    // the offending pattern.
+    let err = parse_ruleset(&json!({
+        "rules": [ { "pattern": "Bash(command !=~ \"rm\")", "behavior": "deny" } ]
+    }))
+    .unwrap_err();
+    assert!(
+        err.contains("Bash(command") && err.contains("!=~"),
+        "error names the pattern and the unsupported operator: {err}"
+    );
+}
+
+#[test]
+fn parse_ruleset_rejects_malformed_pattern() {
+    // A structurally broken pattern (unterminated arg group) is an error, never
+    // silently dropped — a malformed deny must surface, not vanish.
+    let err = parse_ruleset(&json!({
+        "rules": [ { "pattern": "Bash(command ~ \"rm", "behavior": "deny" } ]
+    }))
+    .unwrap_err();
+    assert!(
+        err.contains("Bash(command"),
+        "error names the malformed pattern: {err}"
+    );
+}
+
+#[test]
+fn negated_glob_and_exact_operators_are_accepted() {
+    // Glob-only still admits the *negated non-regex* operators `!~` and `!=`.
+    assert!(ToolCallPattern::parse("Bash(command !~ \"rm *\")").is_ok());
+    assert!(ToolCallPattern::parse("Bash(command != \"rm\")").is_ok());
+}
+
+#[test]
+fn negated_deny_matches_present_field_but_not_a_missing_one() {
+    // Documents a fail-closed-to-*non-firing* edge: a `!~` deny ("deny anything
+    // that is not `ls*`") fires when the field is present and non-matching, but
+    // a call that OMITS the field resolves to no value → the condition is false
+    // → the deny does not fire and the call falls to the default. See the
+    // report's design note: negated deny rules do not catch missing fields.
+    let set = ruleset(
+        ToolPermissionBehavior::Ask,
+        vec![rule(
+            "Bash(command !~ \"ls*\")",
+            ToolPermissionBehavior::Deny,
+        )],
+    );
+    // Present + not ls* → deny fires.
+    assert_eq!(
+        set.decide("Bash", &json!({"command": "rm -rf /"})),
+        ToolPermissionBehavior::Deny
+    );
+    // Present + ls* → not denied, falls to default ask.
+    assert_eq!(
+        set.decide("Bash", &json!({"command": "ls -la"})),
+        ToolPermissionBehavior::Ask
+    );
+    // Missing field → deny does NOT fire; falls to default ask (documented gap).
+    assert_eq!(
+        set.decide("Bash", &json!({})),
+        ToolPermissionBehavior::Ask,
+        "a negated deny does not catch a call that omits the field"
+    );
+}
+
+#[test]
+fn equal_specificity_first_rule_wins_allow_vs_ask() {
+    // Documents the tie-break: two non-deny rules of identical specificity are
+    // resolved by *order* (strictly-greater specificity replaces, equal does
+    // not), so the first-listed rule wins. See report's design recommendation
+    // to prefer the more restrictive behavior on ties.
+    let allow_first = ruleset(
+        ToolPermissionBehavior::Deny,
+        vec![
+            rule("Bash(npm *)", ToolPermissionBehavior::Allow),
+            rule("Bash(npm *)", ToolPermissionBehavior::Ask),
+        ],
+    );
+    let ask_first = ruleset(
+        ToolPermissionBehavior::Deny,
+        vec![
+            rule("Bash(npm *)", ToolPermissionBehavior::Ask),
+            rule("Bash(npm *)", ToolPermissionBehavior::Allow),
+        ],
+    );
+    let call = json!({"command": "npm install"});
+    assert_eq!(
+        allow_first.decide("Bash", &call),
+        ToolPermissionBehavior::Allow
+    );
+    assert_eq!(ask_first.decide("Bash", &call), ToolPermissionBehavior::Ask);
 }

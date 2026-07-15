@@ -450,4 +450,80 @@ mod tests {
                 if tool_call_id == "c1"
         ));
     }
+
+    // A provider-executed (server-side) tool call must be flagged
+    // `providerExecuted: true`, so `useChat` renders its result rather than asking
+    // the client to run it — the complement of the pending-client/built-in rows.
+    #[test]
+    fn an_executed_tool_call_is_provider_executed() {
+        let events = AiSdkEncoder.transcode(&AgentEvent::ToolCall {
+            id: "c1".into(),
+            name: "read".into(),
+            input: json!({ "path": "x" }),
+            disposition: ToolDisposition::Executed,
+        });
+        assert!(matches!(
+            events.as_slice(),
+            [UIStreamEvent::ToolInputAvailable { tool_call_id, provider_executed: true, .. }]
+                if tool_call_id == "c1"
+        ));
+    }
+
+    // parse_output: a tool result whose text is not valid JSON falls back to a
+    // JSON string (the other arm from the JSON-parsing `history_merges` row).
+    #[test]
+    fn a_non_json_tool_result_falls_back_to_a_string_output() {
+        let events = AiSdkEncoder.transcode(&AgentEvent::ToolResult {
+            id: "c1".into(),
+            content: vec![ContentBlock::text("just text")],
+            is_error: false,
+        });
+        assert!(matches!(
+            events.as_slice(),
+            [UIStreamEvent::ToolOutputAvailable { output, .. }] if *output == json!("just text")
+        ));
+    }
+
+    // Post the projection change: an assistant message whose only block is an
+    // empty-string Text is dropped by `project_messages`, so the AI SDK stream
+    // carries no spurious `text-*` frames — only the step's start and finish.
+    #[test]
+    fn an_empty_text_only_assistant_turn_emits_no_text_part() {
+        let outcome = StepOutcome {
+            new_messages: vec![Message::new(
+                Id("a1".into()),
+                Role::Assistant,
+                vec![ContentBlock::text("")],
+            )],
+            terminal: Terminal::Finished,
+        };
+        let events = encode_step(&outcome);
+        assert!(
+            events.iter().all(|e| !matches!(
+                e,
+                UIStreamEvent::TextStart { .. }
+                    | UIStreamEvent::TextDelta { .. }
+                    | UIStreamEvent::TextEnd { .. }
+            )),
+            "an all-empty-text assistant turn must emit no text part: {events:?}"
+        );
+        assert!(events.contains(&UIStreamEvent::finish("stop")));
+    }
+
+    // The history fold drops the same all-empty-text assistant message, matching
+    // the streaming projection — only the real user message survives.
+    #[test]
+    fn history_drops_an_empty_text_only_assistant_message() {
+        let messages = vec![
+            Message::text(Id("u1".into()), Role::User, "hi"),
+            Message::new(
+                Id("a1".into()),
+                Role::Assistant,
+                vec![ContentBlock::text("")],
+            ),
+        ];
+        let encoded = encode_history(&messages);
+        assert_eq!(encoded.len(), 1);
+        assert_eq!(encoded[0]["role"], "user");
+    }
 }

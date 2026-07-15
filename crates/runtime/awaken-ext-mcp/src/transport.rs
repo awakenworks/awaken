@@ -90,3 +90,74 @@ pub trait McpToolTransport: Send + Sync {
         true
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mcp::{CallToolResult, ToolContent};
+
+    /// A tools-only transport: it implements only the two mandatory methods, so the
+    /// prompt/resource/progress/liveness surfaces exercise the trait defaults.
+    struct ToolsOnly;
+
+    #[async_trait]
+    impl McpToolTransport for ToolsOnly {
+        async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+            Ok(Vec::new())
+        }
+        async fn call_tool(
+            &self,
+            tool_name: &str,
+            _arguments: Value,
+        ) -> Result<CallToolResult, McpTransportError> {
+            Ok(CallToolResult {
+                content: vec![ToolContent::Text {
+                    text: format!("ran {tool_name}"),
+                    annotations: None,
+                    meta: None,
+                }],
+                structured_content: None,
+                is_error: Some(false),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tools_only_transport_defaults_the_optional_surfaces_fail_soft() {
+        let t = ToolsOnly;
+        // List surfaces default to empty (a tools-only server has none), never an error.
+        assert!(t.list_prompts().await.expect("prompts default").is_empty());
+        assert!(
+            t.list_resources()
+                .await
+                .expect("resources default")
+                .is_empty()
+        );
+        // Get/read surfaces default to an explicit NotSupported, not a panic.
+        assert!(matches!(
+            t.get_prompt("greet", None).await,
+            Err(McpTransportError::NotSupported(m)) if m == "prompts/get"
+        ));
+        assert!(matches!(
+            t.read_resource("file:///x").await,
+            Err(McpTransportError::NotSupported(m)) if m == "resources/read"
+        ));
+        // A stateless transport reports alive by default.
+        assert!(t.is_alive());
+    }
+
+    #[tokio::test]
+    async fn call_tool_with_progress_defaults_to_a_plain_call() {
+        // A transport with no server-notification support falls back to `call_tool`,
+        // so a progress-aware caller still gets the result (just no progress events).
+        let t = ToolsOnly;
+        let (tx, mut rx) = mpsc::channel(1);
+        let result = t
+            .call_tool_with_progress("echo", Value::Null, tx)
+            .await
+            .expect("delegates to call_tool");
+        assert!(matches!(result.is_error, Some(false)));
+        // No progress was emitted on the fallback path.
+        assert!(rx.try_recv().is_err());
+    }
+}

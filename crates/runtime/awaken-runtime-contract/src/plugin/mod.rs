@@ -87,6 +87,24 @@ mod tests {
         assert!(!IdBound::default().allows("anything"));
     }
 
+    #[test]
+    fn id_bound_is_deny_all_only_for_the_empty_exact_ceiling() {
+        // The operator-overlay predicate: only the empty allow-list reads as deny-all;
+        // any variant that could admit an id (even an exact list with entries) does not.
+        assert!(IdBound::default().is_deny_all());
+        assert!(IdBound::Exact(Vec::new()).is_deny_all());
+        assert!(!IdBound::Exact(vec!["a".into()]).is_deny_all());
+        assert!(!IdBound::Any.is_deny_all());
+        assert!(!IdBound::Namespace("mcp__".into()).is_deny_all());
+        assert!(
+            !IdBound::NamespacedExact {
+                prefix: "mcp__".into(),
+                ids: Vec::new(),
+            }
+            .is_deny_all()
+        );
+    }
+
     fn manifest(id: &str, bound: CapabilityBound) -> PluginManifest {
         PluginManifest {
             id: id.to_string(),
@@ -149,6 +167,72 @@ mod tests {
             enforce_bound(&m, &kind),
             Err(BoundViolation::ActionKind { .. })
         ));
+    }
+
+    struct FakeGate(&'static str);
+
+    #[async_trait]
+    impl crate::permission::ToolGateHook for FakeGate {
+        fn id(&self) -> &str {
+            self.0
+        }
+        async fn gate(
+            &self,
+            _ctx: &crate::permission::PermissionContext,
+            _state: &Store,
+        ) -> crate::permission::GateOutcome {
+            crate::permission::GateOutcome::Allow
+        }
+    }
+
+    struct FakeGuard(&'static str);
+
+    #[async_trait]
+    impl RunEndGuard for FakeGuard {
+        fn id(&self) -> &str {
+            self.0
+        }
+        async fn evaluate(&self, _ctx: &RunEndContext<'_>) -> RunEndDecision {
+            RunEndDecision::Complete {
+                detail: serde_json::Value::Null,
+            }
+        }
+    }
+
+    #[test]
+    fn enforce_bound_rejects_high_privilege_gate_and_guard_ids_outside_the_bound() {
+        // The tool-gate and run-end-guard axes are high-privilege (a gate can restrict
+        // every tool call); with the default deny-all bound, contributing either id is a
+        // fail-closed violation — the two rows the existing enforce_bound table omits.
+        let m = manifest("p", CapabilityBound::default());
+
+        let mut gate = Contributions::new("p");
+        gate.tool_gates.push(Arc::new(FakeGate("my-gate")));
+        assert!(matches!(
+            enforce_bound(&m, &gate),
+            Err(BoundViolation::ToolGate { id, .. }) if id == "my-gate"
+        ));
+
+        let mut guard = Contributions::new("p");
+        guard.run_end_guards.push(Arc::new(FakeGuard("my-guard")));
+        assert!(matches!(
+            enforce_bound(&m, &guard),
+            Err(BoundViolation::RunEndGuard { id, .. }) if id == "my-guard"
+        ));
+
+        // Declaring the id in the bound admits it.
+        let allowed = manifest(
+            "p",
+            CapabilityBound {
+                tool_gates: IdBound::Exact(vec!["my-gate".into()]),
+                run_end_guards: IdBound::Exact(vec!["my-guard".into()]),
+                ..Default::default()
+            },
+        );
+        let mut both = Contributions::new("p");
+        both.tool_gates.push(Arc::new(FakeGate("my-gate")));
+        both.run_end_guards.push(Arc::new(FakeGuard("my-guard")));
+        assert!(enforce_bound(&allowed, &both).is_ok());
     }
 
     fn with_action_kind(id: &str, kind: &str) -> (PluginManifest, Contributions) {

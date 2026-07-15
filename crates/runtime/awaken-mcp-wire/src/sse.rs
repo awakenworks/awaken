@@ -102,4 +102,35 @@ mod tests {
         let events = parser.push("data: y\r\n\r\n");
         assert_eq!(events, vec!["y".to_string()]);
     }
+
+    #[test]
+    fn blank_lines_without_data_yield_no_event() {
+        // Keep-alive blank lines with no preceding `data:` must not dispatch a
+        // spurious empty event.
+        let mut parser = SseParser::new();
+        assert!(parser.push("\n\n\n").is_empty());
+    }
+
+    #[test]
+    fn event_field_without_data_dispatches_nothing() {
+        // An event that carries only non-`data` fields produces no payload.
+        let mut parser = SseParser::new();
+        assert!(parser.push("event: message\nid: 1\n\n").is_empty());
+    }
+
+    #[test]
+    fn only_one_leading_space_after_colon_is_stripped() {
+        // SSE strips exactly one optional space after `data:`; a second space is
+        // part of the payload.
+        let mut parser = SseParser::new();
+        assert_eq!(parser.push("data:  x\n\n"), vec![" x".to_string()]);
+    }
+
+    #[test]
+    fn empty_data_line_dispatches_an_empty_payload() {
+        // `data:` with an empty value is still a data line, so the terminating
+        // blank line dispatches an (empty) event.
+        let mut parser = SseParser::new();
+        assert_eq!(parser.push("data:\n\n"), vec![String::new()]);
+    }
 }

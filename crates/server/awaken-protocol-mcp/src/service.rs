@@ -761,4 +761,106 @@ mod tests {
         assert_eq!(err.code, -32602);
         assert!(err.message.contains("unknown tool: unk"));
     }
+
+    /// A progress tool whose updates carry neither a `total` nor a `message`:
+    /// exercises the "field absent" arm of the notification builder.
+    struct BareProgressTool;
+
+    #[async_trait]
+    impl ProgressRawTool for BareProgressTool {
+        fn id(&self) -> &str {
+            "bare"
+        }
+        async fn invoke_with_progress(
+            &self,
+            call: ToolCall,
+            progress: mpsc::Sender<McpProgressUpdate>,
+        ) -> Result<ToolOutput, ToolError> {
+            let _ = progress
+                .send(McpProgressUpdate {
+                    progress: 1.0,
+                    total: None,
+                    message: None,
+                })
+                .await;
+            Ok(ToolOutput::ok(call.call_id, "done"))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_progress_update_without_total_or_message_omits_those_keys() {
+        // The forwarder only writes `total`/`message` when the update carries
+        // them — a bare update yields a notification with just progressToken and
+        // progress, so a client never sees a null total or message.
+        let source = StaticExports::new(vec![McpExportedTool::with_progress(
+            descriptor("bare"),
+            Arc::new(BareProgressTool),
+        )]);
+        let service = McpToolService::new("test-server", "0.0.0", Arc::new(source));
+        let sink = Arc::new(RecordingSink::default());
+        let result = service
+            .handle(
+                "tools/call",
+                json!({ "name": "bare", "_meta": { "progressToken": 1 } }),
+                Arc::clone(&sink) as Arc<dyn NotifySink>,
+            )
+            .await
+            .expect("calls");
+        assert_eq!(result["content"][0]["text"], "done");
+
+        let seen = sink.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "one bare update");
+        let (method, params) = &seen[0];
+        assert_eq!(method, "notifications/progress");
+        assert_eq!(params["progressToken"], 1);
+        assert_eq!(params["progress"], 1.0);
+        assert!(
+            params.get("total").is_none(),
+            "no total key when the update has none"
+        );
+        assert!(
+            params.get("message").is_none(),
+            "no message key when the update has none"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_null_progress_token_is_treated_as_absent() {
+        // `_meta.progressToken: null` is not a subscription — the null-filter
+        // drops it, so a progress-capable tool streams nothing (the mirror of
+        // the HTTP transport's `is_null` guard).
+        let sink = Arc::new(RecordingSink::default());
+        let service = service();
+        let result = service
+            .handle(
+                "tools/call",
+                json!({
+                    "name": "count",
+                    "arguments": { "steps": 2 },
+                    "_meta": { "progressToken": null },
+                }),
+                Arc::clone(&sink) as Arc<dyn NotifySink>,
+            )
+            .await
+            .expect("calls");
+        assert_eq!(result["content"][0]["text"], "counted 2");
+        assert!(
+            sink.seen.lock().unwrap().is_empty(),
+            "a null token carries no client subscription"
+        );
+    }
+
+    #[tokio::test]
+    async fn initialize_with_a_non_string_version_falls_back_to_the_default() {
+        // A `protocolVersion` that is present but not a string cannot be echoed;
+        // the server answers with its own default rather than a malformed value.
+        let result = handle(
+            &service(),
+            "initialize",
+            json!({ "protocolVersion": 20_250_618 }),
+        )
+        .await
+        .expect("initializes");
+        assert_eq!(result["protocolVersion"], mcp::MCP_PROTOCOL_VERSION);
+    }
 }

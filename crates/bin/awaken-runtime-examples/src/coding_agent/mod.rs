@@ -157,3 +157,84 @@ impl CodingSession {
         Ok(self.commit.committed_messages(&self.thread_id)[before..].to_vec())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn descriptors_are_exactly_the_coding_tools_and_carry_no_web_tools() {
+        let ids: Vec<String> = coding_tool_descriptors()
+            .iter()
+            .map(|d| d.id.as_str().to_string())
+            .collect();
+        // Exactly the CODING_TOOLS set — read/write/edit/glob/grep/bash, no web tools.
+        assert_eq!(ids.len(), CODING_TOOLS.len());
+        for id in &ids {
+            assert!(
+                CODING_TOOLS.contains(&id.as_str()),
+                "{id} is not a coding tool"
+            );
+        }
+        // The mutating tools a coding agent needs are present.
+        for expected in ["read", "edit", "bash"] {
+            assert!(ids.iter().any(|i| i == expected), "missing {expected}");
+        }
+        assert!(
+            !ids.iter().any(|i| i == "web_fetch" || i == "web_search"),
+            "web tools must be excluded"
+        );
+    }
+
+    #[test]
+    fn coding_config_carries_the_model_ref_tools_and_step_ceiling() {
+        let spec = coding_config("some-model").snapshot().resolved_spec.clone();
+        // The binding selects the passed model ref.
+        assert_eq!(spec.model_binding.model_ref, "some-model");
+        // The config carries the coding descriptors (ids match the executable tools).
+        let tool_ids: Vec<&str> = spec
+            .tool_descriptors
+            .iter()
+            .map(|d| d.id.as_str())
+            .collect();
+        assert_eq!(tool_ids.len(), CODING_TOOLS.len());
+        // A sensible step ceiling and non-empty coding instructions.
+        assert_eq!(spec.max_steps, 40);
+        assert!(spec.instructions.contains("coding"));
+    }
+
+    #[tokio::test]
+    async fn the_policy_allows_reads_and_asks_before_mutations() {
+        use awaken_runtime_contract::permission::{
+            PermissionContext, PermissionDecision, PermissionPolicy,
+        };
+        let policy = coding_policy();
+        let decide = |tool: &str| {
+            let policy = &policy;
+            let tool = tool.to_string();
+            async move {
+                policy
+                    .decide(&PermissionContext {
+                        tool_id: tool,
+                        call_id: "c1".to_string(),
+                        arguments: serde_json::json!({}),
+                    })
+                    .await
+            }
+        };
+        // Read-only tools are pre-allowed (no prompt).
+        for ro in ["read", "glob", "grep"] {
+            assert!(
+                matches!(decide(ro).await, PermissionDecision::Allow),
+                "{ro} should be allowed"
+            );
+        }
+        // Mutating / unlisted tools fall through to the default: Ask.
+        for mutate in ["write", "edit", "bash"] {
+            assert!(
+                matches!(decide(mutate).await, PermissionDecision::Ask { .. }),
+                "{mutate} should park for approval"
+            );
+        }
+    }
+}

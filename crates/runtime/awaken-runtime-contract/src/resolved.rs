@@ -416,7 +416,10 @@ pub struct ResolvedRun {
 
 #[cfg(test)]
 mod tests {
-    use super::{Backend, ModelBinding, ToolDescriptor, ToolFacet, ToolPresentation};
+    use super::{
+        Backend, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor, ToolFacet,
+        ToolPresentation,
+    };
 
     fn td(id: &str) -> ToolDescriptor {
         ToolDescriptor::pinned("t", id, format!("desc of {id}"), serde_json::json!({}))
@@ -561,6 +564,55 @@ mod tests {
             Some("https://host/a2a")
         );
         assert!(!Backend::from_ref("a2a:x").is_acp());
+    }
+
+    #[test]
+    fn a_legacy_spec_without_the_defaulted_fields_still_loads() {
+        // The `#[serde(default)]` fields (model_candidates, plugin_config,
+        // context_policy, tool_presentation) exist so a snapshot compiled before they
+        // were added stays loadable. A JSON carrying only the required surface must
+        // deserialize with each optional field at its documented default — the very
+        // backward-compat promise those attributes make.
+        let legacy = serde_json::json!({
+            "catalog_fingerprint": "fp-1",
+            "instructions": "be concise",
+            "max_steps": 8,
+            "model_binding": {
+                "provider_identity_ref": "p",
+                "model_ref": "m",
+                "backend_ref": "genai"
+            },
+            "tool_descriptors": [],
+            "plugin_ids": []
+        });
+        let spec: ResolvedSpec = serde_json::from_value(legacy).expect("legacy spec loads");
+        assert!(spec.model_candidates.is_empty());
+        assert!(spec.plugin_config.is_empty());
+        assert!(spec.tool_presentation.is_empty());
+        // An unset context policy sends the whole transcript (KeepAll), unchanged behavior.
+        assert_eq!(spec.context_policy, ContextPolicy::KeepAll);
+        // A single-model agent yields exactly the primary binding.
+        assert_eq!(spec.candidate_bindings().len(), 1);
+    }
+
+    #[test]
+    fn context_policy_wire_is_internally_tagged_snake_case_and_defaults_to_keep_all() {
+        // `tag = "kind"`, `rename_all = "snake_case"`: the unit variant carries just its
+        // tag, the struct variant its fields alongside.
+        assert_eq!(
+            serde_json::to_value(ContextPolicy::KeepAll).unwrap(),
+            serde_json::json!({ "kind": "keep_all" })
+        );
+        assert_eq!(
+            serde_json::to_value(ContextPolicy::KeepLast { keep_last: 3 }).unwrap(),
+            serde_json::json!({ "kind": "keep_last", "keep_last": 3 })
+        );
+        // Both directions round-trip, and the derived default is KeepAll.
+        let back: ContextPolicy =
+            serde_json::from_value(serde_json::json!({ "kind": "keep_last", "keep_last": 0 }))
+                .unwrap();
+        assert_eq!(back, ContextPolicy::KeepLast { keep_last: 0 });
+        assert_eq!(ContextPolicy::default(), ContextPolicy::KeepAll);
     }
 
     #[test]

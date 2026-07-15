@@ -82,15 +82,25 @@ pub fn gate_evaluate(
 
         let mut matched_any = false;
         let mut allowed: Option<&str> = None;
-        let mut first_violation: Option<&Transition> = None;
+        let mut strongest_violation: Option<&Transition> = None;
 
         for t in machine.matching_transitions(tool_name, tool_args) {
             matched_any = true;
             if t.allows_from(current) {
                 allowed = Some(&t.to);
                 break;
-            } else if first_violation.is_none() {
-                first_violation = Some(t);
+            }
+            // Among the non-allowing matches keep the STRONGEST action (Deny >
+            // Ask > Warn), not the first one seen: an author ordering a `warn`
+            // transition before a `deny` transition for the same tool/state must
+            // not weaken enforcement to a non-blocking warn (a within-machine
+            // fail-open). This mirrors the cross-machine reduction in
+            // `gate_decision`.
+            let stronger = strongest_violation.is_none_or(|prev| {
+                action_rank(t.on_violation.action) > action_rank(prev.on_violation.action)
+            });
+            if stronger {
+                strongest_violation = Some(t);
             }
         }
 
@@ -101,7 +111,7 @@ pub fn gate_evaluate(
                 key,
                 to: to.to_string(),
             });
-        } else if let Some(t) = first_violation {
+        } else if let Some(t) = strongest_violation {
             let reason = t
                 .on_violation
                 .reason
@@ -126,16 +136,21 @@ pub fn gate_evaluate(
     out
 }
 
+/// Rank a violation action by severity: `Deny` > `Ask` > `Warn`. The single
+/// source of truth for "which violation wins", used both within a machine
+/// (strongest non-allowing transition) and across machines (`gate_decision`).
+fn action_rank(a: ViolationAction) -> u8 {
+    match a {
+        ViolationAction::Deny => 2,
+        ViolationAction::Ask => 1,
+        ViolationAction::Warn => 0,
+    }
+}
+
 /// Reduce gate evaluations to the strongest blocking decision, if any.
 #[must_use]
 pub fn gate_decision(evals: &[MachineEval]) -> Option<GateViolation> {
-    fn rank(a: ViolationAction) -> u8 {
-        match a {
-            ViolationAction::Deny => 2,
-            ViolationAction::Ask => 1,
-            ViolationAction::Warn => 0,
-        }
-    }
+    let rank = action_rank;
     let mut best: Option<GateViolation> = None;
     for e in evals {
         let MachineEval::Violation {
@@ -341,6 +356,29 @@ mod tests {
         assert_eq!(gate.reason, "Read a.rs before writing.");
     }
 
+    // REGRESSION (within-machine fail-open): two transitions match the same tool
+    // from a state that allows neither — the first is a `warn` violation, the
+    // second a `deny`. The gate must surface the STRONGEST action (Deny), not the
+    // first-listed (Warn); otherwise reordering rules silently disables the deny.
+    #[test]
+    fn a_warn_transition_before_a_deny_does_not_weaken_enforcement() {
+        let ms = machines(
+            r#"{"machines":[{
+                "name":"ord","scope":"thread","key":"{file_path}","initial":"s0",
+                "transitions":[
+                    {"on":"Write(file_path ~ \"*\")","from":["other"],"to":"x",
+                     "on_violation":{"action":"warn","reason":"soft"}},
+                    {"on":"Write(file_path ~ \"*\")","from":["other"],"to":"y",
+                     "on_violation":{"action":"deny","reason":"hard"}}
+                ]}]}"#,
+        );
+        let (thread, run) = (FsmStore::default(), FsmStore::default());
+        let evals = gate_evaluate(&ms, &thread, &run, "Write", &json!({"file_path":"a.rs"}));
+        let gate = gate_decision(&evals).expect("the deny must still block");
+        assert_eq!(gate.action, ViolationAction::Deny);
+        assert_eq!(gate.reason, "hard");
+    }
+
     #[test]
     fn write_after_read_is_allowed() {
         let thread = advanced("rbw", "a.rs", "read");
@@ -492,5 +530,103 @@ mod tests {
         assert!(
             advance_evaluate(&ms, &thread, &run, "Write", &json!({"x":1}), &ok("ok")).is_empty()
         );
+    }
+
+    // --- Gate decision precedence across machines (Deny > Ask > Warn) ---
+
+    #[test]
+    fn gate_deny_outranks_ask_regardless_of_machine_order() {
+        // Two keyless machines both violate the same `Write`: one denies, one asks.
+        // The gate decision must resolve to the strongest block (Deny) no matter
+        // which machine is evaluated first.
+        let deny_first = machines(
+            r#"{"machines":[
+                {"name":"d","key":"","initial":"s","transitions":[{"on":"Write","from":"other","to":"x","on_violation":"deny"}]},
+                {"name":"a","key":"","initial":"s","transitions":[{"on":"Write","from":"other","to":"x","on_violation":"ask"}]}
+            ]}"#,
+        );
+        let ask_first = machines(
+            r#"{"machines":[
+                {"name":"a","key":"","initial":"s","transitions":[{"on":"Write","from":"other","to":"x","on_violation":"ask"}]},
+                {"name":"d","key":"","initial":"s","transitions":[{"on":"Write","from":"other","to":"x","on_violation":"deny"}]}
+            ]}"#,
+        );
+        let (thread, run) = (FsmStore::default(), FsmStore::default());
+        for ms in [deny_first, ask_first] {
+            let evals = gate_evaluate(&ms, &thread, &run, "Write", &json!({}));
+            assert_eq!(evals.len(), 2, "both machines produce a violation");
+            assert_eq!(gate_decision(&evals).unwrap().action, ViolationAction::Deny);
+        }
+    }
+
+    #[test]
+    fn gate_warn_only_violation_does_not_block() {
+        // A lone `warn` violation is not a blocking decision: `gate_decision`
+        // yields `None` (the warn surfaces later, at advance).
+        let ms = machines(
+            r#"{"machines":[{"name":"w","key":"","initial":"s",
+                "transitions":[{"on":"Write","from":"other","to":"x","on_violation":"warn"}]}]}"#,
+        );
+        let (thread, run) = (FsmStore::default(), FsmStore::default());
+        let evals = gate_evaluate(&ms, &thread, &run, "Write", &json!({}));
+        assert!(matches!(
+            evals.as_slice(),
+            [MachineEval::Violation {
+                action: ViolationAction::Warn,
+                ..
+            }]
+        ));
+        assert!(gate_decision(&evals).is_none());
+    }
+
+    #[test]
+    fn gate_non_strict_unmatched_tool_produces_no_eval() {
+        // The key renders (empty template ⇒ `""`), but no transition matches the
+        // tool and the machine is not `strict`: no eval is produced (allow). This
+        // is distinct from the keyless case where the machine is skipped outright.
+        let ms = machines(
+            r#"{"machines":[{"name":"m","key":"","initial":"s",
+                "transitions":[{"on":"Read","from":"s","to":"r"}]}]}"#,
+        );
+        let (thread, run) = (FsmStore::default(), FsmStore::default());
+        assert!(gate_evaluate(&ms, &thread, &run, "Write", &json!({})).is_empty());
+    }
+
+    // --- Advance: on_unmatched fallback when no `when` fires ---
+
+    #[test]
+    fn advance_on_unmatched_fires_when_no_result_condition_matches() {
+        // A matching, from-allowed transition whose `when` does not match the
+        // result routes the instance to the machine-level `on_unmatched` state.
+        let ms = machines(
+            r#"{"machines":[{"name":"t","scope":"run","key":"","initial":"idle","on_unmatched":"flaky",
+                "transitions":[{"on":"Test","from":["idle"],"when":{"content":"*ok*"},"to":"passing"}]}]}"#,
+        );
+        let (thread, run) = (FsmStore::default(), FsmStore::default());
+        // Success, but the content condition ("*ok*") does not match "boom".
+        let ops = advance_evaluate(&ms, &thread, &run, "Test", &json!({}), &ok("boom"));
+        assert_eq!(
+            ops,
+            vec![AdvanceOp::Transition {
+                scope: MachineScope::Run,
+                machine: "t".into(),
+                key: String::new(),
+                to: "flaky".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn advance_stays_when_no_result_matches_and_no_on_unmatched() {
+        // No `on_unmatched`: when the result matches no from-allowed transition,
+        // the instance stays put and no op is emitted.
+        let ms = machines(
+            r#"{"machines":[{"name":"t","scope":"run","key":"","initial":"idle",
+                "transitions":[{"on":"Test","from":["idle"],"when":{"status":"error"},"to":"failed"}]}]}"#,
+        );
+        let (thread, run) = (FsmStore::default(), FsmStore::default());
+        // Success result, but the only transition fires on error ⇒ nothing.
+        let ops = advance_evaluate(&ms, &thread, &run, "Test", &json!({}), &ok("done"));
+        assert!(ops.is_empty());
     }
 }

@@ -544,6 +544,95 @@ mod error_classification_tests {
     }
 
     #[test]
+    fn retry_classification_and_codes_are_the_authoritative_decision_table() {
+        // The doc contract: retryable ⇔ Provider | RateLimited | Overloaded | Timeout;
+        // everything else is permanent. `code()` is the stable per-variant fault class
+        // a terminal failure records. Assert both axes together so a new variant or a
+        // reclassification cannot silently drift.
+        let retryable: [(Error, &str); 4] = [
+            (Error::Provider("5xx".into()), "provider_error"),
+            (
+                Error::RateLimited {
+                    message: "429".into(),
+                    retry_after: None,
+                },
+                "rate_limited",
+            ),
+            (
+                Error::Overloaded {
+                    message: "529".into(),
+                    retry_after: None,
+                },
+                "overloaded",
+            ),
+            (Error::Timeout("slow".into()), "timeout"),
+        ];
+        for (e, code) in retryable {
+            assert!(e.is_retryable(), "{e:?} must be retryable");
+            assert_eq!(e.code(), code, "code for {e:?}");
+        }
+
+        let permanent: [(Error, &str); 7] = [
+            (Error::Binding("bad".into()), "binding_rejected"),
+            (
+                Error::ContextOverflow("too long".into()),
+                "context_overflow",
+            ),
+            (Error::InvalidRequest("400".into()), "invalid_request"),
+            (Error::Unauthorized("401".into()), "unauthorized"),
+            (Error::ModelNotFound("404".into()), "model_not_found"),
+            (Error::ContentFiltered("blocked".into()), "content_filtered"),
+            (Error::LoginRequired("expired".into()), "login_required"),
+        ];
+        for (e, code) in permanent {
+            assert!(!e.is_retryable(), "{e:?} must be permanent");
+            assert_eq!(e.code(), code, "code for {e:?}");
+        }
+        // UsageLimit is surfaced but never auto-retried (covered separately).
+        assert!(
+            !Error::UsageLimit {
+                message: "q".into(),
+                reset_after: None
+            }
+            .is_retryable()
+        );
+    }
+
+    #[test]
+    fn retry_after_surfaces_only_the_transient_backoff_hint_not_the_reset_window() {
+        // `retry_after` is the same-call backoff hint carried ONLY by RateLimited and
+        // Overloaded; a hard UsageLimit's window is a `reset_hint`, never a retry_after
+        // (an immediate retry cannot clear a hard limit), and every other error has none.
+        let d = Duration::from_secs(7);
+        assert_eq!(
+            Error::RateLimited {
+                message: "429".into(),
+                retry_after: Some(d),
+            }
+            .retry_after(),
+            Some(d)
+        );
+        assert_eq!(
+            Error::Overloaded {
+                message: "529".into(),
+                retry_after: Some(d),
+            }
+            .retry_after(),
+            Some(d)
+        );
+        // A quota reset window never masquerades as a retry backoff.
+        assert_eq!(
+            Error::UsageLimit {
+                message: "weekly".into(),
+                reset_after: Some(d),
+            }
+            .retry_after(),
+            None
+        );
+        assert_eq!(Error::Provider("5xx".into()).retry_after(), None);
+    }
+
+    #[test]
     fn login_required_is_permanent_and_distinct_from_unauthorized() {
         let lr = Error::LoginRequired("grant expired".to_string());
         assert_eq!(lr.code(), "login_required");

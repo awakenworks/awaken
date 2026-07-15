@@ -191,6 +191,74 @@ async fn mcp_server_with_unknown_credential_source_is_rejected() {
     assert_eq!(s, StatusCode::NOT_FOUND);
 }
 
+/// put_mcp_server (pool arm): a def bound to a credential *pool* is validated
+/// fail-closed on write — an unknown pool is a 404 and the def is never stored,
+/// while a def bound to an authored pool is accepted and retrievable. The existing
+/// suite only exercises the `Exact` and `None` binding arms; this covers the
+/// `OneOfCredentialPool` branch (both its rejection and its success path).
+#[tokio::test]
+async fn mcp_server_pool_binding_is_validated_fail_closed_on_write() {
+    let app = harness();
+
+    // Unknown pool → 404, and nothing is stored (a def that can never resolve is
+    // never persisted).
+    let (s, err) = call(
+        &app,
+        "PUT",
+        "/v1/config/mcp-servers/jira",
+        Some(json!({
+            "id": "jira",
+            "display_name": "Jira",
+            "url": "https://jira.example/mcp",
+            "credential_binding": {
+                "type": "one_of_credential_pool",
+                "credential_pool_id": "ghost-pool"
+            },
+            "version": 1
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert_eq!(err["code"], "not_found");
+    let (s, _) = call(&app, "GET", "/v1/config/mcp-servers/jira", None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    // Author the pool, then the same binding is accepted and stored.
+    let (s, _) = call(
+        &app,
+        "PUT",
+        "/v1/config/credential-pools/pool-a",
+        Some(json!({ "id": "pool-a", "workspace_id": "ws", "members": [] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    let (s, server) = call(
+        &app,
+        "PUT",
+        "/v1/config/mcp-servers/jira",
+        Some(json!({
+            "id": "jira",
+            "display_name": "Jira",
+            "url": "https://jira.example/mcp",
+            "credential_binding": {
+                "type": "one_of_credential_pool",
+                "credential_pool_id": "pool-a"
+            },
+            "version": 1
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        server["credential_binding"]["type"],
+        "one_of_credential_pool"
+    );
+    let (s, got) = call(&app, "GET", "/v1/config/mcp-servers/jira", None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(got["credential_binding"]["credential_pool_id"], "pool-a");
+}
+
 #[tokio::test]
 async fn agent_binding_to_unknown_mcp_server_is_rejected() {
     let app = harness();

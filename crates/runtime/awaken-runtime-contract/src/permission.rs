@@ -94,3 +94,43 @@ pub trait ToolGateHook: Send + Sync {
     /// `state`; a state machine gate reads it to enforce a precondition.
     async fn gate(&self, ctx: &PermissionContext, state: &Store) -> GateOutcome;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decision_label_is_the_authoritative_audit_vocabulary_for_every_outcome() {
+        // The single label surface the audit trail records (ADR-0030). Each outcome
+        // maps to exactly one stable label; a Block reads as "deny" and a Suspend as
+        // "ask" (the gate labels mirror the permission decision they came from), while
+        // the gate-only outcomes carry their own labels.
+        assert_eq!(GateOutcome::Allow.decision_label(), "allow");
+        assert_eq!(
+            GateOutcome::Block {
+                reason: "no".into()
+            }
+            .decision_label(),
+            "deny"
+        );
+        assert_eq!(
+            GateOutcome::Suspend {
+                ticket_id: "t".into()
+            }
+            .decision_label(),
+            "ask"
+        );
+        assert_eq!(
+            GateOutcome::SetResult(ToolOutput::ok("c1", "done")).decision_label(),
+            "set_result"
+        );
+        assert_eq!(
+            GateOutcome::Schedule {
+                correlation_id: "x".into(),
+                action_kind: None,
+            }
+            .decision_label(),
+            "schedule"
+        );
+    }
+}

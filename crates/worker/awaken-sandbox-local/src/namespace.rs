@@ -786,6 +786,22 @@ mod tests {
     }
 
     #[test]
+    fn bubblewrap_chdirs_into_a_custom_cwd_when_the_command_sets_one() {
+        // The cwd decision branch: an empty cwd renders `--chdir /workspace` (covered
+        // elsewhere); a non-empty sandbox-absolute cwd must render `--chdir <cwd>` so a
+        // launched process starts in the directory the command asked for.
+        let ws = PathBuf::from("/w");
+        let out = PathBuf::from("/o");
+        let argv = vec![s("true")];
+        let mut inp = input(&ws, &out, &[], &[], &pc::NetworkPolicy::Unrestricted, &argv);
+        inp.cwd = "/workspace/sub";
+        let a = bubblewrap_argv(&inp);
+        // The chdir target is the custom cwd, not the /workspace default.
+        let pos = a.iter().position(|x| x == "--chdir").unwrap();
+        assert_eq!(a[pos + 1], "/workspace/sub");
+    }
+
+    #[test]
     fn bubblewrap_unshares_net_when_not_unrestricted() {
         let ws = PathBuf::from("/w");
         let out = PathBuf::from("/o");

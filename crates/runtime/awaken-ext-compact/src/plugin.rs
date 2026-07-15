@@ -502,4 +502,123 @@ mod tests {
         assert!(plugin.resolve_configured(Some(&bad)).is_err());
         assert!(plugin.resolve_configured(None).is_ok());
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn without_a_runner_the_hook_is_inert() {
+        // No SubagentRunner wired: even a long conversation folds nothing. The hook
+        // still records the "evaluated, did not fold" entry, but stages no marker.
+        let plugin = CompactPlugin::new(CompactConfig {
+            threshold: 4,
+            keep_last: 2,
+            ..Default::default()
+        });
+        let hook = &plugin.resolve().phase_hooks[0];
+        let reaction = hook.on_phase(&phase_ctx(), &convo(10), &Store::new()).await;
+        assert!(injected(&reaction).is_empty());
+        assert_eq!(compaction_count(&reaction.state), 0);
+        assert_eq!(
+            reaction.state.len(),
+            1,
+            "only the no-fold ContextMessages entry is staged"
+        );
+    }
+
+    /// A runner that returns a blank (whitespace-only) summary.
+    struct BlankSummarizer;
+    #[async_trait]
+    impl SubagentRunner for BlankSummarizer {
+        async fn run(&self, _r: SubagentRequest) -> Result<SubagentReply, SubagentError> {
+            Ok(SubagentReply {
+                text: Some("   \n\t ".to_string()),
+            })
+        }
+    }
+
+    /// A runner that produces no assistant text at all.
+    struct NoTextSummarizer;
+    #[async_trait]
+    impl SubagentRunner for NoTextSummarizer {
+        async fn run(&self, _r: SubagentRequest) -> Result<SubagentReply, SubagentError> {
+            Ok(SubagentReply { text: None })
+        }
+    }
+
+    /// A runner that fails (unknown agent / transport error).
+    struct ErrSummarizer;
+    #[async_trait]
+    impl SubagentRunner for ErrSummarizer {
+        async fn run(&self, _r: SubagentRequest) -> Result<SubagentReply, SubagentError> {
+            Err(SubagentError("boom".to_string()))
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_blank_or_missing_or_failed_summary_folds_nothing() {
+        // Each degenerate runner outcome must yield a no-fold decision: no summary
+        // block injected and no compaction marker staged (only the no-fold entry).
+        for runner in [
+            Arc::new(BlankSummarizer) as Arc<dyn SubagentRunner>,
+            Arc::new(NoTextSummarizer),
+            Arc::new(ErrSummarizer),
+        ] {
+            let plugin = CompactPlugin::new(CompactConfig {
+                threshold: 4,
+                keep_last: 2,
+                ..Default::default()
+            })
+            .with_runner(runner);
+            let hook = &plugin.resolve().phase_hooks[0];
+            let reaction = hook.on_phase(&phase_ctx(), &convo(10), &Store::new()).await;
+            assert!(injected(&reaction).is_empty(), "no summary block");
+            assert_eq!(compaction_count(&reaction.state), 0, "no marker");
+            assert_eq!(reaction.state.len(), 1, "only the no-fold entry");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_no_fold_step_gates_a_later_grown_conversation() {
+        // The None branch records an empty ContextMessages entry so a run that once
+        // decided not to fold does not fold late when the conversation later grows.
+        let plugin = CompactPlugin::new(CompactConfig {
+            threshold: 40,
+            keep_last: 8,
+            ..Default::default()
+        })
+        .with_runner(Arc::new(FixedSummarizer {
+            seen_len: std::sync::Mutex::new(0),
+        }));
+        let hook = &plugin.resolve().phase_hooks[0];
+        let mut state = Store::new();
+        // Step 1: short conversation → evaluated, did not fold.
+        let first = hook.on_phase(&phase_ctx(), &convo(5), &state).await;
+        assert!(injected(&first).is_empty());
+        assert_eq!(compaction_count(&first.state), 0);
+        assert_eq!(first.state.len(), 1, "the no-fold entry is recorded");
+        for command in &first.state {
+            state.apply(command);
+        }
+        // Step 2: the conversation has grown past threshold, but the run already
+        // evaluated compaction → it must not fold late (emit-once per run).
+        let second = hook.on_phase(&phase_ctx(), &convo(100), &state).await;
+        assert!(second.state.is_empty(), "no late fold once evaluated");
+        assert_eq!(compaction_count(&second.state), 0);
+    }
+
+    #[test]
+    fn compaction_count_dedups_by_run_id_and_ignores_unrelated_state() {
+        let cmds = vec![
+            compaction_marker("run-a"),
+            compaction_marker("run-b"),
+            compaction_marker("run-a"), // duplicate run id → not double-counted
+            // A thread-scoped set under a different key is not a compaction marker.
+            Command::set(
+                Scope::Thread,
+                MergePolicy::Disjoint,
+                "other/x",
+                serde_json::Value::Bool(true),
+            ),
+        ];
+        assert_eq!(compaction_count(&cmds), 2);
+        assert_eq!(compaction_count(&[]), 0);
+    }
 }

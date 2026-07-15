@@ -23,6 +23,9 @@ awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-
 [dev-dependencies]
 tokio.workspace = true
 tempfile = "3"
+# Wire-shape unit tests (serde round-trips of the catalog DTOs) — available even
+# without the `sqlite`/`postgres` features that pull `serde_json` as a lib dep.
+serde_json = { workspace = true }
 # The live Postgres conformance test (feature `postgres`) isolates each suite in
 # its own schema via `SET search_path`.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }

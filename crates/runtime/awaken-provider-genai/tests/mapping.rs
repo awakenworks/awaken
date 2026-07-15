@@ -11,7 +11,10 @@ use awaken_provider_genai::{
 };
 use awaken_runtime_contract::llm::{AssistantOutput, ChatMessage, ChatRequest};
 use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
-use genai::chat::{ChatRole as GenaiRole, MessageContent, ToolCall as GenaiToolCall, Usage};
+use genai::chat::{
+    ChatRole as GenaiRole, ContentPart, MessageContent, PromptTokensDetails,
+    ToolCall as GenaiToolCall, ToolResponse, Usage,
+};
 
 fn binding(model: &str) -> ModelBinding {
     ModelBinding {
@@ -213,6 +216,160 @@ fn permanent_provider_errors_classify_and_are_not_retryable() {
         let err = classify_error(msg);
         assert_eq!(err.code(), code, "{msg:?}");
         assert!(!err.is_retryable(), "{msg:?} should be permanent");
+    }
+}
+
+#[test]
+fn assistant_tool_use_block_maps_to_a_genai_tool_call() {
+    // An assistant turn replaying a prior tool request (a ToolUse block) must map
+    // to a genai ToolCall part, or a multi-turn tool conversation loses the model's
+    // own call and a strict provider rejects the follow-up tool result.
+    let request = ChatRequest {
+        model_binding: binding("gpt-4o-mini"),
+        messages: vec![ChatMessage {
+            role: Role::Assistant,
+            content: vec![ContentBlock::tool_use(
+                "call-7",
+                "search",
+                serde_json::json!({"q": "rust"}),
+            )],
+        }],
+        tools: Vec::new(),
+    };
+    let genai = to_genai_request(&request);
+    let content = &genai.messages[0].content;
+    assert!(
+        content.contains_tool_call(),
+        "the tool_use maps to a tool call"
+    );
+    let calls = content.tool_calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].call_id, "call-7");
+    assert_eq!(calls[0].fn_name, "search");
+    assert_eq!(calls[0].fn_arguments, serde_json::json!({"q": "rust"}));
+}
+
+#[test]
+fn image_url_infers_content_type_from_extension() {
+    // A neutral image URL carries no media type; the adapter infers a concrete MIME
+    // from the extension (case-insensitively) so the provider gets a usable type,
+    // falling back to the generic `image/*` for an unknown or extension-less URL.
+    for (url, expected) in [
+        ("https://x.test/a.png", "image/png"),
+        ("https://x.test/a.PNG", "image/png"),
+        ("https://x.test/a.jpg", "image/jpeg"),
+        ("https://x.test/a.jpeg", "image/jpeg"),
+        ("https://x.test/a.gif", "image/gif"),
+        ("https://x.test/a.webp", "image/webp"),
+        ("https://x.test/a.bmp", "image/*"),
+        ("https://x.test/no-extension", "image/*"),
+    ] {
+        let request = ChatRequest {
+            model_binding: binding("m"),
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: vec![ContentBlock::image_url(url)],
+            }],
+            tools: Vec::new(),
+        };
+        let genai = to_genai_request(&request);
+        let binaries = genai.messages[0].content.binaries();
+        assert_eq!(binaries.len(), 1, "{url}");
+        assert_eq!(binaries[0].content_type, expected, "{url}");
+    }
+}
+
+#[test]
+fn usage_maps_prompt_cache_breakdown_when_present() {
+    // Anthropic reports cache_read / cache_creation inside prompt_tokens_details;
+    // the adapter surfaces both so cost accounting sees the cache split.
+    let usage = Usage {
+        prompt_tokens: Some(100),
+        completion_tokens: Some(40),
+        prompt_tokens_details: Some(PromptTokensDetails {
+            cached_tokens: Some(70),
+            cache_creation_tokens: Some(12),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mapped = map_usage(&usage);
+    assert_eq!(mapped.prompt_tokens, 100);
+    assert_eq!(mapped.completion_tokens, 40);
+    assert_eq!(mapped.cache_read_tokens, 70);
+    assert_eq!(mapped.cache_creation_tokens, 12);
+
+    // No details → the cache split is zero, not an error.
+    let plain = map_usage(&Usage {
+        prompt_tokens: Some(5),
+        ..Default::default()
+    });
+    assert_eq!(plain.cache_read_tokens, 0);
+    assert_eq!(plain.cache_creation_tokens, 0);
+}
+
+#[test]
+fn usage_clamps_negative_counts_to_zero() {
+    // A stray negative count (the field is a signed i32) clamps to zero rather
+    // than wrapping to a huge u64.
+    let usage = Usage {
+        prompt_tokens: Some(-5),
+        completion_tokens: Some(-1),
+        prompt_tokens_details: Some(PromptTokensDetails {
+            cached_tokens: Some(-3),
+            cache_creation_tokens: Some(-2),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mapped = map_usage(&usage);
+    assert_eq!(mapped.prompt_tokens, 0);
+    assert_eq!(mapped.completion_tokens, 0);
+    assert_eq!(mapped.cache_read_tokens, 0);
+    assert_eq!(mapped.cache_creation_tokens, 0);
+}
+
+#[test]
+fn assistant_output_preserves_order_and_drops_non_content_parts() {
+    // The doc contract: text and tool requests keep their interleaved order, and
+    // provider parts with no neutral equivalent (a tool response) are dropped.
+    let content = MessageContent::from_parts(vec![
+        ContentPart::Text("first".to_string()),
+        ContentPart::ToolCall(GenaiToolCall {
+            call_id: "c1".to_string(),
+            fn_name: "search".to_string(),
+            fn_arguments: serde_json::json!({}),
+            thought_signatures: None,
+        }),
+        ContentPart::Text("second".to_string()),
+        // A tool response has no neutral assistant-output equivalent → dropped.
+        ContentPart::ToolResponse(ToolResponse::new("c1", "ignored")),
+    ]);
+    let output = map_assistant_output(&content);
+    assert_eq!(output.blocks.len(), 3, "the tool response is dropped");
+    assert_eq!(output.blocks[0], ContentBlock::text("first"));
+    assert!(matches!(output.blocks[1], ContentBlock::ToolUse { .. }));
+    assert_eq!(output.blocks[2], ContentBlock::text("second"));
+}
+
+#[test]
+fn classify_error_numeric_status_and_precedence_boundaries() {
+    // Numeric-status rows and cross-class precedence that the phrase-based cases
+    // do not cover.
+    for (msg, code) in [
+        // 413 (payload too large) is deliberately an overflow, not a rate limit.
+        ("413 Request Entity Too Large", "context_overflow"),
+        ("422 Unprocessable Entity", "invalid_request"),
+        ("529 site is overloaded", "overloaded"),
+        ("408 Request Timeout", "timeout"),
+        ("504 Gateway Timeout", "timeout"),
+        // Content-filter is checked first: a 400 that is really a policy block must
+        // classify as content_filtered, not the generic invalid_request bucket.
+        ("400 request blocked by content policy", "content_filtered"),
+        // An empty message has nothing to match → the retryable provider default.
+        ("", "provider_error"),
+    ] {
+        assert_eq!(classify_error(msg).code(), code, "{msg:?}");
     }
 }
 

@@ -31,6 +31,12 @@ async fn conformance_commits_accumulate() {
 }
 
 #[tokio::test]
+async fn conformance_terminal_run_is_fenced() {
+    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    awaken_store_conformance::terminal_run_is_fenced(&store).await;
+}
+
+#[tokio::test]
 async fn reopen_file_resumes_from_committed_facts() {
     let dir = std::env::temp_dir().join("awaken_store_sqlite_reopen");
     let _ = std::fs::remove_dir_all(&dir);

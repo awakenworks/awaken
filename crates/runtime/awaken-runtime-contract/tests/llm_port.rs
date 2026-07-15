@@ -73,6 +73,34 @@ fn chat_response_stop_reason_round_trips_and_defaults_when_absent() {
     assert_eq!(back.stop_reason, None);
 }
 
+#[test]
+fn assistant_output_projects_interleaved_tool_calls_in_order_and_joins_text() {
+    // A turn may interleave text and tool requests (`[Text, ToolUse, Text, ToolUse]`).
+    // `tool_calls()` projects only the ToolUse blocks, in document order, mapping
+    // id/name/input onto the execution-side ToolCall; `text_content()` joins the text
+    // blocks and ignores the tool blocks.
+    let output = AssistantOutput::from_blocks(vec![
+        ContentBlock::text("first "),
+        ContentBlock::tool_use("call-a", "search", serde_json::json!({"q": 1})),
+        ContentBlock::text("second"),
+        ContentBlock::tool_use("call-b", "fetch", serde_json::json!({"url": "x"})),
+    ]);
+
+    let calls = output.tool_calls();
+    assert_eq!(calls.len(), 2, "text blocks are not projected as calls");
+    assert_eq!(calls[0].call_id, "call-a");
+    assert_eq!(calls[0].tool_id, "search");
+    assert_eq!(calls[0].arguments, serde_json::json!({"q": 1}));
+    // Order follows the blocks, not id ordering.
+    assert_eq!(calls[1].call_id, "call-b");
+    assert_eq!(calls[1].tool_id, "fetch");
+
+    assert_eq!(output.text_content(), "first second");
+
+    // A text-only turn requests no tools.
+    assert!(AssistantOutput::text("done").tool_calls().is_empty());
+}
+
 /// A deterministic fake provider proves the port is object-safe and awaitable.
 struct EchoExecutor;
 

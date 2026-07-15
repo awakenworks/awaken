@@ -363,6 +363,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_judge_score_exactly_at_the_threshold_passes() {
+        // Boundary: the threshold is inclusive (`score >= min_score`), so a judge
+        // score exactly equal to the minimum passes.
+        let case = judged_case(); // min_score = 70
+        let score = Evaluator::new()
+            .with_judge(Arc::new(ScoreJudge("70")))
+            .run_case(&case)
+            .await;
+        assert!(score.passed(), "70 >= 70 is inclusive: {:?}", score.results);
+        assert!(score.results[0].detail.contains("70"));
+    }
+
+    #[tokio::test]
+    async fn a_non_numeric_judge_output_fails_with_a_clear_detail() {
+        // The judge replied with no parseable 0-100 score → fail (not silently pass),
+        // and the detail says the output was not a score.
+        let case = judged_case();
+        let score = Evaluator::new()
+            .with_judge(Arc::new(ScoreJudge("I cannot decide")))
+            .run_case(&case)
+            .await;
+        assert!(!score.passed(), "an unparseable judge reply is not a pass");
+        assert!(
+            score.results[0].detail.contains("not a 0-100 score"),
+            "detail: {}",
+            score.results[0].detail
+        );
+    }
+
+    #[tokio::test]
     async fn without_a_judge_a_judge_score_fails_with_a_clear_detail() {
         let score = Evaluator::new().run_case(&judged_case()).await;
         assert!(!score.passed());

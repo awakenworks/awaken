@@ -96,7 +96,12 @@ pub fn project_messages(
                     .filter(|b| matches!(b, ContentBlock::Text { .. }))
                     .cloned()
                     .collect();
-                if !text.is_empty() {
+                // Emit only when there is *visible* text — an assistant message whose
+                // only text block is empty is a useless empty wire event, and the
+                // history fold ([`text_is_empty`]) already drops it. Both folds share
+                // the one predicate so the "matching the streaming projection"
+                // invariant holds by construction, not by two divergent inline tests.
+                if !text_is_empty(&message.content) {
                     out.push(AgentEvent::AssistantMessage {
                         id: message.id.0.clone(),
                         content: text,
@@ -361,5 +366,295 @@ mod tests {
         let json = serde_json::to_string(&cause).unwrap();
         let parsed: EndCause = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, EndCause::Indeterminate);
+    }
+
+    // --- terminal(): the remaining phase rows of the decision table ---
+
+    #[test]
+    fn running_phase_projects_as_run_started_not_a_terminus() {
+        assert_eq!(terminal(&Phase::Running, None), AgentEvent::RunStarted);
+    }
+
+    #[test]
+    fn max_steps_projects_as_exhausted_run_finished() {
+        assert_eq!(
+            terminal(&Phase::Ended(EndCause::MaxSteps), None),
+            AgentEvent::RunFinished { exhausted: true }
+        );
+    }
+
+    #[test]
+    fn non_exhausting_ends_project_as_unexhausted_run_finished() {
+        for cause in [
+            EndCause::NaturalEnd,
+            EndCause::Cancelled,
+            EndCause::Stopped("budget".into()),
+        ] {
+            assert_eq!(
+                terminal(&Phase::Ended(cause.clone()), None),
+                AgentEvent::RunFinished { exhausted: false },
+                "{cause:?} must project as a non-exhausted finish"
+            );
+        }
+    }
+
+    #[test]
+    fn waiting_phase_carries_the_pending_tool_id_or_none() {
+        assert_eq!(
+            terminal(&Phase::Waiting, Some(("call-9", false))),
+            AgentEvent::Waiting {
+                pending_tool_use_id: Some("call-9".into())
+            }
+        );
+        assert_eq!(
+            terminal(&Phase::Waiting, None),
+            AgentEvent::Waiting {
+                pending_tool_use_id: None
+            }
+        );
+    }
+
+    #[test]
+    fn state_conflict_error_projects_its_code() {
+        let phase = Phase::Ended(EndCause::Error(Failure::StateConflict));
+        assert!(matches!(
+            terminal(&phase, None),
+            AgentEvent::RunFailed { code, .. } if code == "state_conflict"
+        ));
+    }
+
+    #[test]
+    fn terminal_waiting_helper_maps_the_id() {
+        assert_eq!(
+            terminal_waiting(Some("c1")),
+            AgentEvent::Waiting {
+                pending_tool_use_id: Some("c1".into())
+            }
+        );
+        assert_eq!(
+            terminal_waiting(None),
+            AgentEvent::Waiting {
+                pending_tool_use_id: None
+            }
+        );
+    }
+
+    // --- project_messages(): role x pending x content rows ---
+
+    fn assistant(id: &str, blocks: Vec<ContentBlock>) -> Message {
+        Message::new(Id(id.into()), Role::Assistant, blocks)
+    }
+
+    #[test]
+    fn assistant_text_only_emits_one_assistant_message() {
+        let msg = assistant("a1", vec![ContentBlock::text("hello")]);
+        let events = project_messages(&[msg], None);
+        assert_eq!(
+            events,
+            vec![AgentEvent::AssistantMessage {
+                id: "a1".into(),
+                content: vec![ContentBlock::text("hello")],
+            }]
+        );
+    }
+
+    #[test]
+    fn assistant_with_no_content_at_all_emits_nothing() {
+        // No text blocks and no tool-use blocks => no events.
+        let msg = assistant("a1", vec![]);
+        assert!(project_messages(&[msg], None).is_empty());
+    }
+
+    // INVARIANT: the two projections agree on the skip-empty test. An assistant
+    // message whose only block is an empty-string Text is a useless empty wire
+    // event, so BOTH the streaming fold (project_messages) and the static-history
+    // fold (project_history) drop it. They share the one `text_is_empty` predicate,
+    // so this parity holds by construction — flipping it flips this named test.
+    #[test]
+    fn assistant_all_empty_text_is_dropped_by_both_projections() {
+        let msg = assistant("a1", vec![ContentBlock::text("")]);
+        let events = project_messages(&[msg], None);
+        assert!(
+            events.is_empty(),
+            "streaming projection drops an all-empty-text assistant message: {events:?}"
+        );
+
+        let mut sink = RecordingSink::default();
+        project_history(&[assistant("a1", vec![ContentBlock::text("")])], &mut sink);
+        assert!(
+            sink.calls.is_empty(),
+            "history fold drops the same all-empty-text assistant message"
+        );
+    }
+
+    #[test]
+    fn assistant_text_then_tool_call_preserves_order() {
+        let msg = assistant(
+            "a1",
+            vec![
+                ContentBlock::text("thinking"),
+                ContentBlock::tool_use("c1", "run", serde_json::json!({})),
+            ],
+        );
+        let events = project_messages(&[msg], None);
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], AgentEvent::AssistantMessage { .. }));
+        assert_eq!(
+            events[1],
+            AgentEvent::ToolCall {
+                id: "c1".into(),
+                name: "run".into(),
+                input: serde_json::json!({}),
+                disposition: ToolDisposition::Executed,
+            }
+        );
+    }
+
+    #[test]
+    fn pending_builtin_and_non_matching_pending_classify_correctly() {
+        let msg = assistant(
+            "a1",
+            vec![ContentBlock::tool_use("c1", "run", serde_json::json!({}))],
+        );
+        // client=false => PendingBuiltin.
+        let builtin = project_messages(&[msg.clone()], Some(("c1", false)));
+        assert!(matches!(
+            &builtin[0],
+            AgentEvent::ToolCall { disposition, .. } if *disposition == ToolDisposition::PendingBuiltin
+        ));
+        // A pending id that does not match this call => Executed.
+        let executed = project_messages(&[msg], Some(("other", true)));
+        assert!(matches!(
+            &executed[0],
+            AgentEvent::ToolCall { disposition, .. } if *disposition == ToolDisposition::Executed
+        ));
+    }
+
+    #[test]
+    fn tool_role_projects_tool_result_with_is_error_false() {
+        let msg = Message::new(
+            Id("t1".into()),
+            Role::Tool,
+            vec![ContentBlock::tool_result(
+                "c1",
+                vec![ContentBlock::text("ok")],
+            )],
+        );
+        let events = project_messages(&[msg], None);
+        assert_eq!(
+            events,
+            vec![AgentEvent::ToolResult {
+                id: "c1".into(),
+                content: vec![ContentBlock::text("ok")],
+                is_error: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn user_and_system_messages_project_nothing() {
+        let u = Message::text(Id("u1".into()), Role::User, "hi");
+        let s = Message::text(Id("s1".into()), Role::System, "sys");
+        assert!(project_messages(&[u, s], None).is_empty());
+    }
+
+    // --- project_history(): the shared static-history fold ---
+
+    #[derive(Default)]
+    struct RecordingSink {
+        calls: Vec<String>,
+    }
+    impl HistorySink for RecordingSink {
+        fn user_or_system(&mut self, id: &str, role: Role, content: &[ContentBlock]) {
+            self.calls.push(format!(
+                "us:{id}:{role:?}:{}",
+                crate::agent::content::extract_text(content)
+            ));
+        }
+        fn assistant(&mut self, id: &str, content: &[ContentBlock], tools: &[ToolUseRef<'_>]) {
+            let names: Vec<&str> = tools.iter().map(|t| t.name).collect();
+            self.calls.push(format!(
+                "as:{id}:{}:{names:?}",
+                crate::agent::content::extract_text(content)
+            ));
+        }
+        fn tool_result(
+            &mut self,
+            message_id: &str,
+            sub: usize,
+            tool_use_id: &str,
+            _content: &[ContentBlock],
+        ) {
+            self.calls
+                .push(format!("tr:{message_id}:{sub}:{tool_use_id}"));
+        }
+    }
+
+    #[test]
+    fn history_fold_skips_empty_indexes_tool_results_and_extracts_tools() {
+        let messages = vec![
+            // Empty user message: skipped.
+            Message::new(Id("u0".into()), Role::User, vec![ContentBlock::text("")]),
+            // Real user message.
+            Message::text(Id("u1".into()), Role::User, "ask"),
+            // Empty assistant with no tools: skipped.
+            Message::new(
+                Id("a0".into()),
+                Role::Assistant,
+                vec![ContentBlock::text("")],
+            ),
+            // Assistant with a tool call but no text: still emitted.
+            assistant(
+                "a1",
+                vec![ContentBlock::tool_use("c1", "run", serde_json::json!({}))],
+            ),
+            // Tool message with two results: sub 0 and 1.
+            Message::new(
+                Id("t1".into()),
+                Role::Tool,
+                vec![
+                    ContentBlock::tool_result("c1", vec![ContentBlock::text("r0")]),
+                    ContentBlock::tool_result("c2", vec![ContentBlock::text("r1")]),
+                ],
+            ),
+        ];
+        let mut sink = RecordingSink::default();
+        project_history(&messages, &mut sink);
+        assert_eq!(
+            sink.calls,
+            vec![
+                "us:u1:User:ask".to_string(),
+                "as:a1::[\"run\"]".to_string(),
+                "tr:t1:0:c1".to_string(),
+                "tr:t1:1:c2".to_string(),
+            ]
+        );
+    }
+
+    // --- Transcoder::transcode_all default method ---
+
+    struct Marker;
+    impl Transcoder for Marker {
+        type Output = &'static str;
+        fn transcode(&mut self, event: &AgentEvent) -> Vec<&'static str> {
+            match event {
+                AgentEvent::RunStarted => vec!["start"],
+                AgentEvent::RunFinished { .. } => vec!["fin"],
+                _ => vec![],
+            }
+        }
+    }
+
+    #[test]
+    fn transcode_all_flat_maps_in_order() {
+        let events = vec![
+            AgentEvent::RunStarted,
+            AgentEvent::AssistantMessage {
+                id: "a".into(),
+                content: vec![],
+            },
+            AgentEvent::RunFinished { exhausted: false },
+        ];
+        assert_eq!(Marker.transcode_all(&events), vec!["start", "fin"]);
     }
 }

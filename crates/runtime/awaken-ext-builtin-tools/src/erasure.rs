@@ -145,6 +145,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn null_args_for_a_required_field_tool_is_invalid_arguments() {
+        // The null→empty-object coalescing must not fabricate a default for a
+        // required field: an empty object still fails deserialization as a typed
+        // InvalidArguments error (only genuinely no-arg tools survive a null call).
+        let raw = erase(Greet);
+        let err = raw
+            .invoke(call("greet", serde_json::Value::Null))
+            .await
+            .expect_err("null args cannot satisfy a required `name`");
+        assert!(matches!(err, ToolError::InvalidArguments(_)));
+    }
+
+    #[tokio::test]
     async fn tool_execution_error_propagates() {
         let raw = erase(Greet);
         let err = raw

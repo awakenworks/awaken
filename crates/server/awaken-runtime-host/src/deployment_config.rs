@@ -208,4 +208,24 @@ mod tests {
     fn a_direct_ingress_never_requires_persistence() {
         assert!(base().durable_needs_persistence_error(false).is_none());
     }
+
+    #[test]
+    fn a_postgres_commit_store_does_not_satisfy_the_dispatch_queue() {
+        // The commit store and the dispatch queue are SEPARATE backends: selecting
+        // Postgres for committed truth (`store`) does not make the dispatch queue
+        // persistent. With a durable ingress on the default SQLite *dispatch* backend
+        // and no storage dir, the queue is still in-memory — so this must remain the
+        // refused footgun, driven only by `dispatch_backend`/storage-dir, not `store`.
+        let cfg = DeploymentConfig {
+            durable: true,
+            store: StoreKind::Postgres,
+            dispatch_backend: DispatchBackend::Sqlite,
+            storage_dir: None,
+            ..base()
+        };
+        assert!(
+            cfg.durable_needs_persistence_error(false).is_some(),
+            "a postgres COMMIT store must not be mistaken for a persistent DISPATCH queue"
+        );
+    }
 }

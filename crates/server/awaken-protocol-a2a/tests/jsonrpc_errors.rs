@@ -155,6 +155,124 @@ async fn a_request_without_an_id_echoes_a_null_id() {
 }
 
 #[tokio::test]
+async fn tasks_cancel_without_an_id_is_invalid_params() {
+    // Symmetric with `tasks/get`: a cancel that names no task `id` is a caller
+    // fault (-32602), never a silent no-op.
+    let r = rpc(json!({ "jsonrpc": "2.0", "id": 7, "method": "tasks/cancel", "params": {} })).await;
+    assert_eq!(r["error"]["code"], -32602, "{r}");
+    assert_eq!(r["id"], 7);
+}
+
+#[tokio::test]
+async fn tasks_cancel_on_a_task_with_nothing_parked_is_not_falsely_canceled() {
+    // A cancel targeting a context with no parked run must report the task's
+    // real state (a no-op runtime reads back `completed`), NOT `canceled` — the
+    // client must not be told it canceled work that was never in flight.
+    let r = rpc(
+        json!({ "jsonrpc": "2.0", "id": 8, "method": "tasks/cancel", "params": { "id": "task-idle" } }),
+    )
+    .await;
+    assert_eq!(r["result"]["status"]["state"], "completed", "{r}");
+    assert_eq!(r["result"]["contextId"], "idle", "{r}");
+}
+
+/// A runtime whose fresh turn always faults with the configured driver error, so
+/// the JSON-RPC `message/send` error-mapping (`rpc_fault`) is exercised end to end.
+struct FaultingRuntime {
+    internal: bool,
+}
+
+#[async_trait]
+impl ProtocolRuntime for FaultingRuntime {
+    async fn run(
+        &self,
+        _thread: &str,
+        _agent: Option<String>,
+        _messages: Vec<Message>,
+    ) -> Result<StepOutcome, DriverError> {
+        Err(if self.internal {
+            DriverError::Internal("upstream is down".into())
+        } else {
+            DriverError::BadRequest("empty message".into())
+        })
+    }
+
+    async fn resume(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        _resume: Resume,
+    ) -> Result<StepOutcome, DriverError> {
+        unreachable!()
+    }
+
+    async fn pending(&self, _thread: &str) -> Option<Pending> {
+        None
+    }
+
+    async fn history(&self, _thread: &str) -> Vec<Message> {
+        Vec::new()
+    }
+
+    fn model(&self) -> String {
+        "test".into()
+    }
+}
+
+async fn rpc_on(rt: Arc<dyn ProtocolRuntime>, body: Value) -> Value {
+    let app = router(rt);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/a2a")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+fn send_body(id: i64) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "message/send",
+        "params": { "message": { "messageId": "m1", "contextId": "c", "role": "user", "parts": [{ "kind": "text", "text": "hi" }] } }
+    })
+}
+
+#[tokio::test]
+async fn message_send_internal_fault_maps_to_jsonrpc_internal_error() {
+    // A2A `message/send` succeeded as a transport call but the run faulted: the
+    // internal driver fault becomes JSON-RPC -32603 inside the 200 envelope (not
+    // an HTTP 500), and echoes the request id.
+    let r = rpc_on(Arc::new(FaultingRuntime { internal: true }), send_body(11)).await;
+    assert_eq!(r["error"]["code"], -32603, "{r}");
+    assert_eq!(r["id"], 11);
+    assert!(
+        r["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("upstream is down"),
+        "{r}"
+    );
+    assert!(r.get("result").is_none(), "a fault carries no result: {r}");
+}
+
+#[tokio::test]
+async fn message_send_bad_request_fault_maps_to_jsonrpc_invalid_request() {
+    // A caller-fault driver error maps to JSON-RPC -32600 (invalid request), the
+    // JSON-RPC twin of the HTTP 400 the request/response binding returns.
+    let r = rpc_on(Arc::new(FaultingRuntime { internal: false }), send_body(12)).await;
+    assert_eq!(r["error"]["code"], -32600, "{r}");
+    assert_eq!(r["id"], 12);
+}
+
+#[tokio::test]
 async fn an_oversized_body_is_bounded_not_oom() {
     // A body past the request-body limit is refused (413, or the A2A 400 envelope
     // when the custom extractor maps the length-limit rejection) — never buffered

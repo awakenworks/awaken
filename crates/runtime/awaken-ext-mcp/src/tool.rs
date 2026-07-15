@@ -291,4 +291,69 @@ mod tests {
         ];
         assert_eq!(flatten_content(&content), "line one\nline two");
     }
+
+    #[test]
+    fn a_non_text_block_renders_as_a_json_marker_interleaved_with_text() {
+        // Image/audio/resource content the model cannot read as prose still has to
+        // be *seen* — it becomes a compact JSON marker (carrying its type), joined
+        // with any surrounding text so the model knows non-text content came back.
+        let content = vec![
+            ToolContent::Text {
+                text: "here is a chart".to_string(),
+                annotations: None,
+                meta: None,
+            },
+            ToolContent::Image {
+                data: "AAAA".to_string(),
+                mime_type: "image/png".to_string(),
+                annotations: None,
+                meta: None,
+            },
+        ];
+        let flat = flatten_content(&content);
+        let lines: Vec<&str> = flat.split('\n').collect();
+        assert_eq!(lines[0], "here is a chart");
+        // The image line is the block's JSON, tagged with its wire type — not dropped.
+        assert!(
+            lines[1].contains("\"type\":\"image\""),
+            "marker: {}",
+            lines[1]
+        );
+        assert!(lines[1].contains("image/png"));
+    }
+
+    #[tokio::test]
+    async fn a_non_text_result_reaches_the_model_as_the_json_marker() {
+        // End to end: a successful call whose content is a lone non-text block still
+        // yields a non-empty, non-error output carrying the marker (never an empty
+        // string that would hide the returned content from the model).
+        struct ImageTransport;
+        #[async_trait]
+        impl McpToolTransport for ImageTransport {
+            async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+                Ok(vec![tool_def("shot")])
+            }
+            async fn call_tool(
+                &self,
+                _tool_name: &str,
+                _arguments: Value,
+            ) -> Result<CallToolResult, McpTransportError> {
+                Ok(CallToolResult {
+                    content: vec![ToolContent::Image {
+                        data: "ZZZZ".to_string(),
+                        mime_type: "image/jpeg".to_string(),
+                        annotations: None,
+                        meta: None,
+                    }],
+                    structured_content: None,
+                    is_error: Some(false),
+                })
+            }
+        }
+        let tool = McpRawTool::new("srv", "shot", Arc::new(ImageTransport)).expect("builds");
+        let out = tool.invoke(call()).await.expect("invokes");
+        assert!(!out.is_error);
+        assert!(out.content.contains("\"type\":\"image\""));
+        assert!(out.content.contains("image/jpeg"));
+    }
 }

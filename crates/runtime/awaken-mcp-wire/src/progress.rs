@@ -123,6 +123,40 @@ mod tests {
     }
 
     #[test]
+    fn normalize_clamps_below_zero_with_total() {
+        // A ratio below zero clamps up to the 0.0 floor (matches the upper clamp).
+        let update = McpProgressUpdate {
+            progress: -3.0,
+            total: Some(10.0),
+            message: None,
+        };
+        assert!((normalize_progress(&update).unwrap() - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn normalize_negative_total_uses_raw() {
+        // A non-positive total is not a valid denominator; fall back to the raw
+        // progress rather than dividing by it.
+        let update = McpProgressUpdate {
+            progress: 0.4,
+            total: Some(-5.0),
+            message: None,
+        };
+        assert!((normalize_progress(&update).unwrap() - 0.4).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn normalize_non_finite_total_uses_raw() {
+        // An infinite total is not usable; fall back to the raw progress.
+        let update = McpProgressUpdate {
+            progress: 0.6,
+            total: Some(f64::INFINITY),
+            message: None,
+        };
+        assert!((normalize_progress(&update).unwrap() - 0.6).abs() < f64::EPSILON);
+    }
+
+    #[test]
     fn gate_first_emission_always_passes() {
         let mut gate = ProgressEmitGate::default();
         assert!(should_emit_progress(&mut gate, 0.1, None));
@@ -154,5 +188,14 @@ mod tests {
         let mut gate = ProgressEmitGate::default();
         assert!(should_emit_progress(&mut gate, 0.99, None));
         assert!(should_emit_progress(&mut gate, 1.0, None));
+    }
+
+    #[test]
+    fn gate_allows_message_cleared_to_none() {
+        // Clearing the message (Some -> None) is a change and must emit even when
+        // the progress delta is below threshold within the interval.
+        let mut gate = ProgressEmitGate::default();
+        assert!(should_emit_progress(&mut gate, 0.1, Some("working")));
+        assert!(should_emit_progress(&mut gate, 0.1001, None));
     }
 }

@@ -100,3 +100,46 @@ impl Message {
         extract_text(&self.content)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::run::Id as RunId;
+
+    #[test]
+    fn id_minting_schemes_are_distinct_and_well_formed() {
+        let run = RunId("r".into());
+        assert_eq!(Id::assistant(&run, 2).0, "r-assistant-2");
+        assert_eq!(
+            Id::assistant_truncated(&run, 2, 1).0,
+            "r-assistant-2-truncated-1"
+        );
+        assert_eq!(Id::continuation(&run, 2, 0).0, "r-continuation-2-0");
+        assert_eq!(Id::tool_result("call9").0, "tool-call9");
+        assert_eq!(Id::steer(&run, 3).0, "r-steer-3");
+        assert_eq!(Id::steer_prefix(&run), "r-steer-");
+        assert_eq!(Id::resume_input("call9").0, "resume-input-call9");
+    }
+
+    #[test]
+    fn is_steer_of_matches_only_its_own_runs_steer_ids() {
+        let run = RunId("r".into());
+        let other = RunId("r2".into());
+        assert!(Id::steer(&run, 0).is_steer_of(&run));
+        // A steer id for `r2` must not read as a steer of `r` (prefix `r-steer-`
+        // vs `r2-steer-`), so the prefix test does not false-positive.
+        assert!(!Id::steer(&other, 0).is_steer_of(&run));
+        // A non-steer id (an assistant turn) is never a steer.
+        assert!(!Id::assistant(&run, 0).is_steer_of(&run));
+    }
+
+    #[test]
+    fn text_content_delegates_to_extract_text() {
+        let msg = Message::new(
+            Id("m".into()),
+            Role::Assistant,
+            vec![ContentBlock::text("x"), ContentBlock::text("y")],
+        );
+        assert_eq!(msg.text_content(), "xy");
+    }
+}

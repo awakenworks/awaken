@@ -484,4 +484,117 @@ mod tests {
         assert_eq!(seen["method"], "notifications/progress");
         assert!(seen.get("id").is_none());
     }
+
+    #[tokio::test]
+    async fn response_error_maps_to_server_error() {
+        // A JSON-RPC error response resolves the pending request as an Err, not
+        // an Ok(Null) — the caller must not mistake a server failure for success.
+        let (peer, _notif, mut server_r, mut server_w) = wired(None);
+        let server = tokio::spawn(async move {
+            let req = read_line(&mut server_r).await;
+            let id = req["id"].clone();
+            let reply = format!(
+                "{}\n",
+                json!({ "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32000, "message": "boom" } })
+            );
+            server_w.write_all(reply.as_bytes()).await.unwrap();
+        });
+        let err = peer
+            .request("do", json!({}), Duration::from_secs(5))
+            .await
+            .expect_err("error response resolves as Err");
+        match err {
+            McpTransportError::ServerError(text) => {
+                assert!(text.contains("boom"), "carries the server error: {text}");
+            }
+            other => panic!("expected ServerError, got {other:?}"),
+        }
+        server.await.unwrap();
+    }
+
+    struct FailingHandler;
+    #[async_trait]
+    impl ServerRequestHandler for FailingHandler {
+        async fn handle(&self, _method: &str, _params: Value) -> Result<Value, ServerRequestError> {
+            Err(ServerRequestError::invalid_params("bad args"))
+        }
+    }
+
+    #[tokio::test]
+    async fn handler_error_becomes_json_rpc_error_reply() {
+        // A handler that fails must produce a well-formed JSON-RPC error reply
+        // (its code + message), never a silent drop or a success result.
+        let (_peer, _notif, mut server_r, mut server_w) = wired(Some(Arc::new(FailingHandler)));
+        let line = format!(
+            "{}\n",
+            json!({ "jsonrpc": "2.0", "id": 9, "method": "sampling/createMessage",
+                    "params": {} })
+        );
+        server_w.write_all(line.as_bytes()).await.unwrap();
+        let reply = read_line(&mut server_r).await;
+        assert_eq!(reply["id"], 9);
+        assert_eq!(reply["error"]["code"], -32602);
+        assert_eq!(reply["error"]["message"], "bad args");
+        assert!(reply.get("result").is_none());
+    }
+
+    #[tokio::test]
+    async fn null_id_with_method_is_treated_as_notification() {
+        // An explicit `"id": null` is not a real request id; a message that
+        // carries a method with a null id routes to the notification channel,
+        // not the peer-request handler (which would try to reply to a null id).
+        let (_peer, mut notif_rx, mut _server_r, mut server_w) = wired(None);
+        let line = format!(
+            "{}\n",
+            json!({ "jsonrpc": "2.0", "method": "notifications/cancelled",
+                    "id": null, "params": { "reason": "x" } })
+        );
+        server_w.write_all(line.as_bytes()).await.unwrap();
+        let notif = notif_rx.recv().await.expect("routed as notification");
+        assert_eq!(notif.method, "notifications/cancelled");
+        assert_eq!(notif.params["reason"], "x");
+    }
+
+    #[tokio::test]
+    async fn malformed_line_is_skipped_then_valid_response_resolves() {
+        // A garbage (non-JSON) line must not break the read loop or spuriously
+        // resolve a request; the subsequent valid response still resolves it.
+        let (peer, _notif, mut server_r, mut server_w) = wired(None);
+        let server = tokio::spawn(async move {
+            let req = read_line(&mut server_r).await;
+            let id = req["id"].clone();
+            // Garbage, a blank line, then the real reply.
+            server_w.write_all(b"this is not json\n").await.unwrap();
+            server_w.write_all(b"\n").await.unwrap();
+            let reply = format!(
+                "{}\n",
+                json!({ "jsonrpc": "2.0", "id": id, "result": { "ok": true } })
+            );
+            server_w.write_all(reply.as_bytes()).await.unwrap();
+        });
+        let result = peer
+            .request("ping", json!({}), Duration::from_secs(5))
+            .await
+            .expect("valid reply after garbage resolves");
+        assert_eq!(result["ok"], true);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn request_after_stream_close_returns_connection_closed() {
+        // Once the stream is closed, a new request fails fast with
+        // ConnectionClosed rather than queuing and hanging until timeout.
+        let (peer, _notif, server_r, server_w) = wired(None);
+        drop(server_w);
+        drop(server_r);
+        tokio::time::timeout(Duration::from_secs(5), peer.closed())
+            .await
+            .expect("closed resolves");
+        let err = peer
+            .request("ping", json!({}), Duration::from_secs(5))
+            .await
+            .expect_err("request on a closed peer fails");
+        assert!(matches!(err, McpTransportError::ConnectionClosed));
+    }
 }

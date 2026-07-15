@@ -182,4 +182,85 @@ mod assemble_tests {
         );
         assert_eq!(commit.run_fact.run_id.0, "r");
     }
+
+    fn ticket(run: &str, thread: &str) -> crate::agent::waiting::WaitingTicket {
+        use crate::agent::waiting::{WaitingReason, WaitingTicket};
+        WaitingTicket {
+            correlation_id: "corr".into(),
+            run_id: RunId(run.into()),
+            thread_id: ThreadId(thread.into()),
+            snapshot_id: "snap".into(),
+            catalog_fingerprint: "fp".into(),
+            reason: WaitingReason::UserInput,
+            call_id: None,
+            pending_tool: None,
+            deadline_ms: None,
+        }
+    }
+
+    #[test]
+    fn run_waiting_rides_after_phase_and_state_when_the_run_parks() {
+        let state = vec![Command::set(
+            Scope::Thread,
+            MergePolicy::Disjoint,
+            "k",
+            serde_json::json!(1),
+        )];
+        let commit = assemble(Phase::Waiting, true, state, Some(ticket("r", "t")), vec![]);
+        assert_eq!(
+            kinds(&commit),
+            vec![Kind::RunPhaseChanged, Kind::StateChanged, Kind::RunWaiting]
+        );
+        // The synthesized RunWaiting is keyed by run_id.
+        let waiting = commit
+            .events
+            .iter()
+            .find(|e| e.kind == Kind::RunWaiting)
+            .unwrap();
+        assert_eq!(waiting.payload["run_id"], "r");
+        assert!(commit.waiting.is_some());
+    }
+
+    #[test]
+    fn validate_rejects_empty_ids() {
+        let empty_thread = assemble(Phase::Running, true, vec![], None, vec![]);
+        let mut c = empty_thread;
+        c.thread_id = ThreadId("".into());
+        assert!(c.validate().is_err());
+
+        let mut c2 = assemble(Phase::Running, true, vec![], None, vec![]);
+        c2.run_fact.run_id = RunId("".into());
+        assert!(c2.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_a_cross_run_or_cross_thread_ticket() {
+        // Ticket run/thread must match the commit; a mismatch is an orphan risk.
+        let cross_run = assemble(
+            Phase::Waiting,
+            true,
+            vec![],
+            Some(ticket("other", "t")),
+            vec![],
+        );
+        assert!(cross_run.validate().is_err());
+
+        let cross_thread = assemble(
+            Phase::Waiting,
+            true,
+            vec![],
+            Some(ticket("r", "other")),
+            vec![],
+        );
+        assert!(cross_thread.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_a_matching_commit_and_ticket() {
+        let ok = assemble(Phase::Waiting, true, vec![], Some(ticket("r", "t")), vec![]);
+        assert!(ok.validate().is_ok());
+        // And a plain terminal commit with no ticket.
+        let terminal = assemble(Phase::Running, true, vec![], None, vec![]);
+        assert!(terminal.validate().is_ok());
+    }
 }

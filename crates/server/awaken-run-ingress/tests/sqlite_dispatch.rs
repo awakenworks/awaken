@@ -217,3 +217,15 @@ async fn list_dispatches_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory().expect("open");
     harness::assert_list_dispatches(&store).await;
 }
+
+#[tokio::test]
+async fn dedupe_ignores_dead_lettered_on_sqlite() {
+    let store = SqliteDispatchStore::open_in_memory().expect("open");
+    harness::assert_dedupe_ignores_dead_lettered(&store).await;
+}
+
+#[tokio::test]
+async fn wake_suppressed_while_thread_running_on_sqlite() {
+    let store = SqliteDispatchStore::open_in_memory().expect("open");
+    harness::assert_wake_suppressed_while_thread_running(&store).await;
+}

@@ -831,6 +831,62 @@ async fn refusal_maps_to_stopped() {
     assert!(matches!(phase, Phase::Ended(EndCause::Stopped(_))));
 }
 
+// Fail-open guard (the class found in run-executor-a2a): a clean turn that ends on
+// `TerminationReason::Error` — the agent reporting an error as its own terminal frame,
+// NOT a driver/IO fault — flows through the `Idle` boundary arm's `end_cause`. It must
+// map to a terminal ERROR, never to a success (`NaturalEnd`), or a failed run would be
+// recorded as a clean completion. Exercises the `end_cause(Error)` row the truncated-
+// stream test (a driver `Err`, i.e. `failure_cause`) never reaches.
+#[tokio::test]
+async fn a_clean_error_turn_end_maps_to_error_not_natural_end() {
+    let e = exec(vec![
+        r#"{"type":"message","text":"partial"}"#.into(),
+        r#"{"type":"turn_end","reason":"error"}"#.into(),
+    ]);
+    let coord = Arc::new(RecordingCoordinator::default());
+    let phase = e
+        .execute(
+            activation(),
+            RuntimeRunContext::new().with_commit(coord.clone()),
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        matches!(phase, Phase::Ended(EndCause::Error(_))),
+        "a clean error turn must end in a terminal Error, got {phase:?}"
+    );
+    assert_ne!(
+        phase,
+        Phase::Ended(EndCause::NaturalEnd),
+        "a reported error must never be recorded as a natural (successful) end"
+    );
+    // The committed run fact carries the same terminal Error — committed truth is not
+    // a success either.
+    let commits = coord.commits.lock().unwrap();
+    assert!(matches!(
+        commits[0].run_fact.phase,
+        Phase::Ended(EndCause::Error(_))
+    ));
+}
+
+// A clean turn that ends on `TerminationReason::TimedOut` (the agent/supervisor
+// reporting the turn hit its deadline) maps through `end_cause` to a terminal
+// `Stopped`, never to a success — the last untested clean-outcome row.
+#[tokio::test]
+async fn a_timed_out_turn_end_maps_to_stopped_not_natural_end() {
+    let e = exec(vec![r#"{"type":"turn_end","reason":"timed_out"}"#.into()]);
+    let phase = e
+        .execute(activation(), RuntimeRunContext::new())
+        .await
+        .unwrap();
+    assert!(
+        matches!(phase, Phase::Ended(EndCause::Stopped(_))),
+        "a timed-out turn must end Stopped, got {phase:?}"
+    );
+    assert_ne!(phase, Phase::Ended(EndCause::NaturalEnd));
+}
+
 #[tokio::test]
 async fn an_org_subscription_disabled_launch_fault_surfaces_a_credential_prompt() {
     let e = AcpRunExecutor::new(Arc::new(ScriptedSource {

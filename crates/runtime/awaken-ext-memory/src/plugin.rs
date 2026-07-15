@@ -360,4 +360,52 @@ mod tests {
             "selector must not re-run once recall is computed for the run"
         );
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn over_threshold_without_a_selector_falls_back_to_bounded_recall() {
+        // 3 memories, select_over = 1, but NO selector wired: selection is gated on
+        // `selector.is_some()`, so the hook injects the bounded newest instead of
+        // going empty or attempting selection.
+        let store = store_with(&[("a", "AAA"), ("b", "BBB"), ("c", "CCC")]);
+        let bounds = RecallBounds {
+            select_over: 1,
+            ..RecallBounds::default()
+        };
+        let plugin = MemoryPlugin::new(store, bounds);
+        let hook = &plugin.resolve().phase_hooks[0];
+        let reaction = hook.on_phase(&phase_ctx(), &[], &Store::new()).await;
+        let block = injected(&reaction);
+        assert_eq!(block.len(), 1);
+        let text = block[0].text_content();
+        assert!(
+            text.contains("AAA") && text.contains("BBB") && text.contains("CCC"),
+            "all memories rendered bounded: {text}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn empty_store_injects_no_recall_block() {
+        let plugin = MemoryPlugin::new(store_with(&[]), RecallBounds::default());
+        let hook = &plugin.resolve().phase_hooks[0];
+        let reaction = hook.on_phase(&phase_ctx(), &[], &Store::new()).await;
+        assert!(injected(&reaction).is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn selector_picking_none_injects_nothing() {
+        // Over threshold, selector wired, but it returns no indices → no block.
+        let store = store_with(&[("a", "AAA"), ("b", "BBB")]);
+        let bounds = RecallBounds {
+            select_over: 1,
+            ..RecallBounds::default()
+        };
+        let selector = Arc::new(FixedSelector {
+            picks: vec![],
+            seen_query: std::sync::Mutex::new(String::new()),
+        });
+        let plugin = MemoryPlugin::new(store, bounds).with_selector(selector);
+        let hook = &plugin.resolve().phase_hooks[0];
+        let reaction = hook.on_phase(&phase_ctx(), &[], &Store::new()).await;
+        assert!(injected(&reaction).is_empty());
+    }
 }

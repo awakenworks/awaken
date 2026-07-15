@@ -392,6 +392,32 @@ mod tests {
         assert!(!egress_permitted(&g, 500, true)); // revoked mid-flight
         assert!(!egress_permitted(&g, 1_500, false)); // past the deadline
     }
+
+    #[test]
+    fn an_indefinite_lease_permits_egress_but_a_revoke_still_fences_it() {
+        // An indefinite (never-expiring) lease is never `Reapable`, so egress stays
+        // permitted at any wall-clock — the deadline arm of the fence never fires. But
+        // the revoke arm is independent of expiry: a revoked worker holding an
+        // indefinite lease must STILL be denied egress (the row the finite-lease test
+        // could not exercise, since there expiry and revoke coincide at the tail).
+        let g = LeaseGrant::indefinite();
+        assert!(egress_permitted(&g, u64::MAX, false)); // never expires → permitted
+        assert!(!egress_permitted(&g, u64::MAX, true)); // revoke fences it regardless
+    }
+
+    #[test]
+    fn capped_expiry_holds_even_when_the_lease_already_expired() {
+        // The "a secret must never outlive its lease" invariant at its degenerate edge:
+        // when the lease deadline is already in the past relative to `now`, a freshly
+        // minted token is capped BELOW `now` (i.e. born already-expired) rather than
+        // being granted its full TTL. `min` clamps to the lease deadline unconditionally.
+        let g = LeaseGrant::until(1_000);
+        assert_eq!(
+            capped_expiry(500, 2_000, &g),
+            1_000,
+            "cap to the (already-passed) lease deadline, not now+ttl=2_500"
+        );
+    }
 }
 
 #[cfg(test)]

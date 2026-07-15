@@ -117,3 +117,60 @@ pub mod prelude {
 
     pub use crate::{EchoTool, GreeterLlm, ScriptedLlm};
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn call(args: serde_json::Value) -> ToolCall {
+        ToolCall {
+            call_id: "c1".to_string(),
+            tool_id: "echo".to_string(),
+            arguments: args,
+        }
+    }
+
+    #[tokio::test]
+    async fn echo_returns_the_text_argument() {
+        let out = EchoTool
+            .invoke(call(serde_json::json!({ "text": "hi" })))
+            .await
+            .unwrap();
+        assert_eq!(out.content, "echoed: hi");
+        assert_eq!(out.call_id, "c1", "the call id is echoed back");
+        assert!(!out.is_error);
+    }
+
+    #[tokio::test]
+    async fn echo_defaults_to_empty_when_text_is_missing_or_not_a_string() {
+        // Missing key → the fail-safe empty default, not an error.
+        let missing = EchoTool.invoke(call(serde_json::json!({}))).await.unwrap();
+        assert_eq!(missing.content, "echoed: ");
+        // Present but not a string → also the empty default (as_str is None).
+        let non_string = EchoTool
+            .invoke(call(serde_json::json!({ "text": 42 })))
+            .await
+            .unwrap();
+        assert_eq!(non_string.content, "echoed: ");
+    }
+
+    #[tokio::test]
+    async fn scripted_llm_calls_the_echo_tool_first_then_ends_with_text() {
+        use awaken_runtime_contract::llm::ChatRequest;
+        use awaken_runtime_contract::resolved::ModelBinding;
+        let llm = ScriptedLlm::default();
+        let request = || ChatRequest {
+            model_binding: ModelBinding::new("x", "y", "z"),
+            messages: Vec::new(),
+            tools: Vec::new(),
+        };
+        // First inference: one echo tool call, no terminal text.
+        let first = llm.infer(request()).await.unwrap();
+        assert_eq!(first.output.tool_calls().len(), 1);
+        assert_eq!(first.output.tool_calls()[0].tool_id, "echo");
+        // Second inference: the closing text turn (no tool calls).
+        let second = llm.infer(request()).await.unwrap();
+        assert!(second.output.tool_calls().is_empty());
+        assert_eq!(second.output.text_content(), "All done.");
+    }
+}

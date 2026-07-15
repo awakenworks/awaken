@@ -177,6 +177,23 @@ mod cgroup_host_config_tests {
         });
         assert_eq!(denied.network_mode.as_deref(), Some("none"));
         assert!(denied.port_bindings.is_none());
+
+        // Allowlist: the container keeps the daemon's default bridge (so it can reach
+        // the brokered proxy that enforces the allowlist) and the agent port is still
+        // published. It must NOT be conflated with `None` (which would sever egress and
+        // drop the channel) — only `None` denies the network.
+        let allow = rt.host_config(&ContainerPlan {
+            network: crate::NetworkMode::Allowlist(vec!["api.anthropic.com".into()]),
+            ..plan()
+        });
+        assert_eq!(allow.network_mode, None);
+        assert!(
+            allow
+                .port_bindings
+                .as_ref()
+                .unwrap()
+                .contains_key("8080/tcp")
+        );
     }
 
     #[test]

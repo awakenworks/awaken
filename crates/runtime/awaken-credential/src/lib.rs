@@ -122,4 +122,89 @@ mod tests {
             Some(("X-Api-Key".to_string(), "k".to_string()))
         );
     }
+
+    #[test]
+    fn default_credential_is_none() {
+        // The `#[default]` on `None` is the wire contract: an unconfigured client
+        // contributes no auth header rather than a bogus one.
+        assert_eq!(Credential::default(), Credential::None);
+        assert_eq!(Credential::default().header(), None);
+    }
+
+    #[test]
+    fn bearer_with_empty_token_still_formats_the_scheme() {
+        // An empty token is not the same as `None`: it still emits an
+        // `Authorization` header (with a trailing-space `Bearer ` value), so a
+        // server sees a malformed bearer rather than an anonymous request.
+        assert_eq!(
+            Credential::Bearer(String::new()).header(),
+            Some(("Authorization".to_string(), "Bearer ".to_string()))
+        );
+    }
+
+    #[test]
+    fn custom_header_is_verbatim_not_bearer_wrapped() {
+        // Unlike `Bearer`, a raw header value is passed through untouched — no
+        // `Bearer ` prefix is prepended.
+        let (name, value) = Credential::Header {
+            name: "X-Api-Key".to_string(),
+            value: "Bearer-looking".to_string(),
+        }
+        .header()
+        .expect("header present");
+        assert_eq!(name, "X-Api-Key");
+        assert_eq!(value, "Bearer-looking");
+    }
+
+    #[test]
+    fn empty_www_authenticate_is_rendered_distinctly_from_absent() {
+        // An empty string is still `Some`, so the parenthetical is emitted — a
+        // present-but-empty header must not collapse to the bare `HTTP 401` form
+        // used for a truly absent header.
+        let present_empty = AuthChallenge {
+            status: 401,
+            www_authenticate: Some(String::new()),
+        };
+        assert_eq!(present_empty.to_string(), "HTTP 401 (WWW-Authenticate: )");
+        let absent = AuthChallenge {
+            status: 401,
+            www_authenticate: None,
+        };
+        assert_ne!(present_empty.to_string(), absent.to_string());
+    }
+
+    #[tokio::test]
+    async fn refresher_is_object_safe_and_routes_on_the_challenge() {
+        // The wire client only ever holds a `dyn CredentialRefresher` and reacts to
+        // its `Some`/`None`: `Some` yields a credential to retry with, `None`
+        // surfaces the challenge. Lock both the object-safety and the branch.
+        struct OnUnauthorized;
+        #[async_trait]
+        impl CredentialRefresher for OnUnauthorized {
+            async fn refresh(&self, challenge: &AuthChallenge) -> Option<Credential> {
+                match challenge.status {
+                    401 => Some(Credential::Bearer("fresh".to_string())),
+                    _ => None,
+                }
+            }
+        }
+
+        let refresher: std::sync::Arc<dyn CredentialRefresher> =
+            std::sync::Arc::new(OnUnauthorized);
+        let retry = refresher
+            .refresh(&AuthChallenge {
+                status: 401,
+                www_authenticate: None,
+            })
+            .await;
+        assert_eq!(retry, Some(Credential::Bearer("fresh".to_string())));
+
+        let surface = refresher
+            .refresh(&AuthChallenge {
+                status: 500,
+                www_authenticate: None,
+            })
+            .await;
+        assert_eq!(surface, None);
+    }
 }

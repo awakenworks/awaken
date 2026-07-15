@@ -69,4 +69,36 @@ mod tests {
         // Over budget, but keep_last covers the whole (short) conversation.
         assert_eq!(token_fold_point(9999, 1000, 0.8, 3, 5), None);
     }
+
+    #[test]
+    fn keep_last_zero_folds_the_whole_conversation() {
+        // keep_last 0 → once triggered, everything is folded.
+        assert_eq!(fold_point(5, 4, 0), Some(5));
+    }
+
+    #[test]
+    fn folds_exactly_one_leading_message_at_the_lower_edge() {
+        // keep_last == committed_len - 1 → the smallest non-empty fold.
+        assert_eq!(fold_point(5, 4, 4), Some(1));
+    }
+
+    #[test]
+    fn keep_last_wider_than_the_conversation_folds_nothing() {
+        // Triggered (3 > 1), but saturating_sub floors the prefix at 0 → None.
+        assert_eq!(fold_point(3, 1, 10), None);
+    }
+
+    #[test]
+    fn token_budget_is_a_fractional_threshold_compared_inclusively() {
+        // ratio 0.75, max 10 → budget 7.5; 7 < 7.5 (no fold), 8 >= 7.5 (fold).
+        assert_eq!(token_fold_point(7, 10, 0.75, 10, 2), None);
+        assert_eq!(token_fold_point(8, 10, 0.75, 10, 2), Some(8));
+    }
+
+    #[test]
+    fn full_ratio_folds_only_at_the_window_edge() {
+        // ratio 1.0 → budget == max; fold only once est reaches the whole window.
+        assert_eq!(token_fold_point(999, 1000, 1.0, 10, 2), None);
+        assert_eq!(token_fold_point(1000, 1000, 1.0, 10, 2), Some(8));
+    }
 }

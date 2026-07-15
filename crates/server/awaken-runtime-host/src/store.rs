@@ -231,6 +231,85 @@ pub(crate) fn sanitize_thread(thread: &str) -> String {
         .collect()
 }
 
+/// The on-disk path a thread's commit boundary occupies under `dir` for a
+/// non-Postgres backend: the fs backend keys a per-thread **directory**, the sqlite
+/// backend a per-thread `<stem>.db` **file**. This is the SINGLE source of the
+/// durable layout — both `plan_commit` (where the boundary is created) and
+/// `durable_thread_exists` (the collision probe) derive the path here, so the probe
+/// can never drift from where the commit boundary actually lives (a drift would let a
+/// candidate session id be judged "not durable" and be reused for a different thread).
+pub(crate) fn thread_commit_path(
+    store: crate::deployment_config::StoreKind,
+    dir: &std::path::Path,
+    thread: &str,
+) -> std::path::PathBuf {
+    use crate::deployment_config::StoreKind;
+    if store == StoreKind::Fs {
+        dir.join(sanitize_thread(thread))
+    } else {
+        dir.join(format!("{}.db", sanitize_thread(thread)))
+    }
+}
+
+/// The commit backend a thread resolves to, decided PURELY from config — no I/O, no
+/// process-global, no env read. Extracted from `build_commit` so the whole
+/// backend-selection decision table (including the fail-closed rows) is unit-testable
+/// without a `SharedHost`. `build_commit` matches on this and performs the I/O.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CommitPlan {
+    /// Database-less worker: every thread commits to the cell server's ingest at `url`.
+    Remote(String),
+    /// The shared Postgres coordinator (resolved from the process-global at build time,
+    /// which itself fails closed when uninitialised).
+    Postgres,
+    /// Filesystem append-log directory for the thread.
+    Fs(std::path::PathBuf),
+    /// Per-thread SQLite database file.
+    Sqlite(std::path::PathBuf),
+    /// In-memory ephemeral coordinator: the intended mode when no store dir is set and
+    /// the backend is the default/sqlite (tests, ephemeral sessions).
+    Memory,
+    /// Fail closed: `AWAKEN_STORE=fs` was selected but there is no storage dir. The
+    /// filesystem append-log has no in-memory form, so silently using an ephemeral
+    /// memory store would drop committed history on restart (data loss).
+    FsNeedsStorageDir,
+}
+
+/// Decide a thread's commit backend from the deployment axes alone (see [`CommitPlan`]).
+/// Ordering mirrors the historic `build_commit`: a database-less worker (`upstream`)
+/// wins first, then the shared Postgres backend, then the on-disk fs/sqlite layout —
+/// with the no-store-dir case splitting into the fail-closed fs row and the ephemeral
+/// memory row.
+pub(crate) fn plan_commit(
+    store: crate::deployment_config::StoreKind,
+    store_dir: Option<&std::path::Path>,
+    upstream: Option<&str>,
+    thread: &str,
+) -> CommitPlan {
+    use crate::deployment_config::StoreKind;
+    if let Some(url) = upstream {
+        return CommitPlan::Remote(url.to_string());
+    }
+    if store == StoreKind::Postgres {
+        return CommitPlan::Postgres;
+    }
+    let Some(dir) = store_dir else {
+        // No store dir: the default/sqlite path is the intended ephemeral mode, but an
+        // explicit fs selection with no dir is a misconfiguration — fail closed rather
+        // than silently drop committed history on restart.
+        return if store == StoreKind::Fs {
+            CommitPlan::FsNeedsStorageDir
+        } else {
+            CommitPlan::Memory
+        };
+    };
+    match store {
+        StoreKind::Fs => CommitPlan::Fs(thread_commit_path(store, dir, thread)),
+        // Postgres is handled above; sqlite (and the default) land here.
+        _ => CommitPlan::Sqlite(thread_commit_path(store, dir, thread)),
+    }
+}
+
 /// True when the durable store under `store_dir` already holds `thread`,
 /// WITHOUT opening it: mirrors the commit-boundary layout exactly (fs backend
 /// keys a per-thread directory, default SQLite a per-thread db file; no store
@@ -248,12 +327,9 @@ pub(crate) fn durable_thread_exists(store_dir: Option<&std::path::Path>, thread:
     let Some(dir) = store_dir else {
         return false;
     };
-    let fs_backend = store == StoreKind::Fs;
-    if fs_backend {
-        dir.join(sanitize_thread(thread)).exists()
-    } else {
-        dir.join(format!("{}.db", sanitize_thread(thread))).exists()
-    }
+    // Derive the path through the SAME helper `build_commit` uses, so the probe can
+    // never disagree with where the boundary is actually created.
+    thread_commit_path(store, dir, thread).exists()
 }
 
 #[cfg(test)]
@@ -279,6 +355,109 @@ mod tests {
         let exists = durable_thread_exists(None, "no-such-thread-xyz");
         unsafe { std::env::remove_var("AWAKEN_STORE") };
         assert!(!exists, "an unknown thread has no committed run");
+    }
+
+    use crate::deployment_config::StoreKind;
+    use std::path::{Path, PathBuf};
+
+    // --- thread_commit_path: the single durable-layout source ------------------
+
+    #[test]
+    fn fs_layout_is_a_per_thread_directory_sqlite_a_db_file() {
+        let dir = Path::new("/data");
+        // Fs backend → a per-thread directory named by the sanitized stem (no suffix).
+        assert_eq!(
+            thread_commit_path(StoreKind::Fs, dir, "t1"),
+            PathBuf::from("/data/t1")
+        );
+        // Sqlite backend → a per-thread `<stem>.db` file.
+        assert_eq!(
+            thread_commit_path(StoreKind::Sqlite, dir, "t1"),
+            PathBuf::from("/data/t1.db")
+        );
+    }
+
+    #[test]
+    fn layout_sanitizes_non_alphanumeric_thread_ids() {
+        // A thread id with path-hostile chars maps to a filesystem-safe stem, so the
+        // probe and the boundary agree on where an `acp:foo/bar` thread lives.
+        let dir = Path::new("/data");
+        assert_eq!(
+            thread_commit_path(StoreKind::Sqlite, dir, "acp:foo/bar"),
+            PathBuf::from("/data/acp_foo_bar.db")
+        );
+        assert_eq!(
+            thread_commit_path(StoreKind::Fs, dir, "acp:foo/bar"),
+            PathBuf::from("/data/acp_foo_bar")
+        );
+    }
+
+    // --- plan_commit: the full backend-selection decision table ----------------
+
+    #[test]
+    fn plan_upstream_worker_wins_over_every_local_backend() {
+        // A database-less worker commits to the cell server's ingest — even when a
+        // store dir or the postgres backend is also configured, upstream is first.
+        assert_eq!(
+            plan_commit(
+                StoreKind::Postgres,
+                Some(Path::new("/data")),
+                Some("http://cell"),
+                "t"
+            ),
+            CommitPlan::Remote("http://cell".to_string())
+        );
+    }
+
+    #[test]
+    fn plan_postgres_ignores_the_store_dir() {
+        // The shared coordinator is keyed by thread, not a per-thread file, so a store
+        // dir is irrelevant to the postgres decision.
+        assert_eq!(
+            plan_commit(StoreKind::Postgres, None, None, "t"),
+            CommitPlan::Postgres
+        );
+        assert_eq!(
+            plan_commit(StoreKind::Postgres, Some(Path::new("/data")), None, "t"),
+            CommitPlan::Postgres
+        );
+    }
+
+    #[test]
+    fn plan_fs_with_a_dir_is_a_thread_directory() {
+        assert_eq!(
+            plan_commit(StoreKind::Fs, Some(Path::new("/data")), None, "t1"),
+            CommitPlan::Fs(PathBuf::from("/data/t1"))
+        );
+    }
+
+    #[test]
+    fn plan_fs_without_a_dir_fails_closed_not_ephemeral() {
+        // The regression that matters: an explicit fs backend with NO store dir must
+        // fail closed rather than silently resolve to an ephemeral memory store (which
+        // would drop committed history on restart — the data-loss footgun).
+        assert_eq!(
+            plan_commit(StoreKind::Fs, None, None, "t1"),
+            CommitPlan::FsNeedsStorageDir
+        );
+    }
+
+    #[test]
+    fn plan_sqlite_with_a_dir_is_a_db_file() {
+        assert_eq!(
+            plan_commit(StoreKind::Sqlite, Some(Path::new("/data")), None, "t1"),
+            CommitPlan::Sqlite(PathBuf::from("/data/t1.db"))
+        );
+    }
+
+    #[test]
+    fn plan_sqlite_without_a_dir_is_the_intended_ephemeral_mode() {
+        // The default/sqlite no-dir case is the documented ephemeral mode (unit tests,
+        // throwaway sessions) — NOT a footgun, so it stays memory rather than an error.
+        assert_eq!(
+            plan_commit(StoreKind::Sqlite, None, None, "t1"),
+            CommitPlan::Memory
+        );
     }
 
     #[tokio::test]

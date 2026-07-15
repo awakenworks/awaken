@@ -75,7 +75,9 @@ impl FileStore for PgFileStore {
     }
 
     async fn list(&self) -> Result<Vec<String>, FileStoreError> {
-        let rows = sqlx::query("SELECT id FROM file_store_blob ORDER BY id")
+        // COLLATE "C" = raw byte order, matching fs/in-mem/sqlite (the FileStore
+        // contract requires every backend's `list` to be byte-for-byte comparable).
+        let rows = sqlx::query("SELECT id FROM file_store_blob ORDER BY id COLLATE \"C\"")
             .fetch_all(&self.pool)
             .await
             .map_err(e)?;

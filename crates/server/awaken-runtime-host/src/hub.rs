@@ -106,4 +106,44 @@ mod tests {
         assert!(a.try_recv().is_ok());
         assert!(b.try_recv().is_err());
     }
+
+    #[tokio::test]
+    async fn every_observer_on_a_thread_sees_the_delta() {
+        // The whole point of the hub: a non-submitting adapter observes the same
+        // thread's committed deltas. Two observers on one thread must BOTH receive.
+        let hub = ThreadEventHub::new();
+        let mut o1 = hub.subscribe("t1");
+        let mut o2 = hub.subscribe("t1");
+        hub.publish("t1", ThreadEvent::Committed(vec![msg("hi")]));
+        assert!(matches!(o1.try_recv(), Ok(ThreadEvent::Committed(_))));
+        assert!(matches!(o2.try_recv(), Ok(ThreadEvent::Committed(_))));
+    }
+
+    #[tokio::test]
+    async fn a_late_subscriber_misses_a_pre_subscription_publish() {
+        // The documented ordering guarantee: only events published AFTER subscribe are
+        // delivered, so an observer must attach before the turn it wants to watch. A
+        // publish before the (first ever) subscribe is not replayed to the newcomer.
+        let hub = ThreadEventHub::new();
+        hub.publish("t1", ThreadEvent::StepEnded { waiting: false });
+        let mut late = hub.subscribe("t1");
+        assert!(
+            late.try_recv().is_err(),
+            "a subscriber attached after the publish sees nothing buffered for it"
+        );
+        // But it does see the NEXT event, proving the channel is live (not the wrong one).
+        hub.publish("t1", ThreadEvent::StepEnded { waiting: true });
+        assert!(matches!(
+            late.try_recv(),
+            Ok(ThreadEvent::StepEnded { waiting: true })
+        ));
+    }
+
+    #[tokio::test]
+    async fn publish_with_no_observers_is_a_silent_no_op() {
+        // A submitter always publishes; a thread nobody observes must not error/panic
+        // (the send result is deliberately swallowed).
+        let hub = ThreadEventHub::new();
+        hub.publish("unobserved", ThreadEvent::StepEnded { waiting: false });
+    }
 }

@@ -904,6 +904,16 @@ async fn list_dispatches_store_spec() {
 }
 
 #[tokio::test]
+async fn dedupe_ignores_dead_lettered_store_spec() {
+    harness::assert_dedupe_ignores_dead_lettered(&MemoryDispatchStore::new()).await;
+}
+
+#[tokio::test]
+async fn wake_suppressed_while_thread_running_store_spec() {
+    harness::assert_wake_suppressed_while_thread_running(&MemoryDispatchStore::new()).await;
+}
+
+#[tokio::test]
 async fn ingress_lists_dispatches_and_purges_aged_dead_letters() {
     // Covers the DurableRunIngress query + time-windowed GC wrappers.
     let runtime = text_runtime();

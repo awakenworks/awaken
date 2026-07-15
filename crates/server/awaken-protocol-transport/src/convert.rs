@@ -33,4 +33,15 @@ mod tests {
     fn empty_when_no_text() {
         assert_eq!(blocks_text(&[]), "");
     }
+
+    #[test]
+    fn media_only_content_flattens_to_empty_not_a_placeholder() {
+        // A non-empty content vector with no text blocks drops to "" — the filter
+        // removes every media block rather than emitting a placeholder.
+        let blocks = vec![
+            ContentBlock::image_url("https://example/a.png"),
+            ContentBlock::image_url("https://example/b.png"),
+        ];
+        assert_eq!(blocks_text(&blocks), "");
+    }
 }

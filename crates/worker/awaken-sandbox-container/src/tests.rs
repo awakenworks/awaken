@@ -125,6 +125,54 @@ fn container_plan_honors_an_image_override_and_network_variants() {
 }
 
 #[test]
+fn container_plan_resolves_rootfs_from_a_declared_environment_or_falls_back_to_image() {
+    // No `environment` declared → the container runs its resolved image.
+    let plan = container_plan(&spec("s"), "def:img", &["x".to_string()]);
+    assert_eq!(plan.rootfs, RootfsPlan::Image("def:img".into()));
+
+    // A declared Image environment is honored as the rootfs.
+    let mut img = spec("s");
+    img.extra = Some(serde_json::json!({
+        "command": ["x"],
+        "environment": { "kind": "image", "reference": "ghcr.io/x:2" }
+    }));
+    assert_eq!(
+        container_plan(&img, "def:img", &["x".to_string()]).rootfs,
+        RootfsPlan::Image("ghcr.io/x:2".into())
+    );
+
+    // A declared IsolatedRoot(Dir) becomes a private RootDir the podman adapter honors.
+    let mut iso = spec("s");
+    iso.extra = Some(serde_json::json!({
+        "command": ["x"],
+        "environment": {
+            "kind": "isolated_root",
+            "base": { "source": "dir", "path_template": "/roots/{scope}" },
+            "writable_base": true
+        }
+    }));
+    assert_eq!(
+        container_plan(&iso, "def:img", &["x".to_string()]).rootfs,
+        RootfsPlan::RootDir {
+            path_template: "/roots/{scope}".into(),
+            writable: true,
+        }
+    );
+
+    // A non-container environment (Scope) has no container-tier rootfs; it is ignored
+    // and falls back to the image — never silently realized as a borrowed userland.
+    let mut scope = spec("s");
+    scope.extra = Some(serde_json::json!({
+        "command": ["x"],
+        "environment": { "kind": "scope" }
+    }));
+    assert_eq!(
+        container_plan(&scope, "def:img", &["x".to_string()]).rootfs,
+        RootfsPlan::Image("def:img".into())
+    );
+}
+
+#[test]
 fn mount_ref_covers_every_source_kind() {
     let s = |src| BindPlan {
         source_ref: mount_ref(&src),

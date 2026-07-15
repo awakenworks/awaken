@@ -211,6 +211,63 @@ mod tests {
     }
 
     #[test]
+    fn protocol_parse_is_case_insensitive_and_trims_surrounding_whitespace() {
+        // The OTel spec values arrive from env vars that may carry casing/whitespace.
+        assert_eq!("GRPC".parse::<OtelProtocol>().unwrap(), OtelProtocol::Grpc);
+        assert_eq!(
+            "  http/json  ".parse::<OtelProtocol>().unwrap(),
+            OtelProtocol::HttpJson
+        );
+        assert_eq!(
+            "Http/Protobuf".parse::<OtelProtocol>().unwrap(),
+            OtelProtocol::HttpProtobuf
+        );
+        // Empty / whitespace-only fall back to the default rather than erroring.
+        assert_eq!("".parse::<OtelProtocol>().unwrap(), OtelProtocol::default());
+        assert_eq!(
+            "   ".parse::<OtelProtocol>().unwrap(),
+            OtelProtocol::default()
+        );
+    }
+
+    #[test]
+    fn headers_parse_edge_cases() {
+        // Empty value is kept (a header with no value is still a header).
+        assert_eq!(parse_headers("a="), vec![("a".to_string(), String::new())]);
+        // A pair with no `=` separator is dropped, not treated as a keyless value.
+        assert_eq!(parse_headers("nokey"), Vec::<(String, String)>::new());
+        // Only the FIRST `=` splits; the value may itself contain `=` (e.g. base64).
+        assert_eq!(
+            parse_headers("auth=Bearer=abc=="),
+            vec![("auth".to_string(), "Bearer=abc==".to_string())]
+        );
+        // Mixed: keyless value dropped, empty-key dropped, valid ones kept.
+        assert_eq!(
+            parse_headers("nokey, =v, k=val"),
+            vec![("k".to_string(), "val".to_string())]
+        );
+    }
+
+    #[test]
+    fn effective_traces_protocol_prefers_signal_specific_over_base() {
+        // The builder has no `traces_protocol` setter, so construct directly (all
+        // fields are pub); the signal-specific protocol must win over the base one.
+        let cfg = OtelConfig {
+            protocol: OtelProtocol::HttpJson,
+            traces_protocol: Some(OtelProtocol::Grpc),
+            ..OtelConfig::default()
+        };
+        assert_eq!(cfg.effective_traces_protocol(), &OtelProtocol::Grpc);
+    }
+
+    #[test]
+    fn effective_traces_endpoint_is_none_when_unconfigured() {
+        let cfg = OtelConfig::default();
+        assert_eq!(cfg.effective_traces_endpoint(), None);
+        assert!(!cfg.is_configured());
+    }
+
+    #[test]
     fn headers_parse_key_value_pairs() {
         assert_eq!(parse_headers(""), Vec::<(String, String)>::new());
         assert_eq!(

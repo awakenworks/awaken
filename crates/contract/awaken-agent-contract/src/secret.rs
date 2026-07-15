@@ -99,4 +99,34 @@ mod tests {
             "sk-a***wxyz"
         );
     }
+
+    #[test]
+    fn preview_boundary_at_twelve_chars() {
+        // 11 chars -> fully masked; 12 -> head4***tail4 (the < 12 threshold).
+        assert_eq!(RedactedString::new("0123456789a").preview(), "***"); // 11
+        assert_eq!(RedactedString::new("0123456789ab").preview(), "0123***89ab"); // 12
+    }
+
+    #[test]
+    fn preview_is_char_aware_and_never_splits_a_code_point() {
+        // Twelve multibyte chars: char-aware slicing must take whole code points
+        // (byte slicing here would panic). Head/tail are the first/last four chars.
+        let s = RedactedString::new("αβγδεζηθικλμ"); // 12 Greek letters
+        assert_eq!(s.preview(), "αβγδ***ικλμ");
+        // A short multibyte value still fully masks without panicking.
+        assert_eq!(RedactedString::new("日本語").preview(), "***");
+    }
+
+    #[test]
+    fn is_empty_reflects_inner_value() {
+        assert!(RedactedString::new("").is_empty());
+        assert!(!RedactedString::new("x").is_empty());
+    }
+
+    #[test]
+    fn from_string_wraps_and_stays_redacted() {
+        let s: RedactedString = String::from("secret-value").into();
+        assert_eq!(s.expose_secret(), "secret-value");
+        assert_eq!(format!("{s}"), "***");
+    }
 }

@@ -174,4 +174,32 @@ mod tests {
         assert!(fs.list("s", "/").await.unwrap().len() == 1);
         assert!(rx.try_recv().is_err(), "reads do not invalidate");
     }
+
+    #[tokio::test]
+    async fn a_failed_mutation_publishes_no_invalidation() {
+        // The invalidation rides AFTER the inner write's `?`, so a mutation that the
+        // store rejects broadcasts nothing — other hosts must not drop a cache entry
+        // for a change that never landed.
+        let bus = Arc::new(LocalInvalidator::new(16));
+        let mut rx = bus.subscribe();
+        let fs = InvalidatingMemoryFs::new(Arc::new(InMemoryFs::new()), bus.clone());
+
+        let m = fs.create("s", "/a.md", "one").await.unwrap();
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            ("s".to_string(), "/a.md".to_string()),
+            "the successful create did publish"
+        );
+
+        // A duplicate create (PathConflict) fails → no publish.
+        assert!(fs.create("s", "/a.md", "dup").await.is_err());
+        // A CAS update on a stale base sha (Conflict) fails → no publish.
+        assert!(fs.update("s", &m.id, "two", "deadbeef").await.is_err());
+        // A delete of an id-less path still succeeds (idempotent) — but a create/update
+        // that errored above left the bus silent.
+        assert!(
+            rx.try_recv().is_err(),
+            "a rejected mutation broadcasts nothing"
+        );
+    }
 }
