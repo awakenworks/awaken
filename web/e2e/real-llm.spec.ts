@@ -178,3 +178,4 @@ test("Agent reads a bound read-only file (real model)", async ({ request }) => {
   const answer = await runTurn(request, s.id, "Read the config file that is mounted for you and tell me the launch code. Answer with only the code.");
   expect(answer).toContain(secret);
 });
+
