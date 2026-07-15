@@ -207,6 +207,22 @@ impl SharedHost {
             .as_ref()
             .zip(agent)
             .and_then(|(svc, agent)| svc.installed(agent));
+        // The workspace skill dir is negotiated by the agent/hand definition: its
+        // `plugin_config.skills_dir` (ADR-0036) overrides the default `skills` subdir,
+        // so a hand that authors skills elsewhere is discovered where it says — not a
+        // hardcoded path. Absent/blank → the default.
+        let skills_subdir = installed
+            .as_ref()
+            .and_then(|c| {
+                c.snapshot()
+                    .resolved_spec
+                    .plugin_config
+                    .get("skills_dir")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| crate::skills::DEFAULT_SKILLS_SUBDIR.to_string());
         // An authored permission policy (the agent's `permission` config section)
         // shapes the gate: its rules layer over the built-in baseline (perception +
         // the pre-authorized MCP/admin tools) and its default governs unmatched calls.
@@ -274,6 +290,7 @@ impl SharedHost {
             base_gate.clone(),
             sub_base("skill-fork"),
             self.subagent_reuse_sandbox,
+            &skills_subdir,
         ) {
             runtime = runtime
                 .with_gate(wiring.gate)

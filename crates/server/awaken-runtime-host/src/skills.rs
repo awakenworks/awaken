@@ -24,9 +24,10 @@ use awaken_runtime_contract::subagent_runner::{
 use awaken_runtime_contract::tool::RawTool;
 use awaken_sandbox_local::{LocalProvider, LocalSandbox};
 
-/// The conventional workspace subdir the agent authors skills under; scanned live
-/// so a skill written this run is discovered (ADR-0036 D8).
-const WORKSPACE_SKILLS_SUBDIR: &str = "skills";
+/// The default workspace subdir the agent authors skills under, scanned live so a
+/// skill written this run is discovered (ADR-0036 D8). A hand/agent definition can
+/// negotiate a different dir via its `plugin_config.skills_dir`; this is the fallback.
+pub(crate) const DEFAULT_SKILLS_SUBDIR: &str = "skills";
 
 /// Bridges the sandbox [`LocalSandbox`] to the [`SkillSource`] port: scans the
 /// workspace skill dir live, returning neutral file data. The host owns this bridge
@@ -134,6 +135,7 @@ pub(crate) fn wire_skills(
     base_gate: Arc<dyn ToolGateHook>,
     fork_base: PathBuf,
     reuse_sandbox: bool,
+    skills_subdir: &str,
 ) -> Option<SkillWiring> {
     // Offer skills when either a static set is configured or a durable catalog is
     // wired — the workspace-authored source alone never opens the surface (a run with
@@ -170,7 +172,7 @@ pub(crate) fn wire_skills(
     registries.push(Arc::new(SourceSkillRegistry::new(
         Arc::new(EnvSkillSource {
             env: env.clone(),
-            subdir: WORKSPACE_SKILLS_SUBDIR.to_string(),
+            subdir: skills_subdir.to_string(),
         }),
         SkillProvenance::AgentCreated,
     )));
@@ -269,13 +271,13 @@ mod tests {
         let registry = SourceSkillRegistry::new(
             Arc::new(EnvSkillSource {
                 env: env.clone(),
-                subdir: WORKSPACE_SKILLS_SUBDIR.to_string(),
+                subdir: DEFAULT_SKILLS_SUBDIR.to_string(),
             }),
             SkillProvenance::AgentCreated,
         );
         assert!(registry.list().is_empty(), "nothing authored yet");
 
-        let skill_dir = base.join("t").join(WORKSPACE_SKILLS_SUBDIR).join("notes");
+        let skill_dir = base.join("t").join(DEFAULT_SKILLS_SUBDIR).join("notes");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
@@ -290,6 +292,50 @@ mod tests {
         assert_eq!(found.provenance, SkillProvenance::AgentCreated);
         assert_eq!(found.dir.as_deref(), Some("skills/notes"));
         assert!(found.body.contains("hydrate"));
+
+        env.dispose().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_negotiated_skills_dir_is_scanned_instead_of_the_default() {
+        // A hand/agent that authors skills under a non-default dir (its
+        // `plugin_config.skills_dir`) is discovered there — the dir is not hardcoded.
+        let base = std::env::temp_dir().join(format!("awaken-skilldir-{}", std::process::id()));
+        std::fs::remove_dir_all(&base).ok();
+        let env = Arc::new(
+            LocalProvider::new(&base)
+                .create_sandbox(&crate::provisioning::subrun_sandbox_spec("t"))
+                .await
+                .unwrap(),
+        );
+        let registry = SourceSkillRegistry::new(
+            Arc::new(EnvSkillSource {
+                env: env.clone(),
+                subdir: "recipes".to_string(),
+            }),
+            SkillProvenance::AgentCreated,
+        );
+
+        // A skill under the DEFAULT `skills/` dir is NOT seen (we negotiated `recipes`).
+        let default_dir = base.join("t").join("skills").join("ignored");
+        std::fs::create_dir_all(&default_dir).unwrap();
+        std::fs::write(default_dir.join("SKILL.md"), "---\ndescription: no\n---\n").unwrap();
+        assert!(
+            registry.get("ignored").is_none(),
+            "the default dir is not scanned"
+        );
+
+        // A skill under the negotiated `recipes/` dir IS discovered, tagged by that dir.
+        let recipe_dir = base.join("t").join("recipes").join("bake");
+        std::fs::create_dir_all(&recipe_dir).unwrap();
+        std::fs::write(
+            recipe_dir.join("SKILL.md"),
+            "---\ndescription: bake\n---\nmix",
+        )
+        .unwrap();
+        let found = registry.get("bake").expect("skill in the negotiated dir");
+        assert_eq!(found.description, "bake");
+        assert_eq!(found.dir.as_deref(), Some("recipes/bake"));
 
         env.dispose().await.unwrap();
     }
