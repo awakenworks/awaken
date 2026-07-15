@@ -1,6 +1,6 @@
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::sync::Mutex;
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
@@ -17,7 +17,30 @@ use awaken_runtime_contract::plugin::{MergeError, Plugin, ResolvedExecutionEnv};
 use awaken_runtime_contract::resolved::CatalogFingerprint;
 use awaken_runtime_contract::snapshot::{ExecutableAgentSnapshot, ExecutableAgentSnapshotId};
 use awaken_runtime_contract::tool::RawTool;
+use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
+
+/// The run-ending consecutive-failure ceiling, guaranteed `>= 1` by construction:
+/// a 0 would mean "never terminal", which the loop must never allow. The clamp
+/// lives here (once, at the type boundary) instead of at every read, so the stored
+/// value is always valid and `Default` is a meaningful `1`.
+#[derive(Debug, Clone, Copy)]
+struct FailureCeiling(NonZeroUsize);
+
+impl FailureCeiling {
+    fn from_usize(n: usize) -> Self {
+        Self(NonZeroUsize::new(n).unwrap_or(NonZeroUsize::MIN))
+    }
+    fn get(self) -> usize {
+        self.0.get()
+    }
+}
+
+impl Default for FailureCeiling {
+    fn default() -> Self {
+        Self(NonZeroUsize::MIN)
+    }
+}
 
 /// The runtime core. It installs catalogs, resolves snapshots, and executes
 /// runs through injected ports. The model provider, executable tools, and the
@@ -56,7 +79,9 @@ pub struct Runtime {
     /// The nth consecutive failed inference step ends the run. 1 (the default)
     /// means a single failure is terminal; a higher value absorbs failures at
     /// step granularity so a long-lived agent can ride out a provider outage.
-    max_consecutive_inference_failures: usize,
+    /// A `NonZeroUsize` by construction, so a derived-default 0 can never mean
+    /// "never terminal".
+    max_consecutive_inference_failures: FailureCeiling,
     /// Per-model circuit breaker shared by every run on this runtime.
     circuit_breaker: crate::circuit_breaker::CircuitBreaker,
     /// Structure-only metrics sink for the model/tool chokepoints (#2). Absent
@@ -73,7 +98,7 @@ impl Runtime {
     pub fn new() -> Self {
         Self {
             max_continuation_retries: 2,
-            max_consecutive_inference_failures: 1,
+            // `FailureCeiling::default()` is already 1.
             ..Self::default()
         }
     }
@@ -106,7 +131,8 @@ impl Runtime {
     /// count.
     #[must_use]
     pub fn with_max_consecutive_inference_failures(mut self, max: usize) -> Self {
-        self.max_consecutive_inference_failures = max;
+        // Clamp once, here at the type boundary: a 0 would mean "never terminal".
+        self.max_consecutive_inference_failures = FailureCeiling::from_usize(max);
         self
     }
 
@@ -130,8 +156,8 @@ impl Runtime {
     }
 
     pub(crate) fn max_consecutive_inference_failures(&self) -> usize {
-        // A derived-default 0 must not mean "never terminal": clamp to 1.
-        self.max_consecutive_inference_failures.max(1)
+        // Valid by construction (>= 1): the ceiling owns its own invariant.
+        self.max_consecutive_inference_failures.get()
     }
 
     pub(crate) fn circuit_breaker(&self) -> &crate::circuit_breaker::CircuitBreaker {
@@ -262,31 +288,23 @@ impl Runtime {
     /// Track an in-flight run's cancellation token so `LiveRunControl` can reach
     /// it. Called at the start of execution when the context carries a token.
     pub(crate) fn register_run(&self, run_id: &RunId, token: CancellationToken) {
-        if let Ok(mut active) = self.active_runs.lock() {
-            active.insert(run_id.clone(), token);
-        }
+        self.active_runs.lock().insert(run_id.clone(), token);
     }
 
     /// Stop tracking a run once it reaches a terminal state.
     pub(crate) fn deregister_run(&self, run_id: &RunId) {
-        if let Ok(mut active) = self.active_runs.lock() {
-            active.remove(run_id);
-        }
+        self.active_runs.lock().remove(run_id);
     }
 
     /// Track an in-flight run's pause signal so `LiveRunControl` can park it.
     /// Called at the start of execution when the context carries a signal.
     pub(crate) fn register_pause(&self, run_id: &RunId, pause: PauseSignal) {
-        if let Ok(mut active) = self.active_pauses.lock() {
-            active.insert(run_id.clone(), pause);
-        }
+        self.active_pauses.lock().insert(run_id.clone(), pause);
     }
 
     /// Stop tracking a run's pause signal once it reaches a terminal state.
     pub(crate) fn deregister_pause(&self, run_id: &RunId) {
-        if let Ok(mut active) = self.active_pauses.lock() {
-            active.remove(run_id);
-        }
+        self.active_pauses.lock().remove(run_id);
     }
 
     /// Register an executable snapshot for by-id resolution. Returns the id so
@@ -296,17 +314,15 @@ impl Runtime {
         snapshot: ExecutableAgentSnapshot,
     ) -> ExecutableAgentSnapshotId {
         let id = snapshot.id.clone();
-        if let Ok(mut snapshots) = self.snapshots.lock() {
-            snapshots.insert(id.clone(), snapshot);
-        }
+        self.snapshots.lock().insert(id.clone(), snapshot);
         id
     }
 
     pub(crate) fn active_fingerprint(&self) -> Option<CatalogFingerprint> {
         self.active_catalog
             .lock()
-            .ok()
-            .and_then(|catalog| catalog.as_ref().map(|install| install.fingerprint.clone()))
+            .as_ref()
+            .map(|install| install.fingerprint.clone())
     }
 
     /// Resume a parked run from a validated `ResumeCommand`. The reader supplies
@@ -368,17 +384,11 @@ impl Runtime {
         &self,
         id: &ExecutableAgentSnapshotId,
     ) -> Option<ExecutableAgentSnapshot> {
-        self.snapshots
-            .lock()
-            .ok()
-            .and_then(|snapshots| snapshots.get(id).cloned())
+        self.snapshots.lock().get(id).cloned()
     }
 
     pub(crate) fn snapshot_ids(&self) -> Vec<ExecutableAgentSnapshotId> {
-        self.snapshots
-            .lock()
-            .map(|snapshots| snapshots.keys().cloned().collect())
-            .unwrap_or_default()
+        self.snapshots.lock().keys().cloned().collect()
     }
 }
 
@@ -405,12 +415,7 @@ impl RuntimeCatalogInstaller for Runtime {
         }
 
         let fingerprint = install.fingerprint.clone();
-        let mut active_catalog = self.active_catalog.lock().map_err(|_| {
-            awaken_runtime_contract::catalog::Error::Rejected(
-                "active catalog lock is poisoned".to_string(),
-            )
-        })?;
-        *active_catalog = Some(install);
+        *self.active_catalog.lock() = Some(install);
 
         Ok(InstalledCatalog { fingerprint })
     }
@@ -423,8 +428,8 @@ impl RuntimeCapabilitySource for Runtime {
         let mut catalog = self
             .active_catalog
             .lock()
-            .ok()
-            .and_then(|catalog| catalog.as_ref().map(|install| install.capabilities.clone()))
+            .as_ref()
+            .map(|install| install.capabilities.clone())
             .unwrap_or_else(
                 || awaken_runtime_contract::capability::RuntimeCapabilityCatalog {
                     catalog_fingerprint: CatalogFingerprint(String::new()),
@@ -456,18 +461,14 @@ impl LiveRunControl for Runtime {
             // Cancellation is cooperative: signal the token; the loop observes it
             // at the next step boundary and commits a terminal Cancelled outcome.
             LiveCommand::Cancel { run_id } => {
-                let active = self.active_runs.lock().map_err(|_| {
-                    ControlError::Rejected("active run registry poisoned".to_string())
-                })?;
+                let active = self.active_runs.lock();
                 active.get(&run_id).ok_or(ControlError::NotActive)?.cancel();
                 Ok(())
             }
             // Pause is cooperative: signal the pause; the loop observes it at the
             // next safe boundary and commits a durable `ManualPause` park (ADR-0054).
             LiveCommand::Pause { run_id } => {
-                let active = self.active_pauses.lock().map_err(|_| {
-                    ControlError::Rejected("active pause registry poisoned".to_string())
-                })?;
+                let active = self.active_pauses.lock();
                 active
                     .get(&run_id)
                     .ok_or(ControlError::NotActive)?
@@ -482,9 +483,7 @@ impl LiveRunControl for Runtime {
             // success), so the durable live-control seam surfaces `NoSubscriber`
             // rather than reporting a phantom wake.
             LiveCommand::Wake { run_id, .. } => {
-                let active = self.active_runs.lock().map_err(|_| {
-                    ControlError::Rejected("active run registry poisoned".to_string())
-                })?;
+                let active = self.active_runs.lock();
                 if active.contains_key(&run_id) {
                     Ok(())
                 } else {
