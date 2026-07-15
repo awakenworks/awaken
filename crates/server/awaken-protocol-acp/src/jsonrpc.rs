@@ -950,26 +950,28 @@ mod tests {
             .await
             .unwrap();
 
-        let params = params.lock().unwrap();
-        let servers = params
-            .get("mcpServers")
-            .and_then(|v| v.as_array())
-            .expect("mcpServers array present");
-        assert_eq!(servers.len(), 2, "{params}");
-        let text = params.to_string();
-        // HTTP server: its url and the auth carried as a header.
-        assert!(text.contains("https://mcp.example/sse"), "{text}");
-        assert!(
-            text.contains("Authorization") && text.contains("Bearer tok"),
-            "http auth is a header: {text}"
-        );
-        // Stdio server: command + args, and the auth carried as an env var.
-        assert!(text.contains("mcp-fs"), "{text}");
-        assert!(text.contains("--root") && text.contains("/w"), "{text}");
-        assert!(
-            text.contains("API_KEY") && text.contains("k1"),
-            "stdio auth is an env var: {text}"
-        );
+        {
+            let params = params.lock().unwrap();
+            let servers = params
+                .get("mcpServers")
+                .and_then(|v| v.as_array())
+                .expect("mcpServers array present");
+            assert_eq!(servers.len(), 2, "{params}");
+            let text = params.to_string();
+            // HTTP server: its url and the auth carried as a header.
+            assert!(text.contains("https://mcp.example/sse"), "{text}");
+            assert!(
+                text.contains("Authorization") && text.contains("Bearer tok"),
+                "http auth is a header: {text}"
+            );
+            // Stdio server: command + args, and the auth carried as an env var.
+            assert!(text.contains("mcp-fs"), "{text}");
+            assert!(text.contains("--root") && text.contains("/w"), "{text}");
+            assert!(
+                text.contains("API_KEY") && text.contains("k1"),
+                "stdio auth is an env var: {text}"
+            );
+        }
         agent.await.unwrap();
     }
 
