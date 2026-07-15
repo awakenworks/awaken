@@ -163,6 +163,12 @@ impl AgentChannelSource for SandboxChannelSource {
             // session under the same slug every relaunch/machine — the stable interior
             // identity cross-directory/cross-machine recovery needs.
             workspace_cwd: Some(SANDBOX_WORKSPACE.to_string()),
+            // The sandboxed source launches a fixed `AcpLaunch`, not a per-run `AcpCli`
+            // row, so it does not yet project `session/new` MCP servers (that lives in
+            // `ProjectingChannelSource::open`). A sandboxed AcpSession CLI's α-secretless
+            // MCP delivery is a follow-up: it needs the CLI row + config-home write into
+            // the sandbox interior. Empty here means "none projected", not "none declared".
+            mcp_session_servers: Vec::new(),
         })
     }
 }

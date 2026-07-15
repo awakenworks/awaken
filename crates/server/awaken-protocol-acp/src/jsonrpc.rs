@@ -29,6 +29,42 @@ use awaken_agent_channel::AgentChannel;
 use serde::Serialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+/// Map the neutral [`crate::SessionMcpServer`]s onto the ACP `session/new` `mcpServers`
+/// param: an HTTP server carries its auth as a header, a stdio server as an env var
+/// (α: a broker reference the gateway resolves; β: a raw secret on a trusted launch).
+fn to_acp_mcp_servers(
+    servers: &[crate::SessionMcpServer],
+) -> Vec<agent_client_protocol::McpServer> {
+    use agent_client_protocol::{
+        EnvVariable, HttpHeader, McpServer, McpServerHttp, McpServerStdio,
+    };
+    servers
+        .iter()
+        .map(|s| match &s.url {
+            Some(url) => {
+                let headers = s
+                    .auth
+                    .iter()
+                    .map(|(n, v)| HttpHeader::new(n.clone(), v.clone()))
+                    .collect();
+                McpServer::Http(McpServerHttp::new(s.name.clone(), url.clone()).headers(headers))
+            }
+            None => {
+                let env = s
+                    .auth
+                    .iter()
+                    .map(|(n, v)| EnvVariable::new(n.clone(), v.clone()))
+                    .collect();
+                McpServer::Stdio(
+                    McpServerStdio::new(s.name.clone(), s.command.clone().unwrap_or_default())
+                        .args(s.args.clone())
+                        .env(env),
+                )
+            }
+        })
+        .collect()
+}
+
 use crate::real_acp::{project_update, termination_from_stop_reason};
 use crate::{
     AcpError, AcpLaunchEvent, AcpLaunchStage, AgentEvent, AllowAll, LaunchSink, PermissionAsk,
@@ -240,7 +276,8 @@ pub async fn run_turn_with_config(
             wire.send_request(
                 ID_NEW_SESSION,
                 AGENT_METHOD_NAMES.session_new,
-                NewSessionRequest::new(cwd.as_str()),
+                NewSessionRequest::new(cwd.as_str())
+                    .mcp_servers(to_acp_mcp_servers(&config.mcp_servers)),
             )
             .await?;
             let new_session: NewSessionResponse = parse(

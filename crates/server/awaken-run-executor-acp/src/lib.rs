@@ -61,6 +61,10 @@ pub struct AgentSession {
     /// per thread so a cwd-keyed CLI's session is found on `session/load` across
     /// directories/machines. `None` → the CLI runs at `/` (the default).
     pub workspace_cwd: Option<String>,
+    /// MCP servers to hand the CLI at `session/new` (the `AcpSession` interface —
+    /// claude/gemini/opencode). Populated by [`ProjectingChannelSource::open`] for those
+    /// CLIs; empty for a config-file CLI (codex gets a `config.toml`) and for fixtures.
+    pub mcp_session_servers: Vec<awaken_protocol_acp::SessionMcpServer>,
 }
 
 /// Opens an [`AgentSession`] for a run. The one seam the host wires: local =
@@ -419,6 +423,7 @@ impl AcpRunExecutor {
 
             let process = session.process.clone();
             let mut config = TurnConfig::new(self.permission.as_ref());
+            config.mcp_servers = session.mcp_session_servers.clone();
             config.session_id = acp_session_id.take();
             config.session_mode = self.session_mode.clone();
             config.session_cwd = session.workspace_cwd.clone();
@@ -812,8 +817,8 @@ mod config_home;
 mod session_home;
 mod subprocess;
 pub use acp_cli::{
-    AcpCli, McpInterface, ModelDelivery, ResolvedModel, SessionKey, SessionPersistence, acp_cli,
-    is_dynamic_install, known_acp_clis,
+    AcpCli, McpCredential, McpDelivery, McpInterface, McpServerConfig, McpTransport, ModelDelivery,
+    ResolvedModel, SessionKey, SessionPersistence, acp_cli, is_dynamic_install, known_acp_clis,
 };
 // The ACP config-home path convention (shared kernel) and the reference cross-machine
 // session-home provider over it — the host consumes these instead of owning them.
