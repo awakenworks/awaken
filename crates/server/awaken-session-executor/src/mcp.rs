@@ -439,11 +439,11 @@ mod alpha_beta_tests {
             .build();
         let out2 = overlay_acp_mcp(native, &[prepared(Some("sk"))], false, false);
         assert!(
-            out2.snapshot()
+            !out2
+                .snapshot()
                 .resolved_spec
                 .plugin_config
-                .get("acp")
-                .is_none()
+                .contains_key("acp")
         );
     }
 }

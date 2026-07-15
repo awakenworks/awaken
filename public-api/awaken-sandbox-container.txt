@@ -2,77 +2,14 @@ pub mod awaken_sandbox_container
 pub enum awaken_sandbox_container::ContainerState
 pub awaken_sandbox_container::ContainerState::Gone
 pub awaken_sandbox_container::ContainerState::Running
-impl core::clone::Clone for awaken_sandbox_container::ContainerState
-pub fn awaken_sandbox_container::ContainerState::clone(&self) -> awaken_sandbox_container::ContainerState
-impl core::cmp::Eq for awaken_sandbox_container::ContainerState
-impl core::cmp::PartialEq for awaken_sandbox_container::ContainerState
-pub fn awaken_sandbox_container::ContainerState::eq(&self, &awaken_sandbox_container::ContainerState) -> bool
-impl core::fmt::Debug for awaken_sandbox_container::ContainerState
-pub fn awaken_sandbox_container::ContainerState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_sandbox_container::ContainerState
-impl core::marker::StructuralPartialEq for awaken_sandbox_container::ContainerState
-impl core::marker::Freeze for awaken_sandbox_container::ContainerState
-impl core::marker::Send for awaken_sandbox_container::ContainerState
-impl core::marker::Sync for awaken_sandbox_container::ContainerState
-impl core::marker::Unpin for awaken_sandbox_container::ContainerState
-impl core::marker::UnsafeUnpin for awaken_sandbox_container::ContainerState
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::ContainerState
-impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::ContainerState
 pub enum awaken_sandbox_container::EgressError
 pub awaken_sandbox_container::EgressError::ProxyRequired
-impl core::cmp::Eq for awaken_sandbox_container::EgressError
-impl core::cmp::PartialEq for awaken_sandbox_container::EgressError
-pub fn awaken_sandbox_container::EgressError::eq(&self, &awaken_sandbox_container::EgressError) -> bool
-impl core::error::Error for awaken_sandbox_container::EgressError
-impl core::fmt::Debug for awaken_sandbox_container::EgressError
-pub fn awaken_sandbox_container::EgressError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for awaken_sandbox_container::EgressError
-pub fn awaken_sandbox_container::EgressError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_sandbox_container::EgressError
-impl core::marker::Freeze for awaken_sandbox_container::EgressError
-impl core::marker::Send for awaken_sandbox_container::EgressError
-impl core::marker::Sync for awaken_sandbox_container::EgressError
-impl core::marker::Unpin for awaken_sandbox_container::EgressError
-impl core::marker::UnsafeUnpin for awaken_sandbox_container::EgressError
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::EgressError
-impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::EgressError
 pub enum awaken_sandbox_container::NetworkMode
 pub awaken_sandbox_container::NetworkMode::Allowlist(alloc::vec::Vec<alloc::string::String>)
 pub awaken_sandbox_container::NetworkMode::None
 pub awaken_sandbox_container::NetworkMode::Open
-impl core::clone::Clone for awaken_sandbox_container::NetworkMode
-pub fn awaken_sandbox_container::NetworkMode::clone(&self) -> awaken_sandbox_container::NetworkMode
-impl core::cmp::Eq for awaken_sandbox_container::NetworkMode
-impl core::cmp::PartialEq for awaken_sandbox_container::NetworkMode
-pub fn awaken_sandbox_container::NetworkMode::eq(&self, &awaken_sandbox_container::NetworkMode) -> bool
-impl core::fmt::Debug for awaken_sandbox_container::NetworkMode
-pub fn awaken_sandbox_container::NetworkMode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_sandbox_container::NetworkMode
-impl core::marker::Freeze for awaken_sandbox_container::NetworkMode
-impl core::marker::Send for awaken_sandbox_container::NetworkMode
-impl core::marker::Sync for awaken_sandbox_container::NetworkMode
-impl core::marker::Unpin for awaken_sandbox_container::NetworkMode
-impl core::marker::UnsafeUnpin for awaken_sandbox_container::NetworkMode
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::NetworkMode
-impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::NetworkMode
 pub enum awaken_sandbox_container::RootfsError
 pub awaken_sandbox_container::RootfsError::NotAContainerRootfs
-impl core::cmp::Eq for awaken_sandbox_container::RootfsError
-impl core::cmp::PartialEq for awaken_sandbox_container::RootfsError
-pub fn awaken_sandbox_container::RootfsError::eq(&self, &awaken_sandbox_container::RootfsError) -> bool
-impl core::error::Error for awaken_sandbox_container::RootfsError
-impl core::fmt::Debug for awaken_sandbox_container::RootfsError
-pub fn awaken_sandbox_container::RootfsError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for awaken_sandbox_container::RootfsError
-pub fn awaken_sandbox_container::RootfsError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_sandbox_container::RootfsError
-impl core::marker::Freeze for awaken_sandbox_container::RootfsError
-impl core::marker::Send for awaken_sandbox_container::RootfsError
-impl core::marker::Sync for awaken_sandbox_container::RootfsError
-impl core::marker::Unpin for awaken_sandbox_container::RootfsError
-impl core::marker::UnsafeUnpin for awaken_sandbox_container::RootfsError
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::RootfsError
-impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::RootfsError
 pub enum awaken_sandbox_container::RootfsPlan
 pub awaken_sandbox_container::RootfsPlan::HostUserland
 pub awaken_sandbox_container::RootfsPlan::Image(alloc::string::String)
@@ -82,55 +19,13 @@ pub awaken_sandbox_container::RootfsPlan::RootDir::writable: bool
 pub awaken_sandbox_container::RootfsPlan::RootTarball
 pub awaken_sandbox_container::RootfsPlan::RootTarball::reference: alloc::string::String
 pub awaken_sandbox_container::RootfsPlan::RootTarball::writable: bool
-impl core::clone::Clone for awaken_sandbox_container::RootfsPlan
-pub fn awaken_sandbox_container::RootfsPlan::clone(&self) -> awaken_sandbox_container::RootfsPlan
-impl core::cmp::Eq for awaken_sandbox_container::RootfsPlan
-impl core::cmp::PartialEq for awaken_sandbox_container::RootfsPlan
-pub fn awaken_sandbox_container::RootfsPlan::eq(&self, &awaken_sandbox_container::RootfsPlan) -> bool
-impl core::fmt::Debug for awaken_sandbox_container::RootfsPlan
-pub fn awaken_sandbox_container::RootfsPlan::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_sandbox_container::RootfsPlan
-impl core::marker::Freeze for awaken_sandbox_container::RootfsPlan
-impl core::marker::Send for awaken_sandbox_container::RootfsPlan
-impl core::marker::Sync for awaken_sandbox_container::RootfsPlan
-impl core::marker::Unpin for awaken_sandbox_container::RootfsPlan
-impl core::marker::UnsafeUnpin for awaken_sandbox_container::RootfsPlan
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::RootfsPlan
-impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::RootfsPlan
 pub enum awaken_sandbox_container::RuntimeError
 pub awaken_sandbox_container::RuntimeError::Backend(alloc::string::String)
 pub awaken_sandbox_container::RuntimeError::NotFound(alloc::string::String)
-impl core::error::Error for awaken_sandbox_container::RuntimeError
-impl core::fmt::Debug for awaken_sandbox_container::RuntimeError
-pub fn awaken_sandbox_container::RuntimeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for awaken_sandbox_container::RuntimeError
-pub fn awaken_sandbox_container::RuntimeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_sandbox_container::RuntimeError
-impl core::marker::Send for awaken_sandbox_container::RuntimeError
-impl core::marker::Sync for awaken_sandbox_container::RuntimeError
-impl core::marker::Unpin for awaken_sandbox_container::RuntimeError
-impl core::marker::UnsafeUnpin for awaken_sandbox_container::RuntimeError
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::RuntimeError
-impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::RuntimeError
 pub struct awaken_sandbox_container::BindPlan
 pub awaken_sandbox_container::BindPlan::mount_path: alloc::string::String
 pub awaken_sandbox_container::BindPlan::read_only: bool
 pub awaken_sandbox_container::BindPlan::source_ref: alloc::string::String
-impl core::clone::Clone for awaken_sandbox_container::BindPlan
-pub fn awaken_sandbox_container::BindPlan::clone(&self) -> awaken_sandbox_container::BindPlan
-impl core::cmp::Eq for awaken_sandbox_container::BindPlan
-impl core::cmp::PartialEq for awaken_sandbox_container::BindPlan
-pub fn awaken_sandbox_container::BindPlan::eq(&self, &awaken_sandbox_container::BindPlan) -> bool
-impl core::fmt::Debug for awaken_sandbox_container::BindPlan
-pub fn awaken_sandbox_container::BindPlan::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_sandbox_container::BindPlan
-impl core::marker::Freeze for awaken_sandbox_container::BindPlan
-impl core::marker::Send for awaken_sandbox_container::BindPlan
-impl core::marker::Sync for awaken_sandbox_container::BindPlan
-impl core::marker::Unpin for awaken_sandbox_container::BindPlan
-impl core::marker::UnsafeUnpin for awaken_sandbox_container::BindPlan
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::BindPlan
-impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::BindPlan
 pub struct awaken_sandbox_container::CgroupCaps
 pub awaken_sandbox_container::CgroupCaps::disk_size: core::option::Option<alloc::string::String>
 pub awaken_sandbox_container::CgroupCaps::memory_bytes: core::option::Option<i64>
@@ -139,23 +34,6 @@ pub awaken_sandbox_container::CgroupCaps::nano_cpus: core::option::Option<i64>
 pub awaken_sandbox_container::CgroupCaps::pids: core::option::Option<i64>
 impl awaken_sandbox_container::CgroupCaps
 pub fn awaken_sandbox_container::CgroupCaps::from_limits(&awaken_provisioning_contract::vocab::ResourceLimits) -> Self
-impl core::clone::Clone for awaken_sandbox_container::CgroupCaps
-pub fn awaken_sandbox_container::CgroupCaps::clone(&self) -> awaken_sandbox_container::CgroupCaps
-impl core::cmp::Eq for awaken_sandbox_container::CgroupCaps
-impl core::cmp::PartialEq for awaken_sandbox_container::CgroupCaps
-pub fn awaken_sandbox_container::CgroupCaps::eq(&self, &awaken_sandbox_container::CgroupCaps) -> bool
-impl core::default::Default for awaken_sandbox_container::CgroupCaps
-pub fn awaken_sandbox_container::CgroupCaps::default() -> awaken_sandbox_container::CgroupCaps
-impl core::fmt::Debug for awaken_sandbox_container::CgroupCaps
-pub fn awaken_sandbox_container::CgroupCaps::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_sandbox_container::CgroupCaps
-impl core::marker::Freeze for awaken_sandbox_container::CgroupCaps
-impl core::marker::Send for awaken_sandbox_container::CgroupCaps
-impl core::marker::Sync for awaken_sandbox_container::CgroupCaps
-impl core::marker::Unpin for awaken_sandbox_container::CgroupCaps
-impl core::marker::UnsafeUnpin for awaken_sandbox_container::CgroupCaps
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::CgroupCaps
-impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::CgroupCaps
 pub struct awaken_sandbox_container::ContainerPlan
 pub awaken_sandbox_container::ContainerPlan::binds: alloc::vec::Vec<awaken_sandbox_container::BindPlan>
 pub awaken_sandbox_container::ContainerPlan::command: alloc::vec::Vec<alloc::string::String>
@@ -166,21 +44,6 @@ pub awaken_sandbox_container::ContainerPlan::memory_mounts: alloc::vec::Vec<awak
 pub awaken_sandbox_container::ContainerPlan::network: awaken_sandbox_container::NetworkMode
 pub awaken_sandbox_container::ContainerPlan::outputs_volume: alloc::string::String
 pub awaken_sandbox_container::ContainerPlan::rootfs: awaken_sandbox_container::RootfsPlan
-impl core::clone::Clone for awaken_sandbox_container::ContainerPlan
-pub fn awaken_sandbox_container::ContainerPlan::clone(&self) -> awaken_sandbox_container::ContainerPlan
-impl core::cmp::Eq for awaken_sandbox_container::ContainerPlan
-impl core::cmp::PartialEq for awaken_sandbox_container::ContainerPlan
-pub fn awaken_sandbox_container::ContainerPlan::eq(&self, &awaken_sandbox_container::ContainerPlan) -> bool
-impl core::fmt::Debug for awaken_sandbox_container::ContainerPlan
-pub fn awaken_sandbox_container::ContainerPlan::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_sandbox_container::ContainerPlan
-impl core::marker::Freeze for awaken_sandbox_container::ContainerPlan
-impl core::marker::Send for awaken_sandbox_container::ContainerPlan
-impl core::marker::Sync for awaken_sandbox_container::ContainerPlan
-impl core::marker::Unpin for awaken_sandbox_container::ContainerPlan
-impl core::marker::UnsafeUnpin for awaken_sandbox_container::ContainerPlan
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::ContainerPlan
-impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::ContainerPlan
 pub struct awaken_sandbox_container::ContainerProvider<R: awaken_sandbox_container::ContainerRuntime>
 impl<R: awaken_sandbox_container::ContainerRuntime + 'static> awaken_sandbox_container::ContainerProvider<R>
 pub fn awaken_sandbox_container::ContainerProvider<R>::new(alloc::sync::Arc<R>, impl core::convert::Into<alloc::string::String>) -> Self
@@ -189,66 +52,14 @@ impl<R: awaken_sandbox_container::ContainerRuntime + 'static> awaken_provisionin
 pub fn awaken_sandbox_container::ContainerProvider<R>::adopt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::sandbox::SandboxHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_provisioning_contract::sandbox::Sandbox>, awaken_provisioning_contract::sandbox::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_sandbox_container::ContainerProvider<R>::capabilities(&self) -> awaken_provisioning_contract::sandbox::SandboxCapabilities
 pub fn awaken_sandbox_container::ContainerProvider<R>::create<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::spec::SandboxSpec) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_provisioning_contract::sandbox::Sandbox>, awaken_provisioning_contract::sandbox::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-impl<R> core::marker::Freeze for awaken_sandbox_container::ContainerProvider<R>
-impl<R> core::marker::Send for awaken_sandbox_container::ContainerProvider<R>
-impl<R> core::marker::Sync for awaken_sandbox_container::ContainerProvider<R>
-impl<R> core::marker::Unpin for awaken_sandbox_container::ContainerProvider<R>
-impl<R> core::marker::UnsafeUnpin for awaken_sandbox_container::ContainerProvider<R>
-impl<R> core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::ContainerProvider<R> where R: core::panic::unwind_safe::RefUnwindSafe
-impl<R> core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::ContainerProvider<R> where R: core::panic::unwind_safe::RefUnwindSafe
 pub struct awaken_sandbox_container::EgressProxy
 pub awaken_sandbox_container::EgressProxy::url: alloc::string::String
-impl core::clone::Clone for awaken_sandbox_container::EgressProxy
-pub fn awaken_sandbox_container::EgressProxy::clone(&self) -> awaken_sandbox_container::EgressProxy
-impl core::cmp::Eq for awaken_sandbox_container::EgressProxy
-impl core::cmp::PartialEq for awaken_sandbox_container::EgressProxy
-pub fn awaken_sandbox_container::EgressProxy::eq(&self, &awaken_sandbox_container::EgressProxy) -> bool
-impl core::fmt::Debug for awaken_sandbox_container::EgressProxy
-pub fn awaken_sandbox_container::EgressProxy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_sandbox_container::EgressProxy
-impl core::marker::Freeze for awaken_sandbox_container::EgressProxy
-impl core::marker::Send for awaken_sandbox_container::EgressProxy
-impl core::marker::Sync for awaken_sandbox_container::EgressProxy
-impl core::marker::Unpin for awaken_sandbox_container::EgressProxy
-impl core::marker::UnsafeUnpin for awaken_sandbox_container::EgressProxy
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::EgressProxy
-impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::EgressProxy
 pub struct awaken_sandbox_container::EgressRealization
 pub awaken_sandbox_container::EgressRealization::network: awaken_sandbox_container::NetworkMode
 pub awaken_sandbox_container::EgressRealization::proxy_env: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
-impl core::clone::Clone for awaken_sandbox_container::EgressRealization
-pub fn awaken_sandbox_container::EgressRealization::clone(&self) -> awaken_sandbox_container::EgressRealization
-impl core::cmp::Eq for awaken_sandbox_container::EgressRealization
-impl core::cmp::PartialEq for awaken_sandbox_container::EgressRealization
-pub fn awaken_sandbox_container::EgressRealization::eq(&self, &awaken_sandbox_container::EgressRealization) -> bool
-impl core::fmt::Debug for awaken_sandbox_container::EgressRealization
-pub fn awaken_sandbox_container::EgressRealization::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_sandbox_container::EgressRealization
-impl core::marker::Freeze for awaken_sandbox_container::EgressRealization
-impl core::marker::Send for awaken_sandbox_container::EgressRealization
-impl core::marker::Sync for awaken_sandbox_container::EgressRealization
-impl core::marker::Unpin for awaken_sandbox_container::EgressRealization
-impl core::marker::UnsafeUnpin for awaken_sandbox_container::EgressRealization
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::EgressRealization
-impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::EgressRealization
 pub struct awaken_sandbox_container::MemoryMount
 pub awaken_sandbox_container::MemoryMount::mount_path: alloc::string::String
 pub awaken_sandbox_container::MemoryMount::store_id: alloc::string::String
-impl core::clone::Clone for awaken_sandbox_container::MemoryMount
-pub fn awaken_sandbox_container::MemoryMount::clone(&self) -> awaken_sandbox_container::MemoryMount
-impl core::cmp::Eq for awaken_sandbox_container::MemoryMount
-impl core::cmp::PartialEq for awaken_sandbox_container::MemoryMount
-pub fn awaken_sandbox_container::MemoryMount::eq(&self, &awaken_sandbox_container::MemoryMount) -> bool
-impl core::fmt::Debug for awaken_sandbox_container::MemoryMount
-pub fn awaken_sandbox_container::MemoryMount::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_sandbox_container::MemoryMount
-impl core::marker::Freeze for awaken_sandbox_container::MemoryMount
-impl core::marker::Send for awaken_sandbox_container::MemoryMount
-impl core::marker::Sync for awaken_sandbox_container::MemoryMount
-impl core::marker::Unpin for awaken_sandbox_container::MemoryMount
-impl core::marker::UnsafeUnpin for awaken_sandbox_container::MemoryMount
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::MemoryMount
-impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::MemoryMount
 pub struct awaken_sandbox_container::PodPlan
 pub awaken_sandbox_container::PodPlan::binds: alloc::vec::Vec<awaken_sandbox_container::BindPlan>
 pub awaken_sandbox_container::PodPlan::command: alloc::vec::Vec<alloc::string::String>
@@ -260,21 +71,6 @@ pub awaken_sandbox_container::PodPlan::network: awaken_sandbox_container::Networ
 pub awaken_sandbox_container::PodPlan::outputs_volume: alloc::string::String
 pub awaken_sandbox_container::PodPlan::owner_uid: alloc::string::String
 pub awaken_sandbox_container::PodPlan::restart_never: bool
-impl core::clone::Clone for awaken_sandbox_container::PodPlan
-pub fn awaken_sandbox_container::PodPlan::clone(&self) -> awaken_sandbox_container::PodPlan
-impl core::cmp::Eq for awaken_sandbox_container::PodPlan
-impl core::cmp::PartialEq for awaken_sandbox_container::PodPlan
-pub fn awaken_sandbox_container::PodPlan::eq(&self, &awaken_sandbox_container::PodPlan) -> bool
-impl core::fmt::Debug for awaken_sandbox_container::PodPlan
-pub fn awaken_sandbox_container::PodPlan::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_sandbox_container::PodPlan
-impl core::marker::Freeze for awaken_sandbox_container::PodPlan
-impl core::marker::Send for awaken_sandbox_container::PodPlan
-impl core::marker::Sync for awaken_sandbox_container::PodPlan
-impl core::marker::Unpin for awaken_sandbox_container::PodPlan
-impl core::marker::UnsafeUnpin for awaken_sandbox_container::PodPlan
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::PodPlan
-impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::PodPlan
 pub trait awaken_sandbox_container::ContainerRuntime: core::marker::Send + core::marker::Sync
 pub fn awaken_sandbox_container::ContainerRuntime::artifacts<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_provisioning_contract::vocab::Artifact>, awaken_sandbox_container::RuntimeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_sandbox_container::ContainerRuntime::create<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_sandbox_container::ContainerPlan) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_sandbox_container::RuntimeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait

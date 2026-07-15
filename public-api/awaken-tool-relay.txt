@@ -5,26 +5,6 @@ pub awaken_tool_relay::wire::HandErrorKind::DeadlineExceeded
 pub awaken_tool_relay::wire::HandErrorKind::Execution
 pub awaken_tool_relay::wire::HandErrorKind::FingerprintMismatch
 pub awaken_tool_relay::wire::HandErrorKind::UnknownTool
-impl core::clone::Clone for awaken_tool_relay::wire::HandErrorKind
-pub fn awaken_tool_relay::wire::HandErrorKind::clone(&self) -> awaken_tool_relay::wire::HandErrorKind
-impl core::cmp::Eq for awaken_tool_relay::wire::HandErrorKind
-impl core::cmp::PartialEq for awaken_tool_relay::wire::HandErrorKind
-pub fn awaken_tool_relay::wire::HandErrorKind::eq(&self, &awaken_tool_relay::wire::HandErrorKind) -> bool
-impl core::fmt::Debug for awaken_tool_relay::wire::HandErrorKind
-pub fn awaken_tool_relay::wire::HandErrorKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_tool_relay::wire::HandErrorKind
-impl core::marker::StructuralPartialEq for awaken_tool_relay::wire::HandErrorKind
-impl serde_core::ser::Serialize for awaken_tool_relay::wire::HandErrorKind
-pub fn awaken_tool_relay::wire::HandErrorKind::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_tool_relay::wire::HandErrorKind
-pub fn awaken_tool_relay::wire::HandErrorKind::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_tool_relay::wire::HandErrorKind
-impl core::marker::Send for awaken_tool_relay::wire::HandErrorKind
-impl core::marker::Sync for awaken_tool_relay::wire::HandErrorKind
-impl core::marker::Unpin for awaken_tool_relay::wire::HandErrorKind
-impl core::marker::UnsafeUnpin for awaken_tool_relay::wire::HandErrorKind
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::wire::HandErrorKind
-impl core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::wire::HandErrorKind
 pub enum awaken_tool_relay::wire::HandResult
 pub awaken_tool_relay::wire::HandResult::Err
 pub awaken_tool_relay::wire::HandResult::Err::error: awaken_tool_relay::wire::HandError
@@ -34,69 +14,15 @@ pub awaken_tool_relay::wire::HandResult::Ok::output: awaken_runtime_contract::to
 impl awaken_tool_relay::wire::HandResult
 pub fn awaken_tool_relay::wire::HandResult::err(awaken_tool_relay::wire::HandError) -> Self
 pub fn awaken_tool_relay::wire::HandResult::ok(awaken_runtime_contract::tool::ToolOutput) -> Self
-impl core::clone::Clone for awaken_tool_relay::wire::HandResult
-pub fn awaken_tool_relay::wire::HandResult::clone(&self) -> awaken_tool_relay::wire::HandResult
-impl core::cmp::PartialEq for awaken_tool_relay::wire::HandResult
-pub fn awaken_tool_relay::wire::HandResult::eq(&self, &awaken_tool_relay::wire::HandResult) -> bool
-impl core::fmt::Debug for awaken_tool_relay::wire::HandResult
-pub fn awaken_tool_relay::wire::HandResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_tool_relay::wire::HandResult
-impl serde_core::ser::Serialize for awaken_tool_relay::wire::HandResult
-pub fn awaken_tool_relay::wire::HandResult::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_tool_relay::wire::HandResult
-pub fn awaken_tool_relay::wire::HandResult::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_tool_relay::wire::HandResult
-impl core::marker::Send for awaken_tool_relay::wire::HandResult
-impl core::marker::Sync for awaken_tool_relay::wire::HandResult
-impl core::marker::Unpin for awaken_tool_relay::wire::HandResult
-impl core::marker::UnsafeUnpin for awaken_tool_relay::wire::HandResult
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::wire::HandResult
-impl core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::wire::HandResult
 pub struct awaken_tool_relay::wire::HandError
 pub awaken_tool_relay::wire::HandError::kind: awaken_tool_relay::wire::HandErrorKind
 pub awaken_tool_relay::wire::HandError::message: alloc::string::String
 impl awaken_tool_relay::wire::HandError
 pub fn awaken_tool_relay::wire::HandError::new(awaken_tool_relay::wire::HandErrorKind, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_tool_relay::wire::HandError::unknown_tool(&str) -> Self
-impl core::clone::Clone for awaken_tool_relay::wire::HandError
-pub fn awaken_tool_relay::wire::HandError::clone(&self) -> awaken_tool_relay::wire::HandError
-impl core::cmp::PartialEq for awaken_tool_relay::wire::HandError
-pub fn awaken_tool_relay::wire::HandError::eq(&self, &awaken_tool_relay::wire::HandError) -> bool
-impl core::fmt::Debug for awaken_tool_relay::wire::HandError
-pub fn awaken_tool_relay::wire::HandError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_tool_relay::wire::HandError
-impl serde_core::ser::Serialize for awaken_tool_relay::wire::HandError
-pub fn awaken_tool_relay::wire::HandError::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_tool_relay::wire::HandError
-pub fn awaken_tool_relay::wire::HandError::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_tool_relay::wire::HandError
-impl core::marker::Send for awaken_tool_relay::wire::HandError
-impl core::marker::Sync for awaken_tool_relay::wire::HandError
-impl core::marker::Unpin for awaken_tool_relay::wire::HandError
-impl core::marker::UnsafeUnpin for awaken_tool_relay::wire::HandError
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::wire::HandError
-impl core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::wire::HandError
 pub struct awaken_tool_relay::wire::HandReply
 pub awaken_tool_relay::wire::HandReply::correlation_id: awaken_tool_relay::wire::CorrelationId
 pub awaken_tool_relay::wire::HandReply::result: awaken_tool_relay::wire::HandResult
-impl core::clone::Clone for awaken_tool_relay::wire::HandReply
-pub fn awaken_tool_relay::wire::HandReply::clone(&self) -> awaken_tool_relay::wire::HandReply
-impl core::cmp::PartialEq for awaken_tool_relay::wire::HandReply
-pub fn awaken_tool_relay::wire::HandReply::eq(&self, &awaken_tool_relay::wire::HandReply) -> bool
-impl core::fmt::Debug for awaken_tool_relay::wire::HandReply
-pub fn awaken_tool_relay::wire::HandReply::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_tool_relay::wire::HandReply
-impl serde_core::ser::Serialize for awaken_tool_relay::wire::HandReply
-pub fn awaken_tool_relay::wire::HandReply::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_tool_relay::wire::HandReply
-pub fn awaken_tool_relay::wire::HandReply::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_tool_relay::wire::HandReply
-impl core::marker::Send for awaken_tool_relay::wire::HandReply
-impl core::marker::Sync for awaken_tool_relay::wire::HandReply
-impl core::marker::Unpin for awaken_tool_relay::wire::HandReply
-impl core::marker::UnsafeUnpin for awaken_tool_relay::wire::HandReply
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::wire::HandReply
-impl core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::wire::HandReply
 pub struct awaken_tool_relay::wire::HandRequest
 pub awaken_tool_relay::wire::HandRequest::call: awaken_runtime_contract::llm::ToolCall
 pub awaken_tool_relay::wire::HandRequest::catalog_fingerprint: core::option::Option<alloc::string::String>
@@ -104,50 +30,12 @@ pub awaken_tool_relay::wire::HandRequest::correlation_id: awaken_tool_relay::wir
 pub awaken_tool_relay::wire::HandRequest::deadline_unix_ms: core::option::Option<u64>
 impl awaken_tool_relay::wire::HandRequest
 pub fn awaken_tool_relay::wire::HandRequest::new(awaken_tool_relay::wire::CorrelationId, awaken_runtime_contract::llm::ToolCall) -> Self
-impl core::clone::Clone for awaken_tool_relay::wire::HandRequest
-pub fn awaken_tool_relay::wire::HandRequest::clone(&self) -> awaken_tool_relay::wire::HandRequest
-impl core::cmp::PartialEq for awaken_tool_relay::wire::HandRequest
-pub fn awaken_tool_relay::wire::HandRequest::eq(&self, &awaken_tool_relay::wire::HandRequest) -> bool
-impl core::fmt::Debug for awaken_tool_relay::wire::HandRequest
-pub fn awaken_tool_relay::wire::HandRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_tool_relay::wire::HandRequest
-impl serde_core::ser::Serialize for awaken_tool_relay::wire::HandRequest
-pub fn awaken_tool_relay::wire::HandRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_tool_relay::wire::HandRequest
-pub fn awaken_tool_relay::wire::HandRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_tool_relay::wire::HandRequest
-impl core::marker::Send for awaken_tool_relay::wire::HandRequest
-impl core::marker::Sync for awaken_tool_relay::wire::HandRequest
-impl core::marker::Unpin for awaken_tool_relay::wire::HandRequest
-impl core::marker::UnsafeUnpin for awaken_tool_relay::wire::HandRequest
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::wire::HandRequest
-impl core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::wire::HandRequest
 pub type awaken_tool_relay::wire::CorrelationId = u64
 pub enum awaken_tool_relay::HandErrorKind
 pub awaken_tool_relay::HandErrorKind::DeadlineExceeded
 pub awaken_tool_relay::HandErrorKind::Execution
 pub awaken_tool_relay::HandErrorKind::FingerprintMismatch
 pub awaken_tool_relay::HandErrorKind::UnknownTool
-impl core::clone::Clone for awaken_tool_relay::wire::HandErrorKind
-pub fn awaken_tool_relay::wire::HandErrorKind::clone(&self) -> awaken_tool_relay::wire::HandErrorKind
-impl core::cmp::Eq for awaken_tool_relay::wire::HandErrorKind
-impl core::cmp::PartialEq for awaken_tool_relay::wire::HandErrorKind
-pub fn awaken_tool_relay::wire::HandErrorKind::eq(&self, &awaken_tool_relay::wire::HandErrorKind) -> bool
-impl core::fmt::Debug for awaken_tool_relay::wire::HandErrorKind
-pub fn awaken_tool_relay::wire::HandErrorKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_tool_relay::wire::HandErrorKind
-impl core::marker::StructuralPartialEq for awaken_tool_relay::wire::HandErrorKind
-impl serde_core::ser::Serialize for awaken_tool_relay::wire::HandErrorKind
-pub fn awaken_tool_relay::wire::HandErrorKind::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_tool_relay::wire::HandErrorKind
-pub fn awaken_tool_relay::wire::HandErrorKind::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_tool_relay::wire::HandErrorKind
-impl core::marker::Send for awaken_tool_relay::wire::HandErrorKind
-impl core::marker::Sync for awaken_tool_relay::wire::HandErrorKind
-impl core::marker::Unpin for awaken_tool_relay::wire::HandErrorKind
-impl core::marker::UnsafeUnpin for awaken_tool_relay::wire::HandErrorKind
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::wire::HandErrorKind
-impl core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::wire::HandErrorKind
 pub enum awaken_tool_relay::HandResult
 pub awaken_tool_relay::HandResult::Err
 pub awaken_tool_relay::HandResult::Err::error: awaken_tool_relay::wire::HandError
@@ -157,84 +45,18 @@ pub awaken_tool_relay::HandResult::Ok::output: awaken_runtime_contract::tool::To
 impl awaken_tool_relay::wire::HandResult
 pub fn awaken_tool_relay::wire::HandResult::err(awaken_tool_relay::wire::HandError) -> Self
 pub fn awaken_tool_relay::wire::HandResult::ok(awaken_runtime_contract::tool::ToolOutput) -> Self
-impl core::clone::Clone for awaken_tool_relay::wire::HandResult
-pub fn awaken_tool_relay::wire::HandResult::clone(&self) -> awaken_tool_relay::wire::HandResult
-impl core::cmp::PartialEq for awaken_tool_relay::wire::HandResult
-pub fn awaken_tool_relay::wire::HandResult::eq(&self, &awaken_tool_relay::wire::HandResult) -> bool
-impl core::fmt::Debug for awaken_tool_relay::wire::HandResult
-pub fn awaken_tool_relay::wire::HandResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_tool_relay::wire::HandResult
-impl serde_core::ser::Serialize for awaken_tool_relay::wire::HandResult
-pub fn awaken_tool_relay::wire::HandResult::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_tool_relay::wire::HandResult
-pub fn awaken_tool_relay::wire::HandResult::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_tool_relay::wire::HandResult
-impl core::marker::Send for awaken_tool_relay::wire::HandResult
-impl core::marker::Sync for awaken_tool_relay::wire::HandResult
-impl core::marker::Unpin for awaken_tool_relay::wire::HandResult
-impl core::marker::UnsafeUnpin for awaken_tool_relay::wire::HandResult
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::wire::HandResult
-impl core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::wire::HandResult
 pub enum awaken_tool_relay::ServeError
 pub awaken_tool_relay::ServeError::Decode(alloc::string::String)
 pub awaken_tool_relay::ServeError::Io(alloc::string::String)
-impl core::error::Error for awaken_tool_relay::ServeError
-impl core::fmt::Debug for awaken_tool_relay::ServeError
-pub fn awaken_tool_relay::ServeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for awaken_tool_relay::ServeError
-pub fn awaken_tool_relay::ServeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_tool_relay::ServeError
-impl core::marker::Send for awaken_tool_relay::ServeError
-impl core::marker::Sync for awaken_tool_relay::ServeError
-impl core::marker::Unpin for awaken_tool_relay::ServeError
-impl core::marker::UnsafeUnpin for awaken_tool_relay::ServeError
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::ServeError
-impl core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::ServeError
 pub struct awaken_tool_relay::HandError
 pub awaken_tool_relay::HandError::kind: awaken_tool_relay::wire::HandErrorKind
 pub awaken_tool_relay::HandError::message: alloc::string::String
 impl awaken_tool_relay::wire::HandError
 pub fn awaken_tool_relay::wire::HandError::new(awaken_tool_relay::wire::HandErrorKind, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_tool_relay::wire::HandError::unknown_tool(&str) -> Self
-impl core::clone::Clone for awaken_tool_relay::wire::HandError
-pub fn awaken_tool_relay::wire::HandError::clone(&self) -> awaken_tool_relay::wire::HandError
-impl core::cmp::PartialEq for awaken_tool_relay::wire::HandError
-pub fn awaken_tool_relay::wire::HandError::eq(&self, &awaken_tool_relay::wire::HandError) -> bool
-impl core::fmt::Debug for awaken_tool_relay::wire::HandError
-pub fn awaken_tool_relay::wire::HandError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_tool_relay::wire::HandError
-impl serde_core::ser::Serialize for awaken_tool_relay::wire::HandError
-pub fn awaken_tool_relay::wire::HandError::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_tool_relay::wire::HandError
-pub fn awaken_tool_relay::wire::HandError::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_tool_relay::wire::HandError
-impl core::marker::Send for awaken_tool_relay::wire::HandError
-impl core::marker::Sync for awaken_tool_relay::wire::HandError
-impl core::marker::Unpin for awaken_tool_relay::wire::HandError
-impl core::marker::UnsafeUnpin for awaken_tool_relay::wire::HandError
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::wire::HandError
-impl core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::wire::HandError
 pub struct awaken_tool_relay::HandReply
 pub awaken_tool_relay::HandReply::correlation_id: awaken_tool_relay::wire::CorrelationId
 pub awaken_tool_relay::HandReply::result: awaken_tool_relay::wire::HandResult
-impl core::clone::Clone for awaken_tool_relay::wire::HandReply
-pub fn awaken_tool_relay::wire::HandReply::clone(&self) -> awaken_tool_relay::wire::HandReply
-impl core::cmp::PartialEq for awaken_tool_relay::wire::HandReply
-pub fn awaken_tool_relay::wire::HandReply::eq(&self, &awaken_tool_relay::wire::HandReply) -> bool
-impl core::fmt::Debug for awaken_tool_relay::wire::HandReply
-pub fn awaken_tool_relay::wire::HandReply::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_tool_relay::wire::HandReply
-impl serde_core::ser::Serialize for awaken_tool_relay::wire::HandReply
-pub fn awaken_tool_relay::wire::HandReply::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_tool_relay::wire::HandReply
-pub fn awaken_tool_relay::wire::HandReply::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_tool_relay::wire::HandReply
-impl core::marker::Send for awaken_tool_relay::wire::HandReply
-impl core::marker::Sync for awaken_tool_relay::wire::HandReply
-impl core::marker::Unpin for awaken_tool_relay::wire::HandReply
-impl core::marker::UnsafeUnpin for awaken_tool_relay::wire::HandReply
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::wire::HandReply
-impl core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::wire::HandReply
 pub struct awaken_tool_relay::HandRequest
 pub awaken_tool_relay::HandRequest::call: awaken_runtime_contract::llm::ToolCall
 pub awaken_tool_relay::HandRequest::catalog_fingerprint: core::option::Option<alloc::string::String>
@@ -242,36 +64,11 @@ pub awaken_tool_relay::HandRequest::correlation_id: awaken_tool_relay::wire::Cor
 pub awaken_tool_relay::HandRequest::deadline_unix_ms: core::option::Option<u64>
 impl awaken_tool_relay::wire::HandRequest
 pub fn awaken_tool_relay::wire::HandRequest::new(awaken_tool_relay::wire::CorrelationId, awaken_runtime_contract::llm::ToolCall) -> Self
-impl core::clone::Clone for awaken_tool_relay::wire::HandRequest
-pub fn awaken_tool_relay::wire::HandRequest::clone(&self) -> awaken_tool_relay::wire::HandRequest
-impl core::cmp::PartialEq for awaken_tool_relay::wire::HandRequest
-pub fn awaken_tool_relay::wire::HandRequest::eq(&self, &awaken_tool_relay::wire::HandRequest) -> bool
-impl core::fmt::Debug for awaken_tool_relay::wire::HandRequest
-pub fn awaken_tool_relay::wire::HandRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_tool_relay::wire::HandRequest
-impl serde_core::ser::Serialize for awaken_tool_relay::wire::HandRequest
-pub fn awaken_tool_relay::wire::HandRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_tool_relay::wire::HandRequest
-pub fn awaken_tool_relay::wire::HandRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_tool_relay::wire::HandRequest
-impl core::marker::Send for awaken_tool_relay::wire::HandRequest
-impl core::marker::Sync for awaken_tool_relay::wire::HandRequest
-impl core::marker::Unpin for awaken_tool_relay::wire::HandRequest
-impl core::marker::UnsafeUnpin for awaken_tool_relay::wire::HandRequest
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::wire::HandRequest
-impl core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::wire::HandRequest
 pub struct awaken_tool_relay::HandSession
 impl awaken_tool_relay::HandSession
 pub async fn awaken_tool_relay::HandSession::handle(&mut self, awaken_tool_relay::wire::HandRequest) -> awaken_tool_relay::wire::HandReply
 pub fn awaken_tool_relay::HandSession::new(impl core::iter::traits::collect::IntoIterator<Item = alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>) -> Self
 pub fn awaken_tool_relay::HandSession::with_catalog_fingerprint(self, impl core::convert::Into<alloc::string::String>) -> Self
-impl core::marker::Freeze for awaken_tool_relay::HandSession
-impl core::marker::Send for awaken_tool_relay::HandSession
-impl core::marker::Sync for awaken_tool_relay::HandSession
-impl core::marker::Unpin for awaken_tool_relay::HandSession
-impl core::marker::UnsafeUnpin for awaken_tool_relay::HandSession
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::HandSession
-impl !core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::HandSession
 pub struct awaken_tool_relay::RemoteToolExecutor<S>
 impl<S> awaken_tool_relay::RemoteToolExecutor<S> where S: awaken_agent_channel::AgentChannel
 pub async fn awaken_tool_relay::RemoteToolExecutor<S>::call_hand(&self, &awaken_runtime_contract::llm::ToolCall) -> awaken_tool_relay::wire::HandResult
@@ -279,12 +76,5 @@ pub fn awaken_tool_relay::RemoteToolExecutor<S>::new(S) -> Self
 pub fn awaken_tool_relay::RemoteToolExecutor<S>::with_catalog_fingerprint(self, impl core::convert::Into<alloc::string::String>) -> Self
 impl<S> awaken_runtime_contract::tool::ToolExecutor for awaken_tool_relay::RemoteToolExecutor<S> where S: awaken_agent_channel::AgentChannel
 pub fn awaken_tool_relay::RemoteToolExecutor<S>::invoke<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-impl<S> !core::marker::Freeze for awaken_tool_relay::RemoteToolExecutor<S>
-impl<S> core::marker::Send for awaken_tool_relay::RemoteToolExecutor<S> where S: core::marker::Send
-impl<S> core::marker::Sync for awaken_tool_relay::RemoteToolExecutor<S> where S: core::marker::Send
-impl<S> core::marker::Unpin for awaken_tool_relay::RemoteToolExecutor<S> where S: core::marker::Unpin
-impl<S> core::marker::UnsafeUnpin for awaken_tool_relay::RemoteToolExecutor<S> where S: core::marker::UnsafeUnpin
-impl<S> !core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::RemoteToolExecutor<S>
-impl<S> core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::RemoteToolExecutor<S> where S: core::panic::unwind_safe::UnwindSafe
 pub async fn awaken_tool_relay::serve_hand<S>(S, awaken_tool_relay::HandSession) -> core::result::Result<(), awaken_tool_relay::ServeError> where S: awaken_agent_channel::AgentChannel
 pub type awaken_tool_relay::CorrelationId = u64

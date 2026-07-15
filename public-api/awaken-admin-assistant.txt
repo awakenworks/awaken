@@ -3,23 +3,6 @@ pub struct awaken_admin_assistant::AdminAuditEvent
 pub awaken_admin_assistant::AdminAuditEvent::call_id: alloc::string::String
 pub awaken_admin_assistant::AdminAuditEvent::summary: alloc::string::String
 pub awaken_admin_assistant::AdminAuditEvent::tool: alloc::string::String
-impl core::clone::Clone for awaken_admin_assistant::AdminAuditEvent
-pub fn awaken_admin_assistant::AdminAuditEvent::clone(&self) -> awaken_admin_assistant::AdminAuditEvent
-impl core::cmp::Eq for awaken_admin_assistant::AdminAuditEvent
-impl core::cmp::PartialEq for awaken_admin_assistant::AdminAuditEvent
-pub fn awaken_admin_assistant::AdminAuditEvent::eq(&self, &awaken_admin_assistant::AdminAuditEvent) -> bool
-impl core::fmt::Debug for awaken_admin_assistant::AdminAuditEvent
-pub fn awaken_admin_assistant::AdminAuditEvent::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_admin_assistant::AdminAuditEvent
-impl serde_core::ser::Serialize for awaken_admin_assistant::AdminAuditEvent
-pub fn awaken_admin_assistant::AdminAuditEvent::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl core::marker::Freeze for awaken_admin_assistant::AdminAuditEvent
-impl core::marker::Send for awaken_admin_assistant::AdminAuditEvent
-impl core::marker::Sync for awaken_admin_assistant::AdminAuditEvent
-impl core::marker::Unpin for awaken_admin_assistant::AdminAuditEvent
-impl core::marker::UnsafeUnpin for awaken_admin_assistant::AdminAuditEvent
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_admin_assistant::AdminAuditEvent
-impl core::panic::unwind_safe::UnwindSafe for awaken_admin_assistant::AdminAuditEvent
 pub struct awaken_admin_assistant::PlatformCapabilities
 pub awaken_admin_assistant::PlatformCapabilities::agents: alloc::vec::Vec<alloc::string::String>
 pub awaken_admin_assistant::PlatformCapabilities::mcp_servers: alloc::vec::Vec<alloc::string::String>
@@ -28,59 +11,12 @@ pub awaken_admin_assistant::PlatformCapabilities::plugins: alloc::vec::Vec<awake
 pub awaken_admin_assistant::PlatformCapabilities::providers: alloc::vec::Vec<alloc::string::String>
 pub awaken_admin_assistant::PlatformCapabilities::skills: alloc::vec::Vec<alloc::string::String>
 pub awaken_admin_assistant::PlatformCapabilities::tools: alloc::vec::Vec<alloc::string::String>
-impl core::clone::Clone for awaken_admin_assistant::PlatformCapabilities
-pub fn awaken_admin_assistant::PlatformCapabilities::clone(&self) -> awaken_admin_assistant::PlatformCapabilities
-impl core::cmp::Eq for awaken_admin_assistant::PlatformCapabilities
-impl core::cmp::PartialEq for awaken_admin_assistant::PlatformCapabilities
-pub fn awaken_admin_assistant::PlatformCapabilities::eq(&self, &awaken_admin_assistant::PlatformCapabilities) -> bool
-impl core::default::Default for awaken_admin_assistant::PlatformCapabilities
-pub fn awaken_admin_assistant::PlatformCapabilities::default() -> awaken_admin_assistant::PlatformCapabilities
-impl core::fmt::Debug for awaken_admin_assistant::PlatformCapabilities
-pub fn awaken_admin_assistant::PlatformCapabilities::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_admin_assistant::PlatformCapabilities
-impl serde_core::ser::Serialize for awaken_admin_assistant::PlatformCapabilities
-pub fn awaken_admin_assistant::PlatformCapabilities::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_admin_assistant::PlatformCapabilities
-pub fn awaken_admin_assistant::PlatformCapabilities::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_admin_assistant::PlatformCapabilities
-impl core::marker::Send for awaken_admin_assistant::PlatformCapabilities
-impl core::marker::Sync for awaken_admin_assistant::PlatformCapabilities
-impl core::marker::Unpin for awaken_admin_assistant::PlatformCapabilities
-impl core::marker::UnsafeUnpin for awaken_admin_assistant::PlatformCapabilities
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_admin_assistant::PlatformCapabilities
-impl core::panic::unwind_safe::UnwindSafe for awaken_admin_assistant::PlatformCapabilities
 pub struct awaken_admin_assistant::PluginInfo
 pub awaken_admin_assistant::PluginInfo::id: alloc::string::String
 pub awaken_admin_assistant::PluginInfo::schema_keys: alloc::vec::Vec<alloc::string::String>
-impl core::clone::Clone for awaken_admin_assistant::PluginInfo
-pub fn awaken_admin_assistant::PluginInfo::clone(&self) -> awaken_admin_assistant::PluginInfo
-impl core::cmp::Eq for awaken_admin_assistant::PluginInfo
-impl core::cmp::PartialEq for awaken_admin_assistant::PluginInfo
-pub fn awaken_admin_assistant::PluginInfo::eq(&self, &awaken_admin_assistant::PluginInfo) -> bool
-impl core::fmt::Debug for awaken_admin_assistant::PluginInfo
-pub fn awaken_admin_assistant::PluginInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_admin_assistant::PluginInfo
-impl serde_core::ser::Serialize for awaken_admin_assistant::PluginInfo
-pub fn awaken_admin_assistant::PluginInfo::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_admin_assistant::PluginInfo
-pub fn awaken_admin_assistant::PluginInfo::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_admin_assistant::PluginInfo
-impl core::marker::Send for awaken_admin_assistant::PluginInfo
-impl core::marker::Sync for awaken_admin_assistant::PluginInfo
-impl core::marker::Unpin for awaken_admin_assistant::PluginInfo
-impl core::marker::UnsafeUnpin for awaken_admin_assistant::PluginInfo
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_admin_assistant::PluginInfo
-impl core::panic::unwind_safe::UnwindSafe for awaken_admin_assistant::PluginInfo
 pub struct awaken_admin_assistant::TracingAuditSink
 impl awaken_admin_assistant::AuditSink for awaken_admin_assistant::TracingAuditSink
 pub fn awaken_admin_assistant::TracingAuditSink::record(&self, awaken_admin_assistant::AdminAuditEvent)
-impl core::marker::Freeze for awaken_admin_assistant::TracingAuditSink
-impl core::marker::Send for awaken_admin_assistant::TracingAuditSink
-impl core::marker::Sync for awaken_admin_assistant::TracingAuditSink
-impl core::marker::Unpin for awaken_admin_assistant::TracingAuditSink
-impl core::marker::UnsafeUnpin for awaken_admin_assistant::TracingAuditSink
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_admin_assistant::TracingAuditSink
-impl core::panic::unwind_safe::UnwindSafe for awaken_admin_assistant::TracingAuditSink
 pub const awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID: &str
 pub const awaken_admin_assistant::ADMIN_ASSISTANT_INSTRUCTIONS: &str
 pub const awaken_admin_assistant::CAPABILITIES_TOOL: &str

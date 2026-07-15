@@ -6,127 +6,23 @@ pub awaken_provisioning_contract::AdmissionError::MissingRequiredField::field: &
 pub awaken_provisioning_contract::AdmissionError::MissingRequiredField::kind: alloc::string::String
 pub awaken_provisioning_contract::AdmissionError::ReservedEnvKey(alloc::string::String)
 pub awaken_provisioning_contract::AdmissionError::WritableBaseConcurrency(core::option::Option<u32>)
-impl core::cmp::Eq for awaken_provisioning_contract::AdmissionError
-impl core::cmp::PartialEq for awaken_provisioning_contract::AdmissionError
-pub fn awaken_provisioning_contract::AdmissionError::eq(&self, &awaken_provisioning_contract::AdmissionError) -> bool
-impl core::error::Error for awaken_provisioning_contract::AdmissionError
-impl core::fmt::Debug for awaken_provisioning_contract::AdmissionError
-pub fn awaken_provisioning_contract::AdmissionError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for awaken_provisioning_contract::AdmissionError
-pub fn awaken_provisioning_contract::AdmissionError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::AdmissionError
-impl core::marker::Freeze for awaken_provisioning_contract::AdmissionError
-impl core::marker::Send for awaken_provisioning_contract::AdmissionError
-impl core::marker::Sync for awaken_provisioning_contract::AdmissionError
-impl core::marker::Unpin for awaken_provisioning_contract::AdmissionError
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::AdmissionError
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::AdmissionError
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::AdmissionError
 pub enum awaken_provisioning_contract::ApprovalDecision
 pub awaken_provisioning_contract::ApprovalDecision::Allow
 pub awaken_provisioning_contract::ApprovalDecision::RequireApproval
-impl core::clone::Clone for awaken_provisioning_contract::ApprovalDecision
-pub fn awaken_provisioning_contract::ApprovalDecision::clone(&self) -> awaken_provisioning_contract::ApprovalDecision
-impl core::cmp::Eq for awaken_provisioning_contract::ApprovalDecision
-impl core::cmp::PartialEq for awaken_provisioning_contract::ApprovalDecision
-pub fn awaken_provisioning_contract::ApprovalDecision::eq(&self, &awaken_provisioning_contract::ApprovalDecision) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::ApprovalDecision
-pub fn awaken_provisioning_contract::ApprovalDecision::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_provisioning_contract::ApprovalDecision
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::ApprovalDecision
-impl core::marker::Freeze for awaken_provisioning_contract::ApprovalDecision
-impl core::marker::Send for awaken_provisioning_contract::ApprovalDecision
-impl core::marker::Sync for awaken_provisioning_contract::ApprovalDecision
-impl core::marker::Unpin for awaken_provisioning_contract::ApprovalDecision
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::ApprovalDecision
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::ApprovalDecision
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::ApprovalDecision
 pub enum awaken_provisioning_contract::ApprovalPolicy
 pub awaken_provisioning_contract::ApprovalPolicy::Autonomous
 pub awaken_provisioning_contract::ApprovalPolicy::HumanApproval
-impl core::clone::Clone for awaken_provisioning_contract::ApprovalPolicy
-pub fn awaken_provisioning_contract::ApprovalPolicy::clone(&self) -> awaken_provisioning_contract::ApprovalPolicy
-impl core::cmp::Eq for awaken_provisioning_contract::ApprovalPolicy
-impl core::cmp::PartialEq for awaken_provisioning_contract::ApprovalPolicy
-pub fn awaken_provisioning_contract::ApprovalPolicy::eq(&self, &awaken_provisioning_contract::ApprovalPolicy) -> bool
-impl core::default::Default for awaken_provisioning_contract::ApprovalPolicy
-pub fn awaken_provisioning_contract::ApprovalPolicy::default() -> awaken_provisioning_contract::ApprovalPolicy
-impl core::fmt::Debug for awaken_provisioning_contract::ApprovalPolicy
-pub fn awaken_provisioning_contract::ApprovalPolicy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_provisioning_contract::ApprovalPolicy
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::ApprovalPolicy
-impl core::marker::Freeze for awaken_provisioning_contract::ApprovalPolicy
-impl core::marker::Send for awaken_provisioning_contract::ApprovalPolicy
-impl core::marker::Sync for awaken_provisioning_contract::ApprovalPolicy
-impl core::marker::Unpin for awaken_provisioning_contract::ApprovalPolicy
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::ApprovalPolicy
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::ApprovalPolicy
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::ApprovalPolicy
 pub enum awaken_provisioning_contract::AttemptSignal
 pub awaken_provisioning_contract::AttemptSignal::InfraFault
 pub awaken_provisioning_contract::AttemptSignal::Settled
-impl core::clone::Clone for awaken_provisioning_contract::AttemptSignal
-pub fn awaken_provisioning_contract::AttemptSignal::clone(&self) -> awaken_provisioning_contract::AttemptSignal
-impl core::cmp::Eq for awaken_provisioning_contract::AttemptSignal
-impl core::cmp::PartialEq for awaken_provisioning_contract::AttemptSignal
-pub fn awaken_provisioning_contract::AttemptSignal::eq(&self, &awaken_provisioning_contract::AttemptSignal) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::AttemptSignal
-pub fn awaken_provisioning_contract::AttemptSignal::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_provisioning_contract::AttemptSignal
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::AttemptSignal
-impl core::marker::Freeze for awaken_provisioning_contract::AttemptSignal
-impl core::marker::Send for awaken_provisioning_contract::AttemptSignal
-impl core::marker::Sync for awaken_provisioning_contract::AttemptSignal
-impl core::marker::Unpin for awaken_provisioning_contract::AttemptSignal
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::AttemptSignal
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::AttemptSignal
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::AttemptSignal
 pub enum awaken_provisioning_contract::EnvValue
 pub awaken_provisioning_contract::EnvValue::Inline
 pub awaken_provisioning_contract::EnvValue::Inline::value: alloc::string::String
 pub awaken_provisioning_contract::EnvValue::Secret
 pub awaken_provisioning_contract::EnvValue::Secret::reference: alloc::string::String
-impl core::clone::Clone for awaken_provisioning_contract::EnvValue
-pub fn awaken_provisioning_contract::EnvValue::clone(&self) -> awaken_provisioning_contract::EnvValue
-impl core::cmp::PartialEq for awaken_provisioning_contract::EnvValue
-pub fn awaken_provisioning_contract::EnvValue::eq(&self, &awaken_provisioning_contract::EnvValue) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::EnvValue
-pub fn awaken_provisioning_contract::EnvValue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::EnvValue
-impl serde_core::ser::Serialize for awaken_provisioning_contract::EnvValue
-pub fn awaken_provisioning_contract::EnvValue::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::EnvValue
-pub fn awaken_provisioning_contract::EnvValue::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_provisioning_contract::EnvValue
-impl core::marker::Send for awaken_provisioning_contract::EnvValue
-impl core::marker::Sync for awaken_provisioning_contract::EnvValue
-impl core::marker::Unpin for awaken_provisioning_contract::EnvValue
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::EnvValue
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::EnvValue
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::EnvValue
 pub enum awaken_provisioning_contract::EnvVisibility
 pub awaken_provisioning_contract::EnvVisibility::EgressOnly
 pub awaken_provisioning_contract::EnvVisibility::Process
-impl core::clone::Clone for awaken_provisioning_contract::EnvVisibility
-pub fn awaken_provisioning_contract::EnvVisibility::clone(&self) -> awaken_provisioning_contract::EnvVisibility
-impl core::cmp::Eq for awaken_provisioning_contract::EnvVisibility
-impl core::cmp::PartialEq for awaken_provisioning_contract::EnvVisibility
-pub fn awaken_provisioning_contract::EnvVisibility::eq(&self, &awaken_provisioning_contract::EnvVisibility) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::EnvVisibility
-pub fn awaken_provisioning_contract::EnvVisibility::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_provisioning_contract::EnvVisibility
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::EnvVisibility
-impl serde_core::ser::Serialize for awaken_provisioning_contract::EnvVisibility
-pub fn awaken_provisioning_contract::EnvVisibility::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::EnvVisibility
-pub fn awaken_provisioning_contract::EnvVisibility::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_provisioning_contract::EnvVisibility
-impl core::marker::Send for awaken_provisioning_contract::EnvVisibility
-impl core::marker::Sync for awaken_provisioning_contract::EnvVisibility
-impl core::marker::Unpin for awaken_provisioning_contract::EnvVisibility
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::EnvVisibility
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::EnvVisibility
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::EnvVisibility
 pub enum awaken_provisioning_contract::EnvironmentKind
 pub awaken_provisioning_contract::EnvironmentKind::Image
 pub awaken_provisioning_contract::EnvironmentKind::Image::reference: alloc::string::String
@@ -137,157 +33,27 @@ pub awaken_provisioning_contract::EnvironmentKind::LocalDir
 pub awaken_provisioning_contract::EnvironmentKind::LocalDir::path_template: alloc::string::String
 pub awaken_provisioning_contract::EnvironmentKind::Sandbox
 pub awaken_provisioning_contract::EnvironmentKind::Scope
-impl core::clone::Clone for awaken_provisioning_contract::EnvironmentKind
-pub fn awaken_provisioning_contract::EnvironmentKind::clone(&self) -> awaken_provisioning_contract::EnvironmentKind
-impl core::cmp::PartialEq for awaken_provisioning_contract::EnvironmentKind
-pub fn awaken_provisioning_contract::EnvironmentKind::eq(&self, &awaken_provisioning_contract::EnvironmentKind) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::EnvironmentKind
-pub fn awaken_provisioning_contract::EnvironmentKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::EnvironmentKind
-impl serde_core::ser::Serialize for awaken_provisioning_contract::EnvironmentKind
-pub fn awaken_provisioning_contract::EnvironmentKind::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::EnvironmentKind
-pub fn awaken_provisioning_contract::EnvironmentKind::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_provisioning_contract::EnvironmentKind
-impl core::marker::Send for awaken_provisioning_contract::EnvironmentKind
-impl core::marker::Sync for awaken_provisioning_contract::EnvironmentKind
-impl core::marker::Unpin for awaken_provisioning_contract::EnvironmentKind
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::EnvironmentKind
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::EnvironmentKind
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::EnvironmentKind
 pub enum awaken_provisioning_contract::ExecutionShape
 pub awaken_provisioning_contract::ExecutionShape::NoSandbox
 pub awaken_provisioning_contract::ExecutionShape::Sandbox
-impl core::clone::Clone for awaken_provisioning_contract::ExecutionShape
-pub fn awaken_provisioning_contract::ExecutionShape::clone(&self) -> awaken_provisioning_contract::ExecutionShape
-impl core::cmp::Eq for awaken_provisioning_contract::ExecutionShape
-impl core::cmp::PartialEq for awaken_provisioning_contract::ExecutionShape
-pub fn awaken_provisioning_contract::ExecutionShape::eq(&self, &awaken_provisioning_contract::ExecutionShape) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::ExecutionShape
-pub fn awaken_provisioning_contract::ExecutionShape::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_provisioning_contract::ExecutionShape
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::ExecutionShape
-impl core::marker::Freeze for awaken_provisioning_contract::ExecutionShape
-impl core::marker::Send for awaken_provisioning_contract::ExecutionShape
-impl core::marker::Sync for awaken_provisioning_contract::ExecutionShape
-impl core::marker::Unpin for awaken_provisioning_contract::ExecutionShape
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::ExecutionShape
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::ExecutionShape
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::ExecutionShape
 pub enum awaken_provisioning_contract::InFlightOutcome
 pub awaken_provisioning_contract::InFlightOutcome::Indeterminate
 pub awaken_provisioning_contract::InFlightOutcome::Settled
-impl core::clone::Clone for awaken_provisioning_contract::InFlightOutcome
-pub fn awaken_provisioning_contract::InFlightOutcome::clone(&self) -> awaken_provisioning_contract::InFlightOutcome
-impl core::cmp::Eq for awaken_provisioning_contract::InFlightOutcome
-impl core::cmp::PartialEq for awaken_provisioning_contract::InFlightOutcome
-pub fn awaken_provisioning_contract::InFlightOutcome::eq(&self, &awaken_provisioning_contract::InFlightOutcome) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::InFlightOutcome
-pub fn awaken_provisioning_contract::InFlightOutcome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_provisioning_contract::InFlightOutcome
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::InFlightOutcome
-impl core::marker::Freeze for awaken_provisioning_contract::InFlightOutcome
-impl core::marker::Send for awaken_provisioning_contract::InFlightOutcome
-impl core::marker::Sync for awaken_provisioning_contract::InFlightOutcome
-impl core::marker::Unpin for awaken_provisioning_contract::InFlightOutcome
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::InFlightOutcome
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::InFlightOutcome
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::InFlightOutcome
 pub enum awaken_provisioning_contract::IsolationClass
 pub awaken_provisioning_contract::IsolationClass::Container
 pub awaken_provisioning_contract::IsolationClass::Namespace
 pub awaken_provisioning_contract::IsolationClass::Workdir
-impl core::clone::Clone for awaken_provisioning_contract::IsolationClass
-pub fn awaken_provisioning_contract::IsolationClass::clone(&self) -> awaken_provisioning_contract::IsolationClass
-impl core::cmp::Eq for awaken_provisioning_contract::IsolationClass
-impl core::cmp::Ord for awaken_provisioning_contract::IsolationClass
-pub fn awaken_provisioning_contract::IsolationClass::cmp(&self, &awaken_provisioning_contract::IsolationClass) -> core::cmp::Ordering
-impl core::cmp::PartialEq for awaken_provisioning_contract::IsolationClass
-pub fn awaken_provisioning_contract::IsolationClass::eq(&self, &awaken_provisioning_contract::IsolationClass) -> bool
-impl core::cmp::PartialOrd for awaken_provisioning_contract::IsolationClass
-pub fn awaken_provisioning_contract::IsolationClass::partial_cmp(&self, &awaken_provisioning_contract::IsolationClass) -> core::option::Option<core::cmp::Ordering>
-impl core::fmt::Debug for awaken_provisioning_contract::IsolationClass
-pub fn awaken_provisioning_contract::IsolationClass::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_provisioning_contract::IsolationClass
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::IsolationClass
-impl serde_core::ser::Serialize for awaken_provisioning_contract::IsolationClass
-pub fn awaken_provisioning_contract::IsolationClass::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::IsolationClass
-pub fn awaken_provisioning_contract::IsolationClass::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_provisioning_contract::IsolationClass
-impl core::marker::Send for awaken_provisioning_contract::IsolationClass
-impl core::marker::Sync for awaken_provisioning_contract::IsolationClass
-impl core::marker::Unpin for awaken_provisioning_contract::IsolationClass
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::IsolationClass
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::IsolationClass
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::IsolationClass
 pub enum awaken_provisioning_contract::LeaseLiveness
 pub awaken_provisioning_contract::LeaseLiveness::Expiring
 pub awaken_provisioning_contract::LeaseLiveness::Live
 pub awaken_provisioning_contract::LeaseLiveness::Reapable
-impl core::clone::Clone for awaken_provisioning_contract::LeaseLiveness
-pub fn awaken_provisioning_contract::LeaseLiveness::clone(&self) -> awaken_provisioning_contract::LeaseLiveness
-impl core::cmp::Eq for awaken_provisioning_contract::LeaseLiveness
-impl core::cmp::PartialEq for awaken_provisioning_contract::LeaseLiveness
-pub fn awaken_provisioning_contract::LeaseLiveness::eq(&self, &awaken_provisioning_contract::LeaseLiveness) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::LeaseLiveness
-pub fn awaken_provisioning_contract::LeaseLiveness::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_provisioning_contract::LeaseLiveness
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::LeaseLiveness
-impl core::marker::Freeze for awaken_provisioning_contract::LeaseLiveness
-impl core::marker::Send for awaken_provisioning_contract::LeaseLiveness
-impl core::marker::Sync for awaken_provisioning_contract::LeaseLiveness
-impl core::marker::Unpin for awaken_provisioning_contract::LeaseLiveness
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::LeaseLiveness
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::LeaseLiveness
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::LeaseLiveness
 pub enum awaken_provisioning_contract::MountAccess
 pub awaken_provisioning_contract::MountAccess::ReadOnly
 pub awaken_provisioning_contract::MountAccess::ReadWrite
-impl core::clone::Clone for awaken_provisioning_contract::MountAccess
-pub fn awaken_provisioning_contract::MountAccess::clone(&self) -> awaken_provisioning_contract::MountAccess
-impl core::cmp::Eq for awaken_provisioning_contract::MountAccess
-impl core::cmp::PartialEq for awaken_provisioning_contract::MountAccess
-pub fn awaken_provisioning_contract::MountAccess::eq(&self, &awaken_provisioning_contract::MountAccess) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::MountAccess
-pub fn awaken_provisioning_contract::MountAccess::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_provisioning_contract::MountAccess
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::MountAccess
-impl serde_core::ser::Serialize for awaken_provisioning_contract::MountAccess
-pub fn awaken_provisioning_contract::MountAccess::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::MountAccess
-pub fn awaken_provisioning_contract::MountAccess::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_provisioning_contract::MountAccess
-impl core::marker::Send for awaken_provisioning_contract::MountAccess
-impl core::marker::Sync for awaken_provisioning_contract::MountAccess
-impl core::marker::Unpin for awaken_provisioning_contract::MountAccess
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::MountAccess
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::MountAccess
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::MountAccess
 pub enum awaken_provisioning_contract::MountLifetime
 pub awaken_provisioning_contract::MountLifetime::Durable
 pub awaken_provisioning_contract::MountLifetime::PerRun
 pub awaken_provisioning_contract::MountLifetime::Session
-impl core::clone::Clone for awaken_provisioning_contract::MountLifetime
-pub fn awaken_provisioning_contract::MountLifetime::clone(&self) -> awaken_provisioning_contract::MountLifetime
-impl core::cmp::Eq for awaken_provisioning_contract::MountLifetime
-impl core::cmp::PartialEq for awaken_provisioning_contract::MountLifetime
-pub fn awaken_provisioning_contract::MountLifetime::eq(&self, &awaken_provisioning_contract::MountLifetime) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::MountLifetime
-pub fn awaken_provisioning_contract::MountLifetime::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_provisioning_contract::MountLifetime
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::MountLifetime
-impl serde_core::ser::Serialize for awaken_provisioning_contract::MountLifetime
-pub fn awaken_provisioning_contract::MountLifetime::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::MountLifetime
-pub fn awaken_provisioning_contract::MountLifetime::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_provisioning_contract::MountLifetime
-impl core::marker::Send for awaken_provisioning_contract::MountLifetime
-impl core::marker::Sync for awaken_provisioning_contract::MountLifetime
-impl core::marker::Unpin for awaken_provisioning_contract::MountLifetime
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::MountLifetime
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::MountLifetime
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::MountLifetime
 pub enum awaken_provisioning_contract::MountSource
 pub awaken_provisioning_contract::MountSource::File
 pub awaken_provisioning_contract::MountSource::File::content_hash: core::option::Option<alloc::string::String>
@@ -301,24 +67,6 @@ pub awaken_provisioning_contract::MountSource::Resource::resource_id: alloc::str
 pub awaken_provisioning_contract::MountSource::Secret
 pub awaken_provisioning_contract::MountSource::Secret::content_hash: core::option::Option<alloc::string::String>
 pub awaken_provisioning_contract::MountSource::Secret::reference: alloc::string::String
-impl core::clone::Clone for awaken_provisioning_contract::MountSource
-pub fn awaken_provisioning_contract::MountSource::clone(&self) -> awaken_provisioning_contract::MountSource
-impl core::cmp::PartialEq for awaken_provisioning_contract::MountSource
-pub fn awaken_provisioning_contract::MountSource::eq(&self, &awaken_provisioning_contract::MountSource) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::MountSource
-pub fn awaken_provisioning_contract::MountSource::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::MountSource
-impl serde_core::ser::Serialize for awaken_provisioning_contract::MountSource
-pub fn awaken_provisioning_contract::MountSource::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::MountSource
-pub fn awaken_provisioning_contract::MountSource::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_provisioning_contract::MountSource
-impl core::marker::Send for awaken_provisioning_contract::MountSource
-impl core::marker::Sync for awaken_provisioning_contract::MountSource
-impl core::marker::Unpin for awaken_provisioning_contract::MountSource
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::MountSource
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::MountSource
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::MountSource
 pub enum awaken_provisioning_contract::NetworkPolicy
 pub awaken_provisioning_contract::NetworkPolicy::Allowlist
 pub awaken_provisioning_contract::NetworkPolicy::Allowlist::hosts: alloc::vec::Vec<alloc::string::String>
@@ -327,44 +75,9 @@ pub awaken_provisioning_contract::NetworkPolicy::Unrestricted
 impl awaken_provisioning_contract::NetworkPolicy
 pub fn awaken_provisioning_contract::NetworkPolicy::is_restricted(&self) -> bool
 pub fn awaken_provisioning_contract::NetworkPolicy::rank(&self) -> u8
-impl core::clone::Clone for awaken_provisioning_contract::NetworkPolicy
-pub fn awaken_provisioning_contract::NetworkPolicy::clone(&self) -> awaken_provisioning_contract::NetworkPolicy
-impl core::cmp::Eq for awaken_provisioning_contract::NetworkPolicy
-impl core::cmp::PartialEq for awaken_provisioning_contract::NetworkPolicy
-pub fn awaken_provisioning_contract::NetworkPolicy::eq(&self, &awaken_provisioning_contract::NetworkPolicy) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::NetworkPolicy
-pub fn awaken_provisioning_contract::NetworkPolicy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::NetworkPolicy
-impl serde_core::ser::Serialize for awaken_provisioning_contract::NetworkPolicy
-pub fn awaken_provisioning_contract::NetworkPolicy::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::NetworkPolicy
-pub fn awaken_provisioning_contract::NetworkPolicy::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_provisioning_contract::NetworkPolicy
-impl core::marker::Send for awaken_provisioning_contract::NetworkPolicy
-impl core::marker::Sync for awaken_provisioning_contract::NetworkPolicy
-impl core::marker::Unpin for awaken_provisioning_contract::NetworkPolicy
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::NetworkPolicy
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::NetworkPolicy
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::NetworkPolicy
 pub enum awaken_provisioning_contract::PoisonVerdict
 pub awaken_provisioning_contract::PoisonVerdict::Healthy
 pub awaken_provisioning_contract::PoisonVerdict::Quarantine
-impl core::clone::Clone for awaken_provisioning_contract::PoisonVerdict
-pub fn awaken_provisioning_contract::PoisonVerdict::clone(&self) -> awaken_provisioning_contract::PoisonVerdict
-impl core::cmp::Eq for awaken_provisioning_contract::PoisonVerdict
-impl core::cmp::PartialEq for awaken_provisioning_contract::PoisonVerdict
-pub fn awaken_provisioning_contract::PoisonVerdict::eq(&self, &awaken_provisioning_contract::PoisonVerdict) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::PoisonVerdict
-pub fn awaken_provisioning_contract::PoisonVerdict::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_provisioning_contract::PoisonVerdict
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::PoisonVerdict
-impl core::marker::Freeze for awaken_provisioning_contract::PoisonVerdict
-impl core::marker::Send for awaken_provisioning_contract::PoisonVerdict
-impl core::marker::Sync for awaken_provisioning_contract::PoisonVerdict
-impl core::marker::Unpin for awaken_provisioning_contract::PoisonVerdict
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::PoisonVerdict
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::PoisonVerdict
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::PoisonVerdict
 pub enum awaken_provisioning_contract::PrepareError
 pub awaken_provisioning_contract::PrepareError::EgressSecretUnsupported(alloc::string::String)
 pub awaken_provisioning_contract::PrepareError::InsufficientIsolation
@@ -373,266 +86,53 @@ pub awaken_provisioning_contract::PrepareError::OutputsPathNotAbsolute
 pub awaken_provisioning_contract::PrepareError::ReadOnlyUnsupported(alloc::string::String)
 pub awaken_provisioning_contract::PrepareError::ReservedEnvKey(alloc::string::String)
 pub awaken_provisioning_contract::PrepareError::ResourceLimitsUnsupported
-impl core::cmp::Eq for awaken_provisioning_contract::PrepareError
-impl core::cmp::PartialEq for awaken_provisioning_contract::PrepareError
-pub fn awaken_provisioning_contract::PrepareError::eq(&self, &awaken_provisioning_contract::PrepareError) -> bool
-impl core::error::Error for awaken_provisioning_contract::PrepareError
-impl core::fmt::Debug for awaken_provisioning_contract::PrepareError
-pub fn awaken_provisioning_contract::PrepareError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for awaken_provisioning_contract::PrepareError
-pub fn awaken_provisioning_contract::PrepareError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::PrepareError
-impl core::marker::Freeze for awaken_provisioning_contract::PrepareError
-impl core::marker::Send for awaken_provisioning_contract::PrepareError
-impl core::marker::Sync for awaken_provisioning_contract::PrepareError
-impl core::marker::Unpin for awaken_provisioning_contract::PrepareError
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::PrepareError
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::PrepareError
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::PrepareError
 pub enum awaken_provisioning_contract::Realization
 pub awaken_provisioning_contract::Realization::Bind
 pub awaken_provisioning_contract::Realization::Copy
 pub awaken_provisioning_contract::Realization::Fuse
-impl core::clone::Clone for awaken_provisioning_contract::Realization
-pub fn awaken_provisioning_contract::Realization::clone(&self) -> awaken_provisioning_contract::Realization
-impl core::cmp::Eq for awaken_provisioning_contract::Realization
-impl core::cmp::PartialEq for awaken_provisioning_contract::Realization
-pub fn awaken_provisioning_contract::Realization::eq(&self, &awaken_provisioning_contract::Realization) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::Realization
-pub fn awaken_provisioning_contract::Realization::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_provisioning_contract::Realization
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::Realization
-impl serde_core::ser::Serialize for awaken_provisioning_contract::Realization
-pub fn awaken_provisioning_contract::Realization::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::Realization
-pub fn awaken_provisioning_contract::Realization::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_provisioning_contract::Realization
-impl core::marker::Send for awaken_provisioning_contract::Realization
-impl core::marker::Sync for awaken_provisioning_contract::Realization
-impl core::marker::Unpin for awaken_provisioning_contract::Realization
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::Realization
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::Realization
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::Realization
 pub enum awaken_provisioning_contract::ReapCause
 pub awaken_provisioning_contract::ReapCause::Expired
 pub awaken_provisioning_contract::ReapCause::Released
 pub awaken_provisioning_contract::ReapCause::Revoked
 pub awaken_provisioning_contract::ReapCause::Superseded
 pub awaken_provisioning_contract::ReapCause::TransportLost
-impl core::clone::Clone for awaken_provisioning_contract::ReapCause
-pub fn awaken_provisioning_contract::ReapCause::clone(&self) -> awaken_provisioning_contract::ReapCause
-impl core::cmp::Eq for awaken_provisioning_contract::ReapCause
-impl core::cmp::PartialEq for awaken_provisioning_contract::ReapCause
-pub fn awaken_provisioning_contract::ReapCause::eq(&self, &awaken_provisioning_contract::ReapCause) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::ReapCause
-pub fn awaken_provisioning_contract::ReapCause::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_provisioning_contract::ReapCause
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::ReapCause
-impl core::marker::Freeze for awaken_provisioning_contract::ReapCause
-impl core::marker::Send for awaken_provisioning_contract::ReapCause
-impl core::marker::Sync for awaken_provisioning_contract::ReapCause
-impl core::marker::Unpin for awaken_provisioning_contract::ReapCause
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::ReapCause
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::ReapCause
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::ReapCause
 pub enum awaken_provisioning_contract::RootfsSource
 pub awaken_provisioning_contract::RootfsSource::Dir
 pub awaken_provisioning_contract::RootfsSource::Dir::path_template: alloc::string::String
 pub awaken_provisioning_contract::RootfsSource::Tarball
 pub awaken_provisioning_contract::RootfsSource::Tarball::reference: alloc::string::String
-impl core::clone::Clone for awaken_provisioning_contract::RootfsSource
-pub fn awaken_provisioning_contract::RootfsSource::clone(&self) -> awaken_provisioning_contract::RootfsSource
-impl core::cmp::PartialEq for awaken_provisioning_contract::RootfsSource
-pub fn awaken_provisioning_contract::RootfsSource::eq(&self, &awaken_provisioning_contract::RootfsSource) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::RootfsSource
-pub fn awaken_provisioning_contract::RootfsSource::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::RootfsSource
-impl serde_core::ser::Serialize for awaken_provisioning_contract::RootfsSource
-pub fn awaken_provisioning_contract::RootfsSource::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::RootfsSource
-pub fn awaken_provisioning_contract::RootfsSource::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_provisioning_contract::RootfsSource
-impl core::marker::Send for awaken_provisioning_contract::RootfsSource
-impl core::marker::Sync for awaken_provisioning_contract::RootfsSource
-impl core::marker::Unpin for awaken_provisioning_contract::RootfsSource
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::RootfsSource
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::RootfsSource
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::RootfsSource
 pub enum awaken_provisioning_contract::SandboxAction
 pub awaken_provisioning_contract::SandboxAction::Artifact
 pub awaken_provisioning_contract::SandboxAction::Egress
 pub awaken_provisioning_contract::SandboxAction::Spawn
-impl core::clone::Clone for awaken_provisioning_contract::SandboxAction
-pub fn awaken_provisioning_contract::SandboxAction::clone(&self) -> awaken_provisioning_contract::SandboxAction
-impl core::cmp::Eq for awaken_provisioning_contract::SandboxAction
-impl core::cmp::PartialEq for awaken_provisioning_contract::SandboxAction
-pub fn awaken_provisioning_contract::SandboxAction::eq(&self, &awaken_provisioning_contract::SandboxAction) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::SandboxAction
-pub fn awaken_provisioning_contract::SandboxAction::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_provisioning_contract::SandboxAction
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::SandboxAction
-impl core::marker::Freeze for awaken_provisioning_contract::SandboxAction
-impl core::marker::Send for awaken_provisioning_contract::SandboxAction
-impl core::marker::Sync for awaken_provisioning_contract::SandboxAction
-impl core::marker::Unpin for awaken_provisioning_contract::SandboxAction
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::SandboxAction
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::SandboxAction
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::SandboxAction
 pub enum awaken_provisioning_contract::SandboxStatus
 pub awaken_provisioning_contract::SandboxStatus::Provisioning
 pub awaken_provisioning_contract::SandboxStatus::Ready
 pub awaken_provisioning_contract::SandboxStatus::Terminated
-impl core::clone::Clone for awaken_provisioning_contract::SandboxStatus
-pub fn awaken_provisioning_contract::SandboxStatus::clone(&self) -> awaken_provisioning_contract::SandboxStatus
-impl core::cmp::Eq for awaken_provisioning_contract::SandboxStatus
-impl core::cmp::PartialEq for awaken_provisioning_contract::SandboxStatus
-pub fn awaken_provisioning_contract::SandboxStatus::eq(&self, &awaken_provisioning_contract::SandboxStatus) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::SandboxStatus
-pub fn awaken_provisioning_contract::SandboxStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_provisioning_contract::SandboxStatus
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::SandboxStatus
-impl serde_core::ser::Serialize for awaken_provisioning_contract::SandboxStatus
-pub fn awaken_provisioning_contract::SandboxStatus::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::SandboxStatus
-pub fn awaken_provisioning_contract::SandboxStatus::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_provisioning_contract::SandboxStatus
-impl core::marker::Send for awaken_provisioning_contract::SandboxStatus
-impl core::marker::Sync for awaken_provisioning_contract::SandboxStatus
-impl core::marker::Unpin for awaken_provisioning_contract::SandboxStatus
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::SandboxStatus
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::SandboxStatus
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::SandboxStatus
 pub enum awaken_provisioning_contract::SelectionError
 pub awaken_provisioning_contract::SelectionError::NoCapableBackend
-impl core::cmp::Eq for awaken_provisioning_contract::SelectionError
-impl core::cmp::PartialEq for awaken_provisioning_contract::SelectionError
-pub fn awaken_provisioning_contract::SelectionError::eq(&self, &awaken_provisioning_contract::SelectionError) -> bool
-impl core::error::Error for awaken_provisioning_contract::SelectionError
-impl core::fmt::Debug for awaken_provisioning_contract::SelectionError
-pub fn awaken_provisioning_contract::SelectionError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for awaken_provisioning_contract::SelectionError
-pub fn awaken_provisioning_contract::SelectionError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::SelectionError
-impl core::marker::Freeze for awaken_provisioning_contract::SelectionError
-impl core::marker::Send for awaken_provisioning_contract::SelectionError
-impl core::marker::Sync for awaken_provisioning_contract::SelectionError
-impl core::marker::Unpin for awaken_provisioning_contract::SelectionError
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::SelectionError
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::SelectionError
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::SelectionError
 pub enum awaken_provisioning_contract::Signal
 pub awaken_provisioning_contract::Signal::Int
 pub awaken_provisioning_contract::Signal::Kill
 pub awaken_provisioning_contract::Signal::Term
-impl core::clone::Clone for awaken_provisioning_contract::Signal
-pub fn awaken_provisioning_contract::Signal::clone(&self) -> awaken_provisioning_contract::Signal
-impl core::cmp::Eq for awaken_provisioning_contract::Signal
-impl core::cmp::PartialEq for awaken_provisioning_contract::Signal
-pub fn awaken_provisioning_contract::Signal::eq(&self, &awaken_provisioning_contract::Signal) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::Signal
-pub fn awaken_provisioning_contract::Signal::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_provisioning_contract::Signal
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::Signal
-impl serde_core::ser::Serialize for awaken_provisioning_contract::Signal
-pub fn awaken_provisioning_contract::Signal::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::Signal
-pub fn awaken_provisioning_contract::Signal::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_provisioning_contract::Signal
-impl core::marker::Send for awaken_provisioning_contract::Signal
-impl core::marker::Sync for awaken_provisioning_contract::Signal
-impl core::marker::Unpin for awaken_provisioning_contract::Signal
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::Signal
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::Signal
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::Signal
 pub enum awaken_provisioning_contract::Stdio
 pub awaken_provisioning_contract::Stdio::Inherit
 pub awaken_provisioning_contract::Stdio::Null
 pub awaken_provisioning_contract::Stdio::Piped
-impl core::clone::Clone for awaken_provisioning_contract::Stdio
-pub fn awaken_provisioning_contract::Stdio::clone(&self) -> awaken_provisioning_contract::Stdio
-impl core::cmp::Eq for awaken_provisioning_contract::Stdio
-impl core::cmp::PartialEq for awaken_provisioning_contract::Stdio
-pub fn awaken_provisioning_contract::Stdio::eq(&self, &awaken_provisioning_contract::Stdio) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::Stdio
-pub fn awaken_provisioning_contract::Stdio::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_provisioning_contract::Stdio
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::Stdio
-impl serde_core::ser::Serialize for awaken_provisioning_contract::Stdio
-pub fn awaken_provisioning_contract::Stdio::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::Stdio
-pub fn awaken_provisioning_contract::Stdio::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_provisioning_contract::Stdio
-impl core::marker::Send for awaken_provisioning_contract::Stdio
-impl core::marker::Sync for awaken_provisioning_contract::Stdio
-impl core::marker::Unpin for awaken_provisioning_contract::Stdio
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::Stdio
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::Stdio
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::Stdio
 pub enum awaken_provisioning_contract::TokenError
 pub awaken_provisioning_contract::TokenError::BadSignature
 pub awaken_provisioning_contract::TokenError::Expired
 pub awaken_provisioning_contract::TokenError::NotYetValid
 pub awaken_provisioning_contract::TokenError::TupleMismatch
-impl core::cmp::Eq for awaken_provisioning_contract::TokenError
-impl core::cmp::PartialEq for awaken_provisioning_contract::TokenError
-pub fn awaken_provisioning_contract::TokenError::eq(&self, &awaken_provisioning_contract::TokenError) -> bool
-impl core::error::Error for awaken_provisioning_contract::TokenError
-impl core::fmt::Debug for awaken_provisioning_contract::TokenError
-pub fn awaken_provisioning_contract::TokenError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for awaken_provisioning_contract::TokenError
-pub fn awaken_provisioning_contract::TokenError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::TokenError
-impl core::marker::Freeze for awaken_provisioning_contract::TokenError
-impl core::marker::Send for awaken_provisioning_contract::TokenError
-impl core::marker::Sync for awaken_provisioning_contract::TokenError
-impl core::marker::Unpin for awaken_provisioning_contract::TokenError
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::TokenError
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::TokenError
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::TokenError
 pub struct awaken_provisioning_contract::AdoptionPlan
 pub awaken_provisioning_contract::AdoptionPlan::adopt: alloc::vec::Vec<awaken_provisioning_contract::SandboxHandle>
 pub awaken_provisioning_contract::AdoptionPlan::orphan: alloc::vec::Vec<awaken_provisioning_contract::SandboxHandle>
 pub awaken_provisioning_contract::AdoptionPlan::reap: alloc::vec::Vec<awaken_provisioning_contract::SandboxHandle>
-impl core::clone::Clone for awaken_provisioning_contract::AdoptionPlan
-pub fn awaken_provisioning_contract::AdoptionPlan::clone(&self) -> awaken_provisioning_contract::AdoptionPlan
-impl core::cmp::Eq for awaken_provisioning_contract::AdoptionPlan
-impl core::cmp::PartialEq for awaken_provisioning_contract::AdoptionPlan
-pub fn awaken_provisioning_contract::AdoptionPlan::eq(&self, &awaken_provisioning_contract::AdoptionPlan) -> bool
-impl core::default::Default for awaken_provisioning_contract::AdoptionPlan
-pub fn awaken_provisioning_contract::AdoptionPlan::default() -> awaken_provisioning_contract::AdoptionPlan
-impl core::fmt::Debug for awaken_provisioning_contract::AdoptionPlan
-pub fn awaken_provisioning_contract::AdoptionPlan::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::AdoptionPlan
-impl core::marker::Freeze for awaken_provisioning_contract::AdoptionPlan
-impl core::marker::Send for awaken_provisioning_contract::AdoptionPlan
-impl core::marker::Sync for awaken_provisioning_contract::AdoptionPlan
-impl core::marker::Unpin for awaken_provisioning_contract::AdoptionPlan
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::AdoptionPlan
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::AdoptionPlan
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::AdoptionPlan
 pub struct awaken_provisioning_contract::Artifact
 pub awaken_provisioning_contract::Artifact::content_hash: alloc::string::String
 pub awaken_provisioning_contract::Artifact::id: alloc::string::String
 pub awaken_provisioning_contract::Artifact::path: alloc::string::String
 pub awaken_provisioning_contract::Artifact::size_bytes: u64
-impl core::clone::Clone for awaken_provisioning_contract::Artifact
-pub fn awaken_provisioning_contract::Artifact::clone(&self) -> awaken_provisioning_contract::Artifact
-impl core::cmp::PartialEq for awaken_provisioning_contract::Artifact
-pub fn awaken_provisioning_contract::Artifact::eq(&self, &awaken_provisioning_contract::Artifact) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::Artifact
-pub fn awaken_provisioning_contract::Artifact::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::Artifact
-impl serde_core::ser::Serialize for awaken_provisioning_contract::Artifact
-pub fn awaken_provisioning_contract::Artifact::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::Artifact
-pub fn awaken_provisioning_contract::Artifact::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_provisioning_contract::Artifact
-impl core::marker::Send for awaken_provisioning_contract::Artifact
-impl core::marker::Sync for awaken_provisioning_contract::Artifact
-impl core::marker::Unpin for awaken_provisioning_contract::Artifact
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::Artifact
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::Artifact
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::Artifact
 pub struct awaken_provisioning_contract::Command
 pub awaken_provisioning_contract::Command::argv: alloc::vec::Vec<alloc::string::String>
 pub awaken_provisioning_contract::Command::cwd: alloc::string::String
@@ -640,46 +140,10 @@ pub awaken_provisioning_contract::Command::env: alloc::vec::Vec<awaken_provision
 pub awaken_provisioning_contract::Command::stdio: awaken_provisioning_contract::Stdio
 impl awaken_provisioning_contract::Command
 pub fn awaken_provisioning_contract::Command::new(impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::Into<alloc::string::String>>) -> Self
-impl core::clone::Clone for awaken_provisioning_contract::Command
-pub fn awaken_provisioning_contract::Command::clone(&self) -> awaken_provisioning_contract::Command
-impl core::cmp::PartialEq for awaken_provisioning_contract::Command
-pub fn awaken_provisioning_contract::Command::eq(&self, &awaken_provisioning_contract::Command) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::Command
-pub fn awaken_provisioning_contract::Command::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::Command
-impl serde_core::ser::Serialize for awaken_provisioning_contract::Command
-pub fn awaken_provisioning_contract::Command::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::Command
-pub fn awaken_provisioning_contract::Command::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_provisioning_contract::Command
-impl core::marker::Send for awaken_provisioning_contract::Command
-impl core::marker::Sync for awaken_provisioning_contract::Command
-impl core::marker::Unpin for awaken_provisioning_contract::Command
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::Command
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::Command
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::Command
 pub struct awaken_provisioning_contract::EnvVar
 pub awaken_provisioning_contract::EnvVar::name: alloc::string::String
 pub awaken_provisioning_contract::EnvVar::value: awaken_provisioning_contract::EnvValue
 pub awaken_provisioning_contract::EnvVar::visibility: awaken_provisioning_contract::EnvVisibility
-impl core::clone::Clone for awaken_provisioning_contract::EnvVar
-pub fn awaken_provisioning_contract::EnvVar::clone(&self) -> awaken_provisioning_contract::EnvVar
-impl core::cmp::PartialEq for awaken_provisioning_contract::EnvVar
-pub fn awaken_provisioning_contract::EnvVar::eq(&self, &awaken_provisioning_contract::EnvVar) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::EnvVar
-pub fn awaken_provisioning_contract::EnvVar::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::EnvVar
-impl serde_core::ser::Serialize for awaken_provisioning_contract::EnvVar
-pub fn awaken_provisioning_contract::EnvVar::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::EnvVar
-pub fn awaken_provisioning_contract::EnvVar::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_provisioning_contract::EnvVar
-impl core::marker::Send for awaken_provisioning_contract::EnvVar
-impl core::marker::Sync for awaken_provisioning_contract::EnvVar
-impl core::marker::Unpin for awaken_provisioning_contract::EnvVar
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::EnvVar
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::EnvVar
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::EnvVar
 pub struct awaken_provisioning_contract::EnvironmentDecl
 pub awaken_provisioning_contract::EnvironmentDecl::env_keys: alloc::vec::Vec<alloc::string::String>
 pub awaken_provisioning_contract::EnvironmentDecl::kind: alloc::string::String
@@ -687,21 +151,6 @@ pub awaken_provisioning_contract::EnvironmentDecl::max_concurrency: core::option
 pub awaken_provisioning_contract::EnvironmentDecl::required_field: core::option::Option<(&'static str, alloc::string::String)>
 pub awaken_provisioning_contract::EnvironmentDecl::summary: alloc::string::String
 pub awaken_provisioning_contract::EnvironmentDecl::writable_base: bool
-impl core::clone::Clone for awaken_provisioning_contract::EnvironmentDecl
-pub fn awaken_provisioning_contract::EnvironmentDecl::clone(&self) -> awaken_provisioning_contract::EnvironmentDecl
-impl core::cmp::Eq for awaken_provisioning_contract::EnvironmentDecl
-impl core::cmp::PartialEq for awaken_provisioning_contract::EnvironmentDecl
-pub fn awaken_provisioning_contract::EnvironmentDecl::eq(&self, &awaken_provisioning_contract::EnvironmentDecl) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::EnvironmentDecl
-pub fn awaken_provisioning_contract::EnvironmentDecl::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::EnvironmentDecl
-impl core::marker::Freeze for awaken_provisioning_contract::EnvironmentDecl
-impl core::marker::Send for awaken_provisioning_contract::EnvironmentDecl
-impl core::marker::Sync for awaken_provisioning_contract::EnvironmentDecl
-impl core::marker::Unpin for awaken_provisioning_contract::EnvironmentDecl
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::EnvironmentDecl
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::EnvironmentDecl
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::EnvironmentDecl
 pub struct awaken_provisioning_contract::EnvironmentPlan
 pub awaken_provisioning_contract::EnvironmentPlan::env: alloc::vec::Vec<awaken_provisioning_contract::EnvVar>
 pub awaken_provisioning_contract::EnvironmentPlan::limits: awaken_provisioning_contract::ResourceLimits
@@ -709,42 +158,9 @@ pub awaken_provisioning_contract::EnvironmentPlan::mounts: alloc::vec::Vec<awake
 pub awaken_provisioning_contract::EnvironmentPlan::network: awaken_provisioning_contract::NetworkPolicy
 pub awaken_provisioning_contract::EnvironmentPlan::outputs_path: alloc::string::String
 pub awaken_provisioning_contract::EnvironmentPlan::scope: alloc::string::String
-impl core::clone::Clone for awaken_provisioning_contract::EnvironmentPlan
-pub fn awaken_provisioning_contract::EnvironmentPlan::clone(&self) -> awaken_provisioning_contract::EnvironmentPlan
-impl core::cmp::PartialEq for awaken_provisioning_contract::EnvironmentPlan
-pub fn awaken_provisioning_contract::EnvironmentPlan::eq(&self, &awaken_provisioning_contract::EnvironmentPlan) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::EnvironmentPlan
-pub fn awaken_provisioning_contract::EnvironmentPlan::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::EnvironmentPlan
-impl core::marker::Freeze for awaken_provisioning_contract::EnvironmentPlan
-impl core::marker::Send for awaken_provisioning_contract::EnvironmentPlan
-impl core::marker::Sync for awaken_provisioning_contract::EnvironmentPlan
-impl core::marker::Unpin for awaken_provisioning_contract::EnvironmentPlan
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::EnvironmentPlan
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::EnvironmentPlan
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::EnvironmentPlan
 pub struct awaken_provisioning_contract::ExitStatus
 pub awaken_provisioning_contract::ExitStatus::code: core::option::Option<i32>
 pub awaken_provisioning_contract::ExitStatus::signaled: bool
-impl core::clone::Clone for awaken_provisioning_contract::ExitStatus
-pub fn awaken_provisioning_contract::ExitStatus::clone(&self) -> awaken_provisioning_contract::ExitStatus
-impl core::cmp::Eq for awaken_provisioning_contract::ExitStatus
-impl core::cmp::PartialEq for awaken_provisioning_contract::ExitStatus
-pub fn awaken_provisioning_contract::ExitStatus::eq(&self, &awaken_provisioning_contract::ExitStatus) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::ExitStatus
-pub fn awaken_provisioning_contract::ExitStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::ExitStatus
-impl serde_core::ser::Serialize for awaken_provisioning_contract::ExitStatus
-pub fn awaken_provisioning_contract::ExitStatus::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::ExitStatus
-pub fn awaken_provisioning_contract::ExitStatus::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_provisioning_contract::ExitStatus
-impl core::marker::Send for awaken_provisioning_contract::ExitStatus
-impl core::marker::Sync for awaken_provisioning_contract::ExitStatus
-impl core::marker::Unpin for awaken_provisioning_contract::ExitStatus
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::ExitStatus
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::ExitStatus
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::ExitStatus
 pub struct awaken_provisioning_contract::LeaseCallbackClaims
 pub awaken_provisioning_contract::LeaseCallbackClaims::expires_ms: u64
 pub awaken_provisioning_contract::LeaseCallbackClaims::issued_ms: u64
@@ -754,83 +170,21 @@ pub awaken_provisioning_contract::LeaseCallbackClaims::run_id: alloc::string::St
 pub awaken_provisioning_contract::LeaseCallbackClaims::worker_id: alloc::string::String
 impl awaken_provisioning_contract::LeaseCallbackClaims
 pub fn awaken_provisioning_contract::LeaseCallbackClaims::sign(self, impl core::ops::function::Fn(&[u8]) -> alloc::vec::Vec<u8>) -> awaken_provisioning_contract::LeaseCallbackToken
-impl core::clone::Clone for awaken_provisioning_contract::LeaseCallbackClaims
-pub fn awaken_provisioning_contract::LeaseCallbackClaims::clone(&self) -> awaken_provisioning_contract::LeaseCallbackClaims
-impl core::cmp::Eq for awaken_provisioning_contract::LeaseCallbackClaims
-impl core::cmp::PartialEq for awaken_provisioning_contract::LeaseCallbackClaims
-pub fn awaken_provisioning_contract::LeaseCallbackClaims::eq(&self, &awaken_provisioning_contract::LeaseCallbackClaims) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::LeaseCallbackClaims
-pub fn awaken_provisioning_contract::LeaseCallbackClaims::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::LeaseCallbackClaims
-impl core::marker::Freeze for awaken_provisioning_contract::LeaseCallbackClaims
-impl core::marker::Send for awaken_provisioning_contract::LeaseCallbackClaims
-impl core::marker::Sync for awaken_provisioning_contract::LeaseCallbackClaims
-impl core::marker::Unpin for awaken_provisioning_contract::LeaseCallbackClaims
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::LeaseCallbackClaims
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::LeaseCallbackClaims
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::LeaseCallbackClaims
 pub struct awaken_provisioning_contract::LeaseCallbackToken
 pub awaken_provisioning_contract::LeaseCallbackToken::claims: awaken_provisioning_contract::LeaseCallbackClaims
 pub awaken_provisioning_contract::LeaseCallbackToken::mac: alloc::vec::Vec<u8>
 impl awaken_provisioning_contract::LeaseCallbackToken
 pub fn awaken_provisioning_contract::LeaseCallbackToken::verify(&self, &str, &str, &str, u64, u64, impl core::ops::function::Fn(&[u8]) -> alloc::vec::Vec<u8>) -> core::result::Result<(), awaken_provisioning_contract::TokenError>
-impl core::clone::Clone for awaken_provisioning_contract::LeaseCallbackToken
-pub fn awaken_provisioning_contract::LeaseCallbackToken::clone(&self) -> awaken_provisioning_contract::LeaseCallbackToken
-impl core::cmp::Eq for awaken_provisioning_contract::LeaseCallbackToken
-impl core::cmp::PartialEq for awaken_provisioning_contract::LeaseCallbackToken
-pub fn awaken_provisioning_contract::LeaseCallbackToken::eq(&self, &awaken_provisioning_contract::LeaseCallbackToken) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::LeaseCallbackToken
-pub fn awaken_provisioning_contract::LeaseCallbackToken::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::LeaseCallbackToken
-impl core::marker::Freeze for awaken_provisioning_contract::LeaseCallbackToken
-impl core::marker::Send for awaken_provisioning_contract::LeaseCallbackToken
-impl core::marker::Sync for awaken_provisioning_contract::LeaseCallbackToken
-impl core::marker::Unpin for awaken_provisioning_contract::LeaseCallbackToken
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::LeaseCallbackToken
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::LeaseCallbackToken
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::LeaseCallbackToken
 pub struct awaken_provisioning_contract::LeaseGrant
 pub awaken_provisioning_contract::LeaseGrant::expires_ms: core::option::Option<u64>
 impl awaken_provisioning_contract::LeaseGrant
 pub fn awaken_provisioning_contract::LeaseGrant::indefinite() -> Self
 pub fn awaken_provisioning_contract::LeaseGrant::liveness(&self, u64, u64) -> awaken_provisioning_contract::LeaseLiveness
 pub fn awaken_provisioning_contract::LeaseGrant::until(u64) -> Self
-impl core::clone::Clone for awaken_provisioning_contract::LeaseGrant
-pub fn awaken_provisioning_contract::LeaseGrant::clone(&self) -> awaken_provisioning_contract::LeaseGrant
-impl core::cmp::Eq for awaken_provisioning_contract::LeaseGrant
-impl core::cmp::PartialEq for awaken_provisioning_contract::LeaseGrant
-pub fn awaken_provisioning_contract::LeaseGrant::eq(&self, &awaken_provisioning_contract::LeaseGrant) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::LeaseGrant
-pub fn awaken_provisioning_contract::LeaseGrant::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_provisioning_contract::LeaseGrant
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::LeaseGrant
-impl core::marker::Freeze for awaken_provisioning_contract::LeaseGrant
-impl core::marker::Send for awaken_provisioning_contract::LeaseGrant
-impl core::marker::Sync for awaken_provisioning_contract::LeaseGrant
-impl core::marker::Unpin for awaken_provisioning_contract::LeaseGrant
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::LeaseGrant
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::LeaseGrant
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::LeaseGrant
 pub struct awaken_provisioning_contract::LivenessSignals
 pub awaken_provisioning_contract::LivenessSignals::now_ms: u64
 pub awaken_provisioning_contract::LivenessSignals::revoked: bool
 pub awaken_provisioning_contract::LivenessSignals::transport_lost: bool
-impl core::clone::Clone for awaken_provisioning_contract::LivenessSignals
-pub fn awaken_provisioning_contract::LivenessSignals::clone(&self) -> awaken_provisioning_contract::LivenessSignals
-impl core::cmp::Eq for awaken_provisioning_contract::LivenessSignals
-impl core::cmp::PartialEq for awaken_provisioning_contract::LivenessSignals
-pub fn awaken_provisioning_contract::LivenessSignals::eq(&self, &awaken_provisioning_contract::LivenessSignals) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::LivenessSignals
-pub fn awaken_provisioning_contract::LivenessSignals::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_provisioning_contract::LivenessSignals
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::LivenessSignals
-impl core::marker::Freeze for awaken_provisioning_contract::LivenessSignals
-impl core::marker::Send for awaken_provisioning_contract::LivenessSignals
-impl core::marker::Sync for awaken_provisioning_contract::LivenessSignals
-impl core::marker::Unpin for awaken_provisioning_contract::LivenessSignals
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::LivenessSignals
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::LivenessSignals
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::LivenessSignals
 pub struct awaken_provisioning_contract::MountRequirement
 pub awaken_provisioning_contract::MountRequirement::access: awaken_provisioning_contract::MountAccess
 pub awaken_provisioning_contract::MountRequirement::lifetime: awaken_provisioning_contract::MountLifetime
@@ -840,85 +194,21 @@ pub awaken_provisioning_contract::MountRequirement::required: bool
 pub awaken_provisioning_contract::MountRequirement::source: awaken_provisioning_contract::MountSource
 impl awaken_provisioning_contract::MountRequirement
 pub fn awaken_provisioning_contract::MountRequirement::is_secret_writeback(&self) -> bool
-impl core::clone::Clone for awaken_provisioning_contract::MountRequirement
-pub fn awaken_provisioning_contract::MountRequirement::clone(&self) -> awaken_provisioning_contract::MountRequirement
-impl core::cmp::PartialEq for awaken_provisioning_contract::MountRequirement
-pub fn awaken_provisioning_contract::MountRequirement::eq(&self, &awaken_provisioning_contract::MountRequirement) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::MountRequirement
-pub fn awaken_provisioning_contract::MountRequirement::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::MountRequirement
-impl serde_core::ser::Serialize for awaken_provisioning_contract::MountRequirement
-pub fn awaken_provisioning_contract::MountRequirement::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::MountRequirement
-pub fn awaken_provisioning_contract::MountRequirement::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_provisioning_contract::MountRequirement
-impl core::marker::Send for awaken_provisioning_contract::MountRequirement
-impl core::marker::Sync for awaken_provisioning_contract::MountRequirement
-impl core::marker::Unpin for awaken_provisioning_contract::MountRequirement
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::MountRequirement
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::MountRequirement
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::MountRequirement
 pub struct awaken_provisioning_contract::NonceWatermark
 impl awaken_provisioning_contract::NonceWatermark
 pub fn awaken_provisioning_contract::NonceWatermark::admit(&mut self, &str, u64) -> bool
 pub fn awaken_provisioning_contract::NonceWatermark::new() -> Self
-impl core::default::Default for awaken_provisioning_contract::NonceWatermark
-pub fn awaken_provisioning_contract::NonceWatermark::default() -> awaken_provisioning_contract::NonceWatermark
-impl core::fmt::Debug for awaken_provisioning_contract::NonceWatermark
-pub fn awaken_provisioning_contract::NonceWatermark::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_provisioning_contract::NonceWatermark
-impl core::marker::Send for awaken_provisioning_contract::NonceWatermark
-impl core::marker::Sync for awaken_provisioning_contract::NonceWatermark
-impl core::marker::Unpin for awaken_provisioning_contract::NonceWatermark
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::NonceWatermark
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::NonceWatermark
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::NonceWatermark
 pub struct awaken_provisioning_contract::RealizedMount
 pub awaken_provisioning_contract::RealizedMount::access: awaken_provisioning_contract::MountAccess
 pub awaken_provisioning_contract::RealizedMount::content_hash: core::option::Option<alloc::string::String>
 pub awaken_provisioning_contract::RealizedMount::mount_id: alloc::string::String
 pub awaken_provisioning_contract::RealizedMount::mount_path: alloc::string::String
 pub awaken_provisioning_contract::RealizedMount::realization: awaken_provisioning_contract::Realization
-impl core::clone::Clone for awaken_provisioning_contract::RealizedMount
-pub fn awaken_provisioning_contract::RealizedMount::clone(&self) -> awaken_provisioning_contract::RealizedMount
-impl core::cmp::PartialEq for awaken_provisioning_contract::RealizedMount
-pub fn awaken_provisioning_contract::RealizedMount::eq(&self, &awaken_provisioning_contract::RealizedMount) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::RealizedMount
-pub fn awaken_provisioning_contract::RealizedMount::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::RealizedMount
-impl serde_core::ser::Serialize for awaken_provisioning_contract::RealizedMount
-pub fn awaken_provisioning_contract::RealizedMount::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::RealizedMount
-pub fn awaken_provisioning_contract::RealizedMount::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_provisioning_contract::RealizedMount
-impl core::marker::Send for awaken_provisioning_contract::RealizedMount
-impl core::marker::Sync for awaken_provisioning_contract::RealizedMount
-impl core::marker::Unpin for awaken_provisioning_contract::RealizedMount
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::RealizedMount
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::RealizedMount
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::RealizedMount
 pub struct awaken_provisioning_contract::ReconcileOutcome
 pub awaken_provisioning_contract::ReconcileOutcome::adopted: alloc::vec::Vec<awaken_provisioning_contract::SandboxHandle>
 pub awaken_provisioning_contract::ReconcileOutcome::failed: alloc::vec::Vec<awaken_provisioning_contract::SandboxHandle>
 pub awaken_provisioning_contract::ReconcileOutcome::orphaned: alloc::vec::Vec<awaken_provisioning_contract::SandboxHandle>
 pub awaken_provisioning_contract::ReconcileOutcome::reaped: alloc::vec::Vec<awaken_provisioning_contract::SandboxHandle>
-impl core::clone::Clone for awaken_provisioning_contract::ReconcileOutcome
-pub fn awaken_provisioning_contract::ReconcileOutcome::clone(&self) -> awaken_provisioning_contract::ReconcileOutcome
-impl core::cmp::Eq for awaken_provisioning_contract::ReconcileOutcome
-impl core::cmp::PartialEq for awaken_provisioning_contract::ReconcileOutcome
-pub fn awaken_provisioning_contract::ReconcileOutcome::eq(&self, &awaken_provisioning_contract::ReconcileOutcome) -> bool
-impl core::default::Default for awaken_provisioning_contract::ReconcileOutcome
-pub fn awaken_provisioning_contract::ReconcileOutcome::default() -> awaken_provisioning_contract::ReconcileOutcome
-impl core::fmt::Debug for awaken_provisioning_contract::ReconcileOutcome
-pub fn awaken_provisioning_contract::ReconcileOutcome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::ReconcileOutcome
-impl core::marker::Freeze for awaken_provisioning_contract::ReconcileOutcome
-impl core::marker::Send for awaken_provisioning_contract::ReconcileOutcome
-impl core::marker::Sync for awaken_provisioning_contract::ReconcileOutcome
-impl core::marker::Unpin for awaken_provisioning_contract::ReconcileOutcome
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::ReconcileOutcome
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::ReconcileOutcome
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::ReconcileOutcome
 pub struct awaken_provisioning_contract::ResourceLimits
 pub awaken_provisioning_contract::ResourceLimits::cpu_millis: core::option::Option<u32>
 pub awaken_provisioning_contract::ResourceLimits::disk_bytes: core::option::Option<u64>
@@ -926,27 +216,6 @@ pub awaken_provisioning_contract::ResourceLimits::memory_bytes: core::option::Op
 pub awaken_provisioning_contract::ResourceLimits::pids: core::option::Option<u32>
 impl awaken_provisioning_contract::ResourceLimits
 pub fn awaken_provisioning_contract::ResourceLimits::is_set(&self) -> bool
-impl core::clone::Clone for awaken_provisioning_contract::ResourceLimits
-pub fn awaken_provisioning_contract::ResourceLimits::clone(&self) -> awaken_provisioning_contract::ResourceLimits
-impl core::cmp::Eq for awaken_provisioning_contract::ResourceLimits
-impl core::cmp::PartialEq for awaken_provisioning_contract::ResourceLimits
-pub fn awaken_provisioning_contract::ResourceLimits::eq(&self, &awaken_provisioning_contract::ResourceLimits) -> bool
-impl core::default::Default for awaken_provisioning_contract::ResourceLimits
-pub fn awaken_provisioning_contract::ResourceLimits::default() -> awaken_provisioning_contract::ResourceLimits
-impl core::fmt::Debug for awaken_provisioning_contract::ResourceLimits
-pub fn awaken_provisioning_contract::ResourceLimits::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::ResourceLimits
-impl serde_core::ser::Serialize for awaken_provisioning_contract::ResourceLimits
-pub fn awaken_provisioning_contract::ResourceLimits::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::ResourceLimits
-pub fn awaken_provisioning_contract::ResourceLimits::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_provisioning_contract::ResourceLimits
-impl core::marker::Send for awaken_provisioning_contract::ResourceLimits
-impl core::marker::Sync for awaken_provisioning_contract::ResourceLimits
-impl core::marker::Unpin for awaken_provisioning_contract::ResourceLimits
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::ResourceLimits
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::ResourceLimits
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::ResourceLimits
 pub struct awaken_provisioning_contract::SandboxCapabilities
 pub awaken_provisioning_contract::SandboxCapabilities::custom_rootfs: bool
 pub awaken_provisioning_contract::SandboxCapabilities::enforced_readonly: bool
@@ -958,65 +227,15 @@ pub awaken_provisioning_contract::SandboxCapabilities::secret_egress_substitutio
 pub awaken_provisioning_contract::SandboxCapabilities::tool_transparent: bool
 impl awaken_provisioning_contract::SandboxCapabilities
 pub fn awaken_provisioning_contract::SandboxCapabilities::satisfies(&self, &awaken_provisioning_contract::SandboxSpec) -> bool
-impl core::clone::Clone for awaken_provisioning_contract::SandboxCapabilities
-pub fn awaken_provisioning_contract::SandboxCapabilities::clone(&self) -> awaken_provisioning_contract::SandboxCapabilities
-impl core::cmp::Eq for awaken_provisioning_contract::SandboxCapabilities
-impl core::cmp::PartialEq for awaken_provisioning_contract::SandboxCapabilities
-pub fn awaken_provisioning_contract::SandboxCapabilities::eq(&self, &awaken_provisioning_contract::SandboxCapabilities) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::SandboxCapabilities
-pub fn awaken_provisioning_contract::SandboxCapabilities::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::SandboxCapabilities
-impl serde_core::ser::Serialize for awaken_provisioning_contract::SandboxCapabilities
-pub fn awaken_provisioning_contract::SandboxCapabilities::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::SandboxCapabilities
-pub fn awaken_provisioning_contract::SandboxCapabilities::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_provisioning_contract::SandboxCapabilities
-impl core::marker::Send for awaken_provisioning_contract::SandboxCapabilities
-impl core::marker::Sync for awaken_provisioning_contract::SandboxCapabilities
-impl core::marker::Unpin for awaken_provisioning_contract::SandboxCapabilities
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::SandboxCapabilities
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::SandboxCapabilities
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::SandboxCapabilities
 pub struct awaken_provisioning_contract::SandboxError(pub alloc::string::String)
 impl awaken_provisioning_contract::SandboxError
 pub fn awaken_provisioning_contract::SandboxError::new(impl core::convert::Into<alloc::string::String>) -> Self
-impl core::error::Error for awaken_provisioning_contract::SandboxError
-impl core::fmt::Debug for awaken_provisioning_contract::SandboxError
-pub fn awaken_provisioning_contract::SandboxError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for awaken_provisioning_contract::SandboxError
-pub fn awaken_provisioning_contract::SandboxError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_provisioning_contract::SandboxError
-impl core::marker::Send for awaken_provisioning_contract::SandboxError
-impl core::marker::Sync for awaken_provisioning_contract::SandboxError
-impl core::marker::Unpin for awaken_provisioning_contract::SandboxError
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::SandboxError
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::SandboxError
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::SandboxError
 pub struct awaken_provisioning_contract::SandboxHandle
 pub awaken_provisioning_contract::SandboxHandle::extra: core::option::Option<serde_json::value::Value>
 pub awaken_provisioning_contract::SandboxHandle::provider_kind: alloc::string::String
 pub awaken_provisioning_contract::SandboxHandle::sandbox_id: alloc::string::String
 impl awaken_provisioning_contract::SandboxHandle
 pub fn awaken_provisioning_contract::SandboxHandle::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
-impl core::clone::Clone for awaken_provisioning_contract::SandboxHandle
-pub fn awaken_provisioning_contract::SandboxHandle::clone(&self) -> awaken_provisioning_contract::SandboxHandle
-impl core::cmp::Eq for awaken_provisioning_contract::SandboxHandle
-impl core::cmp::PartialEq for awaken_provisioning_contract::SandboxHandle
-pub fn awaken_provisioning_contract::SandboxHandle::eq(&self, &awaken_provisioning_contract::SandboxHandle) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::SandboxHandle
-pub fn awaken_provisioning_contract::SandboxHandle::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::SandboxHandle
-impl serde_core::ser::Serialize for awaken_provisioning_contract::SandboxHandle
-pub fn awaken_provisioning_contract::SandboxHandle::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::SandboxHandle
-pub fn awaken_provisioning_contract::SandboxHandle::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_provisioning_contract::SandboxHandle
-impl core::marker::Send for awaken_provisioning_contract::SandboxHandle
-impl core::marker::Sync for awaken_provisioning_contract::SandboxHandle
-impl core::marker::Unpin for awaken_provisioning_contract::SandboxHandle
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::SandboxHandle
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::SandboxHandle
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::SandboxHandle
 pub struct awaken_provisioning_contract::SandboxSpec
 pub awaken_provisioning_contract::SandboxSpec::env: alloc::vec::Vec<awaken_provisioning_contract::EnvVar>
 pub awaken_provisioning_contract::SandboxSpec::extra: core::option::Option<serde_json::value::Value>
@@ -1027,24 +246,6 @@ pub awaken_provisioning_contract::SandboxSpec::mounts: alloc::vec::Vec<awaken_pr
 pub awaken_provisioning_contract::SandboxSpec::network: awaken_provisioning_contract::NetworkPolicy
 pub awaken_provisioning_contract::SandboxSpec::outputs_path: alloc::string::String
 pub awaken_provisioning_contract::SandboxSpec::scope: alloc::string::String
-impl core::clone::Clone for awaken_provisioning_contract::SandboxSpec
-pub fn awaken_provisioning_contract::SandboxSpec::clone(&self) -> awaken_provisioning_contract::SandboxSpec
-impl core::cmp::PartialEq for awaken_provisioning_contract::SandboxSpec
-pub fn awaken_provisioning_contract::SandboxSpec::eq(&self, &awaken_provisioning_contract::SandboxSpec) -> bool
-impl core::fmt::Debug for awaken_provisioning_contract::SandboxSpec
-pub fn awaken_provisioning_contract::SandboxSpec::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_provisioning_contract::SandboxSpec
-impl serde_core::ser::Serialize for awaken_provisioning_contract::SandboxSpec
-pub fn awaken_provisioning_contract::SandboxSpec::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::SandboxSpec
-pub fn awaken_provisioning_contract::SandboxSpec::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_provisioning_contract::SandboxSpec
-impl core::marker::Send for awaken_provisioning_contract::SandboxSpec
-impl core::marker::Sync for awaken_provisioning_contract::SandboxSpec
-impl core::marker::Unpin for awaken_provisioning_contract::SandboxSpec
-impl core::marker::UnsafeUnpin for awaken_provisioning_contract::SandboxSpec
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::SandboxSpec
-impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::SandboxSpec
 pub const awaken_provisioning_contract::RESERVED_ENV_KEYS: &[&str]
 pub trait awaken_provisioning_contract::BlobSource: core::marker::Send + core::marker::Sync
 pub fn awaken_provisioning_contract::BlobSource::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<alloc::vec::Vec<u8>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
