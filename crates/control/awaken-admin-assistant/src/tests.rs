@@ -160,7 +160,7 @@ impl Harness {
 }
 
 #[test]
-fn descriptors_are_the_four_admin_tools_and_carry_no_publish_tool() {
+fn descriptors_are_the_admin_tools_and_carry_no_publish_tool() {
     let ids: Vec<String> = admin_tool_descriptors()
         .iter()
         .map(|d| d.id.clone())
@@ -171,7 +171,8 @@ fn descriptors_are_the_four_admin_tools_and_carry_no_publish_tool() {
             CAPABILITIES_TOOL,
             CREATE_DRAFT_TOOL,
             PATCH_TOOL,
-            VALIDATE_TOOL
+            VALIDATE_TOOL,
+            EXPLAIN_TOOL
         ]
     );
     // There is deliberately no publish tool (D4): publication is a console action.
@@ -731,7 +732,7 @@ async fn every_tool_call_emits_an_audit_record() {
 }
 
 #[test]
-fn seed_config_is_an_ordinary_auto_bound_config_naming_the_four_tools() {
+fn seed_config_is_an_ordinary_auto_bound_config_naming_the_admin_tools() {
     let cfg = admin_assistant_config();
     assert_eq!(cfg.id, ADMIN_ASSISTANT_AGENT_ID);
     assert!(cfg.model_binding.is_auto());
@@ -741,7 +742,8 @@ fn seed_config_is_an_ordinary_auto_bound_config_naming_the_four_tools() {
             CAPABILITIES_TOOL,
             CREATE_DRAFT_TOOL,
             PATCH_TOOL,
-            VALIDATE_TOOL
+            VALIDATE_TOOL,
+            EXPLAIN_TOOL
         ]
     );
     assert!(cfg.instructions.contains("management assistant"));
