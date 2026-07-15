@@ -1199,6 +1199,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-sandbox-manager"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-provisioning-contract",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-sandbox-memoryd"
 version = "1.0.0-dev"
 dependencies = [

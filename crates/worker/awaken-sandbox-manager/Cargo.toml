@@ -1,0 +1,16 @@
+[package]
+name = "awaken-sandbox-manager"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+
+# ADR-0056 §4: the worker-plane orchestrator for isolation-instance reuse. It owns the
+# control flow (track / reconcile / renew-or-reap) and delegates EVERY judgement to the
+# pure decision kernel in awaken-provisioning-contract (reconcile_adoption /
+# LeaseLiveness / decide_reap), per guardrail G-Pure.
+[dependencies]
+awaken-provisioning-contract.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+async-trait.workspace = true

@@ -1,0 +1,10 @@
+pub mod awaken_sandbox_manager
+pub struct awaken_sandbox_manager::SandboxManager
+impl awaken_sandbox_manager::SandboxManager
+pub async fn awaken_sandbox_manager::SandboxManager::create(&self, &awaken_provisioning_contract::spec::SandboxSpec, awaken_provisioning_contract::lease::LeaseGrant) -> core::result::Result<alloc::boxed::Box<dyn awaken_provisioning_contract::sandbox::Sandbox>, awaken_provisioning_contract::sandbox::SandboxError>
+pub fn awaken_sandbox_manager::SandboxManager::live_handles(&self) -> alloc::vec::Vec<awaken_provisioning_contract::sandbox::SandboxHandle>
+pub fn awaken_sandbox_manager::SandboxManager::new(alloc::sync::Arc<dyn awaken_provisioning_contract::sandbox::SandboxProvider>) -> Self
+pub async fn awaken_sandbox_manager::SandboxManager::reconcile(&self, &[awaken_provisioning_contract::sandbox::SandboxHandle]) -> awaken_provisioning_contract::lease::ReconcileOutcome
+pub async fn awaken_sandbox_manager::SandboxManager::renew_or_reap<F>(&self, F) -> alloc::vec::Vec<(awaken_provisioning_contract::sandbox::SandboxHandle, awaken_provisioning_contract::lease::ReapCause)> where F: core::ops::function::FnMut(&awaken_provisioning_contract::sandbox::SandboxHandle) -> awaken_provisioning_contract::lease::LivenessSignals
+pub async fn awaken_sandbox_manager::SandboxManager::shutdown(&self)
+pub fn awaken_sandbox_manager::SandboxManager::tracked_count(&self) -> usize
