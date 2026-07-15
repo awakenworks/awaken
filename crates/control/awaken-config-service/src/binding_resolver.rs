@@ -32,6 +32,14 @@ pub trait ModelResolver: Send + Sync {
     /// `Err` when the catalog has no provider-backed model ("configure and publish a
     /// model first") — surfaced by `publish` as a 409.
     fn resolve_auto(&self) -> Result<ResolvedModel, String>;
+
+    /// The published context window (max tokens) of a resolved model, when the catalog
+    /// carries it — the source `resolve_for_compile` derives an agent's compaction
+    /// window from. Defaults to `None` (a resolver with no catalog attributes), so the
+    /// compaction window stays whatever the agent authored.
+    fn context_window(&self, _model_id: &str) -> Option<u32> {
+        None
+    }
 }
 
 /// The freshness seam (ADR-0052 D5): the model-catalog write path calls this after a

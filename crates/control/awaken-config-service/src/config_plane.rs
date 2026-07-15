@@ -14,6 +14,23 @@ use std::sync::{Arc, Mutex};
 
 use awaken_config_resolver::ResourceStore;
 use awaken_config_store::ModelSelection;
+
+/// Fill `plugin_config["compact"]["max_tokens"]` from the resolved model's context
+/// window when the agent enabled compaction but didn't pin a window (E:
+/// `CompactConfig::effective_max_tokens`). Never *creates* a `compact` section — an
+/// agent that didn't opt into compaction stays untouched.
+fn apply_default_compact_window(
+    plugin_config: &mut std::collections::BTreeMap<String, serde_json::Value>,
+    model_window: u32,
+) {
+    if let Some(obj) = plugin_config
+        .get_mut("compact")
+        .and_then(|v| v.as_object_mut())
+        && obj.get("max_tokens").is_none_or(|v| v.is_null())
+    {
+        obj.insert("max_tokens".to_string(), serde_json::json!(model_window));
+    }
+}
 use awaken_config_store::{
     AgentConfig, ConfigRegistry, DEFAULT_SCOPE, RunnableConfig, ScopedConfig, ScopedConfigRegistry,
     StoredPublication, ToolOverride, compile_with_resource_prompts,
@@ -131,12 +148,18 @@ impl ConfigService {
         // (`CompileError::field_path`), so the UI projects the issue to the right section
         // instead of parsing a free-text string. An auto-model that can't resolve is a
         // `model` issue; a compile failure carries its own field.
-        let compile_input = self.resolve_for_compile(config.clone()).map_err(|e| {
-            ValidationIssue { path: "model".to_string(), message: e.to_string() }
-        })?;
+        let compile_input =
+            self.resolve_for_compile(config.clone())
+                .map_err(|e| ValidationIssue {
+                    path: "model".to_string(),
+                    message: e.to_string(),
+                })?;
         compile_with_resource_prompts(&compile_input, catalog, &self.resource_prompts(&config.id))
             .map(|_| ())
-            .map_err(|e| ValidationIssue { path: e.field_path().to_string(), message: e.to_string() })
+            .map_err(|e| ValidationIssue {
+                path: e.field_path().to_string(),
+                message: e.to_string(),
+            })
     }
 
     /// Store a config draft (upsert by id) in the caller-supplied scope-bound
@@ -214,6 +237,16 @@ impl ConfigService {
                 .map_err(PublishError::Unresolvable)?;
             config.model_binding = ModelSelection::Pinned(resolved.primary);
             config.model_candidates = resolved.candidates;
+        }
+        // Compaction window inherits the model attribute (E): if the agent didn't pin a
+        // `compact.max_tokens`, default it to the resolved model's published context
+        // window from the catalog. Baked into the content-addressed config at publish,
+        // so it is reproducible and re-baked by the reconciler on a catalog change.
+        if let Some(resolver) = self.model_resolver.as_ref()
+            && let Some(model_id) = config.model_binding.resolved().map(|b| b.model_ref.clone())
+            && let Some(window) = resolver.context_window(&model_id)
+        {
+            apply_default_compact_window(&mut config.plugin_config, window);
         }
         Ok(config)
     }
@@ -704,6 +737,48 @@ mod resource_prompt_tests {
             resolver,
             None,
         )
+    }
+
+    #[test]
+    fn resolve_for_compile_defaults_the_compact_window_from_the_model_attribute() {
+        struct WindowResolver;
+        impl ModelResolver for WindowResolver {
+            fn resolve_auto(&self) -> Result<ResolvedModel, String> {
+                Ok(ResolvedModel {
+                    primary: ModelBinding::new("p", "m-x", "b"),
+                    candidates: vec![],
+                })
+            }
+            fn context_window(&self, model_id: &str) -> Option<u32> {
+                (model_id == "m-x").then_some(200_000)
+            }
+        }
+        let service = ConfigService::new().with_model_resolver(Arc::new(WindowResolver));
+        let pin = || ModelSelection::Pinned(ModelBinding::new("p", "m-x", "b"));
+
+        // Compaction enabled, window unset → inherits the model's context window.
+        let mut cfg = agent_config("a1");
+        cfg.model_binding = pin();
+        cfg.plugin_config
+            .insert("compact".into(), serde_json::json!({ "keep_last": 4 }));
+        let out = service.resolve_for_compile(cfg).unwrap();
+        assert_eq!(out.plugin_config["compact"]["max_tokens"], 200_000);
+
+        // An explicit override is never clobbered.
+        let mut cfg2 = agent_config("a2");
+        cfg2.model_binding = pin();
+        cfg2.plugin_config
+            .insert("compact".into(), serde_json::json!({ "max_tokens": 50 }));
+        assert_eq!(
+            service.resolve_for_compile(cfg2).unwrap().plugin_config["compact"]["max_tokens"],
+            50
+        );
+
+        // No compact section → untouched (compaction was not enabled).
+        let mut cfg3 = agent_config("a3");
+        cfg3.model_binding = pin();
+        let out3 = service.resolve_for_compile(cfg3).unwrap();
+        assert!(!out3.plugin_config.contains_key("compact"));
     }
 
     #[tokio::test]

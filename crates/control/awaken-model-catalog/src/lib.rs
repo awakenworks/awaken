@@ -114,8 +114,25 @@ pub struct ProtocolEndpoint {
     pub version: i64,
 }
 
+/// The published intrinsic attributes of a catalog model, keyed by `model_id`. This is
+/// the control plane's OWN projection of what a console publishes — deliberately not the
+/// agent-domain `ModelSpec` (a runtime type the control plane must not depend on, per the
+/// dependency-direction ban); it carries only what the catalog's consumers read. Extended
+/// as the console publishes more attributes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ModelAttributes {
+    /// Max context window in tokens — the single budget both the ACP CLIs' auto-compact
+    /// window and the native compaction ext derive from. Absent → the consumer falls back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+    /// Max output tokens the model emits, when published.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+}
+
 /// A model reachable on a protocol surface. `model_id` references the catalog's
-/// `ModelSpec` (the intrinsic model attributes, owned by `awaken-agent-contract`).
+/// [`ModelAttributes`] (the intrinsic model attributes the control plane publishes).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Offering {
@@ -137,6 +154,23 @@ pub struct ProviderCatalog {
     pub providers: BTreeMap<String, Provider>,
     pub endpoints: BTreeMap<String, ProtocolEndpoint>,
     pub offerings: Vec<Offering>,
+    /// The published attributes of the models the offerings reference, keyed by
+    /// `model_id`. Absent for a model whose attributes aren't published (the consumer
+    /// then falls back — e.g. compaction stays message-count based).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_attributes: BTreeMap<String, ModelAttributes>,
+}
+
+impl ProviderCatalog {
+    /// The published context window (max tokens) of `model_id`, when the catalog carries
+    /// its [`ModelAttributes`]. This is the single source of truth both the ACP CLIs'
+    /// auto-compact window and the native compaction ext derive their token budget from.
+    #[must_use]
+    pub fn context_window(&self, model_id: &str) -> Option<u32> {
+        self.model_attributes
+            .get(model_id)
+            .and_then(|a| a.context_window)
+    }
 }
 
 /// A write/publish-time invariant violation (fail-closed, G22 / ADR-0043).
@@ -250,6 +284,26 @@ mod tests {
     #[test]
     fn valid_catalog_passes() {
         assert!(catalog().validate().is_ok());
+    }
+
+    #[test]
+    fn context_window_reads_the_model_attributes_or_falls_back_to_none() {
+        let mut c = catalog();
+        c.model_attributes.insert(
+            "claude-opus-4-8".into(),
+            ModelAttributes {
+                context_window: Some(200_000),
+                max_output_tokens: Some(64_000),
+            },
+        );
+        // Published window is returned…
+        assert_eq!(c.context_window("claude-opus-4-8"), Some(200_000));
+        // …an unknown model, or one with no published window, is None (the consumer
+        // then falls back — compaction stays message-count based).
+        assert_eq!(c.context_window("no-such-model"), None);
+        c.model_attributes
+            .insert("bare".into(), ModelAttributes::default());
+        assert_eq!(c.context_window("bare"), None);
     }
 
     #[test]
