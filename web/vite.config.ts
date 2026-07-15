@@ -1,7 +1,7 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
-// The console talks to awaken-server-local (management mode). Every API path
+// The console talks to awaken-server (management mode). Every API path
 // is proxied verbatim — the client's paths ARE the wire paths, so the dev
 // proxy is pure passthrough and production can serve the SPA from the same
 // origin as the API.

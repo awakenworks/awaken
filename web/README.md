@@ -8,7 +8,7 @@ shell — Workspace supplies (catalog, credentials, MCP, access), Project runs
 pnpm install
 # start the backend, then:
 AWAKEN_MODEL_MODE=management AWAKEN_HTTP_ADDR=127.0.0.1:38080 \
-  cargo run -p awaken-server-local &
+  cargo run -p awaken-server &
 pnpm dev            # http://127.0.0.1:3002 (proxies /v1 + /projects)
 
 pnpm typecheck && pnpm lint && pnpm build

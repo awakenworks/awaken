@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 // UI e2e: drives the real console (vite dev on :3002, proxying /v1 to a real
-// awaken-server-local in management mode on :38080). Both are launched as
+// awaken-server in management mode on :38080). Both are launched as
 // webServers; set AWAKEN_HTTP_URL to point vite's proxy at an existing backend.
 export default defineConfig({
   testDir: "./e2e",
@@ -22,9 +22,11 @@ export default defineConfig({
   webServer: [
     {
       // The management backend (advertises /v1/capabilities, config plane, sessions…).
-      command: "cargo run --quiet -p awaken-server-local",
+      // `awaken` (awaken-cli) is the production binary that subsumes awaken-server: its
+      // default Serve role mounts the full management + data plane over AWAKEN_HTTP_ADDR.
+      command: "cargo run --quiet -p awaken-cli --bin awaken",
       cwd: "..",
-      env: { AWAKEN_MODEL_MODE: "management", AWAKEN_HTTP_ADDR: "127.0.0.1:38080" },
+      env: { AWAKEN_HTTP_ADDR: "127.0.0.1:38080" },
       url: "http://127.0.0.1:38080/v1/config/catalog",
       timeout: 240_000,
       reuseExistingServer: true,
