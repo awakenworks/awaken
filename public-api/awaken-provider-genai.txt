@@ -17,6 +17,7 @@ impl core::marker::Freeze for awaken_provider_genai::CredentialProbe
 impl core::marker::Send for awaken_provider_genai::CredentialProbe
 impl core::marker::Sync for awaken_provider_genai::CredentialProbe
 impl core::marker::Unpin for awaken_provider_genai::CredentialProbe
+impl core::marker::UnsafeUnpin for awaken_provider_genai::CredentialProbe
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provider_genai::CredentialProbe
 impl core::panic::unwind_safe::UnwindSafe for awaken_provider_genai::CredentialProbe
 pub struct awaken_provider_genai::GenaiExecutor
@@ -37,6 +38,7 @@ impl core::marker::Freeze for awaken_provider_genai::GenaiExecutor
 impl core::marker::Send for awaken_provider_genai::GenaiExecutor
 impl core::marker::Sync for awaken_provider_genai::GenaiExecutor
 impl core::marker::Unpin for awaken_provider_genai::GenaiExecutor
+impl core::marker::UnsafeUnpin for awaken_provider_genai::GenaiExecutor
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_provider_genai::GenaiExecutor
 impl !core::panic::unwind_safe::UnwindSafe for awaken_provider_genai::GenaiExecutor
 pub fn awaken_provider_genai::classify_error(&str) -> awaken_runtime_contract::llm::Error

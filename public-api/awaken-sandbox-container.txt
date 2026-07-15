@@ -15,6 +15,7 @@ impl core::marker::Freeze for awaken_sandbox_container::ContainerState
 impl core::marker::Send for awaken_sandbox_container::ContainerState
 impl core::marker::Sync for awaken_sandbox_container::ContainerState
 impl core::marker::Unpin for awaken_sandbox_container::ContainerState
+impl core::marker::UnsafeUnpin for awaken_sandbox_container::ContainerState
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::ContainerState
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::ContainerState
 pub enum awaken_sandbox_container::EgressError
@@ -32,6 +33,7 @@ impl core::marker::Freeze for awaken_sandbox_container::EgressError
 impl core::marker::Send for awaken_sandbox_container::EgressError
 impl core::marker::Sync for awaken_sandbox_container::EgressError
 impl core::marker::Unpin for awaken_sandbox_container::EgressError
+impl core::marker::UnsafeUnpin for awaken_sandbox_container::EgressError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::EgressError
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::EgressError
 pub enum awaken_sandbox_container::NetworkMode
@@ -50,6 +52,7 @@ impl core::marker::Freeze for awaken_sandbox_container::NetworkMode
 impl core::marker::Send for awaken_sandbox_container::NetworkMode
 impl core::marker::Sync for awaken_sandbox_container::NetworkMode
 impl core::marker::Unpin for awaken_sandbox_container::NetworkMode
+impl core::marker::UnsafeUnpin for awaken_sandbox_container::NetworkMode
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::NetworkMode
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::NetworkMode
 pub enum awaken_sandbox_container::RootfsError
@@ -67,6 +70,7 @@ impl core::marker::Freeze for awaken_sandbox_container::RootfsError
 impl core::marker::Send for awaken_sandbox_container::RootfsError
 impl core::marker::Sync for awaken_sandbox_container::RootfsError
 impl core::marker::Unpin for awaken_sandbox_container::RootfsError
+impl core::marker::UnsafeUnpin for awaken_sandbox_container::RootfsError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::RootfsError
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::RootfsError
 pub enum awaken_sandbox_container::RootfsPlan
@@ -90,6 +94,7 @@ impl core::marker::Freeze for awaken_sandbox_container::RootfsPlan
 impl core::marker::Send for awaken_sandbox_container::RootfsPlan
 impl core::marker::Sync for awaken_sandbox_container::RootfsPlan
 impl core::marker::Unpin for awaken_sandbox_container::RootfsPlan
+impl core::marker::UnsafeUnpin for awaken_sandbox_container::RootfsPlan
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::RootfsPlan
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::RootfsPlan
 pub enum awaken_sandbox_container::RuntimeError
@@ -104,6 +109,7 @@ impl core::marker::Freeze for awaken_sandbox_container::RuntimeError
 impl core::marker::Send for awaken_sandbox_container::RuntimeError
 impl core::marker::Sync for awaken_sandbox_container::RuntimeError
 impl core::marker::Unpin for awaken_sandbox_container::RuntimeError
+impl core::marker::UnsafeUnpin for awaken_sandbox_container::RuntimeError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::RuntimeError
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::RuntimeError
 pub struct awaken_sandbox_container::BindPlan
@@ -122,6 +128,7 @@ impl core::marker::Freeze for awaken_sandbox_container::BindPlan
 impl core::marker::Send for awaken_sandbox_container::BindPlan
 impl core::marker::Sync for awaken_sandbox_container::BindPlan
 impl core::marker::Unpin for awaken_sandbox_container::BindPlan
+impl core::marker::UnsafeUnpin for awaken_sandbox_container::BindPlan
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::BindPlan
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::BindPlan
 pub struct awaken_sandbox_container::CgroupCaps
@@ -146,6 +153,7 @@ impl core::marker::Freeze for awaken_sandbox_container::CgroupCaps
 impl core::marker::Send for awaken_sandbox_container::CgroupCaps
 impl core::marker::Sync for awaken_sandbox_container::CgroupCaps
 impl core::marker::Unpin for awaken_sandbox_container::CgroupCaps
+impl core::marker::UnsafeUnpin for awaken_sandbox_container::CgroupCaps
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::CgroupCaps
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::CgroupCaps
 pub struct awaken_sandbox_container::ContainerPlan
@@ -170,6 +178,7 @@ impl core::marker::Freeze for awaken_sandbox_container::ContainerPlan
 impl core::marker::Send for awaken_sandbox_container::ContainerPlan
 impl core::marker::Sync for awaken_sandbox_container::ContainerPlan
 impl core::marker::Unpin for awaken_sandbox_container::ContainerPlan
+impl core::marker::UnsafeUnpin for awaken_sandbox_container::ContainerPlan
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::ContainerPlan
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::ContainerPlan
 pub struct awaken_sandbox_container::ContainerProvider<R: awaken_sandbox_container::ContainerRuntime>
@@ -184,6 +193,7 @@ impl<R> core::marker::Freeze for awaken_sandbox_container::ContainerProvider<R>
 impl<R> core::marker::Send for awaken_sandbox_container::ContainerProvider<R>
 impl<R> core::marker::Sync for awaken_sandbox_container::ContainerProvider<R>
 impl<R> core::marker::Unpin for awaken_sandbox_container::ContainerProvider<R>
+impl<R> core::marker::UnsafeUnpin for awaken_sandbox_container::ContainerProvider<R>
 impl<R> core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::ContainerProvider<R> where R: core::panic::unwind_safe::RefUnwindSafe
 impl<R> core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::ContainerProvider<R> where R: core::panic::unwind_safe::RefUnwindSafe
 pub struct awaken_sandbox_container::EgressProxy
@@ -200,6 +210,7 @@ impl core::marker::Freeze for awaken_sandbox_container::EgressProxy
 impl core::marker::Send for awaken_sandbox_container::EgressProxy
 impl core::marker::Sync for awaken_sandbox_container::EgressProxy
 impl core::marker::Unpin for awaken_sandbox_container::EgressProxy
+impl core::marker::UnsafeUnpin for awaken_sandbox_container::EgressProxy
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::EgressProxy
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::EgressProxy
 pub struct awaken_sandbox_container::EgressRealization
@@ -217,6 +228,7 @@ impl core::marker::Freeze for awaken_sandbox_container::EgressRealization
 impl core::marker::Send for awaken_sandbox_container::EgressRealization
 impl core::marker::Sync for awaken_sandbox_container::EgressRealization
 impl core::marker::Unpin for awaken_sandbox_container::EgressRealization
+impl core::marker::UnsafeUnpin for awaken_sandbox_container::EgressRealization
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::EgressRealization
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::EgressRealization
 pub struct awaken_sandbox_container::MemoryMount
@@ -234,6 +246,7 @@ impl core::marker::Freeze for awaken_sandbox_container::MemoryMount
 impl core::marker::Send for awaken_sandbox_container::MemoryMount
 impl core::marker::Sync for awaken_sandbox_container::MemoryMount
 impl core::marker::Unpin for awaken_sandbox_container::MemoryMount
+impl core::marker::UnsafeUnpin for awaken_sandbox_container::MemoryMount
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::MemoryMount
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::MemoryMount
 pub struct awaken_sandbox_container::PodPlan
@@ -259,6 +272,7 @@ impl core::marker::Freeze for awaken_sandbox_container::PodPlan
 impl core::marker::Send for awaken_sandbox_container::PodPlan
 impl core::marker::Sync for awaken_sandbox_container::PodPlan
 impl core::marker::Unpin for awaken_sandbox_container::PodPlan
+impl core::marker::UnsafeUnpin for awaken_sandbox_container::PodPlan
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::PodPlan
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::PodPlan
 pub trait awaken_sandbox_container::ContainerRuntime: core::marker::Send + core::marker::Sync

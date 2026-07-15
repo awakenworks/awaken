@@ -20,6 +20,7 @@ impl core::marker::Freeze for awaken_ext_builtin_tools::Toolset
 impl core::marker::Send for awaken_ext_builtin_tools::Toolset
 impl core::marker::Sync for awaken_ext_builtin_tools::Toolset
 impl core::marker::Unpin for awaken_ext_builtin_tools::Toolset
+impl core::marker::UnsafeUnpin for awaken_ext_builtin_tools::Toolset
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::Toolset
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::Toolset
 pub struct awaken_ext_builtin_tools::BashArgs
@@ -30,6 +31,7 @@ impl core::marker::Freeze for awaken_ext_builtin_tools::BashArgs
 impl core::marker::Send for awaken_ext_builtin_tools::BashArgs
 impl core::marker::Sync for awaken_ext_builtin_tools::BashArgs
 impl core::marker::Unpin for awaken_ext_builtin_tools::BashArgs
+impl core::marker::UnsafeUnpin for awaken_ext_builtin_tools::BashArgs
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::BashArgs
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::BashArgs
 pub struct awaken_ext_builtin_tools::BashTool
@@ -42,6 +44,7 @@ impl core::marker::Freeze for awaken_ext_builtin_tools::BashTool
 impl core::marker::Send for awaken_ext_builtin_tools::BashTool
 impl core::marker::Sync for awaken_ext_builtin_tools::BashTool
 impl core::marker::Unpin for awaken_ext_builtin_tools::BashTool
+impl core::marker::UnsafeUnpin for awaken_ext_builtin_tools::BashTool
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::BashTool
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::BashTool
 pub struct awaken_ext_builtin_tools::BuiltinTool
@@ -62,6 +65,7 @@ impl core::marker::Freeze for awaken_ext_builtin_tools::BuiltinTool
 impl core::marker::Send for awaken_ext_builtin_tools::BuiltinTool
 impl core::marker::Sync for awaken_ext_builtin_tools::BuiltinTool
 impl core::marker::Unpin for awaken_ext_builtin_tools::BuiltinTool
+impl core::marker::UnsafeUnpin for awaken_ext_builtin_tools::BuiltinTool
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::BuiltinTool
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::BuiltinTool
 pub struct awaken_ext_builtin_tools::CancelTaskArgs
@@ -72,6 +76,7 @@ impl core::marker::Freeze for awaken_ext_builtin_tools::CancelTaskArgs
 impl core::marker::Send for awaken_ext_builtin_tools::CancelTaskArgs
 impl core::marker::Sync for awaken_ext_builtin_tools::CancelTaskArgs
 impl core::marker::Unpin for awaken_ext_builtin_tools::CancelTaskArgs
+impl core::marker::UnsafeUnpin for awaken_ext_builtin_tools::CancelTaskArgs
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::CancelTaskArgs
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::CancelTaskArgs
 pub struct awaken_ext_builtin_tools::CancelTaskTool(_)
@@ -86,6 +91,7 @@ impl core::marker::Freeze for awaken_ext_builtin_tools::CancelTaskTool
 impl core::marker::Send for awaken_ext_builtin_tools::CancelTaskTool
 impl core::marker::Sync for awaken_ext_builtin_tools::CancelTaskTool
 impl core::marker::Unpin for awaken_ext_builtin_tools::CancelTaskTool
+impl core::marker::UnsafeUnpin for awaken_ext_builtin_tools::CancelTaskTool
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::CancelTaskTool
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::CancelTaskTool
 pub struct awaken_ext_builtin_tools::EditArgs
@@ -98,6 +104,7 @@ impl core::marker::Freeze for awaken_ext_builtin_tools::EditArgs
 impl core::marker::Send for awaken_ext_builtin_tools::EditArgs
 impl core::marker::Sync for awaken_ext_builtin_tools::EditArgs
 impl core::marker::Unpin for awaken_ext_builtin_tools::EditArgs
+impl core::marker::UnsafeUnpin for awaken_ext_builtin_tools::EditArgs
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::EditArgs
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::EditArgs
 pub struct awaken_ext_builtin_tools::EditTool
@@ -110,6 +117,7 @@ impl core::marker::Freeze for awaken_ext_builtin_tools::EditTool
 impl core::marker::Send for awaken_ext_builtin_tools::EditTool
 impl core::marker::Sync for awaken_ext_builtin_tools::EditTool
 impl core::marker::Unpin for awaken_ext_builtin_tools::EditTool
+impl core::marker::UnsafeUnpin for awaken_ext_builtin_tools::EditTool
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::EditTool
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::EditTool
 pub struct awaken_ext_builtin_tools::Erased<T>(pub T)
@@ -120,6 +128,7 @@ impl<T> core::marker::Freeze for awaken_ext_builtin_tools::Erased<T> where T: co
 impl<T> core::marker::Send for awaken_ext_builtin_tools::Erased<T> where T: core::marker::Send
 impl<T> core::marker::Sync for awaken_ext_builtin_tools::Erased<T> where T: core::marker::Sync
 impl<T> core::marker::Unpin for awaken_ext_builtin_tools::Erased<T> where T: core::marker::Unpin
+impl<T> core::marker::UnsafeUnpin for awaken_ext_builtin_tools::Erased<T> where T: core::marker::UnsafeUnpin
 impl<T> core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::Erased<T> where T: core::panic::unwind_safe::RefUnwindSafe
 impl<T> core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::Erased<T> where T: core::panic::unwind_safe::UnwindSafe
 pub struct awaken_ext_builtin_tools::GlobArgs
@@ -130,6 +139,7 @@ impl core::marker::Freeze for awaken_ext_builtin_tools::GlobArgs
 impl core::marker::Send for awaken_ext_builtin_tools::GlobArgs
 impl core::marker::Sync for awaken_ext_builtin_tools::GlobArgs
 impl core::marker::Unpin for awaken_ext_builtin_tools::GlobArgs
+impl core::marker::UnsafeUnpin for awaken_ext_builtin_tools::GlobArgs
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::GlobArgs
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::GlobArgs
 pub struct awaken_ext_builtin_tools::GlobTool
@@ -142,6 +152,7 @@ impl core::marker::Freeze for awaken_ext_builtin_tools::GlobTool
 impl core::marker::Send for awaken_ext_builtin_tools::GlobTool
 impl core::marker::Sync for awaken_ext_builtin_tools::GlobTool
 impl core::marker::Unpin for awaken_ext_builtin_tools::GlobTool
+impl core::marker::UnsafeUnpin for awaken_ext_builtin_tools::GlobTool
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::GlobTool
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::GlobTool
 pub struct awaken_ext_builtin_tools::GrepArgs
@@ -153,6 +164,7 @@ impl core::marker::Freeze for awaken_ext_builtin_tools::GrepArgs
 impl core::marker::Send for awaken_ext_builtin_tools::GrepArgs
 impl core::marker::Sync for awaken_ext_builtin_tools::GrepArgs
 impl core::marker::Unpin for awaken_ext_builtin_tools::GrepArgs
+impl core::marker::UnsafeUnpin for awaken_ext_builtin_tools::GrepArgs
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::GrepArgs
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::GrepArgs
 pub struct awaken_ext_builtin_tools::GrepTool
@@ -165,6 +177,7 @@ impl core::marker::Freeze for awaken_ext_builtin_tools::GrepTool
 impl core::marker::Send for awaken_ext_builtin_tools::GrepTool
 impl core::marker::Sync for awaken_ext_builtin_tools::GrepTool
 impl core::marker::Unpin for awaken_ext_builtin_tools::GrepTool
+impl core::marker::UnsafeUnpin for awaken_ext_builtin_tools::GrepTool
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::GrepTool
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::GrepTool
 pub struct awaken_ext_builtin_tools::ReadArgs
@@ -175,6 +188,7 @@ impl core::marker::Freeze for awaken_ext_builtin_tools::ReadArgs
 impl core::marker::Send for awaken_ext_builtin_tools::ReadArgs
 impl core::marker::Sync for awaken_ext_builtin_tools::ReadArgs
 impl core::marker::Unpin for awaken_ext_builtin_tools::ReadArgs
+impl core::marker::UnsafeUnpin for awaken_ext_builtin_tools::ReadArgs
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::ReadArgs
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::ReadArgs
 pub struct awaken_ext_builtin_tools::ReadTool
@@ -187,6 +201,7 @@ impl core::marker::Freeze for awaken_ext_builtin_tools::ReadTool
 impl core::marker::Send for awaken_ext_builtin_tools::ReadTool
 impl core::marker::Sync for awaken_ext_builtin_tools::ReadTool
 impl core::marker::Unpin for awaken_ext_builtin_tools::ReadTool
+impl core::marker::UnsafeUnpin for awaken_ext_builtin_tools::ReadTool
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::ReadTool
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::ReadTool
 pub struct awaken_ext_builtin_tools::RecoverFailedMessagesArgs
@@ -196,6 +211,7 @@ impl core::marker::Freeze for awaken_ext_builtin_tools::RecoverFailedMessagesArg
 impl core::marker::Send for awaken_ext_builtin_tools::RecoverFailedMessagesArgs
 impl core::marker::Sync for awaken_ext_builtin_tools::RecoverFailedMessagesArgs
 impl core::marker::Unpin for awaken_ext_builtin_tools::RecoverFailedMessagesArgs
+impl core::marker::UnsafeUnpin for awaken_ext_builtin_tools::RecoverFailedMessagesArgs
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::RecoverFailedMessagesArgs
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::RecoverFailedMessagesArgs
 pub struct awaken_ext_builtin_tools::RecoverFailedMessagesTool(_)
@@ -210,6 +226,7 @@ impl core::marker::Freeze for awaken_ext_builtin_tools::RecoverFailedMessagesToo
 impl core::marker::Send for awaken_ext_builtin_tools::RecoverFailedMessagesTool
 impl core::marker::Sync for awaken_ext_builtin_tools::RecoverFailedMessagesTool
 impl core::marker::Unpin for awaken_ext_builtin_tools::RecoverFailedMessagesTool
+impl core::marker::UnsafeUnpin for awaken_ext_builtin_tools::RecoverFailedMessagesTool
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::RecoverFailedMessagesTool
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::RecoverFailedMessagesTool
 pub struct awaken_ext_builtin_tools::SendMessageArgs
@@ -221,6 +238,7 @@ impl core::marker::Freeze for awaken_ext_builtin_tools::SendMessageArgs
 impl core::marker::Send for awaken_ext_builtin_tools::SendMessageArgs
 impl core::marker::Sync for awaken_ext_builtin_tools::SendMessageArgs
 impl core::marker::Unpin for awaken_ext_builtin_tools::SendMessageArgs
+impl core::marker::UnsafeUnpin for awaken_ext_builtin_tools::SendMessageArgs
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::SendMessageArgs
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::SendMessageArgs
 pub struct awaken_ext_builtin_tools::SendMessageTool(_)
@@ -235,6 +253,7 @@ impl core::marker::Freeze for awaken_ext_builtin_tools::SendMessageTool
 impl core::marker::Send for awaken_ext_builtin_tools::SendMessageTool
 impl core::marker::Sync for awaken_ext_builtin_tools::SendMessageTool
 impl core::marker::Unpin for awaken_ext_builtin_tools::SendMessageTool
+impl core::marker::UnsafeUnpin for awaken_ext_builtin_tools::SendMessageTool
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::SendMessageTool
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::SendMessageTool
 pub struct awaken_ext_builtin_tools::WebFetchArgs
@@ -245,6 +264,7 @@ impl core::marker::Freeze for awaken_ext_builtin_tools::WebFetchArgs
 impl core::marker::Send for awaken_ext_builtin_tools::WebFetchArgs
 impl core::marker::Sync for awaken_ext_builtin_tools::WebFetchArgs
 impl core::marker::Unpin for awaken_ext_builtin_tools::WebFetchArgs
+impl core::marker::UnsafeUnpin for awaken_ext_builtin_tools::WebFetchArgs
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::WebFetchArgs
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::WebFetchArgs
 pub struct awaken_ext_builtin_tools::WebFetchTool
@@ -257,6 +277,7 @@ impl core::marker::Freeze for awaken_ext_builtin_tools::WebFetchTool
 impl core::marker::Send for awaken_ext_builtin_tools::WebFetchTool
 impl core::marker::Sync for awaken_ext_builtin_tools::WebFetchTool
 impl core::marker::Unpin for awaken_ext_builtin_tools::WebFetchTool
+impl core::marker::UnsafeUnpin for awaken_ext_builtin_tools::WebFetchTool
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::WebFetchTool
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::WebFetchTool
 pub struct awaken_ext_builtin_tools::WebSearchArgs
@@ -267,6 +288,7 @@ impl core::marker::Freeze for awaken_ext_builtin_tools::WebSearchArgs
 impl core::marker::Send for awaken_ext_builtin_tools::WebSearchArgs
 impl core::marker::Sync for awaken_ext_builtin_tools::WebSearchArgs
 impl core::marker::Unpin for awaken_ext_builtin_tools::WebSearchArgs
+impl core::marker::UnsafeUnpin for awaken_ext_builtin_tools::WebSearchArgs
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::WebSearchArgs
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::WebSearchArgs
 pub struct awaken_ext_builtin_tools::WebSearchTool
@@ -279,6 +301,7 @@ impl core::marker::Freeze for awaken_ext_builtin_tools::WebSearchTool
 impl core::marker::Send for awaken_ext_builtin_tools::WebSearchTool
 impl core::marker::Sync for awaken_ext_builtin_tools::WebSearchTool
 impl core::marker::Unpin for awaken_ext_builtin_tools::WebSearchTool
+impl core::marker::UnsafeUnpin for awaken_ext_builtin_tools::WebSearchTool
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::WebSearchTool
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::WebSearchTool
 pub struct awaken_ext_builtin_tools::WriteArgs
@@ -290,6 +313,7 @@ impl core::marker::Freeze for awaken_ext_builtin_tools::WriteArgs
 impl core::marker::Send for awaken_ext_builtin_tools::WriteArgs
 impl core::marker::Sync for awaken_ext_builtin_tools::WriteArgs
 impl core::marker::Unpin for awaken_ext_builtin_tools::WriteArgs
+impl core::marker::UnsafeUnpin for awaken_ext_builtin_tools::WriteArgs
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::WriteArgs
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::WriteArgs
 pub struct awaken_ext_builtin_tools::WriteTool
@@ -302,6 +326,7 @@ impl core::marker::Freeze for awaken_ext_builtin_tools::WriteTool
 impl core::marker::Send for awaken_ext_builtin_tools::WriteTool
 impl core::marker::Sync for awaken_ext_builtin_tools::WriteTool
 impl core::marker::Unpin for awaken_ext_builtin_tools::WriteTool
+impl core::marker::UnsafeUnpin for awaken_ext_builtin_tools::WriteTool
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::WriteTool
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::WriteTool
 pub const awaken_ext_builtin_tools::AGENT_RUN: &str

@@ -13,6 +13,7 @@ impl core::marker::Freeze for awaken_file_store::FsFileStore
 impl core::marker::Send for awaken_file_store::FsFileStore
 impl core::marker::Sync for awaken_file_store::FsFileStore
 impl core::marker::Unpin for awaken_file_store::FsFileStore
+impl core::marker::UnsafeUnpin for awaken_file_store::FsFileStore
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_file_store::FsFileStore
 impl core::panic::unwind_safe::UnwindSafe for awaken_file_store::FsFileStore
 pub struct awaken_file_store::InMemoryFileStore
@@ -29,6 +30,7 @@ impl !core::marker::Freeze for awaken_file_store::InMemoryFileStore
 impl core::marker::Send for awaken_file_store::InMemoryFileStore
 impl core::marker::Sync for awaken_file_store::InMemoryFileStore
 impl core::marker::Unpin for awaken_file_store::InMemoryFileStore
+impl core::marker::UnsafeUnpin for awaken_file_store::InMemoryFileStore
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_file_store::InMemoryFileStore
 impl core::panic::unwind_safe::UnwindSafe for awaken_file_store::InMemoryFileStore
 pub fn awaken_file_store::content_id(&[u8]) -> alloc::string::String

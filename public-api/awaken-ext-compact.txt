@@ -11,6 +11,9 @@ pub awaken_ext_compact::config::CompactConfig::keep_last: usize
 pub awaken_ext_compact::config::CompactConfig::max_tokens: core::option::Option<u32>
 pub awaken_ext_compact::config::CompactConfig::threshold: usize
 pub awaken_ext_compact::config::CompactConfig::trigger_ratio: f64
+impl awaken_ext_compact::config::CompactConfig
+pub fn awaken_ext_compact::config::CompactConfig::effective_max_tokens(&self, core::option::Option<u32>) -> core::option::Option<u32>
+pub fn awaken_ext_compact::config::CompactConfig::with_model_context_window(self, core::option::Option<u32>) -> Self
 impl core::clone::Clone for awaken_ext_compact::config::CompactConfig
 pub fn awaken_ext_compact::config::CompactConfig::clone(&self) -> awaken_ext_compact::config::CompactConfig
 impl core::cmp::PartialEq for awaken_ext_compact::config::CompactConfig
@@ -28,6 +31,7 @@ impl core::marker::Freeze for awaken_ext_compact::config::CompactConfig
 impl core::marker::Send for awaken_ext_compact::config::CompactConfig
 impl core::marker::Sync for awaken_ext_compact::config::CompactConfig
 impl core::marker::Unpin for awaken_ext_compact::config::CompactConfig
+impl core::marker::UnsafeUnpin for awaken_ext_compact::config::CompactConfig
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_compact::config::CompactConfig
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_compact::config::CompactConfig
 pub fn awaken_ext_compact::config::config_schema() -> serde_json::value::Value
@@ -47,6 +51,7 @@ impl core::marker::Freeze for awaken_ext_compact::plugin::CompactPlugin
 impl core::marker::Send for awaken_ext_compact::plugin::CompactPlugin
 impl core::marker::Sync for awaken_ext_compact::plugin::CompactPlugin
 impl core::marker::Unpin for awaken_ext_compact::plugin::CompactPlugin
+impl core::marker::UnsafeUnpin for awaken_ext_compact::plugin::CompactPlugin
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_compact::plugin::CompactPlugin
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_compact::plugin::CompactPlugin
 pub const awaken_ext_compact::plugin::COMPACT_PLUGIN_ID: &str
@@ -58,6 +63,9 @@ pub awaken_ext_compact::CompactConfig::keep_last: usize
 pub awaken_ext_compact::CompactConfig::max_tokens: core::option::Option<u32>
 pub awaken_ext_compact::CompactConfig::threshold: usize
 pub awaken_ext_compact::CompactConfig::trigger_ratio: f64
+impl awaken_ext_compact::config::CompactConfig
+pub fn awaken_ext_compact::config::CompactConfig::effective_max_tokens(&self, core::option::Option<u32>) -> core::option::Option<u32>
+pub fn awaken_ext_compact::config::CompactConfig::with_model_context_window(self, core::option::Option<u32>) -> Self
 impl core::clone::Clone for awaken_ext_compact::config::CompactConfig
 pub fn awaken_ext_compact::config::CompactConfig::clone(&self) -> awaken_ext_compact::config::CompactConfig
 impl core::cmp::PartialEq for awaken_ext_compact::config::CompactConfig
@@ -75,6 +83,7 @@ impl core::marker::Freeze for awaken_ext_compact::config::CompactConfig
 impl core::marker::Send for awaken_ext_compact::config::CompactConfig
 impl core::marker::Sync for awaken_ext_compact::config::CompactConfig
 impl core::marker::Unpin for awaken_ext_compact::config::CompactConfig
+impl core::marker::UnsafeUnpin for awaken_ext_compact::config::CompactConfig
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_compact::config::CompactConfig
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_compact::config::CompactConfig
 pub struct awaken_ext_compact::CompactPlugin
@@ -89,6 +98,7 @@ impl core::marker::Freeze for awaken_ext_compact::plugin::CompactPlugin
 impl core::marker::Send for awaken_ext_compact::plugin::CompactPlugin
 impl core::marker::Sync for awaken_ext_compact::plugin::CompactPlugin
 impl core::marker::Unpin for awaken_ext_compact::plugin::CompactPlugin
+impl core::marker::UnsafeUnpin for awaken_ext_compact::plugin::CompactPlugin
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_compact::plugin::CompactPlugin
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_compact::plugin::CompactPlugin
 pub const awaken_ext_compact::COMPACT_AGENT_ID: &str

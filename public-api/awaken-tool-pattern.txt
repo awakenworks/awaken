@@ -19,6 +19,7 @@ impl core::marker::Freeze for awaken_tool_pattern::ArgMatcher
 impl core::marker::Send for awaken_tool_pattern::ArgMatcher
 impl core::marker::Sync for awaken_tool_pattern::ArgMatcher
 impl core::marker::Unpin for awaken_tool_pattern::ArgMatcher
+impl core::marker::UnsafeUnpin for awaken_tool_pattern::ArgMatcher
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_pattern::ArgMatcher
 impl core::panic::unwind_safe::UnwindSafe for awaken_tool_pattern::ArgMatcher
 pub enum awaken_tool_pattern::MatchOp
@@ -47,6 +48,7 @@ impl core::marker::Freeze for awaken_tool_pattern::MatchOp
 impl core::marker::Send for awaken_tool_pattern::MatchOp
 impl core::marker::Sync for awaken_tool_pattern::MatchOp
 impl core::marker::Unpin for awaken_tool_pattern::MatchOp
+impl core::marker::UnsafeUnpin for awaken_tool_pattern::MatchOp
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_pattern::MatchOp
 impl core::panic::unwind_safe::UnwindSafe for awaken_tool_pattern::MatchOp
 pub enum awaken_tool_pattern::MatchResult
@@ -67,6 +69,7 @@ impl core::marker::Freeze for awaken_tool_pattern::MatchResult
 impl core::marker::Send for awaken_tool_pattern::MatchResult
 impl core::marker::Sync for awaken_tool_pattern::MatchResult
 impl core::marker::Unpin for awaken_tool_pattern::MatchResult
+impl core::marker::UnsafeUnpin for awaken_tool_pattern::MatchResult
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_pattern::MatchResult
 impl core::panic::unwind_safe::UnwindSafe for awaken_tool_pattern::MatchResult
 pub enum awaken_tool_pattern::PathSegment
@@ -88,6 +91,7 @@ impl core::marker::Freeze for awaken_tool_pattern::PathSegment
 impl core::marker::Send for awaken_tool_pattern::PathSegment
 impl core::marker::Sync for awaken_tool_pattern::PathSegment
 impl core::marker::Unpin for awaken_tool_pattern::PathSegment
+impl core::marker::UnsafeUnpin for awaken_tool_pattern::PathSegment
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_pattern::PathSegment
 impl core::panic::unwind_safe::UnwindSafe for awaken_tool_pattern::PathSegment
 pub enum awaken_tool_pattern::ToolIdPatternError
@@ -106,6 +110,7 @@ impl core::marker::Freeze for awaken_tool_pattern::ToolIdPatternError
 impl core::marker::Send for awaken_tool_pattern::ToolIdPatternError
 impl core::marker::Sync for awaken_tool_pattern::ToolIdPatternError
 impl core::marker::Unpin for awaken_tool_pattern::ToolIdPatternError
+impl core::marker::UnsafeUnpin for awaken_tool_pattern::ToolIdPatternError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_pattern::ToolIdPatternError
 impl core::panic::unwind_safe::UnwindSafe for awaken_tool_pattern::ToolIdPatternError
 pub enum awaken_tool_pattern::ToolMatcher
@@ -125,6 +130,7 @@ impl core::marker::Freeze for awaken_tool_pattern::ToolMatcher
 impl core::marker::Send for awaken_tool_pattern::ToolMatcher
 impl core::marker::Sync for awaken_tool_pattern::ToolMatcher
 impl core::marker::Unpin for awaken_tool_pattern::ToolMatcher
+impl core::marker::UnsafeUnpin for awaken_tool_pattern::ToolMatcher
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_pattern::ToolMatcher
 impl core::panic::unwind_safe::UnwindSafe for awaken_tool_pattern::ToolMatcher
 pub struct awaken_tool_pattern::FieldCondition
@@ -145,6 +151,7 @@ impl core::marker::Freeze for awaken_tool_pattern::FieldCondition
 impl core::marker::Send for awaken_tool_pattern::FieldCondition
 impl core::marker::Sync for awaken_tool_pattern::FieldCondition
 impl core::marker::Unpin for awaken_tool_pattern::FieldCondition
+impl core::marker::UnsafeUnpin for awaken_tool_pattern::FieldCondition
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_pattern::FieldCondition
 impl core::panic::unwind_safe::UnwindSafe for awaken_tool_pattern::FieldCondition
 pub struct awaken_tool_pattern::PatternParseError
@@ -161,6 +168,7 @@ impl core::marker::Freeze for awaken_tool_pattern::PatternParseError
 impl core::marker::Send for awaken_tool_pattern::PatternParseError
 impl core::marker::Sync for awaken_tool_pattern::PatternParseError
 impl core::marker::Unpin for awaken_tool_pattern::PatternParseError
+impl core::marker::UnsafeUnpin for awaken_tool_pattern::PatternParseError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_pattern::PatternParseError
 impl core::panic::unwind_safe::UnwindSafe for awaken_tool_pattern::PatternParseError
 pub struct awaken_tool_pattern::Specificity
@@ -185,6 +193,7 @@ impl core::marker::Freeze for awaken_tool_pattern::Specificity
 impl core::marker::Send for awaken_tool_pattern::Specificity
 impl core::marker::Sync for awaken_tool_pattern::Specificity
 impl core::marker::Unpin for awaken_tool_pattern::Specificity
+impl core::marker::UnsafeUnpin for awaken_tool_pattern::Specificity
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_pattern::Specificity
 impl core::panic::unwind_safe::UnwindSafe for awaken_tool_pattern::Specificity
 pub struct awaken_tool_pattern::ToolCallPattern
@@ -215,6 +224,7 @@ impl core::marker::Freeze for awaken_tool_pattern::ToolCallPattern
 impl core::marker::Send for awaken_tool_pattern::ToolCallPattern
 impl core::marker::Sync for awaken_tool_pattern::ToolCallPattern
 impl core::marker::Unpin for awaken_tool_pattern::ToolCallPattern
+impl core::marker::UnsafeUnpin for awaken_tool_pattern::ToolCallPattern
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_pattern::ToolCallPattern
 impl core::panic::unwind_safe::UnwindSafe for awaken_tool_pattern::ToolCallPattern
 pub fn awaken_tool_pattern::evaluate_field_condition(&awaken_tool_pattern::FieldCondition, &serde_json::value::Value) -> bool

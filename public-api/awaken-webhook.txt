@@ -14,6 +14,7 @@ impl core::marker::Freeze for awaken_webhook::SignError
 impl core::marker::Send for awaken_webhook::SignError
 impl core::marker::Sync for awaken_webhook::SignError
 impl core::marker::Unpin for awaken_webhook::SignError
+impl core::marker::UnsafeUnpin for awaken_webhook::SignError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_webhook::SignError
 impl core::panic::unwind_safe::UnwindSafe for awaken_webhook::SignError
 pub enum awaken_webhook::UrlRejected
@@ -36,6 +37,7 @@ impl core::marker::Freeze for awaken_webhook::UrlRejected
 impl core::marker::Send for awaken_webhook::UrlRejected
 impl core::marker::Sync for awaken_webhook::UrlRejected
 impl core::marker::Unpin for awaken_webhook::UrlRejected
+impl core::marker::UnsafeUnpin for awaken_webhook::UrlRejected
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_webhook::UrlRejected
 impl core::panic::unwind_safe::UnwindSafe for awaken_webhook::UrlRejected
 pub struct awaken_webhook::DispatchReport
@@ -54,6 +56,7 @@ impl core::marker::Freeze for awaken_webhook::DispatchReport
 impl core::marker::Send for awaken_webhook::DispatchReport
 impl core::marker::Sync for awaken_webhook::DispatchReport
 impl core::marker::Unpin for awaken_webhook::DispatchReport
+impl core::marker::UnsafeUnpin for awaken_webhook::DispatchReport
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_webhook::DispatchReport
 impl core::panic::unwind_safe::UnwindSafe for awaken_webhook::DispatchReport
 pub struct awaken_webhook::ReqwestSender
@@ -67,6 +70,7 @@ impl core::marker::Freeze for awaken_webhook::ReqwestSender
 impl core::marker::Send for awaken_webhook::ReqwestSender
 impl core::marker::Sync for awaken_webhook::ReqwestSender
 impl core::marker::Unpin for awaken_webhook::ReqwestSender
+impl core::marker::UnsafeUnpin for awaken_webhook::ReqwestSender
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_webhook::ReqwestSender
 impl !core::panic::unwind_safe::UnwindSafe for awaken_webhook::ReqwestSender
 pub struct awaken_webhook::ResolvedSubscription
@@ -81,6 +85,7 @@ impl core::marker::Freeze for awaken_webhook::ResolvedSubscription
 impl core::marker::Send for awaken_webhook::ResolvedSubscription
 impl core::marker::Sync for awaken_webhook::ResolvedSubscription
 impl core::marker::Unpin for awaken_webhook::ResolvedSubscription
+impl core::marker::UnsafeUnpin for awaken_webhook::ResolvedSubscription
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_webhook::ResolvedSubscription
 impl core::panic::unwind_safe::UnwindSafe for awaken_webhook::ResolvedSubscription
 pub struct awaken_webhook::WebhookDispatcher
@@ -92,6 +97,7 @@ impl !core::marker::Freeze for awaken_webhook::WebhookDispatcher
 impl core::marker::Send for awaken_webhook::WebhookDispatcher
 impl core::marker::Sync for awaken_webhook::WebhookDispatcher
 impl core::marker::Unpin for awaken_webhook::WebhookDispatcher
+impl core::marker::UnsafeUnpin for awaken_webhook::WebhookDispatcher
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_webhook::WebhookDispatcher
 impl !core::panic::unwind_safe::UnwindSafe for awaken_webhook::WebhookDispatcher
 pub struct awaken_webhook::WebhookEvent
@@ -118,6 +124,7 @@ impl core::marker::Freeze for awaken_webhook::WebhookEvent
 impl core::marker::Send for awaken_webhook::WebhookEvent
 impl core::marker::Sync for awaken_webhook::WebhookEvent
 impl core::marker::Unpin for awaken_webhook::WebhookEvent
+impl core::marker::UnsafeUnpin for awaken_webhook::WebhookEvent
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_webhook::WebhookEvent
 impl core::panic::unwind_safe::UnwindSafe for awaken_webhook::WebhookEvent
 pub struct awaken_webhook::WebhookEventData
@@ -141,6 +148,7 @@ impl core::marker::Freeze for awaken_webhook::WebhookEventData
 impl core::marker::Send for awaken_webhook::WebhookEventData
 impl core::marker::Sync for awaken_webhook::WebhookEventData
 impl core::marker::Unpin for awaken_webhook::WebhookEventData
+impl core::marker::UnsafeUnpin for awaken_webhook::WebhookEventData
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_webhook::WebhookEventData
 impl core::panic::unwind_safe::UnwindSafe for awaken_webhook::WebhookEventData
 pub const awaken_webhook::DEFAULT_TOLERANCE_SECS: i64
