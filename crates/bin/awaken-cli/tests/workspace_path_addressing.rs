@@ -32,7 +32,7 @@ async fn call(
     (status, value)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn workspace_path_addresses_and_isolates_the_agent_registry() {
     let app = build_management_router().await;
 
@@ -86,7 +86,7 @@ async fn workspace_path_addresses_and_isolates_the_agent_registry() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_flat_management_request_is_untouched_by_the_path_middleware() {
     let app = build_management_router().await;
     // A flat create (no workspace path) owns under the seeded default and lists there.
@@ -103,7 +103,7 @@ async fn a_flat_management_request_is_untouched_by_the_path_middleware() {
     assert_eq!(status, StatusCode::OK);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn workspace_path_isolates_inference_profiles() {
     let app = build_management_router().await;
     let body = json!({
