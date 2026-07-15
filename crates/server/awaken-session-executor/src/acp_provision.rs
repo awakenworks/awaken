@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 use awaken_run_executor_acp::{AcpCli, ConfigHome, LaunchResolver, OpenError, ResolvedModel};
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::model_access::ModelAccessGrant;
 
 /// Reads a var from the environment source; injectable so tests need no global env.
 type EnvSource = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
@@ -37,79 +36,42 @@ impl EnvLaunchResolver {
         }
     }
 
-    /// Resolve the model coordinates for `model_ref` under the run's access `grant`.
+    /// Resolve the model coordinates (base URL, model, key) for `model_ref`.
     ///
-    /// One projection path: the effective [`ModelAccessGrant`] is materialized into a
-    /// neutral endpoint and the launch coordinates read off it — no hand-written
-    /// gateway-vs-local branch. The manifest `grant` is authoritative for the access
-    /// mode; only when it names the default local mode do we consult the operator env,
-    /// which may itself carry a legacy gateway injection
-    /// (`AWAKEN_ACP_GATEWAY_URL`+`AWAKEN_ACP_LEASE_TOKEN`, the pre-manifest path, still
-    /// honored during migration — see [`Self::grant_from_env`]).
-    ///
-    /// A gateway grant's endpoint carries `base_url`/`bearer` structurally, so the
-    /// local-env fallback below fires only for a local grant — a gateway run can never
-    /// route onto a raw provider key. A local grant with no env base URL or key is a
-    /// fail-closed launch error.
-    fn resolve_model(
-        &self,
-        model_ref: &str,
-        grant: &ModelAccessGrant,
-    ) -> Result<ResolvedModel, OpenError> {
+    /// This resolver owns how the CLI reaches its model — the runtime never sees it.
+    /// A cloud-managed ACP gateway (both `AWAKEN_ACP_GATEWAY_URL` and
+    /// `AWAKEN_ACP_LEASE_TOKEN` exported) supplies the base URL + lease bearer;
+    /// otherwise the operator's local model-delivery env does. A run with neither a
+    /// gateway nor a local base URL / key is a fail-closed launch error.
+    fn resolve_model(&self, model_ref: &str) -> Result<ResolvedModel, OpenError> {
         let d = &self.cli.model_delivery;
         let model = if model_ref.is_empty() {
             (self.env)(d.model).unwrap_or_default()
         } else {
             model_ref.to_string()
         };
-
-        // Manifest grant wins; a default (local) grant defers to the operator env.
-        let effective = if grant.is_gateway() {
-            grant.clone()
-        } else {
-            self.grant_from_env()
+        // A gateway run dials the gateway with a short-lived lease (never a raw
+        // provider key); a local run reads the operator's model-delivery env. Both
+        // env vars must be present to select the gateway path.
+        let (base_url, api_key) = match (
+            (self.env)("AWAKEN_ACP_GATEWAY_URL"),
+            (self.env)("AWAKEN_ACP_LEASE_TOKEN"),
+        ) {
+            (Some(gateway), Some(lease)) => (gateway, lease),
+            _ => {
+                let base_url = (self.env)(d.base_url).ok_or_else(|| {
+                    OpenError(format!("{} not set in the environment", d.base_url))
+                })?;
+                let api_key = (self.env)(d.key)
+                    .ok_or_else(|| OpenError(format!("{} not set in the environment", d.key)))?;
+                (base_url, api_key)
+            }
         };
-        let ep = effective.materialize();
-
-        // A gateway endpoint fills base_url/bearer, so `.or_else(env)` only fires for
-        // a local grant — the raw key is read solely on the self-credentialed path.
-        let base_url = ep
-            .base_url
-            .or_else(|| (self.env)(d.base_url))
-            .ok_or_else(|| OpenError(format!("{} not set in the environment", d.base_url)))?;
-        let api_key = ep
-            .bearer
-            .or_else(|| (self.env)(d.key))
-            .ok_or_else(|| OpenError(format!("{} not set in the environment", d.key)))?;
-        // The grant's model (a gateway grant names it) wins over the run's `model_ref`
-        // when present; an env-reconstructed grant leaves it empty and defers.
-        let model = ep.model_ref.filter(|m| !m.is_empty()).unwrap_or(model);
         Ok(ResolvedModel {
             base_url,
             model,
             api_key,
         })
-    }
-
-    /// Legacy operator-env → grant bridge (the pre-manifest path). A gateway grant
-    /// when both `AWAKEN_ACP_GATEWAY_URL` and `AWAKEN_ACP_LEASE_TOKEN` are exported,
-    /// else the local default. Kept so an env-only deployment keeps working until
-    /// placement populates `activation.model_access`; remove once it does.
-    fn grant_from_env(&self) -> ModelAccessGrant {
-        match (
-            (self.env)("AWAKEN_ACP_GATEWAY_URL"),
-            (self.env)("AWAKEN_ACP_LEASE_TOKEN"),
-        ) {
-            (Some(gateway), Some(lease)) => ModelAccessGrant::CloudManagedGateway {
-                gateway_base_url: gateway,
-                // The ACP CLI does not consume `dialect`; the model comes from the
-                // run's `model_ref`, applied by the caller.
-                dialect: String::new(),
-                model_ref: String::new(),
-                lease_token: lease,
-            },
-            _ => ModelAccessGrant::default(),
-        }
     }
 
     /// Open the thread's config home and return it as the CLI's `config_home_env`.
@@ -128,10 +90,7 @@ impl EnvLaunchResolver {
 
 impl LaunchResolver for EnvLaunchResolver {
     fn model(&self, activation: &RunActivation) -> Result<ResolvedModel, OpenError> {
-        self.resolve_model(
-            &activation.snapshot.resolved_spec.model_binding.model_ref,
-            &activation.model_access,
-        )
+        self.resolve_model(&activation.snapshot.resolved_spec.model_binding.model_ref)
     }
 
     fn extra_env(&self, activation: &RunActivation) -> Vec<(String, String)> {
@@ -168,9 +127,7 @@ mod tests {
             ],
             None,
         );
-        let model = r
-            .resolve_model("MiniMax-M3[1m]", &ModelAccessGrant::default())
-            .unwrap();
+        let model = r.resolve_model("MiniMax-M3[1m]").unwrap();
         assert_eq!(model.base_url, "https://api.minimaxi.com/anthropic");
         assert_eq!(model.model, "MiniMax-M3[1m]");
         assert_eq!(model.api_key, "exported-key");
@@ -179,7 +136,7 @@ mod tests {
     #[test]
     fn missing_key_or_base_url_fails_closed() {
         let r = resolver_with(&[("ANTHROPIC_BASE_URL", "u")], None);
-        assert!(r.resolve_model("m", &ModelAccessGrant::default()).is_err()); // no ANTHROPIC_API_KEY
+        assert!(r.resolve_model("m").is_err()); // no ANTHROPIC_API_KEY
     }
 
     #[test]
@@ -195,9 +152,7 @@ mod tests {
             ],
             None,
         );
-        let model = r
-            .resolve_model("claude-opus", &ModelAccessGrant::default())
-            .unwrap();
+        let model = r.resolve_model("claude-opus").unwrap();
         assert_eq!(model.base_url, "https://gw.internal/anthropic");
         assert_eq!(model.model, "claude-opus");
         assert_eq!(model.api_key, "lease-abc"); // the lease, not the raw key
@@ -215,28 +170,9 @@ mod tests {
             ],
             None,
         );
-        let model = r.resolve_model("m", &ModelAccessGrant::default()).unwrap();
+        let model = r.resolve_model("m").unwrap();
         assert_eq!(model.base_url, "https://gw.internal");
         assert_eq!(model.api_key, "lease-xyz");
-    }
-
-    #[test]
-    fn manifest_gateway_grant_yields_lease_without_any_gateway_env() {
-        // The typed path: a `CloudManagedGateway` grant on the activation resolves to
-        // the gateway + lease with no `AWAKEN_ACP_*` env at all, and its model_ref
-        // wins. This is what placement/awaken-cloud populates; the env bridge is only
-        // the legacy fallback.
-        let r = resolver_with(&[], None);
-        let grant = ModelAccessGrant::CloudManagedGateway {
-            gateway_base_url: "https://gw.manifest".into(),
-            dialect: "AnthropicMessages".into(),
-            model_ref: "claude-from-grant".into(),
-            lease_token: "lease-manifest".into(), // awaken-allow: secret
-        };
-        let model = r.resolve_model("run-model-ref", &grant).unwrap();
-        assert_eq!(model.base_url, "https://gw.manifest");
-        assert_eq!(model.api_key, "lease-manifest"); // the lease, not a raw key
-        assert_eq!(model.model, "claude-from-grant"); // the grant's model wins
     }
 
     #[test]
@@ -258,12 +194,7 @@ mod tests {
             ],
             None,
         );
-        assert_eq!(
-            r.resolve_model("", &ModelAccessGrant::default())
-                .unwrap()
-                .model,
-            "env-model"
-        );
+        assert_eq!(r.resolve_model("").unwrap().model, "env-model");
     }
 
     #[test]
@@ -300,7 +231,6 @@ mod tests {
                 fingerprint: CatalogFingerprint("fp".into()),
             },
             input: Vec::new(),
-            model_access: Default::default(),
             model_ref_override: None,
         };
         assert_eq!(r.model(&act).unwrap().model, "run-model");

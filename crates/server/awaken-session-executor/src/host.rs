@@ -246,13 +246,6 @@ pub struct SharedHost {
     /// unchanged; when set, a run the provider places (returns `Some`) takes
     /// precedence over the session-wide `remote_hand`.
     pub(crate) tool_executor_provider: Option<Arc<dyn ToolExecutorProvider>>,
-    /// Cloud-managed-gateway egress builder (ADR-0004): when set, a run carrying a
-    /// `ModelAccessGrant::CloudManagedGateway` is honored natively — the grant is
-    /// materialized and this factory builds the executor that dials the gateway with
-    /// the lease token, injected as the run's per-run model executor. `None` (the
-    /// default) fails closed on a gateway grant (never degrades to local credentials).
-    pub(crate) gateway_executor_factory:
-        Option<Arc<dyn crate::gateway_executor::GatewayExecutorFactory>>,
     /// Subject-tagged captured-content sink (ADR-0050): when set, a run whose
     /// capture level permits content writes it here (attributed to the
     /// `AWAKEN_CONTENT_SUBJECT` on the open surface). `None` = spans only.

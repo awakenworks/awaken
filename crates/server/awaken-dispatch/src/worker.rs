@@ -102,16 +102,6 @@ impl<S: Dispatch> DispatchWorker<S> {
         self
     }
 
-    /// Install the cloud-managed-gateway executor builder (ADR-0004), so a
-    /// worker-driven run carrying a gateway grant dials the gateway with its lease
-    /// token instead of resolving a local provider credential — the secretless
-    /// worker path. Without it, a gateway-granted run fails closed.
-    #[must_use]
-    pub fn with_gateway_executor(mut self, build: crate::request::GatewayExecutorFn) -> Self {
-        self.exec = self.exec.with_gateway_executor(build);
-        self
-    }
-
     /// Install the model→executor resolver (R1), so a worker-driven run resolves its
     /// effective model ref to the configured executor without a config service.
     #[must_use]
@@ -151,33 +141,34 @@ impl<S: Dispatch> DispatchWorker<S> {
         self.exec.runtime_context(CancellationToken::new())
     }
 
-    /// A run context that routes this attempt's inference through `gateway` when a
-    /// gateway grant resolved one (ADR-0004), else the runtime's bound executor.
+    /// A run context that routes this attempt's inference through `model_executor`
+    /// when the run resolved one (its provider-resolved model), else the runtime's
+    /// bound (host default) executor.
     fn execution_context_with(
         &self,
-        gateway: &Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>,
+        model_executor: &Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>,
     ) -> RuntimeRunContext {
         let ctx = self.execution_context();
-        match gateway {
+        match model_executor {
             Some(exec) => ctx.with_model_executor(exec.clone()),
             None => ctx,
         }
     }
 
     /// Perform a committed ScheduledAction in-process (ADR-0020), routing any
-    /// inference it triggers through the run's gateway executor when one applies.
+    /// inference it triggers through the run's resolved model executor when one applies.
     async fn perform_scheduled(
         &self,
         run_id: &RunId,
         now_ms: u64,
-        gateway: &Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>,
+        model_executor: &Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>,
     ) -> Result<Phase, Error> {
         Ok(self
             .runtime
             .perform_scheduled_action(
                 run_id,
                 self.reader.as_ref(),
-                self.execution_context_with(gateway),
+                self.execution_context_with(model_executor),
                 now_ms,
             )
             .await?)
@@ -226,17 +217,13 @@ impl<S: Dispatch> DispatchWorker<S> {
         // rejected and abandons instead of clobbering the reclaimer's dispatch.
         let lease_epoch = claimed.lease.epoch;
         // Resolve this run's model to an executor once, before the activation is
-        // consumed, and route every inference in this drive through it. A gateway
-        // grant (ADR-0004) wins — fail closed if this worker cannot dial it, never
-        // degrading to local credentials — else the run's effective model (its
-        // per-run override, else its snapshot binding) is resolved through the
-        // injected provider. `None` leaves the runtime's bound (host default)
-        // executor, so a single-model deployment is unaffected.
+        // consumed, and route every inference in this drive through it: the run's
+        // effective model (its per-run override, else its snapshot binding) resolved
+        // through the injected provider — which owns how the model is reached (local
+        // credentials or a gateway offering). `None` leaves the runtime's bound (host
+        // default) executor, so a single-model deployment is unaffected.
         let effective_model = claimed.request.activation.effective_model_ref().to_string();
-        let gateway = self
-            .exec
-            .resolve_gateway(&claimed.request.activation.model_access)?
-            .or_else(|| self.exec.resolve_model(&effective_model));
+        let model_executor = self.exec.resolve_model(&effective_model);
         // Continue the admitting request's trace across the durable queue boundary:
         // this `wake.dispatch` span's remote parent is the persisted traceparent, so
         // the run driven below (`runtime.run` → …) nests under the trace that
@@ -254,7 +241,7 @@ impl<S: Dispatch> DispatchWorker<S> {
             // crash recovery of a scheduled park (no pending input is expected).
             Some(ticket) if ticket.reason == WaitingReason::ScheduledAction => {
                 match self
-                    .perform_scheduled(&run_id, now_ms, &gateway)
+                    .perform_scheduled(&run_id, now_ms, &model_executor)
                     .instrument(dispatch.clone())
                     .await
                 {
@@ -285,7 +272,7 @@ impl<S: Dispatch> DispatchWorker<S> {
                             .resume(
                                 command,
                                 self.reader.as_ref(),
-                                self.execution_context_with(&gateway),
+                                self.execution_context_with(&model_executor),
                             )
                             .instrument(dispatch.clone())
                             .await
@@ -392,7 +379,7 @@ impl<S: Dispatch> DispatchWorker<S> {
                     all_pending.extend(unbound.into_iter().map(|input| input.message_id));
                     match self
                         .runtime
-                        .execute(activation, self.execution_context_with(&gateway))
+                        .execute(activation, self.execution_context_with(&model_executor))
                         .instrument(dispatch.clone())
                         .await
                     {
@@ -418,7 +405,10 @@ impl<S: Dispatch> DispatchWorker<S> {
         while phase == Phase::Waiting {
             match self.reader.waiting_ticket(&run_id) {
                 Some(ticket) if ticket.reason == WaitingReason::ScheduledAction => {
-                    phase = match self.perform_scheduled(&run_id, now_ms, &gateway).await {
+                    phase = match self
+                        .perform_scheduled(&run_id, now_ms, &model_executor)
+                        .await
+                    {
                         Ok(phase) => phase,
                         Err(err) => {
                             return self

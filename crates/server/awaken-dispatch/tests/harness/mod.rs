@@ -389,7 +389,6 @@ pub fn activation_on(run: &str, thread: &str) -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
-        model_access: Default::default(),
         model_ref_override: None,
     }
 }

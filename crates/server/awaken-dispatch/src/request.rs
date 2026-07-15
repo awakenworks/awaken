@@ -15,19 +15,9 @@ use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_runtime_contract::live_inbox::LiveInbox;
 use awaken_runtime_contract::llm::LlmExecutor;
-use awaken_runtime_contract::model_access::{ModelAccessGrant, ResolvedModelEndpoint};
 use awaken_runtime_contract::pause::PauseSignal;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use tokio_util::sync::CancellationToken;
-
-/// Builds the model executor that dials a materialized cloud-managed gateway grant
-/// (ADR-0004). A plain closure of `ResolvedModelEndpoint → executor` — both types
-/// live in `awaken-runtime-contract`, so the worker path honors a gateway grant
-/// without this crate depending on any concrete provider (the host injects a closure
-/// wrapping its `GatewayExecutorFactory`). `None` from the closure = a dialect it
-/// cannot serve (fail closed).
-pub type GatewayExecutorFn =
-    Arc<dyn Fn(&ResolvedModelEndpoint) -> Option<Arc<dyn LlmExecutor>> + Send + Sync>;
 
 /// Resolves a run's effective model ref to its executor (R1), so a database-less
 /// worker builds the run's configured model with no config service and no
@@ -56,11 +46,6 @@ pub struct RunExecutionContext {
     /// mid-run steer — the pre-P2 behaviour. Neutral: the worker never learns a
     /// protocol; it drains folded `Message`s like the direct path.
     live_inbox: Option<LiveInbox>,
-    /// Builds the per-run gateway executor from a run's `ModelAccessGrant` (ADR-0004),
-    /// so a worker-driven run honors a cloud-managed gateway grant credential-free.
-    /// Absent means the durable path cannot honor a gateway grant — a run that
-    /// carries one then fails closed (see [`resolve_gateway`](Self::resolve_gateway)).
-    gateway_executor: Option<GatewayExecutorFn>,
     /// Resolves a run's effective model ref to its executor (R1), so a database-less
     /// worker builds the run's configured model per attempt. Absent means the run
     /// falls back to the runtime's bound (host default) executor — the pre-provider
@@ -77,7 +62,6 @@ impl RunExecutionContext {
             stream_sink: None,
             stream_checkpoint: None,
             live_inbox: None,
-            gateway_executor: None,
             model_resolver: None,
         }
     }
@@ -99,37 +83,6 @@ impl RunExecutionContext {
         self.model_resolver
             .as_ref()
             .and_then(|resolve| resolve(model_ref))
-    }
-
-    /// Install the cloud-managed-gateway executor builder (ADR-0004): a worker-driven
-    /// run carrying a `ModelAccessGrant::CloudManagedGateway` is routed through the
-    /// executor this builds, dialing the gateway with the run's lease token.
-    #[must_use]
-    pub fn with_gateway_executor(mut self, build: GatewayExecutorFn) -> Self {
-        self.gateway_executor = Some(build);
-        self
-    }
-
-    /// Resolve a run's access `grant` to a per-run model executor, for a gateway
-    /// grant. `Ok(None)` for a local grant (use the runtime's bound executor);
-    /// `Ok(Some(exec))` for a gateway grant this context can dial; `Err` when a
-    /// gateway grant cannot be honored (no builder installed, or a dialect it cannot
-    /// serve) — fail closed rather than degrade to local credentials.
-    pub(crate) fn resolve_gateway(
-        &self,
-        grant: &ModelAccessGrant,
-    ) -> Result<Option<Arc<dyn LlmExecutor>>, crate::Error> {
-        grant
-            .resolve_executor(|endpoint| {
-                self.gateway_executor
-                    .as_ref()
-                    .and_then(|build| build(endpoint))
-            })
-            .map_err(|unservable| {
-                crate::Error::Execution(awaken_runtime_contract::execution::Error::Execution(
-                    unservable.to_string(),
-                ))
-            })
     }
 
     /// Provide the per-session live inbox so worker-driven runs drain mid-run

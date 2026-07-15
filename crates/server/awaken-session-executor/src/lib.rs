@@ -29,7 +29,6 @@ mod dispatch_transport_client;
 mod durable_ops;
 mod env_store;
 mod files;
-mod gateway_executor;
 mod host;
 mod hub;
 mod judge;
@@ -48,8 +47,6 @@ mod skills;
 mod skills_api;
 mod store;
 mod subagent;
-#[cfg(test)]
-mod test_support;
 mod work_store;
 mod worker_http;
 
@@ -125,7 +122,6 @@ pub use crate::skills_api::skills_router;
 pub use crate::work_store::{PostgresWorkQueue, SqliteWorkQueue};
 // The model-route seam (R1/R2/R5): a composition root supplies its own
 // `ExecutorProvider` to map a session's model ref to a labeled executor.
-pub use crate::gateway_executor::GatewayExecutorFactory;
 pub use crate::model_route::ExecutorProvider;
 // The managed-vault OAuth seams (ADR-0043): the transport-level refresher, its
 // prepared configuration, and the live MCP credential probe.
