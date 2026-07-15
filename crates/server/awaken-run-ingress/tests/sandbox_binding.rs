@@ -12,8 +12,19 @@
 //! `provider.create(...)` fresh, keyed by thread. So a reclaimed run today executes on
 //! a NEW sandbox and recovers only from committed history (no data loss — see
 //! `durable_memory::worker_recovery_runs_a_crashed_dispatch_to_completion`), losing
-//! any in-flight sandbox work. Wiring adopt-on-recovery (a placement/fleet concern)
-//! flips that; this test is the durable-binding foundation it will build on.
+//! any in-flight sandbox work.
+//!
+//! DESIGN ↔ GAP: wiring adopt-on-recovery is the subject of **ADR-0056** (Sandbox
+//! Reuse as Two Orthogonal Volumes, `docs/adr/0056-*.md`), which names this exact
+//! gap — "the already-written-but-uncalled reuse decision functions
+//! `reconcile_adoption` / `LeaseLiveness` … None of the decision functions has a
+//! caller." ADR-0056 §4 wires a `SandboxManager` reaper that CALLS `reconcile_adoption`
+//! and completes `adopt(handle)` + `process(pid)` reattach — but only on the Container
+//! tier, and deferred behind its G-Y scenario gate (the Workdir first slice ships NO
+//! reattach). Local tiers stay honestly `Unsupported` (a local sandbox dies with its
+//! owner), which is what this store-layer durable binding is the foundation for. This
+//! test is that foundation; the reattach it enables lands with ADR-0056's Container
+//! slice + its driving-scenario (see `e2e/k3d/worker_failover_e2e.sh`).
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;

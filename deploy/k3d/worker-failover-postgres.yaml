@@ -18,6 +18,10 @@
 # seam is unwired; see sandbox_binding.rs). The echo model has no sandbox state, so
 # recovery-from-committed-history is loss-free here.
 #
+# ADR-0056 (Sandbox Reuse as Two Orthogonal Volumes): this scenario is the G-Y
+# driving-scenario gate for the ADR's deferred Container-tier adopt/reattach — flip it
+# to a Container image + a same-sandbox-continuation assertion when that slice lands.
+#
 # Requires: k3d, kubectl, docker, rustc 1.96 (host build), node (e2e/).
 # Driver: e2e/k3d/worker_failover_e2e.sh
 ---
