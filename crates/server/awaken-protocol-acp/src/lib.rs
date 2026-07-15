@@ -821,14 +821,16 @@ mod tests {
         )
         .await
         .unwrap();
-        let events = observer.events.lock().unwrap();
-        assert_eq!(
-            events.len(),
-            1,
-            "the newline turn emits one lifecycle event"
-        );
-        assert_eq!(events[0].0, "run-7", "the event carries the run scope");
-        assert_eq!(events[0].1.stage, AcpLaunchStage::Ready);
+        {
+            let events = observer.events.lock().unwrap();
+            assert_eq!(
+                events.len(),
+                1,
+                "the newline turn emits one lifecycle event"
+            );
+            assert_eq!(events[0].0, "run-7", "the event carries the run scope");
+            assert_eq!(events[0].1.stage, AcpLaunchStage::Ready);
+        }
         agent.await.unwrap();
     }
 
