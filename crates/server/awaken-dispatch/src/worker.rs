@@ -43,7 +43,7 @@ pub struct DispatchWorker<S> {
     lease_ms: u64,
 }
 
-impl<S: Dispatch> DispatchWorker<S> {
+impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// Wire a worker to its runtime, dispatch store, and durable commit boundary.
     /// The `commit` handle is the single source of durable truth: it is the
     /// commit coordinator the runtime writes through *and* the read port the
@@ -141,14 +141,28 @@ impl<S: Dispatch> DispatchWorker<S> {
         self.exec.runtime_context(CancellationToken::new())
     }
 
-    /// A run context that routes this attempt's inference through `model_executor`
-    /// when the run resolved one (its provider-resolved model), else the runtime's
-    /// bound (host default) executor.
+    /// A run context for the attempt on `run_id` claimed under lease `epoch`, whose
+    /// commit boundary is FENCED by that epoch (a stale owner cannot double-apply side
+    /// effects — the commit twin of the settle fence) and whose inference routes
+    /// through `model_executor` when the run resolved one (its provider-resolved
+    /// model), else the runtime's bound (host default) executor.
     fn execution_context_with(
         &self,
+        run_id: &RunId,
+        epoch: u64,
         model_executor: &Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>,
     ) -> RuntimeRunContext {
-        let ctx = self.execution_context();
+        // The base commit boundary, wrapped per drive because the fence epoch is per
+        // claim. `self.store` (the dispatch queue) reports the run's current epoch, so
+        // a superseded owner's per-step commits are rejected.
+        let fenced: Arc<dyn CommitCoordinator> =
+            Arc::new(crate::commit_fence::FencedCommitCoordinator::new(
+                self.exec.commit().clone(),
+                self.store.clone(),
+                run_id.clone(),
+                epoch,
+            ));
+        let ctx = self.execution_context().with_commit(fenced);
         match model_executor {
             Some(exec) => ctx.with_model_executor(exec.clone()),
             None => ctx,
@@ -156,10 +170,12 @@ impl<S: Dispatch> DispatchWorker<S> {
     }
 
     /// Perform a committed ScheduledAction in-process (ADR-0020), routing any
-    /// inference it triggers through the run's resolved model executor when one applies.
+    /// inference it triggers through the run's resolved model executor when one applies
+    /// and fencing its commits by the claim's lease `epoch`.
     async fn perform_scheduled(
         &self,
         run_id: &RunId,
+        epoch: u64,
         now_ms: u64,
         model_executor: &Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>,
     ) -> Result<Phase, Error> {
@@ -168,7 +184,7 @@ impl<S: Dispatch> DispatchWorker<S> {
             .perform_scheduled_action(
                 run_id,
                 self.reader.as_ref(),
-                self.execution_context_with(model_executor),
+                self.execution_context_with(run_id, epoch, model_executor),
                 now_ms,
             )
             .await?)
@@ -241,7 +257,7 @@ impl<S: Dispatch> DispatchWorker<S> {
             // crash recovery of a scheduled park (no pending input is expected).
             Some(ticket) if ticket.reason == WaitingReason::ScheduledAction => {
                 match self
-                    .perform_scheduled(&run_id, now_ms, &model_executor)
+                    .perform_scheduled(&run_id, lease_epoch, now_ms, &model_executor)
                     .instrument(dispatch.clone())
                     .await
                 {
@@ -272,7 +288,7 @@ impl<S: Dispatch> DispatchWorker<S> {
                             .resume(
                                 command,
                                 self.reader.as_ref(),
-                                self.execution_context_with(&model_executor),
+                                self.execution_context_with(&run_id, lease_epoch, &model_executor),
                             )
                             .instrument(dispatch.clone())
                             .await
@@ -379,7 +395,10 @@ impl<S: Dispatch> DispatchWorker<S> {
                     all_pending.extend(unbound.into_iter().map(|input| input.message_id));
                     match self
                         .runtime
-                        .execute(activation, self.execution_context_with(&model_executor))
+                        .execute(
+                            activation,
+                            self.execution_context_with(&run_id, lease_epoch, &model_executor),
+                        )
                         .instrument(dispatch.clone())
                         .await
                     {
@@ -406,7 +425,7 @@ impl<S: Dispatch> DispatchWorker<S> {
             match self.reader.waiting_ticket(&run_id) {
                 Some(ticket) if ticket.reason == WaitingReason::ScheduledAction => {
                     phase = match self
-                        .perform_scheduled(&run_id, now_ms, &model_executor)
+                        .perform_scheduled(&run_id, lease_epoch, now_ms, &model_executor)
                         .await
                     {
                         Ok(phase) => phase,

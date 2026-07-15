@@ -195,8 +195,7 @@ fn mgmt_seal_key_from_env() -> [u8; 32] {
 mod tests {
     use super::*;
     use awaken_agent_contract::RedactedString;
-    use awaken_credential_vault::{SecretRef, SecretStore};
-    use awaken_model_catalog::repo::CatalogRepo;
+    use awaken_credential_vault::SecretRef;
 
     /// A [`ControlStoreConfig`] whose sqlite files live under a *nested,
     /// not-yet-existing* directory, so opening must exercise `ensure_parent`.

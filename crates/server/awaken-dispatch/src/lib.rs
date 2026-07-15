@@ -17,6 +17,7 @@
 mod any;
 mod capability;
 mod clock;
+mod commit_fence;
 mod dispatch;
 mod dispatch_schema;
 mod durable;
@@ -34,6 +35,7 @@ mod worker;
 pub use any::AnyDispatchStore;
 pub use capability::RunIngressCapabilities;
 pub use clock::{Clock, ManualClock, SystemClock};
+pub use commit_fence::FencedCommitCoordinator;
 pub use dispatch::{
     CasOutcome, Claimed, Dispatch, DispatchError, DispatchOutcome, DispatchQueue, DispatchStatus,
     DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, SettleOutcome,
