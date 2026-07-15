@@ -657,6 +657,8 @@ fn mount_ref(source: &pc::MountSource) -> String {
         pc::MountSource::Resource { resource_id, .. } => resource_id.clone(),
         pc::MountSource::MemoryStore { store_id } => store_id.clone(),
         pc::MountSource::Secret { reference, .. } => reference.clone(),
+        // A Cache Volume is identified by its caller-owned reuse key (ADR-0056).
+        pc::MountSource::CacheVolume { key, .. } => key.clone(),
         pc::MountSource::Other(_) => String::new(),
     }
 }

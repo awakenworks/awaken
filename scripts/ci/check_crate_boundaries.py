@@ -401,6 +401,16 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # an fd) via nix's safe wrapper.
         "nix",
     },
+    # ADR-0056 §4: the worker-plane orchestrator for isolation-instance reuse. Owns the
+    # reconcile/renew control flow and delegates every judgement to the pure decision
+    # kernel in awaken-provisioning-contract (reconcile_adoption/decide_reap) — so it
+    # depends on the contract and nothing heavier (no host, no store, no runtime).
+    "awaken-sandbox-manager": {
+        "awaken-provisioning-contract",
+        # dev-only: drive the async ports through a recording fake in unit tests.
+        "async-trait",
+        "tokio",
+    },
     # Durable skill catalog (resources plane): a SKILL.md-per-skill store the host
     # serves delivered skills from. A resources-plane store like awaken-data-subject —
     # a scoped-migration bundle over sqlite (+ an optional postgres sibling); names no
