@@ -3,15 +3,16 @@
 //! This is the platform's FAB-equivalent: an ordinary agent (authored, compiled,
 //! published like any other) whose *privilege* is expressed entirely by the scope it
 //! lives in and the tools visible in that scope (ADR-0052 D1–D3), not by a special
-//! agent type or a field on any value object. This crate owns only the four
-//! management tools and their descriptors, plus the seeded system prompt; the scope
-//! fence, seeding, model auto-binding, and audit live in the host (D2/D3/D5/D6).
+//! agent type or a field on any value object. This crate owns only the management
+//! tools and their descriptors, plus the seeded system prompt; the scope fence,
+//! seeding, model auto-binding, and audit live in the host (D2/D3/D5/D6).
 //!
-//! The four tools author agent configurations: they read the org-shared capability
-//! view, build/refine a FULL [`AgentConfig`] from a flattened intent, validate it, and
+//! Four tools author agent configurations: they read the org-shared capability view,
+//! build/refine a FULL [`AgentConfig`] from a flattened intent, validate it, and
 //! persist it as an **unpublished** draft (exactly what the editor's Save does). There
 //! is deliberately **no publish tool**: publication is a console action, never an LLM
-//! tool call (D4).
+//! tool call (D4). A fifth, read-only tool ([`EXPLAIN_TOOL`]) turns the assistant into
+//! an in-console user manual (answers how-to/what-is questions from a curated corpus).
 //!
 //! The tools reach real platform state through three ports the host implements
 //! ([`CapabilityReader`], [`DraftValidator`], [`DraftStore`]) — so this crate stays a
