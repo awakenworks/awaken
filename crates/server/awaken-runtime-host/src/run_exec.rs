@@ -58,14 +58,7 @@ impl SharedHost {
         // (the direct path here; the durable path re-resolves on the claiming worker),
         // so the runtime only ever receives an executor, never a model identity to
         // look up. A gateway grant, when present, wins over the local resolution.
-        let effective_model = activation.model_ref_override.clone().unwrap_or_else(|| {
-            activation
-                .snapshot
-                .resolved_spec
-                .model_binding
-                .model_ref
-                .clone()
-        });
+        let effective_model = activation.effective_model_ref().to_string();
         // The gateway grant is honored on BOTH paths: the direct path uses the
         // per-run executor built above; the durable path enqueues, and the pool
         // worker rebuilds the same executor from the session's gateway builder

@@ -232,21 +232,7 @@ impl<S: Dispatch> DispatchWorker<S> {
         // per-run override, else its snapshot binding) is resolved through the
         // injected provider. `None` leaves the runtime's bound (host default)
         // executor, so a single-model deployment is unaffected.
-        let effective_model = claimed
-            .request
-            .activation
-            .model_ref_override
-            .clone()
-            .unwrap_or_else(|| {
-                claimed
-                    .request
-                    .activation
-                    .snapshot
-                    .resolved_spec
-                    .model_binding
-                    .model_ref
-                    .clone()
-            });
+        let effective_model = claimed.request.activation.effective_model_ref().to_string();
         let gateway = self
             .exec
             .resolve_gateway(&claimed.request.activation.model_access)?
