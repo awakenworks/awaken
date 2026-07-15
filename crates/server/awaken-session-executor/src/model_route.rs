@@ -43,6 +43,12 @@ impl ThreadModelBinding {
         self.provider = Some(provider);
     }
 
+    /// The installed model→executor provider, if any — for wiring the neutral
+    /// resolver closure a durable worker's context carries.
+    pub(crate) fn provider(&self) -> Option<Arc<dyn ExecutorProvider>> {
+        self.provider.clone()
+    }
+
     /// Bind `model_ref` to `thread` (R2/R5), staged before its first turn.
     /// Re-registering replaces the binding (the per-turn override re-stages).
     pub(crate) fn register(&self, thread: &str, model_ref: impl Into<String>) {
@@ -62,20 +68,26 @@ impl ThreadModelBinding {
             .unwrap_or_else(|| default_ref.to_string())
     }
 
-    /// The executor a thread's runs use: the provider's resolution of the thread's
-    /// bound model ref, else `default_executor`. The single seam that replaced "the
-    /// host has one fixed executor".
-    pub(crate) fn resolve_executor(
-        &self,
-        thread: &str,
-        default_ref: &str,
-        default_executor: &Arc<dyn LlmExecutor>,
-    ) -> Arc<dyn LlmExecutor> {
-        let model_ref = self.model_ref(thread, default_ref);
+    /// The per-thread model override (R2/R5), if one was staged — `None` when the run
+    /// uses its agent's published binding. Stamped onto the run's activation at
+    /// delivery so the resolve seam sees it without consulting this map.
+    pub(crate) fn override_for(&self, thread: &str) -> Option<String> {
+        self.thread_model
+            .lock()
+            .expect("thread model mutex poisoned")
+            .get(thread)
+            .cloned()
+    }
+
+    /// Resolve an effective model ref to its executor through the installed provider
+    /// (R1), or `None` to fall back to the runtime's bound (host default) executor.
+    /// This is the per-run executor seam: a run names its effective model and gets an
+    /// executor, resolved each attempt from the run's own binding rather than a
+    /// session-build-time registry lookup.
+    pub(crate) fn executor_for(&self, model_ref: &str) -> Option<Arc<dyn LlmExecutor>> {
         self.provider
             .as_ref()
-            .and_then(|provider| provider.executor_for(&model_ref))
-            .unwrap_or_else(|| default_executor.clone())
+            .and_then(|provider| provider.executor_for(model_ref))
     }
 }
 
@@ -107,89 +119,53 @@ mod tests {
     }
 
     #[test]
-    fn binds_per_thread_model_else_default() {
-        let default: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("default"));
+    fn executor_for_resolves_through_the_provider_else_none() {
         let fast: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("fast"));
         let mut map: HashMap<String, Arc<dyn LlmExecutor>> = HashMap::new();
         map.insert("fast-model".into(), fast.clone());
         let mut binding = ThreadModelBinding::new();
         binding.set_provider(Arc::new(MapProvider(map)));
 
-        // No binding → host default.
+        // A resolvable ref → the provider's executor (resolved per run, from the ref).
         assert!(Arc::ptr_eq(
-            &binding.resolve_executor("t-none", "default-model", &default),
-            &default
-        ));
-        // Bound to a resolvable model → the provider's executor (per-session model).
-        binding.register("t-fast", "fast-model");
-        assert!(Arc::ptr_eq(
-            &binding.resolve_executor("t-fast", "default-model", &default),
+            &binding.executor_for("fast-model").unwrap(),
             &fast
         ));
-        // Bound to an unknown model → provider yields None → fail safe to default.
-        binding.register("t-unknown", "no-such");
-        assert!(Arc::ptr_eq(
-            &binding.resolve_executor("t-unknown", "default-model", &default),
-            &default
-        ));
-    }
-
-    #[test]
-    fn unbound_thread_resolves_the_default_ref_through_the_provider() {
-        // A single-model deployment registers its ONE model under the default ref and
-        // binds no per-thread model. resolve_executor must still route the default ref
-        // through the provider (not blindly return the host fallback), so the config
-        // plane's executor for the default model is used.
-        let host_fallback: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("fallback"));
-        let configured: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("configured-default"));
-        let mut map: HashMap<String, Arc<dyn LlmExecutor>> = HashMap::new();
-        map.insert("default-model".into(), configured.clone());
-        let mut binding = ThreadModelBinding::new();
-        binding.set_provider(Arc::new(MapProvider(map)));
-
-        // No per-thread binding, but the provider resolves the DEFAULT ref → its executor.
-        assert!(Arc::ptr_eq(
-            &binding.resolve_executor("t-unbound", "default-model", &host_fallback),
-            &configured
-        ));
+        // An unknown ref → None → the caller falls back to the runtime's bound default.
+        assert!(binding.executor_for("no-such").is_none());
     }
 
     #[test]
     fn re_registering_a_thread_replaces_the_binding() {
         // The per-turn override re-stages the thread's model: the LAST register wins, so
-        // a turn cannot keep running a stale prior model ref.
-        let default: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("default"));
-        let a: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("a"));
-        let b: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("b"));
-        let mut map: HashMap<String, Arc<dyn LlmExecutor>> = HashMap::new();
-        map.insert("model-a".into(), a.clone());
-        map.insert("model-b".into(), b.clone());
+        // a turn cannot keep running a stale prior model ref. `model_ref` reflects the
+        // latest registration (the executor itself is resolved separately via
+        // `executor_for` at run time).
         let mut binding = ThreadModelBinding::new();
+        let mut map: HashMap<String, Arc<dyn LlmExecutor>> = HashMap::new();
+        map.insert("model-a".into(), Arc::new(LabeledModel("a")) as Arc<dyn LlmExecutor>);
+        map.insert("model-b".into(), Arc::new(LabeledModel("b")) as Arc<dyn LlmExecutor>);
         binding.set_provider(Arc::new(MapProvider(map)));
 
         binding.register("t", "model-a");
         assert_eq!(binding.model_ref("t", "default-model"), "model-a");
-        assert!(Arc::ptr_eq(
-            &binding.resolve_executor("t", "default-model", &default),
-            &a
-        ));
         // Re-register (per-turn override) → the new ref replaces the old one.
         binding.register("t", "model-b");
         assert_eq!(binding.model_ref("t", "default-model"), "model-b");
-        assert!(Arc::ptr_eq(
-            &binding.resolve_executor("t", "default-model", &default),
-            &b
-        ));
+        assert_eq!(binding.override_for("t").as_deref(), Some("model-b"));
     }
 
     #[test]
-    fn no_provider_means_every_thread_uses_the_default() {
-        let default: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("default"));
+    fn no_provider_means_executor_for_is_always_none() {
         let binding = ThreadModelBinding::new();
-        binding.register("t", "whatever");
-        assert!(Arc::ptr_eq(
-            &binding.resolve_executor("t", "m", &default),
-            &default
-        ));
+        assert!(binding.executor_for("whatever").is_none());
+    }
+
+    #[test]
+    fn override_for_returns_the_staged_override_else_none() {
+        let binding = ThreadModelBinding::new();
+        assert!(binding.override_for("t").is_none());
+        binding.register("t", "fast-model");
+        assert_eq!(binding.override_for("t").as_deref(), Some("fast-model"));
     }
 }

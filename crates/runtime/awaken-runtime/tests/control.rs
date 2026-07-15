@@ -111,8 +111,8 @@ fn activation() -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("hi")],
         }],
-        trace: Default::default(),
         model_access: Default::default(),
+        model_ref_override: None,
     }
 }
 

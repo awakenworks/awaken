@@ -170,6 +170,10 @@ impl SharedHost {
             .runtime
             .prepare(&ctx.config, thread.to_string(), messages)
             .map_err(|e| HostError::internal(e.to_string()))?;
+        // Stamp the thread's per-turn model override (R2/R5) onto the activation, OFF
+        // the fingerprinted snapshot, so the resolve seam (here or on a claiming
+        // worker) picks the effective model without a session-level registry.
+        activation.model_ref_override = self.model_route.override_for(thread);
         if ctx.durable {
             // The durable path needs a run id that is unique across a restart: the
             // runtime's in-process id counter resets to 1 on restart and would
@@ -360,6 +364,9 @@ impl SharedHost {
             .runtime
             .prepare(&ctx.config, thread.to_string(), messages)
             .map_err(|e| HostError::internal(e.to_string()))?;
+        // Stamp the thread's per-turn model override (R2/R5) off the fingerprinted
+        // snapshot, so the claiming worker resolves the effective model itself.
+        activation.model_ref_override = self.model_route.override_for(thread);
         // Restart-unique run id, same rationale as the foreground durable path.
         let uid = RunId(format!(
             "run-{}-{}",
