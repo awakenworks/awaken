@@ -42,6 +42,9 @@ pub enum WorkState {
     Queued,
     Starting,
     Active,
+    /// No transition currently produces `Stopping` (`stop` goes straight to
+    /// `Stopped`); it is kept because it is Anthropic wire vocabulary a future
+    /// writer could emit, and `state_from_wire` must round-trip a `'stopping'` row.
     Stopping,
     Stopped,
 }
@@ -160,15 +163,6 @@ impl InMemoryWorkQueue {
         format!("work_{:016}", self.seq.fetch_add(1, Ordering::SeqCst))
     }
 
-    fn insert(&self, environment_id: &str, data: WorkData) {
-        let id = match &data {
-            // A healthcheck's inner id is the work id itself.
-            WorkData::HealthCheck { id } => id.clone(),
-            _ => unreachable!("insert takes an already-identified item"),
-        };
-        self.store(id, environment_id, data);
-    }
-
     fn store(&self, id: String, environment_id: &str, data: WorkData) {
         self.works.lock().unwrap().insert(
             id.clone(),
@@ -217,8 +211,9 @@ impl WorkQueue for InMemoryWorkQueue {
     }
 
     async fn enqueue_healthcheck(&self, env_id: &str) -> String {
+        // A healthcheck's inner id is the work id itself (self-reference).
         let id = self.next_id();
-        self.insert(env_id, WorkData::HealthCheck { id: id.clone() });
+        self.store(id.clone(), env_id, WorkData::HealthCheck { id: id.clone() });
         id
     }
 

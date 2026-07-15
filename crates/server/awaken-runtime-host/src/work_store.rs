@@ -77,20 +77,64 @@ fn data_of(data_type: &str, data_id: String) -> WorkData {
 const COLS: &str = "work_id, environment_id, data_type, data_id, metadata_json, state, \
      acknowledged_at, latest_heartbeat_at, started_at, stop_requested_at, stopped_at";
 
+fn metadata_str(m: &BTreeMap<String, String>) -> String {
+    serde_json::to_string(m).expect("work metadata serializes")
+}
+
+/// Ack stamps receipt: `queued` → `starting`; any other state is unchanged.
+fn ack_next_state(current: &WorkItem) -> &'static str {
+    if current.state == WorkState::Queued {
+        "starting"
+    } else {
+        current.state.as_str()
+    }
+}
+
+/// Assemble a [`WorkItem`] from already-extracted scalars — the one place the
+/// row shape is decoded, so the two adapters (rusqlite/sqlx) can't drift.
+#[allow(clippy::too_many_arguments)]
+fn build_item(
+    id: String,
+    environment_id: String,
+    data_type: &str,
+    data_id: String,
+    metadata_json: &str,
+    state: &str,
+    acknowledged_at: Option<String>,
+    latest_heartbeat_at: Option<String>,
+    started_at: Option<String>,
+    stop_requested_at: Option<String>,
+    stopped_at: Option<String>,
+) -> WorkItem {
+    WorkItem {
+        id,
+        environment_id,
+        data: data_of(data_type, data_id),
+        metadata: serde_json::from_str(metadata_json).unwrap_or_default(),
+        state: state_from_wire(state),
+        acknowledged_at,
+        latest_heartbeat_at,
+        started_at,
+        stop_requested_at,
+        stopped_at,
+    }
+}
+
 fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkItem> {
     let metadata_json: String = row.get(4)?;
-    Ok(WorkItem {
-        id: row.get(0)?,
-        environment_id: row.get(1)?,
-        data: data_of(&row.get::<_, String>(2)?, row.get(3)?),
-        metadata: serde_json::from_str(&metadata_json).unwrap_or_default(),
-        state: state_from_wire(&row.get::<_, String>(5)?),
-        acknowledged_at: row.get(6)?,
-        latest_heartbeat_at: row.get(7)?,
-        started_at: row.get(8)?,
-        stop_requested_at: row.get(9)?,
-        stopped_at: row.get(10)?,
-    })
+    Ok(build_item(
+        row.get(0)?,
+        row.get(1)?,
+        &row.get::<_, String>(2)?,
+        row.get(3)?,
+        &metadata_json,
+        &row.get::<_, String>(5)?,
+        row.get(6)?,
+        row.get(7)?,
+        row.get(8)?,
+        row.get(9)?,
+        row.get(10)?,
+    ))
 }
 
 /// SQLite persistence for the environment work queue.
@@ -236,12 +280,7 @@ impl WorkQueue for SqliteWorkQueue {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .expect("begin immediate");
         let current = Self::owned(&tx, env_id, wid)?;
-        // Ack stamps receipt; queued→starting (other states are unchanged).
-        let next = if current.state == WorkState::Queued {
-            "starting"
-        } else {
-            current.state.as_str()
-        };
+        let next = ack_next_state(&current);
         tx.execute(
             "UPDATE work_queue_item SET acknowledged_at = ?1, state = ?2 WHERE work_id = ?3",
             params![OBJECT_AT, next, wid],
@@ -302,7 +341,7 @@ impl WorkQueue for SqliteWorkQueue {
             .expect("begin immediate");
         let mut current = Self::owned(&tx, env_id, wid)?;
         current.metadata.extend(patch);
-        let metadata_json = serde_json::to_string(&current.metadata).expect("metadata serializes");
+        let metadata_json = metadata_str(&current.metadata);
         tx.execute(
             "UPDATE work_queue_item SET metadata_json = ?1 WHERE work_id = ?2",
             params![metadata_json, wid],
@@ -349,18 +388,19 @@ impl WorkQueue for SqliteWorkQueue {
 
 fn pg_row_to_item(row: &PgRow) -> WorkItem {
     let metadata_json: String = row.get("metadata_json");
-    WorkItem {
-        id: row.get("work_id"),
-        environment_id: row.get("environment_id"),
-        data: data_of(&row.get::<String, _>("data_type"), row.get("data_id")),
-        metadata: serde_json::from_str(&metadata_json).unwrap_or_default(),
-        state: state_from_wire(&row.get::<String, _>("state")),
-        acknowledged_at: row.get("acknowledged_at"),
-        latest_heartbeat_at: row.get("latest_heartbeat_at"),
-        started_at: row.get("started_at"),
-        stop_requested_at: row.get("stop_requested_at"),
-        stopped_at: row.get("stopped_at"),
-    }
+    build_item(
+        row.get("work_id"),
+        row.get("environment_id"),
+        &row.get::<String, _>("data_type"),
+        row.get("data_id"),
+        &metadata_json,
+        &row.get::<String, _>("state"),
+        row.get("acknowledged_at"),
+        row.get("latest_heartbeat_at"),
+        row.get("started_at"),
+        row.get("stop_requested_at"),
+        row.get("stopped_at"),
+    )
 }
 
 /// A Postgres-backed [`WorkQueue`] — the network-DB sibling over the same
@@ -493,11 +533,7 @@ impl WorkQueue for PostgresWorkQueue {
 
     async fn ack(&self, env_id: &str, wid: &str) -> Option<WorkItem> {
         let current = self.fetch_owned(env_id, wid).await?;
-        let next = if current.state == WorkState::Queued {
-            "starting"
-        } else {
-            current.state.as_str()
-        };
+        let next = ack_next_state(&current);
         sqlx::query(
             "UPDATE work_queue_item SET acknowledged_at = $1, state = $2 \
              WHERE work_id = $3 AND environment_id = $4",
@@ -556,7 +592,7 @@ impl WorkQueue for PostgresWorkQueue {
     ) -> Option<WorkItem> {
         let mut current = self.fetch_owned(env_id, wid).await?;
         current.metadata.extend(patch);
-        let metadata_json = serde_json::to_string(&current.metadata).expect("metadata serializes");
+        let metadata_json = metadata_str(&current.metadata);
         sqlx::query(
             "UPDATE work_queue_item SET metadata_json = $1 WHERE work_id = $2 AND environment_id = $3",
         )
