@@ -8,6 +8,7 @@
 //! ([`AcpLaunch`]): the host resolves the model (config plane) and hands this
 //! module already-materialized strings — no config or secret types cross here.
 
+use std::collections::BTreeMap;
 use std::process::Stdio;
 use std::sync::Arc;
 
@@ -262,33 +263,48 @@ pub fn project_launch(
 ) -> std::result::Result<AcpLaunch, OpenError> {
     let model = resolver.model(activation)?;
     let extra_env = resolver.extra_env(activation);
-    let window = compact_window(&activation.snapshot.resolved_spec);
+    let window = AcpSettings::from_plugin_config(&activation.snapshot.resolved_spec.plugin_config)
+        .compact_window;
     Ok(cli.project(&model, window, &extra_env))
 }
 
-/// The launched CLI's own auto-compaction window, from the run's config. Read from
-/// the neutral `plugin_config["acp"]["compact_window"]` (a token count) — an
-/// ACP-scoped setting, kept separate from the native compactor's message-count
-/// [`ContextPolicy`](awaken_runtime_contract::resolved::ContextPolicy) since a CLI's
-/// window is tokens, not messages. Absent → the CLI keeps its own default.
-fn compact_window(spec: &awaken_runtime_contract::resolved::ResolvedSpec) -> Option<u64> {
-    spec.plugin_config
-        .get("acp")?
-        .get("compact_window")?
-        .as_u64()
+/// The ACP-scoped run settings carried in `plugin_config["acp"]` — the single typed
+/// codec for that section, replacing ad-hoc `.get("acp").get(...)` reads scattered
+/// across the executor. The authoring plane writes the same shape; this crate reads
+/// it. Kept separate from the native compactor's message-count
+/// [`ContextPolicy`](awaken_runtime_contract::resolved::ContextPolicy): a CLI's
+/// window is tokens, not messages.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AcpSettings {
+    /// The launched CLI's own auto-compaction window (a token count). Absent → the
+    /// CLI keeps its own default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_window: Option<u64>,
+    /// The MCP servers this run declares for its ACP CLI. The host projects them onto
+    /// the CLI's delivery mechanism (config file or `session/new`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<crate::McpServerConfig>,
 }
 
-/// The MCP servers a run declares for its ACP CLI, read from the config plane
-/// (`plugin_config.acp.mcp_servers`). The host binds these from a session's
-/// `mcp_servers`; empty when none declared or the shape is unrecognized.
-fn mcp_servers_of(
-    plugin_config: &std::collections::BTreeMap<String, serde_json::Value>,
-) -> Vec<crate::McpServerConfig> {
-    plugin_config
-        .get("acp")
-        .and_then(|v| v.get("mcp_servers"))
-        .and_then(|v| serde_json::from_value::<Vec<crate::McpServerConfig>>(v.clone()).ok())
-        .unwrap_or_default()
+impl AcpSettings {
+    /// Decode the `acp` section from a run's `plugin_config`. Fail-soft per field
+    /// (a malformed `mcp_servers` yields an empty list without dropping
+    /// `compact_window`), matching the readers this replaces.
+    #[must_use]
+    pub fn from_plugin_config(plugin_config: &BTreeMap<String, serde_json::Value>) -> Self {
+        let Some(acp) = plugin_config.get("acp") else {
+            return Self::default();
+        };
+        Self {
+            compact_window: acp
+                .get("compact_window")
+                .and_then(serde_json::Value::as_u64),
+            mcp_servers: acp
+                .get("mcp_servers")
+                .and_then(|v| serde_json::from_value::<Vec<crate::McpServerConfig>>(v.clone()).ok())
+                .unwrap_or_default(),
+        }
+    }
 }
 
 /// Project the run's declared MCP servers onto its CLI's delivery mechanism — a config
@@ -299,9 +315,9 @@ fn mcp_servers_of(
 /// is the seam that finally carries config-plane MCP servers to the projection core.
 pub(crate) fn mcp_delivery(
     cli: &AcpCli,
-    plugin_config: &std::collections::BTreeMap<String, serde_json::Value>,
+    plugin_config: &BTreeMap<String, serde_json::Value>,
 ) -> Option<crate::McpDelivery> {
-    let servers = mcp_servers_of(plugin_config);
+    let servers = AcpSettings::from_plugin_config(plugin_config).mcp_servers;
     (!servers.is_empty()).then(|| cli.project_mcp(&servers))
 }
 
@@ -609,6 +625,51 @@ mod tests {
 
     // Reuse the fixture activation from the crate tests.
     use crate::tests::activation;
+
+    fn pc(section: serde_json::Value) -> BTreeMap<String, serde_json::Value> {
+        BTreeMap::from([("acp".to_string(), section)])
+    }
+
+    #[test]
+    fn acp_settings_decode_compact_window_and_mcp_servers() {
+        let s = AcpSettings::from_plugin_config(&pc(serde_json::json!({
+            "compact_window": 120_000,
+            "mcp_servers": [{ "name": "gh", "transport": { "kind": "http", "url": "https://mcp" } }],
+        })));
+        assert_eq!(s.compact_window, Some(120_000));
+        assert_eq!(s.mcp_servers.len(), 1);
+        assert_eq!(s.mcp_servers[0].name, "gh");
+    }
+
+    #[test]
+    fn acp_settings_absent_section_is_default() {
+        assert_eq!(
+            AcpSettings::from_plugin_config(&BTreeMap::new()),
+            AcpSettings::default()
+        );
+    }
+
+    #[test]
+    fn acp_settings_malformed_mcp_servers_does_not_drop_compact_window() {
+        // Fail-soft per field: a bad mcp_servers shape must not lose the window —
+        // the exact semantics of the two readers this codec replaces.
+        let s = AcpSettings::from_plugin_config(&pc(serde_json::json!({
+            "compact_window": 4096,
+            "mcp_servers": "not-an-array",
+        })));
+        assert_eq!(s.compact_window, Some(4096));
+        assert!(s.mcp_servers.is_empty());
+    }
+
+    #[test]
+    fn acp_settings_round_trips_through_json() {
+        let s = AcpSettings {
+            compact_window: Some(8192),
+            mcp_servers: Vec::new(),
+        };
+        let round: AcpSettings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(s, round);
+    }
 
     #[test]
     fn host_passthrough_adds_path_and_home_without_shadowing_projected_env() {

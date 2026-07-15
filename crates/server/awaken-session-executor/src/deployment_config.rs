@@ -52,6 +52,12 @@ pub enum Wake {
 /// configured differently (`AWAKEN_SANDBOX_TIER`), so one fleet mixes backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SandboxTier {
+    /// No OS isolation — the ACP CLI runs as a plain child of the runtime process
+    /// (`AWAKEN_SANDBOX_TIER=local`). The environment-agnostic executor drives it
+    /// over the same [`AgentChannelSource`] as any sandboxed tier; only the host's
+    /// choice of source differs (ADR-0057: the executor never learns the tier). For
+    /// a trusted CLI or single-tenant dev where isolation is provided elsewhere.
+    Local,
     /// Bubblewrap namespace isolation on the worker host (`AWAKEN_SANDBOX_TIER=namespace`,
     /// the default) — no user image, the agent runs under `bwrap`.
     #[default]
@@ -68,6 +74,7 @@ impl SandboxTier {
     /// Parse the `AWAKEN_SANDBOX_TIER` value; unknown/absent → the namespace default.
     fn from_env_str(value: Option<&str>) -> Self {
         match value {
+            Some("local") | Some("none") => Self::Local,
             Some("docker") => Self::Docker,
             Some("podman") => Self::Podman,
             Some("k8s") | Some("kubernetes") => Self::K8s,
@@ -75,11 +82,12 @@ impl SandboxTier {
         }
     }
 
-    /// Whether this tier runs the agent inside a container image (vs. the namespace
-    /// tier on the worker host) — the composition root builds a container ACP source.
+    /// Whether this tier runs the agent inside a container image (vs. the local or
+    /// namespace tiers on the worker host) — the composition root builds a container
+    /// ACP source.
     #[must_use]
     pub fn is_container(self) -> bool {
-        !matches!(self, Self::Namespace)
+        matches!(self, Self::Docker | Self::Podman | Self::K8s)
     }
 }
 
