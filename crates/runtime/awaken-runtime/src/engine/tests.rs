@@ -137,6 +137,48 @@ fn keep_last_zero_keeps_only_the_system_prefix() {
 }
 
 #[test]
+fn keep_last_preserves_a_system_message_regardless_of_position() {
+    // The positional invariant: KeepLast keeps EVERY system message wherever it
+    // sits (agent instructions, an injected compaction summary), dropping only the
+    // oldest conversational turns. A system message placed early in the stream must
+    // survive a drop that removes older user turns around it.
+    let transcript = vec![
+        numbered(0),
+        Message::text(MessageId("s-mid".to_string()), Role::System, "pinned"),
+        numbered(1),
+        numbered(2),
+    ];
+    let request = build_chat_request(
+        &spec_with(ContextPolicy::KeepLast { keep_last: 1 }),
+        &[],
+        &transcript,
+        &[],
+        &Default::default(),
+    );
+    // Oldest conversational turns "0" and "1" drop; only the last one survives.
+    assert_eq!(user_texts(&request), vec!["2".to_string()]);
+    // Both system messages survive: the instruction prefix and the mid-list one.
+    let system_texts: Vec<String> = request
+        .messages
+        .iter()
+        .filter(|m| matches!(m.role, Role::System))
+        .map(|m| {
+            m.content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect::<String>()
+        })
+        .collect();
+    assert!(
+        system_texts.contains(&"pinned".to_string()),
+        "a mid-list system message survives the KeepLast drop, got {system_texts:?}"
+    );
+}
+
+#[test]
 fn prelude_is_injected_after_instructions_before_the_transcript() {
     let prelude = vec![Message::text(
         MessageId("p1".to_string()),
@@ -454,6 +496,45 @@ async fn completed_tool_calls_before_a_drop_are_executed_without_re_inferring() 
     assert_eq!(calls[0].tool_id, "search");
     assert_eq!(calls[0].arguments, serde_json::json!({ "q": "rust" }));
     // No re-inference: the provider ran exactly once.
+    assert_eq!(flaky.requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn completed_tool_calls_are_salvaged_even_when_the_retry_budget_is_spent() {
+    // R2 preempts budget exhaustion: a mid-stream drop that left a COMPLETE tool
+    // call (its args parse) executes the salvaged call without re-inference, even
+    // though `max_retries == 0` leaves no budget for a text continuation. The
+    // completed-tools short-circuit (inference.rs B8) sits before the budget gate.
+    let flaky = Arc::new(FlakyStreamLlm {
+        requests: Default::default(),
+        first_partial: "searching ",
+        first_tool: Some(("c1", "search", r#"{"q":"rust"}"#)),
+        continuation: "unused",
+    });
+    let llm: Arc<dyn LlmExecutor> = flaky.clone();
+    let breaker = crate::circuit_breaker::CircuitBreaker::default();
+    let sink = recording();
+
+    let response = infer_with_retry(
+        &llm,
+        one_turn_request(),
+        &policy(0),
+        &breaker,
+        &sink,
+        None,
+        None,
+        &awaken_runtime_contract::CaptureDecision::default(),
+        None,
+        &awaken_runtime_contract::metrics::NoopRecorder,
+    )
+    .await
+    .expect("salvages the completed tool call despite a spent budget");
+
+    assert_eq!(response.stop_reason, Some(StopReason::ToolUse));
+    let calls = response.output.tool_calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].arguments, serde_json::json!({ "q": "rust" }));
+    // The salvage short-circuits before any retry: the provider ran exactly once.
     assert_eq!(flaky.requests.lock().unwrap().len(), 1);
 }
 

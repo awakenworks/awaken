@@ -78,6 +78,21 @@ fn resolve_fails_closed_on_fingerprint_mismatch() {
 }
 
 #[test]
+fn resolve_fails_closed_when_only_the_spec_catalog_fingerprint_drifts() {
+    // The gate is a compound OR: EITHER the snapshot identity fingerprint OR the
+    // resolved-spec's own catalog fingerprint mismatching fails closed (G4). Here
+    // the snapshot fingerprint matches the active catalog, but the spec's embedded
+    // catalog fingerprint has drifted — the second, independent branch must reject.
+    let runtime = Runtime::new();
+    install(&runtime, "catalog-a");
+
+    let mut snap = snapshot("catalog-a");
+    snap.resolved_spec.catalog_fingerprint = CatalogFingerprint("catalog-b".to_string());
+
+    assert_eq!(runtime.resolve(&snap), Err(Error::FingerprintMismatch));
+}
+
+#[test]
 fn resolve_fails_closed_without_a_catalog() {
     let runtime = Runtime::new();
     assert_eq!(

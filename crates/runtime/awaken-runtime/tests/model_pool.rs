@@ -58,6 +58,47 @@ impl LlmExecutor for RouteLlm {
     }
 }
 
+/// The primary streams a `MaxTokens`-truncated text turn on its first call (which
+/// commits a continuation partial), then fails on its continuation call. Any other
+/// model answers cleanly — so a fail-over, if it wrongly happened, would be visible.
+struct TruncateThenFailPrimary {
+    seen: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for TruncateThenFailPrimary {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let model = request.model_binding.model_ref.clone();
+        let primary_calls = {
+            let mut seen = self.seen.lock().unwrap();
+            seen.push(model.clone());
+            seen.iter().filter(|m| m.as_str() == "primary").count()
+        };
+        match model.as_str() {
+            // First primary call: a truncated text turn → an in-place continuation
+            // partial is committed and `truncation_retries` advances past 0.
+            "primary" if primary_calls == 1 => Ok(ChatResponse {
+                output: AssistantOutput::text("partial ".to_string()),
+                usage: None,
+                stop_reason: Some(StopReason::MaxTokens),
+            }),
+            // The continuation call fails — but a partial already rode this step.
+            "primary" => Err(LlmError::Overloaded {
+                message: "primary down".to_string(),
+                retry_after: None,
+            }),
+            other => Ok(ChatResponse {
+                output: AssistantOutput::text(format!("answered by {other}")),
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+            }),
+        }
+    }
+}
+
 fn binding(model: &str) -> ModelBinding {
     ModelBinding {
         provider_identity_ref: "p".to_string(),
@@ -151,6 +192,34 @@ async fn primary_failure_fails_over_to_the_next_candidate() {
     // Both models were tried, primary first then fallback — in candidate order.
     assert_eq!(&*seen.lock().unwrap(), &["primary", "fallback"]);
     let _ = &commit;
+}
+
+#[tokio::test]
+async fn a_committed_truncation_partial_does_not_fail_over_to_a_pool_model() {
+    // I6: once a step commits a truncation partial (truncation_retries > 0), a later
+    // inference failure is terminal in place — switching to another pool model would
+    // double-generate the turn. Failover (I5) fires only on a CLEAN pre-commit
+    // failure. So the fallback candidate is never tried after a partial is committed.
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(TruncateThenFailPrimary { seen: seen.clone() }))
+        .with_retry_policy(no_retries());
+    install(&runtime);
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
+    let outcome = runtime
+        .execute(activation("primary", &["fallback"]), context)
+        .await
+        .expect("runs");
+
+    assert!(
+        matches!(outcome, Phase::Ended(EndCause::Error(_))),
+        "a post-partial failure is terminal, got {outcome:?}"
+    );
+    // Primary was asked twice (truncation, then the failing continuation); the
+    // fallback was never asked — no failover after a committed partial.
+    assert_eq!(&*seen.lock().unwrap(), &["primary", "primary"]);
 }
 
 #[tokio::test]
