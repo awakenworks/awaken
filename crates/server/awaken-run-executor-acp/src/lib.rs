@@ -824,7 +824,9 @@ pub use acp_cli::{
 // session-home provider over it — the host consumes these instead of owning them.
 pub use config_home::{ConfigHome, RetentionPolicy, SessionReuse};
 pub use session_home::{DirSessionHome, FsSessionBlobStore, SessionBlobStore};
-pub use subprocess::{AcpLaunch, LaunchResolver, ProjectingChannelSource, SubprocessChannelSource};
+pub use subprocess::{
+    AcpLaunch, LaunchResolver, ProjectingChannelSource, SubprocessChannelSource, project_launch,
+};
 
 #[cfg(test)]
 mod tests;
