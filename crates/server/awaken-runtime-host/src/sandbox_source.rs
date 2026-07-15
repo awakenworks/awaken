@@ -281,6 +281,145 @@ impl AgentChannelSource for ContainerChannelSource {
     }
 }
 
+/// The TCP port a containerized agent publishes its ACP wire on — the image's
+/// entrypoint binds it, the runtime dials it. A fixed convention for now.
+#[cfg(any(feature = "container-docker", feature = "container-podman"))]
+const CONTAINER_AGENT_PORT: u16 = 8080;
+
+/// Build the ACP [`AgentChannelSource`] a worker serves, from its configured
+/// [`SandboxTier`](crate::deployment_config::SandboxTier): the namespace (bwrap) tier
+/// by default, or a container tier running the agent in `image` via the matching
+/// runtime (podman / docker / k8s). This is the composition seam behind
+/// `AWAKEN_SANDBOX_TIER` — different workers pick different backends. A container tier
+/// whose backend feature is not compiled in, or with no image configured, fails closed.
+pub async fn build_acp_channel_source(
+    tier: crate::deployment_config::SandboxTier,
+    image: Option<&str>,
+    launch: AcpLaunch,
+    egress: ThreadEgress,
+    namespace_base: std::path::PathBuf,
+) -> Result<Arc<dyn AgentChannelSource>, String> {
+    use crate::deployment_config::SandboxTier;
+    match tier {
+        SandboxTier::Namespace => Ok(Arc::new(
+            SandboxChannelSource::new(namespace_base, launch).with_thread_egress(egress),
+        )),
+        SandboxTier::Docker => build_docker_source(image, launch, egress),
+        SandboxTier::Podman => build_podman_source(image, launch, egress),
+        SandboxTier::K8s => build_k8s_source(image, launch, egress).await,
+    }
+}
+
+/// The image a container tier requires, or a fail-closed error naming the config var.
+#[cfg(any(
+    feature = "container-docker",
+    feature = "container-podman",
+    feature = "container-k8s"
+))]
+fn container_image(image: Option<&str>) -> Result<String, String> {
+    image
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "a container sandbox tier requires AWAKEN_CONTAINER_IMAGE".to_string())
+}
+
+/// Wrap a worker-configured [`AgentContainerProvider`] into a [`ContainerChannelSource`].
+#[cfg(any(
+    feature = "container-docker",
+    feature = "container-podman",
+    feature = "container-k8s"
+))]
+fn container_source(
+    provider: Arc<dyn AgentContainerProvider>,
+    launch: AcpLaunch,
+    egress: ThreadEgress,
+) -> Arc<dyn AgentChannelSource> {
+    Arc::new(ContainerChannelSource::new(provider, launch).with_thread_egress(egress))
+}
+
+#[cfg(feature = "container-docker")]
+fn build_docker_source(
+    image: Option<&str>,
+    launch: AcpLaunch,
+    egress: ThreadEgress,
+) -> Result<Arc<dyn AgentChannelSource>, String> {
+    let runtime =
+        awaken_sandbox_container::docker::DockerRuntime::connect_local(CONTAINER_AGENT_PORT)
+            .map_err(|e| format!("docker runtime: {e}"))?;
+    let provider = awaken_sandbox_container::ContainerProvider::new(
+        std::sync::Arc::new(runtime),
+        container_image(image)?,
+    );
+    Ok(container_source(Arc::new(provider), launch, egress))
+}
+
+#[cfg(not(feature = "container-docker"))]
+fn build_docker_source(
+    _image: Option<&str>,
+    _launch: AcpLaunch,
+    _egress: ThreadEgress,
+) -> Result<Arc<dyn AgentChannelSource>, String> {
+    Err("AWAKEN_SANDBOX_TIER=docker needs the `container-docker` feature".into())
+}
+
+#[cfg(feature = "container-podman")]
+fn build_podman_source(
+    image: Option<&str>,
+    launch: AcpLaunch,
+    egress: ThreadEgress,
+) -> Result<Arc<dyn AgentChannelSource>, String> {
+    let runtime = awaken_sandbox_container::podman::PodmanRuntime::new(CONTAINER_AGENT_PORT);
+    let provider = awaken_sandbox_container::ContainerProvider::new(
+        std::sync::Arc::new(runtime),
+        container_image(image)?,
+    );
+    Ok(container_source(Arc::new(provider), launch, egress))
+}
+
+#[cfg(not(feature = "container-podman"))]
+fn build_podman_source(
+    _image: Option<&str>,
+    _launch: AcpLaunch,
+    _egress: ThreadEgress,
+) -> Result<Arc<dyn AgentChannelSource>, String> {
+    Err("AWAKEN_SANDBOX_TIER=podman needs the `container-podman` feature".into())
+}
+
+#[cfg(feature = "container-k8s")]
+async fn build_k8s_source(
+    image: Option<&str>,
+    launch: AcpLaunch,
+    egress: ThreadEgress,
+) -> Result<Arc<dyn AgentChannelSource>, String> {
+    // The Pod's reachable agent address + namespace come from the worker's env; the
+    // Service/NodePort exposure is a cluster-deployment concern outside this process.
+    let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".into());
+    let addr = std::env::var("AWAKEN_K8S_AGENT_ADDR")
+        .map_err(|_| {
+            "AWAKEN_SANDBOX_TIER=k8s needs AWAKEN_K8S_AGENT_ADDR (the Pod's reachable ACP address)"
+                .to_string()
+        })?
+        .parse()
+        .map_err(|e| format!("bad AWAKEN_K8S_AGENT_ADDR: {e}"))?;
+    let runtime = awaken_sandbox_container::k8s::K8sRuntime::connect(namespace, addr)
+        .await
+        .map_err(|e| format!("k8s runtime: {e}"))?;
+    let provider = awaken_sandbox_container::ContainerProvider::new(
+        std::sync::Arc::new(runtime),
+        container_image(image)?,
+    );
+    Ok(container_source(Arc::new(provider), launch, egress))
+}
+
+#[cfg(not(feature = "container-k8s"))]
+async fn build_k8s_source(
+    _image: Option<&str>,
+    _launch: AcpLaunch,
+    _egress: ThreadEgress,
+) -> Result<Arc<dyn AgentChannelSource>, String> {
+    Err("AWAKEN_SANDBOX_TIER=k8s needs the `container-k8s` feature".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,5 +534,47 @@ mod tests {
         assert_eq!(spec.env.len(), 1);
         assert_eq!(spec.env[0].name, "K");
         assert!(matches!(spec.env[0].value, pc::EnvValue::Inline { .. }));
+    }
+
+    #[tokio::test]
+    async fn the_factory_builds_the_namespace_source_by_default() {
+        use crate::deployment_config::SandboxTier;
+        // The namespace tier always builds (no image, no container feature needed).
+        let src = build_acp_channel_source(
+            SandboxTier::Namespace,
+            None,
+            AcpLaunch::custom(vec!["claude".into()], vec![]),
+            ThreadEgress::new(),
+            base(),
+        )
+        .await;
+        assert!(src.is_ok(), "namespace tier must always build");
+    }
+
+    #[tokio::test]
+    async fn a_container_tier_without_its_backend_feature_fails_closed() {
+        use crate::deployment_config::SandboxTier;
+        // With no container-* feature compiled in, a container tier is a clear error —
+        // never a silent fallback that would ignore the worker's configured backend.
+        for tier in [SandboxTier::Docker, SandboxTier::Podman, SandboxTier::K8s] {
+            let out = build_acp_channel_source(
+                tier,
+                Some("ghcr.io/x/agent:1"),
+                AcpLaunch::custom(vec!["claude".into()], vec![]),
+                ThreadEgress::new(),
+                base(),
+            )
+            .await;
+            #[cfg(not(any(
+                feature = "container-docker",
+                feature = "container-podman",
+                feature = "container-k8s"
+            )))]
+            assert!(
+                out.is_err(),
+                "{tier:?} without its feature must fail closed"
+            );
+            let _ = out;
+        }
     }
 }

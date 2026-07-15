@@ -355,6 +355,7 @@ pub trait awaken_runtime_host::ExecutorProvider: core::marker::Send + core::mark
 pub fn awaken_runtime_host::ExecutorProvider::executor_for(&self, &str) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
 pub fn awaken_runtime_host::advertised_tools(&std::collections::hash::set::HashSet<alloc::string::String>, &std::collections::hash::set::HashSet<alloc::string::String>, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub fn awaken_runtime_host::block_text(&[awaken_agent_contract::agent::content::ContentBlock]) -> alloc::string::String
+pub async fn awaken_runtime_host::build_acp_channel_source(awaken_runtime_host::deployment_config::SandboxTier, core::option::Option<&str>, awaken_run_executor_acp::subprocess::AcpLaunch, awaken_runtime_host::ThreadEgress, std::path::PathBuf) -> core::result::Result<alloc::sync::Arc<dyn awaken_run_executor_acp::AgentChannelSource>, alloc::string::String>
 pub fn awaken_runtime_host::commit_ingest_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> axum::routing::Router
 pub fn awaken_runtime_host::consent_router(alloc::sync::Arc<dyn awaken_data_subject::DataSubjectRepo>) -> axum::routing::Router
 pub fn awaken_runtime_host::default_models() -> alloc::vec::Vec<awaken_runtime_host::ModelEntry>

@@ -88,6 +88,12 @@ tracing = "0.1"
 # Off by default — the durable store stays Postgres either way; this only swaps the
 # best-effort wake hint channel. Separate from any NATS the bin uses for the hand relay.
 nats = ["awaken-run-ingress/nats"]
+# Container ACP tiers: enable the backend a worker is configured for
+# (AWAKEN_SANDBOX_TIER). Each forwards to the matching awaken-sandbox-container
+# runtime; off by default so the namespace-only host stays light.
+container-docker = ["awaken-sandbox-container/docker"]
+container-podman = ["awaken-sandbox-container/podman"]
+container-k8s = ["awaken-sandbox-container/k8s"]
 
 [dev-dependencies]
 # The durable session-store round-trip test opens a real sessions.db under a temp dir.
