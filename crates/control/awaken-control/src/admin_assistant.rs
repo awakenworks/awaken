@@ -4,7 +4,7 @@
 //!
 //! The assistant is authored, compiled, and published like any agent (D1) — the
 //! seeding here is exactly a `put` + `publish` through `ConfigService`, in the reserved
-//! scope (D2), where the scope-keyed catalog makes the four admin tools nameable (D3).
+//! scope (D2), where the scope-keyed catalog makes the five admin tools nameable (D3).
 
 use std::sync::Arc;
 
@@ -485,9 +485,9 @@ mod tests {
             .expect("installed");
         let spec = &installed.snapshot().resolved_spec;
         assert_eq!(spec.model_binding.model_ref, "m-1");
-        // It carries the four admin tool descriptors (nameable because it published in
+        // It carries the five admin tool descriptors (nameable because it published in
         // the reserved scope).
-        assert_eq!(spec.tool_descriptors.len(), 4);
+        assert_eq!(spec.tool_descriptors.len(), 5);
     }
 
     #[tokio::test]

@@ -517,7 +517,7 @@ mod tests {
             vec![ContentBlock::tool_use("c1", "run", serde_json::json!({}))],
         );
         // client=false => PendingBuiltin.
-        let builtin = project_messages(&[msg.clone()], Some(("c1", false)));
+        let builtin = project_messages(std::slice::from_ref(&msg), Some(("c1", false)));
         assert!(matches!(
             &builtin[0],
             AgentEvent::ToolCall { disposition, .. } if *disposition == ToolDisposition::PendingBuiltin
