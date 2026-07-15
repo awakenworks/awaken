@@ -200,7 +200,6 @@ pub fn awaken_agent_contract::event::draft::Draft::from(awaken_agent_contract::e
 pub mod awaken_agent_contract::event::kind
 pub enum awaken_agent_contract::event::kind::Kind
 pub awaken_agent_contract::event::kind::Kind::Continuation
-pub awaken_agent_contract::event::kind::Kind::MessageCommitted
 pub awaken_agent_contract::event::kind::Kind::PermissionDecided
 pub awaken_agent_contract::event::kind::Kind::RunPhaseChanged
 pub awaken_agent_contract::event::kind::Kind::RunResumed

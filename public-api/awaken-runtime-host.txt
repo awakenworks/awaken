@@ -34,9 +34,15 @@ pub awaken_runtime_host::HostResume::ClientResult::is_error: bool
 pub awaken_runtime_host::HostResume::Confirm
 pub awaken_runtime_host::HostResume::Confirm::allow: bool
 pub awaken_runtime_host::HostResume::Confirm::note: core::option::Option<alloc::string::String>
+pub enum awaken_runtime_host::LaunchSource
+pub awaken_runtime_host::LaunchSource::Fixed(awaken_run_executor_acp::subprocess::AcpLaunch)
+pub awaken_runtime_host::LaunchSource::Projected
+pub awaken_runtime_host::LaunchSource::Projected::cli: awaken_run_executor_acp::acp_cli::AcpCli
+pub awaken_runtime_host::LaunchSource::Projected::resolver: alloc::sync::Arc<dyn awaken_run_executor_acp::subprocess::LaunchResolver>
 pub enum awaken_runtime_host::SandboxTier
 pub awaken_runtime_host::SandboxTier::Docker
 pub awaken_runtime_host::SandboxTier::K8s
+pub awaken_runtime_host::SandboxTier::Local
 pub awaken_runtime_host::SandboxTier::Namespace
 pub awaken_runtime_host::SandboxTier::Podman
 impl awaken_runtime_host::SandboxTier
@@ -68,7 +74,9 @@ pub awaken_runtime_host::AcpTurn::messages: alloc::vec::Vec<awaken_agent_contrac
 pub awaken_runtime_host::AcpTurn::stop: awaken_runtime_host::AcpStop
 pub struct awaken_runtime_host::ContainerChannelSource
 impl awaken_runtime_host::ContainerChannelSource
+pub fn awaken_runtime_host::ContainerChannelSource::from_source(alloc::sync::Arc<dyn awaken_sandbox_container::AgentContainerProvider>, awaken_runtime_host::LaunchSource) -> Self
 pub fn awaken_runtime_host::ContainerChannelSource::new(alloc::sync::Arc<dyn awaken_sandbox_container::AgentContainerProvider>, awaken_run_executor_acp::subprocess::AcpLaunch) -> Self
+pub fn awaken_runtime_host::ContainerChannelSource::projecting(alloc::sync::Arc<dyn awaken_sandbox_container::AgentContainerProvider>, awaken_run_executor_acp::acp_cli::AcpCli, alloc::sync::Arc<dyn awaken_run_executor_acp::subprocess::LaunchResolver>) -> Self
 pub fn awaken_runtime_host::ContainerChannelSource::with_codec(self, awaken_protocol_acp::Codec) -> Self
 pub fn awaken_runtime_host::ContainerChannelSource::with_thread_egress(self, awaken_runtime_host::ThreadEgress) -> Self
 impl awaken_run_executor_acp::AgentChannelSource for awaken_runtime_host::ContainerChannelSource
@@ -227,7 +235,9 @@ impl awaken_agent_contract::commit::coordinator::Coordinator for awaken_runtime_
 pub fn awaken_runtime_host::RemoteCoordinator::commit<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::commit::staged::ThreadCommit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::commit::staged::CommitRecord, awaken_agent_contract::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_runtime_host::SandboxChannelSource
 impl awaken_runtime_host::SandboxChannelSource
+pub fn awaken_runtime_host::SandboxChannelSource::from_source(impl core::convert::Into<std::path::PathBuf>, awaken_runtime_host::LaunchSource) -> Self
 pub fn awaken_runtime_host::SandboxChannelSource::new(impl core::convert::Into<std::path::PathBuf>, awaken_run_executor_acp::subprocess::AcpLaunch) -> Self
+pub fn awaken_runtime_host::SandboxChannelSource::projecting(impl core::convert::Into<std::path::PathBuf>, awaken_run_executor_acp::acp_cli::AcpCli, alloc::sync::Arc<dyn awaken_run_executor_acp::subprocess::LaunchResolver>) -> Self
 pub fn awaken_runtime_host::SandboxChannelSource::with_codec(self, awaken_protocol_acp::Codec) -> Self
 pub fn awaken_runtime_host::SandboxChannelSource::with_thread_egress(self, awaken_runtime_host::ThreadEgress) -> Self
 impl awaken_run_executor_acp::AgentChannelSource for awaken_runtime_host::SandboxChannelSource
@@ -237,6 +247,7 @@ impl awaken_runtime_host::SharedHost
 pub fn awaken_runtime_host::SharedHost::acp_launch_observer(&self) -> alloc::sync::Arc<dyn awaken_protocol_acp::LaunchObserver>
 pub fn awaken_runtime_host::SharedHost::register_thread_runtime(&self, &str, &str)
 pub fn awaken_runtime_host::SharedHost::with_acp(self, alloc::sync::Arc<awaken_run_executor_acp::AcpRunExecutor>) -> Self
+pub async fn awaken_runtime_host::SharedHost::with_acp_from_env(self) -> Self
 pub fn awaken_runtime_host::SharedHost::with_projected_acp(self, awaken_run_executor_acp::acp_cli::AcpCli, core::option::Option<std::path::PathBuf>) -> Self
 impl awaken_runtime_host::SharedHost
 pub async fn awaken_runtime_host::SharedHost::add_system(&self, &str, &str) -> core::result::Result<(), awaken_runtime_host::host::types::HostError>
@@ -256,6 +267,7 @@ pub fn awaken_runtime_host::SharedHost::client_tools(&self) -> &std::collections
 pub async fn awaken_runtime_host::SharedHost::drain_memory(&self, core::time::Duration) -> bool
 pub fn awaken_runtime_host::SharedHost::ensure_dispatch_pool(&alloc::sync::Arc<Self>)
 pub fn awaken_runtime_host::SharedHost::hub(&self) -> &alloc::sync::Arc<awaken_runtime_host::ThreadEventHub>
+pub fn awaken_runtime_host::SharedHost::memory_registry(&self) -> alloc::sync::Arc<dyn awaken_config_resolver::stores::MemoryStoreRegistry>
 pub fn awaken_runtime_host::SharedHost::model(&self) -> alloc::string::String
 pub fn awaken_runtime_host::SharedHost::new(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::SharedHost::pool_accepting_work(&self) -> bool
@@ -274,6 +286,7 @@ pub fn awaken_runtime_host::SharedHost::with_executor_provider(self, alloc::sync
 pub fn awaken_runtime_host::SharedHost::with_gate_override(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_judge(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_memory(self, impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn awaken_runtime_host::SharedHost::with_memory_registry(self, alloc::sync::Arc<dyn awaken_config_resolver::stores::MemoryStoreRegistry>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_remote_a2a(self, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_protocol_a2a::client::Transport>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_remote_hand(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_session_blob_root(self, impl core::convert::Into<std::path::PathBuf>) -> Self
@@ -361,8 +374,9 @@ pub fn awaken_runtime_host::VaultRefresher::refresh<'life0, 'life1, 'async_trait
 pub trait awaken_runtime_host::ExecutorProvider: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_host::ExecutorProvider::executor_for(&self, &str) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
 pub fn awaken_runtime_host::advertised_tools(&std::collections::hash::set::HashSet<alloc::string::String>, &std::collections::hash::set::HashSet<alloc::string::String>, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
+pub fn awaken_runtime_host::authorable_config_sections() -> alloc::vec::Vec<awaken_runtime_contract::capability::PluginCapability>
 pub fn awaken_runtime_host::block_text(&[awaken_agent_contract::agent::content::ContentBlock]) -> alloc::string::String
-pub async fn awaken_runtime_host::build_acp_channel_source(awaken_runtime_host::SandboxTier, core::option::Option<&str>, awaken_run_executor_acp::subprocess::AcpLaunch, awaken_runtime_host::ThreadEgress, std::path::PathBuf) -> core::result::Result<alloc::sync::Arc<dyn awaken_run_executor_acp::AgentChannelSource>, alloc::string::String>
+pub async fn awaken_runtime_host::build_acp_channel_source(awaken_runtime_host::SandboxTier, core::option::Option<&str>, awaken_runtime_host::LaunchSource, awaken_runtime_host::ThreadEgress, std::path::PathBuf) -> core::result::Result<alloc::sync::Arc<dyn awaken_run_executor_acp::AgentChannelSource>, alloc::string::String>
 pub fn awaken_runtime_host::commit_ingest_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> axum::routing::Router
 pub fn awaken_runtime_host::consent_router(alloc::sync::Arc<dyn awaken_data_subject::DataSubjectRepo>) -> axum::routing::Router
 pub fn awaken_runtime_host::default_models() -> alloc::vec::Vec<awaken_runtime_host::ModelEntry>
@@ -377,5 +391,6 @@ pub async fn awaken_runtime_host::init_shared_postgres_dispatch(&str) -> core::r
 pub fn awaken_runtime_host::install_capture_sink(alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>)
 pub fn awaken_runtime_host::memory_stores_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> axum::routing::Router
 pub fn awaken_runtime_host::models_router(alloc::sync::Arc<alloc::vec::Vec<awaken_runtime_host::ModelEntry>>) -> axum::routing::Router
+pub fn awaken_runtime_host::platform_plugin_capabilities() -> alloc::vec::Vec<awaken_runtime_contract::capability::PluginCapability>
 pub fn awaken_runtime_host::skills_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> axum::routing::Router
 pub fn awaken_runtime_host::worker_dispatch_store(impl core::convert::Into<alloc::string::String>) -> alloc::sync::Arc<awaken_run_ingress::any::AnyDispatchStore>
