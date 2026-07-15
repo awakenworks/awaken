@@ -1135,6 +1135,7 @@ dependencies = [
  "awaken-run-ingress",
  "awaken-runtime",
  "awaken-runtime-contract",
+ "awaken-sandbox-container",
  "awaken-sandbox-local",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",

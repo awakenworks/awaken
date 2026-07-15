@@ -89,7 +89,7 @@ pub use crate::host::{HostResume, SharedHost};
 pub use crate::data_subject_api::{consent_router, erasure_router, install_capture_sink};
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::redact::PiiRedactor;
-pub use crate::sandbox_source::{SandboxChannelSource, ThreadEgress};
+pub use crate::sandbox_source::{ContainerChannelSource, SandboxChannelSource, ThreadEgress};
 // The config data plane (ADR-0036/slice A): the service + its router + the
 // advertised-tools helper the composition root builds a config host from.
 pub use crate::acp_provision::EnvLaunchResolver;
