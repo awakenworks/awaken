@@ -88,6 +88,47 @@ impl crate::host::SharedHost {
         self
     }
 
+    /// Wire the ACP backend from the standard environment — the ONE place both the
+    /// server (`awaken serve`) and worker (`awaken_worker::run`) composition roots
+    /// configure ACP, so they never drift (ADR-0057 `serve-selected-cli`).
+    ///
+    /// `AWAKEN_ACP_CLI=<id>` selects the production projecting path (each run's
+    /// config-plane `acp:<cli>` launched through its catalog row); `AWAKEN_ACP_ARGV`
+    /// a fixed trusted/test CLI; neither set → no ACP backend served. The source is
+    /// realized in `AWAKEN_SANDBOX_TIER` (`local`/`namespace`/container) — the
+    /// executor is unaware of which (worker + provisioning own the environment).
+    /// Panics on a misconfigured tier, never a silent fallback.
+    pub async fn with_acp_from_env(self) -> Self {
+        let base = acp_sandbox_base();
+        let source = match (acp_serve_cli(), acp_launch_argv()) {
+            (Some(id), _) => {
+                let cli = *awaken_run_executor_acp::acp_cli(&id)
+                    .unwrap_or_else(|| panic!("AWAKEN_ACP_CLI={id} is not a known ACP CLI"));
+                let resolver = Arc::new(crate::EnvLaunchResolver::from_process_env(
+                    cli,
+                    Some(base.clone()),
+                ));
+                crate::LaunchSource::Projected { cli, resolver }
+            }
+            (None, Some(argv)) => {
+                crate::LaunchSource::Fixed(awaken_run_executor_acp::AcpLaunch::custom(argv, vec![]))
+            }
+            (None, None) => return self,
+        };
+        let dep = crate::DeploymentConfig::from_env();
+        let egress = self.thread_egress();
+        let channel = crate::build_acp_channel_source(
+            dep.sandbox_tier,
+            dep.container_image.as_deref(),
+            source,
+            egress,
+            base,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("configure the ACP sandbox tier: {e}"));
+        self.with_acp(Arc::new(AcpRunExecutor::new(channel)))
+    }
+
     /// The hub-backed launch observer for this host: republishes an ACP agent's
     /// bring-up (install → launch → initialize → ready → failed) onto the per-thread
     /// hub, so a composition root wires it onto the [`AcpRunExecutor`] it builds and
@@ -139,6 +180,35 @@ impl crate::host::SharedHost {
             acp.register(thread, adapter);
         }
     }
+}
+
+/// The ACP CLI id this worker serves (`AWAKEN_ACP_CLI`), selecting the production
+/// projecting path. Takes precedence over the fixed `AWAKEN_ACP_ARGV`.
+fn acp_serve_cli() -> Option<String> {
+    std::env::var("AWAKEN_ACP_CLI")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+}
+
+/// The fixed agent-CLI argv for `acp:*` sessions (`AWAKEN_ACP_ARGV`, whitespace-split,
+/// e.g. `claude --acp`). `None` when unset/blank.
+fn acp_launch_argv() -> Option<Vec<String>> {
+    std::env::var("AWAKEN_ACP_ARGV")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| v.split_whitespace().map(String::from).collect())
+}
+
+/// The base dir the ACP sandbox roots and per-thread config homes live under
+/// (`AWAKEN_SANDBOX_DIR`), or a per-process temp dir when unset.
+fn acp_sandbox_base() -> std::path::PathBuf {
+    std::env::var("AWAKEN_SANDBOX_DIR")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("awaken-acp-sbx-{}", std::process::id()))
+        })
 }
 
 #[cfg(test)]

@@ -85,6 +85,11 @@ pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
     // empty service when no config store is configured.
     host = host.with_config_service(awaken_control::warm_config_service_from_env().await);
 
+    // Serve `acp:*` runs this worker claims on the config-selected CLI, realized in the
+    // worker's configured sandbox tier — the SAME env wiring the server root uses, so
+    // the two never drift (ADR-0057). No selector set → no ACP backend, native only.
+    host = host.with_acp_from_env().await;
+
     let host = Arc::new(host);
     host.ensure_dispatch_pool();
     let posture = if gateway_only {
