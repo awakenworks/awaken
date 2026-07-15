@@ -723,7 +723,6 @@ impl RawTool for DraftAgent {
             skills: args.skills,
             multiagent: args.multiagent,
             metadata: args.metadata,
-            ..Default::default()
         };
         let out = validate_persist_emit(call.call_id, config, &self.validator, &self.store).await?;
         // Resources are a SEPARATE store: only bind them once the config validated + was

@@ -35,7 +35,10 @@ async fn call(
     (status, value)
 }
 
-#[tokio::test]
+// Multi-thread flavor: resolving a session's model bridges the async catalog
+// snapshot via `block_in_place` (`model_resolver::snapshot`), which is only valid
+// on a multi-thread runtime — the same flavor production `awaken serve` runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admin_and_vault_surfaces_are_served_together() {
     let app = build_management_router().await;
 
