@@ -954,31 +954,85 @@ async fn a_bound_resource_with_a_missing_backing_store_fails_the_session_closed(
     );
 }
 
-/// G5 — characterization of the known cross-node gap. A host WITHOUT a `ResourceStore`
-/// is exactly a database-less remote worker (it has no binding store, and the snapshot
-/// it drives from carries only rendered instructions, never structured mounts). So an
-/// agent's bound resources DO NOT mount there. This pins the current boundary; when
-/// resources are carried cross-node, this test must flip and be updated.
+/// G5 — characterization of the known cross-node gap, as a CONTRAST that isolates the
+/// gap to one variable. The SAME agent binding (same seeded memory store, same
+/// `AgentResourceConfig`) mounts on a host that HAS the `ResourceStore` (the all-in-one
+/// / co-located case) but NOT on a host without it (a database-less remote worker —
+/// which drives from a snapshot carrying only rendered instructions, never the binding
+/// store or structured mounts). The only difference between the two is whether the
+/// `ResourceStore` crossed the node boundary, so this pins the gap precisely: it is
+/// "the store is not carried cross-node", not "no binding exists". When resources ARE
+/// carried to a worker, the second half flips and this test must be updated.
 #[tokio::test]
-async fn without_a_resource_store_an_agents_bound_resources_do_not_mount() {
+async fn an_agents_bound_resource_mounts_with_the_store_but_not_on_a_db_less_worker() {
+    use awaken_config_resolver::{
+        AgentResourceConfig, InMemoryResourceStore, ResourceAccess, ResourceBinding, ResourceKind,
+        ResourceStore,
+    };
     use awaken_protocol_managed::SessionRuntime;
-    // A managed host with NO `.with_resources(...)` — the db-less worker's situation.
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    let managed = crate::ManagedHost::new(host.clone());
 
-    managed
-        .prepare_session("t-g5", bare_session("a"))
+    // Author ONE binding: agent `a` → a seeded memory store at /mnt/memory. Shared
+    // verbatim by both hosts so the ONLY variable is whether the store is present.
+    async fn bind(host: &Arc<SharedHost>) -> Arc<dyn ResourceStore> {
+        let store_id = host.create_memory_store().await;
+        host.memory_stores
+            .put(
+                crate::provisioning::HOST_MEMORY_WORKSPACE,
+                &store_id,
+                b"CARRIED-BYTES",
+            )
+            .await
+            .expect("seed");
+        let bindings: Arc<dyn ResourceStore> = Arc::new(InMemoryResourceStore::new());
+        bindings.put_agent_resource(AgentResourceConfig {
+            agent_id: "a".into(),
+            resources: vec![ResourceBinding {
+                kind: ResourceKind::MemoryStore,
+                resource_id: store_id,
+                mount_path: "/mnt/memory".into(),
+                access: ResourceAccess::ReadWrite,
+                instructions: None,
+            }],
+            version: 1,
+        });
+        bindings
+    }
+
+    // Positive control: a host that HAS the ResourceStore mounts the bound resource.
+    let with_store = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let bindings = bind(&with_store).await;
+    let managed_with = crate::ManagedHost::new(with_store.clone()).with_resources(bindings);
+    managed_with
+        .prepare_session("t-g5-with", bare_session("a"))
         .await
         .unwrap();
-
-    let dump = serde_json::to_string(&host.sandbox_spec("t-g5").mounts).unwrap();
-    assert_eq!(
-        dump, "[]",
-        "without the binding store, an agent's bound resources are invisible: {dump}"
+    let with_dump = serde_json::to_string(&with_store.sandbox_spec("t-g5-with").mounts).unwrap();
+    assert!(
+        with_dump.contains("CARRIED-BYTES"),
+        "with the store, the agent's bound resource mounts: {with_dump}"
     );
     assert!(
-        host.thread_memory_mounts("t-g5").is_empty(),
-        "no memory mounts are staged without the resource store"
+        !with_store.thread_memory_mounts("t-g5-with").is_empty(),
+        "with the store, a memory mount is staged"
+    );
+
+    // The gap: a db-less worker (same agent, but NO ResourceStore crossed the boundary)
+    // mounts nothing — the binding is invisible to it.
+    let db_less = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    bind(&db_less).await; // seed the store's *bytes*, but do NOT wire the binding store
+    let managed_worker = crate::ManagedHost::new(db_less.clone()); // no .with_resources(...)
+    managed_worker
+        .prepare_session("t-g5-worker", bare_session("a"))
+        .await
+        .unwrap();
+    let worker_dump = serde_json::to_string(&db_less.sandbox_spec("t-g5-worker").mounts).unwrap();
+    assert_eq!(
+        worker_dump, "[]",
+        "the same binding is invisible to a db-less worker (gap): {worker_dump}"
+    );
+    assert!(
+        db_less.thread_memory_mounts("t-g5-worker").is_empty(),
+        "no memory mount is staged without the resource store crossing the boundary"
     );
 }
 
