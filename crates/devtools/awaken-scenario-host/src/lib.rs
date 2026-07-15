@@ -1300,6 +1300,12 @@ pub async fn build_config_router() -> Router {
     let admin_execs = awaken_admin_assistant::admin_tools(
         reader,
         validator,
+        // Persist/read drafts as unpublished config agents through the same plane the
+        // editor's Save uses, in the tenant/default scope (ADR-0052).
+        Arc::new(awaken_control::ConfigServiceDraftStore::new(
+            plane.clone(),
+            awaken_config_store::DEFAULT_SCOPE,
+        )),
         Arc::new(awaken_admin_assistant::TracingAuditSink),
     );
     let host = SharedHost::new(model, model_ref)
