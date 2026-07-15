@@ -28,8 +28,9 @@ pub mod stores;
 /// Telemetry ceiling composition (ADR-0050 D3): Org baseline tightened by lower layers.
 pub mod telemetry;
 pub use stores::{
-    InMemoryMcpStore, InMemoryProfileStore, InMemoryResourceStore, InMemoryWebhookStore,
-    InferenceProfileStore, McpStore, ResourceStore, WebhookStore,
+    InMemoryMcpStore, InMemoryMemoryStoreRegistry, InMemoryProfileStore, InMemoryResourceStore,
+    InMemoryWebhookStore, InferenceProfileStore, McpStore, MemoryStoreDef, MemoryStoreRegistry,
+    ResourceStore, WebhookStore,
 };
 pub use telemetry::{RedactionMode, TelemetryCeiling};
 

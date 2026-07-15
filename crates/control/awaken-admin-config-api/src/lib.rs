@@ -28,8 +28,9 @@ pub use sqlite::SqliteAdminStore;
 // type). The authoring HTTP surface writes through these ports; the SQLite backend
 // (`SqliteAdminStore`) implements them.
 pub use awaken_config_resolver::{
-    InMemoryMcpStore, InMemoryProfileStore, InMemoryResourceStore, InMemoryWebhookStore,
-    InferenceProfileStore, McpStore, ResourceStore, WebhookStore,
+    InMemoryMcpStore, InMemoryMemoryStoreRegistry, InMemoryProfileStore, InMemoryResourceStore,
+    InMemoryWebhookStore, InferenceProfileStore, McpStore, MemoryStoreDef, MemoryStoreRegistry,
+    ResourceStore, WebhookStore,
 };
 pub use router::{
     AdminState, CredentialProbe, CredentialValidation, EnterCredentialRequest, ProbeStatus,

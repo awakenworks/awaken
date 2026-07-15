@@ -78,6 +78,9 @@ impl SharedHost {
             file_store: Arc::new(InMemoryFileStore::new()),
             memory_stores,
             memory_fs,
+            // Default to an ephemeral in-memory identity registry; the composition root
+            // overrides it with the durable admin backend via `with_memory_registry`.
+            memory_registry: Arc::new(awaken_config_resolver::InMemoryMemoryStoreRegistry::new()),
             gate_override: None,
             dispatch_pool: std::sync::OnceLock::new(),
             completion: Arc::new(CompletionRegistry::default()),
@@ -292,6 +295,27 @@ impl SharedHost {
     ) -> Self {
         self.skill_store = Some(store);
         self
+    }
+
+    /// Back the memory-store **identity** registry (id/name/metadata, ADR-0038) with a
+    /// durable [`awaken_config_resolver::MemoryStoreRegistry`] (e.g. the admin store), so
+    /// a store's identity survives a restart and the control plane can enumerate stores.
+    /// Sibling of [`with_skill_store_backend`](Self::with_skill_store_backend); unset, an
+    /// ephemeral in-memory registry is used (back-compat). Store *content* is unaffected —
+    /// it always lives in the durable memory blob store / `MemoryFs`.
+    pub fn with_memory_registry(
+        mut self,
+        registry: Arc<dyn awaken_config_resolver::MemoryStoreRegistry>,
+    ) -> Self {
+        self.memory_registry = registry;
+        self
+    }
+
+    /// The memory-store identity registry (the durable admin backend when wired, else the
+    /// ephemeral default). The memory-store HTTP router reads identity through this.
+    #[must_use]
+    pub fn memory_registry(&self) -> Arc<dyn awaken_config_resolver::MemoryStoreRegistry> {
+        self.memory_registry.clone()
     }
 
     /// Grade outcomes with a real judge sub-agent (`judge_agent_id`) run through the

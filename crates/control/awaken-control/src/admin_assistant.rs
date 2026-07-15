@@ -14,7 +14,8 @@ use awaken_admin_assistant::{
     PluginInfo, ResourceInventory, ResourceSpec, admin_assistant_config,
 };
 use awaken_config_resolver::{
-    AgentResourceConfig, McpStore, ResourceAccess, ResourceBinding, ResourceKind, ResourceStore,
+    AgentResourceConfig, McpStore, MemoryStoreRegistry, ResourceAccess, ResourceBinding,
+    ResourceKind, ResourceStore,
 };
 use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
 use awaken_config_store::{AgentConfig, DEFAULT_SCOPE};
@@ -140,6 +141,59 @@ impl CapabilityReader for CatalogCapabilityReader {
             mcp_servers,
             memory_stores,
         }
+    }
+}
+
+/// The LIVE data-plane resource inventory (ADR-0038 memory stores + skills) behind the
+/// [`ResourceInventory`] port, so the [`CatalogCapabilityReader`] can report real memory
+/// store + skill ids without `awaken-control` depending on the runtime host. Memory-store
+/// identity comes from the durable [`MemoryStoreRegistry`] (the same admin backend the
+/// host writes through), and skills from the [`awaken_skill_store::SkillStore`]. Carries
+/// only ids — never a secret.
+pub struct HostResourceInventory {
+    memory: Arc<dyn MemoryStoreRegistry>,
+    skills: Arc<dyn awaken_skill_store::SkillStore>,
+    /// The workspace the single-catalog host addresses its skills under (mirrors the
+    /// host's `HOST_SKILL_WORKSPACE`, the default scope).
+    skill_workspace: String,
+}
+
+impl HostResourceInventory {
+    /// Build the inventory from the two live handles (the memory-store identity registry
+    /// and the skill store), scoped to the default workspace.
+    pub fn new(
+        memory: Arc<dyn MemoryStoreRegistry>,
+        skills: Arc<dyn awaken_skill_store::SkillStore>,
+    ) -> Self {
+        Self {
+            memory,
+            skills,
+            skill_workspace: DEFAULT_SCOPE.to_string(),
+        }
+    }
+}
+
+#[async_trait]
+impl ResourceInventory for HostResourceInventory {
+    async fn memory_stores(&self) -> Vec<String> {
+        // Non-archived store ids from the durable registry (sorted by id).
+        self.memory
+            .list_memory_stores()
+            .into_iter()
+            .map(|d| d.id)
+            .collect()
+    }
+
+    async fn skills(&self) -> Vec<String> {
+        // The `.0` of each `(id, name)` pair; a read failure degrades to empty rather than
+        // failing the capability call.
+        self.skills
+            .list(&self.skill_workspace)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
     }
 }
 
@@ -466,6 +520,37 @@ mod tests {
         assert!(caps.memory_stores.is_empty());
         let json = serde_json::to_string(&caps).unwrap();
         assert!(!json.contains("key") && !json.contains("secret"));
+    }
+
+    /// The LIVE inventory reports a put memory store's id and a delivered skill's id — the
+    /// two data-plane sources the `CatalogCapabilityReader` folds in when wired.
+    #[tokio::test]
+    async fn host_inventory_reports_put_memory_stores_and_skills() {
+        use awaken_config_resolver::{InMemoryMemoryStoreRegistry, MemoryStoreDef};
+        use awaken_skill_store::{InMemorySkillStore, SkillStore};
+
+        let registry = Arc::new(InMemoryMemoryStoreRegistry::new());
+        registry.put_memory_store(MemoryStoreDef {
+            id: "mem-1".into(),
+            name: "Prefs".into(),
+            description: String::new(),
+            metadata: std::collections::BTreeMap::new(),
+            archived: false,
+        });
+        // An archived store must NOT be enumerated.
+        registry.put_memory_store(MemoryStoreDef {
+            id: "mem-gone".into(),
+            name: "Old".into(),
+            description: String::new(),
+            metadata: std::collections::BTreeMap::new(),
+            archived: true,
+        });
+        let skills = Arc::new(InMemorySkillStore::new());
+        skills.put(DEFAULT_SCOPE, "greet", "# greet").await.unwrap();
+
+        let inv = HostResourceInventory::new(registry, skills);
+        assert_eq!(inv.memory_stores().await, vec!["mem-1".to_string()]);
+        assert_eq!(inv.skills().await, vec!["greet".to_string()]);
     }
 
     /// The reader lists existing agent ids in the scope, excluding the reserved admin
