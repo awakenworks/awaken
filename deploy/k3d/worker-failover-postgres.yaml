@@ -1,0 +1,130 @@
+# Worker-fleet failover (ADR-0019 / ADR-0022) on a real multi-node k3d/k3s cluster.
+#
+# Unlike `failover-postgres.yaml` (a BRAIN fleet, each pod driving its own local pool
+# over a shared Postgres), this is the DATABASE-LESS WORKER topology: ONE brain acts
+# as a pool-less COORDINATOR (it queues runs to shared Postgres but runs no local
+# drain pool), and a FLEET of stateless workers claim/execute/commit over the HTTP
+# worker transport (`/v1/worker/dispatch/*` + `/v1/worker/commit`). We:
+#   1. submit a batch of durable runs to the coordinator (queued to Postgres)
+#   2. the worker fleet drains them over HTTP, committing back to the coordinator
+#   3. DELETE one worker pod mid-drain (a worker crash)
+#   4. the surviving worker reclaims the crashed worker's in-flight + pending runs
+#      (lease expiry → recovery re-claim, fenced exactly-once) and drives them all
+# proving a worker is not a data-loss SPOF: no run is lost when a worker dies, and
+# the committed log stays exactly-once (the commit fence rejects a stale re-commit).
+#
+# NOTE: this proves NO-LOSS recovery over the worker HTTP path. It does NOT prove
+# sandbox re-adoption (a reclaimed run currently executes on a fresh sandbox — that
+# seam is unwired; see sandbox_binding.rs). The echo model has no sandbox state, so
+# recovery-from-committed-history is loss-free here.
+#
+# Requires: k3d, kubectl, docker, rustc 1.96 (host build), node (e2e/).
+# Driver: e2e/k3d/worker_failover_e2e.sh
+---
+apiVersion: v1
+kind: Service
+metadata: { name: postgres, labels: { app: postgres } }
+spec:
+  selector: { app: postgres }
+  ports: [ { name: pg, port: 5432, targetPort: 5432 } ]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: postgres, labels: { app: postgres } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: postgres } }
+  template:
+    metadata: { labels: { app: postgres } }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          imagePullPolicy: Never
+          env:
+            - { name: POSTGRES_PASSWORD, value: "test" } # awaken-allow: secret
+            - { name: POSTGRES_DB, value: "awaken" }
+            - { name: PGDATA, value: "/var/lib/postgresql/data/pgdata" }
+          ports: [ { containerPort: 5432 } ]
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "postgres", "-d", "awaken"] }
+            initialDelaySeconds: 2
+            periodSeconds: 2
+          volumeMounts: [ { name: data, mountPath: /var/lib/postgresql/data } ]
+      volumes: [ { name: data, emptyDir: {} } ]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: brain, labels: { app: brain } }
+spec:
+  selector: { app: brain }
+  ports: [ { name: http, port: 3000, targetPort: 3000 } ]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: brain, labels: { app: brain } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: brain } }
+  template:
+    metadata: { labels: { app: brain } }
+    spec:
+      terminationGracePeriodSeconds: 2
+      containers:
+        - name: brain
+          image: awaken-topology:latest
+          imagePullPolicy: Never
+          env:
+            - { name: AWAKEN_MODEL_MODE, value: echo }
+            - { name: AWAKEN_INGRESS, value: durable }
+            - { name: AWAKEN_DISPATCH_BACKEND, value: postgres }
+            - { name: AWAKEN_STORE, value: postgres }
+            - { name: AWAKEN_DATABASE_URL, value: "postgres://postgres:test@postgres:5432/awaken" } # awaken-allow: secret
+            - { name: AWAKEN_DISPATCH_WAKE, value: pg-notify }
+            # Pool-less COORDINATOR: the brain queues runs but runs NO local drain pool,
+            # so the worker fleet is the sole executor (the validator requires a shared
+            # Postgres queue for this, which we have).
+            - { name: AWAKEN_SERVER_RUN_LOCAL_POOL, value: "false" }
+            - { name: AWAKEN_HTTP_ADDR, value: "0.0.0.0:3000" }
+            - { name: AWAKEN_STORAGE_DIR, value: "/tmp/awaken" }
+          ports: [ { containerPort: 3000 } ]
+          readinessProbe:
+            tcpSocket: { port: 3000 }
+            initialDelaySeconds: 2
+            periodSeconds: 2
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: worker, labels: { app: worker } }
+spec:
+  # Two stateless db-less workers; anti-affinity spreads them onto distinct nodes so
+  # killing one pod is a real cross-node worker crash, not a co-located restart.
+  replicas: 2
+  selector: { matchLabels: { app: worker } }
+  template:
+    metadata: { labels: { app: worker } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector: { matchLabels: { app: worker } }
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: worker
+          image: awaken-topology:latest
+          imagePullPolicy: Never
+          env:
+            - { name: AWAKEN_ROLE, value: worker }
+            - { name: AWAKEN_MODEL_MODE, value: echo }
+            - { name: AWAKEN_INGRESS, value: durable }
+            # Drain the coordinator's shared queue over the HTTP worker transport.
+            - { name: AWAKEN_UPSTREAM_URL, value: "http://brain:3000" }
+            - { name: AWAKEN_WORKER_ADMIN_LISTEN, value: "0.0.0.0:9090" }
+          ports: [ { containerPort: 9090 } ]
+          readinessProbe:
+            tcpSocket: { port: 9090 }
+            initialDelaySeconds: 2
+            periodSeconds: 2
