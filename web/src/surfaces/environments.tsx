@@ -5,9 +5,32 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../lib/api/client";
-import type { Environment, Page } from "../lib/api/types";
+import type { Environment, Page, WorkQueueStats } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import { Button, Card, Pill, TextField } from "../components/ui";
+
+/** The environment's durable work-queue state (EnvRegistry + WorkQueue). A self-hosted
+ * worker polls this queue; `depth` = items queued (backlog waiting to be claimed),
+ * `pending` = items a worker has claimed and is processing. Polls alongside the env
+ * list so a freshly-seeded healthcheck shows up. */
+function EnvQueue({ id }: { id: string }) {
+  const app = useApp();
+  const stats = useQuery({
+    queryKey: ["env-work-stats", id],
+    queryFn: () => api.get<WorkQueueStats>(`/v1/environments/${id}/work/stats`),
+    refetchInterval: 15_000,
+    retry: false,
+  });
+  const s = stats.data;
+  if (!s) return <span className="mut">—</span>;
+  if (s.depth === 0 && s.pending === 0) return <Pill tone="neutral">{app.t("idle", "空闲")}</Pill>;
+  const title = `${s.depth} queued · ${s.pending} in-flight · ${s.workers_polling} workers polling`;
+  return (
+    <Pill tone={s.pending > 0 ? "ok" : "info"} title={title}>
+      {s.depth > 0 ? app.t(`${s.depth} queued`, `${s.depth} 排队`) : app.t(`${s.pending} active`, `${s.pending} 进行中`)}
+    </Pill>
+  );
+}
 
 function CreateModal({ onClose }: { onClose: () => void }) {
   const app = useApp();
@@ -132,6 +155,7 @@ export default function EnvironmentsSurface() {
               <th>{app.t("Name", "名称")}</th>
               <th>{app.t("Runtime", "运行时")}</th>
               <th>{app.t("Networking", "网络")}</th>
+              <th>{app.t("Queue", "队列")}</th>
               <th />
             </tr>
           </thead>
@@ -146,6 +170,7 @@ export default function EnvironmentsSurface() {
                   </Pill>
                 </td>
                 <td className="mut">{e.config.networking?.type ?? "—"}</td>
+                <td>{e.archived_at ? <span className="mut">—</span> : <EnvQueue id={e.id} />}</td>
                 <td style={{ textAlign: "right" }}>
                   {e.archived_at ? (
                     <Pill tone="neutral">{app.t("archived", "已归档")}</Pill>
@@ -164,7 +189,7 @@ export default function EnvironmentsSurface() {
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={5} className="mut">
+                <td colSpan={6} className="mut">
                   {envs.isLoading ? "…" : app.t("No environments yet.", "还没有运行环境。")}
                 </td>
               </tr>

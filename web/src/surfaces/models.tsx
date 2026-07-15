@@ -11,6 +11,13 @@ import { useApp } from "../lib/app-state";
 
 const WORKSPACE = "wrkspc_default";
 
+/** Compact a token count for the catalog list: 200000 → "200k", 1_000_000 → "1M". */
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 ? 1 : 0)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
+  return String(n);
+}
+
 /** A live model test: a scratch session (via the `default` agent) pinned to the
  * chosen model, so a real reply proves the connection — the same transcript
  * engine as the Sandbox. No provider key → the run errors honestly, not a stub. */
@@ -88,6 +95,7 @@ export default function ModelsSurface() {
     baseUrl: "",
     model: "claude-sonnet-4-5",
     dialect: "anthropic_messages",
+    contextWindow: "",
   });
   const upsert = useMutation({
     mutationFn: async () => {
@@ -113,6 +121,12 @@ export default function ModelsSurface() {
         dialect: draft.dialect,
         upstream_model: null,
       });
+      // The context window is a per-model_id attribute (not an offering field): it feeds
+      // the compaction token budget. Publish it only when the operator entered one.
+      const ctx = Number(draft.contextWindow);
+      if (draft.contextWindow.trim() && Number.isFinite(ctx) && ctx > 0) {
+        await api.put(`/v1/config/model-attributes/${draft.model}`, { context_window: Math.round(ctx) });
+      }
     },
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["catalog"] }),
   });
@@ -149,6 +163,7 @@ export default function ModelsSurface() {
               <th>Provider</th>
               <th>Endpoint</th>
               <th>Dialect</th>
+              <th>{app.t("Context", "上下文")}</th>
               <th style={{ textAlign: "right" }}></th>
             </tr>
           </thead>
@@ -160,6 +175,11 @@ export default function ModelsSurface() {
                 <td className="mono mut">{o.protocol_endpoint_id}</td>
                 <td>
                   <Pill tone="neutral">{o.dialect}</Pill>
+                </td>
+                <td className="mut">
+                  {c?.model_attributes?.[o.model_id]?.context_window
+                    ? `${fmtTokens(c.model_attributes[o.model_id].context_window!)}`
+                    : "—"}
                 </td>
                 <td style={{ textAlign: "right" }}>
                   <Button style={{ height: 24 }} onClick={() => setTestModel(o.model_id)}>
@@ -193,7 +213,14 @@ export default function ModelsSurface() {
             <option value="open_ai_chat">open_ai_chat</option>
             <option value="gemini">gemini</option>
           </SelectField>
-          <TextField label="Model id" mono value={draft.model} onChange={(e) => setDraft({ ...draft, model: e.target.value })} />
+          <TextField label="Model id" mono placeholder="model-id" value={draft.model} onChange={(e) => setDraft({ ...draft, model: e.target.value })} />
+          <TextField
+            label={app.t("Context window", "上下文窗口")}
+            mono
+            placeholder="200000"
+            value={draft.contextWindow}
+            onChange={(e) => setDraft({ ...draft, contextWindow: e.target.value })}
+          />
           <Button variant="primary" style={{ alignSelf: "flex-end" }} disabled={upsert.isPending} onClick={() => upsert.mutate()}>
             {app.t("Author", "写入")}
           </Button>

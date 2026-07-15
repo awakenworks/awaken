@@ -26,10 +26,17 @@ export interface Offering {
   dialect: ApiDialect;
   upstream_model?: string | null;
 }
+/** Intrinsic per-model_id attributes the control plane publishes (context window
+ * feeds the compaction budget). Keyed by model_id in the catalog. */
+export interface ModelAttributes {
+  context_window?: number | null;
+  max_output_tokens?: number | null;
+}
 export interface ProviderCatalog {
   providers: Record<string, Provider>;
   endpoints: Record<string, ProtocolEndpoint>;
   offerings: Offering[];
+  model_attributes?: Record<string, ModelAttributes>;
 }
 
 export type ApiDialect = "anthropic_messages" | "open_ai_chat" | "gemini";
@@ -280,6 +287,17 @@ export interface Environment {
   archived_at?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/** An environment's durable work queue state (GET /v1/environments/:id/work/stats):
+ * `depth` = items queued (waiting to be claimed), `pending` = items a worker has
+ * claimed and is processing. */
+export interface WorkQueueStats {
+  type: "work_queue_stats";
+  depth: number;
+  pending: number;
+  oldest_queued_at?: string | null;
+  workers_polling: number;
 }
 
 // ---- memory stores ----
