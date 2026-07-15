@@ -48,7 +48,9 @@ const COMMIT_SPECS: [(i64, &str, &str); 6] = [
     ),
     (
         4,
-        "committed events with a monotonic sequence",
+        "committed lifecycle/observability event stream (monotonic sequence); \
+         NOT the message-truth source — messages live in {prefix}_message, state \
+         in {prefix}_state_command, phase authority/fence in {prefix}_commit",
         "CREATE TABLE {prefix}_event (\
             sequence BIGINT PRIMARY KEY, \
             run_id TEXT NOT NULL, \

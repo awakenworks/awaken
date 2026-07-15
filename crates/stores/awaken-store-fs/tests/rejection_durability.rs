@@ -31,7 +31,7 @@ fn ck(thread: &str, run: &str, text: &str, phase: Phase) -> ThreadCommit {
         )],
         state: Vec::new(),
         events: vec![Draft {
-            kind: EventKind::MessageCommitted,
+            kind: EventKind::RunPhaseChanged,
             payload: serde_json::Value::Null,
         }],
         waiting: None,
