@@ -9,7 +9,9 @@ import { useApp } from "../../lib/app-state";
 
 const GROUP_CAPTIONS: Record<NavGroup, [string, string]> = {
   global: ["Global", "全局"],
-  run: ["Run", "运行"],
+  author: ["Author", "作者化"],
+  blocks: ["Building blocks", "构件"],
+  operate: ["Operate", "运营"],
   supply: ["Supply", "供给"],
   observe: ["Observe", "观测"],
   govern: ["Govern", "治理"],
@@ -37,7 +39,7 @@ function SidebarItem({ item }: { item: NavItem }) {
 export default function Sidebar() {
   const app = useApp();
   const activeWs = app.workspaces.find((w) => w.id === app.workspaceId);
-  const groups: NavGroup[] = ["run", "supply", "observe", "govern"];
+  const groups: NavGroup[] = ["author", "blocks", "operate", "supply", "observe", "govern"];
 
   return (
     <aside className="sidebar">
