@@ -42,10 +42,10 @@ use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::tool::{ToolExecutor, ToolExecutorProvider, ToolOutput};
-// Legacy host-altitude provider (deprecated); the host still runs on it pending
-// the rebase onto pc::Sandbox. See awaken_sandbox_local::SandboxProvider.
-#[allow(deprecated)]
-use awaken_sandbox_local::{Environment, LocalSandboxProvider, SandboxProvider};
+// The Workdir-tier sandbox realized through the neutral provisioning contract:
+// `LocalProvider::create_sandbox` yields a `LocalSandbox` whose host-tier helpers
+// (rooted tools, repos, artifacts) the host composes into each session's runtime.
+use awaken_sandbox_local::{LocalProvider, LocalSandbox};
 use awaken_store_fs::{FsCommitCoordinator, FsStreamCheckpointStore};
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
@@ -122,7 +122,7 @@ pub struct SharedHost {
     pub(crate) model_route: crate::model_route::ThreadModelBinding,
     /// ACP runtime backend (R3/R4): serves `acp:*` sessions on an external CLI.
     pub(crate) acp: Option<Arc<crate::acp_backend::AcpBackend>>,
-    pub(crate) provider: LocalSandboxProvider,
+    pub(crate) provider: LocalProvider,
     grader: Arc<dyn Grader>,
     pub(crate) client_tools: HashSet<String>,
     /// Skills offered on every thread (ADR-0036). The whole set is fronted by the

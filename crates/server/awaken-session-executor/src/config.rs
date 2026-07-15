@@ -21,7 +21,7 @@ use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding, ToolDescriptor};
 use awaken_runtime_contract::runnable::RunnableConfig;
-use awaken_sandbox_local::Environment;
+use awaken_sandbox_local::LocalSandbox;
 
 const SYSTEM_PROMPT: &str = "You are a helpful assistant working in a local repository.";
 
@@ -303,7 +303,7 @@ pub(crate) fn server_gate_allowing(
 /// A per-thread runtime whose hand tools come from `env` (placement-agnostic). No
 /// `agent_run` executor is registered: a delegate call is advertised by the config
 /// but the kernel runs it via the injected resolver, not the tool registry.
-pub(crate) fn build_runtime(llm: Arc<dyn LlmExecutor>, env: &Environment) -> Runtime {
+pub(crate) fn build_runtime(llm: Arc<dyn LlmExecutor>, sandbox: &LocalSandbox) -> Runtime {
     let mut runtime = Runtime::new()
         .with_llm(llm)
         .with_gate(server_gate())
@@ -315,7 +315,7 @@ pub(crate) fn build_runtime(llm: Arc<dyn LlmExecutor>, env: &Environment) -> Run
         .with_plugin(Arc::new(StateMachinePlugin::empty()));
     // The full capability surface (ADR-0035 D8): hand tools plus provisioned skill
     // tools. Placement-agnostic — the kernel sees `RawTool`s, not "skills".
-    for tool in env.tools() {
+    for tool in sandbox.rooted_tools() {
         runtime = runtime.with_tool(tool);
     }
     runtime
@@ -445,11 +445,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn build_runtime_registers_the_plugin_and_validates_config() {
+    #[tokio::test]
+    async fn build_runtime_registers_the_plugin_and_validates_config() {
         // A1: the composed runtime has the plugin (a valid section resolves).
         // A3: a malformed section fails closed at publish-time validation.
-        let runtime = build_runtime(Arc::new(NoLlm), &Environment::new("t", Vec::new()));
+        let tmp = tempfile::tempdir().unwrap();
+        let sandbox = awaken_sandbox_local::LocalProvider::new(tmp.path())
+            .create_sandbox(&crate::provisioning::subrun_sandbox_spec("t"))
+            .await
+            .unwrap();
+        let runtime = build_runtime(Arc::new(NoLlm), &sandbox);
         assert!(
             runtime
                 .validate_plugins(&config_with(serde_json::json!({"machines": []})))

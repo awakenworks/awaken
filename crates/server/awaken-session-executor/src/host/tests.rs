@@ -588,9 +588,19 @@ async fn prepare_session_stages_egress_into_the_sandbox_spec() {
         deny_egress: deny,
     };
 
+    // Egress denial rides the Workdir spec's opaque `extra` (a bwrap convenience,
+    // not admission-gated network isolation this tier cannot enforce).
+    let denies = |spec: awaken_provisioning_contract::SandboxSpec| {
+        spec.extra
+            .as_ref()
+            .and_then(|v| v.get("deny_egress"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+
     managed.prepare_session("t-deny", init(true)).await.unwrap();
     assert!(
-        host.sandbox_spec("t-deny").deny_egress,
+        denies(host.sandbox_spec("t-deny")),
         "a deny_egress session stages into the sandbox spec"
     );
 
@@ -599,7 +609,7 @@ async fn prepare_session_stages_egress_into_the_sandbox_spec() {
         .await
         .unwrap();
     assert!(
-        !host.sandbox_spec("t-open").deny_egress,
+        !denies(host.sandbox_spec("t-open")),
         "an unrestricted session keeps the host network"
     );
 }
@@ -834,7 +844,7 @@ async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount
     );
     let dump = serde_json::to_string(&host.sandbox_spec("t-g1").mounts).unwrap();
     assert!(
-        dump.contains(&format!("\"logical_path\":\"{logical}\"")),
+        dump.contains(&format!("\"mount_path\":\"{realized}\"")),
         "the host mounts at exactly the path the prompt named: {dump}"
     );
 }

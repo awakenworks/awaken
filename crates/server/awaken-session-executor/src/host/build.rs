@@ -45,7 +45,7 @@ impl SharedHost {
             model_ref: model_ref.into(),
             model_route: crate::model_route::ThreadModelBinding::new(),
             acp: None,
-            provider: LocalSandboxProvider::new(sub_base("")),
+            provider: LocalProvider::new(sub_base("")),
             grader: Arc::new(KeywordGrader),
             client_tools: HashSet::new(),
             skills: Vec::new(),
@@ -193,7 +193,7 @@ impl SharedHost {
         )));
         let extraction = MemoryExtraction::new(
             self.llm.clone(),
-            Arc::new(LocalSandboxProvider::new(sub_base("mem"))),
+            Arc::new(LocalProvider::new(sub_base("mem"))),
             catalog,
             Arc::new(BackgroundRuns::new()),
             mem_dir.into(),
@@ -329,7 +329,7 @@ impl SharedHost {
         )));
         let runner = Arc::new(HostSubagentRunner {
             llm: self.llm.clone(),
-            provider: LocalSandboxProvider::new(sub_base("judge")),
+            provider: LocalProvider::new(sub_base("judge")),
             catalog,
             seq: AtomicU64::new(0),
         });
@@ -458,7 +458,7 @@ impl SharedHost {
         Some(Arc::new(DelegationResolver::new(
             self.llm.clone(),
             self.model_ref.clone(),
-            LocalSandboxProvider::new(sub_base("deleg")),
+            LocalProvider::new(sub_base("deleg")),
             native,
             self.remote_agents.clone(),
         )))
