@@ -114,8 +114,17 @@ function NoModel({ wsId }: { wsId: string }) {
 }
 
 /** The reusable chat panel. `targetAgentId` (set when opened over an agent editor) steers
- * the assistant to refine THAT agent (patch) instead of drafting a fresh one. */
-export function AssistantPanel({ wsId, targetAgentId }: { wsId: string; targetAgentId?: string }) {
+ * the assistant to refine THAT agent (patch); `surfaceHint` (the current page's name) lets
+ * it answer a how-to question about where the operator is. */
+export function AssistantPanel({
+  wsId,
+  targetAgentId,
+  surfaceHint,
+}: {
+  wsId: string;
+  targetAgentId?: string;
+  surfaceHint?: string;
+}) {
   const app = useApp();
   const gate = useGate(`/v1/agents/${ASSISTANT_ID}`);
   const models = useModels();
@@ -137,7 +146,9 @@ export function AssistantPanel({ wsId, targetAgentId }: { wsId: string; targetAg
 
   const contextPrefix = targetAgentId
     ? `[Refine the existing agent \`${targetAgentId}\` using admin_patch_agent (id: ${targetAgentId}).]`
-    : undefined;
+    : surfaceHint
+      ? `[The operator is viewing the "${surfaceHint}" page. For a how-to/what-is question, explain that area.]`
+      : undefined;
   const placeholder = targetAgentId
     ? app.t(`Describe a change to ${targetAgentId}…`, `描述对 ${targetAgentId} 的修改…`)
     : app.t("Describe the agent you want…", "描述你想要的 agent…");
