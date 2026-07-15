@@ -25,6 +25,12 @@ pub enum CompileError {
     /// tool is rejected at compile, not silently dropped.
     #[error("agent {agent} has an invalid tool override: {reason}")]
     InvalidToolOverride { agent: String, reason: String },
+    /// The config declares a capability its execution kind cannot honor (ADR-0057 D2):
+    /// an A2A (remote) agent owns its own skills/MCP on the far side, so declaring them
+    /// locally is a silent no-op at runtime — rejected at publish instead. `axis` is the
+    /// unsupported capability (`"skills"` / `"mcp_servers"`).
+    #[error("agent {agent} is a remote (a2a) agent and cannot honor local {axis}")]
+    UnsupportedCapability { agent: String, axis: &'static str },
 }
 
 impl CompileError {
@@ -37,6 +43,7 @@ impl CompileError {
             CompileError::UnknownTool { .. } => "tools",
             CompileError::UnresolvedModel { .. } => "model",
             CompileError::InvalidToolOverride { .. } => "tool_overrides",
+            CompileError::UnsupportedCapability { axis, .. } => axis,
             CompileError::Serialize(_) => "",
         }
     }
@@ -165,6 +172,27 @@ pub fn compile_with_resource_prompts(
             agent: config.id.clone(),
         })?
         .clone();
+
+    // Capability gate (ADR-0057 D2): the execution kind — derived from the now-concrete
+    // `backend_ref` — must be able to honor the declared capabilities. A remote (a2a)
+    // agent runs everything on the far side, so local skills/MCP would be a silent
+    // runtime no-op; reject at publish so the mistake surfaces at authoring time.
+    if let awaken_runtime_contract::resolved::Backend::Remote { .. } =
+        awaken_runtime_contract::resolved::Backend::from_ref(&model.backend_ref)
+    {
+        if !config.skills.is_empty() {
+            return Err(CompileError::UnsupportedCapability {
+                agent: config.id.clone(),
+                axis: "skills",
+            });
+        }
+        if !config.mcp_servers.is_empty() {
+            return Err(CompileError::UnsupportedCapability {
+                agent: config.id.clone(),
+                axis: "mcp_servers",
+            });
+        }
+    }
 
     Ok(RunnableConfig::builder(&config.id)
         .instructions(compose_instructions(&config.instructions, resource_prompts))
@@ -470,6 +498,49 @@ mod tests {
                 agent: "agent-1".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn a2a_agent_declaring_skills_or_mcp_fails_the_capability_gate() {
+        // ADR-0057 D2: a remote (a2a) agent honors neither locally — declaring them is a
+        // silent runtime no-op, so publish rejects it. Skills reported first.
+        let mut with_skills = config(&[]);
+        with_skills.model_binding = ModelSelection::pinned("p", "m", "a2a:https://remote/agent");
+        with_skills.skills = vec![serde_json::json!({"id": "review"})];
+        assert_eq!(
+            compile(&with_skills, &[]).unwrap_err(),
+            CompileError::UnsupportedCapability {
+                agent: "agent-1".to_string(),
+                axis: "skills",
+            }
+        );
+
+        let mut with_mcp = config(&[]);
+        with_mcp.model_binding = ModelSelection::pinned("p", "m", "a2a:https://remote/agent");
+        with_mcp.mcp_servers = vec![serde_json::json!({"name": "gh"})];
+        assert_eq!(
+            compile(&with_mcp, &[]).unwrap_err(),
+            CompileError::UnsupportedCapability {
+                agent: "agent-1".to_string(),
+                axis: "mcp_servers",
+            }
+        );
+    }
+
+    #[test]
+    fn native_and_acp_agents_may_declare_skills_and_mcp() {
+        // The gate is A2A-only: Native and ACP kinds honor skills/MCP (in-process or via
+        // the CLI's config-home/session), so they compile with them present.
+        for backend in ["genai", "acp:claude"] {
+            let mut cfg = config(&[]);
+            cfg.model_binding = ModelSelection::pinned("p", "m", backend);
+            cfg.skills = vec![serde_json::json!({"id": "review"})];
+            cfg.mcp_servers = vec![serde_json::json!({"name": "gh"})];
+            assert!(
+                compile(&cfg, &[]).is_ok(),
+                "backend `{backend}` must honor skills/mcp"
+            );
+        }
     }
 
     #[test]
