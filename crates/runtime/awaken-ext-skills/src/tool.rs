@@ -814,6 +814,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_fork_skill_whose_runner_errors_surfaces_a_model_visible_error() {
+        // The fork failure arm: when the sub-agent runner returns Err, the activation
+        // becomes a model-visible error result (never a panic or a silent success).
+        struct FailingRunner;
+        #[async_trait]
+        impl SubagentRunner for FailingRunner {
+            async fn run(
+                &self,
+                _request: SubagentRequest,
+            ) -> Result<
+                awaken_runtime_contract::subagent_runner::SubagentReply,
+                awaken_runtime_contract::subagent_runner::SubagentError,
+            > {
+                Err(awaken_runtime_contract::subagent_runner::SubagentError(
+                    "runner boom".to_string(),
+                ))
+            }
+        }
+
+        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+            "review",
+            "Review",
+            "d",
+            "review $ARGUMENTS",
+        )
+        .with_context(SkillContext::Fork)]));
+        let out = SkillTool::new(registry)
+            .with_fork_runner(Arc::new(FailingRunner))
+            .invoke(call(
+                SKILL_TOOL_ID,
+                serde_json::json!({ "skill": "review", "args": "PR-7" }),
+            ))
+            .await
+            .unwrap();
+        assert!(
+            out.is_error,
+            "a fork runner failure is a model-visible error"
+        );
+        assert!(out.content.contains("skill fork failed"));
+    }
+
+    #[tokio::test]
+    async fn a_conditional_skill_hidden_from_the_catalog_is_still_activatable_by_id() {
+        // `paths` is progressive DISCLOSURE (what `list_skills` surfaces), NOT
+        // authorization — authorization is `model_invocable`. A model that names a
+        // hidden-but-invocable skill's id activates it. Pinned so the disclosure-vs-authz
+        // split stays explicit: to bar activation, make the skill non-model-invocable.
+        let skill = SkillSpec::new("deploy", "Deploy", "d", "the deploy steps")
+            .with_paths(vec!["**/Dockerfile".to_string()]);
+        let registry = Arc::new(InMemorySkillRegistry::from_specs([skill]));
+
+        // Discovery hides it (no matching path touched, no activations wired).
+        let listed = ListSkillsTool::new(registry.clone())
+            .invoke(call(SKILL_LIST_TOOL_ID, serde_json::json!({})))
+            .await
+            .unwrap();
+        assert!(
+            !listed.content.contains("deploy"),
+            "a conditional skill is hidden from the catalog until surfaced"
+        );
+
+        // Activation by id still works — `paths` gates disclosure, not activation.
+        let out = SkillTool::new(registry)
+            .invoke(call(
+                SKILL_TOOL_ID,
+                serde_json::json!({ "skill": "deploy" }),
+            ))
+            .await
+            .unwrap();
+        assert!(!out.is_error);
+        assert!(out.content.contains("the deploy steps"));
+    }
+
+    #[tokio::test]
     async fn fork_skill_without_a_runner_falls_back_to_inline() {
         let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
             "review",

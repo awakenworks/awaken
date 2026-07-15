@@ -380,4 +380,47 @@ mod tests {
         assert_eq!(spec.name, "PDF");
         assert_eq!(spec.allowed_tools, vec!["read", "bash"]);
     }
+
+    #[test]
+    fn a_name_at_exactly_the_cap_is_left_untouched_but_one_over_is_ellipsized() {
+        // Boundary: length == cap keeps the value verbatim (no truncation marker);
+        // cap+1 truncates and appends the ellipsis. (Complements the over-cap test.)
+        let at_cap = "n".repeat(MAX_NAME_LENGTH);
+        let spec = parse_skill_md("x", &format!("---\nname: {at_cap}\n---\nb"));
+        assert_eq!(
+            spec.name, at_cap,
+            "a name exactly at the cap is not truncated"
+        );
+        assert!(!spec.name.ends_with('…'));
+
+        let over = "n".repeat(MAX_NAME_LENGTH + 1);
+        let spec = parse_skill_md("x", &format!("---\nname: {over}\n---\nb"));
+        assert_eq!(spec.name.chars().count(), MAX_NAME_LENGTH);
+        assert!(spec.name.ends_with('…'));
+    }
+
+    #[test]
+    fn truncation_respects_char_boundaries_for_multibyte_names() {
+        // A CJK name over the cap must truncate on a char boundary (never mid-byte) —
+        // `chars().count()`, not byte length, bounds it.
+        let wide = "字".repeat(MAX_NAME_LENGTH + 5);
+        let spec = parse_skill_md("x", &format!("---\nname: {wide}\n---\nb"));
+        assert_eq!(spec.name.chars().count(), MAX_NAME_LENGTH);
+        assert!(spec.name.ends_with('…'));
+        // Round-trips as valid UTF-8 (would panic on a mid-byte cut).
+        assert!(std::str::from_utf8(spec.name.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn an_unterminated_frontmatter_fence_is_treated_as_all_body() {
+        // Malformed: an opening `---` with no closing fence must not eat the content —
+        // it falls through to "no frontmatter", so the whole input is the body and the
+        // name defaults to the id (lenient parse, never a hard failure).
+        let spec = parse_skill_md("id7", "---\nname: X\nno closing fence here\nstill body");
+        assert_eq!(
+            spec.name, "id7",
+            "unterminated frontmatter → name defaults to id"
+        );
+        assert!(spec.body.contains("still body"));
+    }
 }

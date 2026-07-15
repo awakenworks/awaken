@@ -1800,9 +1800,21 @@ async fn execute_tool(
         }
     };
     let started = std::time::Instant::now();
-    let output = match executor.invoke(call).await {
-        Ok(output) => output,
-        Err(err) => ToolOutput::error(&call.call_id, err.to_string()),
+    // Fault isolation at the port boundary: a `RawTool` (MCP / plugin / skill — often
+    // third-party) that PANICS must not take down the run. Catch the unwind here, at
+    // the single execute-tool confluence, and map it to a model-visible error just like
+    // an `Err` — so unknown/invalid-args/execution/panic all fail closed identically.
+    use futures_util::FutureExt;
+    let output = match std::panic::AssertUnwindSafe(executor.invoke(call))
+        .catch_unwind()
+        .await
+    {
+        Ok(Ok(output)) => output,
+        Ok(Err(err)) => ToolOutput::error(&call.call_id, err.to_string()),
+        Err(_panic) => ToolOutput::error(
+            &call.call_id,
+            format!("tool `{}` panicked during execution", call.tool_id),
+        ),
     };
     // OTel: a tool that returned an error (unknown tool, invocation failure, or a
     // model-visible error result) marks the span ERROR with a `gen_ai`-shaped type.
