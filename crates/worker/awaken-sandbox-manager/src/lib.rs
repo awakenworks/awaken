@@ -80,15 +80,38 @@ impl SandboxManager {
         Ok(sandbox)
     }
 
-    /// Reconcile the tracked-live set against the sandboxes a live run still
-    /// `referenced` (from the durable dispatch bindings), actuating the plan through
-    /// the pure kernel: adopt the still-referenced, reap the unreferenced, surface the
-    /// orphaned (referenced-but-dead) for the caller to re-place. Reaped and orphaned
-    /// handles are dropped from tracking — they are no longer this worker's to renew.
+    /// Reconcile THIS manager's own tracked-live set against the sandboxes a live run
+    /// still `referenced`. Correct for a **node-local** tier (Workdir): a sandbox that
+    /// this worker did not create is not live for it (it died with its owner), so it is
+    /// surfaced as orphaned for re-placement. For a **shared-substrate** tier whose
+    /// sandboxes outlive their creator (Container/k8s), use [`reconcile_against`] with
+    /// the provider-discovered live set so a peer can re-adopt a still-running sandbox.
     pub async fn reconcile(&self, referenced: &[SandboxHandle]) -> ReconcileOutcome {
-        let live = self.live_handles();
-        let outcome = reconcile_and_apply(self.provider.as_ref(), &live, referenced).await;
+        self.reconcile_against(&self.live_handles(), referenced)
+            .await
+    }
+
+    /// Reconcile a caller-supplied `live` set (the provider's discovered live sandboxes,
+    /// which on a shared substrate span workers) against the `referenced` set, actuating
+    /// through the pure kernel: adopt the still-referenced (reconnect — this is how a
+    /// PEER worker re-adopts a sandbox whose creator crashed, so the worker is not a
+    /// data-loss single point of failure), reap the unreferenced, surface the orphaned
+    /// (referenced-but-not-live) for re-placement. Adopted handles this worker did not
+    /// track become tracked; reaped/orphaned are dropped.
+    pub async fn reconcile_against(
+        &self,
+        live: &[SandboxHandle],
+        referenced: &[SandboxHandle],
+    ) -> ReconcileOutcome {
+        let outcome = reconcile_and_apply(self.provider.as_ref(), live, referenced).await;
         let mut tracked = self.tracked.lock().expect("sandbox manager tracked map");
+        // A peer re-adopting a crashed worker's sandbox now owns its renewal.
+        for handle in &outcome.adopted {
+            tracked.entry(key(handle)).or_insert_with(|| Tracked {
+                handle: handle.clone(),
+                lease: LeaseGrant::indefinite(),
+            });
+        }
         for handle in outcome.reaped.iter().chain(outcome.orphaned.iter()) {
             tracked.remove(&key(handle));
         }
@@ -376,6 +399,55 @@ mod tests {
         assert_eq!(reaped, vec![(href("t-revoked"), ReapCause::Revoked)]);
         assert_eq!(*rec.disposed.lock().unwrap(), vec!["t-revoked".to_string()]);
         assert_eq!(mgr.tracked_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_peer_worker_re_adopts_a_crashed_workers_still_live_sandbox() {
+        // The SPOF-elimination proof at the component level (ADR-0056). One shared
+        // substrate (the provider): worker A creates a sandbox and binds the run to it,
+        // then A "crashes" (its manager is gone). Worker B recovers the run — the
+        // sandbox OUTLIVED A (shared-substrate tier) so the provider still discovers it
+        // live. B reconciles the run's binding against the discovered-live set and
+        // ADOPTS the SAME sandbox (same handle) rather than orphaning it. No dispose
+        // happens: the in-flight sandbox state is preserved across the worker crash.
+        let rec = Arc::new(Recorder::default());
+        let provider_a = Arc::new(RecProvider { rec: rec.clone() });
+        let provider_b = Arc::new(RecProvider { rec: rec.clone() }); // same substrate
+
+        let worker_a = SandboxManager::new(provider_a);
+        worker_a
+            .create(&spec("run-42"), LeaseGrant::indefinite())
+            .await
+            .unwrap();
+        let bound = href("run-42"); // the run's durable sandbox binding
+
+        // A crashes. B recovers: the provider discovers the sandbox still live (it
+        // outlived A), so B reconciles the binding against that discovered-live set.
+        drop(worker_a);
+        let worker_b = SandboxManager::new(provider_b);
+        let discovered_live = vec![bound.clone()];
+        let outcome = worker_b
+            .reconcile_against(&discovered_live, std::slice::from_ref(&bound))
+            .await;
+
+        assert_eq!(
+            outcome.adopted,
+            vec![bound.clone()],
+            "B re-adopts the same sandbox"
+        );
+        assert!(
+            outcome.orphaned.is_empty(),
+            "a still-live sandbox is not orphaned"
+        );
+        assert!(
+            rec.disposed.lock().unwrap().is_empty(),
+            "the sandbox is NOT torn down — its state survives the crash"
+        );
+        assert_eq!(
+            worker_b.live_handles(),
+            vec![bound],
+            "B now tracks (and will renew) the adopted sandbox"
+        );
     }
 
     #[tokio::test]
