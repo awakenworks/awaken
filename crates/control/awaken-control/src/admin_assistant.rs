@@ -105,7 +105,9 @@ impl ConfigServiceDraftValidator {
 impl DraftValidator for ConfigServiceDraftValidator {
     fn validate(&self, draft: &AgentConfig) -> Result<(), String> {
         // This consumer only needs a human message; flatten the field-routed issue.
-        self.plane.validate(&self.scope, draft).map_err(|issue| issue.message)
+        self.plane
+            .validate(&self.scope, draft)
+            .map_err(|issue| issue.message)
     }
 }
 
