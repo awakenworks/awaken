@@ -44,11 +44,27 @@ enum LaunchSource {
 
 impl LaunchSource {
     /// The concrete launch for `activation` — the fixed argv, or the projection of the
-    /// run's selected [`AcpCli`].
+    /// run's selected [`AcpCli`]. A projecting source serves exactly one CLI, so a run
+    /// whose config-plane selection (`acp:<other>`) names a *different* CLI fails closed
+    /// rather than silently running on the wrong runtime — the runtime-side of matching
+    /// the declared ACP dialect to what this worker actually serves.
     fn resolve(&self, activation: &RunActivation) -> Result<AcpLaunch, OpenError> {
         match self {
             LaunchSource::Fixed(launch) => Ok(launch.clone()),
             LaunchSource::Projected { cli, resolver } => {
+                use awaken_runtime_contract::resolved::Backend;
+                let selected = &activation.snapshot.resolved_spec.model_binding.backend_ref;
+                match Backend::from_ref(selected) {
+                    // A bare `acp` (no CLI named) or the exact CLI this worker serves.
+                    Backend::Acp { cli: id } if id.is_empty() || id == cli.id => {}
+                    Backend::Acp { cli: id } => {
+                        return Err(OpenError(format!(
+                            "run selected `acp:{id}` but this worker serves `acp:{}`",
+                            cli.id
+                        )));
+                    }
+                    _ => return Err(OpenError(format!("run backend `{selected}` is not ACP"))),
+                }
                 project_launch(cli, resolver.as_ref(), activation)
             }
         }
@@ -725,6 +741,30 @@ mod tests {
             cmd.first().map(String::as_str),
             Some("npx"),
             "claude projects to an npx launch: {cmd:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_for_a_different_cli_than_the_worker_serves_fails_closed() {
+        // This worker serves `acp:claude`; a run whose agent selected `acp:codex` must
+        // not silently run on claude — the declared ACP dialect is matched at open time.
+        let captured = Arc::new(CapturingProvider(std::sync::Mutex::new(None)));
+        let cli = awaken_run_executor_acp::acp_cli("claude").expect("claude");
+        let source =
+            ContainerChannelSource::projecting(captured.clone(), *cli, Arc::new(FakeResolver));
+
+        let err = source
+            .open(&acp_activation("acp:codex"))
+            .await
+            .err()
+            .expect("a CLI mismatch must fail closed");
+        assert!(
+            err.0.contains("acp:codex") && err.0.contains("acp:claude"),
+            "{err:?}"
+        );
+        assert!(
+            captured.0.lock().unwrap().is_none(),
+            "no container was created for the mismatched run"
         );
     }
 
