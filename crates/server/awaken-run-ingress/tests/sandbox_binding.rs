@@ -1,7 +1,19 @@
 //! B-P3 (ADR-0021 §6): the run↔sandbox binding is durable across a claim, so crash
-//! recovery re-adopts the same sandbox. Verifies the memory backend directly and,
-//! gated on `AWAKEN_TEST_PG_URL`, the real Postgres backend (which also proves the
-//! V0011 `sandbox` column migration applies).
+//! recovery CAN re-adopt the same sandbox. Verifies the memory backend directly and,
+//! gated on `AWAKEN_TEST_DATABASE_URL`, the real Postgres backend (which also proves
+//! the V0011 `sandbox` column migration applies).
+//!
+//! SCOPE — what this proves and what it does NOT. This is the STORE-layer half: a
+//! bound sandbox ref survives a recovery re-claim, so no sandbox is leaked and a
+//! reclaimer *could* re-adopt it. It does NOT prove the execution path actually
+//! re-adopts: as of this writing that seam is unwired — `bind_sandbox` has no
+//! production caller, `Claimed.sandbox` is produced but never read, and the session
+//! path (`awaken-runtime-host` `host/session.rs` `ctx_for`) unconditionally calls
+//! `provider.create(...)` fresh, keyed by thread. So a reclaimed run today executes on
+//! a NEW sandbox and recovers only from committed history (no data loss — see
+//! `durable_memory::worker_recovery_runs_a_crashed_dispatch_to_completion`), losing
+//! any in-flight sandbox work. Wiring adopt-on-recovery (a placement/fleet concern)
+//! flips that; this test is the durable-binding foundation it will build on.
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -97,8 +109,11 @@ async fn memory_backend_binds_and_recovers() {
 
 #[tokio::test]
 async fn postgres_backend_binds_and_recovers() {
-    let Ok(url) = std::env::var("AWAKEN_TEST_PG_URL") else {
-        eprintln!("skip: AWAKEN_TEST_PG_URL unset");
+    // The standard test-DB var every other pg suite uses (`AWAKEN_TEST_DATABASE_URL`).
+    // It previously read a bespoke `AWAKEN_TEST_PG_URL`, so it self-skipped even under
+    // the pg CI harness — a false green for the durable-binding guarantee.
+    let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+        eprintln!("skip: AWAKEN_TEST_DATABASE_URL unset");
         return;
     };
     let store = awaken_run_ingress::PostgresDispatchStore::connect(&url)
