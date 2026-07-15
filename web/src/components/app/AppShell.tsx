@@ -4,6 +4,7 @@ import { useApp } from "../../lib/app-state";
 import { NAV, navPath } from "../../lib/navigation/paths";
 import { ConfirmProvider } from "../ui/Confirm";
 import { ToastProvider } from "../ui/Toast";
+import AssistantFab from "./AssistantFab";
 import Sidebar from "./Sidebar";
 import TopChrome from "./TopChrome";
 
@@ -91,6 +92,7 @@ export default function AppShell() {
             </main>
           </div>
           <CommandPalette />
+          <AssistantFab />
         </div>
       </ConfirmProvider>
     </ToastProvider>
