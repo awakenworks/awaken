@@ -111,6 +111,41 @@ async fn credential_resolver_and_applied_auth() {
 }
 
 #[tokio::test]
+async fn a_credential_resolver_surfaces_unknown_and_failed_errors() {
+    // The resolver error arms (an unknown ref vs a broker failure) — only the NoAuth
+    // success path was covered before.
+    use awaken_connection_plan::{AppliedAuth, CredentialError, CredentialResolver};
+
+    struct FailingResolver;
+    #[async_trait::async_trait]
+    impl CredentialResolver for FailingResolver {
+        async fn resolve(
+            &self,
+            credential: &CredentialRef,
+        ) -> Result<AppliedAuth, CredentialError> {
+            if credential.0.contains("missing") {
+                Err(CredentialError::Unknown(credential.0.clone()))
+            } else {
+                Err(CredentialError::Failed("broker unreachable".into()))
+            }
+        }
+    }
+
+    assert!(matches!(
+        FailingResolver
+            .resolve(&CredentialRef("vault://missing".into()))
+            .await,
+        Err(CredentialError::Unknown(_))
+    ));
+    assert!(matches!(
+        FailingResolver
+            .resolve(&CredentialRef("vault://present".into()))
+            .await,
+        Err(CredentialError::Failed(_))
+    ));
+}
+
+#[tokio::test]
 async fn factory_and_bind_error_paths() {
     use awaken_connection_plan::{bind_tcp, bind_unix, connect_with_retry};
     // InProcess must be established via in_process_pair(), not connect().

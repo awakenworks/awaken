@@ -407,6 +407,86 @@ async fn invalid_arguments_yield_a_model_visible_error_result() {
     );
 }
 
+/// A tool whose invocation fails at runtime — not unknown, not bad-args, but a genuine
+/// `ToolError::Execution` (the class a real tool raises when its work fails). It must
+/// reach the model as an error result and let the run continue, exactly like the
+/// unknown/invalid-args paths (the engine's `Err → ToolOutput::error` seam, A2).
+struct FailingExecTool;
+
+#[async_trait::async_trait]
+impl RawTool for FailingExecTool {
+    fn id(&self) -> &str {
+        "echo"
+    }
+    async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
+        Err(ToolError::Execution("exec boom".to_string()))
+    }
+}
+
+#[tokio::test]
+async fn an_execution_error_yields_a_model_visible_error_result_and_continues() {
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(CallsTool("echo")))
+        .with_tool(Arc::new(FailingExecTool))
+        .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
+    install(&runtime);
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
+
+    let outcome = runtime.execute(activation(), context).await.expect("runs");
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+
+    let committed = commit.committed();
+    assert!(
+        committed
+            .messages
+            .iter()
+            .any(|m| m.role == Role::Tool && m.text_content().contains("exec boom")),
+        "an Execution error must surface as a model-visible tool error, not abort the run"
+    );
+}
+
+/// A tool that PANICS (an impl bug / a stray `.unwrap()`), not one that returns an
+/// error. A runtime that hosts arbitrary third-party tools (MCP/plugin/skill) must
+/// isolate that panic to a model-visible error and keep the run alive — never let one
+/// tool crash the whole agent run.
+struct PanickingTool;
+
+#[async_trait::async_trait]
+impl RawTool for PanickingTool {
+    fn id(&self) -> &str {
+        "echo"
+    }
+    async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
+        panic!("tool impl bug: a stray unwrap");
+    }
+}
+
+#[tokio::test]
+async fn a_panicking_tool_is_isolated_to_a_model_visible_error_and_the_run_continues() {
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(CallsTool("echo")))
+        .with_tool(Arc::new(PanickingTool))
+        .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
+    install(&runtime);
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
+
+    let outcome = runtime.execute(activation(), context).await.expect("runs");
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+
+    let committed = commit.committed();
+    assert!(
+        committed
+            .messages
+            .iter()
+            .any(|m| m.role == Role::Tool && m.text_content().to_lowercase().contains("panic")),
+        "a panicking tool must surface as a model-visible error, not crash the run"
+    );
+}
+
 /// Captures the tool schemas the model receives so we can assert the real
 /// descriptor schema (not a placeholder) reaches inference (A2).
 struct CaptureTools {

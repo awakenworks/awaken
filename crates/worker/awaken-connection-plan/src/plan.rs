@@ -1,8 +1,8 @@
 //! The connection plan value object (ADR-0045 D2).
 //!
-//! `ConnectionPlan` names *how two ends meet*: a transport address, whether they
-//! meet directly or via a broker, who initiates, and *which* credential to
-//! present — a reference, never resolved material (ADR-0045 D4 / G34). It is a
+//! `ConnectionPlan` names *how two ends meet*: a transport address, who initiates,
+//! and *which* credential to present — a reference, never resolved material
+//! (ADR-0045 D4 / G34). It is a
 //! serializable value object with no product-hosting vocabulary and no secret,
 //! safe to log, persist, and carry across the config-to-host edge.
 
@@ -29,17 +29,6 @@ pub enum DialAddr {
     },
 }
 
-/// Whether the two ends meet directly or through a broker (ADR-0045 D2).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Wiring {
-    /// The two ends connect to each other with nothing in between.
-    Direct,
-    /// Both legs meet at a broker; `Relay` opaque bytes vs a terminating trust
-    /// boundary is a broker-trust detail carried in `broker`.
-    Relay { broker: String },
-}
-
 /// Who initiates the connection — orthogonal to which side is the requester.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -48,8 +37,6 @@ pub enum DialPolicy {
     Dial,
     /// This end listens; the peer dials in (NAT / no inbound — the reverse case).
     Listen,
-    /// Neither end dials the other; both reach a broker.
-    ViaBroker,
 }
 
 /// An opaque reference to a credential resolved *by the host* immediately before
@@ -63,8 +50,6 @@ pub struct CredentialRef(pub String);
 pub struct ConnectionPlan {
     /// Where the peer is.
     pub transport: DialAddr,
-    /// Direct or brokered.
-    pub wiring: Wiring,
     /// Who initiates.
     pub dial: DialPolicy,
     /// Which credential to present, if any. A loopback (`InProcess`/`Unix`) plan
@@ -78,7 +63,6 @@ impl ConnectionPlan {
     pub fn in_process() -> Self {
         Self {
             transport: DialAddr::InProcess,
-            wiring: Wiring::Direct,
             dial: DialPolicy::Dial,
             credential: None,
         }
@@ -88,7 +72,6 @@ impl ConnectionPlan {
     pub fn unix_dial(path: impl Into<String>) -> Self {
         Self {
             transport: DialAddr::Unix(path.into()),
-            wiring: Wiring::Direct,
             dial: DialPolicy::Dial,
             credential: None,
         }
@@ -98,7 +81,6 @@ impl ConnectionPlan {
     pub fn unix_listen(path: impl Into<String>) -> Self {
         Self {
             transport: DialAddr::Unix(path.into()),
-            wiring: Wiring::Direct,
             dial: DialPolicy::Listen,
             credential: None,
         }
@@ -109,7 +91,6 @@ impl ConnectionPlan {
     pub fn tcp_dial(addr: impl Into<String>) -> Self {
         Self {
             transport: DialAddr::Tcp(addr.into()),
-            wiring: Wiring::Direct,
             dial: DialPolicy::Dial,
             credential: None,
         }
@@ -120,7 +101,6 @@ impl ConnectionPlan {
     pub fn tcp_listen(addr: impl Into<String>) -> Self {
         Self {
             transport: DialAddr::Tcp(addr.into()),
-            wiring: Wiring::Direct,
             dial: DialPolicy::Listen,
             credential: None,
         }

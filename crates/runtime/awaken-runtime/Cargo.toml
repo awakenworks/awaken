@@ -14,6 +14,9 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+# `FutureExt::catch_unwind` isolates a panicking third-party tool at the executor
+# boundary (a tool impl bug must not crash the whole run).
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # Run/loop/tool spans (`#[instrument]`), exported through the global subscriber the
 # service binary installs; this crate emits spans, never wires an exporter.
 tracing = "0.1"
