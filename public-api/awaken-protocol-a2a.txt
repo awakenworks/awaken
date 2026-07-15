@@ -18,18 +18,6 @@ pub awaken_protocol_a2a::client::ClientError::Transport(alloc::string::String)
 pub awaken_protocol_a2a::client::ClientError::Unauthorized
 pub awaken_protocol_a2a::client::ClientError::Unauthorized::challenge: awaken_credential::AuthChallenge
 pub awaken_protocol_a2a::client::ClientError::Unauthorized::what: &'static str
-impl core::error::Error for awaken_protocol_a2a::client::ClientError
-impl core::fmt::Debug for awaken_protocol_a2a::client::ClientError
-pub fn awaken_protocol_a2a::client::ClientError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for awaken_protocol_a2a::client::ClientError
-pub fn awaken_protocol_a2a::client::ClientError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_protocol_a2a::client::ClientError
-impl core::marker::Send for awaken_protocol_a2a::client::ClientError
-impl core::marker::Sync for awaken_protocol_a2a::client::ClientError
-impl core::marker::Unpin for awaken_protocol_a2a::client::ClientError
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::client::ClientError
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::client::ClientError
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::client::ClientError
 pub struct awaken_protocol_a2a::client::HttpTransport
 impl awaken_protocol_a2a::client::HttpTransport
 pub fn awaken_protocol_a2a::client::HttpTransport::new(impl core::convert::Into<alloc::string::String>) -> Self
@@ -40,26 +28,12 @@ pub fn awaken_protocol_a2a::client::HttpTransport::with_header(self, impl core::
 pub fn awaken_protocol_a2a::client::HttpTransport::with_refresher(self, alloc::sync::Arc<dyn awaken_credential::CredentialRefresher>) -> Self
 impl awaken_protocol_a2a::client::Transport for awaken_protocol_a2a::client::HttpTransport
 pub fn awaken_protocol_a2a::client::HttpTransport::request<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<alloc::vec::Vec<u8>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_a2a::client::Response, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-impl !core::marker::Freeze for awaken_protocol_a2a::client::HttpTransport
-impl core::marker::Send for awaken_protocol_a2a::client::HttpTransport
-impl core::marker::Sync for awaken_protocol_a2a::client::HttpTransport
-impl core::marker::Unpin for awaken_protocol_a2a::client::HttpTransport
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::client::HttpTransport
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::client::HttpTransport
-impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::client::HttpTransport
 pub struct awaken_protocol_a2a::client::Response
 pub awaken_protocol_a2a::client::Response::body: alloc::vec::Vec<u8>
 pub awaken_protocol_a2a::client::Response::status: u16
 pub awaken_protocol_a2a::client::Response::www_authenticate: core::option::Option<alloc::string::String>
 impl awaken_protocol_a2a::client::Response
 pub fn awaken_protocol_a2a::client::Response::new(u16, alloc::vec::Vec<u8>) -> Self
-impl core::marker::Freeze for awaken_protocol_a2a::client::Response
-impl core::marker::Send for awaken_protocol_a2a::client::Response
-impl core::marker::Sync for awaken_protocol_a2a::client::Response
-impl core::marker::Unpin for awaken_protocol_a2a::client::Response
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::client::Response
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::client::Response
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::client::Response
 pub const awaken_protocol_a2a::client::AGENT_CARD_PATH: &str
 pub const awaken_protocol_a2a::client::MESSAGE_SEND_PATH: &str
 pub trait awaken_protocol_a2a::client::Transport: core::marker::Send + core::marker::Sync
@@ -80,13 +54,6 @@ pub awaken_protocol_a2a::request::Processed::agent_id: core::option::Option<allo
 pub awaken_protocol_a2a::request::Processed::message: awaken_agent_contract::agent::message::Message
 pub awaken_protocol_a2a::request::Processed::text: alloc::string::String
 pub awaken_protocol_a2a::request::Processed::thread_id: alloc::string::String
-impl core::marker::Freeze for awaken_protocol_a2a::request::Processed
-impl core::marker::Send for awaken_protocol_a2a::request::Processed
-impl core::marker::Sync for awaken_protocol_a2a::request::Processed
-impl core::marker::Unpin for awaken_protocol_a2a::request::Processed
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::request::Processed
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::request::Processed
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::request::Processed
 pub fn awaken_protocol_a2a::request::process(awaken_protocol_a2a::types::SendMessageRequest, core::option::Option<alloc::string::String>) -> awaken_protocol_a2a::request::Processed
 pub mod awaken_protocol_a2a::router
 pub const awaken_protocol_a2a::router::JSONRPC_PATH: &str
@@ -97,49 +64,9 @@ pub enum awaken_protocol_a2a::types::ApiKeyLocation
 pub awaken_protocol_a2a::types::ApiKeyLocation::Cookie
 pub awaken_protocol_a2a::types::ApiKeyLocation::Header
 pub awaken_protocol_a2a::types::ApiKeyLocation::Query
-impl core::clone::Clone for awaken_protocol_a2a::types::ApiKeyLocation
-pub fn awaken_protocol_a2a::types::ApiKeyLocation::clone(&self) -> awaken_protocol_a2a::types::ApiKeyLocation
-impl core::cmp::Eq for awaken_protocol_a2a::types::ApiKeyLocation
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::ApiKeyLocation
-pub fn awaken_protocol_a2a::types::ApiKeyLocation::eq(&self, &awaken_protocol_a2a::types::ApiKeyLocation) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::ApiKeyLocation
-pub fn awaken_protocol_a2a::types::ApiKeyLocation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_protocol_a2a::types::ApiKeyLocation
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::ApiKeyLocation
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::ApiKeyLocation
-pub fn awaken_protocol_a2a::types::ApiKeyLocation::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::ApiKeyLocation
-pub fn awaken_protocol_a2a::types::ApiKeyLocation::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::ApiKeyLocation
-impl core::marker::Send for awaken_protocol_a2a::types::ApiKeyLocation
-impl core::marker::Sync for awaken_protocol_a2a::types::ApiKeyLocation
-impl core::marker::Unpin for awaken_protocol_a2a::types::ApiKeyLocation
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::ApiKeyLocation
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::ApiKeyLocation
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::ApiKeyLocation
 pub enum awaken_protocol_a2a::types::MessageRole
 pub awaken_protocol_a2a::types::MessageRole::Agent
 pub awaken_protocol_a2a::types::MessageRole::User
-impl core::clone::Clone for awaken_protocol_a2a::types::MessageRole
-pub fn awaken_protocol_a2a::types::MessageRole::clone(&self) -> awaken_protocol_a2a::types::MessageRole
-impl core::cmp::Eq for awaken_protocol_a2a::types::MessageRole
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::MessageRole
-pub fn awaken_protocol_a2a::types::MessageRole::eq(&self, &awaken_protocol_a2a::types::MessageRole) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::MessageRole
-pub fn awaken_protocol_a2a::types::MessageRole::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_protocol_a2a::types::MessageRole
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::MessageRole
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::MessageRole
-pub fn awaken_protocol_a2a::types::MessageRole::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::MessageRole
-pub fn awaken_protocol_a2a::types::MessageRole::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::MessageRole
-impl core::marker::Send for awaken_protocol_a2a::types::MessageRole
-impl core::marker::Sync for awaken_protocol_a2a::types::MessageRole
-impl core::marker::Unpin for awaken_protocol_a2a::types::MessageRole
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::MessageRole
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::MessageRole
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::MessageRole
 pub enum awaken_protocol_a2a::types::SecurityScheme
 pub awaken_protocol_a2a::types::SecurityScheme::ApiKey
 pub awaken_protocol_a2a::types::SecurityScheme::ApiKey::description: core::option::Option<alloc::string::String>
@@ -158,25 +85,6 @@ pub awaken_protocol_a2a::types::SecurityScheme::OAuth2::oauth2_metadata_url: cor
 pub awaken_protocol_a2a::types::SecurityScheme::OpenIdConnect
 pub awaken_protocol_a2a::types::SecurityScheme::OpenIdConnect::description: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::types::SecurityScheme::OpenIdConnect::open_id_connect_url: alloc::string::String
-impl core::clone::Clone for awaken_protocol_a2a::types::SecurityScheme
-pub fn awaken_protocol_a2a::types::SecurityScheme::clone(&self) -> awaken_protocol_a2a::types::SecurityScheme
-impl core::cmp::Eq for awaken_protocol_a2a::types::SecurityScheme
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::SecurityScheme
-pub fn awaken_protocol_a2a::types::SecurityScheme::eq(&self, &awaken_protocol_a2a::types::SecurityScheme) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::SecurityScheme
-pub fn awaken_protocol_a2a::types::SecurityScheme::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::SecurityScheme
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::SecurityScheme
-pub fn awaken_protocol_a2a::types::SecurityScheme::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::SecurityScheme
-pub fn awaken_protocol_a2a::types::SecurityScheme::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::SecurityScheme
-impl core::marker::Send for awaken_protocol_a2a::types::SecurityScheme
-impl core::marker::Sync for awaken_protocol_a2a::types::SecurityScheme
-impl core::marker::Unpin for awaken_protocol_a2a::types::SecurityScheme
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::SecurityScheme
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::SecurityScheme
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::SecurityScheme
 pub enum awaken_protocol_a2a::types::TaskState
 pub awaken_protocol_a2a::types::TaskState::AuthRequired
 pub awaken_protocol_a2a::types::TaskState::Canceled
@@ -184,50 +92,9 @@ pub awaken_protocol_a2a::types::TaskState::Completed
 pub awaken_protocol_a2a::types::TaskState::Failed
 pub awaken_protocol_a2a::types::TaskState::InputRequired
 pub awaken_protocol_a2a::types::TaskState::Working
-impl core::clone::Clone for awaken_protocol_a2a::types::TaskState
-pub fn awaken_protocol_a2a::types::TaskState::clone(&self) -> awaken_protocol_a2a::types::TaskState
-impl core::cmp::Eq for awaken_protocol_a2a::types::TaskState
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::TaskState
-pub fn awaken_protocol_a2a::types::TaskState::eq(&self, &awaken_protocol_a2a::types::TaskState) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::TaskState
-pub fn awaken_protocol_a2a::types::TaskState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_protocol_a2a::types::TaskState
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::TaskState
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::TaskState
-pub fn awaken_protocol_a2a::types::TaskState::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::TaskState
-pub fn awaken_protocol_a2a::types::TaskState::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::TaskState
-impl core::marker::Send for awaken_protocol_a2a::types::TaskState
-impl core::marker::Sync for awaken_protocol_a2a::types::TaskState
-impl core::marker::Unpin for awaken_protocol_a2a::types::TaskState
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::TaskState
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::TaskState
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::TaskState
 pub struct awaken_protocol_a2a::types::AgentCapabilities
 pub awaken_protocol_a2a::types::AgentCapabilities::push_notifications: bool
 pub awaken_protocol_a2a::types::AgentCapabilities::streaming: bool
-impl core::clone::Clone for awaken_protocol_a2a::types::AgentCapabilities
-pub fn awaken_protocol_a2a::types::AgentCapabilities::clone(&self) -> awaken_protocol_a2a::types::AgentCapabilities
-impl core::cmp::Eq for awaken_protocol_a2a::types::AgentCapabilities
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::AgentCapabilities
-pub fn awaken_protocol_a2a::types::AgentCapabilities::eq(&self, &awaken_protocol_a2a::types::AgentCapabilities) -> bool
-impl core::default::Default for awaken_protocol_a2a::types::AgentCapabilities
-pub fn awaken_protocol_a2a::types::AgentCapabilities::default() -> awaken_protocol_a2a::types::AgentCapabilities
-impl core::fmt::Debug for awaken_protocol_a2a::types::AgentCapabilities
-pub fn awaken_protocol_a2a::types::AgentCapabilities::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::AgentCapabilities
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::AgentCapabilities
-pub fn awaken_protocol_a2a::types::AgentCapabilities::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::AgentCapabilities
-pub fn awaken_protocol_a2a::types::AgentCapabilities::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::AgentCapabilities
-impl core::marker::Send for awaken_protocol_a2a::types::AgentCapabilities
-impl core::marker::Sync for awaken_protocol_a2a::types::AgentCapabilities
-impl core::marker::Unpin for awaken_protocol_a2a::types::AgentCapabilities
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::AgentCapabilities
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::AgentCapabilities
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::AgentCapabilities
 pub struct awaken_protocol_a2a::types::AgentCard
 pub awaken_protocol_a2a::types::AgentCard::capabilities: awaken_protocol_a2a::types::AgentCapabilities
 pub awaken_protocol_a2a::types::AgentCard::default_input_modes: alloc::vec::Vec<alloc::string::String>
@@ -242,209 +109,39 @@ pub awaken_protocol_a2a::types::AgentCard::skills: alloc::vec::Vec<awaken_protoc
 pub awaken_protocol_a2a::types::AgentCard::supports_authenticated_extended_card: core::option::Option<bool>
 pub awaken_protocol_a2a::types::AgentCard::url: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::types::AgentCard::version: alloc::string::String
-impl core::clone::Clone for awaken_protocol_a2a::types::AgentCard
-pub fn awaken_protocol_a2a::types::AgentCard::clone(&self) -> awaken_protocol_a2a::types::AgentCard
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::AgentCard
-pub fn awaken_protocol_a2a::types::AgentCard::eq(&self, &awaken_protocol_a2a::types::AgentCard) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::AgentCard
-pub fn awaken_protocol_a2a::types::AgentCard::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::AgentCard
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::AgentCard
-pub fn awaken_protocol_a2a::types::AgentCard::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::AgentCard
-pub fn awaken_protocol_a2a::types::AgentCard::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::AgentCard
-impl core::marker::Send for awaken_protocol_a2a::types::AgentCard
-impl core::marker::Sync for awaken_protocol_a2a::types::AgentCard
-impl core::marker::Unpin for awaken_protocol_a2a::types::AgentCard
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::AgentCard
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::AgentCard
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::AgentCard
 pub struct awaken_protocol_a2a::types::AgentSkill
 pub awaken_protocol_a2a::types::AgentSkill::id: alloc::string::String
 pub awaken_protocol_a2a::types::AgentSkill::name: alloc::string::String
 pub awaken_protocol_a2a::types::AgentSkill::tags: alloc::vec::Vec<alloc::string::String>
-impl core::clone::Clone for awaken_protocol_a2a::types::AgentSkill
-pub fn awaken_protocol_a2a::types::AgentSkill::clone(&self) -> awaken_protocol_a2a::types::AgentSkill
-impl core::cmp::Eq for awaken_protocol_a2a::types::AgentSkill
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::AgentSkill
-pub fn awaken_protocol_a2a::types::AgentSkill::eq(&self, &awaken_protocol_a2a::types::AgentSkill) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::AgentSkill
-pub fn awaken_protocol_a2a::types::AgentSkill::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::AgentSkill
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::AgentSkill
-pub fn awaken_protocol_a2a::types::AgentSkill::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::AgentSkill
-pub fn awaken_protocol_a2a::types::AgentSkill::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::AgentSkill
-impl core::marker::Send for awaken_protocol_a2a::types::AgentSkill
-impl core::marker::Sync for awaken_protocol_a2a::types::AgentSkill
-impl core::marker::Unpin for awaken_protocol_a2a::types::AgentSkill
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::AgentSkill
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::AgentSkill
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::AgentSkill
 pub struct awaken_protocol_a2a::types::Artifact
 pub awaken_protocol_a2a::types::Artifact::name: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::types::Artifact::parts: alloc::vec::Vec<awaken_protocol_a2a::types::Part>
 impl awaken_protocol_a2a::types::Artifact
 pub fn awaken_protocol_a2a::types::Artifact::text(&self) -> alloc::string::String
-impl core::clone::Clone for awaken_protocol_a2a::types::Artifact
-pub fn awaken_protocol_a2a::types::Artifact::clone(&self) -> awaken_protocol_a2a::types::Artifact
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::Artifact
-pub fn awaken_protocol_a2a::types::Artifact::eq(&self, &awaken_protocol_a2a::types::Artifact) -> bool
-impl core::default::Default for awaken_protocol_a2a::types::Artifact
-pub fn awaken_protocol_a2a::types::Artifact::default() -> awaken_protocol_a2a::types::Artifact
-impl core::fmt::Debug for awaken_protocol_a2a::types::Artifact
-pub fn awaken_protocol_a2a::types::Artifact::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::Artifact
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::Artifact
-pub fn awaken_protocol_a2a::types::Artifact::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::Artifact
-pub fn awaken_protocol_a2a::types::Artifact::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::Artifact
-impl core::marker::Send for awaken_protocol_a2a::types::Artifact
-impl core::marker::Sync for awaken_protocol_a2a::types::Artifact
-impl core::marker::Unpin for awaken_protocol_a2a::types::Artifact
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::Artifact
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::Artifact
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::Artifact
 pub struct awaken_protocol_a2a::types::AuthorizationCodeFlow
 pub awaken_protocol_a2a::types::AuthorizationCodeFlow::authorization_url: alloc::string::String
 pub awaken_protocol_a2a::types::AuthorizationCodeFlow::refresh_url: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::types::AuthorizationCodeFlow::scopes: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_protocol_a2a::types::AuthorizationCodeFlow::token_url: alloc::string::String
-impl core::clone::Clone for awaken_protocol_a2a::types::AuthorizationCodeFlow
-pub fn awaken_protocol_a2a::types::AuthorizationCodeFlow::clone(&self) -> awaken_protocol_a2a::types::AuthorizationCodeFlow
-impl core::cmp::Eq for awaken_protocol_a2a::types::AuthorizationCodeFlow
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::AuthorizationCodeFlow
-pub fn awaken_protocol_a2a::types::AuthorizationCodeFlow::eq(&self, &awaken_protocol_a2a::types::AuthorizationCodeFlow) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::AuthorizationCodeFlow
-pub fn awaken_protocol_a2a::types::AuthorizationCodeFlow::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::AuthorizationCodeFlow
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::AuthorizationCodeFlow
-pub fn awaken_protocol_a2a::types::AuthorizationCodeFlow::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::AuthorizationCodeFlow
-pub fn awaken_protocol_a2a::types::AuthorizationCodeFlow::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::AuthorizationCodeFlow
-impl core::marker::Send for awaken_protocol_a2a::types::AuthorizationCodeFlow
-impl core::marker::Sync for awaken_protocol_a2a::types::AuthorizationCodeFlow
-impl core::marker::Unpin for awaken_protocol_a2a::types::AuthorizationCodeFlow
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::AuthorizationCodeFlow
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::AuthorizationCodeFlow
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::AuthorizationCodeFlow
 pub struct awaken_protocol_a2a::types::ClientCredentialsFlow
 pub awaken_protocol_a2a::types::ClientCredentialsFlow::refresh_url: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::types::ClientCredentialsFlow::scopes: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_protocol_a2a::types::ClientCredentialsFlow::token_url: alloc::string::String
-impl core::clone::Clone for awaken_protocol_a2a::types::ClientCredentialsFlow
-pub fn awaken_protocol_a2a::types::ClientCredentialsFlow::clone(&self) -> awaken_protocol_a2a::types::ClientCredentialsFlow
-impl core::cmp::Eq for awaken_protocol_a2a::types::ClientCredentialsFlow
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::ClientCredentialsFlow
-pub fn awaken_protocol_a2a::types::ClientCredentialsFlow::eq(&self, &awaken_protocol_a2a::types::ClientCredentialsFlow) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::ClientCredentialsFlow
-pub fn awaken_protocol_a2a::types::ClientCredentialsFlow::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::ClientCredentialsFlow
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::ClientCredentialsFlow
-pub fn awaken_protocol_a2a::types::ClientCredentialsFlow::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::ClientCredentialsFlow
-pub fn awaken_protocol_a2a::types::ClientCredentialsFlow::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::ClientCredentialsFlow
-impl core::marker::Send for awaken_protocol_a2a::types::ClientCredentialsFlow
-impl core::marker::Sync for awaken_protocol_a2a::types::ClientCredentialsFlow
-impl core::marker::Unpin for awaken_protocol_a2a::types::ClientCredentialsFlow
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::ClientCredentialsFlow
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::ClientCredentialsFlow
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::ClientCredentialsFlow
 pub struct awaken_protocol_a2a::types::Error
 pub awaken_protocol_a2a::types::Error::code: i32
 pub awaken_protocol_a2a::types::Error::message: alloc::string::String
-impl core::clone::Clone for awaken_protocol_a2a::types::Error
-pub fn awaken_protocol_a2a::types::Error::clone(&self) -> awaken_protocol_a2a::types::Error
-impl core::cmp::Eq for awaken_protocol_a2a::types::Error
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::Error
-pub fn awaken_protocol_a2a::types::Error::eq(&self, &awaken_protocol_a2a::types::Error) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::Error
-pub fn awaken_protocol_a2a::types::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::Error
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::Error
-pub fn awaken_protocol_a2a::types::Error::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::Error
-pub fn awaken_protocol_a2a::types::Error::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::Error
-impl core::marker::Send for awaken_protocol_a2a::types::Error
-impl core::marker::Sync for awaken_protocol_a2a::types::Error
-impl core::marker::Unpin for awaken_protocol_a2a::types::Error
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::Error
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::Error
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::Error
 pub struct awaken_protocol_a2a::types::ErrorResponse
 pub awaken_protocol_a2a::types::ErrorResponse::error: awaken_protocol_a2a::types::Error
 impl awaken_protocol_a2a::types::ErrorResponse
 pub fn awaken_protocol_a2a::types::ErrorResponse::new(i32, impl core::convert::Into<alloc::string::String>) -> Self
-impl core::clone::Clone for awaken_protocol_a2a::types::ErrorResponse
-pub fn awaken_protocol_a2a::types::ErrorResponse::clone(&self) -> awaken_protocol_a2a::types::ErrorResponse
-impl core::cmp::Eq for awaken_protocol_a2a::types::ErrorResponse
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::ErrorResponse
-pub fn awaken_protocol_a2a::types::ErrorResponse::eq(&self, &awaken_protocol_a2a::types::ErrorResponse) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::ErrorResponse
-pub fn awaken_protocol_a2a::types::ErrorResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::ErrorResponse
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::ErrorResponse
-pub fn awaken_protocol_a2a::types::ErrorResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::ErrorResponse
-pub fn awaken_protocol_a2a::types::ErrorResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::ErrorResponse
-impl core::marker::Send for awaken_protocol_a2a::types::ErrorResponse
-impl core::marker::Sync for awaken_protocol_a2a::types::ErrorResponse
-impl core::marker::Unpin for awaken_protocol_a2a::types::ErrorResponse
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::ErrorResponse
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::ErrorResponse
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::ErrorResponse
 pub struct awaken_protocol_a2a::types::FilePart
 pub awaken_protocol_a2a::types::FilePart::bytes: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::types::FilePart::mime_type: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::types::FilePart::uri: core::option::Option<alloc::string::String>
-impl core::clone::Clone for awaken_protocol_a2a::types::FilePart
-pub fn awaken_protocol_a2a::types::FilePart::clone(&self) -> awaken_protocol_a2a::types::FilePart
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::FilePart
-pub fn awaken_protocol_a2a::types::FilePart::eq(&self, &awaken_protocol_a2a::types::FilePart) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::FilePart
-pub fn awaken_protocol_a2a::types::FilePart::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::FilePart
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::FilePart
-pub fn awaken_protocol_a2a::types::FilePart::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::FilePart
-pub fn awaken_protocol_a2a::types::FilePart::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::FilePart
-impl core::marker::Send for awaken_protocol_a2a::types::FilePart
-impl core::marker::Sync for awaken_protocol_a2a::types::FilePart
-impl core::marker::Unpin for awaken_protocol_a2a::types::FilePart
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::FilePart
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::FilePart
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::FilePart
 pub struct awaken_protocol_a2a::types::ImplicitFlow
 pub awaken_protocol_a2a::types::ImplicitFlow::authorization_url: alloc::string::String
 pub awaken_protocol_a2a::types::ImplicitFlow::refresh_url: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::types::ImplicitFlow::scopes: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
-impl core::clone::Clone for awaken_protocol_a2a::types::ImplicitFlow
-pub fn awaken_protocol_a2a::types::ImplicitFlow::clone(&self) -> awaken_protocol_a2a::types::ImplicitFlow
-impl core::cmp::Eq for awaken_protocol_a2a::types::ImplicitFlow
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::ImplicitFlow
-pub fn awaken_protocol_a2a::types::ImplicitFlow::eq(&self, &awaken_protocol_a2a::types::ImplicitFlow) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::ImplicitFlow
-pub fn awaken_protocol_a2a::types::ImplicitFlow::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::ImplicitFlow
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::ImplicitFlow
-pub fn awaken_protocol_a2a::types::ImplicitFlow::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::ImplicitFlow
-pub fn awaken_protocol_a2a::types::ImplicitFlow::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::ImplicitFlow
-impl core::marker::Send for awaken_protocol_a2a::types::ImplicitFlow
-impl core::marker::Sync for awaken_protocol_a2a::types::ImplicitFlow
-impl core::marker::Unpin for awaken_protocol_a2a::types::ImplicitFlow
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::ImplicitFlow
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::ImplicitFlow
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::ImplicitFlow
 pub struct awaken_protocol_a2a::types::Message
 pub awaken_protocol_a2a::types::Message::context_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::types::Message::kind: core::option::Option<alloc::string::String>
@@ -455,97 +152,21 @@ pub awaken_protocol_a2a::types::Message::task_id: core::option::Option<alloc::st
 impl awaken_protocol_a2a::types::Message
 pub fn awaken_protocol_a2a::types::Message::agent_text(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_protocol_a2a::types::Message::text(&self) -> alloc::string::String
-impl core::clone::Clone for awaken_protocol_a2a::types::Message
-pub fn awaken_protocol_a2a::types::Message::clone(&self) -> awaken_protocol_a2a::types::Message
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::Message
-pub fn awaken_protocol_a2a::types::Message::eq(&self, &awaken_protocol_a2a::types::Message) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::Message
-pub fn awaken_protocol_a2a::types::Message::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::Message
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::Message
-pub fn awaken_protocol_a2a::types::Message::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::Message
-pub fn awaken_protocol_a2a::types::Message::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::Message
-impl core::marker::Send for awaken_protocol_a2a::types::Message
-impl core::marker::Sync for awaken_protocol_a2a::types::Message
-impl core::marker::Unpin for awaken_protocol_a2a::types::Message
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::Message
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::Message
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::Message
 pub struct awaken_protocol_a2a::types::OAuthFlows
 pub awaken_protocol_a2a::types::OAuthFlows::authorization_code: core::option::Option<awaken_protocol_a2a::types::AuthorizationCodeFlow>
 pub awaken_protocol_a2a::types::OAuthFlows::client_credentials: core::option::Option<awaken_protocol_a2a::types::ClientCredentialsFlow>
 pub awaken_protocol_a2a::types::OAuthFlows::implicit: core::option::Option<awaken_protocol_a2a::types::ImplicitFlow>
 pub awaken_protocol_a2a::types::OAuthFlows::password: core::option::Option<awaken_protocol_a2a::types::PasswordFlow>
-impl core::clone::Clone for awaken_protocol_a2a::types::OAuthFlows
-pub fn awaken_protocol_a2a::types::OAuthFlows::clone(&self) -> awaken_protocol_a2a::types::OAuthFlows
-impl core::cmp::Eq for awaken_protocol_a2a::types::OAuthFlows
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::OAuthFlows
-pub fn awaken_protocol_a2a::types::OAuthFlows::eq(&self, &awaken_protocol_a2a::types::OAuthFlows) -> bool
-impl core::default::Default for awaken_protocol_a2a::types::OAuthFlows
-pub fn awaken_protocol_a2a::types::OAuthFlows::default() -> awaken_protocol_a2a::types::OAuthFlows
-impl core::fmt::Debug for awaken_protocol_a2a::types::OAuthFlows
-pub fn awaken_protocol_a2a::types::OAuthFlows::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::OAuthFlows
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::OAuthFlows
-pub fn awaken_protocol_a2a::types::OAuthFlows::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::OAuthFlows
-pub fn awaken_protocol_a2a::types::OAuthFlows::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::OAuthFlows
-impl core::marker::Send for awaken_protocol_a2a::types::OAuthFlows
-impl core::marker::Sync for awaken_protocol_a2a::types::OAuthFlows
-impl core::marker::Unpin for awaken_protocol_a2a::types::OAuthFlows
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::OAuthFlows
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::OAuthFlows
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::OAuthFlows
 pub struct awaken_protocol_a2a::types::Part
 pub awaken_protocol_a2a::types::Part::file: core::option::Option<awaken_protocol_a2a::types::FilePart>
 pub awaken_protocol_a2a::types::Part::kind: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::types::Part::text: core::option::Option<alloc::string::String>
 impl awaken_protocol_a2a::types::Part
 pub fn awaken_protocol_a2a::types::Part::text(impl core::convert::Into<alloc::string::String>) -> Self
-impl core::clone::Clone for awaken_protocol_a2a::types::Part
-pub fn awaken_protocol_a2a::types::Part::clone(&self) -> awaken_protocol_a2a::types::Part
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::Part
-pub fn awaken_protocol_a2a::types::Part::eq(&self, &awaken_protocol_a2a::types::Part) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::Part
-pub fn awaken_protocol_a2a::types::Part::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::Part
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::Part
-pub fn awaken_protocol_a2a::types::Part::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::Part
-pub fn awaken_protocol_a2a::types::Part::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::Part
-impl core::marker::Send for awaken_protocol_a2a::types::Part
-impl core::marker::Sync for awaken_protocol_a2a::types::Part
-impl core::marker::Unpin for awaken_protocol_a2a::types::Part
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::Part
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::Part
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::Part
 pub struct awaken_protocol_a2a::types::PasswordFlow
 pub awaken_protocol_a2a::types::PasswordFlow::refresh_url: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::types::PasswordFlow::scopes: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_protocol_a2a::types::PasswordFlow::token_url: alloc::string::String
-impl core::clone::Clone for awaken_protocol_a2a::types::PasswordFlow
-pub fn awaken_protocol_a2a::types::PasswordFlow::clone(&self) -> awaken_protocol_a2a::types::PasswordFlow
-impl core::cmp::Eq for awaken_protocol_a2a::types::PasswordFlow
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::PasswordFlow
-pub fn awaken_protocol_a2a::types::PasswordFlow::eq(&self, &awaken_protocol_a2a::types::PasswordFlow) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::PasswordFlow
-pub fn awaken_protocol_a2a::types::PasswordFlow::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::PasswordFlow
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::PasswordFlow
-pub fn awaken_protocol_a2a::types::PasswordFlow::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::PasswordFlow
-pub fn awaken_protocol_a2a::types::PasswordFlow::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::PasswordFlow
-impl core::marker::Send for awaken_protocol_a2a::types::PasswordFlow
-impl core::marker::Sync for awaken_protocol_a2a::types::PasswordFlow
-impl core::marker::Unpin for awaken_protocol_a2a::types::PasswordFlow
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::PasswordFlow
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::PasswordFlow
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::PasswordFlow
 pub struct awaken_protocol_a2a::types::SendMessage
 pub awaken_protocol_a2a::types::SendMessage::context_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::types::SendMessage::message_id: core::option::Option<alloc::string::String>
@@ -554,55 +175,11 @@ pub awaken_protocol_a2a::types::SendMessage::role: awaken_protocol_a2a::types::M
 pub awaken_protocol_a2a::types::SendMessage::task_id: core::option::Option<alloc::string::String>
 impl awaken_protocol_a2a::types::SendMessage
 pub fn awaken_protocol_a2a::types::SendMessage::text(&self) -> alloc::string::String
-impl core::clone::Clone for awaken_protocol_a2a::types::SendMessage
-pub fn awaken_protocol_a2a::types::SendMessage::clone(&self) -> awaken_protocol_a2a::types::SendMessage
-impl core::fmt::Debug for awaken_protocol_a2a::types::SendMessage
-pub fn awaken_protocol_a2a::types::SendMessage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::SendMessage
-pub fn awaken_protocol_a2a::types::SendMessage::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::SendMessage
-impl core::marker::Send for awaken_protocol_a2a::types::SendMessage
-impl core::marker::Sync for awaken_protocol_a2a::types::SendMessage
-impl core::marker::Unpin for awaken_protocol_a2a::types::SendMessage
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::SendMessage
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::SendMessage
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::SendMessage
 pub struct awaken_protocol_a2a::types::SendMessageRequest
 pub awaken_protocol_a2a::types::SendMessageRequest::agent_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::types::SendMessageRequest::message: awaken_protocol_a2a::types::SendMessage
-impl core::clone::Clone for awaken_protocol_a2a::types::SendMessageRequest
-pub fn awaken_protocol_a2a::types::SendMessageRequest::clone(&self) -> awaken_protocol_a2a::types::SendMessageRequest
-impl core::fmt::Debug for awaken_protocol_a2a::types::SendMessageRequest
-pub fn awaken_protocol_a2a::types::SendMessageRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::SendMessageRequest
-pub fn awaken_protocol_a2a::types::SendMessageRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::SendMessageRequest
-impl core::marker::Send for awaken_protocol_a2a::types::SendMessageRequest
-impl core::marker::Sync for awaken_protocol_a2a::types::SendMessageRequest
-impl core::marker::Unpin for awaken_protocol_a2a::types::SendMessageRequest
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::SendMessageRequest
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::SendMessageRequest
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::SendMessageRequest
 pub struct awaken_protocol_a2a::types::SendMessageResponse
 pub awaken_protocol_a2a::types::SendMessageResponse::task: awaken_protocol_a2a::types::Task
-impl core::clone::Clone for awaken_protocol_a2a::types::SendMessageResponse
-pub fn awaken_protocol_a2a::types::SendMessageResponse::clone(&self) -> awaken_protocol_a2a::types::SendMessageResponse
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::SendMessageResponse
-pub fn awaken_protocol_a2a::types::SendMessageResponse::eq(&self, &awaken_protocol_a2a::types::SendMessageResponse) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::SendMessageResponse
-pub fn awaken_protocol_a2a::types::SendMessageResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::SendMessageResponse
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::SendMessageResponse
-pub fn awaken_protocol_a2a::types::SendMessageResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::SendMessageResponse
-pub fn awaken_protocol_a2a::types::SendMessageResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::SendMessageResponse
-impl core::marker::Send for awaken_protocol_a2a::types::SendMessageResponse
-impl core::marker::Sync for awaken_protocol_a2a::types::SendMessageResponse
-impl core::marker::Unpin for awaken_protocol_a2a::types::SendMessageResponse
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::SendMessageResponse
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::SendMessageResponse
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::SendMessageResponse
 pub struct awaken_protocol_a2a::types::Task
 pub awaken_protocol_a2a::types::Task::artifacts: alloc::vec::Vec<awaken_protocol_a2a::types::Artifact>
 pub awaken_protocol_a2a::types::Task::context_id: alloc::string::String
@@ -610,69 +187,13 @@ pub awaken_protocol_a2a::types::Task::history: alloc::vec::Vec<awaken_protocol_a
 pub awaken_protocol_a2a::types::Task::id: alloc::string::String
 pub awaken_protocol_a2a::types::Task::kind: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::types::Task::status: awaken_protocol_a2a::types::TaskStatus
-impl core::clone::Clone for awaken_protocol_a2a::types::Task
-pub fn awaken_protocol_a2a::types::Task::clone(&self) -> awaken_protocol_a2a::types::Task
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::Task
-pub fn awaken_protocol_a2a::types::Task::eq(&self, &awaken_protocol_a2a::types::Task) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::Task
-pub fn awaken_protocol_a2a::types::Task::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::Task
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::Task
-pub fn awaken_protocol_a2a::types::Task::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::Task
-pub fn awaken_protocol_a2a::types::Task::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::Task
-impl core::marker::Send for awaken_protocol_a2a::types::Task
-impl core::marker::Sync for awaken_protocol_a2a::types::Task
-impl core::marker::Unpin for awaken_protocol_a2a::types::Task
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::Task
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::Task
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::Task
 pub struct awaken_protocol_a2a::types::TaskStatus
 pub awaken_protocol_a2a::types::TaskStatus::message: core::option::Option<awaken_protocol_a2a::types::Message>
 pub awaken_protocol_a2a::types::TaskStatus::state: awaken_protocol_a2a::types::TaskState
-impl core::clone::Clone for awaken_protocol_a2a::types::TaskStatus
-pub fn awaken_protocol_a2a::types::TaskStatus::clone(&self) -> awaken_protocol_a2a::types::TaskStatus
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::TaskStatus
-pub fn awaken_protocol_a2a::types::TaskStatus::eq(&self, &awaken_protocol_a2a::types::TaskStatus) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::TaskStatus
-pub fn awaken_protocol_a2a::types::TaskStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::TaskStatus
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::TaskStatus
-pub fn awaken_protocol_a2a::types::TaskStatus::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::TaskStatus
-pub fn awaken_protocol_a2a::types::TaskStatus::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::TaskStatus
-impl core::marker::Send for awaken_protocol_a2a::types::TaskStatus
-impl core::marker::Sync for awaken_protocol_a2a::types::TaskStatus
-impl core::marker::Unpin for awaken_protocol_a2a::types::TaskStatus
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::TaskStatus
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::TaskStatus
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::TaskStatus
 pub enum awaken_protocol_a2a::ApiKeyLocation
 pub awaken_protocol_a2a::ApiKeyLocation::Cookie
 pub awaken_protocol_a2a::ApiKeyLocation::Header
 pub awaken_protocol_a2a::ApiKeyLocation::Query
-impl core::clone::Clone for awaken_protocol_a2a::types::ApiKeyLocation
-pub fn awaken_protocol_a2a::types::ApiKeyLocation::clone(&self) -> awaken_protocol_a2a::types::ApiKeyLocation
-impl core::cmp::Eq for awaken_protocol_a2a::types::ApiKeyLocation
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::ApiKeyLocation
-pub fn awaken_protocol_a2a::types::ApiKeyLocation::eq(&self, &awaken_protocol_a2a::types::ApiKeyLocation) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::ApiKeyLocation
-pub fn awaken_protocol_a2a::types::ApiKeyLocation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_protocol_a2a::types::ApiKeyLocation
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::ApiKeyLocation
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::ApiKeyLocation
-pub fn awaken_protocol_a2a::types::ApiKeyLocation::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::ApiKeyLocation
-pub fn awaken_protocol_a2a::types::ApiKeyLocation::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::ApiKeyLocation
-impl core::marker::Send for awaken_protocol_a2a::types::ApiKeyLocation
-impl core::marker::Sync for awaken_protocol_a2a::types::ApiKeyLocation
-impl core::marker::Unpin for awaken_protocol_a2a::types::ApiKeyLocation
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::ApiKeyLocation
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::ApiKeyLocation
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::ApiKeyLocation
 pub enum awaken_protocol_a2a::ClientError
 pub awaken_protocol_a2a::ClientError::Decode(alloc::string::String)
 pub awaken_protocol_a2a::ClientError::Http
@@ -683,18 +204,6 @@ pub awaken_protocol_a2a::ClientError::Transport(alloc::string::String)
 pub awaken_protocol_a2a::ClientError::Unauthorized
 pub awaken_protocol_a2a::ClientError::Unauthorized::challenge: awaken_credential::AuthChallenge
 pub awaken_protocol_a2a::ClientError::Unauthorized::what: &'static str
-impl core::error::Error for awaken_protocol_a2a::client::ClientError
-impl core::fmt::Debug for awaken_protocol_a2a::client::ClientError
-pub fn awaken_protocol_a2a::client::ClientError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for awaken_protocol_a2a::client::ClientError
-pub fn awaken_protocol_a2a::client::ClientError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_protocol_a2a::client::ClientError
-impl core::marker::Send for awaken_protocol_a2a::client::ClientError
-impl core::marker::Sync for awaken_protocol_a2a::client::ClientError
-impl core::marker::Unpin for awaken_protocol_a2a::client::ClientError
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::client::ClientError
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::client::ClientError
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::client::ClientError
 pub enum awaken_protocol_a2a::SecurityScheme
 pub awaken_protocol_a2a::SecurityScheme::ApiKey
 pub awaken_protocol_a2a::SecurityScheme::ApiKey::description: core::option::Option<alloc::string::String>
@@ -713,25 +222,6 @@ pub awaken_protocol_a2a::SecurityScheme::OAuth2::oauth2_metadata_url: core::opti
 pub awaken_protocol_a2a::SecurityScheme::OpenIdConnect
 pub awaken_protocol_a2a::SecurityScheme::OpenIdConnect::description: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::SecurityScheme::OpenIdConnect::open_id_connect_url: alloc::string::String
-impl core::clone::Clone for awaken_protocol_a2a::types::SecurityScheme
-pub fn awaken_protocol_a2a::types::SecurityScheme::clone(&self) -> awaken_protocol_a2a::types::SecurityScheme
-impl core::cmp::Eq for awaken_protocol_a2a::types::SecurityScheme
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::SecurityScheme
-pub fn awaken_protocol_a2a::types::SecurityScheme::eq(&self, &awaken_protocol_a2a::types::SecurityScheme) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::SecurityScheme
-pub fn awaken_protocol_a2a::types::SecurityScheme::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::SecurityScheme
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::SecurityScheme
-pub fn awaken_protocol_a2a::types::SecurityScheme::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::SecurityScheme
-pub fn awaken_protocol_a2a::types::SecurityScheme::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::SecurityScheme
-impl core::marker::Send for awaken_protocol_a2a::types::SecurityScheme
-impl core::marker::Sync for awaken_protocol_a2a::types::SecurityScheme
-impl core::marker::Unpin for awaken_protocol_a2a::types::SecurityScheme
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::SecurityScheme
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::SecurityScheme
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::SecurityScheme
 pub enum awaken_protocol_a2a::TaskState
 pub awaken_protocol_a2a::TaskState::AuthRequired
 pub awaken_protocol_a2a::TaskState::Canceled
@@ -739,26 +229,6 @@ pub awaken_protocol_a2a::TaskState::Completed
 pub awaken_protocol_a2a::TaskState::Failed
 pub awaken_protocol_a2a::TaskState::InputRequired
 pub awaken_protocol_a2a::TaskState::Working
-impl core::clone::Clone for awaken_protocol_a2a::types::TaskState
-pub fn awaken_protocol_a2a::types::TaskState::clone(&self) -> awaken_protocol_a2a::types::TaskState
-impl core::cmp::Eq for awaken_protocol_a2a::types::TaskState
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::TaskState
-pub fn awaken_protocol_a2a::types::TaskState::eq(&self, &awaken_protocol_a2a::types::TaskState) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::TaskState
-pub fn awaken_protocol_a2a::types::TaskState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_protocol_a2a::types::TaskState
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::TaskState
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::TaskState
-pub fn awaken_protocol_a2a::types::TaskState::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::TaskState
-pub fn awaken_protocol_a2a::types::TaskState::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::TaskState
-impl core::marker::Send for awaken_protocol_a2a::types::TaskState
-impl core::marker::Sync for awaken_protocol_a2a::types::TaskState
-impl core::marker::Unpin for awaken_protocol_a2a::types::TaskState
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::TaskState
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::TaskState
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::TaskState
 pub struct awaken_protocol_a2a::AgentCard
 pub awaken_protocol_a2a::AgentCard::capabilities: awaken_protocol_a2a::types::AgentCapabilities
 pub awaken_protocol_a2a::AgentCard::default_input_modes: alloc::vec::Vec<alloc::string::String>
@@ -773,96 +243,20 @@ pub awaken_protocol_a2a::AgentCard::skills: alloc::vec::Vec<awaken_protocol_a2a:
 pub awaken_protocol_a2a::AgentCard::supports_authenticated_extended_card: core::option::Option<bool>
 pub awaken_protocol_a2a::AgentCard::url: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::AgentCard::version: alloc::string::String
-impl core::clone::Clone for awaken_protocol_a2a::types::AgentCard
-pub fn awaken_protocol_a2a::types::AgentCard::clone(&self) -> awaken_protocol_a2a::types::AgentCard
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::AgentCard
-pub fn awaken_protocol_a2a::types::AgentCard::eq(&self, &awaken_protocol_a2a::types::AgentCard) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::AgentCard
-pub fn awaken_protocol_a2a::types::AgentCard::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::AgentCard
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::AgentCard
-pub fn awaken_protocol_a2a::types::AgentCard::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::AgentCard
-pub fn awaken_protocol_a2a::types::AgentCard::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::AgentCard
-impl core::marker::Send for awaken_protocol_a2a::types::AgentCard
-impl core::marker::Sync for awaken_protocol_a2a::types::AgentCard
-impl core::marker::Unpin for awaken_protocol_a2a::types::AgentCard
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::AgentCard
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::AgentCard
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::AgentCard
 pub struct awaken_protocol_a2a::Artifact
 pub awaken_protocol_a2a::Artifact::name: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::Artifact::parts: alloc::vec::Vec<awaken_protocol_a2a::types::Part>
 impl awaken_protocol_a2a::types::Artifact
 pub fn awaken_protocol_a2a::types::Artifact::text(&self) -> alloc::string::String
-impl core::clone::Clone for awaken_protocol_a2a::types::Artifact
-pub fn awaken_protocol_a2a::types::Artifact::clone(&self) -> awaken_protocol_a2a::types::Artifact
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::Artifact
-pub fn awaken_protocol_a2a::types::Artifact::eq(&self, &awaken_protocol_a2a::types::Artifact) -> bool
-impl core::default::Default for awaken_protocol_a2a::types::Artifact
-pub fn awaken_protocol_a2a::types::Artifact::default() -> awaken_protocol_a2a::types::Artifact
-impl core::fmt::Debug for awaken_protocol_a2a::types::Artifact
-pub fn awaken_protocol_a2a::types::Artifact::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::Artifact
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::Artifact
-pub fn awaken_protocol_a2a::types::Artifact::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::Artifact
-pub fn awaken_protocol_a2a::types::Artifact::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::Artifact
-impl core::marker::Send for awaken_protocol_a2a::types::Artifact
-impl core::marker::Sync for awaken_protocol_a2a::types::Artifact
-impl core::marker::Unpin for awaken_protocol_a2a::types::Artifact
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::Artifact
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::Artifact
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::Artifact
 pub struct awaken_protocol_a2a::AuthorizationCodeFlow
 pub awaken_protocol_a2a::AuthorizationCodeFlow::authorization_url: alloc::string::String
 pub awaken_protocol_a2a::AuthorizationCodeFlow::refresh_url: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::AuthorizationCodeFlow::scopes: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_protocol_a2a::AuthorizationCodeFlow::token_url: alloc::string::String
-impl core::clone::Clone for awaken_protocol_a2a::types::AuthorizationCodeFlow
-pub fn awaken_protocol_a2a::types::AuthorizationCodeFlow::clone(&self) -> awaken_protocol_a2a::types::AuthorizationCodeFlow
-impl core::cmp::Eq for awaken_protocol_a2a::types::AuthorizationCodeFlow
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::AuthorizationCodeFlow
-pub fn awaken_protocol_a2a::types::AuthorizationCodeFlow::eq(&self, &awaken_protocol_a2a::types::AuthorizationCodeFlow) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::AuthorizationCodeFlow
-pub fn awaken_protocol_a2a::types::AuthorizationCodeFlow::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::AuthorizationCodeFlow
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::AuthorizationCodeFlow
-pub fn awaken_protocol_a2a::types::AuthorizationCodeFlow::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::AuthorizationCodeFlow
-pub fn awaken_protocol_a2a::types::AuthorizationCodeFlow::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::AuthorizationCodeFlow
-impl core::marker::Send for awaken_protocol_a2a::types::AuthorizationCodeFlow
-impl core::marker::Sync for awaken_protocol_a2a::types::AuthorizationCodeFlow
-impl core::marker::Unpin for awaken_protocol_a2a::types::AuthorizationCodeFlow
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::AuthorizationCodeFlow
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::AuthorizationCodeFlow
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::AuthorizationCodeFlow
 pub struct awaken_protocol_a2a::ClientCredentialsFlow
 pub awaken_protocol_a2a::ClientCredentialsFlow::refresh_url: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::ClientCredentialsFlow::scopes: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_protocol_a2a::ClientCredentialsFlow::token_url: alloc::string::String
-impl core::clone::Clone for awaken_protocol_a2a::types::ClientCredentialsFlow
-pub fn awaken_protocol_a2a::types::ClientCredentialsFlow::clone(&self) -> awaken_protocol_a2a::types::ClientCredentialsFlow
-impl core::cmp::Eq for awaken_protocol_a2a::types::ClientCredentialsFlow
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::ClientCredentialsFlow
-pub fn awaken_protocol_a2a::types::ClientCredentialsFlow::eq(&self, &awaken_protocol_a2a::types::ClientCredentialsFlow) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::ClientCredentialsFlow
-pub fn awaken_protocol_a2a::types::ClientCredentialsFlow::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::ClientCredentialsFlow
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::ClientCredentialsFlow
-pub fn awaken_protocol_a2a::types::ClientCredentialsFlow::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::ClientCredentialsFlow
-pub fn awaken_protocol_a2a::types::ClientCredentialsFlow::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::ClientCredentialsFlow
-impl core::marker::Send for awaken_protocol_a2a::types::ClientCredentialsFlow
-impl core::marker::Sync for awaken_protocol_a2a::types::ClientCredentialsFlow
-impl core::marker::Unpin for awaken_protocol_a2a::types::ClientCredentialsFlow
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::ClientCredentialsFlow
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::ClientCredentialsFlow
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::ClientCredentialsFlow
 pub struct awaken_protocol_a2a::HttpTransport
 impl awaken_protocol_a2a::client::HttpTransport
 pub fn awaken_protocol_a2a::client::HttpTransport::new(impl core::convert::Into<alloc::string::String>) -> Self
@@ -873,134 +267,30 @@ pub fn awaken_protocol_a2a::client::HttpTransport::with_header(self, impl core::
 pub fn awaken_protocol_a2a::client::HttpTransport::with_refresher(self, alloc::sync::Arc<dyn awaken_credential::CredentialRefresher>) -> Self
 impl awaken_protocol_a2a::client::Transport for awaken_protocol_a2a::client::HttpTransport
 pub fn awaken_protocol_a2a::client::HttpTransport::request<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<alloc::vec::Vec<u8>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_a2a::client::Response, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-impl !core::marker::Freeze for awaken_protocol_a2a::client::HttpTransport
-impl core::marker::Send for awaken_protocol_a2a::client::HttpTransport
-impl core::marker::Sync for awaken_protocol_a2a::client::HttpTransport
-impl core::marker::Unpin for awaken_protocol_a2a::client::HttpTransport
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::client::HttpTransport
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::client::HttpTransport
-impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::client::HttpTransport
 pub struct awaken_protocol_a2a::ImplicitFlow
 pub awaken_protocol_a2a::ImplicitFlow::authorization_url: alloc::string::String
 pub awaken_protocol_a2a::ImplicitFlow::refresh_url: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::ImplicitFlow::scopes: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
-impl core::clone::Clone for awaken_protocol_a2a::types::ImplicitFlow
-pub fn awaken_protocol_a2a::types::ImplicitFlow::clone(&self) -> awaken_protocol_a2a::types::ImplicitFlow
-impl core::cmp::Eq for awaken_protocol_a2a::types::ImplicitFlow
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::ImplicitFlow
-pub fn awaken_protocol_a2a::types::ImplicitFlow::eq(&self, &awaken_protocol_a2a::types::ImplicitFlow) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::ImplicitFlow
-pub fn awaken_protocol_a2a::types::ImplicitFlow::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::ImplicitFlow
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::ImplicitFlow
-pub fn awaken_protocol_a2a::types::ImplicitFlow::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::ImplicitFlow
-pub fn awaken_protocol_a2a::types::ImplicitFlow::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::ImplicitFlow
-impl core::marker::Send for awaken_protocol_a2a::types::ImplicitFlow
-impl core::marker::Sync for awaken_protocol_a2a::types::ImplicitFlow
-impl core::marker::Unpin for awaken_protocol_a2a::types::ImplicitFlow
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::ImplicitFlow
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::ImplicitFlow
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::ImplicitFlow
 pub struct awaken_protocol_a2a::OAuthFlows
 pub awaken_protocol_a2a::OAuthFlows::authorization_code: core::option::Option<awaken_protocol_a2a::types::AuthorizationCodeFlow>
 pub awaken_protocol_a2a::OAuthFlows::client_credentials: core::option::Option<awaken_protocol_a2a::types::ClientCredentialsFlow>
 pub awaken_protocol_a2a::OAuthFlows::implicit: core::option::Option<awaken_protocol_a2a::types::ImplicitFlow>
 pub awaken_protocol_a2a::OAuthFlows::password: core::option::Option<awaken_protocol_a2a::types::PasswordFlow>
-impl core::clone::Clone for awaken_protocol_a2a::types::OAuthFlows
-pub fn awaken_protocol_a2a::types::OAuthFlows::clone(&self) -> awaken_protocol_a2a::types::OAuthFlows
-impl core::cmp::Eq for awaken_protocol_a2a::types::OAuthFlows
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::OAuthFlows
-pub fn awaken_protocol_a2a::types::OAuthFlows::eq(&self, &awaken_protocol_a2a::types::OAuthFlows) -> bool
-impl core::default::Default for awaken_protocol_a2a::types::OAuthFlows
-pub fn awaken_protocol_a2a::types::OAuthFlows::default() -> awaken_protocol_a2a::types::OAuthFlows
-impl core::fmt::Debug for awaken_protocol_a2a::types::OAuthFlows
-pub fn awaken_protocol_a2a::types::OAuthFlows::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::OAuthFlows
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::OAuthFlows
-pub fn awaken_protocol_a2a::types::OAuthFlows::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::OAuthFlows
-pub fn awaken_protocol_a2a::types::OAuthFlows::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::OAuthFlows
-impl core::marker::Send for awaken_protocol_a2a::types::OAuthFlows
-impl core::marker::Sync for awaken_protocol_a2a::types::OAuthFlows
-impl core::marker::Unpin for awaken_protocol_a2a::types::OAuthFlows
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::OAuthFlows
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::OAuthFlows
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::OAuthFlows
 pub struct awaken_protocol_a2a::PasswordFlow
 pub awaken_protocol_a2a::PasswordFlow::refresh_url: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::PasswordFlow::scopes: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_protocol_a2a::PasswordFlow::token_url: alloc::string::String
-impl core::clone::Clone for awaken_protocol_a2a::types::PasswordFlow
-pub fn awaken_protocol_a2a::types::PasswordFlow::clone(&self) -> awaken_protocol_a2a::types::PasswordFlow
-impl core::cmp::Eq for awaken_protocol_a2a::types::PasswordFlow
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::PasswordFlow
-pub fn awaken_protocol_a2a::types::PasswordFlow::eq(&self, &awaken_protocol_a2a::types::PasswordFlow) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::PasswordFlow
-pub fn awaken_protocol_a2a::types::PasswordFlow::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::PasswordFlow
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::PasswordFlow
-pub fn awaken_protocol_a2a::types::PasswordFlow::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::PasswordFlow
-pub fn awaken_protocol_a2a::types::PasswordFlow::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::PasswordFlow
-impl core::marker::Send for awaken_protocol_a2a::types::PasswordFlow
-impl core::marker::Sync for awaken_protocol_a2a::types::PasswordFlow
-impl core::marker::Unpin for awaken_protocol_a2a::types::PasswordFlow
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::PasswordFlow
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::PasswordFlow
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::PasswordFlow
 pub struct awaken_protocol_a2a::Response
 pub awaken_protocol_a2a::Response::body: alloc::vec::Vec<u8>
 pub awaken_protocol_a2a::Response::status: u16
 pub awaken_protocol_a2a::Response::www_authenticate: core::option::Option<alloc::string::String>
 impl awaken_protocol_a2a::client::Response
 pub fn awaken_protocol_a2a::client::Response::new(u16, alloc::vec::Vec<u8>) -> Self
-impl core::marker::Freeze for awaken_protocol_a2a::client::Response
-impl core::marker::Send for awaken_protocol_a2a::client::Response
-impl core::marker::Sync for awaken_protocol_a2a::client::Response
-impl core::marker::Unpin for awaken_protocol_a2a::client::Response
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::client::Response
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::client::Response
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::client::Response
 pub struct awaken_protocol_a2a::SendMessageRequest
 pub awaken_protocol_a2a::SendMessageRequest::agent_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::SendMessageRequest::message: awaken_protocol_a2a::types::SendMessage
-impl core::clone::Clone for awaken_protocol_a2a::types::SendMessageRequest
-pub fn awaken_protocol_a2a::types::SendMessageRequest::clone(&self) -> awaken_protocol_a2a::types::SendMessageRequest
-impl core::fmt::Debug for awaken_protocol_a2a::types::SendMessageRequest
-pub fn awaken_protocol_a2a::types::SendMessageRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::SendMessageRequest
-pub fn awaken_protocol_a2a::types::SendMessageRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::SendMessageRequest
-impl core::marker::Send for awaken_protocol_a2a::types::SendMessageRequest
-impl core::marker::Sync for awaken_protocol_a2a::types::SendMessageRequest
-impl core::marker::Unpin for awaken_protocol_a2a::types::SendMessageRequest
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::SendMessageRequest
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::SendMessageRequest
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::SendMessageRequest
 pub struct awaken_protocol_a2a::SendMessageResponse
 pub awaken_protocol_a2a::SendMessageResponse::task: awaken_protocol_a2a::types::Task
-impl core::clone::Clone for awaken_protocol_a2a::types::SendMessageResponse
-pub fn awaken_protocol_a2a::types::SendMessageResponse::clone(&self) -> awaken_protocol_a2a::types::SendMessageResponse
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::SendMessageResponse
-pub fn awaken_protocol_a2a::types::SendMessageResponse::eq(&self, &awaken_protocol_a2a::types::SendMessageResponse) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::SendMessageResponse
-pub fn awaken_protocol_a2a::types::SendMessageResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::SendMessageResponse
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::SendMessageResponse
-pub fn awaken_protocol_a2a::types::SendMessageResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::SendMessageResponse
-pub fn awaken_protocol_a2a::types::SendMessageResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::SendMessageResponse
-impl core::marker::Send for awaken_protocol_a2a::types::SendMessageResponse
-impl core::marker::Sync for awaken_protocol_a2a::types::SendMessageResponse
-impl core::marker::Unpin for awaken_protocol_a2a::types::SendMessageResponse
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::SendMessageResponse
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::SendMessageResponse
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::SendMessageResponse
 pub struct awaken_protocol_a2a::Task
 pub awaken_protocol_a2a::Task::artifacts: alloc::vec::Vec<awaken_protocol_a2a::types::Artifact>
 pub awaken_protocol_a2a::Task::context_id: alloc::string::String
@@ -1008,24 +298,6 @@ pub awaken_protocol_a2a::Task::history: alloc::vec::Vec<awaken_protocol_a2a::typ
 pub awaken_protocol_a2a::Task::id: alloc::string::String
 pub awaken_protocol_a2a::Task::kind: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::Task::status: awaken_protocol_a2a::types::TaskStatus
-impl core::clone::Clone for awaken_protocol_a2a::types::Task
-pub fn awaken_protocol_a2a::types::Task::clone(&self) -> awaken_protocol_a2a::types::Task
-impl core::cmp::PartialEq for awaken_protocol_a2a::types::Task
-pub fn awaken_protocol_a2a::types::Task::eq(&self, &awaken_protocol_a2a::types::Task) -> bool
-impl core::fmt::Debug for awaken_protocol_a2a::types::Task
-pub fn awaken_protocol_a2a::types::Task::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_protocol_a2a::types::Task
-impl serde_core::ser::Serialize for awaken_protocol_a2a::types::Task
-pub fn awaken_protocol_a2a::types::Task::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::Task
-pub fn awaken_protocol_a2a::types::Task::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_protocol_a2a::types::Task
-impl core::marker::Send for awaken_protocol_a2a::types::Task
-impl core::marker::Sync for awaken_protocol_a2a::types::Task
-impl core::marker::Unpin for awaken_protocol_a2a::types::Task
-impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::Task
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::Task
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::Task
 pub trait awaken_protocol_a2a::Transport: core::marker::Send + core::marker::Sync
 pub fn awaken_protocol_a2a::Transport::request<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<alloc::vec::Vec<u8>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_a2a::client::Response, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 impl awaken_protocol_a2a::client::Transport for awaken_protocol_a2a::client::HttpTransport

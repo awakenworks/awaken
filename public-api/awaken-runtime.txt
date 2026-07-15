@@ -5,23 +5,8 @@ pub struct awaken_runtime::CircuitBreakerConfig
 pub awaken_runtime::CircuitBreakerConfig::cooldown: core::time::Duration
 pub awaken_runtime::CircuitBreakerConfig::failure_threshold: u32
 pub awaken_runtime::CircuitBreakerConfig::half_open_max_probes: u32
-impl core::clone::Clone for awaken_runtime::CircuitBreakerConfig
-pub fn awaken_runtime::CircuitBreakerConfig::clone(&self) -> awaken_runtime::CircuitBreakerConfig
-impl core::cmp::Eq for awaken_runtime::CircuitBreakerConfig
-impl core::cmp::PartialEq for awaken_runtime::CircuitBreakerConfig
-pub fn awaken_runtime::CircuitBreakerConfig::eq(&self, &awaken_runtime::CircuitBreakerConfig) -> bool
 impl core::default::Default for awaken_runtime::CircuitBreakerConfig
 pub fn awaken_runtime::CircuitBreakerConfig::default() -> Self
-impl core::fmt::Debug for awaken_runtime::CircuitBreakerConfig
-pub fn awaken_runtime::CircuitBreakerConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_runtime::CircuitBreakerConfig
-impl core::marker::Freeze for awaken_runtime::CircuitBreakerConfig
-impl core::marker::Send for awaken_runtime::CircuitBreakerConfig
-impl core::marker::Sync for awaken_runtime::CircuitBreakerConfig
-impl core::marker::Unpin for awaken_runtime::CircuitBreakerConfig
-impl core::marker::UnsafeUnpin for awaken_runtime::CircuitBreakerConfig
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime::CircuitBreakerConfig
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime::CircuitBreakerConfig
 pub struct awaken_runtime::DirectRunIngress
 impl awaken_runtime::DirectRunIngress
 pub fn awaken_runtime::DirectRunIngress::new(alloc::sync::Arc<awaken_runtime::Runtime>) -> Self
@@ -29,49 +14,18 @@ impl awaken_runtime::RunIngress for awaken_runtime::DirectRunIngress
 pub fn awaken_runtime::DirectRunIngress::cancel(&self, &awaken_agent_contract::agent::run::Id) -> core::result::Result<(), awaken_runtime_contract::control::Error>
 pub fn awaken_runtime::DirectRunIngress::submit<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::Phase>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime::DirectRunIngress::submit_background<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::Phase>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-impl core::clone::Clone for awaken_runtime::DirectRunIngress
-pub fn awaken_runtime::DirectRunIngress::clone(&self) -> awaken_runtime::DirectRunIngress
-impl core::marker::Freeze for awaken_runtime::DirectRunIngress
-impl core::marker::Send for awaken_runtime::DirectRunIngress
-impl core::marker::Sync for awaken_runtime::DirectRunIngress
-impl core::marker::Unpin for awaken_runtime::DirectRunIngress
-impl core::marker::UnsafeUnpin for awaken_runtime::DirectRunIngress
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime::DirectRunIngress
-impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime::DirectRunIngress
 pub struct awaken_runtime::LlmRetryPolicy
 pub awaken_runtime::LlmRetryPolicy::backoff_base_ms: u64
 pub awaken_runtime::LlmRetryPolicy::max_retries: usize
 pub awaken_runtime::LlmRetryPolicy::overloaded_backoff_base_ms: u64
-impl core::clone::Clone for awaken_runtime::LlmRetryPolicy
-pub fn awaken_runtime::LlmRetryPolicy::clone(&self) -> awaken_runtime::LlmRetryPolicy
-impl core::cmp::Eq for awaken_runtime::LlmRetryPolicy
-impl core::cmp::PartialEq for awaken_runtime::LlmRetryPolicy
-pub fn awaken_runtime::LlmRetryPolicy::eq(&self, &awaken_runtime::LlmRetryPolicy) -> bool
 impl core::default::Default for awaken_runtime::LlmRetryPolicy
 pub fn awaken_runtime::LlmRetryPolicy::default() -> Self
-impl core::fmt::Debug for awaken_runtime::LlmRetryPolicy
-pub fn awaken_runtime::LlmRetryPolicy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_runtime::LlmRetryPolicy
-impl core::marker::Freeze for awaken_runtime::LlmRetryPolicy
-impl core::marker::Send for awaken_runtime::LlmRetryPolicy
-impl core::marker::Sync for awaken_runtime::LlmRetryPolicy
-impl core::marker::Unpin for awaken_runtime::LlmRetryPolicy
-impl core::marker::UnsafeUnpin for awaken_runtime::LlmRetryPolicy
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime::LlmRetryPolicy
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime::LlmRetryPolicy
 pub struct awaken_runtime::PermissionGate
 impl awaken_runtime::PermissionGate
 pub fn awaken_runtime::PermissionGate::new(alloc::sync::Arc<dyn awaken_runtime_contract::permission::PermissionPolicy>) -> Self
 impl awaken_runtime_contract::permission::ToolGateHook for awaken_runtime::PermissionGate
 pub fn awaken_runtime::PermissionGate::gate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::permission::PermissionContext, &'life2 awaken_agent_contract::agent::state::Store) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::GateOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime::PermissionGate::id(&self) -> &str
-impl core::marker::Freeze for awaken_runtime::PermissionGate
-impl core::marker::Send for awaken_runtime::PermissionGate
-impl core::marker::Sync for awaken_runtime::PermissionGate
-impl core::marker::Unpin for awaken_runtime::PermissionGate
-impl core::marker::UnsafeUnpin for awaken_runtime::PermissionGate
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime::PermissionGate
-impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime::PermissionGate
 pub struct awaken_runtime::RunInput(_)
 impl core::convert::From<&str> for awaken_runtime::RunInput
 pub fn awaken_runtime::RunInput::from(&str) -> Self
@@ -81,13 +35,6 @@ impl core::convert::From<alloc::vec::Vec<awaken_agent_contract::agent::message::
 pub fn awaken_runtime::RunInput::from(alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> Self
 impl core::convert::From<awaken_agent_contract::agent::message::Message> for awaken_runtime::RunInput
 pub fn awaken_runtime::RunInput::from(awaken_agent_contract::agent::message::Message) -> Self
-impl core::marker::Freeze for awaken_runtime::RunInput
-impl core::marker::Send for awaken_runtime::RunInput
-impl core::marker::Sync for awaken_runtime::RunInput
-impl core::marker::Unpin for awaken_runtime::RunInput
-impl core::marker::UnsafeUnpin for awaken_runtime::RunInput
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime::RunInput
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime::RunInput
 pub struct awaken_runtime::Runtime
 impl awaken_runtime::Runtime
 pub async fn awaken_runtime::Runtime::cancel_run(&self, awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::thread::Id, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_agent_contract::agent::run::Phase, awaken_runtime_contract::execution::Error>
@@ -131,15 +78,6 @@ impl awaken_runtime_contract::resolver::AgentSnapshotResolver for awaken_runtime
 pub fn awaken_runtime::Runtime::get_snapshot(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
 impl awaken_runtime_contract::resolver::RunResolver for awaken_runtime::Runtime
 pub fn awaken_runtime::Runtime::resolve(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshot) -> core::result::Result<awaken_runtime_contract::resolved::ResolvedRun, awaken_runtime_contract::resolver::Error>
-impl core::default::Default for awaken_runtime::Runtime
-pub fn awaken_runtime::Runtime::default() -> awaken_runtime::Runtime
-impl !core::marker::Freeze for awaken_runtime::Runtime
-impl core::marker::Send for awaken_runtime::Runtime
-impl core::marker::Sync for awaken_runtime::Runtime
-impl core::marker::Unpin for awaken_runtime::Runtime
-impl core::marker::UnsafeUnpin for awaken_runtime::Runtime
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime::Runtime
-impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime::Runtime
 pub trait awaken_runtime::RunIngress: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime::RunIngress::cancel(&self, &awaken_agent_contract::agent::run::Id) -> core::result::Result<(), awaken_runtime_contract::control::Error>
 pub fn awaken_runtime::RunIngress::submit<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::Phase>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
