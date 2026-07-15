@@ -249,6 +249,70 @@ async fn pool_uses_the_injected_wake_signal() {
     pool.shutdown().await;
 }
 
+/// Metamorphic (S6): a wake hint is NON-authoritative — losing it must not change
+/// the committed outcome, only defer the drain to the poll fallback. Metamorphic
+/// relation: `drain(wake delivered) ≡ drain(wake lost)` in committed truth. Here the
+/// wake NEVER delivers (publish is a no-op, wait blocks forever), simulating total
+/// wake loss across a node fleet; the poll fallback alone must still claim, drive,
+/// and commit the run to the SAME terminal state the wake-driven path reaches.
+#[tokio::test]
+async fn a_lost_wake_still_drains_through_the_poll_fallback_to_the_same_outcome() {
+    struct BlackholeWake;
+    #[async_trait]
+    impl WakeSignal for BlackholeWake {
+        // The hint is dropped on the floor — as if every cross-node wake were lost.
+        async fn publish(&self) -> Result<(), DispatchError> {
+            Ok(())
+        }
+        // Never fires, so ONLY the poll fallback can drive the drain.
+        async fn wait(&self) {
+            std::future::pending::<()>().await
+        }
+    }
+
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = worker_over(text_runtime(), store.clone(), commit.clone());
+    let resolver = Arc::new(MapResolver {
+        workers: HashMap::from([(harness::THREAD.to_string(), worker)]),
+    });
+
+    let pool = DispatchPool::spawn_with_wake(
+        store.clone(),
+        Arc::new(SystemClock),
+        "pool",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig {
+            // A short poll so the fallback fires quickly — the wake never will.
+            poll_interval: Duration::from_millis(20),
+            ..Default::default()
+        },
+        resolver,
+        1,
+        Arc::new(BlackholeWake) as Arc<dyn WakeSignal>,
+    );
+
+    pool.submit(activation("run-1")).await.unwrap();
+
+    // Same committed outcome as the wake-driven path: the run drains to a terminal
+    // commit and its dispatch row is gone — correctness never depended on the hint.
+    assert!(
+        wait_for(|| commit.commit_count() >= 1).await,
+        "a lost wake still drains via the poll fallback"
+    );
+    assert!(
+        wait_for(|| store.dispatch_count() == 0).await,
+        "the poll-drained run settled and was removed, same as with a wake"
+    );
+    assert_eq!(
+        commit.committed().messages.last().unwrap().text_content(),
+        "done",
+        "the committed reply is identical to the wake-driven outcome",
+    );
+
+    pool.shutdown().await;
+}
+
 /// Event-driven completion: the pool signals a `CompletionSink` the instant it
 /// settles a run — the mechanism that lets a foreground submitter wait by event,
 /// not by polling committed truth.
