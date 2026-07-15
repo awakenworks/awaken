@@ -129,6 +129,50 @@ pub async fn open_shared_config_stores_from_env() -> SharedConfigStores {
     }
 }
 
+/// Open the config store selected from the environment and build a **warm-loaded**
+/// [`ConfigService`](awaken_config_service::ConfigService) over it, so a
+/// database-less worker resolves a published run's config from the shared control
+/// plane — its `installed` projection repopulated on boot exactly like the Serve
+/// composition. Reads the same `AWAKEN_CONFIG_DB` backend the authoring plane writes;
+/// an in-memory service (no publications) when `AWAKEN_MGMT_DIR` is unset. No model
+/// resolver is wired: a worker only *reads* installed publications, it never
+/// (re)publishes.
+pub async fn warm_config_service_from_env() -> std::sync::Arc<awaken_config_service::ConfigService>
+{
+    let service = awaken_config_service::ConfigService::new();
+    if let Ok(dir) = std::env::var("AWAKEN_MGMT_DIR") {
+        let cfg = ControlStoreConfig::from_env(Path::new(&dir));
+        if let StoreBackend::Sqlite(path) = &cfg.config
+            && let Some(parent) = path.parent()
+        {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let store: Arc<dyn awaken_config_store::ScopedConfigRegistry> = match &cfg.config {
+            StoreBackend::Sqlite(p) => Arc::new(
+                awaken_config_store::SqliteConfigStore::open(&p.to_string_lossy())
+                    .expect("open config sqlite"),
+            ),
+            StoreBackend::Postgres(url) => Arc::new(
+                awaken_config_store::PostgresConfigStore::connect(url)
+                    .await
+                    .expect("connect config postgres"),
+            ),
+        };
+        let warmed = service
+            .warm_install(
+                store.as_ref(),
+                &awaken_tenancy::ScopeId::from(awaken_config_store::DEFAULT_SCOPE),
+            )
+            .await;
+        if warmed > 0 {
+            eprintln!(
+                "worker config: warm-loaded {warmed} published agent(s) from the config store"
+            );
+        }
+    }
+    std::sync::Arc::new(service)
+}
+
 /// The AEAD key for the durable shared stores, from `AWAKEN_MGMT_SEAL_KEY` (inline)
 /// or `AWAKEN_MGMT_SEAL_KEY_FILE` (a path). Exactly one must be set. Panics loudly
 /// when unset, both-set, unreadable, or malformed — the same fail-closed behavior as

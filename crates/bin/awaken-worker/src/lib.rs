@@ -78,6 +78,14 @@ pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
         host = host.with_executor_provider(Arc::new(config_exec_provider));
     }
 
+    // Warm-load the published config catalog from the shared control plane, so a run
+    // claimed by this database-less worker opens its session bound to its OWN agent's
+    // published config — its own catalog. The run then resolves against a matching
+    // fingerprint instead of stranding on a host-default rebuild (the cross-node
+    // catalog-parity fix). Reads the same config store the authoring plane writes; an
+    // empty service when no config store is configured.
+    host = host.with_config_service(awaken_control::warm_config_service_from_env().await);
+
     let host = Arc::new(host);
     host.ensure_dispatch_pool();
     let posture = if gateway_only {

@@ -48,15 +48,14 @@ use crate::worker::DispatchWorker;
 #[async_trait]
 pub trait WorkerResolver<S>: Send + Sync {
     /// The worker whose runtime owns `thread_id`, opening the session if needed.
-    /// `model_ref` is the claimed run's own model binding (from its activation
-    /// snapshot), so a cold worker — which has no in-process config service or
-    /// per-session model binding — can resolve the run's configured model through
-    /// its executor provider before the session's runtime is built. `None`/empty
-    /// leaves the host default (the pre-existing behavior).
+    /// `agent_id` is the claimed run's own agent (from its activation snapshot), so a
+    /// cold worker opens the session bound to THAT agent's published config — its own
+    /// catalog, so the run resolves against a matching fingerprint — resolved from the
+    /// worker's config service. `None`/empty opens the built-in default agent.
     async fn worker_for(
         &self,
         thread_id: &ThreadId,
-        model_ref: Option<&str>,
+        agent_id: Option<&str>,
     ) -> Result<Arc<DispatchWorker<S>>, Error>;
 }
 
@@ -372,20 +371,13 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     // The resolved worker shares this store and owner, so the settle it performs
     // acts on the same row this task just claimed.
     let thread_id = claimed.request.thread_id().clone();
-    // The claimed run carries its own compiled model binding; hand it to the resolver
-    // so a cold worker resolves THIS run's configured model (not the host default).
-    let run_model_ref = claimed
-        .request
-        .activation
-        .snapshot
-        .resolved_spec
-        .model_binding
-        .model_ref
-        .clone();
-    let model_ref = Some(run_model_ref).filter(|m| !m.is_empty());
-    let worker = resolver
-        .worker_for(&thread_id, model_ref.as_deref())
-        .await?;
+    // The claimed run carries its own agent identity; hand it to the resolver so a
+    // cold worker opens the session bound to THAT agent's published config (its own
+    // catalog), not the host default — the run then resolves against a matching
+    // fingerprint instead of stranding.
+    let run_agent_id = claimed.request.activation.snapshot.root_agent_id.0.clone();
+    let agent_id = Some(run_agent_id).filter(|a| !a.is_empty());
+    let worker = resolver.worker_for(&thread_id, agent_id.as_deref()).await?;
     if let Some((run_id, phase)) = worker.drive_claimed(claimed, now).await?
         && let Some(sink) = completion
     {
