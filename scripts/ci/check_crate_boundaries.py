@@ -1026,6 +1026,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-ext-goal",
         "awaken-ext-state-machine",
         "awaken-sandbox-local",
+        # The container tier (podman/docker/k8s) behind ContainerChannelSource, so an
+        # agent can run inside a user image; the runtime backend is worker-configured.
+        "awaken-sandbox-container",
         # The content-addressed store the host serves files/artifacts from and adapts
         # behind the sandbox providers' BlobSource port (was re-exported via
         # awaken-sandbox-local before that crate moved to the worker tier).
