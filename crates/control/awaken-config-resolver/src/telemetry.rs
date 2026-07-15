@@ -121,6 +121,51 @@ mod tests {
     }
 
     #[test]
+    fn redaction_stricter_is_a_total_order_none_lt_regex_lt_dlp() {
+        // A10(a): `stricter` is max over the total order None < Regex < Dlp.
+        assert!(RedactionMode::None < RedactionMode::Regex);
+        assert!(RedactionMode::Regex < RedactionMode::Dlp);
+        assert_eq!(
+            RedactionMode::None.stricter(RedactionMode::Regex),
+            RedactionMode::Regex
+        );
+        assert_eq!(
+            RedactionMode::Regex.stricter(RedactionMode::Dlp),
+            RedactionMode::Dlp
+        );
+        // Commutative, and the open default never wins over a stricter mode.
+        assert_eq!(
+            RedactionMode::Dlp.stricter(RedactionMode::None),
+            RedactionMode::Dlp
+        );
+        assert_eq!(
+            RedactionMode::None.stricter(RedactionMode::None),
+            RedactionMode::None
+        );
+    }
+
+    #[test]
+    fn tighten_composes_the_three_axes_independently() {
+        // A10(e): capture/redaction/retention each tighten on their own axis — a layer
+        // that only tightens one leaves the others at the upper ceiling.
+        let org = TelemetryCeiling {
+            content_capture: ContentCapture::Full,
+            redaction: RedactionMode::None,
+            retention_days: Some(90),
+        };
+        // Lower layer tightens ONLY redaction.
+        let only_redaction = TelemetryCeiling {
+            content_capture: ContentCapture::Full,
+            redaction: RedactionMode::Dlp,
+            retention_days: None,
+        };
+        let got = org.tighten(only_redaction);
+        assert_eq!(got.content_capture, ContentCapture::Full);
+        assert_eq!(got.redaction, RedactionMode::Dlp);
+        assert_eq!(got.retention_days, Some(90));
+    }
+
+    #[test]
     fn tighten_is_associative_over_a_chain() {
         let org = TelemetryCeiling {
             content_capture: ContentCapture::Full,

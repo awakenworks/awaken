@@ -11,7 +11,8 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_config_store::{
-    AgentConfig, ConfigRegistry, SqliteConfigStore, StoredPublication, compile,
+    AgentConfig, ConfigRegistry, DEFAULT_SCOPE, ModelSelection, PublicationState, ScopeId,
+    ScopedConfig, SqliteConfigStore, StoredPublication, compile,
 };
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
@@ -180,4 +181,101 @@ async fn config_and_runtime_tables_coexist_in_one_database() {
     drop(stmt);
     drop(conn);
     let _ = std::fs::remove_file(&path);
+}
+
+// --- CEG 03 / B7 (StoredPublication::published) ------------------------------
+
+fn scoped_agent(id: &str) -> AgentConfig {
+    AgentConfig {
+        id: id.to_string(),
+        instructions: "be helpful".to_string(),
+        max_steps: 8,
+        model_binding: ModelSelection::pinned("p", "m", "b"),
+        tool_ids: Vec::new(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn published_always_stamps_published_and_takes_ids_from_the_runnable() {
+    // B7(a): `published` always sets state=Published and lifts the fingerprint and
+    // publication id from the runnable itself (never re-derived by the store).
+    let cfg = agent_config();
+    let runnable = compile(&cfg, &tool_catalog()).expect("compile");
+    let want_fingerprint = runnable.snapshot().fingerprint.0.clone();
+    let want_pub_id = runnable.install().publication_id.clone();
+
+    let stored = StoredPublication::published(runnable, &cfg.id);
+    assert_eq!(stored.state, PublicationState::Published);
+    assert_eq!(stored.fingerprint, want_fingerprint);
+    assert_eq!(stored.publication_id, want_pub_id);
+    assert_eq!(stored.agent_id, cfg.id);
+    // The wrapped snapshot/install agree on that same fingerprint.
+    assert_eq!(stored.snapshot.fingerprint.0, want_fingerprint);
+    assert_eq!(stored.install.fingerprint.0, want_fingerprint);
+}
+
+#[test]
+fn published_is_idempotent_for_the_same_runnable() {
+    // B7(b): the runnable is content-addressed, so wrapping two compiles of the same
+    // config yields the same identity (fingerprint + publication id + state).
+    let cfg = agent_config();
+    let a = StoredPublication::published(compile(&cfg, &tool_catalog()).unwrap(), &cfg.id);
+    let b = StoredPublication::published(compile(&cfg, &tool_catalog()).unwrap(), &cfg.id);
+    assert_eq!(a.fingerprint, b.fingerprint);
+    assert_eq!(a.publication_id, b.publication_id);
+    assert_eq!(a.state, b.state);
+}
+
+// --- CEG 03 / B8 (ScopedConfig decorator) ------------------------------------
+
+#[tokio::test]
+async fn scoped_config_isolates_writes_and_lists_across_scopes() {
+    // B8(a)+(b)+(d): the decorator binds one scope and exposes the scope-free port.
+    // A write under scope A is invisible to scope B's get *and* list, and B cannot
+    // clobber A's row of the same id.
+    let store = Arc::new(SqliteConfigStore::open_in_memory().expect("store"));
+    let a = ScopedConfig::new(store.clone(), ScopeId::from("ws_a"));
+    let b = ScopedConfig::new(store.clone(), ScopeId::from("ws_b"));
+
+    a.put_config(&scoped_agent("shared")).await.expect("put a");
+
+    // (a) list isolation: A sees its row, B's list is empty.
+    let a_list: Vec<String> = a
+        .list_configs()
+        .await
+        .expect("list a")
+        .into_iter()
+        .map(|c| c.id)
+        .collect();
+    assert_eq!(a_list, vec!["shared".to_string()]);
+    assert!(b.list_configs().await.expect("list b").is_empty());
+    // (d) get isolation.
+    assert!(b.get_config("shared").await.expect("get b").is_none());
+
+    // (b) B cannot clobber A's row of the same id (conflict guard → no-op).
+    b.put_config(&scoped_agent("shared")).await.expect("put b");
+    assert!(a.get_config("shared").await.expect("get a").is_some());
+    assert!(b.get_config("shared").await.expect("get b").is_none());
+}
+
+#[tokio::test]
+async fn scoped_config_default_scope_shares_the_owner_with_scope_free_writes() {
+    // B8(c): a scope-free write lands under DEFAULT_SCOPE, so a ScopedConfig bound to
+    // DEFAULT_SCOPE reads it back (same owner), while a foreign scope cannot.
+    let store = Arc::new(SqliteConfigStore::open_in_memory().expect("store"));
+    // Scope-free write via the raw store's ConfigRegistry impl (DEFAULT_SCOPE).
+    store.put_config(&scoped_agent("d")).await.expect("put");
+
+    let default = ScopedConfig::new(store.clone(), ScopeId::from(DEFAULT_SCOPE));
+    let other = ScopedConfig::new(store.clone(), ScopeId::from("ws_other"));
+    assert!(
+        default
+            .get_config("d")
+            .await
+            .expect("get default")
+            .is_some()
+    );
+    assert!(other.get_config("d").await.expect("get other").is_none());
+    assert_eq!(default.scope(), &ScopeId::from(DEFAULT_SCOPE));
 }

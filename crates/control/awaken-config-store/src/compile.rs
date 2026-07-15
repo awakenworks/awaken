@@ -626,4 +626,154 @@ mod tests {
                 .0
         );
     }
+
+    // --- CEG 03 / B1 (compile priority + override masks) ---------------------
+
+    #[test]
+    fn c3_an_alias_equal_to_the_reserved_tool_open_id_is_rejected() {
+        // C3: the runtime mints `tool_open` for deferred tools; an override alias must
+        // not shadow that reserved id, else the model sees two tools under one face.
+        use crate::config::ToolOverride;
+        use awaken_runtime_contract::resolved::TOOL_OPEN_ID;
+        let tools = vec![tool("echo")];
+        let mut cfg = config(&["echo"]);
+        cfg.tool_overrides = vec![ToolOverride {
+            target: "echo".into(),
+            alias: Some(TOOL_OPEN_ID.to_string()),
+            ..Default::default()
+        }];
+        let err = compile(&cfg, &tools).unwrap_err();
+        assert!(
+            matches!(err, CompileError::InvalidToolOverride { .. }),
+            "reserved tool_open alias must be rejected, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn c4_two_tools_aliased_to_one_visible_id_is_rejected() {
+        // C4: two selected tools overridden to the same model-facing id would present
+        // the model two tools under one name — fail-closed, not silently deduped.
+        use crate::config::ToolOverride;
+        let catalog = vec![tool("echo"), tool("read")];
+        let mut cfg = config(&["echo", "read"]);
+        cfg.tool_overrides = vec![
+            ToolOverride {
+                target: "echo".into(),
+                alias: Some("same".into()),
+                ..Default::default()
+            },
+            ToolOverride {
+                target: "read".into(),
+                alias: Some("same".into()),
+                ..Default::default()
+            },
+        ];
+        let err = compile(&cfg, &catalog).unwrap_err();
+        assert!(
+            matches!(err, CompileError::InvalidToolOverride { .. }),
+            "a duplicate model-facing id must be rejected, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn c8_unknown_tool_takes_priority_over_an_unresolved_auto_model() {
+        // C8 (priority chain): tool resolution runs before model resolution, so an
+        // Auto binding *and* an unknown tool must surface the UnknownTool error — the
+        // earlier, more specific failure — not UnresolvedModel.
+        let mut cfg = config(&["ghost"]);
+        cfg.model_binding = ModelSelection::Auto;
+        let err = compile(&cfg, &[tool("echo")]).unwrap_err();
+        assert_eq!(
+            err,
+            CompileError::UnknownTool {
+                agent: "agent-1".to_string(),
+                tool: "ghost".to_string(),
+            },
+            "unknown tool must win over the unresolved model"
+        );
+    }
+
+    #[test]
+    fn c9_an_mcp_override_target_absent_from_the_catalog_passes() {
+        // C9: the `mcp__` prefix masks the "target is not a selected tool" check — MCP
+        // ids are resolved at runtime, so an override for an MCP tool that never appears
+        // in the compile catalog is inert (passes), and being absent it does not enter
+        // the model-facing uniqueness set either.
+        use crate::config::ToolOverride;
+        let tools = vec![tool("echo")];
+        let mut cfg = config(&["echo"]);
+        cfg.tool_overrides = vec![ToolOverride {
+            target: "mcp__gh__create_issue".into(),
+            alias: Some("file_issue".into()),
+            description: Some("Open a GitHub issue.".into()),
+            defer: true,
+        }];
+        let compiled = compile(&cfg, &tools).expect("missing MCP target must compile");
+        // The override still projects into the presentation (applied at runtime).
+        let pres = &compiled.snapshot().resolved_spec.tool_presentation;
+        assert!(!pres.is_empty());
+        assert_eq!(pres.resolve("file_issue"), "mcp__gh__create_issue");
+    }
+
+    // --- CEG 03 / B2 (glob_match) --------------------------------------------
+
+    #[test]
+    fn glob_match_covers_prefix_middle_exact_and_empty() {
+        // (a) trailing star matches a longer id sharing the prefix.
+        assert!(glob_match("fs_*", "fs_read"));
+        // (b) anchored at both ends: `fs_*` does not match a mid-string occurrence.
+        assert!(!glob_match("fs_*", "net_fs"));
+        // (c) the empty pattern matches only the empty string.
+        assert!(glob_match("", ""));
+        assert!(!glob_match("", "x"));
+        // (d) a middle star spans any run (including empty).
+        assert!(glob_match("a*c", "abc"));
+        assert!(glob_match("a*c", "ac"));
+        assert!(glob_match("a*c", "abbbc"));
+        assert!(!glob_match("a*c", "abd"));
+        // (e) a pattern with no star is an exact match.
+        assert!(glob_match("fs_read", "fs_read"));
+        assert!(!glob_match("fs_read", "fs_reads"));
+    }
+
+    // --- CEG 03 / B5 (ModelSelection) ----------------------------------------
+
+    #[test]
+    fn model_selection_resolved_reports_pinned_and_auto() {
+        // (a) Pinned exposes the concrete binding; (b) Auto is the None "resolve me"
+        // signal. (c)/(d) wire shapes are covered by
+        // `pinned_selection_is_wire_identical_to_the_flat_triple`.
+        let pinned = ModelSelection::pinned("p", "m", "b");
+        assert_eq!(pinned.resolved(), Some(&ModelBinding::new("p", "m", "b")));
+        assert!(!pinned.is_auto());
+        assert_eq!(ModelSelection::Auto.resolved(), None);
+        assert!(ModelSelection::Auto.is_auto());
+    }
+
+    // --- CEG 03 / B6 (CompileError::field_path) ------------------------------
+
+    #[test]
+    fn compile_error_field_path_routes_each_variant() {
+        assert_eq!(
+            CompileError::UnknownTool {
+                agent: "a".into(),
+                tool: "t".into()
+            }
+            .field_path(),
+            "tools"
+        );
+        assert_eq!(
+            CompileError::UnresolvedModel { agent: "a".into() }.field_path(),
+            "model"
+        );
+        assert_eq!(
+            CompileError::InvalidToolOverride {
+                agent: "a".into(),
+                reason: "r".into()
+            }
+            .field_path(),
+            "tool_overrides"
+        );
+        assert_eq!(CompileError::Serialize("boom".into()).field_path(), "");
+    }
 }

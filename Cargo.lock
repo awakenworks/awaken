@@ -454,10 +454,12 @@ dependencies = [
  "awaken-tenancy",
  "awaken-webhook-managed",
  "axum",
+ "http-body-util",
  "rusqlite",
  "serde_json",
  "tempfile",
  "tokio",
+ "tower",
 ]
 
 [[package]]

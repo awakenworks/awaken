@@ -298,6 +298,47 @@ mod tests {
         }
     }
 
+    // DS3: a Pending (in-flight, not-yet-a-permit) grant ceils to Structured, the
+    // same as no grant at all — only an active `Granted` grant lifts to Full.
+    #[test]
+    fn consent_ceiling_pending_grant_is_structured() {
+        let mut s = DataSubject::new(DataSubjectId("dsub_1".into()), "org_1", 0);
+        s.upsert_consent(ConsentGrant {
+            status: ConsentStatus::Pending,
+            ..granted(Purpose::TelemetryContent)
+        });
+        assert_eq!(
+            s.consent_ceiling(Purpose::TelemetryContent),
+            ContentCapture::Structured
+        );
+    }
+
+    // upsert (b): at most one grant per purpose, even across several purposes —
+    // re-upserting one purpose supersedes only that purpose's grant.
+    #[test]
+    fn upsert_keeps_at_most_one_grant_per_purpose() {
+        let mut s = DataSubject::new(DataSubjectId("dsub_1".into()), "org_1", 0);
+        s.upsert_consent(granted(Purpose::TelemetryContent));
+        s.upsert_consent(granted(Purpose::EvalRecording));
+        assert_eq!(s.consents.len(), 2, "two distinct purposes coexist");
+        // Re-upsert TelemetryContent as Withdrawn: supersedes only that purpose.
+        s.upsert_consent(ConsentGrant {
+            status: ConsentStatus::Withdrawn,
+            ..granted(Purpose::TelemetryContent)
+        });
+        assert_eq!(s.consents.len(), 2, "still at most one per purpose");
+        assert_eq!(
+            s.consent_ceiling(Purpose::TelemetryContent),
+            ContentCapture::Structured,
+            "superseded to Withdrawn"
+        );
+        assert_eq!(
+            s.consent_ceiling(Purpose::EvalRecording),
+            ContentCapture::Full,
+            "the other purpose is untouched"
+        );
+    }
+
     #[test]
     fn consent_ceiling_is_full_only_with_an_active_grant() {
         let mut s = DataSubject::new(DataSubjectId("dsub_1".into()), "org_1", 0);
@@ -401,5 +442,53 @@ mod tests {
 
         let receipt = resolver.erase(&DataSubjectId("dsub_1".into())).await;
         assert_eq!(receipt.records_removed, 5, "sums across content stores");
+    }
+
+    // E4: the resolver's erase fans the removal out across every eraser (sum),
+    // then RETAINS the subject record as accountability proof — stamping
+    // `erased_at`, withdrawing its grants, and so ceiling any purpose to Structured.
+    #[tokio::test]
+    async fn resolver_erase_fans_out_and_stamps_retained_subject() {
+        use awaken_runtime_contract::ContentEraser;
+
+        struct FakeEraser(usize);
+        #[async_trait]
+        impl ContentEraser for FakeEraser {
+            async fn erase_subject(&self, _s: &DataSubjectId) -> usize {
+                self.0
+            }
+        }
+
+        let repo = std::sync::Arc::new(InMemoryDataSubjectRepo::new());
+        let mut s = DataSubject::new(DataSubjectId("dsub_1".into()), "org_1", 0);
+        s.upsert_consent(granted(Purpose::TelemetryContent));
+        repo.put(s).await.unwrap();
+
+        let resolver = RepoDataSubjectResolver::new(repo.clone())
+            .with_eraser(std::sync::Arc::new(FakeEraser(4)))
+            .with_eraser(std::sync::Arc::new(FakeEraser(3)));
+        let id = DataSubjectId("dsub_1".into());
+
+        let receipt = resolver.erase(&id).await;
+        assert_eq!(receipt.records_removed, 7, "fan-out sum across erasers");
+
+        // Subject record is retained (Art. 5(2)/7(1)) with an erased_at stamp and
+        // its grants withdrawn — not deleted.
+        let after = repo.get(&id).await.expect("subject retained after erase");
+        assert!(after.erased_at.is_some(), "erased_at stamped");
+        assert_eq!(after.consents.len(), 1, "grant kept as audit proof");
+        assert_eq!(after.consents[0].status, ConsentStatus::Withdrawn);
+
+        // Any purpose now ceils to Structured (no live consent survives erasure).
+        assert_eq!(
+            resolver
+                .consent_ceiling(&id, Purpose::TelemetryContent)
+                .await,
+            ContentCapture::Structured
+        );
+        assert_eq!(
+            resolver.consent_ceiling(&id, Purpose::EvalRecording).await,
+            ContentCapture::Structured
+        );
     }
 }

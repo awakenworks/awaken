@@ -169,6 +169,37 @@ mod tests {
         assert_eq!(repo.list_pools("empty").await.unwrap().len(), 0);
     }
 
+    /// F11(d): `get` is keyed by source id **only** — it is *not* workspace-scoped.
+    /// A caller holding a source id from another workspace reads the row directly;
+    /// only `list` filters by workspace. This pins the *current* behavior: if a
+    /// consumer ever calls `get` with an id crossing a tenant boundary, no guard
+    /// here stops it. Flagged for adjudication — this test does not endorse it.
+    #[tokio::test]
+    async fn get_is_not_workspace_scoped_and_reads_across_workspaces() {
+        let store = InMemorySecretStore::new();
+        let repo = InMemoryCredentialRepo::new();
+        let owned = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "ws-owner".into(),
+                kind: CredentialKind::Env,
+                provider_id: Some("anthropic".into()),
+                env_key: Some("ANTHROPIC_API_KEY".into()),
+                secret: None,
+                oauth_command: None,
+            },
+            &store,
+            &repo,
+        )
+        .await
+        .unwrap();
+
+        // `list` for an unrelated workspace correctly hides the row...
+        assert_eq!(repo.list("ws-other").await.unwrap().len(), 0);
+        // ...but a direct `get` with the id returns it regardless of workspace.
+        let cross_read = repo.get(&owned.id).await.unwrap();
+        assert_eq!(cross_read.workspace_id, "ws-owner");
+    }
+
     #[tokio::test]
     async fn a_missing_source_or_pool_is_not_found() {
         let repo = InMemoryCredentialRepo::new();

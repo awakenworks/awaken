@@ -1009,3 +1009,151 @@ async fn list_credentials(
         .map(Json)
         .map_err(|e| cred_problem(&e, &req_id(&headers)))
 }
+
+#[cfg(test)]
+mod tests {
+    //! Unit coverage of the pure problem-detail mappers (CEG 09: repo_problem /
+    //! cred_problem / resolve_problem). Every error variant is asserted to the
+    //! status + code the causal-graph spec pins, including the catch-all arms —
+    //! the fail-closed default must never widen to a permissive status.
+    use super::*;
+    use awaken_model_catalog::CatalogError;
+
+    // --- repo_problem: (a) NotFound→404; (b) Invariant→422 -------------------
+    #[test]
+    fn repo_problem_provider_not_found_is_404() {
+        let p = repo_problem(&RepoError::ProviderNotFound("x".into()), "rid");
+        assert_eq!(p.0.status, 404);
+        assert_eq!(p.0.code, "not_found");
+    }
+
+    #[test]
+    fn repo_problem_endpoint_not_found_is_404() {
+        let p = repo_problem(&RepoError::EndpointNotFound("x".into()), "rid");
+        assert_eq!(p.0.status, 404);
+        assert_eq!(p.0.code, "not_found");
+    }
+
+    #[test]
+    fn repo_problem_invariant_is_422() {
+        let p = repo_problem(
+            &RepoError::Invariant(CatalogError::OfferingEndpointUnknown {
+                model: "m".into(),
+                endpoint: "e".into(),
+            }),
+            "rid",
+        );
+        assert_eq!(p.0.status, 422);
+        assert_eq!(p.0.code, "catalog_invariant");
+    }
+
+    // --- cred_problem: (a) NotFound→404; (b) NoCredential→422;
+    //     (c) NotActive→409; (d) `_`→422 ---------------------------------------
+    #[test]
+    fn cred_problem_not_found_family_is_404() {
+        for e in [
+            CredentialError::SourceNotFound("s".into()),
+            CredentialError::SecretNotFound("s".into()),
+            CredentialError::PoolNotFound("p".into()),
+        ] {
+            let p = cred_problem(&e, "rid");
+            assert_eq!(p.0.status, 404, "{e:?}");
+            assert_eq!(p.0.code, "not_found", "{e:?}");
+        }
+    }
+
+    #[test]
+    fn cred_problem_no_credential_is_422() {
+        let p = cred_problem(&CredentialError::NoCredential, "rid");
+        assert_eq!(p.0.status, 422);
+        assert_eq!(p.0.code, "no_credential");
+    }
+
+    #[test]
+    fn cred_problem_not_active_is_409() {
+        let p = cred_problem(&CredentialError::NotActive("s".into()), "rid");
+        assert_eq!(p.0.status, 409);
+        assert_eq!(p.0.code, "credential_inactive");
+    }
+
+    #[test]
+    fn cred_problem_catch_all_is_422_credential_invalid() {
+        // The `_` arm must fail closed to 422 for every non-enumerated variant.
+        for e in [
+            CredentialError::MissingMaterialRef("s".into()),
+            CredentialError::MissingEnv("s".into()),
+            CredentialError::Seal,
+            CredentialError::OAuth("boom".into()),
+            CredentialError::Storage("io".into()),
+        ] {
+            let p = cred_problem(&e, "rid");
+            assert_eq!(p.0.status, 422, "{e:?}");
+            assert_eq!(p.0.code, "credential_invalid", "{e:?}");
+        }
+    }
+
+    // --- resolve_problem: (a) ModelUnresolved→404; (b) EndpointMissing→422;
+    //     (c) Source/PoolMissing→404; (d) Incompatible→422; (e) NoEligible→409;
+    //     (f) Credential→422 ----------------------------------------------------
+    #[test]
+    fn resolve_problem_model_unresolved_is_404() {
+        let p = resolve_problem(&ResolveError::ModelUnresolved("m".into()), "rid");
+        assert_eq!(p.0.status, 404);
+        assert_eq!(p.0.code, "model_unresolved");
+    }
+
+    #[test]
+    fn resolve_problem_endpoint_missing_is_422() {
+        let p = resolve_problem(&ResolveError::EndpointMissing("e".into()), "rid");
+        assert_eq!(p.0.status, 422);
+        assert_eq!(p.0.code, "endpoint_missing");
+    }
+
+    #[test]
+    fn resolve_problem_source_and_pool_missing_are_404() {
+        for e in [
+            ResolveError::SourceMissing("s".into()),
+            ResolveError::PoolMissing("p".into()),
+        ] {
+            let p = resolve_problem(&e, "rid");
+            assert_eq!(p.0.status, 404, "{e:?}");
+            assert_eq!(p.0.code, "not_found", "{e:?}");
+        }
+    }
+
+    #[test]
+    fn resolve_problem_incompatible_credential_is_422() {
+        let p = resolve_problem(
+            &ResolveError::IncompatibleCredential {
+                source_id: "s".into(),
+                provider_id: "anthropic".into(),
+            },
+            "rid",
+        );
+        assert_eq!(p.0.status, 422);
+        assert_eq!(p.0.code, "incompatible_credential");
+    }
+
+    #[test]
+    fn resolve_problem_no_eligible_credential_is_409_pool_exhausted() {
+        // Wire code stays `pool_exhausted` even though the variant is NoEligibleCredential.
+        let p = resolve_problem(
+            &ResolveError::NoEligibleCredential {
+                pool_id: "p".into(),
+                total: 2,
+                cooled: 1,
+                over_capacity: 0,
+            },
+            "rid",
+        );
+        assert_eq!(p.0.status, 409);
+        assert_eq!(p.0.code, "pool_exhausted");
+    }
+
+    #[test]
+    fn resolve_problem_credential_is_422() {
+        let p = resolve_problem(&ResolveError::Credential(CredentialError::Seal), "rid");
+        assert_eq!(p.0.status, 422);
+        assert_eq!(p.0.code, "credential_invalid");
+    }
+}

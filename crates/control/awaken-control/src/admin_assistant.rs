@@ -230,4 +230,92 @@ mod tests {
         bad.tool_ids = vec!["ghost".to_string()];
         assert!(validator.validate(&bad).is_err());
     }
+
+    // ---- CEG §10 additions -------------------------------------------------
+
+    /// F35(b): when no provider-backed model resolves, `publish` fails and
+    /// `seed_admin_assistant` surfaces that error string verbatim.
+    #[tokio::test]
+    async fn seed_returns_the_publish_error_when_no_model_resolves() {
+        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let tools = Arc::new(ScopedToolCatalog::new(
+            Vec::new(),
+            RESERVED_ADMIN_SCOPE,
+            awaken_admin_assistant::admin_tool_descriptors(),
+        ));
+        // An EMPTY catalog: the Auto assistant cannot resolve a model, so publish
+        // is Unresolvable and seed returns the error.
+        let service = Arc::new(
+            ConfigService::new()
+                .with_model_resolver(Arc::new(FirstOfferingResolver(ProviderCatalog::default()))),
+        );
+        let plane = ConfigPlane::new(service, store, tools);
+        let err = seed_admin_assistant(&plane)
+            .await
+            .expect_err("no provider-backed model → publish fails");
+        assert!(!err.is_empty(), "the publish error is surfaced: {err}");
+    }
+
+    /// F35(c): re-seeding recompiles to the same installed content (idempotent).
+    #[tokio::test]
+    async fn seeding_is_idempotent_recompiling_to_the_same_content() {
+        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let tools = Arc::new(ScopedToolCatalog::new(
+            Vec::new(),
+            RESERVED_ADMIN_SCOPE,
+            awaken_admin_assistant::admin_tool_descriptors(),
+        ));
+        let service = Arc::new(
+            ConfigService::new()
+                .with_model_resolver(Arc::new(FirstOfferingResolver(catalog("m-1")))),
+        );
+        let plane = ConfigPlane::new(service.clone(), store, tools);
+
+        seed_admin_assistant(&plane).await.expect("first seed");
+        let first_model = service
+            .installed(ADMIN_ASSISTANT_AGENT_ID)
+            .unwrap()
+            .snapshot()
+            .resolved_spec
+            .model_binding
+            .model_ref
+            .clone();
+        let first_tools = service
+            .installed(ADMIN_ASSISTANT_AGENT_ID)
+            .unwrap()
+            .snapshot()
+            .resolved_spec
+            .tool_descriptors
+            .len();
+
+        seed_admin_assistant(&plane)
+            .await
+            .expect("re-seed is idempotent");
+        let handle = service.installed(ADMIN_ASSISTANT_AGENT_ID).unwrap();
+        let second = handle.snapshot();
+        assert_eq!(second.resolved_spec.model_binding.model_ref, first_model);
+        assert_eq!(second.resolved_spec.tool_descriptors.len(), first_tools);
+    }
+
+    /// F36(b): the validator flattens the field-routed issue to its human message.
+    #[tokio::test]
+    async fn draft_validator_error_carries_the_issue_message() {
+        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let plane = ConfigPlane::new(
+            Arc::new(ConfigService::new()),
+            store,
+            Arc::new(StaticToolCatalog(vec![tool("read")])),
+        );
+        let validator = ConfigServiceDraftValidator::new(plane, DEFAULT_SCOPE);
+        let mut bad = admin_assistant_config();
+        bad.model_binding = ModelSelection::pinned("p", "m", "b");
+        bad.tool_ids = vec!["ghost".to_string()];
+        let err = validator
+            .validate(&bad)
+            .expect_err("an unknown tool is rejected");
+        assert!(
+            !err.is_empty(),
+            "carries the flattened issue message: {err}"
+        );
+    }
 }

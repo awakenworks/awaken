@@ -466,4 +466,181 @@ mod tests {
             StatusCode::FORBIDDEN
         );
     }
+
+    // G3 (write-back clause): an authorized bare request has its owning
+    // workspace stamped into the request extensions for downstream projection.
+    #[tokio::test]
+    async fn guard_stamps_the_owning_workspace_on_a_bare_request() {
+        let (engine, secret) = admin_engine();
+        let app = Router::new()
+            .fallback(any(
+                |axum::Extension(tenancy): axum::Extension<RequestTenancy>| async move {
+                    tenancy.workspace_id
+                },
+            ))
+            .layer(from_fn_with_state(engine, guard));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/sessions")
+            .header("authorization", format!("Bearer {secret}"))
+            .body(Body::empty())
+            .expect("request");
+        let response = app.oneshot(request).await.expect("router call");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        assert_eq!(
+            &body[..],
+            WS.as_bytes(),
+            "guard writes back the token's workspace"
+        );
+    }
+
+    // Mint a token bound to an arbitrary preset role at the local workspace.
+    fn engine_with_role(role: &str) -> (Arc<EnforceEngine>, String) {
+        let engine = Arc::new(EnforceEngine::seeded());
+        let secret = engine
+            .mint(TokenSpec {
+                token_id: "tok_role".into(),
+                service_id: "operator".into(),
+                workspace_id: WS.into(),
+                role: role.into(),
+                expires_at: None,
+            })
+            .expect("mint role token");
+        (engine, secret)
+    }
+
+    // G6: a valid token whose role carries no `agent.*` grant is scope-clean at
+    // its own workspace but denied at the policy engine → 403. The preset
+    // `developer` role holds `apikey.*` etc. but never the managed-agent verbs.
+    #[tokio::test]
+    async fn guard_forbids_a_role_without_the_agent_grant() {
+        let (engine, secret) = engine_with_role("developer");
+        assert_eq!(
+            call(engine, Method::POST, Some(&secret), None).await,
+            StatusCode::FORBIDDEN,
+        );
+    }
+
+    // --- presented_bearer (F5) -----------------------------------------------
+
+    fn header_map(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        for (name, value) in pairs {
+            map.insert(
+                axum::http::HeaderName::from_bytes(name.as_bytes()).expect("header name"),
+                axum::http::HeaderValue::from_str(value).expect("header value"),
+            );
+        }
+        map
+    }
+
+    // B1: Authorization: Bearer sk-x → Some("sk-x").
+    #[test]
+    fn presented_bearer_reads_the_authorization_bearer() {
+        assert_eq!(
+            presented_bearer(&header_map(&[("authorization", "Bearer sk-x")])),
+            Some("sk-x".to_string())
+        );
+    }
+
+    // B2: only x-api-key → Some("sk-y").
+    #[test]
+    fn presented_bearer_falls_back_to_x_api_key() {
+        assert_eq!(
+            presented_bearer(&header_map(&[("x-api-key", "sk-y")])),
+            Some("sk-y".to_string())
+        );
+    }
+
+    // B3: non-Bearer Authorization + x-api-key → the x-api-key value.
+    #[test]
+    fn presented_bearer_ignores_non_bearer_and_uses_x_api_key() {
+        assert_eq!(
+            presented_bearer(&header_map(&[
+                ("authorization", "Basic dXNlcjpwYXNz"),
+                ("x-api-key", "sk-y"),
+            ])),
+            Some("sk-y".to_string())
+        );
+    }
+
+    // B4: neither header → None.
+    #[test]
+    fn presented_bearer_absent_is_none() {
+        assert_eq!(presented_bearer(&header_map(&[])), None);
+    }
+
+    // B5: empty x-api-key is filtered → None.
+    #[test]
+    fn presented_bearer_filters_an_empty_x_api_key() {
+        assert_eq!(presented_bearer(&header_map(&[("x-api-key", "")])), None);
+    }
+
+    // B6: a present-but-empty `"Bearer "` header. `value.trim()` strips the
+    // delimiter space, so the `"Bearer "` prefix no longer matches and the value
+    // falls through to `None`. NOTE (latent inconsistency, not fixed here): this
+    // means a present-but-empty bearer is reported as a *missing* credential (401
+    // "missing bearer credential") rather than an *invalid* one — both are 401, so
+    // no behavior/security impact, but the message is arguably misleading. Pinned
+    // as current behavior; flagged for a deliberate product decision, not smuggled
+    // in via a test change.
+    #[test]
+    fn presented_bearer_empty_bearer_falls_through_to_none() {
+        assert_eq!(
+            presented_bearer(&header_map(&[("authorization", "Bearer ")])),
+            None
+        );
+    }
+
+    // --- authenticate / session_action (F4/F6) -------------------------------
+
+    // A6: an expired token fails authentication. `mint` fail-closes on a past
+    // expiry (InvalidApiTokenWindow), so an already-expired token is not
+    // constructible directly — mint a short-lived one and let it lapse.
+    fn rfc3339_secs_from_now(delta: u64) -> String {
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_secs()
+            + delta;
+        let (year, month, day) = civil_from_days((secs / 86_400) as i64);
+        let rem = secs % 86_400;
+        format!(
+            "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+            rem / 3600,
+            (rem / 60) % 60,
+            rem % 60
+        )
+    }
+
+    #[test]
+    fn authenticate_rejects_an_expired_token() {
+        let engine = EnforceEngine::seeded();
+        let secret = engine
+            .mint(TokenSpec {
+                token_id: "tok_exp".into(),
+                service_id: "operator".into(),
+                workspace_id: WS.into(),
+                role: "admin".into(),
+                expires_at: Some(rfc3339_secs_from_now(2)),
+            })
+            .expect("mint short-lived token");
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        match engine.authenticate(&secret) {
+            Err(IamError::ApiTokenExpired { .. }) => {}
+            other => panic!("expected an expired-token error, got {other:?}"),
+        }
+    }
+
+    // A10: session_action is case-sensitive — only uppercase GET/HEAD are reads;
+    // anything else (including lowercase `get`) maps to the write verb.
+    #[test]
+    fn session_action_is_case_sensitive() {
+        assert_eq!(session_action("get").0, "agent.write");
+        assert_eq!(session_action("head").0, "agent.write");
+        assert_eq!(session_action("HEAD").0, "agent.read");
+    }
 }

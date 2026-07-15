@@ -321,6 +321,50 @@ mod tests {
     }
 
     #[test]
+    fn resolve_offering_returns_first_match_and_none_for_unknown() {
+        let mut c = catalog();
+        // A second offering for the same model+dialect on a second endpoint. The
+        // first-inserted offering (ep1) must win the intersection ("Some 首个").
+        c.endpoints.insert(
+            "ep2".into(),
+            endpoint("ep2", "anthropic", ApiDialect::AnthropicMessages),
+        );
+        c.offerings.push(Offering {
+            model_id: "claude-opus-4-8".into(),
+            provider_id: ProviderId::new("anthropic"),
+            protocol_endpoint_id: ProtocolEndpointId::new("ep2"),
+            dialect: ApiDialect::AnthropicMessages,
+            upstream_model: None,
+        });
+        let got = c
+            .resolve_offering("claude-opus-4-8", ApiDialect::AnthropicMessages)
+            .expect("first matching offering");
+        assert_eq!(got.protocol_endpoint_id.as_str(), "ep1");
+        // An unknown model has no offering at all (empty intersection).
+        assert!(
+            c.resolve_offering("ghost-model", ApiDialect::AnthropicMessages)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn dangling_offering_endpoint_fails_closed() {
+        let mut c = catalog();
+        c.offerings.push(Offering {
+            model_id: "orphan".into(),
+            provider_id: ProviderId::new("anthropic"),
+            protocol_endpoint_id: ProtocolEndpointId::new("ghost"),
+            dialect: ApiDialect::AnthropicMessages,
+            upstream_model: None,
+        });
+        assert!(matches!(
+            c.validate(),
+            Err(CatalogError::OfferingEndpointUnknown { model, endpoint })
+                if model == "orphan" && endpoint == "ghost"
+        ));
+    }
+
+    #[test]
     fn dangling_endpoint_provider_fails_closed() {
         let mut c = catalog();
         c.endpoints.insert(

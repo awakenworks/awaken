@@ -119,6 +119,83 @@ async fn exact_binding_materializes_the_named_source() {
 }
 
 #[tokio::test]
+async fn resolves_multiple_defs_in_order() {
+    // A9(b): several defs resolve to servers in the same order, each carrying its own
+    // (or no) credential.
+    let store = InMemorySecretStore::new();
+    let repo = InMemoryCredentialRepo::new();
+    let good = enter(&store, &repo, "sk-jira").await;
+    let mut sources: HashMap<String, CredentialSource> = HashMap::new();
+    sources.insert(
+        good.clone(),
+        repo.get(&CredentialSourceId(good.clone())).await.unwrap(),
+    );
+
+    let resolved = resolve_mcp_servers(
+        &[
+            def("docs", CredentialBinding::None),
+            def(
+                "jira",
+                CredentialBinding::Exact {
+                    credential_source_id: CredentialSourceId(good.clone()),
+                },
+            ),
+        ],
+        &sources,
+        &store,
+    )
+    .await
+    .expect("both defs resolve");
+
+    assert_eq!(resolved.len(), 2);
+    assert_eq!(resolved[0].name, "docs display");
+    assert!(resolved[0].credential.is_none());
+    assert_eq!(resolved[1].name, "jira display");
+    assert_eq!(
+        resolved[1].credential.as_ref().unwrap().expose_secret(),
+        "sk-jira"
+    );
+}
+
+#[tokio::test]
+async fn mcp_batch_is_terminal_even_when_a_healthy_def_follows() {
+    // A9(c) asymmetry: unlike a profile's candidate axis (where one unresolvable model
+    // is skipped), a single unresolvable def sinks the *whole* MCP batch — even with
+    // healthy defs on both sides. Fail-closed: never a partial, silently-short batch.
+    let store = InMemorySecretStore::new();
+    let repo = InMemoryCredentialRepo::new();
+    let good = enter(&store, &repo, "sk-ok").await;
+    let mut sources: HashMap<String, CredentialSource> = HashMap::new();
+    sources.insert(
+        good.clone(),
+        repo.get(&CredentialSourceId(good.clone())).await.unwrap(),
+    );
+
+    let err = resolve_mcp_servers(
+        &[
+            def(
+                "healthy-before",
+                CredentialBinding::Exact {
+                    credential_source_id: CredentialSourceId(good.clone()),
+                },
+            ),
+            def(
+                "broken",
+                CredentialBinding::Exact {
+                    credential_source_id: CredentialSourceId("ghost".into()),
+                },
+            ),
+            def("healthy-after", CredentialBinding::None),
+        ],
+        &sources,
+        &store,
+    )
+    .await
+    .expect_err("one broken def fails the whole batch");
+    assert!(matches!(err, ResolveError::SourceMissing(id) if id == "ghost"));
+}
+
+#[tokio::test]
 async fn exact_binding_with_missing_source_fails_closed() {
     let store = InMemorySecretStore::new();
     let sources: HashMap<String, CredentialSource> = HashMap::new();

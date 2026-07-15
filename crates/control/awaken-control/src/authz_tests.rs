@@ -1,0 +1,1039 @@
+use super::*;
+
+#[test]
+fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
+    let get = Method::GET;
+    let post = Method::POST;
+    let put = Method::PUT;
+    let delete = Method::DELETE;
+    // Scoped(action) shorthand so the assertions below stay line-per-route.
+    fn action_for(method: &Method, path: &str) -> Option<&'static str> {
+        match super::action_for(method, path) {
+            Some(RouteAuthz::Scoped(action)) => Some(action),
+            Some(RouteAuthz::TokenAdmin) => panic!("{path} is not a Scoped route"),
+            None => None,
+        }
+    }
+    assert_eq!(action_for(&get, "/v1/config/catalog"), Some(WORKSPACE_READ));
+    assert_eq!(
+        action_for(&put, "/v1/config/providers/anthropic"),
+        Some(WORKSPACE_WRITE)
+    );
+    assert_eq!(
+        action_for(&get, "/v1/config/providers/anthropic"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        action_for(&post, "/v1/config/offerings"),
+        Some(WORKSPACE_WRITE)
+    );
+    assert_eq!(
+        action_for(&post, "/v1/config/credentials"),
+        Some(APIKEY_WRITE)
+    );
+    assert_eq!(
+        action_for(&get, "/v1/config/credentials"),
+        Some(APIKEY_READ)
+    );
+    assert_eq!(
+        action_for(&post, "/v1/config/credentials/c1/archive"),
+        Some(APIKEY_WRITE)
+    );
+    assert_eq!(
+        action_for(&post, "/v1/config/credentials/c1/validate"),
+        Some(APIKEY_WRITE)
+    );
+    assert_eq!(
+        action_for(&put, "/v1/config/credential-pools/p1"),
+        Some(APIKEY_WRITE)
+    );
+    assert_eq!(
+        action_for(&post, "/v1/config/inference/resolve"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        action_for(&post, "/v1/config/inference-profiles/p/resolve"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        action_for(&put, "/v1/config/agents/a1/mcp"),
+        Some(WORKSPACE_WRITE)
+    );
+    assert_eq!(
+        action_for(&post, "/v1/config/agents/a1/mcp/resolve"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(action_for(&post, "/v1/vaults"), Some(APIKEY_WRITE));
+    // Listing (GET) reads; the SDK `beta.vaults.list` / `credentials.list`.
+    assert_eq!(action_for(&get, "/v1/vaults"), Some(APIKEY_READ));
+    assert_eq!(
+        action_for(&get, "/v1/vaults/v1/credentials"),
+        Some(APIKEY_READ)
+    );
+    assert_eq!(action_for(&get, "/v1/vaults/v1"), Some(APIKEY_READ));
+    assert_eq!(action_for(&delete, "/v1/vaults/v1"), Some(APIKEY_WRITE));
+    // Archive + update + delete on the credential resource all write.
+    assert_eq!(
+        action_for(&post, "/v1/vaults/v1/archive"),
+        Some(APIKEY_WRITE)
+    );
+    assert_eq!(
+        action_for(&delete, "/v1/vaults/v1/credentials/c1"),
+        Some(APIKEY_WRITE)
+    );
+    assert_eq!(
+        action_for(&post, "/v1/vaults/v1/credentials/c1"),
+        Some(APIKEY_WRITE)
+    );
+    assert_eq!(
+        action_for(&post, "/v1/vaults/v1/credentials/c1/archive"),
+        Some(APIKEY_WRITE)
+    );
+    assert_eq!(
+        action_for(&get, "/v1/vaults/v1/credentials/c1"),
+        Some(APIKEY_READ)
+    );
+    assert_eq!(
+        action_for(&post, "/v1/vaults/v1/credentials"),
+        Some(APIKEY_WRITE)
+    );
+    assert_eq!(
+        action_for(&post, "/v1/vaults/v1/credentials/c1/mcp_oauth_validate"),
+        Some(APIKEY_WRITE)
+    );
+    // User-profile family maps to workspace.* by method.
+    assert_eq!(action_for(&get, "/v1/user_profiles"), Some(WORKSPACE_READ));
+    assert_eq!(
+        action_for(&post, "/v1/user_profiles"),
+        Some(WORKSPACE_WRITE)
+    );
+    assert_eq!(
+        action_for(&post, "/v1/user_profiles/uprof_1/enrollment_url"),
+        Some(WORKSPACE_WRITE)
+    );
+    // An unmapped route fails closed (the guard turns None into 403).
+    assert_eq!(action_for(&get, "/v1/config/unknown"), None);
+    assert_eq!(action_for(&post, "/v1/config/catalog"), None);
+}
+
+#[test]
+fn the_token_management_family_delegates_authorization_to_its_handlers() {
+    for (method, path) in [
+        (Method::POST, "/v1/config/iam/tokens"),
+        (Method::GET, "/v1/config/iam/tokens"),
+        (Method::DELETE, "/v1/config/iam/tokens/tok_x"),
+    ] {
+        assert_eq!(action_for(&method, path), Some(RouteAuthz::TokenAdmin));
+    }
+}
+
+#[test]
+fn only_canonical_utc_timestamps_pass_the_expiry_shape_check() {
+    assert!(canonical_timestamp_shape("2027-01-01T00:00:00Z"));
+    assert!(!canonical_timestamp_shape("banana"));
+    assert!(!canonical_timestamp_shape("2027-01-01T00:00:00+02:00"));
+    assert!(!canonical_timestamp_shape("2027-01-01 00:00:00Z"));
+    assert!(!canonical_timestamp_shape("2027-01-01T00:00:00.000Z"));
+}
+
+#[test]
+fn only_preset_role_ids_are_mintable() {
+    for role in ["admin", "workspace_admin", "workspace_user"] {
+        assert!(is_preset_role(role), "{role}");
+    }
+    assert!(!is_preset_role("superuser"));
+    assert!(!is_preset_role(""));
+}
+
+#[test]
+fn fresh_token_ids_are_tok_prefixed_hex() {
+    let id = fresh_token_id();
+    assert!(id.starts_with("tok_"), "{id}");
+    assert_eq!(id.len(), 4 + 16);
+    assert!(id[4..].bytes().all(|b| b.is_ascii_hexdigit()));
+    assert_ne!(fresh_token_id(), fresh_token_id());
+}
+
+#[test]
+fn timestamps_render_canonical_rfc3339_utc() {
+    assert_eq!(civil_from_days(0), (1970, 1, 1));
+    assert_eq!(civil_from_days(19_723), (2024, 1, 1)); // leap-year boundary
+    assert_eq!(civil_from_days(20_513), (2026, 3, 1)); // day after 2026-02-28
+    let now = now_rfc3339();
+    assert_eq!(now.len(), 20);
+    assert!(now.ends_with('Z'));
+    assert!(now.starts_with("20"));
+}
+
+#[test]
+fn the_query_fence_reads_workspace_id_pairs() {
+    assert_eq!(
+        query_workspace_id(Some("workspace_id=ws1")),
+        Some("ws1".to_string())
+    );
+    assert_eq!(
+        query_workspace_id(Some("a=b&workspace_id=ws2")),
+        Some("ws2".to_string())
+    );
+    assert_eq!(query_workspace_id(Some("a=b")), None);
+    assert_eq!(query_workspace_id(None), None);
+}
+
+// ---- CEG §10 additions -------------------------------------------------
+//
+// These drive the guard + token handlers end-to-end over an in-process axum
+// app, reusing the black-box scaffolding shape from
+// `awaken-cli/tests/management_{authz,tokens}.rs` but built from THIS crate's
+// private surface (`embedded_iam`, `token_router`, `management_guard`) so the
+// control crate carries its own coverage. Each test opens a fresh `iam` over
+// its own tempdir, so ids/bootstrap state never collide.
+
+use awaken_iam_core::ActionPattern;
+use axum::body::Body;
+use axum::http::HeaderValue;
+use http_body_util::BodyExt as _;
+use serde_json::{Value, json};
+use tower::ServiceExt as _;
+
+/// A fresh embedded IAM over a throwaway directory; the tempdir is returned so
+/// the caller keeps it alive for the test.
+fn fresh_iam() -> (tempfile::TempDir, Arc<ManagementAuthz>) {
+    let dir = tempfile::tempdir().unwrap();
+    let iam = embedded_iam(dir.path());
+    (dir, iam)
+}
+
+/// The bootstrap admin cleartext boot wrote to `<dir>/admin-token`.
+fn admin_token(dir: &Path) -> String {
+    std::fs::read_to_string(dir.join(ADMIN_TOKEN_FILE)).expect("bootstrap admin-token file")
+}
+
+/// The full guarded management app: the token routes + a mapped-route echo
+/// fallback, wrapped by [`management_guard`] exactly as `control_router` wires
+/// it. The echo answers 200 for any *mapped* route the guard admits.
+fn guarded_app(iam: Arc<ManagementAuthz>) -> Router {
+    async fn echo() -> Response {
+        (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+    }
+    Router::new()
+        .merge(token_router(iam.clone()))
+        .fallback(echo)
+        .layer(axum::middleware::from_fn_with_state(iam, management_guard))
+}
+
+/// The token routes WITHOUT the guard — so the handlers see no
+/// [`AuthedPrincipal`] stamp and must fail closed (401).
+fn unguarded_token_app(iam: Arc<ManagementAuthz>) -> Router {
+    token_router(iam)
+}
+
+async fn call(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    token: Option<&str>,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let mut b = Request::builder().method(method).uri(uri);
+    if let Some(token) = token {
+        b = b.header("authorization", format!("Bearer {token}"));
+    }
+    let body = match body {
+        Some(v) => {
+            b = b.header("content-type", "application/json");
+            Body::from(serde_json::to_vec(&v).unwrap())
+        }
+        None => Body::empty(),
+    };
+    let resp = app.clone().oneshot(b.body(body).unwrap()).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let value = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+    };
+    (status, value)
+}
+
+async fn resp_parts(resp: Response) -> (StatusCode, Value) {
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+/// Mint a token through the embedding handle (the test controls its id).
+fn mint(iam: &ManagementAuthz, id: &str, workspace: &str, role: &str) -> String {
+    iam.mint_service_token(TokenSpec {
+        token_id: id.to_string(),
+        service_id: format!("svc-{id}"),
+        workspace_id: workspace.to_string(),
+        role: role.to_string(),
+        created_at: None,
+        expires_at: None,
+    })
+    .unwrap()
+}
+
+// -- management_guard (F25) ---------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mg1_unmapped_route_is_403_no_action_mapped() {
+    let (_dir, iam) = fresh_iam();
+    let app = guarded_app(iam);
+    // Unmapped fails closed BEFORE the token check — no credential needed.
+    let (s, err) = call(&app, "GET", "/v1/config/unknown", None, None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+    assert_eq!(err["error"]["type"], json!("permission_error"));
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no management action"),
+        "{err}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mg2_missing_token_is_401() {
+    let (_dir, iam) = fresh_iam();
+    let app = guarded_app(iam);
+    let (s, err) = call(&app, "GET", "/v1/config/catalog", None, None).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "{err}");
+    assert_eq!(err["error"]["type"], json!("authentication_error"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mg3_expired_token_is_401_expired() {
+    let (_dir, iam) = fresh_iam();
+    let expired = iam
+        .mint_service_token(TokenSpec {
+            token_id: "tok_expired".into(),
+            service_id: "svc-expired".into(),
+            workspace_id: BOOTSTRAP_WORKSPACE.into(),
+            role: "admin".into(),
+            created_at: Some("2020-01-01T00:00:00Z".into()),
+            expires_at: Some("2020-01-02T00:00:00Z".into()),
+        })
+        .unwrap();
+    let app = guarded_app(iam);
+    let (s, err) = call(&app, "GET", "/v1/config/catalog", Some(&expired), None).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "{err}");
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("expired")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mg4_revoked_token_is_401_revoked() {
+    let (_dir, iam) = fresh_iam();
+    let cleartext = mint(&iam, "tok_revoked", BOOTSTRAP_WORKSPACE, "admin");
+    iam.revoke_token("tok_revoked").unwrap();
+    let app = guarded_app(iam);
+    let (s, err) = call(&app, "GET", "/v1/config/catalog", Some(&cleartext), None).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "{err}");
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("revoked")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mg5_invalid_token_is_401_invalid() {
+    let (_dir, iam) = fresh_iam();
+    let app = guarded_app(iam);
+    let (s, err) = call(&app, "GET", "/v1/config/catalog", Some("garbage"), None).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "{err}");
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("invalid")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mg6_token_admin_route_delegates_and_skips_the_equality_fence() {
+    // The bootstrap admin is Global-bound; the TokenAdmin route must NOT
+    // fence the body's foreign workspace_id (it delegates to the handler,
+    // which authorizes at the target). A Scoped route with the same body
+    // would 403; this 201s.
+    let (dir, iam) = fresh_iam();
+    let bootstrap = admin_token(dir.path());
+    let app = guarded_app(iam);
+    let (s, minted) = call(
+        &app,
+        "POST",
+        "/v1/config/iam/tokens",
+        Some(&bootstrap),
+        Some(json!({ "workspace_id": "wrkspc_other", "role": "workspace_admin" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{minted}");
+    assert_eq!(minted["api_token"]["workspace_id"], json!("wrkspc_other"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mg7_path_workspace_mismatch_is_403() {
+    let (dir, iam) = fresh_iam();
+    let bootstrap = admin_token(dir.path());
+    let app = guarded_app(iam);
+    // Stamp a foreign path tenancy (as `workspace_path_scope` would) — it
+    // must equal the token's workspace or the guard fences it.
+    let mut req = Request::builder()
+        .method("GET")
+        .uri("/v1/config/catalog")
+        .header("authorization", format!("Bearer {bootstrap}"))
+        .body(Body::empty())
+        .unwrap();
+    req.extensions_mut()
+        .insert(awaken_authz_enforce::RequestTenancy {
+            workspace_id: "wrkspc_other".into(),
+        });
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let (s, err) = resp_parts(resp).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("workspace path"),
+        "{err}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mg8_query_workspace_mismatch_is_403() {
+    let (dir, iam) = fresh_iam();
+    let bootstrap = admin_token(dir.path());
+    let app = guarded_app(iam);
+    let (s, err) = call(
+        &app,
+        "GET",
+        "/v1/config/catalog?workspace_id=wrkspc_other",
+        Some(&bootstrap),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("workspace_id does not match"),
+        "{err}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mg9_oversize_body_is_413() {
+    let (dir, iam) = fresh_iam();
+    let bootstrap = admin_token(dir.path());
+    let app = guarded_app(iam);
+    let big = "x".repeat(3 * 1024 * 1024);
+    let (s, _) = call(
+        &app,
+        "POST",
+        "/v1/config/credentials",
+        Some(&bootstrap),
+        Some(json!({ "workspace_id": BOOTSTRAP_WORKSPACE, "blob": big })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mg10_body_workspace_mismatch_is_403() {
+    let (dir, iam) = fresh_iam();
+    let bootstrap = admin_token(dir.path());
+    let app = guarded_app(iam);
+    let (s, err) = call(
+        &app,
+        "POST",
+        "/v1/config/credentials",
+        Some(&bootstrap),
+        Some(json!({ "workspace_id": "wrkspc_other", "kind": "vault" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+    assert_eq!(err["error"]["type"], json!("permission_error"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mg11a_allow_passes_through() {
+    let (dir, iam) = fresh_iam();
+    let bootstrap = admin_token(dir.path());
+    let app = guarded_app(iam);
+    let (s, body) = call(&app, "GET", "/v1/config/catalog", Some(&bootstrap), None).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({ "ok": true }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mg11b_require_approval_is_403_approval() {
+    let (dir, iam) = fresh_iam();
+    let bootstrap = admin_token(dir.path());
+    // Install a RequireApproval grant on `workspace.read` for the bootstrap
+    // principal (RequireApproval > Allow), so an otherwise-Allowed read is
+    // approval-gated — which P1 cannot discharge, so it 403s.
+    let (principal, _) = iam.authenticate(&bootstrap).unwrap();
+    iam.state
+        .lock()
+        .unwrap()
+        .authz
+        .policy_mut()
+        .add_grant(Grant {
+            id: GrantId("ceg-approval".into()),
+            subject: GrantSubject::Principal(principal),
+            action_pattern: ActionPattern(WORKSPACE_READ.into()),
+            scope: ScopeRef::Global,
+            effect: Effect::RequireApproval,
+        });
+    let app = guarded_app(iam);
+    let (s, err) = call(&app, "GET", "/v1/config/catalog", Some(&bootstrap), None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("approval"),
+        "{err}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mg11c_deny_is_403() {
+    let (_dir, iam) = fresh_iam();
+    // workspace_user holds no apikey pattern — reading credentials Denies.
+    let user = mint(&iam, "tok_user", BOOTSTRAP_WORKSPACE, "workspace_user");
+    let app = guarded_app(iam);
+    let (s, err) = call(
+        &app,
+        "GET",
+        &format!("/v1/config/credentials?workspace_id={BOOTSTRAP_WORKSPACE}"),
+        Some(&user),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("does not authorize"),
+        "{err}"
+    );
+}
+
+// -- action_for (F26) ----------------------------------------------------
+
+#[test]
+fn af2_credential_id_routes_map_read_and_write_sub_actions() {
+    // GET /{id} reads; the write sub-route is `/{id}/archive`. A bare
+    // PUT/{id} has NO mapping (there is no such admin route) → None, which
+    // the guard turns into a fail-closed 403. (The CEG line's literal
+    // "PUT credentials/{id}→APIKEY_WRITE" does not exist in the route table;
+    // asserted here as the actual, correct behavior.)
+    assert_eq!(
+        action_for(&Method::GET, "/v1/config/credentials/c1"),
+        Some(RouteAuthz::Scoped(APIKEY_READ))
+    );
+    assert_eq!(
+        action_for(&Method::POST, "/v1/config/credentials"),
+        Some(RouteAuthz::Scoped(APIKEY_WRITE))
+    );
+    assert_eq!(
+        action_for(&Method::POST, "/v1/config/credentials/c1/archive"),
+        Some(RouteAuthz::Scoped(APIKEY_WRITE))
+    );
+    assert_eq!(action_for(&Method::PUT, "/v1/config/credentials/c1"), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn af6_workspace_user_reading_credentials_denies() {
+    // Role adaptation: workspace_user cannot reach the apikey namespace, so
+    // an apikey.read decision is Deny even inside its own workspace.
+    let (_dir, iam) = fresh_iam();
+    let user = mint(&iam, "tok_af6", BOOTSTRAP_WORKSPACE, "workspace_user");
+    let (principal, ws) = iam.authenticate(&user).unwrap();
+    assert_eq!(
+        iam.authorize(principal, APIKEY_READ, ws),
+        AuthorizationDecision::Deny
+    );
+}
+
+// -- bearer_token (F27) --------------------------------------------------
+
+#[test]
+fn bearer_token_prefers_authorization_then_falls_back_to_x_api_key() {
+    let mut h = HeaderMap::new();
+    h.insert("authorization", HeaderValue::from_static("Bearer sk-x"));
+    assert_eq!(bearer_token(&h).as_deref(), Some("sk-x"));
+
+    // (b) fall back to x-api-key when Authorization is absent.
+    let mut h = HeaderMap::new();
+    h.insert("x-api-key", HeaderValue::from_static("sk-y"));
+    assert_eq!(bearer_token(&h).as_deref(), Some("sk-y"));
+
+    // Non-Bearer Authorization + a real x-api-key → the x-api-key.
+    let mut h = HeaderMap::new();
+    h.insert("authorization", HeaderValue::from_static("Basic abc"));
+    h.insert("x-api-key", HeaderValue::from_static("sk-z"));
+    assert_eq!(bearer_token(&h).as_deref(), Some("sk-z"));
+
+    // (c) whitespace / empty → None (blank credentials are filtered).
+    assert_eq!(bearer_token(&HeaderMap::new()), None);
+    let mut h = HeaderMap::new();
+    h.insert("x-api-key", HeaderValue::from_static(""));
+    assert_eq!(bearer_token(&h), None);
+    let mut h = HeaderMap::new();
+    h.insert("authorization", HeaderValue::from_static("Bearer   "));
+    assert_eq!(bearer_token(&h), None);
+}
+
+// -- authenticate (F28) --------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn authenticate_ok_expired_and_invalid() {
+    let (dir, iam) = fresh_iam();
+    let bootstrap = admin_token(dir.path());
+    // (a) a live token → Ok with its workspace binding.
+    let (principal, ws) = iam.authenticate(&bootstrap).unwrap();
+    assert_eq!(
+        principal,
+        PrincipalRef::Service {
+            service_id: BOOTSTRAP_PRINCIPAL.into()
+        }
+    );
+    assert_eq!(ws.0, BOOTSTRAP_WORKSPACE);
+
+    // (c) errors pass through with their distinct reason.
+    assert!(matches!(
+        iam.authenticate("garbage"),
+        Err(AuthReject::Invalid)
+    ));
+    let expired = iam
+        .mint_service_token(TokenSpec {
+            token_id: "tok_exp_auth".into(),
+            service_id: "svc-exp".into(),
+            workspace_id: BOOTSTRAP_WORKSPACE.into(),
+            role: "admin".into(),
+            created_at: Some("2020-01-01T00:00:00Z".into()),
+            expires_at: Some("2020-01-02T00:00:00Z".into()),
+        })
+        .unwrap();
+    assert!(matches!(
+        iam.authenticate(&expired),
+        Err(AuthReject::Expired)
+    ));
+    // (b) Ok-but-workspaceless → Invalid is a fail-closed branch that this
+    // plane cannot construct: every mintable credential is an API token
+    // bound to a workspace (JWTs are never minted here). Skipped-infeasible.
+}
+
+// -- authorize_at_target (F29) ------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn authorize_at_target_allow_deny_and_require_approval() {
+    let (dir, iam) = fresh_iam();
+    let bootstrap = admin_token(dir.path());
+    let (admin_principal, _) = iam.authenticate(&bootstrap).unwrap();
+
+    // (a) Allow → None.
+    assert!(
+        authorize_at_target(
+            &iam,
+            admin_principal.clone(),
+            APIKEY_WRITE,
+            BOOTSTRAP_WORKSPACE
+        )
+        .is_none()
+    );
+
+    // (c) Deny → 403.
+    let user = mint(&iam, "tok_at_user", BOOTSTRAP_WORKSPACE, "workspace_user");
+    let (user_principal, _) = iam.authenticate(&user).unwrap();
+    let refusal = authorize_at_target(&iam, user_principal, APIKEY_WRITE, BOOTSTRAP_WORKSPACE)
+        .expect("deny yields a refusal");
+    assert_eq!(resp_parts(refusal).await.0, StatusCode::FORBIDDEN);
+
+    // (b) RequireApproval → 403 with the approval message.
+    iam.state
+        .lock()
+        .unwrap()
+        .authz
+        .policy_mut()
+        .add_grant(Grant {
+            id: GrantId("ceg-at-approval".into()),
+            subject: GrantSubject::Principal(admin_principal.clone()),
+            action_pattern: ActionPattern("custom.approve".into()),
+            scope: ScopeRef::Global,
+            effect: Effect::RequireApproval,
+        });
+    let refusal = authorize_at_target(&iam, admin_principal, "custom.approve", BOOTSTRAP_WORKSPACE)
+        .expect("require-approval yields a refusal");
+    let (s, err) = resp_parts(refusal).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("approval"),
+        "{err}"
+    );
+}
+
+// -- mint (F30) ----------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mt1_mint_without_the_guard_stamp_is_401() {
+    let (_dir, iam) = fresh_iam();
+    let app = unguarded_token_app(iam);
+    let (s, err) = call(
+        &app,
+        "POST",
+        "/v1/config/iam/tokens",
+        None,
+        Some(json!({ "workspace_id": BOOTSTRAP_WORKSPACE, "role": "admin" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "{err}");
+    assert!(err["error"]["message"].as_str().unwrap().contains("guard"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mt2_mint_oversize_body_is_413() {
+    let (dir, iam) = fresh_iam();
+    let bootstrap = admin_token(dir.path());
+    let app = guarded_app(iam);
+    let big = "x".repeat(3 * 1024 * 1024);
+    let (s, err) = call(
+        &app,
+        "POST",
+        "/v1/config/iam/tokens",
+        Some(&bootstrap),
+        Some(json!({ "workspace_id": BOOTSTRAP_WORKSPACE, "role": "admin", "blob": big })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::PAYLOAD_TOO_LARGE, "{err}");
+    assert_eq!(err["code"], json!("body_too_large"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mt3_mint_non_object_body_is_422() {
+    let (dir, iam) = fresh_iam();
+    let bootstrap = admin_token(dir.path());
+    let app = guarded_app(iam);
+    let (s, err) = call(
+        &app,
+        "POST",
+        "/v1/config/iam/tokens",
+        Some(&bootstrap),
+        Some(json!(123)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+    assert_eq!(err["code"], json!("invalid_token_spec"));
+    assert!(err["detail"].as_str().unwrap().contains("JSON object"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mt4_mint_missing_workspace_id_is_422() {
+    let (dir, iam) = fresh_iam();
+    let bootstrap = admin_token(dir.path());
+    let app = guarded_app(iam);
+    let (s, err) = call(
+        &app,
+        "POST",
+        "/v1/config/iam/tokens",
+        Some(&bootstrap),
+        Some(json!({ "role": "admin" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+    assert!(err["detail"].as_str().unwrap().contains("workspace_id"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mt5_mint_missing_role_is_422() {
+    let (dir, iam) = fresh_iam();
+    let bootstrap = admin_token(dir.path());
+    let app = guarded_app(iam);
+    let (s, err) = call(
+        &app,
+        "POST",
+        "/v1/config/iam/tokens",
+        Some(&bootstrap),
+        Some(json!({ "workspace_id": BOOTSTRAP_WORKSPACE })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+    assert!(err["detail"].as_str().unwrap().contains("role"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mt6_mint_unknown_role_is_422_with_preset_list() {
+    let (dir, iam) = fresh_iam();
+    let bootstrap = admin_token(dir.path());
+    let app = guarded_app(iam);
+    let (s, err) = call(
+        &app,
+        "POST",
+        "/v1/config/iam/tokens",
+        Some(&bootstrap),
+        Some(json!({ "workspace_id": BOOTSTRAP_WORKSPACE, "role": "superuser" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+    assert_eq!(err["code"], json!("unknown_role"));
+    let detail = err["detail"].as_str().unwrap();
+    assert!(detail.contains("superuser"));
+    assert!(detail.contains("admin"), "lists the preset roles: {detail}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mt7_mint_noncanonical_expiry_is_422() {
+    let (dir, iam) = fresh_iam();
+    let bootstrap = admin_token(dir.path());
+    let app = guarded_app(iam);
+    let (s, err) = call(
+        &app,
+        "POST",
+        "/v1/config/iam/tokens",
+        Some(&bootstrap),
+        Some(json!({
+            "workspace_id": BOOTSTRAP_WORKSPACE, "role": "admin", "expires_at": "banana"
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+    assert_eq!(err["code"], json!("invalid_token_spec"));
+    assert!(err["detail"].as_str().unwrap().contains("expires_at"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mt8_mint_target_authorization_denied_is_403() {
+    let (_dir, iam) = fresh_iam();
+    // workspace_user has no apikey.write, so it cannot mint anywhere.
+    let user = mint(&iam, "tok_mt8", BOOTSTRAP_WORKSPACE, "workspace_user");
+    let app = guarded_app(iam);
+    let (s, err) = call(
+        &app,
+        "POST",
+        "/v1/config/iam/tokens",
+        Some(&user),
+        Some(json!({ "workspace_id": BOOTSTRAP_WORKSPACE, "role": "workspace_user" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+    assert_eq!(err["error"]["type"], json!("permission_error"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mt9_mint_engine_failure_is_422() {
+    // Canonical-shaped expiry that is BEFORE `created_at` (now) passes the
+    // shape gate but the engine rejects it → 422 "mint refused".
+    let (dir, iam) = fresh_iam();
+    let bootstrap = admin_token(dir.path());
+    let app = guarded_app(iam);
+    let (s, err) = call(
+        &app,
+        "POST",
+        "/v1/config/iam/tokens",
+        Some(&bootstrap),
+        Some(json!({
+            "workspace_id": BOOTSTRAP_WORKSPACE, "role": "admin",
+            "expires_at": "2020-01-01T00:00:00Z"
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+    assert!(err["detail"].as_str().unwrap().contains("mint refused"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mt10_mint_success_is_201_cleartext_once_and_secret_free_view() {
+    let (dir, iam) = fresh_iam();
+    let bootstrap = admin_token(dir.path());
+    let app = guarded_app(iam);
+    let (s, minted) = call(
+        &app,
+        "POST",
+        "/v1/config/iam/tokens",
+        Some(&bootstrap),
+        Some(json!({ "workspace_id": BOOTSTRAP_WORKSPACE, "role": "workspace_admin" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{minted}");
+    let cleartext = minted["token"].as_str().unwrap();
+    assert!(cleartext.starts_with("sk-awaken-"), "{cleartext}");
+    let view = &minted["api_token"];
+    assert_eq!(view["workspace_id"], json!(BOOTSTRAP_WORKSPACE));
+    assert_eq!(view["role"], json!("workspace_admin"));
+    assert!(view["id"].as_str().unwrap().starts_with("tok_"));
+    // The view NEVER carries hash/cleartext material.
+    assert!(view.get("secret_hash").is_none());
+    assert!(!serde_json::to_string(view).unwrap().contains("$argon2"));
+}
+
+// -- list (F31) ----------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn lt1_list_without_the_guard_stamp_is_401() {
+    let (_dir, iam) = fresh_iam();
+    let app = unguarded_token_app(iam);
+    let (s, _) = call(
+        &app,
+        "GET",
+        "/v1/config/iam/tokens?workspace_id=x",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn lt2_list_without_workspace_id_query_is_422() {
+    let (dir, iam) = fresh_iam();
+    let bootstrap = admin_token(dir.path());
+    let app = guarded_app(iam);
+    let (s, err) = call(&app, "GET", "/v1/config/iam/tokens", Some(&bootstrap), None).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+    assert_eq!(err["code"], json!("invalid_token_query"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn lt3_list_denies_read_scope_and_returns_secret_free_views() {
+    let (dir, iam) = fresh_iam();
+    let bootstrap = admin_token(dir.path());
+    // A workspace_user cannot read the token list (apikey.read denied).
+    let user = mint(&iam, "tok_lt3", BOOTSTRAP_WORKSPACE, "workspace_user");
+    let app = guarded_app(iam);
+    let (s, _) = call(
+        &app,
+        "GET",
+        &format!("/v1/config/iam/tokens?workspace_id={BOOTSTRAP_WORKSPACE}"),
+        Some(&user),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+
+    // The bootstrap admin lists, secret-free (its own view is present).
+    let (s, listed) = call(
+        &app,
+        "GET",
+        &format!("/v1/config/iam/tokens?workspace_id={BOOTSTRAP_WORKSPACE}"),
+        Some(&bootstrap),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{listed}");
+    let raw = serde_json::to_string(&listed).unwrap();
+    assert!(!raw.contains("$argon2"), "list leaks a hash: {raw}");
+    let arr = listed.as_array().unwrap();
+    assert!(
+        arr.iter()
+            .any(|t| t["principal_id"] == json!(BOOTSTRAP_PRINCIPAL))
+    );
+    for view in arr {
+        assert!(view.get("secret_hash").is_none());
+        assert_eq!(view["workspace_id"], json!(BOOTSTRAP_WORKSPACE));
+    }
+}
+
+// -- revoke (F32) --------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rt1_revoke_without_the_guard_stamp_is_401() {
+    let (_dir, iam) = fresh_iam();
+    let app = unguarded_token_app(iam);
+    let (s, _) = call(&app, "DELETE", "/v1/config/iam/tokens/tok_x", None, None).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rt2_revoke_unknown_id_is_404() {
+    let (dir, iam) = fresh_iam();
+    let bootstrap = admin_token(dir.path());
+    let app = guarded_app(iam);
+    let (s, err) = call(
+        &app,
+        "DELETE",
+        "/v1/config/iam/tokens/tok_missing",
+        Some(&bootstrap),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{err}");
+    assert_eq!(err["code"], json!("not_found"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rt3_revoke_denied_at_the_tokens_own_workspace_is_403() {
+    let (_dir, iam) = fresh_iam();
+    // A target token lives in the bootstrap workspace; a workspace_user in
+    // the same workspace lacks apikey.write, so revoking it is denied.
+    mint(&iam, "tok_target", BOOTSTRAP_WORKSPACE, "workspace_admin");
+    let user = mint(&iam, "tok_rt3_user", BOOTSTRAP_WORKSPACE, "workspace_user");
+    let app = guarded_app(iam);
+    let (s, err) = call(
+        &app,
+        "DELETE",
+        "/v1/config/iam/tokens/tok_target",
+        Some(&user),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+    assert_eq!(err["error"]["type"], json!("permission_error"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rt4_revoke_ok_returns_the_revoked_view() {
+    let (dir, iam) = fresh_iam();
+    let bootstrap = admin_token(dir.path());
+    mint(&iam, "tok_rt4", BOOTSTRAP_WORKSPACE, "workspace_admin");
+    let app = guarded_app(iam);
+    let (s, view) = call(
+        &app,
+        "DELETE",
+        "/v1/config/iam/tokens/tok_rt4",
+        Some(&bootstrap),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{view}");
+    assert!(view["revoked_at"].as_str().is_some(), "{view}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rt5_a_token_may_revoke_itself_then_subsequent_calls_401() {
+    // The feasible half of RT5 (the 500 "other error" branch cannot be
+    // provoked without corrupting the directory, so it is skipped-infeasible):
+    // self-revocation completes, and the now-revoked token 401s afterward.
+    let (_dir, iam) = fresh_iam();
+    let cleartext = mint(&iam, "tok_self", BOOTSTRAP_WORKSPACE, "workspace_admin");
+    let app = guarded_app(iam);
+    let (s, view) = call(
+        &app,
+        "DELETE",
+        "/v1/config/iam/tokens/tok_self",
+        Some(&cleartext),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{view}");
+    assert!(view["revoked_at"].as_str().is_some());
+    let (s, _) = call(&app, "GET", "/v1/config/catalog", Some(&cleartext), None).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
