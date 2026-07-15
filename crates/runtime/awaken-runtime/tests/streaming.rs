@@ -110,7 +110,6 @@ async fn run(chunks: Vec<&'static str>) -> (MemoryCommitCoordinator, MemoryStrea
             role: Role::User,
             content: vec![ContentBlock::text("hi")],
         }],
-        model_access: Default::default(),
         model_ref_override: None,
     };
     let outcome = runtime.execute(activation, context).await.expect("runs");

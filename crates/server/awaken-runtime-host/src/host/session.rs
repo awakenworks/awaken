@@ -109,22 +109,20 @@ impl SharedHost {
         // Every session's worker shares this queue; the process-level `DispatchPool`
         // is its sole claimer and routes each run back to its owning session.
         let store = crate::dispatch_backend::shared_durable_store(self.store_dir.as_deref())?;
-        // Carry the host's cloud-managed-gateway builder into the worker so a
-        // worker-driven run honors a per-run gateway grant credential-free (ADR-0004,
-        // the durable-path half of the secretless worker). `None` when no factory is
-        // installed → a gateway-granted run fails closed on this worker.
-        let gateway = self.worker_gateway_builder();
+        // Carry the host's ExecutorProvider into the worker as a neutral model→executor
+        // closure, so a worker-driven run resolves its own configured model per attempt
+        // (R1). `None` when no provider is installed — the worker stays on the host
+        // default.
         let model_resolver = self.worker_model_resolver();
         // The recovered dispatch a crash left mid-flight is re-executed by this
         // worker; giving it the same checkpoint store lets that re-execution resume
         // the interrupted step from its flushed partial (Phase 3 cross-process).
-        let ingress = Arc::new(DurableRunIngress::with_owner_and_gateway(
+        let ingress = Arc::new(DurableRunIngress::with_owner_and_resolver(
             runtime,
             store,
             commit,
             crate::dispatch_backend::dispatch_owner(),
             Some(stream_checkpoint),
-            gateway,
             model_resolver,
         ));
         // No per-session recovery sweep here: this session's worker shares one queue
@@ -133,18 +131,6 @@ impl SharedHost {
         // routes it to the session (this one included) that owns its thread.
         let boxed: Arc<dyn RunIngress> = ingress.clone();
         Ok((boxed, Some(ingress)))
-    }
-
-    /// Wrap this host's cloud-managed-gateway factory (if installed) into the neutral
-    /// `endpoint → executor` closure a worker's `RunExecutionContext` carries, so a
-    /// worker-driven run honors a gateway grant (ADR-0004). `None` when no factory is
-    /// installed — a gateway-granted run then fails closed on the worker.
-    pub(crate) fn worker_gateway_builder(&self) -> Option<awaken_run_ingress::GatewayExecutorFn> {
-        self.gateway_executor_factory.clone().map(|factory| {
-            let build: awaken_run_ingress::GatewayExecutorFn =
-                Arc::new(move |endpoint| factory.build(endpoint));
-            build
-        })
     }
 
     /// Wrap this host's `ExecutorProvider` (if installed) into the neutral
@@ -418,31 +404,5 @@ impl SharedHost {
             }
         }
         Ok(ctx)
-    }
-}
-
-#[cfg(test)]
-mod gateway_builder_tests {
-    use std::sync::Arc;
-
-    use crate::host::SharedHost;
-    use crate::test_support::{ServingFactory, StubModel, gateway_grant};
-
-    #[test]
-    fn worker_gateway_builder_wraps_the_factory_or_is_none() {
-        // No factory installed → no builder (a gateway run fails closed on the worker).
-        let bare = SharedHost::new(Arc::new(StubModel), "t");
-        assert!(bare.worker_gateway_builder().is_none());
-
-        // Factory installed → a builder that delegates to it: materializing a gateway
-        // grant and running the closure yields the factory's executor.
-        let host = SharedHost::new(Arc::new(StubModel), "t")
-            .with_gateway_executor_factory(Arc::new(ServingFactory));
-        let builder = host.worker_gateway_builder().expect("a builder");
-        let endpoint = gateway_grant().materialize();
-        assert!(
-            builder(&endpoint).is_some(),
-            "the builder delegates to the factory"
-        );
     }
 }

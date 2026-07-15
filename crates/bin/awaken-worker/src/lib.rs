@@ -49,13 +49,11 @@ pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
         upstream,
     ));
 
-    // The base host: honors a per-run cloud-managed gateway grant (ADR-0004) by
-    // dialing the gateway with the run's lease token — the genai implementation of
-    // the gateway egress port. This is the durable-path secretless seam: a gateway
-    // run needs no local provider credential.
-    let mut host = SharedHost::new(Arc::new(NoModelConfiguredExecutor), "worker")
-        .with_upstream(upstream)
-        .with_gateway_executor_factory(Arc::new(awaken_server::GenaiGatewayExecutorFactory));
+    // The base host. A run's model is resolved per attempt through the injected
+    // ExecutorProvider, which owns how the model is reached (local credentials or a
+    // gateway offering) — the runtime never sees an access grant.
+    let mut host =
+        SharedHost::new(Arc::new(NoModelConfiguredExecutor), "worker").with_upstream(upstream);
 
     // Gateway-only mode (`AWAKEN_WORKER_GATEWAY_ONLY=1`): a genuinely SECRETLESS
     // worker. It opens no credential vault and needs no seal key — every run must

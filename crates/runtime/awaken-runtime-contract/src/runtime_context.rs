@@ -76,12 +76,12 @@ pub struct RuntimeRunContext {
     /// hand. The kernel never learns placement; it calls the port either way.
     pub tool_executor: Option<Arc<dyn crate::tool::ToolExecutor>>,
     /// The model executor to use for THIS attempt, overriding the runtime's bound
-    /// default (ADR-0004). Absent means use the runtime's session-resolved executor.
-    /// Present routes this attempt's inference through the given executor — e.g. a
-    /// gateway-dialing executor built from the run's `ModelAccessGrant`, so a
-    /// secretless worker honors a per-run cloud gateway grant without a local
-    /// provider credential. Symmetric with `tool_executor`: a per-run egress override
-    /// the kernel consults without learning why it was chosen.
+    /// default. Absent means use the runtime's session-resolved executor. Present
+    /// routes this attempt's inference through the given executor — the run's model,
+    /// resolved to a provider at the resolve seam (which owns how the model is
+    /// reached: local credentials or a gateway offering). Symmetric with
+    /// `tool_executor`: a per-run egress override the kernel consults without learning
+    /// why it was chosen.
     pub model_executor: Option<Arc<dyn crate::llm::LlmExecutor>>,
     /// The content-capture wiring for this attempt (ADR-0050 D5): the resolved
     /// decision (level + redactor) gating what prompt/completion/tool content the
@@ -150,9 +150,9 @@ impl RuntimeRunContext {
         self
     }
 
-    /// Override this attempt's model executor (e.g. a gateway-dialing executor built
-    /// from the run's `ModelAccessGrant`), instead of the runtime's bound default
-    /// (ADR-0004). The single per-run egress seam a secretless worker uses.
+    /// Override this attempt's model executor with the run's model resolved to a
+    /// provider at the resolve seam, instead of the runtime's bound default. The
+    /// single per-run egress seam a database-less worker uses.
     #[must_use]
     pub fn with_model_executor(mut self, executor: Arc<dyn crate::llm::LlmExecutor>) -> Self {
         self.model_executor = Some(executor);

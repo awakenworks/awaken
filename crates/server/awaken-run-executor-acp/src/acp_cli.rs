@@ -109,8 +109,8 @@ impl ResolvedModel {
     /// mediated by the gateway. `base_url` is the **gateway**, and the CLI's "API
     /// key" is a short-lived **lease token** — the gateway injects the real provider
     /// credential out of the sandbox's address space. Build the ACP model this way
-    /// from a `ModelAccessGrant::CloudManagedGateway` so the raw key never enters the
-    /// launch env.
+    /// from a resolved cloud-managed gateway (base URL + lease) so the raw key never
+    /// enters the launch env.
     #[must_use]
     pub fn cloud_managed_gateway(
         gateway_base_url: impl Into<String>,

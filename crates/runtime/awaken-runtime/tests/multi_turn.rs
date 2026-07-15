@@ -111,7 +111,6 @@ fn turn(message_id: &str, text: &str) -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text(text)],
         }],
-        model_access: Default::default(),
         model_ref_override: None,
     }
 }
