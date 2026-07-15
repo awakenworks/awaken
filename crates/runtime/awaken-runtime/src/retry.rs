@@ -144,6 +144,13 @@ mod tests {
     }
 
     #[test]
+    fn jitter_of_zero_is_zero() {
+        // The early-return guard: a zero backoff never draws a (would-panic on the
+        // `% (0 - 0 + 1)`) jitter — it is exactly `Duration::ZERO`.
+        assert_eq!(jitter_backoff(0), Duration::ZERO);
+    }
+
+    #[test]
     fn retry_after_wins_when_longer_and_is_capped() {
         let policy = LlmRetryPolicy::default();
         // Longer than the backoff: adopted verbatim.

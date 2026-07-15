@@ -281,6 +281,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tokio-util",
         # `catch_unwind` isolates a panicking third-party tool at the executor boundary.
         "futures-util",
+        # Poison-free mutexes for the in-memory registries + circuit breaker.
+        "parking_lot",
         "tracing",
     },
     # In-memory reference store backend (ADR-0039 2.2): the neutral commit/read
