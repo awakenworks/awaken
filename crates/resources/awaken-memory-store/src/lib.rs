@@ -61,6 +61,7 @@ pub fn sanitize_stem(name: &str) -> String {
             out.push('-');
         }
     }
+    out.truncate(120); // bound the stem so a crafted long id can't exceed NAME_MAX
     let trimmed = out.trim_matches('-').to_string();
     if trimmed.is_empty() {
         "memstore".to_string()

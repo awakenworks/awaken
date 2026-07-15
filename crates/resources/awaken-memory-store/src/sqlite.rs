@@ -681,6 +681,98 @@ mod memfs_tests {
         ));
     }
 
+    /// The same cause-effect-graph edge cases the in-memory/fs backends get in
+    /// `memfs::tests::extended_conformance`, run against the SQLite backend so the
+    /// CAS/rename **precedence** and prefix-boundary rules are pinned here too.
+    #[tokio::test]
+    async fn sqlite_memory_fs_extended_conformance() {
+        use crate::memfs::MAX_PATH_BYTES;
+        let fs = SqliteMemoryFs::open_in_memory().unwrap();
+        let store = "ext";
+
+        // G-C1: the remaining validate_path rejections on create.
+        let over_cap = format!("/{}", "a".repeat(MAX_PATH_BYTES)); // len == cap + 1
+        for bad in ["/", "/ctrl\nseg.md", "/a/./b.md", over_cap.as_str()] {
+            assert!(
+                matches!(
+                    fs.create(store, bad, "x").await,
+                    Err(MemErr::InvalidPath(_))
+                ),
+                "expected InvalidPath for {bad:?}"
+            );
+        }
+
+        // G-C2: content exactly at the cap is accepted.
+        let at_cap = "x".repeat(super::super::MAX_MEMORY_BYTES);
+        let m_cap = fs.create(store, "/at-cap.md", &at_cap).await.unwrap();
+        assert_eq!(m_cap.content_size, super::super::MAX_MEMORY_BYTES as u64);
+
+        // G-U1: validate_size runs before the id lookup — an oversized update to a
+        // nonexistent id reports TooLarge, not NotFound.
+        let big = "x".repeat(super::super::MAX_MEMORY_BYTES + 1);
+        assert!(matches!(
+            fs.update(store, "mem_does_not_exist", &big, "sha").await,
+            Err(MemErr::TooLarge)
+        ));
+
+        // G-U2: an idempotent update leaves the version unchanged.
+        let m = fs.create(store, "/idem.md", "v0").await.unwrap();
+        let up = fs
+            .update(store, &m.id, "v1", &m.content_sha256)
+            .await
+            .unwrap();
+        assert_eq!(up.version, 2);
+        let idem = fs
+            .update(store, &m.id, "v1", "stale-base-sha")
+            .await
+            .unwrap();
+        assert_eq!(
+            idem.version, 2,
+            "idempotent write leaves the version unchanged"
+        );
+
+        // G-R1: rename to an invalid path fails before touching the source.
+        fs.create(store, "/src.md", "s").await.unwrap();
+        assert!(matches!(
+            fs.rename(store, "/src.md", "relative").await,
+            Err(MemErr::InvalidPath(_))
+        ));
+        assert!(fs.get_by_path(store, "/src.md").await.unwrap().is_some());
+
+        // G-R2: from == to returns current, no version bump.
+        let src = fs.get_by_path(store, "/src.md").await.unwrap().unwrap();
+        let same = fs.rename(store, "/src.md", "/src.md").await.unwrap();
+        assert_eq!(same.id, src.id);
+        assert_eq!(same.version, src.version);
+
+        // G-R3: a pure move preserves the id and bumps the version.
+        let moved = fs.rename(store, "/src.md", "/moved.md").await.unwrap();
+        assert_eq!(moved.id, src.id);
+        assert_eq!(moved.version, src.version + 1);
+        assert!(fs.get_by_path(store, "/src.md").await.unwrap().is_none());
+
+        // G-L1/G-L2: prefix boundary + empty prefix.
+        let pstore = "prefix";
+        fs.create(pstore, "/notes", "a").await.unwrap();
+        fs.create(pstore, "/notes/x.md", "b").await.unwrap();
+        fs.create(pstore, "/notesbar", "c").await.unwrap();
+        let mut under: Vec<_> = fs
+            .list(pstore, "/notes")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.path)
+            .collect();
+        under.sort();
+        assert_eq!(under, vec!["/notes", "/notes/x.md"]);
+        assert_eq!(fs.list(pstore, "").await.unwrap().len(), 3);
+
+        // delete on a store that was never created is a no-op Ok.
+        fs.delete_by_path("never_created_store", "/x.md")
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn sqlite_memory_fs_survives_reopen() {
         let dir = std::env::temp_dir().join(format!("awaken-sqlmemfs-{}", std::process::id()));
