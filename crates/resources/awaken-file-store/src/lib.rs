@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use tokio::sync::Mutex;
@@ -30,10 +31,25 @@ pub fn content_id(bytes: &[u8]) -> String {
     blake3::hash(bytes).to_hex().to_string()
 }
 
+/// Whether `id` names exactly one file directly under the base — non-empty and made
+/// only of `[A-Za-z0-9_-]`. Ids minted by [`content_id`] are BLAKE3 hex and always
+/// pass, but `get`/`delete` take an id off the wire, so a crafted `../` or absolute id
+/// must resolve to *no file* rather than escape the base. (`.` is not alphanumeric, so
+/// `..` and any `/` are rejected here.)
+fn safe_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 /// Filesystem-backed store: one file per blob, named by its content id. `put` writes
 /// to a temp file and atomically renames into place (crash-safe, idempotent).
 pub struct FsFileStore {
     base: PathBuf,
+    // Per-call sequence so two concurrent `put`s of the *same* bytes stage into
+    // distinct temp files and never race on a shared one.
+    seq: AtomicU64,
 }
 
 impl FsFileStore {
@@ -41,7 +57,10 @@ impl FsFileStore {
     pub async fn open(base: impl Into<PathBuf>) -> Result<Self, FileStoreError> {
         let base = base.into();
         tokio::fs::create_dir_all(&base).await.map_err(e)?;
-        Ok(Self { base })
+        Ok(Self {
+            base,
+            seq: AtomicU64::new(0),
+        })
     }
 
     fn path(&self, id: &str) -> PathBuf {
@@ -57,14 +76,23 @@ impl FileStore for FsFileStore {
         if tokio::fs::try_exists(&path).await.map_err(e)? {
             return Ok(id); // immutable + deduplicating: already present
         }
-        // Atomic publish: write a unique temp file, then rename onto the id path.
-        let tmp = self.base.join(format!(".tmp-{id}"));
+        // Atomic publish: write a per-call-unique temp file, then rename onto the id
+        // path. The temp name carries pid + a local sequence so concurrent writers of
+        // identical bytes never share (and race to rename) one temp file.
+        let tmp = self.base.join(format!(
+            ".tmp-{id}-{}-{}",
+            std::process::id(),
+            self.seq.fetch_add(1, Ordering::Relaxed)
+        ));
         tokio::fs::write(&tmp, bytes).await.map_err(e)?;
         tokio::fs::rename(&tmp, &path).await.map_err(e)?;
         Ok(id)
     }
 
     async fn get(&self, id: &str) -> Result<Option<Vec<u8>>, FileStoreError> {
+        if !safe_id(id) {
+            return Ok(None); // a crafted id resolves to nothing; it cannot escape base
+        }
         match tokio::fs::read(self.path(id)).await {
             Ok(bytes) => Ok(Some(bytes)),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -94,6 +122,9 @@ impl FileStore for FsFileStore {
     }
 
     async fn delete(&self, id: &str) -> Result<bool, FileStoreError> {
+        if !safe_id(id) {
+            return Ok(false); // a crafted id names no blob; never delete outside base
+        }
         match tokio::fs::remove_file(self.path(id)).await {
             Ok(()) => Ok(true),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -208,6 +239,62 @@ mod tests {
             reopened.get(&id).await.unwrap().as_deref(),
             Some(&b"durable"[..])
         );
+    }
+
+    /// G-F1: a crashed/in-flight write leaves a `.tmp-...` file in the base; `list`
+    /// must report only committed blobs, never the temp.
+    #[tokio::test]
+    async fn fs_list_excludes_in_flight_temp_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = FsFileStore::open(tmp.path()).await.unwrap();
+        let id = store.put(b"real blob").await.unwrap();
+        tokio::fs::write(tmp.path().join(".tmp-deadbeef-1-2"), b"partial")
+            .await
+            .unwrap();
+        assert_eq!(store.list().await.unwrap(), vec![id]);
+    }
+
+    /// G-F2 (R1): `get`/`delete` take an id off the wire, so a crafted `../` id must
+    /// resolve to nothing and can neither read nor delete a file outside the base.
+    #[tokio::test]
+    async fn fs_crafted_ids_cannot_escape_root() {
+        let parent = tempfile::tempdir().unwrap();
+        let secret = parent.path().join("secret.txt");
+        tokio::fs::write(&secret, b"top secret").await.unwrap();
+        let store = FsFileStore::open(parent.path().join("store"))
+            .await
+            .unwrap();
+        assert!(store.get("../secret.txt").await.unwrap().is_none());
+        assert!(!store.delete("../secret.txt").await.unwrap());
+        assert!(
+            secret.exists(),
+            "the outside file was neither read nor deleted"
+        );
+    }
+
+    /// G-F3 (R2): concurrent `put`s of identical bytes all agree on the one content id
+    /// and all succeed — no writer errors on a temp-file race, exactly one blob lands.
+    #[tokio::test]
+    async fn fs_concurrent_identical_puts_all_succeed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(FsFileStore::open(tmp.path()).await.unwrap());
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let store = store.clone();
+            handles.push(tokio::spawn(async move { store.put(b"same bytes").await }));
+        }
+        let id0 = content_id(b"same bytes");
+        for h in handles {
+            assert_eq!(
+                h.await.unwrap().expect("identical put must not race-error"),
+                id0
+            );
+        }
+        assert_eq!(
+            store.get(&id0).await.unwrap().as_deref(),
+            Some(&b"same bytes"[..])
+        );
+        assert_eq!(store.list().await.unwrap(), vec![id0]);
     }
 
     #[tokio::test]
