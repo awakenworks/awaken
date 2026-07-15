@@ -940,6 +940,91 @@ async fn settle_fences_stale_epoch_store_spec() {
 }
 
 #[tokio::test]
+async fn current_epoch_tracks_the_fence_store_spec() {
+    harness::assert_current_epoch_tracks_the_fence(&MemoryDispatchStore::new()).await;
+}
+
+#[tokio::test]
+async fn a_superseded_owners_commit_is_fenced_while_the_current_owners_lands() {
+    // dispatch-fencing-token-gap closed. A run commits per step while it executes, so a
+    // stale owner — its lease lapsed and a peer re-claimed under a higher epoch — must
+    // NOT be able to write to the thread, or both owners double-apply side effects. The
+    // fenced commit boundary rejects the stale owner's write before it reaches the
+    // durable boundary, while the current owner's write lands. This is the commit twin
+    // of the already-covered settle fence.
+    use awaken_agent_contract::commit::coordinator::Coordinator;
+    use awaken_agent_contract::commit::staged::ThreadCommit;
+    use awaken_run_ingress::FencedCommitCoordinator;
+
+    let store = Arc::new(MemoryDispatchStore::new());
+    let inner = Arc::new(MemoryCommitCoordinator::new());
+
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .unwrap();
+    // Owner A claims (epoch 1); its lease lapses; owner B reclaims (epoch 2).
+    let a = store
+        .claim("owner-a", 100, 0)
+        .await
+        .unwrap()
+        .expect("A claims");
+    let b = store
+        .claim("owner-b", 100, 200)
+        .await
+        .unwrap()
+        .expect("B reclaims");
+    assert_eq!((a.lease.epoch, b.lease.epoch), (1, 2));
+
+    let plan = |run: &RunId| {
+        ThreadCommit::assemble(
+            ThreadId(THREAD.to_string()),
+            run.clone(),
+            Phase::Running,
+            true,
+            Vec::new(),
+            Vec::new(),
+            None,
+            Vec::new(),
+        )
+    };
+    let run = RunId("run-1".to_string());
+
+    // A (stale epoch 1) is fenced — nothing reaches the durable boundary.
+    let fenced_a =
+        FencedCommitCoordinator::new(inner.clone(), store.clone(), run.clone(), a.lease.epoch);
+    assert!(
+        fenced_a.commit(plan(&run)).await.is_err(),
+        "a superseded owner's commit must be fenced"
+    );
+    assert_eq!(
+        inner.commit_count(),
+        0,
+        "the fenced commit never reached the boundary"
+    );
+
+    // B (current epoch 2) commits through.
+    let fenced_b =
+        FencedCommitCoordinator::new(inner.clone(), store.clone(), run.clone(), b.lease.epoch);
+    fenced_b
+        .commit(plan(&run))
+        .await
+        .expect("the current owner commits");
+    assert_eq!(inner.commit_count(), 1, "the current owner's commit landed");
+
+    // Fail-open: a run the store has no row for (already settled, or a backend that
+    // cannot read the fence) is never blocked — the fence only rejects a DEFINITE
+    // supersession, so it can never strand a legitimate write.
+    let ghost = RunId("ghost".to_string());
+    let fenced_ghost = FencedCommitCoordinator::new(inner.clone(), store.clone(), ghost.clone(), 7);
+    fenced_ghost
+        .commit(plan(&ghost))
+        .await
+        .expect("an unknown run fails open");
+    assert_eq!(inner.commit_count(), 2, "the fail-open commit landed");
+}
+
+#[tokio::test]
 async fn concurrent_recovery_yields_one_winner_on_memory() {
     harness::assert_concurrent_recovery_yields_one_winner(std::sync::Arc::new(
         MemoryDispatchStore::new(),

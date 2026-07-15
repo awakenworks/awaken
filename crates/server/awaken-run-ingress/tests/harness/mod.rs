@@ -1465,6 +1465,78 @@ pub async fn assert_dedupe_ignores_dead_lettered<S: awaken_run_ingress::Dispatch
     );
 }
 
+/// Shared spec (every backend must match): `current_epoch` / `holds_current_epoch`
+/// track the same fence token the settle path uses, so the COMMIT fence reads the
+/// truth. Cause: the run is un-enqueued / claimed / reclaimed / settled. Effect: the
+/// reported epoch is None / 1 / 2 / None, and a caller holding a lower epoch than the
+/// current one is refused (`holds == false`) while the current owner — and any read
+/// that cannot see a row — is allowed (fail-open), which is exactly what the commit
+/// fence needs to reject a superseded owner without ever blocking a legitimate write.
+pub async fn assert_current_epoch_tracks_the_fence<S: awaken_run_ingress::Dispatch>(store: &S) {
+    use awaken_run_ingress::{DispatchOutcome, RunExecutionRequest};
+    let run = RunId("run-1".to_string());
+
+    // No row yet: the epoch is unknown, and the fence fails OPEN (a write is never
+    // rejected just because the store cannot see the run).
+    assert_eq!(store.current_epoch(&run).await.unwrap(), None);
+    assert!(store.holds_current_epoch(&run, 0).await.unwrap());
+
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .unwrap();
+    // Enqueued but never claimed: epoch 0.
+    assert_eq!(store.current_epoch(&run).await.unwrap(), Some(0));
+
+    // Owner A claims: epoch 1. A holds it; a stale epoch 0 does not.
+    let a = store
+        .claim("owner-a", 100, 0)
+        .await
+        .unwrap()
+        .expect("A claims");
+    assert_eq!(a.lease.epoch, 1);
+    assert_eq!(store.current_epoch(&run).await.unwrap(), Some(1));
+    assert!(store.holds_current_epoch(&run, 1).await.unwrap());
+    assert!(!store.holds_current_epoch(&run, 0).await.unwrap());
+
+    // A's lease lapses; B reclaims: epoch 2. A (epoch 1) is now SUPERSEDED — its
+    // commits must be fenced — while B (epoch 2) holds the fence.
+    let b = store
+        .claim("owner-b", 100, 200)
+        .await
+        .unwrap()
+        .expect("B reclaims");
+    assert_eq!(b.lease.epoch, 2);
+    assert_eq!(store.current_epoch(&run).await.unwrap(), Some(2));
+    assert!(
+        !store
+            .holds_current_epoch(&run, a.lease.epoch)
+            .await
+            .unwrap(),
+        "the superseded owner no longer holds the fence"
+    );
+    assert!(
+        store
+            .holds_current_epoch(&run, b.lease.epoch)
+            .await
+            .unwrap()
+    );
+
+    // B settles Done: the row is gone, so the epoch is unknown again and the fence
+    // fails open (B's own terminal commit, which races its settle, is never rejected).
+    store
+        .settle(&run, b.lease.epoch, DispatchOutcome::Done, &[])
+        .await
+        .unwrap();
+    assert_eq!(store.current_epoch(&run).await.unwrap(), None);
+    assert!(
+        store
+            .holds_current_epoch(&run, b.lease.epoch)
+            .await
+            .unwrap()
+    );
+}
+
 /// Shared spec (single-writer-per-thread, ADR-0022, on the WAKE path): a parked run
 /// with due input is NOT woken while its own thread already has another run in
 /// flight — waking it would put two concurrent runs on one thread. The suppressed
@@ -1475,7 +1547,6 @@ pub async fn assert_wake_suppressed_while_thread_running<S: awaken_run_ingress::
 ) {
     use awaken_run_ingress::{DispatchOutcome, RunExecutionRequest};
     use awaken_runtime_contract::resume::ResumeResult;
-    let thread = ThreadId(THREAD.to_string());
 
     // run-1 parks on the thread.
     store

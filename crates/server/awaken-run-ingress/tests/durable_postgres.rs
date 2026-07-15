@@ -405,6 +405,17 @@ async fn settle_fences_stale_epoch_on_postgres() {
 }
 
 #[tokio::test]
+async fn current_epoch_tracks_the_fence_on_postgres() {
+    let Some(pool) = harness::schema_pool("t_pg_current_epoch").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
+        .await
+        .expect("dispatch");
+    harness::assert_current_epoch_tracks_the_fence(&store).await;
+}
+
+#[tokio::test]
 async fn concurrent_recovery_yields_one_winner_on_postgres() {
     let schema = "t_pg_concurrent_recovery";
     let Some(pool) = harness::schema_pool(schema).await else {
@@ -545,8 +556,11 @@ async fn postgres_mid_flight_reclaim_keeps_the_committed_log_exactly_once() {
         "B reclaimed the still-running run and drove it to completion"
     );
 
-    // Release A; its re-commit over the now-terminal run is FENCED and absorbed as an
-    // already-done settle, so A's tick resolves cleanly reporting the run terminal.
+    // Release A; its re-commit over the now-terminal run is FENCED (B already settled
+    // Done under a higher epoch and removed the row). A's terminal settle applies
+    // nothing, so A's tick resolves cleanly to `None` — it durably settled nothing and
+    // abandons, rather than reporting a completion it did not own (the memory analogue
+    // is `lease_semantics::mid_flight_reclaim_keeps_the_committed_log_exactly_once`).
     release.add_permits(1);
     let a_result = tokio::time::timeout(std::time::Duration::from_secs(10), a_handle)
         .await
@@ -554,9 +568,8 @@ async fn postgres_mid_flight_reclaim_keeps_the_committed_log_exactly_once() {
         .expect("A did not panic")
         .expect("A resolved without a fatal error");
     assert_eq!(
-        a_result,
-        Some((run.clone(), Phase::Ended(EndCause::NaturalEnd))),
-        "the stale owner's rejected re-drive settles as already-done, not a fault"
+        a_result, None,
+        "the stale owner's re-drive is fenced: it settles nothing and abandons"
     );
 
     // Residual: the tool side effect ran twice (at-least-once).

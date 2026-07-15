@@ -363,6 +363,14 @@ impl DispatchQueue for MemoryDispatchStore {
         Ok(renewed)
     }
 
+    async fn current_epoch(&self, run_id: &RunId) -> Result<Option<u64>, DispatchError> {
+        // The row's live fence token (bumped on every claim); `None` once the row is
+        // gone. Same field the settle fence above compares against — the commit fence
+        // reads it here.
+        let state = lock(&self.state)?;
+        Ok(state.rows.get(run_id).map(|r| r.lease_epoch))
+    }
+
     async fn settle(
         &self,
         run_id: &RunId,

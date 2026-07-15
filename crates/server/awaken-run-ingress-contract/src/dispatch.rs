@@ -258,6 +258,39 @@ pub trait DispatchQueue: Send + Sync {
         consumed: &[String],
     ) -> Result<SettleOutcome, DispatchError>;
 
+    /// The run's current lease epoch — the fence token bumped on every claim (see
+    /// [`Lease::epoch`]). `Some(epoch)` while a dispatch row exists for the run;
+    /// `None` when none does (settled, cancelled, or never enqueued). A caller that
+    /// holds a LOWER epoch than this has been superseded: a peer reclaimed the lapsed
+    /// lease under a higher epoch, so the caller's in-flight writes must be fenced.
+    ///
+    /// This is the read the *commit* fence uses, the twin of the epoch [`settle`]
+    /// already fences on. Default: `Ok(None)` — a backend that cannot cheaply read the
+    /// fence (e.g. a remote transport) declines to gate on it, so
+    /// [`holds_current_epoch`](Self::holds_current_epoch) fails OPEN and behaviour is
+    /// exactly as before this method existed.
+    async fn current_epoch(&self, run_id: &RunId) -> Result<Option<u64>, DispatchError> {
+        let _ = run_id;
+        Ok(None)
+    }
+
+    /// Whether a caller holding `epoch` may still commit for `run_id`: `true` while it
+    /// holds the current fence, `false` only when a strictly higher epoch has
+    /// superseded it. The commit fence checks this before each durable write so a
+    /// slow-but-alive owner cannot double-apply side effects after a peer reclaimed
+    /// the run.
+    ///
+    /// A gone row (`current_epoch` is `None`) is fail-OPEN: a run settles its own row
+    /// as its final act, and fencing that would reject the legitimate terminal commit.
+    /// A backend that cannot read the epoch is likewise fail-open (preserving prior
+    /// behaviour) — the fence only ever *rejects* on a definite, observed supersession.
+    async fn holds_current_epoch(&self, run_id: &RunId, epoch: u64) -> Result<bool, DispatchError> {
+        Ok(match self.current_epoch(run_id).await? {
+            Some(current) => epoch >= current,
+            None => true,
+        })
+    }
+
     /// Dead-letter every *crashed* dispatch — one whose lease expired without a
     /// settle — that has used up its crash-retry budget (`attempt_count >=
     /// max_attempts`). A dead-lettered dispatch is no longer claimed, so a poison
