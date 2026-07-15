@@ -19,7 +19,9 @@ use awaken_protocol_a2a::{AgentCard, Task, TaskState};
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::agent_resolver::{AgentError, AgentRequest, AgentResolver, AgentStep};
 use awaken_runtime_contract::llm::{LlmExecutor, ThreadUsage};
-use awaken_sandbox_local::LocalProvider;
+use awaken_sandbox_local::{LocalProvider, LocalSandbox};
+
+use crate::subagent::SubrunSandbox;
 use serde_json::{Value, json};
 
 use crate::host::{BASE_SEQ, HostError, SharedHost};
@@ -137,6 +139,12 @@ pub(crate) struct DelegationResolver {
     llm: Arc<dyn LlmExecutor>,
     model_ref: String,
     provider: LocalProvider,
+    /// The parent agent's sandbox, shared with a native delegate by default so the two
+    /// collaborate in one workspace (`默认共用`); bypassed when `reuse_sandbox` is off.
+    sandbox: Arc<LocalSandbox>,
+    /// Whether a native delegate reuses the parent sandbox (default) or gets a fresh,
+    /// isolated one. The per-subagent knob behind "new sandbox vs. shared".
+    reuse_sandbox: bool,
     /// Local (native) delegate ids.
     roster: HashSet<String>,
     /// Remote (A2A) delegate ids → transport.
@@ -148,6 +156,8 @@ impl DelegationResolver {
         llm: Arc<dyn LlmExecutor>,
         model_ref: String,
         provider: LocalProvider,
+        sandbox: Arc<LocalSandbox>,
+        reuse_sandbox: bool,
         roster: HashSet<String>,
         remotes: HashMap<String, Arc<dyn Transport>>,
     ) -> Self {
@@ -155,13 +165,16 @@ impl DelegationResolver {
             llm,
             model_ref,
             provider,
+            sandbox,
+            reuse_sandbox,
             roster,
             remotes,
         }
     }
 
-    /// Run a native (in-process) delegate: a fresh rooted sub-run over the same
-    /// model with no delegation tool (a delegate cannot recurse).
+    /// Run a native (in-process) delegate: a rooted sub-run over the same model with no
+    /// delegation tool (a delegate cannot recurse). By default it shares the parent's
+    /// sandbox (`默认共用`); with `reuse_sandbox` off it gets a fresh, isolated one.
     async fn native_run(
         &self,
         agent_id: &str,
@@ -170,13 +183,18 @@ impl DelegationResolver {
     ) -> Result<AgentStep, AgentError> {
         let n = BASE_SEQ.fetch_add(1, Ordering::SeqCst);
         let name = format!("{agent_id}-sub-{n}");
+        let sandbox = if self.reuse_sandbox {
+            SubrunSandbox::Shared(&self.sandbox)
+        } else {
+            SubrunSandbox::Fresh(&self.provider)
+        };
         // The sub-run's usage rides back on the step so the kernel folds it into the
         // parent thread's tally (its own isolated store is dropped here) — turn work,
         // so it counts against the session.
         let (text, usage) = crate::subagent::run_subagent(
             self.llm.clone(),
             &self.model_ref,
-            &self.provider,
+            sandbox,
             &name,
             input,
             cancellation.cloned(),

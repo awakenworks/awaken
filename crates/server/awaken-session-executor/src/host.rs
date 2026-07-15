@@ -141,6 +141,11 @@ pub struct SharedHost {
     /// network-DB (async) catalog serves the host's sync read paths.
     pub(crate) skill_cache: std::sync::Mutex<Vec<(String, String)>>,
     pub(crate) delegates: HashSet<String>,
+    /// Whether a native subagent (delegation / skill fork) reuses the parent agent's
+    /// sandbox (`true`, the default — `默认共用`) or runs in a fresh, isolated one.
+    /// The workspace-sharing knob for subagents; out-of-band housekeeping sub-runs
+    /// (judge / memory / compaction) are always isolated regardless.
+    pub(crate) subagent_reuse_sandbox: bool,
     /// Runtime plugins this host activates on every thread, and their config
     /// sections (e.g. the tool state machine). Empty by default.
     pub(crate) plugin_ids: Vec<String>,
