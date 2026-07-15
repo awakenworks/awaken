@@ -249,7 +249,7 @@ impl SharedHost {
         }
         // Delegation is a runtime concern: inject the resolver so the kernel runs
         // `agent_run` as a sub-agent (native or remote), not the tool registry.
-        if let Some(resolver) = self.agent_resolver() {
+        if let Some(resolver) = self.agent_resolver(env.clone()) {
             runtime = runtime.with_resolver(resolver);
         }
         // Skills are fronted by two stable tools (ADR-0036); all skill behavior is
@@ -273,6 +273,7 @@ impl SharedHost {
             // pre-authorized MCP tools (identical to `server_gate()` without MCP).
             base_gate.clone(),
             sub_base("skill-fork"),
+            self.subagent_reuse_sandbox,
         ) {
             runtime = runtime
                 .with_gate(wiring.gate)

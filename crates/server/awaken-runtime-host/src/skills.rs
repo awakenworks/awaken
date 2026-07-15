@@ -68,14 +68,19 @@ impl SkillSource for SnapshotSkillSource {
     }
 }
 
-/// Runs a `context: fork` skill as a fresh, isolated default-assistant sub-agent
-/// (no skills, so a fork cannot recurse), returning its reply. Implements the
-/// neutral [`SubagentRunner`] port — the same one the goal judge and compactor use
-/// — so skills no longer needs a bespoke fork-runner trait.
+/// Runs a `context: fork` skill as a default-assistant sub-agent (no skills, so a
+/// fork cannot recurse), returning its reply. By default it shares the parent agent's
+/// sandbox (`默认共用`), so a forked skill sees the same workspace; with
+/// `reuse_sandbox` off it gets a fresh, isolated root. Implements the neutral
+/// [`SubagentRunner`] port — the same one the goal judge and compactor use.
 struct ForkRunner {
     llm: Arc<dyn LlmExecutor>,
     model_ref: String,
     provider: LocalProvider,
+    /// The parent agent's sandbox, shared with the fork by default.
+    sandbox: Arc<LocalSandbox>,
+    /// Reuse the parent sandbox (default) vs. a fresh, isolated one.
+    reuse_sandbox: bool,
 }
 
 #[async_trait::async_trait]
@@ -85,10 +90,15 @@ impl SubagentRunner for ForkRunner {
         // activation is out-of-band housekeeping, so its usage stays isolated (this
         // port surfaces only the reply text).
         let name = format!("skill-{}", request.agent_id);
+        let sandbox = if self.reuse_sandbox {
+            crate::subagent::SubrunSandbox::Shared(&self.sandbox)
+        } else {
+            crate::subagent::SubrunSandbox::Fresh(&self.provider)
+        };
         crate::subagent::run_subagent(
             self.llm.clone(),
             &self.model_ref,
-            &self.provider,
+            sandbox,
             &name,
             request.seed,
             request.cancellation,
@@ -123,6 +133,7 @@ pub(crate) fn wire_skills(
     session_id: &str,
     base_gate: Arc<dyn ToolGateHook>,
     fork_base: PathBuf,
+    reuse_sandbox: bool,
 ) -> Option<SkillWiring> {
     // Offer skills when either a static set is configured or a durable catalog is
     // wired — the workspace-authored source alone never opens the surface (a run with
@@ -158,7 +169,7 @@ pub(crate) fn wire_skills(
     }
     registries.push(Arc::new(SourceSkillRegistry::new(
         Arc::new(EnvSkillSource {
-            env,
+            env: env.clone(),
             subdir: WORKSPACE_SKILLS_SUBDIR.to_string(),
         }),
         SkillProvenance::AgentCreated,
@@ -173,6 +184,8 @@ pub(crate) fn wire_skills(
         llm,
         model_ref: model_ref.to_string(),
         provider: LocalProvider::new(fork_base),
+        sandbox: env,
+        reuse_sandbox,
     });
     let activate: Arc<dyn RawTool> = Arc::new(
         SkillTool::new(registry.clone())

@@ -18,7 +18,13 @@ impl SharedHost {
         // (unit tests / ephemeral use) keeps it in-run only.
         let memory_store_root = match &store_dir {
             Some(dir) => dir.join("memory_stores"),
-            None => std::env::temp_dir().join(format!("awaken-memstore-{}", std::process::id())),
+            // Ephemeral: a per-instance dir (pid + a process-local counter), so two
+            // hosts in one process (parallel unit tests) never share a memory store.
+            None => {
+                static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                std::env::temp_dir().join(format!("awaken-memstore-{}-{n}", std::process::id()))
+            }
         };
         let memory_stores: Arc<dyn awaken_memory_store::MemoryBlobStore> = Arc::new(
             awaken_memory_store::FsMemoryBlobStore::open(&memory_store_root)
@@ -52,6 +58,8 @@ impl SharedHost {
             skill_store: None,
             skill_cache: std::sync::Mutex::new(Vec::new()),
             delegates: HashSet::new(),
+            // Subagents share the parent's sandbox by default (`默认共用`).
+            subagent_reuse_sandbox: true,
             plugin_ids: Vec::new(),
             plugin_config: std::collections::BTreeMap::new(),
             sessions: tokio::sync::Mutex::new(HashMap::new()),
@@ -250,6 +258,14 @@ impl SharedHost {
         self
     }
 
+    /// Whether native subagents (delegation / skill fork) reuse the parent agent's
+    /// sandbox (`true`, the default) or run in a fresh, isolated one. Housekeeping
+    /// sub-runs (judge / memory / compaction) stay isolated regardless.
+    pub fn with_subagent_reuse_sandbox(mut self, reuse: bool) -> Self {
+        self.subagent_reuse_sandbox = reuse;
+        self
+    }
+
     /// Activate the tool state machine on every thread with `config` (its
     /// `{"machines":[…]}` section). The plugin gates and advances tool calls per
     /// the declared transitions (ADR tool-state-machine).
@@ -444,7 +460,14 @@ impl SharedHost {
 
     /// Build the delegation resolver from the configured roster and remotes, or
     /// `None` when the host has no delegates. Injected into each thread's runtime.
-    pub(crate) fn agent_resolver(&self) -> Option<Arc<dyn AgentResolver>> {
+    /// Build the per-session delegation resolver. `sandbox` is the calling thread's
+    /// live sandbox: a native delegate shares it by default (`默认共用`), so the parent
+    /// and its subagent collaborate in one workspace; `subagent_reuse_sandbox = false`
+    /// gives each delegate a fresh, isolated root instead.
+    pub(crate) fn agent_resolver(
+        &self,
+        sandbox: Arc<LocalSandbox>,
+    ) -> Option<Arc<dyn AgentResolver>> {
         if self.delegates.is_empty() {
             return None;
         }
@@ -459,6 +482,8 @@ impl SharedHost {
             self.llm.clone(),
             self.model_ref.clone(),
             LocalProvider::new(sub_base("deleg")),
+            sandbox,
+            self.subagent_reuse_sandbox,
             native,
             self.remote_agents.clone(),
         )))

@@ -64,7 +64,7 @@ impl SubagentRunner for HostSubagentRunner {
         // isolated on its own sub-thread rather than folding into the parent tally.
         let (text, _usage) = crate::subagent::run_configured_subrun(
             &self.catalog,
-            &self.provider,
+            crate::subagent::SubrunSandbox::Fresh(&self.provider),
             self.llm.clone(),
             &request.agent_id,
             &name,
