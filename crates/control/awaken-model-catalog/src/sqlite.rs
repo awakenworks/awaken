@@ -13,8 +13,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::repo::{CatalogRepo, RepoError};
 use crate::schema::catalog_bundle;
 use crate::{
-    CatalogError, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderCatalog,
-    ProviderId, ValidCatalog,
+    CatalogError, ModelAttributes, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider,
+    ProviderCatalog, ProviderId, ValidCatalog,
 };
 
 /// The catalog component's table namespace (its bundle prefix).
@@ -132,6 +132,13 @@ fn load_catalog(conn: &Connection, p: &str) -> Result<ProviderCatalog, RepoError
         cat.offerings
             .push(serde_json::from_str(&data).map_err(storage)?);
     }
+    for (model_id, data) in select_keyed(
+        conn,
+        &format!("SELECT model_id, data FROM {p}_model_attributes"),
+    )? {
+        let attrs: ModelAttributes = serde_json::from_str(&data).map_err(storage)?;
+        cat.model_attributes.insert(model_id, attrs);
+    }
     Ok(cat)
 }
 
@@ -139,6 +146,16 @@ fn select_data(conn: &Connection, sql: &str) -> Result<Vec<String>, RepoError> {
     let mut stmt = conn.prepare(sql).map_err(storage)?;
     let rows = stmt
         .query_map([], |r| r.get::<_, String>(0))
+        .map_err(storage)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(storage)
+}
+
+/// Like [`select_data`] but reads a `(key, data)` pair per row — for tables keyed
+/// on their own id column (e.g. `_model_attributes` keyed on `model_id`).
+fn select_keyed(conn: &Connection, sql: &str) -> Result<Vec<(String, String)>, RepoError> {
+    let mut stmt = conn.prepare(sql).map_err(storage)?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
         .map_err(storage)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(storage)
 }
@@ -209,6 +226,26 @@ impl CatalogRepo for SqliteCatalogRepo {
             // boundary (`ValidCatalog::parse`) — same fail-closed check, funneled.
             ValidCatalog::parse(load_catalog(&tx, p)?)?;
             tx.commit().map_err(storage)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn put_model_attributes(
+        &self,
+        model_id: String,
+        attrs: ModelAttributes,
+    ) -> Result<(), RepoError> {
+        let data = serde_json::to_string(&attrs).map_err(storage)?;
+        self.with_conn(move |conn, p| {
+            conn.execute(
+                &format!(
+                    "INSERT INTO {p}_model_attributes (model_id, data) VALUES (?1, ?2) \
+                     ON CONFLICT(model_id) DO UPDATE SET data = excluded.data"
+                ),
+                params![model_id, data],
+            )
+            .map_err(storage)?;
             Ok(())
         })
         .await
@@ -285,6 +322,27 @@ mod tests {
                 .unwrap()
                 .slug,
             "anthropic"
+        );
+    }
+
+    /// Model attributes publish independently of offerings (no provider/endpoint
+    /// reference) and round-trip through the durable table into the snapshot.
+    #[tokio::test]
+    async fn put_model_attributes_round_trips_through_the_durable_snapshot() {
+        let repo = SqliteCatalogRepo::open_in_memory().unwrap();
+        repo.put_model_attributes(
+            "claude-opus-4-8".into(),
+            ModelAttributes {
+                context_window: Some(200_000),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let snap = repo.snapshot().await.unwrap();
+        assert_eq!(
+            snap.model_attributes["claude-opus-4-8"].context_window,
+            Some(200_000)
         );
     }
 }

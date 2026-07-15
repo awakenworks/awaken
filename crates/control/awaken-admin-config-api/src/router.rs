@@ -26,7 +26,9 @@ use awaken_credential_vault::{
     CredentialSourceId, CredentialStatus, SecretStore,
 };
 use awaken_model_catalog::repo::{CatalogRepo, RepoError};
-use awaken_model_catalog::{Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId};
+use awaken_model_catalog::{
+    ModelAttributes, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
+};
 use awaken_runtime_contract::resilience::Disposition;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header::CONTENT_TYPE};
@@ -95,6 +97,10 @@ pub fn admin_router(state: AdminState) -> Router {
             put(put_endpoint).get(get_endpoint),
         )
         .route("/v1/config/offerings", post(post_offering))
+        .route(
+            "/v1/config/model-attributes/{model_id}",
+            put(put_model_attributes),
+        )
         .route("/v1/config/catalog", get(get_catalog))
         .route(
             "/v1/config/credentials",
@@ -286,6 +292,23 @@ async fn post_offering(
         .await
         .map_err(|e| repo_problem(&e, &req_id(&headers)))?;
     Ok(Json(offering))
+}
+
+async fn put_model_attributes(
+    State(state): State<AdminState>,
+    Path(model_id): Path<String>,
+    headers: HeaderMap,
+    Json(attrs): Json<ModelAttributes>,
+) -> Result<Json<ModelAttributes>, Problem> {
+    // Model attributes publish independently of offerings — they carry no
+    // provider/endpoint reference (`ProviderCatalog::validate` leaves them
+    // unconstrained), so the only failure surface is a whole-catalog invariant (422).
+    state
+        .catalog
+        .put_model_attributes(model_id, attrs.clone())
+        .await
+        .map_err(|e| repo_problem(&e, &req_id(&headers)))?;
+    Ok(Json(attrs))
 }
 
 async fn get_catalog(

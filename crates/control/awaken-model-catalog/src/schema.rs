@@ -9,7 +9,7 @@ use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 /// the runtime `awaken.commit` schemas in a shared database.
 pub const BUNDLE_ID: &str = "awaken.catalog";
 
-const SPECS: [(i64, &str, &str); 3] = [
+const SPECS: [(i64, &str, &str); 4] = [
     (
         1,
         "providers: one row per vendor",
@@ -35,6 +35,13 @@ const SPECS: [(i64, &str, &str); 3] = [
             protocol_endpoint_id TEXT NOT NULL, \
             data {json} NOT NULL, \
             PRIMARY KEY (model_id, protocol_endpoint_id))",
+    ),
+    (
+        4,
+        "model attributes: intrinsic per-model_id properties (context_window, …)",
+        "CREATE TABLE {prefix}_model_attributes (\
+            model_id TEXT PRIMARY KEY, \
+            data {json} NOT NULL)",
     ),
 ];
 

@@ -15,8 +15,8 @@ use sqlx::types::Json;
 use crate::repo::{CatalogRepo, RepoError};
 use crate::schema::catalog_bundle;
 use crate::{
-    CatalogError, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderCatalog,
-    ProviderId, ValidCatalog,
+    CatalogError, ModelAttributes, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider,
+    ProviderCatalog, ProviderId, ValidCatalog,
 };
 
 /// The catalog component's table namespace (its bundle prefix).
@@ -97,6 +97,15 @@ async fn load_catalog(
     {
         let Json(offering): Json<Offering> = row.try_get("data").map_err(storage)?;
         cat.offerings.push(offering);
+    }
+    for row in sqlx::query(&format!("SELECT model_id, data FROM {p}_model_attributes"))
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(storage)?
+    {
+        let model_id: String = row.try_get("model_id").map_err(storage)?;
+        let Json(attrs): Json<ModelAttributes> = row.try_get("data").map_err(storage)?;
+        cat.model_attributes.insert(model_id, attrs);
     }
     Ok(cat)
 }
@@ -186,6 +195,24 @@ impl CatalogRepo for PostgresCatalogRepo {
         // boundary (`ValidCatalog::parse`) — same fail-closed check, funneled.
         ValidCatalog::parse(load_catalog(&mut tx, p).await?)?; // Transaction derefs to PgConnection
         tx.commit().await.map_err(storage)?;
+        Ok(())
+    }
+
+    async fn put_model_attributes(
+        &self,
+        model_id: String,
+        attrs: ModelAttributes,
+    ) -> Result<(), RepoError> {
+        let p = NS;
+        sqlx::query(&format!(
+            "INSERT INTO {p}_model_attributes (model_id, data) VALUES ($1, $2) \
+             ON CONFLICT (model_id) DO UPDATE SET data = excluded.data"
+        ))
+        .bind(&model_id)
+        .bind(Json(&attrs))
+        .execute(&self.pool)
+        .await
+        .map_err(storage)?;
         Ok(())
     }
 

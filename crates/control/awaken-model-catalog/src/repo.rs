@@ -7,8 +7,8 @@
 use std::sync::Mutex;
 
 use crate::{
-    CatalogError, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderCatalog,
-    ProviderId, ValidCatalog,
+    CatalogError, ModelAttributes, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider,
+    ProviderCatalog, ProviderId, ValidCatalog,
 };
 
 /// A catalog write/read failure.
@@ -29,6 +29,15 @@ pub trait CatalogRepo: Send + Sync {
     async fn put_provider(&self, provider: Provider) -> Result<(), RepoError>;
     async fn put_endpoint(&self, endpoint: ProtocolEndpoint) -> Result<(), RepoError>;
     async fn put_offering(&self, offering: Offering) -> Result<(), RepoError>;
+    /// Publish the intrinsic attributes of a `model_id` (upsert on the model id).
+    /// Model attributes publish independently of offerings — they carry no
+    /// reference to a provider/endpoint (`ProviderCatalog::validate` leaves them
+    /// unconstrained), so this never fails on reference integrity.
+    async fn put_model_attributes(
+        &self,
+        model_id: String,
+        attrs: ModelAttributes,
+    ) -> Result<(), RepoError>;
     async fn get_provider(&self, id: &ProviderId) -> Result<Provider, RepoError>;
     async fn get_endpoint(&self, id: &ProtocolEndpointId) -> Result<ProtocolEndpoint, RepoError>;
     /// The full catalog projection (what the resolver queries). Validated.
@@ -118,6 +127,23 @@ impl CatalogRepo for InMemoryCatalogRepo {
         Ok(())
     }
 
+    async fn put_model_attributes(
+        &self,
+        model_id: String,
+        attrs: ModelAttributes,
+    ) -> Result<(), RepoError> {
+        let mut guard = self.inner.lock().expect("catalog mutex");
+        let mut next = guard.get().clone();
+        // Upsert on `model_id` — the durable backends key their row on exactly the
+        // model id (schema PK, `ON CONFLICT … DO UPDATE`), so insert replaces.
+        next.model_attributes.insert(model_id, attrs);
+        // Re-parse through the construction boundary; on rejection the store is
+        // never reassigned (fail-closed) — model attributes carry no reference to
+        // constrain, so this only rejects a corrupt whole-catalog invariant.
+        *guard = ValidCatalog::parse(next)?;
+        Ok(())
+    }
+
     async fn get_provider(&self, id: &ProviderId) -> Result<Provider, RepoError> {
         self.inner
             .lock()
@@ -197,6 +223,26 @@ mod tests {
         );
         let snap = repo.snapshot().await.unwrap();
         assert_eq!(snap.offerings.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn put_model_attributes_round_trips_in_the_snapshot() {
+        let repo = InMemoryCatalogRepo::new();
+        // Model attributes publish independently of offerings — no provider/endpoint needed.
+        repo.put_model_attributes(
+            "claude-opus-4-8".into(),
+            ModelAttributes {
+                context_window: Some(200_000),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let snap = repo.snapshot().await.unwrap();
+        assert_eq!(
+            snap.model_attributes["claude-opus-4-8"].context_window,
+            Some(200_000)
+        );
     }
 
     #[tokio::test]
