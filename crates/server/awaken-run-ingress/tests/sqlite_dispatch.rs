@@ -183,6 +183,12 @@ async fn settle_fences_stale_epoch_on_sqlite() {
 }
 
 #[tokio::test]
+async fn concurrent_recovery_yields_one_winner_on_sqlite() {
+    let store = std::sync::Arc::new(SqliteDispatchStore::open_in_memory().expect("open"));
+    harness::assert_concurrent_recovery_yields_one_winner(store).await;
+}
+
+#[tokio::test]
 async fn parked_settle_fences_stale_epoch_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory().expect("open");
     harness::assert_parked_settle_fences_stale_epoch(&store).await;

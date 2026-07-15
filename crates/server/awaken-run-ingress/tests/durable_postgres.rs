@@ -405,6 +405,20 @@ async fn settle_fences_stale_epoch_on_postgres() {
 }
 
 #[tokio::test]
+async fn concurrent_recovery_yields_one_winner_on_postgres() {
+    let schema = "t_pg_concurrent_recovery";
+    let Some(pool) = harness::schema_pool(schema).await else {
+        return;
+    };
+    let store = Arc::new(
+        PostgresDispatchStore::with_pool(pool.clone())
+            .await
+            .expect("dispatch"),
+    );
+    harness::assert_concurrent_recovery_yields_one_winner(store).await;
+}
+
+#[tokio::test]
 async fn parked_settle_fences_stale_epoch_on_postgres() {
     let Some(pool) = harness::schema_pool("t_pg_fence_park").await else {
         return;

@@ -131,6 +131,25 @@ mod tests {
     }
 
     #[test]
+    fn splice_rejects_a_negative_offset() {
+        // A negative pwrite offset is a fail-closed error, never wrapped to a huge usize.
+        assert!(matches!(
+            splice_bytes("hello", -1, b"x"),
+            Err(FuseError::Internal(_))
+        ));
+    }
+
+    #[test]
+    fn splice_rejects_a_non_utf8_result() {
+        // The memory store is text; writing raw non-UTF-8 bytes must fail closed rather
+        // than materialize an invalid string.
+        assert!(matches!(
+            splice_bytes("hello", 0, &[0xFF, 0xFE]),
+            Err(FuseError::Internal(_))
+        ));
+    }
+
+    #[test]
     fn immediate_children_rolls_up_one_level() {
         let memories = vec![
             entry("/notes/today.md"),

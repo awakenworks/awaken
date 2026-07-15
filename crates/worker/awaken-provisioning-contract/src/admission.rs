@@ -137,4 +137,24 @@ mod tests {
         d.max_concurrency = Some(1);
         assert!(check_environment_soundness(&d).is_ok());
     }
+
+    #[test]
+    fn accepts_a_declaration_whose_required_field_is_satisfied() {
+        // The Some(non-empty) accept path — sound() uses None and the blank-Some case
+        // is a rejection, so the "present and non-empty passes" branch was untested.
+        let mut d = sound();
+        d.kind = "image".into();
+        d.required_field = Some(("reference", "registry.io/img:1".into()));
+        assert!(check_environment_soundness(&d).is_ok());
+    }
+
+    #[test]
+    fn writable_base_with_unset_concurrency_is_admitted() {
+        // Boundary: writable_base bars concurrency > 1, but an unset (None) concurrency
+        // is fine — `is_some_and` short-circuits false.
+        let mut d = sound();
+        d.writable_base = true;
+        d.max_concurrency = None;
+        assert!(check_environment_soundness(&d).is_ok());
+    }
 }

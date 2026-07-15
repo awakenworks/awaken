@@ -225,6 +225,36 @@ mod tests {
     }
 
     #[test]
+    fn an_isolation_violation_masks_a_lower_precedence_reserved_key() {
+        // Cause-effect masking: prepare_environment short-circuits in precedence order,
+        // so a spec that violates isolation (checked first) AND also carries a reserved
+        // env key reports InsufficientIsolation — the reserved-key fault stays masked,
+        // never reached. Proves the ordering, not just the individual checks.
+        let mut s = spec();
+        s.isolation = IsolationClass::Container; // require the strongest tier
+        s.env[0].name = "PATH".into(); // a reserved key that MUST stay masked
+        assert_eq!(
+            prepare_environment(&s, &caps(IsolationClass::Workdir)),
+            Err(PrepareError::InsufficientIsolation)
+        );
+    }
+
+    #[test]
+    fn a_no_egress_policy_needs_isolation_and_is_admitted_with_it() {
+        // The `None` egress class (most restrictive) — the other prepare egress tests
+        // only used `Allowlist`. With isolation it prepares; without it fails closed.
+        let mut s = spec();
+        s.network = NetworkPolicy::None;
+        assert!(prepare_environment(&s, &caps(IsolationClass::Namespace)).is_ok());
+        let mut c = caps(IsolationClass::Namespace);
+        c.network_isolation = false;
+        assert_eq!(
+            prepare_environment(&s, &c),
+            Err(PrepareError::NetworkIsolationUnsupported)
+        );
+    }
+
+    #[test]
     fn rejects_resource_limits_a_backend_cannot_enforce() {
         let mut s = spec();
         s.limits.memory_bytes = Some(512 * 1024 * 1024);

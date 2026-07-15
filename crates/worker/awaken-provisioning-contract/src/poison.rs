@@ -119,6 +119,17 @@ mod tests {
     }
 
     #[test]
+    fn a_threshold_of_one_quarantines_on_a_single_infra_fault() {
+        // Boundary: threshold == 1 means one infra fault at the tail is a crash-loop,
+        // but a single Settled tail is healthy.
+        assert_eq!(
+            classify(&[Settled, InfraFault], 1),
+            PoisonVerdict::Quarantine
+        );
+        assert_eq!(classify(&[InfraFault, Settled], 1), PoisonVerdict::Healthy);
+    }
+
+    #[test]
     fn quarantine_stops_redispatch() {
         assert!(should_redispatch(PoisonVerdict::Healthy));
         assert!(!should_redispatch(PoisonVerdict::Quarantine));

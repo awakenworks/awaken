@@ -279,6 +279,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "async-trait",
         "tokio",
         "tokio-util",
+        # `catch_unwind` isolates a panicking third-party tool at the executor boundary.
+        "futures-util",
         "tracing",
     },
     # In-memory reference store backend (ADR-0039 2.2): the neutral commit/read
@@ -574,6 +576,11 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # dev-dep: `tcp_relay_e2e` drives the brain↔hand relay over a real TCP
         # socket, so it needs the agent-channel transport the topology plan wires.
         "awaken-agent-channel",
+        # dev-deps: `remote_hand_sandbox_e2e` runs the remote hand's tool inside a
+        # real OS sandbox (ADR-0044 hand × ADR-0041 sandbox) — the composition root
+        # for "the hand executes tools under isolation" lives here.
+        "awaken-sandbox-local",
+        "awaken-provisioning-contract",
         # coding-agent example (feature-gated): built-in tools, a real model, a TUI.
         "awaken-ext-builtin-tools",
         "awaken-provider-genai",
@@ -705,6 +712,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-agent-channel",
         "awaken-protocol-acp",
         "async-trait",
+        # McpServerConfig derives Serde to ride the config plane into plugin_config.
+        "serde",
         "thiserror",
         "tokio",
         # dev-only: build a `plugin_config` JSON value in the compaction-window test.

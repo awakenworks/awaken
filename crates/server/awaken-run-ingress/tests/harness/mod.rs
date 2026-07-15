@@ -1422,6 +1422,49 @@ pub async fn assert_settle_fences_stale_epoch<S: awaken_run_ingress::Dispatch>(s
     );
 }
 
+/// G5-T6 (cause-effect graphing): two workers RACE to recover the SAME expired lease.
+/// Exactly one wins the epoch bump; the other finds nothing runnable — never double
+/// ownership. The in-memory store serializes via its mutex, sqlite/postgres via row
+/// locking, so the single-winner invariant holds on every backend.
+pub async fn assert_concurrent_recovery_yields_one_winner<S>(store: Arc<S>)
+where
+    S: awaken_run_ingress::Dispatch + Send + Sync + 'static,
+{
+    use awaken_run_ingress::RunExecutionRequest;
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .unwrap();
+    // Owner A claims with a short lease (ttl 100 from t=0); it has lapsed by t=200.
+    let a = store
+        .claim("owner-a", 100, 0)
+        .await
+        .unwrap()
+        .expect("A claims");
+    assert_eq!(a.lease.epoch, 1);
+
+    // Two workers race to recover the one expired lease at t=200.
+    let s1 = store.clone();
+    let s2 = store.clone();
+    let (r1, r2) = tokio::join!(
+        tokio::spawn(async move { s1.claim("owner-b", 100, 200).await }),
+        tokio::spawn(async move { s2.claim("owner-c", 100, 200).await }),
+    );
+    let winners: Vec<_> = [r1.unwrap().expect("claim b"), r2.unwrap().expect("claim c")]
+        .into_iter()
+        .flatten()
+        .collect();
+    assert_eq!(
+        winners.len(),
+        1,
+        "exactly one worker recovers the expired lease (no double ownership)"
+    );
+    assert_eq!(
+        winners[0].lease.epoch, 2,
+        "the recovery re-claim bumps the fence 1 -> 2"
+    );
+}
+
 /// Shared spec: a `Parked` settle is fenced the same way — a stale owner cannot
 /// re-park (and reset the crash-retry budget / clear the lease) behind a reclaimer.
 pub async fn assert_parked_settle_fences_stale_epoch<S: awaken_run_ingress::Dispatch>(store: &S) {

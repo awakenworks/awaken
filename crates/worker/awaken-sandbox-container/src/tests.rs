@@ -401,6 +401,51 @@ async fn full_lifecycle_create_channel_process_artifacts_lease_dispose() {
 }
 
 #[tokio::test]
+async fn a_second_node_adopts_a_running_container_over_the_shared_runtime() {
+    // Cross-node recovery on the container tier: two provider objects (two workers)
+    // over the SAME runtime backend — the container lives in a shared cluster/daemon
+    // reachable from both. Node A realizes it; Node A vanishes; Node B adopts it from
+    // the persisted handle and takes over its process, artifacts, and lease.
+    let rt =
+        Arc::new(FakeRuntime::default().with_artifact("a1", "/mnt/session/outputs/o.txt", b"work"));
+    let node_a = provider(rt.clone());
+    let sandbox_a = node_a.create(&spec("run-x")).await.unwrap();
+    let wire = serde_json::to_string(&sandbox_a.handle()).unwrap();
+    drop(sandbox_a);
+    drop(node_a);
+
+    let recovered: pc::SandboxHandle = serde_json::from_str(&wire).unwrap();
+    assert_eq!(recovered.provider_kind, "container");
+    let node_b = provider(rt.clone());
+    let sandbox_b = node_b
+        .adopt(&recovered)
+        .await
+        .expect("a second node adopts the container from its handle");
+
+    assert_eq!(sandbox_b.id(), "run-x");
+    assert!(matches!(
+        sandbox_b.status().await.unwrap(),
+        pc::SandboxStatus::Ready
+    ));
+    // The adopting node reaches the still-running container's process + out-of-band
+    // artifacts, and keeps the lease alive.
+    let proc = sandbox_b
+        .spawn(pc::Command::new(["ignored"]))
+        .await
+        .unwrap();
+    assert_eq!(proc.id(), "cid-run-x");
+    assert_eq!(sandbox_b.read_artifact("a1").await.unwrap(), b"work");
+    sandbox_b.renew_lease().await.unwrap();
+    assert_eq!(rt.st.lock().unwrap().lease_touches, 1);
+
+    sandbox_b.dispose().await.unwrap();
+    assert!(matches!(
+        sandbox_b.status().await.unwrap(),
+        pc::SandboxStatus::Terminated
+    ));
+}
+
+#[tokio::test]
 async fn open_channel_is_the_agent_transport_capability() {
     let rt = Arc::new(FakeRuntime::default());
     let sandbox = ContainerSandbox {
