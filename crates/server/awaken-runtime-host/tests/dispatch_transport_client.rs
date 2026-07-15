@@ -82,11 +82,24 @@ async fn db_less_worker_drives_runs_over_real_http() {
 
     // The worker holds only this HTTP client — no store handle.
     let queue = HttpDispatchQueue::new(format!("http://{addr}"));
+    let run = RunId("run-A".into());
+
+    // S8 fence read #1 — no row yet: the remote epoch is unknown, and the COMMIT fence
+    // fails OPEN (a db-less worker's write is never rejected because the store cannot
+    // see the run). Without the current_epoch route this silently returned None from
+    // the trait default, so the whole fence was a no-op over the wire.
+    assert_eq!(queue.current_epoch(&run).await.unwrap(), None);
+    assert!(queue.holds_current_epoch(&run, 0).await.unwrap());
 
     queue
         .enqueue(RunExecutionRequest::new(activation("run-A", "t1")))
         .await
         .expect("enqueue over http");
+    assert_eq!(
+        queue.current_epoch(&run).await.unwrap(),
+        Some(0),
+        "enqueued-but-unclaimed reads epoch 0 over the wire"
+    );
 
     let claimed = queue
         .claim("worker-1", 30_000, 0)
@@ -95,6 +108,20 @@ async fn db_less_worker_drives_runs_over_real_http() {
         .expect("a run is claimable");
     assert_eq!(claimed.request.activation.run_id.0, "run-A");
     assert_eq!(claimed.lease.owner, "worker-1");
+
+    // S8 fence read #2 — the claim bumped the epoch; the owner holds the fence over
+    // http, a stale lower epoch does not.
+    assert_eq!(
+        queue.current_epoch(&run).await.unwrap(),
+        Some(claimed.lease.epoch)
+    );
+    assert!(
+        queue
+            .holds_current_epoch(&run, claimed.lease.epoch)
+            .await
+            .unwrap()
+    );
+    assert!(!queue.holds_current_epoch(&run, 0).await.unwrap());
 
     assert!(
         queue
@@ -115,6 +142,26 @@ async fn db_less_worker_drives_runs_over_real_http() {
     assert!(
         reclaimed.lease.epoch > claimed.lease.epoch,
         "the recovery re-claim bumped the fence epoch"
+    );
+    // S8 fence read #3 — the reclaim superseded worker-1: its commit fence must now
+    // REJECT over the wire (the exact double-apply the co-located fence blocks), while
+    // the current owner still holds.
+    assert_eq!(
+        queue.current_epoch(&run).await.unwrap(),
+        Some(reclaimed.lease.epoch)
+    );
+    assert!(
+        !queue
+            .holds_current_epoch(&run, claimed.lease.epoch)
+            .await
+            .unwrap(),
+        "the superseded remote worker no longer holds the commit fence over http"
+    );
+    assert!(
+        queue
+            .holds_current_epoch(&run, reclaimed.lease.epoch)
+            .await
+            .unwrap()
     );
     assert_eq!(
         queue
@@ -151,6 +198,17 @@ async fn db_less_worker_drives_runs_over_real_http() {
             .expect("claim over http")
             .is_none(),
         "a settled run is gone"
+    );
+
+    // S8 fence read #4 — the row is gone, so the epoch is unknown again and the fence
+    // fails open over the wire (a terminal commit racing its own settle is never
+    // rejected). This is the None-→-fail-open half of the contract.
+    assert_eq!(queue.current_epoch(&run).await.unwrap(), None);
+    assert!(
+        queue
+            .holds_current_epoch(&run, reclaimed.lease.epoch)
+            .await
+            .unwrap()
     );
 
     // A server-local write verb is refused on the worker transport (cancel is the

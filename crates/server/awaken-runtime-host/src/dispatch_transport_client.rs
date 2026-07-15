@@ -163,6 +163,20 @@ impl DispatchQueue for HttpDispatchQueue {
         )
     }
 
+    async fn current_epoch(&self, run_id: &RunId) -> Result<Option<u64>, DispatchError> {
+        // The COMMIT fence's read over the wire: without this the trait default would
+        // return `None` (fail-open) and a superseded db-less worker could double-apply
+        // side effects the co-located fence blocks. `null` from the server means the
+        // row is gone → fail-open, identical to the local store's behaviour.
+        let v = self
+            .post(
+                "/v1/worker/dispatch/current_epoch",
+                json!({ "run_id": run_id.0 }),
+            )
+            .await?;
+        Ok(v.get("epoch").and_then(serde_json::Value::as_u64))
+    }
+
     // --- server-local operational verbs: the SERVER owns dead-letter/recovery GC.
     // A worker's pool may tick these from its maintenance loop; they are benign
     // no-ops here (the server does the real work) so the pool's loops never fail. ---

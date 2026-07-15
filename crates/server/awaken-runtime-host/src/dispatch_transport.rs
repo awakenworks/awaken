@@ -38,6 +38,7 @@ pub fn dispatch_transport_router(host: Arc<SharedHost>) -> Router {
         .route("/v1/worker/dispatch/renew", post(renew))
         .route("/v1/worker/dispatch/renew_owned", post(renew_owned))
         .route("/v1/worker/dispatch/settle", post(settle))
+        .route("/v1/worker/dispatch/current_epoch", post(current_epoch))
         .with_state(host)
 }
 
@@ -163,6 +164,34 @@ async fn settle(
         // `settled` is the fence verdict: `true` = applied, `false` = the worker's
         // epoch was stale (re-claimed) and nothing changed, so it must abandon.
         Ok(json!({ "settled": outcome.applied() }))
+    }
+    .await;
+    respond(result)
+}
+
+#[derive(Deserialize)]
+struct EpochReq {
+    run_id: String,
+}
+
+/// The run's current lease epoch — the read a database-less worker's COMMIT fence
+/// needs. Without this route the worker's `HttpDispatchQueue` would fall back to the
+/// trait's fail-open default (`current_epoch → None`), so a superseded remote worker
+/// could double-apply side effects the co-located fence already blocks. Exposing it
+/// makes the commit fence real over the wire: the worker reads the epoch it holds
+/// against the store's current one before each durable write.
+async fn current_epoch(
+    State(_host): State<Arc<SharedHost>>,
+    Json(req): Json<EpochReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        let epoch = store()?
+            .current_epoch(&RunId(req.run_id))
+            .await
+            .map_err(|e| HostError::internal(e.to_string()))?;
+        // `null` when the row is gone (settled/never-enqueued) — the worker fence
+        // reads that as fail-open, exactly as the local path does.
+        Ok(json!({ "epoch": epoch }))
     }
     .await;
     respond(result)

@@ -174,6 +174,12 @@ impl DispatchQueue for AnyDispatchStore {
         delegate!(self, settle(run_id, epoch, outcome, consumed))
     }
 
+    async fn current_epoch(&self, run_id: &RunId) -> Result<Option<u64>, DispatchError> {
+        // Must forward, not use the trait's fail-open default: the commit fence (and
+        // its HTTP transport) reads the real backend's epoch through this wrapper.
+        delegate!(self, current_epoch(run_id))
+    }
+
     async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError> {
         delegate!(self, reap(max_attempts, now_ms))
     }
