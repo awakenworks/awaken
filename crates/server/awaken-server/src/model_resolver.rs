@@ -30,6 +30,12 @@ fn binding_of(offering: &Offering) -> ModelBinding {
 }
 
 impl ModelResolver for CatalogModelResolver {
+    /// The model's published context window from the catalog's `ModelAttributes` (E: the
+    /// source an agent's compaction window and the ACP auto-compact window derive from).
+    fn context_window(&self, model_id: &str) -> Option<u32> {
+        self.catalog.context_window(model_id)
+    }
+
     fn resolve_auto(&self) -> Result<ResolvedModel, String> {
         let mut offerings = self.catalog.offerings.iter();
         let primary = offerings.next().ok_or_else(|| {

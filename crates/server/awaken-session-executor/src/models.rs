@@ -29,6 +29,12 @@ const CREATED_AT: &str = "2026-01-01T00:00:00Z";
 pub struct ModelEntry {
     pub id: String,
     pub display_name: String,
+    /// The model's published context window (max input tokens) — the intrinsic
+    /// attribute compaction and the ACP auto-compact window derive their budget from.
+    /// `None` when the deployment doesn't publish it.
+    pub context_window: Option<u32>,
+    /// Hard ceiling on a single response's output tokens, when published.
+    pub max_output_tokens: Option<u32>,
 }
 
 impl ModelEntry {
@@ -36,12 +42,22 @@ impl ModelEntry {
         Self {
             id: id.to_string(),
             display_name: display_name.to_string(),
+            context_window: None,
+            max_output_tokens: None,
         }
     }
 
-    /// The `BetaModelInfo` JSON projection. Capability/limit fields are `null`
-    /// (unknown to a single-machine deployment); `allowed_fallback_models` is an
-    /// empty list (fallbacks are a gateway concern).
+    /// Attach the model's published token limits (context window + output ceiling).
+    #[must_use]
+    fn with_limits(mut self, context_window: u32, max_output_tokens: u32) -> Self {
+        self.context_window = Some(context_window);
+        self.max_output_tokens = Some(max_output_tokens);
+        self
+    }
+
+    /// The `BetaModelInfo` JSON projection. `max_input_tokens`/`max_tokens` carry the
+    /// model's published context window / output ceiling (or `null` when unknown);
+    /// `allowed_fallback_models` is an empty list (fallbacks are a gateway concern).
     fn to_json(&self) -> serde_json::Value {
         json!({
             "id": self.id,
@@ -50,8 +66,8 @@ impl ModelEntry {
             "created_at": CREATED_AT,
             "allowed_fallback_models": [],
             "capabilities": null,
-            "max_input_tokens": null,
-            "max_tokens": null,
+            "max_input_tokens": self.context_window,
+            "max_tokens": self.max_output_tokens,
         })
     }
 }
@@ -63,10 +79,13 @@ impl ModelEntry {
 #[must_use]
 pub fn default_models() -> Vec<ModelEntry> {
     vec![
-        ModelEntry::new("claude-opus-4-8", "Claude Opus 4.8"),
-        ModelEntry::new("claude-sonnet-5", "Claude Sonnet 5"),
-        ModelEntry::new("claude-haiku-4-5-20251001", "Claude Haiku 4.5"),
-        ModelEntry::new("claude-fable-5", "Fable 5"),
+        // Published context windows (max input tokens) — the intrinsic attribute the
+        // compaction window derives from; 200K is the standard Claude context.
+        ModelEntry::new("claude-opus-4-8", "Claude Opus 4.8").with_limits(200_000, 64_000),
+        ModelEntry::new("claude-sonnet-5", "Claude Sonnet 5").with_limits(200_000, 64_000),
+        ModelEntry::new("claude-haiku-4-5-20251001", "Claude Haiku 4.5")
+            .with_limits(200_000, 32_000),
+        ModelEntry::new("claude-fable-5", "Fable 5").with_limits(200_000, 32_000),
     ]
 }
 
@@ -128,10 +147,17 @@ mod tests {
             assert!(v["display_name"].is_string());
             assert!(v["created_at"].is_string());
             assert!(v["allowed_fallback_models"].is_array());
-            // Unknown capability/limit fields are explicitly null, not absent.
+            // Capabilities stay null (unknown); the token limits now carry the model's
+            // published context window / output ceiling.
             assert!(v["capabilities"].is_null());
-            assert!(v["max_input_tokens"].is_null());
-            assert!(v["max_tokens"].is_null());
+            assert_eq!(
+                v["max_input_tokens"], 200_000,
+                "the published context window is reported"
+            );
+            assert!(
+                v["max_tokens"].as_u64().is_some(),
+                "the output ceiling is reported"
+            );
         }
     }
 }
