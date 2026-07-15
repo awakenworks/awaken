@@ -73,6 +73,50 @@ async fn remote_tool_runs_out_of_process_and_returns_output() {
 }
 
 #[tokio::test]
+async fn concurrent_calls_serialize_and_never_cross_their_correlation() {
+    // The executor guards its framed channel with a Mutex, so overlapping `invoke`s
+    // from many tasks must each still receive THEIR OWN reply (request/reply pairing
+    // never crosses under contention).
+    let runs = Arc::new(AtomicU32::new(0));
+    let session = HandSession::new([Arc::new(CountingEcho {
+        id: "echo".into(),
+        runs: runs.clone(),
+    }) as Arc<dyn RawTool>]);
+
+    let (brain_end, hand_end) = tokio::io::duplex(64 * 1024);
+    let hand = tokio::spawn(serve_hand(hand_end, session));
+
+    let executor = Arc::new(RemoteToolExecutor::new(brain_end));
+    let mut handles = Vec::new();
+    for i in 0..8 {
+        let ex = executor.clone();
+        handles.push(tokio::spawn(async move {
+            let text = format!("msg-{i}");
+            let out = ex
+                .invoke(&call(&format!("c{i}"), "echo", &text))
+                .await
+                .expect("concurrent invoke");
+            (text, out.content)
+        }));
+    }
+    for h in handles {
+        let (sent, got) = h.await.unwrap();
+        assert_eq!(
+            got, sent,
+            "each concurrent call received its own reply, not a crossed one"
+        );
+    }
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        8,
+        "each effect ran exactly once"
+    );
+
+    drop(executor);
+    let _ = hand.await;
+}
+
+#[tokio::test]
 async fn unknown_tool_reads_identically_to_the_local_path() {
     let session = HandSession::new(std::iter::empty::<Arc<dyn RawTool>>());
     let (brain_end, hand_end) = tokio::io::duplex(64 * 1024);
@@ -88,6 +132,21 @@ async fn unknown_tool_reads_identically_to_the_local_path() {
     assert_eq!(err.to_string(), "unknown tool: nope");
     drop(executor);
     let _ = hand.await;
+}
+
+#[tokio::test]
+async fn an_oversized_frame_fails_closed_at_encode_never_indeterminate() {
+    // A call whose encoded frame exceeds the length-delimited codec's max is rejected
+    // locally at encode — before it can reach the hand — so it is a DEFINITE error, not
+    // an Indeterminate. The effect provably never ran (nothing was dispatched).
+    let (brain_end, _hand_end) = tokio::io::duplex(64 * 1024);
+    let executor = RemoteToolExecutor::new(brain_end);
+    let huge = "x".repeat(9 * 1024 * 1024); // > the 8 MiB default max frame length
+    let result = executor.call_hand(&call("c1", "echo", &huge)).await;
+    assert!(
+        matches!(result, HandResult::Err { .. }),
+        "an oversized frame is a definite encode error, not Indeterminate: {result:?}"
+    );
 }
 
 #[tokio::test]

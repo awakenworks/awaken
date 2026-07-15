@@ -311,4 +311,113 @@ mod tests {
         );
         assert!(!m.is_secret_writeback());
     }
+
+    #[test]
+    fn network_policy_rank_orders_unrestricted_below_allowlist_below_none() {
+        // The ranked restrictiveness a provider admits against (satisfies uses it).
+        assert_eq!(NetworkPolicy::Unrestricted.rank(), 0);
+        assert_eq!(
+            NetworkPolicy::Allowlist {
+                hosts: vec!["h".into()]
+            }
+            .rank(),
+            1
+        );
+        assert_eq!(NetworkPolicy::None.rank(), 2);
+        assert!(
+            NetworkPolicy::Unrestricted.rank() < NetworkPolicy::Allowlist { hosts: vec![] }.rank()
+        );
+        assert!(NetworkPolicy::Allowlist { hosts: vec![] }.rank() < NetworkPolicy::None.rank());
+    }
+
+    #[test]
+    fn every_mount_source_kind_round_trips_through_the_wire() {
+        // Forward-compat: each variant serializes with its tag and reparses equal —
+        // the seam a distributed provider relies on (Resource/MemoryStore/Other were
+        // previously only covered for Secret/File).
+        for src in [
+            MountSource::File {
+                file_id: "f".into(),
+                content_hash: Some("h".into()),
+            },
+            MountSource::Resource {
+                resource_id: "r".into(),
+                content_hash: None,
+            },
+            MountSource::MemoryStore {
+                store_id: "s".into(),
+            },
+            MountSource::Secret {
+                reference: "broker://k".into(),
+                content_hash: None,
+            },
+        ] {
+            let wire = serde_json::to_string(&src).unwrap();
+            assert_eq!(serde_json::from_str::<MountSource>(&wire).unwrap(), src);
+        }
+    }
+
+    #[test]
+    fn a_session_lifetime_secret_is_not_a_writeback() {
+        // Only Durable+ReadWrite is a writeback; Session lifetime (between PerRun and
+        // Durable) is not — the boundary the other writeback tests didn't cover.
+        let m = req(
+            MountSource::Secret {
+                reference: "r".into(),
+                content_hash: None,
+            },
+            MountAccess::ReadWrite,
+            MountLifetime::Session,
+        );
+        assert!(!m.is_secret_writeback());
+    }
+
+    #[test]
+    fn resource_limits_is_set_flips_on_any_single_field() {
+        assert!(!ResourceLimits::default().is_set());
+        for limits in [
+            ResourceLimits {
+                cpu_millis: Some(1),
+                ..Default::default()
+            },
+            ResourceLimits {
+                memory_bytes: Some(1),
+                ..Default::default()
+            },
+            ResourceLimits {
+                pids: Some(1),
+                ..Default::default()
+            },
+            ResourceLimits {
+                disk_bytes: Some(1),
+                ..Default::default()
+            },
+        ] {
+            assert!(limits.is_set(), "any single cap set makes is_set() true");
+        }
+    }
+
+    #[test]
+    fn a_bind_realization_round_trips() {
+        // `Realization::Bind` is produced by the namespace/container tiers but was
+        // never constructed in a contract test; pin its wire form here.
+        let m = RealizedMount {
+            mount_id: "in".into(),
+            mount_path: "/data/in".into(),
+            access: MountAccess::ReadOnly,
+            realization: Realization::Bind,
+            content_hash: Some("h".into()),
+        };
+        let wire = serde_json::to_string(&m).unwrap();
+        assert!(wire.contains("\"realization\":\"bind\""));
+        assert_eq!(serde_json::from_str::<RealizedMount>(&wire).unwrap(), m);
+    }
+
+    #[test]
+    fn reserved_env_keys_are_the_runtime_owned_set() {
+        // The full guard set admission rejects (previously only PATH was exercised).
+        for key in ["PATH", "HOME", "AWAKEN_PROJECT_DIR", "AWAKEN_OUTPUTS_DIR"] {
+            assert!(RESERVED_ENV_KEYS.contains(&key), "{key} is runtime-owned");
+        }
+    }
 }

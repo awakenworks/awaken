@@ -201,6 +201,52 @@ mod tests {
     }
 
     #[test]
+    fn a_wrong_tuple_masks_a_bad_signature() {
+        // Cause-effect masking: the tuple is checked before the MAC, so a token that
+        // fails BOTH reports `TupleMismatch` — it never leaks that the signature is also
+        // bad (precedence short-circuit).
+        let mut token = claims(1).sign(signer(7));
+        token.mac[0] ^= 0xFF; // corrupt the signature too
+        assert_eq!(
+            token.verify("lease-X", "run-1", "w-1", 1_500, 100, signer(7)),
+            Err(TokenError::TupleMismatch)
+        );
+    }
+
+    #[test]
+    fn a_tuple_mismatch_on_run_or_worker_is_rejected() {
+        // The full tuple is fenced — previously only a differing lease_id was tested.
+        let token = claims(1).sign(signer(7));
+        assert_eq!(
+            token.verify("lease-1", "run-X", "w-1", 1_500, 100, signer(7)),
+            Err(TokenError::TupleMismatch)
+        );
+        assert_eq!(
+            token.verify("lease-1", "run-1", "w-X", 1_500, 100, signer(7)),
+            Err(TokenError::TupleMismatch)
+        );
+    }
+
+    #[test]
+    fn the_validity_window_is_inclusive_at_both_edges() {
+        // Boundary: `now == expires` is still valid (expiry is exclusive-above), and
+        // `now + skew == issued` is valid (not-yet-valid is strictly-before).
+        let token = claims(1).sign(signer(7));
+        assert!(
+            token
+                .verify("lease-1", "run-1", "w-1", 2_000, 0, signer(7))
+                .is_ok(),
+            "now == expires_ms is inside the window"
+        );
+        assert!(
+            token
+                .verify("lease-1", "run-1", "w-1", 900, 100, signer(7))
+                .is_ok(),
+            "now + skew == issued_ms is inside the window"
+        );
+    }
+
+    #[test]
     fn the_nonce_watermark_rejects_replays_and_advances_on_higher() {
         let mut wm = NonceWatermark::new();
         assert!(wm.admit("lease-1", 5), "first nonce admitted");

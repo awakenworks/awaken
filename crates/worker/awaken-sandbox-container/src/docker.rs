@@ -155,6 +155,31 @@ mod cgroup_host_config_tests {
     }
 
     #[test]
+    fn host_config_applies_the_planned_network_mode_and_gates_port_publishing() {
+        let rt = DockerRuntime::connect_local(8080).expect("client builds without a daemon");
+
+        // Open: default bridge (no explicit network_mode) with the agent port published.
+        let open = rt.host_config(&plan()); // plan() defaults to NetworkMode::Open
+        assert_eq!(open.network_mode, None);
+        assert!(
+            open.port_bindings
+                .as_ref()
+                .unwrap()
+                .contains_key("8080/tcp")
+        );
+
+        // None: an empty network is applied and port publishing is dropped (Docker
+        // forbids publishing under `--network none`). Without this the deny-egress
+        // policy is planned but never enforced — a fail-open egress leak.
+        let denied = rt.host_config(&ContainerPlan {
+            network: crate::NetworkMode::None,
+            ..plan()
+        });
+        assert_eq!(denied.network_mode.as_deref(), Some("none"));
+        assert!(denied.port_bindings.is_none());
+    }
+
+    #[test]
     fn with_client_wraps_a_handle_and_connect_local_builds_one() {
         let docker = Docker::connect_with_local_defaults().unwrap();
         let rt = DockerRuntime::with_client(docker, 9000);
@@ -216,18 +241,30 @@ impl DockerRuntime {
                 format!("{}:{}{ro}", b.source_ref, b.mount_path)
             })
             .collect();
-        // Publish the agent port to an ephemeral 127.0.0.1 host port.
-        let mut port_bindings = HashMap::new();
-        port_bindings.insert(
-            self.port_key(),
-            Some(vec![PortBinding {
-                host_ip: Some("127.0.0.1".to_string()),
-                host_port: Some(String::new()),
-            }]),
-        );
+        // Apply the planned egress policy at the container level. `None` gets its own
+        // empty network (`--network none`); `Open`/`Allowlist` keep the daemon default
+        // bridge (an allowlist is enforced at the brokered proxy, whose env is injected,
+        // so the container still needs bridge egress to reach that chokepoint). Without
+        // this the policy is planned but never applied — a fail-open egress leak.
+        let deny_net = matches!(plan.network, crate::NetworkMode::None);
+        // Publish the agent port to an ephemeral 127.0.0.1 host port — but not under
+        // `--network none`, where Docker forbids port publishing (and there is no
+        // reachable agent channel anyway).
+        let port_bindings = (!deny_net).then(|| {
+            let mut m = HashMap::new();
+            m.insert(
+                self.port_key(),
+                Some(vec![PortBinding {
+                    host_ip: Some("127.0.0.1".to_string()),
+                    host_port: Some(String::new()),
+                }]),
+            );
+            m
+        });
         HostConfig {
             binds: (!binds.is_empty()).then_some(binds),
-            port_bindings: Some(port_bindings),
+            port_bindings,
+            network_mode: deny_net.then(|| "none".to_string()),
             // Harden the untrusted agent: read-only rootfs, writable app paths as tmpfs.
             readonly_rootfs: Some(true),
             tmpfs: Some(tmpfs_for(plan)),

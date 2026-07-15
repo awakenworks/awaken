@@ -371,6 +371,21 @@ mod tests {
     }
 
     #[test]
+    fn capped_expiry_saturates_instead_of_overflowing() {
+        // Boundary: now + ttl near u64::MAX must saturate (never wrap/panic). An
+        // indefinite lease then returns the saturated ceiling; a real lease still caps.
+        assert_eq!(
+            capped_expiry(u64::MAX, u64::MAX, &LeaseGrant::indefinite()),
+            u64::MAX
+        );
+        assert_eq!(
+            capped_expiry(u64::MAX, u64::MAX, &LeaseGrant::until(1_000)),
+            1_000,
+            "a saturated token is still capped to the lease deadline"
+        );
+    }
+
+    #[test]
     fn egress_is_denied_once_the_lease_is_revoked_or_expired() {
         let g = LeaseGrant::until(1_000);
         assert!(egress_permitted(&g, 500, false)); // live

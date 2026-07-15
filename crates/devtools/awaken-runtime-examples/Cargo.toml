@@ -52,6 +52,10 @@ awaken-tool-relay = { workspace = true }
 awaken-connection-plan = { workspace = true }
 # `tcp_relay_e2e` names the neutral channel trait to hold a dialed brain channel.
 awaken-agent-channel = { workspace = true }
+# `remote_hand_sandbox_e2e` composes the remote hand with a real OS sandbox: the
+# hand's tool executes inside a provisioned sandbox (ADR-0044 hand × ADR-0041 sandbox).
+awaken-sandbox-local = { workspace = true }
+awaken-provisioning-contract = { workspace = true }
 
 [[example]]
 name = "coding_agent"
