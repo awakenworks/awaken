@@ -21,6 +21,7 @@ impl core::marker::Freeze for awaken_ext_skills::SkillContext
 impl core::marker::Send for awaken_ext_skills::SkillContext
 impl core::marker::Sync for awaken_ext_skills::SkillContext
 impl core::marker::Unpin for awaken_ext_skills::SkillContext
+impl core::marker::UnsafeUnpin for awaken_ext_skills::SkillContext
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_skills::SkillContext
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_skills::SkillContext
 pub enum awaken_ext_skills::SkillProvenance
@@ -45,6 +46,7 @@ impl core::marker::Freeze for awaken_ext_skills::SkillProvenance
 impl core::marker::Send for awaken_ext_skills::SkillProvenance
 impl core::marker::Sync for awaken_ext_skills::SkillProvenance
 impl core::marker::Unpin for awaken_ext_skills::SkillProvenance
+impl core::marker::UnsafeUnpin for awaken_ext_skills::SkillProvenance
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_skills::SkillProvenance
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_skills::SkillProvenance
 pub struct awaken_ext_skills::CompositeSkillRegistry
@@ -57,6 +59,7 @@ impl core::marker::Freeze for awaken_ext_skills::CompositeSkillRegistry
 impl core::marker::Send for awaken_ext_skills::CompositeSkillRegistry
 impl core::marker::Sync for awaken_ext_skills::CompositeSkillRegistry
 impl core::marker::Unpin for awaken_ext_skills::CompositeSkillRegistry
+impl core::marker::UnsafeUnpin for awaken_ext_skills::CompositeSkillRegistry
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_skills::CompositeSkillRegistry
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_skills::CompositeSkillRegistry
 pub struct awaken_ext_skills::InMemorySkillRegistry
@@ -78,6 +81,7 @@ impl core::marker::Freeze for awaken_ext_skills::InMemorySkillRegistry
 impl core::marker::Send for awaken_ext_skills::InMemorySkillRegistry
 impl core::marker::Sync for awaken_ext_skills::InMemorySkillRegistry
 impl core::marker::Unpin for awaken_ext_skills::InMemorySkillRegistry
+impl core::marker::UnsafeUnpin for awaken_ext_skills::InMemorySkillRegistry
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_skills::InMemorySkillRegistry
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_skills::InMemorySkillRegistry
 pub struct awaken_ext_skills::ListSkillsTool
@@ -94,6 +98,7 @@ impl core::marker::Freeze for awaken_ext_skills::ListSkillsTool
 impl core::marker::Send for awaken_ext_skills::ListSkillsTool
 impl core::marker::Sync for awaken_ext_skills::ListSkillsTool
 impl core::marker::Unpin for awaken_ext_skills::ListSkillsTool
+impl core::marker::UnsafeUnpin for awaken_ext_skills::ListSkillsTool
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_skills::ListSkillsTool
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_skills::ListSkillsTool
 pub struct awaken_ext_skills::PathActivations
@@ -109,6 +114,7 @@ impl core::marker::Freeze for awaken_ext_skills::PathActivations
 impl core::marker::Send for awaken_ext_skills::PathActivations
 impl core::marker::Sync for awaken_ext_skills::PathActivations
 impl core::marker::Unpin for awaken_ext_skills::PathActivations
+impl core::marker::UnsafeUnpin for awaken_ext_skills::PathActivations
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_skills::PathActivations
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_skills::PathActivations
 pub struct awaken_ext_skills::RecordingGate
@@ -120,6 +126,7 @@ impl core::marker::Freeze for awaken_ext_skills::RecordingGate
 impl core::marker::Send for awaken_ext_skills::RecordingGate
 impl core::marker::Sync for awaken_ext_skills::RecordingGate
 impl core::marker::Unpin for awaken_ext_skills::RecordingGate
+impl core::marker::UnsafeUnpin for awaken_ext_skills::RecordingGate
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_skills::RecordingGate
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_skills::RecordingGate
 pub struct awaken_ext_skills::SkillFile
@@ -138,6 +145,7 @@ impl core::marker::Freeze for awaken_ext_skills::SkillFile
 impl core::marker::Send for awaken_ext_skills::SkillFile
 impl core::marker::Sync for awaken_ext_skills::SkillFile
 impl core::marker::Unpin for awaken_ext_skills::SkillFile
+impl core::marker::UnsafeUnpin for awaken_ext_skills::SkillFile
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_skills::SkillFile
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_skills::SkillFile
 pub struct awaken_ext_skills::SkillSpec
@@ -183,6 +191,7 @@ impl core::marker::Freeze for awaken_ext_skills::SkillSpec
 impl core::marker::Send for awaken_ext_skills::SkillSpec
 impl core::marker::Sync for awaken_ext_skills::SkillSpec
 impl core::marker::Unpin for awaken_ext_skills::SkillSpec
+impl core::marker::UnsafeUnpin for awaken_ext_skills::SkillSpec
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_skills::SkillSpec
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_skills::SkillSpec
 pub struct awaken_ext_skills::SkillTool
@@ -200,6 +209,7 @@ impl core::marker::Freeze for awaken_ext_skills::SkillTool
 impl core::marker::Send for awaken_ext_skills::SkillTool
 impl core::marker::Sync for awaken_ext_skills::SkillTool
 impl core::marker::Unpin for awaken_ext_skills::SkillTool
+impl core::marker::UnsafeUnpin for awaken_ext_skills::SkillTool
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_skills::SkillTool
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_skills::SkillTool
 pub struct awaken_ext_skills::SourceSkillRegistry
@@ -212,6 +222,7 @@ impl core::marker::Freeze for awaken_ext_skills::SourceSkillRegistry
 impl core::marker::Send for awaken_ext_skills::SourceSkillRegistry
 impl core::marker::Sync for awaken_ext_skills::SourceSkillRegistry
 impl core::marker::Unpin for awaken_ext_skills::SourceSkillRegistry
+impl core::marker::UnsafeUnpin for awaken_ext_skills::SourceSkillRegistry
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_skills::SourceSkillRegistry
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_skills::SourceSkillRegistry
 pub const awaken_ext_skills::SKILL_LIST_TOOL_ID: &str

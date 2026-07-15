@@ -27,6 +27,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::client::ClientError
 impl core::marker::Send for awaken_protocol_a2a::client::ClientError
 impl core::marker::Sync for awaken_protocol_a2a::client::ClientError
 impl core::marker::Unpin for awaken_protocol_a2a::client::ClientError
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::client::ClientError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::client::ClientError
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::client::ClientError
 pub struct awaken_protocol_a2a::client::HttpTransport
@@ -43,6 +44,7 @@ impl !core::marker::Freeze for awaken_protocol_a2a::client::HttpTransport
 impl core::marker::Send for awaken_protocol_a2a::client::HttpTransport
 impl core::marker::Sync for awaken_protocol_a2a::client::HttpTransport
 impl core::marker::Unpin for awaken_protocol_a2a::client::HttpTransport
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::client::HttpTransport
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::client::HttpTransport
 impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::client::HttpTransport
 pub struct awaken_protocol_a2a::client::Response
@@ -55,6 +57,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::client::Response
 impl core::marker::Send for awaken_protocol_a2a::client::Response
 impl core::marker::Sync for awaken_protocol_a2a::client::Response
 impl core::marker::Unpin for awaken_protocol_a2a::client::Response
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::client::Response
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::client::Response
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::client::Response
 pub const awaken_protocol_a2a::client::AGENT_CARD_PATH: &str
@@ -81,6 +84,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::request::Processed
 impl core::marker::Send for awaken_protocol_a2a::request::Processed
 impl core::marker::Sync for awaken_protocol_a2a::request::Processed
 impl core::marker::Unpin for awaken_protocol_a2a::request::Processed
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::request::Processed
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::request::Processed
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::request::Processed
 pub fn awaken_protocol_a2a::request::process(awaken_protocol_a2a::types::SendMessageRequest, core::option::Option<alloc::string::String>) -> awaken_protocol_a2a::request::Processed
@@ -110,6 +114,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::ApiKeyLocation
 impl core::marker::Send for awaken_protocol_a2a::types::ApiKeyLocation
 impl core::marker::Sync for awaken_protocol_a2a::types::ApiKeyLocation
 impl core::marker::Unpin for awaken_protocol_a2a::types::ApiKeyLocation
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::ApiKeyLocation
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::ApiKeyLocation
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::ApiKeyLocation
 pub enum awaken_protocol_a2a::types::MessageRole
@@ -132,6 +137,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::MessageRole
 impl core::marker::Send for awaken_protocol_a2a::types::MessageRole
 impl core::marker::Sync for awaken_protocol_a2a::types::MessageRole
 impl core::marker::Unpin for awaken_protocol_a2a::types::MessageRole
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::MessageRole
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::MessageRole
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::MessageRole
 pub enum awaken_protocol_a2a::types::SecurityScheme
@@ -168,6 +174,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::SecurityScheme
 impl core::marker::Send for awaken_protocol_a2a::types::SecurityScheme
 impl core::marker::Sync for awaken_protocol_a2a::types::SecurityScheme
 impl core::marker::Unpin for awaken_protocol_a2a::types::SecurityScheme
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::SecurityScheme
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::SecurityScheme
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::SecurityScheme
 pub enum awaken_protocol_a2a::types::TaskState
@@ -194,6 +201,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::TaskState
 impl core::marker::Send for awaken_protocol_a2a::types::TaskState
 impl core::marker::Sync for awaken_protocol_a2a::types::TaskState
 impl core::marker::Unpin for awaken_protocol_a2a::types::TaskState
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::TaskState
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::TaskState
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::TaskState
 pub struct awaken_protocol_a2a::types::AgentCapabilities
@@ -217,6 +225,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::AgentCapabilities
 impl core::marker::Send for awaken_protocol_a2a::types::AgentCapabilities
 impl core::marker::Sync for awaken_protocol_a2a::types::AgentCapabilities
 impl core::marker::Unpin for awaken_protocol_a2a::types::AgentCapabilities
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::AgentCapabilities
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::AgentCapabilities
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::AgentCapabilities
 pub struct awaken_protocol_a2a::types::AgentCard
@@ -248,6 +257,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::AgentCard
 impl core::marker::Send for awaken_protocol_a2a::types::AgentCard
 impl core::marker::Sync for awaken_protocol_a2a::types::AgentCard
 impl core::marker::Unpin for awaken_protocol_a2a::types::AgentCard
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::AgentCard
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::AgentCard
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::AgentCard
 pub struct awaken_protocol_a2a::types::AgentSkill
@@ -270,6 +280,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::AgentSkill
 impl core::marker::Send for awaken_protocol_a2a::types::AgentSkill
 impl core::marker::Sync for awaken_protocol_a2a::types::AgentSkill
 impl core::marker::Unpin for awaken_protocol_a2a::types::AgentSkill
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::AgentSkill
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::AgentSkill
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::AgentSkill
 pub struct awaken_protocol_a2a::types::Artifact
@@ -294,6 +305,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::Artifact
 impl core::marker::Send for awaken_protocol_a2a::types::Artifact
 impl core::marker::Sync for awaken_protocol_a2a::types::Artifact
 impl core::marker::Unpin for awaken_protocol_a2a::types::Artifact
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::Artifact
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::Artifact
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::Artifact
 pub struct awaken_protocol_a2a::types::AuthorizationCodeFlow
@@ -317,6 +329,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::AuthorizationCodeFlow
 impl core::marker::Send for awaken_protocol_a2a::types::AuthorizationCodeFlow
 impl core::marker::Sync for awaken_protocol_a2a::types::AuthorizationCodeFlow
 impl core::marker::Unpin for awaken_protocol_a2a::types::AuthorizationCodeFlow
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::AuthorizationCodeFlow
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::AuthorizationCodeFlow
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::AuthorizationCodeFlow
 pub struct awaken_protocol_a2a::types::ClientCredentialsFlow
@@ -339,6 +352,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::ClientCredentialsFlow
 impl core::marker::Send for awaken_protocol_a2a::types::ClientCredentialsFlow
 impl core::marker::Sync for awaken_protocol_a2a::types::ClientCredentialsFlow
 impl core::marker::Unpin for awaken_protocol_a2a::types::ClientCredentialsFlow
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::ClientCredentialsFlow
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::ClientCredentialsFlow
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::ClientCredentialsFlow
 pub struct awaken_protocol_a2a::types::Error
@@ -360,6 +374,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::Error
 impl core::marker::Send for awaken_protocol_a2a::types::Error
 impl core::marker::Sync for awaken_protocol_a2a::types::Error
 impl core::marker::Unpin for awaken_protocol_a2a::types::Error
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::Error
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::Error
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::Error
 pub struct awaken_protocol_a2a::types::ErrorResponse
@@ -382,6 +397,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::ErrorResponse
 impl core::marker::Send for awaken_protocol_a2a::types::ErrorResponse
 impl core::marker::Sync for awaken_protocol_a2a::types::ErrorResponse
 impl core::marker::Unpin for awaken_protocol_a2a::types::ErrorResponse
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::ErrorResponse
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::ErrorResponse
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::ErrorResponse
 pub struct awaken_protocol_a2a::types::FilePart
@@ -403,6 +419,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::FilePart
 impl core::marker::Send for awaken_protocol_a2a::types::FilePart
 impl core::marker::Sync for awaken_protocol_a2a::types::FilePart
 impl core::marker::Unpin for awaken_protocol_a2a::types::FilePart
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::FilePart
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::FilePart
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::FilePart
 pub struct awaken_protocol_a2a::types::ImplicitFlow
@@ -425,6 +442,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::ImplicitFlow
 impl core::marker::Send for awaken_protocol_a2a::types::ImplicitFlow
 impl core::marker::Sync for awaken_protocol_a2a::types::ImplicitFlow
 impl core::marker::Unpin for awaken_protocol_a2a::types::ImplicitFlow
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::ImplicitFlow
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::ImplicitFlow
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::ImplicitFlow
 pub struct awaken_protocol_a2a::types::Message
@@ -452,6 +470,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::Message
 impl core::marker::Send for awaken_protocol_a2a::types::Message
 impl core::marker::Sync for awaken_protocol_a2a::types::Message
 impl core::marker::Unpin for awaken_protocol_a2a::types::Message
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::Message
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::Message
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::Message
 pub struct awaken_protocol_a2a::types::OAuthFlows
@@ -477,6 +496,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::OAuthFlows
 impl core::marker::Send for awaken_protocol_a2a::types::OAuthFlows
 impl core::marker::Sync for awaken_protocol_a2a::types::OAuthFlows
 impl core::marker::Unpin for awaken_protocol_a2a::types::OAuthFlows
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::OAuthFlows
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::OAuthFlows
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::OAuthFlows
 pub struct awaken_protocol_a2a::types::Part
@@ -500,6 +520,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::Part
 impl core::marker::Send for awaken_protocol_a2a::types::Part
 impl core::marker::Sync for awaken_protocol_a2a::types::Part
 impl core::marker::Unpin for awaken_protocol_a2a::types::Part
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::Part
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::Part
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::Part
 pub struct awaken_protocol_a2a::types::PasswordFlow
@@ -522,6 +543,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::PasswordFlow
 impl core::marker::Send for awaken_protocol_a2a::types::PasswordFlow
 impl core::marker::Sync for awaken_protocol_a2a::types::PasswordFlow
 impl core::marker::Unpin for awaken_protocol_a2a::types::PasswordFlow
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::PasswordFlow
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::PasswordFlow
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::PasswordFlow
 pub struct awaken_protocol_a2a::types::SendMessage
@@ -542,6 +564,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::SendMessage
 impl core::marker::Send for awaken_protocol_a2a::types::SendMessage
 impl core::marker::Sync for awaken_protocol_a2a::types::SendMessage
 impl core::marker::Unpin for awaken_protocol_a2a::types::SendMessage
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::SendMessage
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::SendMessage
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::SendMessage
 pub struct awaken_protocol_a2a::types::SendMessageRequest
@@ -557,6 +580,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::SendMessageRequest
 impl core::marker::Send for awaken_protocol_a2a::types::SendMessageRequest
 impl core::marker::Sync for awaken_protocol_a2a::types::SendMessageRequest
 impl core::marker::Unpin for awaken_protocol_a2a::types::SendMessageRequest
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::SendMessageRequest
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::SendMessageRequest
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::SendMessageRequest
 pub struct awaken_protocol_a2a::types::SendMessageResponse
@@ -576,6 +600,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::SendMessageResponse
 impl core::marker::Send for awaken_protocol_a2a::types::SendMessageResponse
 impl core::marker::Sync for awaken_protocol_a2a::types::SendMessageResponse
 impl core::marker::Unpin for awaken_protocol_a2a::types::SendMessageResponse
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::SendMessageResponse
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::SendMessageResponse
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::SendMessageResponse
 pub struct awaken_protocol_a2a::types::Task
@@ -600,6 +625,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::Task
 impl core::marker::Send for awaken_protocol_a2a::types::Task
 impl core::marker::Sync for awaken_protocol_a2a::types::Task
 impl core::marker::Unpin for awaken_protocol_a2a::types::Task
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::Task
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::Task
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::Task
 pub struct awaken_protocol_a2a::types::TaskStatus
@@ -620,6 +646,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::TaskStatus
 impl core::marker::Send for awaken_protocol_a2a::types::TaskStatus
 impl core::marker::Sync for awaken_protocol_a2a::types::TaskStatus
 impl core::marker::Unpin for awaken_protocol_a2a::types::TaskStatus
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::TaskStatus
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::TaskStatus
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::TaskStatus
 pub enum awaken_protocol_a2a::ApiKeyLocation
@@ -643,6 +670,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::ApiKeyLocation
 impl core::marker::Send for awaken_protocol_a2a::types::ApiKeyLocation
 impl core::marker::Sync for awaken_protocol_a2a::types::ApiKeyLocation
 impl core::marker::Unpin for awaken_protocol_a2a::types::ApiKeyLocation
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::ApiKeyLocation
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::ApiKeyLocation
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::ApiKeyLocation
 pub enum awaken_protocol_a2a::ClientError
@@ -664,6 +692,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::client::ClientError
 impl core::marker::Send for awaken_protocol_a2a::client::ClientError
 impl core::marker::Sync for awaken_protocol_a2a::client::ClientError
 impl core::marker::Unpin for awaken_protocol_a2a::client::ClientError
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::client::ClientError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::client::ClientError
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::client::ClientError
 pub enum awaken_protocol_a2a::SecurityScheme
@@ -700,6 +729,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::SecurityScheme
 impl core::marker::Send for awaken_protocol_a2a::types::SecurityScheme
 impl core::marker::Sync for awaken_protocol_a2a::types::SecurityScheme
 impl core::marker::Unpin for awaken_protocol_a2a::types::SecurityScheme
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::SecurityScheme
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::SecurityScheme
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::SecurityScheme
 pub enum awaken_protocol_a2a::TaskState
@@ -726,6 +756,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::TaskState
 impl core::marker::Send for awaken_protocol_a2a::types::TaskState
 impl core::marker::Sync for awaken_protocol_a2a::types::TaskState
 impl core::marker::Unpin for awaken_protocol_a2a::types::TaskState
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::TaskState
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::TaskState
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::TaskState
 pub struct awaken_protocol_a2a::AgentCard
@@ -757,6 +788,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::AgentCard
 impl core::marker::Send for awaken_protocol_a2a::types::AgentCard
 impl core::marker::Sync for awaken_protocol_a2a::types::AgentCard
 impl core::marker::Unpin for awaken_protocol_a2a::types::AgentCard
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::AgentCard
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::AgentCard
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::AgentCard
 pub struct awaken_protocol_a2a::Artifact
@@ -781,6 +813,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::Artifact
 impl core::marker::Send for awaken_protocol_a2a::types::Artifact
 impl core::marker::Sync for awaken_protocol_a2a::types::Artifact
 impl core::marker::Unpin for awaken_protocol_a2a::types::Artifact
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::Artifact
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::Artifact
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::Artifact
 pub struct awaken_protocol_a2a::AuthorizationCodeFlow
@@ -804,6 +837,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::AuthorizationCodeFlow
 impl core::marker::Send for awaken_protocol_a2a::types::AuthorizationCodeFlow
 impl core::marker::Sync for awaken_protocol_a2a::types::AuthorizationCodeFlow
 impl core::marker::Unpin for awaken_protocol_a2a::types::AuthorizationCodeFlow
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::AuthorizationCodeFlow
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::AuthorizationCodeFlow
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::AuthorizationCodeFlow
 pub struct awaken_protocol_a2a::ClientCredentialsFlow
@@ -826,6 +860,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::ClientCredentialsFlow
 impl core::marker::Send for awaken_protocol_a2a::types::ClientCredentialsFlow
 impl core::marker::Sync for awaken_protocol_a2a::types::ClientCredentialsFlow
 impl core::marker::Unpin for awaken_protocol_a2a::types::ClientCredentialsFlow
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::ClientCredentialsFlow
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::ClientCredentialsFlow
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::ClientCredentialsFlow
 pub struct awaken_protocol_a2a::HttpTransport
@@ -842,6 +877,7 @@ impl !core::marker::Freeze for awaken_protocol_a2a::client::HttpTransport
 impl core::marker::Send for awaken_protocol_a2a::client::HttpTransport
 impl core::marker::Sync for awaken_protocol_a2a::client::HttpTransport
 impl core::marker::Unpin for awaken_protocol_a2a::client::HttpTransport
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::client::HttpTransport
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::client::HttpTransport
 impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::client::HttpTransport
 pub struct awaken_protocol_a2a::ImplicitFlow
@@ -864,6 +900,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::ImplicitFlow
 impl core::marker::Send for awaken_protocol_a2a::types::ImplicitFlow
 impl core::marker::Sync for awaken_protocol_a2a::types::ImplicitFlow
 impl core::marker::Unpin for awaken_protocol_a2a::types::ImplicitFlow
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::ImplicitFlow
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::ImplicitFlow
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::ImplicitFlow
 pub struct awaken_protocol_a2a::OAuthFlows
@@ -889,6 +926,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::OAuthFlows
 impl core::marker::Send for awaken_protocol_a2a::types::OAuthFlows
 impl core::marker::Sync for awaken_protocol_a2a::types::OAuthFlows
 impl core::marker::Unpin for awaken_protocol_a2a::types::OAuthFlows
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::OAuthFlows
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::OAuthFlows
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::OAuthFlows
 pub struct awaken_protocol_a2a::PasswordFlow
@@ -911,6 +949,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::PasswordFlow
 impl core::marker::Send for awaken_protocol_a2a::types::PasswordFlow
 impl core::marker::Sync for awaken_protocol_a2a::types::PasswordFlow
 impl core::marker::Unpin for awaken_protocol_a2a::types::PasswordFlow
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::PasswordFlow
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::PasswordFlow
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::PasswordFlow
 pub struct awaken_protocol_a2a::Response
@@ -923,6 +962,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::client::Response
 impl core::marker::Send for awaken_protocol_a2a::client::Response
 impl core::marker::Sync for awaken_protocol_a2a::client::Response
 impl core::marker::Unpin for awaken_protocol_a2a::client::Response
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::client::Response
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::client::Response
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::client::Response
 pub struct awaken_protocol_a2a::SendMessageRequest
@@ -938,6 +978,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::SendMessageRequest
 impl core::marker::Send for awaken_protocol_a2a::types::SendMessageRequest
 impl core::marker::Sync for awaken_protocol_a2a::types::SendMessageRequest
 impl core::marker::Unpin for awaken_protocol_a2a::types::SendMessageRequest
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::SendMessageRequest
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::SendMessageRequest
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::SendMessageRequest
 pub struct awaken_protocol_a2a::SendMessageResponse
@@ -957,6 +998,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::SendMessageResponse
 impl core::marker::Send for awaken_protocol_a2a::types::SendMessageResponse
 impl core::marker::Sync for awaken_protocol_a2a::types::SendMessageResponse
 impl core::marker::Unpin for awaken_protocol_a2a::types::SendMessageResponse
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::SendMessageResponse
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::SendMessageResponse
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::SendMessageResponse
 pub struct awaken_protocol_a2a::Task
@@ -981,6 +1023,7 @@ impl core::marker::Freeze for awaken_protocol_a2a::types::Task
 impl core::marker::Send for awaken_protocol_a2a::types::Task
 impl core::marker::Sync for awaken_protocol_a2a::types::Task
 impl core::marker::Unpin for awaken_protocol_a2a::types::Task
+impl core::marker::UnsafeUnpin for awaken_protocol_a2a::types::Task
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::Task
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::Task
 pub trait awaken_protocol_a2a::Transport: core::marker::Send + core::marker::Sync

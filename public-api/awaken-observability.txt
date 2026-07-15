@@ -20,6 +20,7 @@ impl core::marker::Freeze for awaken_observability::OtelProtocol
 impl core::marker::Send for awaken_observability::OtelProtocol
 impl core::marker::Sync for awaken_observability::OtelProtocol
 impl core::marker::Unpin for awaken_observability::OtelProtocol
+impl core::marker::UnsafeUnpin for awaken_observability::OtelProtocol
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_observability::OtelProtocol
 impl core::panic::unwind_safe::UnwindSafe for awaken_observability::OtelProtocol
 pub struct awaken_observability::OtelConfig
@@ -47,6 +48,7 @@ impl core::marker::Freeze for awaken_observability::OtelConfig
 impl core::marker::Send for awaken_observability::OtelConfig
 impl core::marker::Sync for awaken_observability::OtelConfig
 impl core::marker::Unpin for awaken_observability::OtelConfig
+impl core::marker::UnsafeUnpin for awaken_observability::OtelConfig
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_observability::OtelConfig
 impl core::panic::unwind_safe::UnwindSafe for awaken_observability::OtelConfig
 pub struct awaken_observability::OtelConfigBuilder
@@ -65,6 +67,7 @@ impl core::marker::Freeze for awaken_observability::OtelConfigBuilder
 impl core::marker::Send for awaken_observability::OtelConfigBuilder
 impl core::marker::Sync for awaken_observability::OtelConfigBuilder
 impl core::marker::Unpin for awaken_observability::OtelConfigBuilder
+impl core::marker::UnsafeUnpin for awaken_observability::OtelConfigBuilder
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_observability::OtelConfigBuilder
 impl core::panic::unwind_safe::UnwindSafe for awaken_observability::OtelConfigBuilder
 pub struct awaken_observability::OtelMetricsRecorder
@@ -82,6 +85,7 @@ impl core::marker::Freeze for awaken_observability::OtelMetricsRecorder
 impl core::marker::Send for awaken_observability::OtelMetricsRecorder
 impl core::marker::Sync for awaken_observability::OtelMetricsRecorder
 impl core::marker::Unpin for awaken_observability::OtelMetricsRecorder
+impl core::marker::UnsafeUnpin for awaken_observability::OtelMetricsRecorder
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_observability::OtelMetricsRecorder
 impl !core::panic::unwind_safe::UnwindSafe for awaken_observability::OtelMetricsRecorder
 pub fn awaken_observability::current_traceparent() -> core::option::Option<alloc::string::String>

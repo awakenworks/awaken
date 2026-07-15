@@ -16,6 +16,7 @@ impl core::marker::Freeze for awaken_store_inmem::CommittedThread
 impl core::marker::Send for awaken_store_inmem::CommittedThread
 impl core::marker::Sync for awaken_store_inmem::CommittedThread
 impl core::marker::Unpin for awaken_store_inmem::CommittedThread
+impl core::marker::UnsafeUnpin for awaken_store_inmem::CommittedThread
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_store_inmem::CommittedThread
 impl core::panic::unwind_safe::UnwindSafe for awaken_store_inmem::CommittedThread
 pub struct awaken_store_inmem::MemoryCommitCoordinator
@@ -46,6 +47,7 @@ impl core::marker::Freeze for awaken_store_inmem::MemoryCommitCoordinator
 impl core::marker::Send for awaken_store_inmem::MemoryCommitCoordinator
 impl core::marker::Sync for awaken_store_inmem::MemoryCommitCoordinator
 impl core::marker::Unpin for awaken_store_inmem::MemoryCommitCoordinator
+impl core::marker::UnsafeUnpin for awaken_store_inmem::MemoryCommitCoordinator
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_store_inmem::MemoryCommitCoordinator
 impl core::panic::unwind_safe::UnwindSafe for awaken_store_inmem::MemoryCommitCoordinator
 pub struct awaken_store_inmem::MemoryStreamCheckpointStore
@@ -63,6 +65,7 @@ impl !core::marker::Freeze for awaken_store_inmem::MemoryStreamCheckpointStore
 impl core::marker::Send for awaken_store_inmem::MemoryStreamCheckpointStore
 impl core::marker::Sync for awaken_store_inmem::MemoryStreamCheckpointStore
 impl core::marker::Unpin for awaken_store_inmem::MemoryStreamCheckpointStore
+impl core::marker::UnsafeUnpin for awaken_store_inmem::MemoryStreamCheckpointStore
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_store_inmem::MemoryStreamCheckpointStore
 impl core::panic::unwind_safe::UnwindSafe for awaken_store_inmem::MemoryStreamCheckpointStore
 pub struct awaken_store_inmem::MemoryStreamSink
@@ -81,6 +84,7 @@ impl core::marker::Freeze for awaken_store_inmem::MemoryStreamSink
 impl core::marker::Send for awaken_store_inmem::MemoryStreamSink
 impl core::marker::Sync for awaken_store_inmem::MemoryStreamSink
 impl core::marker::Unpin for awaken_store_inmem::MemoryStreamSink
+impl core::marker::UnsafeUnpin for awaken_store_inmem::MemoryStreamSink
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_store_inmem::MemoryStreamSink
 impl core::panic::unwind_safe::UnwindSafe for awaken_store_inmem::MemoryStreamSink
 pub fn awaken_store_inmem::replay_latest_phase(&awaken_store_inmem::CommittedThread, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::Phase>

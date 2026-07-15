@@ -23,6 +23,7 @@ impl core::marker::Freeze for awaken_ext_permission::Mode
 impl core::marker::Send for awaken_ext_permission::Mode
 impl core::marker::Sync for awaken_ext_permission::Mode
 impl core::marker::Unpin for awaken_ext_permission::Mode
+impl core::marker::UnsafeUnpin for awaken_ext_permission::Mode
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_permission::Mode
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_permission::Mode
 pub enum awaken_ext_permission::PermissionRuleScope
@@ -49,6 +50,7 @@ impl core::marker::Freeze for awaken_ext_permission::PermissionRuleScope
 impl core::marker::Send for awaken_ext_permission::PermissionRuleScope
 impl core::marker::Sync for awaken_ext_permission::PermissionRuleScope
 impl core::marker::Unpin for awaken_ext_permission::PermissionRuleScope
+impl core::marker::UnsafeUnpin for awaken_ext_permission::PermissionRuleScope
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_permission::PermissionRuleScope
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_permission::PermissionRuleScope
 pub enum awaken_ext_permission::ToolPermissionBehavior
@@ -72,6 +74,7 @@ impl core::marker::Freeze for awaken_ext_permission::ToolPermissionBehavior
 impl core::marker::Send for awaken_ext_permission::ToolPermissionBehavior
 impl core::marker::Sync for awaken_ext_permission::ToolPermissionBehavior
 impl core::marker::Unpin for awaken_ext_permission::ToolPermissionBehavior
+impl core::marker::UnsafeUnpin for awaken_ext_permission::ToolPermissionBehavior
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_permission::ToolPermissionBehavior
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_permission::ToolPermissionBehavior
 pub struct awaken_ext_permission::PermissionRule
@@ -88,6 +91,7 @@ impl core::marker::Freeze for awaken_ext_permission::PermissionRule
 impl core::marker::Send for awaken_ext_permission::PermissionRule
 impl core::marker::Sync for awaken_ext_permission::PermissionRule
 impl core::marker::Unpin for awaken_ext_permission::PermissionRule
+impl core::marker::UnsafeUnpin for awaken_ext_permission::PermissionRule
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_permission::PermissionRule
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_permission::PermissionRule
 pub struct awaken_ext_permission::PermissionRuleset
@@ -106,6 +110,7 @@ impl core::marker::Freeze for awaken_ext_permission::PermissionRuleset
 impl core::marker::Send for awaken_ext_permission::PermissionRuleset
 impl core::marker::Sync for awaken_ext_permission::PermissionRuleset
 impl core::marker::Unpin for awaken_ext_permission::PermissionRuleset
+impl core::marker::UnsafeUnpin for awaken_ext_permission::PermissionRuleset
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_permission::PermissionRuleset
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_permission::PermissionRuleset
 pub struct awaken_ext_permission::RuleConfig
@@ -123,6 +128,7 @@ impl core::marker::Freeze for awaken_ext_permission::RuleConfig
 impl core::marker::Send for awaken_ext_permission::RuleConfig
 impl core::marker::Sync for awaken_ext_permission::RuleConfig
 impl core::marker::Unpin for awaken_ext_permission::RuleConfig
+impl core::marker::UnsafeUnpin for awaken_ext_permission::RuleConfig
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_permission::RuleConfig
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_permission::RuleConfig
 pub struct awaken_ext_permission::RulePermissionPolicy
@@ -134,6 +140,7 @@ impl core::marker::Freeze for awaken_ext_permission::RulePermissionPolicy
 impl core::marker::Send for awaken_ext_permission::RulePermissionPolicy
 impl core::marker::Sync for awaken_ext_permission::RulePermissionPolicy
 impl core::marker::Unpin for awaken_ext_permission::RulePermissionPolicy
+impl core::marker::UnsafeUnpin for awaken_ext_permission::RulePermissionPolicy
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_permission::RulePermissionPolicy
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_permission::RulePermissionPolicy
 pub struct awaken_ext_permission::RulesConfig
@@ -152,6 +159,7 @@ impl core::marker::Freeze for awaken_ext_permission::RulesConfig
 impl core::marker::Send for awaken_ext_permission::RulesConfig
 impl core::marker::Sync for awaken_ext_permission::RulesConfig
 impl core::marker::Unpin for awaken_ext_permission::RulesConfig
+impl core::marker::UnsafeUnpin for awaken_ext_permission::RulesConfig
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_permission::RulesConfig
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_permission::RulesConfig
 pub struct awaken_ext_permission::ToolCallPattern(_)
@@ -166,6 +174,7 @@ impl core::marker::Freeze for awaken_ext_permission::ToolCallPattern
 impl core::marker::Send for awaken_ext_permission::ToolCallPattern
 impl core::marker::Sync for awaken_ext_permission::ToolCallPattern
 impl core::marker::Unpin for awaken_ext_permission::ToolCallPattern
+impl core::marker::UnsafeUnpin for awaken_ext_permission::ToolCallPattern
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_permission::ToolCallPattern
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_permission::ToolCallPattern
 pub fn awaken_ext_permission::parse_ruleset(&serde_json::value::Value) -> core::result::Result<awaken_ext_permission::PermissionRuleset, alloc::string::String>

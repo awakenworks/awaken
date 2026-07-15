@@ -9,6 +9,7 @@ impl core::marker::Freeze for awaken_protocol_mcp::export::ToolExec
 impl core::marker::Send for awaken_protocol_mcp::export::ToolExec
 impl core::marker::Sync for awaken_protocol_mcp::export::ToolExec
 impl core::marker::Unpin for awaken_protocol_mcp::export::ToolExec
+impl core::marker::UnsafeUnpin for awaken_protocol_mcp::export::ToolExec
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::export::ToolExec
 impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::export::ToolExec
 pub struct awaken_protocol_mcp::export::McpExportedTool
@@ -25,6 +26,7 @@ impl core::marker::Freeze for awaken_protocol_mcp::export::McpExportedTool
 impl core::marker::Send for awaken_protocol_mcp::export::McpExportedTool
 impl core::marker::Sync for awaken_protocol_mcp::export::McpExportedTool
 impl core::marker::Unpin for awaken_protocol_mcp::export::McpExportedTool
+impl core::marker::UnsafeUnpin for awaken_protocol_mcp::export::McpExportedTool
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::export::McpExportedTool
 impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::export::McpExportedTool
 pub struct awaken_protocol_mcp::export::SharedExports
@@ -39,6 +41,7 @@ impl !core::marker::Freeze for awaken_protocol_mcp::export::SharedExports
 impl core::marker::Send for awaken_protocol_mcp::export::SharedExports
 impl core::marker::Sync for awaken_protocol_mcp::export::SharedExports
 impl core::marker::Unpin for awaken_protocol_mcp::export::SharedExports
+impl core::marker::UnsafeUnpin for awaken_protocol_mcp::export::SharedExports
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::export::SharedExports
 impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::export::SharedExports
 pub struct awaken_protocol_mcp::export::StaticExports
@@ -52,6 +55,7 @@ impl core::marker::Freeze for awaken_protocol_mcp::export::StaticExports
 impl core::marker::Send for awaken_protocol_mcp::export::StaticExports
 impl core::marker::Sync for awaken_protocol_mcp::export::StaticExports
 impl core::marker::Unpin for awaken_protocol_mcp::export::StaticExports
+impl core::marker::UnsafeUnpin for awaken_protocol_mcp::export::StaticExports
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::export::StaticExports
 impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::export::StaticExports
 pub trait awaken_protocol_mcp::export::ProgressRawTool: core::marker::Send + core::marker::Sync
@@ -79,6 +83,7 @@ impl core::marker::Freeze for awaken_protocol_mcp::http::McpHttpConfig
 impl core::marker::Send for awaken_protocol_mcp::http::McpHttpConfig
 impl core::marker::Sync for awaken_protocol_mcp::http::McpHttpConfig
 impl core::marker::Unpin for awaken_protocol_mcp::http::McpHttpConfig
+impl core::marker::UnsafeUnpin for awaken_protocol_mcp::http::McpHttpConfig
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::http::McpHttpConfig
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::http::McpHttpConfig
 pub fn awaken_protocol_mcp::http::router(alloc::sync::Arc<awaken_protocol_mcp::service::McpToolService>, awaken_protocol_mcp::http::McpHttpConfig) -> axum::routing::Router
@@ -94,6 +99,7 @@ impl !core::marker::Freeze for awaken_protocol_mcp::service::McpToolService
 impl core::marker::Send for awaken_protocol_mcp::service::McpToolService
 impl core::marker::Sync for awaken_protocol_mcp::service::McpToolService
 impl core::marker::Unpin for awaken_protocol_mcp::service::McpToolService
+impl core::marker::UnsafeUnpin for awaken_protocol_mcp::service::McpToolService
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::service::McpToolService
 impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::service::McpToolService
 pub struct awaken_protocol_mcp::service::NullSink
@@ -103,6 +109,7 @@ impl core::marker::Freeze for awaken_protocol_mcp::service::NullSink
 impl core::marker::Send for awaken_protocol_mcp::service::NullSink
 impl core::marker::Sync for awaken_protocol_mcp::service::NullSink
 impl core::marker::Unpin for awaken_protocol_mcp::service::NullSink
+impl core::marker::UnsafeUnpin for awaken_protocol_mcp::service::NullSink
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::service::NullSink
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::service::NullSink
 pub trait awaken_protocol_mcp::service::NotifySink: core::marker::Send + core::marker::Sync
@@ -120,6 +127,7 @@ impl core::marker::Freeze for awaken_protocol_mcp::stdio::McpStdioServer
 impl core::marker::Send for awaken_protocol_mcp::stdio::McpStdioServer
 impl core::marker::Sync for awaken_protocol_mcp::stdio::McpStdioServer
 impl core::marker::Unpin for awaken_protocol_mcp::stdio::McpStdioServer
+impl core::marker::UnsafeUnpin for awaken_protocol_mcp::stdio::McpStdioServer
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::stdio::McpStdioServer
 impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::stdio::McpStdioServer
 pub enum awaken_protocol_mcp::ToolExec
@@ -131,6 +139,7 @@ impl core::marker::Freeze for awaken_protocol_mcp::export::ToolExec
 impl core::marker::Send for awaken_protocol_mcp::export::ToolExec
 impl core::marker::Sync for awaken_protocol_mcp::export::ToolExec
 impl core::marker::Unpin for awaken_protocol_mcp::export::ToolExec
+impl core::marker::UnsafeUnpin for awaken_protocol_mcp::export::ToolExec
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::export::ToolExec
 impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::export::ToolExec
 pub struct awaken_protocol_mcp::McpExportedTool
@@ -147,6 +156,7 @@ impl core::marker::Freeze for awaken_protocol_mcp::export::McpExportedTool
 impl core::marker::Send for awaken_protocol_mcp::export::McpExportedTool
 impl core::marker::Sync for awaken_protocol_mcp::export::McpExportedTool
 impl core::marker::Unpin for awaken_protocol_mcp::export::McpExportedTool
+impl core::marker::UnsafeUnpin for awaken_protocol_mcp::export::McpExportedTool
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::export::McpExportedTool
 impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::export::McpExportedTool
 pub struct awaken_protocol_mcp::McpHttpConfig
@@ -158,6 +168,7 @@ impl core::marker::Freeze for awaken_protocol_mcp::http::McpHttpConfig
 impl core::marker::Send for awaken_protocol_mcp::http::McpHttpConfig
 impl core::marker::Sync for awaken_protocol_mcp::http::McpHttpConfig
 impl core::marker::Unpin for awaken_protocol_mcp::http::McpHttpConfig
+impl core::marker::UnsafeUnpin for awaken_protocol_mcp::http::McpHttpConfig
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::http::McpHttpConfig
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::http::McpHttpConfig
 pub struct awaken_protocol_mcp::McpStdioServer
@@ -170,6 +181,7 @@ impl core::marker::Freeze for awaken_protocol_mcp::stdio::McpStdioServer
 impl core::marker::Send for awaken_protocol_mcp::stdio::McpStdioServer
 impl core::marker::Sync for awaken_protocol_mcp::stdio::McpStdioServer
 impl core::marker::Unpin for awaken_protocol_mcp::stdio::McpStdioServer
+impl core::marker::UnsafeUnpin for awaken_protocol_mcp::stdio::McpStdioServer
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::stdio::McpStdioServer
 impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::stdio::McpStdioServer
 pub struct awaken_protocol_mcp::McpToolService
@@ -183,6 +195,7 @@ impl !core::marker::Freeze for awaken_protocol_mcp::service::McpToolService
 impl core::marker::Send for awaken_protocol_mcp::service::McpToolService
 impl core::marker::Sync for awaken_protocol_mcp::service::McpToolService
 impl core::marker::Unpin for awaken_protocol_mcp::service::McpToolService
+impl core::marker::UnsafeUnpin for awaken_protocol_mcp::service::McpToolService
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::service::McpToolService
 impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::service::McpToolService
 pub struct awaken_protocol_mcp::NullSink
@@ -192,6 +205,7 @@ impl core::marker::Freeze for awaken_protocol_mcp::service::NullSink
 impl core::marker::Send for awaken_protocol_mcp::service::NullSink
 impl core::marker::Sync for awaken_protocol_mcp::service::NullSink
 impl core::marker::Unpin for awaken_protocol_mcp::service::NullSink
+impl core::marker::UnsafeUnpin for awaken_protocol_mcp::service::NullSink
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::service::NullSink
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::service::NullSink
 pub struct awaken_protocol_mcp::SharedExports
@@ -206,6 +220,7 @@ impl !core::marker::Freeze for awaken_protocol_mcp::export::SharedExports
 impl core::marker::Send for awaken_protocol_mcp::export::SharedExports
 impl core::marker::Sync for awaken_protocol_mcp::export::SharedExports
 impl core::marker::Unpin for awaken_protocol_mcp::export::SharedExports
+impl core::marker::UnsafeUnpin for awaken_protocol_mcp::export::SharedExports
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::export::SharedExports
 impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::export::SharedExports
 pub struct awaken_protocol_mcp::StaticExports
@@ -219,6 +234,7 @@ impl core::marker::Freeze for awaken_protocol_mcp::export::StaticExports
 impl core::marker::Send for awaken_protocol_mcp::export::StaticExports
 impl core::marker::Sync for awaken_protocol_mcp::export::StaticExports
 impl core::marker::Unpin for awaken_protocol_mcp::export::StaticExports
+impl core::marker::UnsafeUnpin for awaken_protocol_mcp::export::StaticExports
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::export::StaticExports
 impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::export::StaticExports
 pub trait awaken_protocol_mcp::NotifySink: core::marker::Send + core::marker::Sync

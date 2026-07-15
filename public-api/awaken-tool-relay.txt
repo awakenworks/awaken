@@ -22,6 +22,7 @@ impl core::marker::Freeze for awaken_tool_relay::wire::HandErrorKind
 impl core::marker::Send for awaken_tool_relay::wire::HandErrorKind
 impl core::marker::Sync for awaken_tool_relay::wire::HandErrorKind
 impl core::marker::Unpin for awaken_tool_relay::wire::HandErrorKind
+impl core::marker::UnsafeUnpin for awaken_tool_relay::wire::HandErrorKind
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::wire::HandErrorKind
 impl core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::wire::HandErrorKind
 pub enum awaken_tool_relay::wire::HandResult
@@ -48,6 +49,7 @@ impl core::marker::Freeze for awaken_tool_relay::wire::HandResult
 impl core::marker::Send for awaken_tool_relay::wire::HandResult
 impl core::marker::Sync for awaken_tool_relay::wire::HandResult
 impl core::marker::Unpin for awaken_tool_relay::wire::HandResult
+impl core::marker::UnsafeUnpin for awaken_tool_relay::wire::HandResult
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::wire::HandResult
 impl core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::wire::HandResult
 pub struct awaken_tool_relay::wire::HandError
@@ -71,6 +73,7 @@ impl core::marker::Freeze for awaken_tool_relay::wire::HandError
 impl core::marker::Send for awaken_tool_relay::wire::HandError
 impl core::marker::Sync for awaken_tool_relay::wire::HandError
 impl core::marker::Unpin for awaken_tool_relay::wire::HandError
+impl core::marker::UnsafeUnpin for awaken_tool_relay::wire::HandError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::wire::HandError
 impl core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::wire::HandError
 pub struct awaken_tool_relay::wire::HandReply
@@ -91,6 +94,7 @@ impl core::marker::Freeze for awaken_tool_relay::wire::HandReply
 impl core::marker::Send for awaken_tool_relay::wire::HandReply
 impl core::marker::Sync for awaken_tool_relay::wire::HandReply
 impl core::marker::Unpin for awaken_tool_relay::wire::HandReply
+impl core::marker::UnsafeUnpin for awaken_tool_relay::wire::HandReply
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::wire::HandReply
 impl core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::wire::HandReply
 pub struct awaken_tool_relay::wire::HandRequest
@@ -115,6 +119,7 @@ impl core::marker::Freeze for awaken_tool_relay::wire::HandRequest
 impl core::marker::Send for awaken_tool_relay::wire::HandRequest
 impl core::marker::Sync for awaken_tool_relay::wire::HandRequest
 impl core::marker::Unpin for awaken_tool_relay::wire::HandRequest
+impl core::marker::UnsafeUnpin for awaken_tool_relay::wire::HandRequest
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::wire::HandRequest
 impl core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::wire::HandRequest
 pub type awaken_tool_relay::wire::CorrelationId = u64
@@ -140,6 +145,7 @@ impl core::marker::Freeze for awaken_tool_relay::wire::HandErrorKind
 impl core::marker::Send for awaken_tool_relay::wire::HandErrorKind
 impl core::marker::Sync for awaken_tool_relay::wire::HandErrorKind
 impl core::marker::Unpin for awaken_tool_relay::wire::HandErrorKind
+impl core::marker::UnsafeUnpin for awaken_tool_relay::wire::HandErrorKind
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::wire::HandErrorKind
 impl core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::wire::HandErrorKind
 pub enum awaken_tool_relay::HandResult
@@ -166,6 +172,7 @@ impl core::marker::Freeze for awaken_tool_relay::wire::HandResult
 impl core::marker::Send for awaken_tool_relay::wire::HandResult
 impl core::marker::Sync for awaken_tool_relay::wire::HandResult
 impl core::marker::Unpin for awaken_tool_relay::wire::HandResult
+impl core::marker::UnsafeUnpin for awaken_tool_relay::wire::HandResult
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::wire::HandResult
 impl core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::wire::HandResult
 pub enum awaken_tool_relay::ServeError
@@ -180,6 +187,7 @@ impl core::marker::Freeze for awaken_tool_relay::ServeError
 impl core::marker::Send for awaken_tool_relay::ServeError
 impl core::marker::Sync for awaken_tool_relay::ServeError
 impl core::marker::Unpin for awaken_tool_relay::ServeError
+impl core::marker::UnsafeUnpin for awaken_tool_relay::ServeError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::ServeError
 impl core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::ServeError
 pub struct awaken_tool_relay::HandError
@@ -203,6 +211,7 @@ impl core::marker::Freeze for awaken_tool_relay::wire::HandError
 impl core::marker::Send for awaken_tool_relay::wire::HandError
 impl core::marker::Sync for awaken_tool_relay::wire::HandError
 impl core::marker::Unpin for awaken_tool_relay::wire::HandError
+impl core::marker::UnsafeUnpin for awaken_tool_relay::wire::HandError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::wire::HandError
 impl core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::wire::HandError
 pub struct awaken_tool_relay::HandReply
@@ -223,6 +232,7 @@ impl core::marker::Freeze for awaken_tool_relay::wire::HandReply
 impl core::marker::Send for awaken_tool_relay::wire::HandReply
 impl core::marker::Sync for awaken_tool_relay::wire::HandReply
 impl core::marker::Unpin for awaken_tool_relay::wire::HandReply
+impl core::marker::UnsafeUnpin for awaken_tool_relay::wire::HandReply
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::wire::HandReply
 impl core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::wire::HandReply
 pub struct awaken_tool_relay::HandRequest
@@ -247,6 +257,7 @@ impl core::marker::Freeze for awaken_tool_relay::wire::HandRequest
 impl core::marker::Send for awaken_tool_relay::wire::HandRequest
 impl core::marker::Sync for awaken_tool_relay::wire::HandRequest
 impl core::marker::Unpin for awaken_tool_relay::wire::HandRequest
+impl core::marker::UnsafeUnpin for awaken_tool_relay::wire::HandRequest
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::wire::HandRequest
 impl core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::wire::HandRequest
 pub struct awaken_tool_relay::HandSession
@@ -258,6 +269,7 @@ impl core::marker::Freeze for awaken_tool_relay::HandSession
 impl core::marker::Send for awaken_tool_relay::HandSession
 impl core::marker::Sync for awaken_tool_relay::HandSession
 impl core::marker::Unpin for awaken_tool_relay::HandSession
+impl core::marker::UnsafeUnpin for awaken_tool_relay::HandSession
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::HandSession
 impl !core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::HandSession
 pub struct awaken_tool_relay::RemoteToolExecutor<S>
@@ -271,6 +283,7 @@ impl<S> !core::marker::Freeze for awaken_tool_relay::RemoteToolExecutor<S>
 impl<S> core::marker::Send for awaken_tool_relay::RemoteToolExecutor<S> where S: core::marker::Send
 impl<S> core::marker::Sync for awaken_tool_relay::RemoteToolExecutor<S> where S: core::marker::Send
 impl<S> core::marker::Unpin for awaken_tool_relay::RemoteToolExecutor<S> where S: core::marker::Unpin
+impl<S> core::marker::UnsafeUnpin for awaken_tool_relay::RemoteToolExecutor<S> where S: core::marker::UnsafeUnpin
 impl<S> !core::panic::unwind_safe::RefUnwindSafe for awaken_tool_relay::RemoteToolExecutor<S>
 impl<S> core::panic::unwind_safe::UnwindSafe for awaken_tool_relay::RemoteToolExecutor<S> where S: core::panic::unwind_safe::UnwindSafe
 pub async fn awaken_tool_relay::serve_hand<S>(S, awaken_tool_relay::HandSession) -> core::result::Result<(), awaken_tool_relay::ServeError> where S: awaken_agent_channel::AgentChannel

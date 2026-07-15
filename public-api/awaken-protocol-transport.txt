@@ -17,6 +17,7 @@ impl core::marker::Freeze for awaken_protocol_transport::DriverError
 impl core::marker::Send for awaken_protocol_transport::DriverError
 impl core::marker::Sync for awaken_protocol_transport::DriverError
 impl core::marker::Unpin for awaken_protocol_transport::DriverError
+impl core::marker::UnsafeUnpin for awaken_protocol_transport::DriverError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_transport::DriverError
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_transport::DriverError
 pub enum awaken_protocol_transport::Resume
@@ -34,6 +35,7 @@ impl core::marker::Freeze for awaken_protocol_transport::Resume
 impl core::marker::Send for awaken_protocol_transport::Resume
 impl core::marker::Sync for awaken_protocol_transport::Resume
 impl core::marker::Unpin for awaken_protocol_transport::Resume
+impl core::marker::UnsafeUnpin for awaken_protocol_transport::Resume
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_transport::Resume
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_transport::Resume
 pub enum awaken_protocol_transport::Terminal
@@ -55,6 +57,7 @@ impl core::marker::Freeze for awaken_protocol_transport::Terminal
 impl core::marker::Send for awaken_protocol_transport::Terminal
 impl core::marker::Sync for awaken_protocol_transport::Terminal
 impl core::marker::Unpin for awaken_protocol_transport::Terminal
+impl core::marker::UnsafeUnpin for awaken_protocol_transport::Terminal
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_transport::Terminal
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_transport::Terminal
 pub struct awaken_protocol_transport::ChannelStreamSink
@@ -66,6 +69,7 @@ impl core::marker::Freeze for awaken_protocol_transport::ChannelStreamSink
 impl core::marker::Send for awaken_protocol_transport::ChannelStreamSink
 impl core::marker::Sync for awaken_protocol_transport::ChannelStreamSink
 impl core::marker::Unpin for awaken_protocol_transport::ChannelStreamSink
+impl core::marker::UnsafeUnpin for awaken_protocol_transport::ChannelStreamSink
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_transport::ChannelStreamSink
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_transport::ChannelStreamSink
 pub struct awaken_protocol_transport::Pending
@@ -84,6 +88,7 @@ impl core::marker::Freeze for awaken_protocol_transport::Pending
 impl core::marker::Send for awaken_protocol_transport::Pending
 impl core::marker::Sync for awaken_protocol_transport::Pending
 impl core::marker::Unpin for awaken_protocol_transport::Pending
+impl core::marker::UnsafeUnpin for awaken_protocol_transport::Pending
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_transport::Pending
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_transport::Pending
 pub struct awaken_protocol_transport::StepFailure
@@ -103,6 +108,7 @@ impl core::marker::Freeze for awaken_protocol_transport::StepFailure
 impl core::marker::Send for awaken_protocol_transport::StepFailure
 impl core::marker::Sync for awaken_protocol_transport::StepFailure
 impl core::marker::Unpin for awaken_protocol_transport::StepFailure
+impl core::marker::UnsafeUnpin for awaken_protocol_transport::StepFailure
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_transport::StepFailure
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_transport::StepFailure
 pub struct awaken_protocol_transport::StepOutcome
@@ -121,6 +127,7 @@ impl core::marker::Freeze for awaken_protocol_transport::StepOutcome
 impl core::marker::Send for awaken_protocol_transport::StepOutcome
 impl core::marker::Sync for awaken_protocol_transport::StepOutcome
 impl core::marker::Unpin for awaken_protocol_transport::StepOutcome
+impl core::marker::UnsafeUnpin for awaken_protocol_transport::StepOutcome
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_transport::StepOutcome
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_transport::StepOutcome
 pub trait awaken_protocol_transport::ProtocolRuntime: core::marker::Send + core::marker::Sync

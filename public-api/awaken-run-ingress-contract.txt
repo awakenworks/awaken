@@ -17,6 +17,7 @@ impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::CasOutcome
 impl core::marker::Send for awaken_run_ingress_contract::dispatch::CasOutcome
 impl core::marker::Sync for awaken_run_ingress_contract::dispatch::CasOutcome
 impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::CasOutcome
+impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::CasOutcome
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::CasOutcome
 impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::CasOutcome
 pub enum awaken_run_ingress_contract::dispatch::DispatchError
@@ -30,6 +31,7 @@ impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::DispatchErr
 impl core::marker::Send for awaken_run_ingress_contract::dispatch::DispatchError
 impl core::marker::Sync for awaken_run_ingress_contract::dispatch::DispatchError
 impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::DispatchError
+impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::DispatchError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::DispatchError
 impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::DispatchError
 pub enum awaken_run_ingress_contract::dispatch::DispatchOutcome
@@ -52,6 +54,7 @@ impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::DispatchOut
 impl core::marker::Send for awaken_run_ingress_contract::dispatch::DispatchOutcome
 impl core::marker::Sync for awaken_run_ingress_contract::dispatch::DispatchOutcome
 impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::DispatchOutcome
+impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::DispatchOutcome
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::DispatchOutcome
 impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::DispatchOutcome
 pub enum awaken_run_ingress_contract::dispatch::DispatchStatus
@@ -75,6 +78,7 @@ impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::DispatchSta
 impl core::marker::Send for awaken_run_ingress_contract::dispatch::DispatchStatus
 impl core::marker::Sync for awaken_run_ingress_contract::dispatch::DispatchStatus
 impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::DispatchStatus
+impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::DispatchStatus
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::DispatchStatus
 impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::DispatchStatus
 pub enum awaken_run_ingress_contract::dispatch::SettleOutcome
@@ -99,6 +103,7 @@ impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::SettleOutco
 impl core::marker::Send for awaken_run_ingress_contract::dispatch::SettleOutcome
 impl core::marker::Sync for awaken_run_ingress_contract::dispatch::SettleOutcome
 impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::SettleOutcome
+impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::SettleOutcome
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::SettleOutcome
 impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::SettleOutcome
 pub struct awaken_run_ingress_contract::dispatch::Claimed
@@ -121,6 +126,7 @@ impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::Claimed
 impl core::marker::Send for awaken_run_ingress_contract::dispatch::Claimed
 impl core::marker::Sync for awaken_run_ingress_contract::dispatch::Claimed
 impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::Claimed
+impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::Claimed
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::Claimed
 impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::Claimed
 pub struct awaken_run_ingress_contract::dispatch::DispatchSummary
@@ -140,6 +146,7 @@ impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::DispatchSum
 impl core::marker::Send for awaken_run_ingress_contract::dispatch::DispatchSummary
 impl core::marker::Sync for awaken_run_ingress_contract::dispatch::DispatchSummary
 impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::DispatchSummary
+impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::DispatchSummary
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::DispatchSummary
 impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::DispatchSummary
 pub struct awaken_run_ingress_contract::dispatch::Lease
@@ -163,6 +170,7 @@ impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::Lease
 impl core::marker::Send for awaken_run_ingress_contract::dispatch::Lease
 impl core::marker::Sync for awaken_run_ingress_contract::dispatch::Lease
 impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::Lease
+impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::Lease
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::Lease
 impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::Lease
 pub struct awaken_run_ingress_contract::dispatch::PendingInput
@@ -187,6 +195,7 @@ impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::PendingInpu
 impl core::marker::Send for awaken_run_ingress_contract::dispatch::PendingInput
 impl core::marker::Sync for awaken_run_ingress_contract::dispatch::PendingInput
 impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::PendingInput
+impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::PendingInput
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::PendingInput
 impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::PendingInput
 pub struct awaken_run_ingress_contract::dispatch::PendingRecord
@@ -203,6 +212,7 @@ impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::PendingReco
 impl core::marker::Send for awaken_run_ingress_contract::dispatch::PendingRecord
 impl core::marker::Sync for awaken_run_ingress_contract::dispatch::PendingRecord
 impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::PendingRecord
+impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::PendingRecord
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::PendingRecord
 impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::PendingRecord
 pub struct awaken_run_ingress_contract::dispatch::SubmitOptions
@@ -227,6 +237,7 @@ impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::SubmitOptio
 impl core::marker::Send for awaken_run_ingress_contract::dispatch::SubmitOptions
 impl core::marker::Sync for awaken_run_ingress_contract::dispatch::SubmitOptions
 impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::SubmitOptions
+impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::SubmitOptions
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::SubmitOptions
 impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::SubmitOptions
 pub trait awaken_run_ingress_contract::dispatch::Dispatch: awaken_run_ingress_contract::dispatch::DispatchQueue + awaken_run_ingress_contract::dispatch::Inbox + awaken_run_ingress_contract::dispatch::Outbox
@@ -280,6 +291,7 @@ impl core::marker::Freeze for awaken_run_ingress_contract::request::RunExecution
 impl core::marker::Send for awaken_run_ingress_contract::request::RunExecutionRequest
 impl core::marker::Sync for awaken_run_ingress_contract::request::RunExecutionRequest
 impl core::marker::Unpin for awaken_run_ingress_contract::request::RunExecutionRequest
+impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::request::RunExecutionRequest
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::request::RunExecutionRequest
 impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::request::RunExecutionRequest
 pub enum awaken_run_ingress_contract::CasOutcome
@@ -299,6 +311,7 @@ impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::CasOutcome
 impl core::marker::Send for awaken_run_ingress_contract::dispatch::CasOutcome
 impl core::marker::Sync for awaken_run_ingress_contract::dispatch::CasOutcome
 impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::CasOutcome
+impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::CasOutcome
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::CasOutcome
 impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::CasOutcome
 pub enum awaken_run_ingress_contract::DispatchError
@@ -312,6 +325,7 @@ impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::DispatchErr
 impl core::marker::Send for awaken_run_ingress_contract::dispatch::DispatchError
 impl core::marker::Sync for awaken_run_ingress_contract::dispatch::DispatchError
 impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::DispatchError
+impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::DispatchError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::DispatchError
 impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::DispatchError
 pub enum awaken_run_ingress_contract::DispatchOutcome
@@ -334,6 +348,7 @@ impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::DispatchOut
 impl core::marker::Send for awaken_run_ingress_contract::dispatch::DispatchOutcome
 impl core::marker::Sync for awaken_run_ingress_contract::dispatch::DispatchOutcome
 impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::DispatchOutcome
+impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::DispatchOutcome
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::DispatchOutcome
 impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::DispatchOutcome
 pub enum awaken_run_ingress_contract::DispatchStatus
@@ -357,6 +372,7 @@ impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::DispatchSta
 impl core::marker::Send for awaken_run_ingress_contract::dispatch::DispatchStatus
 impl core::marker::Sync for awaken_run_ingress_contract::dispatch::DispatchStatus
 impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::DispatchStatus
+impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::DispatchStatus
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::DispatchStatus
 impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::DispatchStatus
 pub enum awaken_run_ingress_contract::SettleOutcome
@@ -381,6 +397,7 @@ impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::SettleOutco
 impl core::marker::Send for awaken_run_ingress_contract::dispatch::SettleOutcome
 impl core::marker::Sync for awaken_run_ingress_contract::dispatch::SettleOutcome
 impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::SettleOutcome
+impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::SettleOutcome
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::SettleOutcome
 impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::SettleOutcome
 pub struct awaken_run_ingress_contract::Claimed
@@ -403,6 +420,7 @@ impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::Claimed
 impl core::marker::Send for awaken_run_ingress_contract::dispatch::Claimed
 impl core::marker::Sync for awaken_run_ingress_contract::dispatch::Claimed
 impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::Claimed
+impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::Claimed
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::Claimed
 impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::Claimed
 pub struct awaken_run_ingress_contract::DispatchSummary
@@ -422,6 +440,7 @@ impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::DispatchSum
 impl core::marker::Send for awaken_run_ingress_contract::dispatch::DispatchSummary
 impl core::marker::Sync for awaken_run_ingress_contract::dispatch::DispatchSummary
 impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::DispatchSummary
+impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::DispatchSummary
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::DispatchSummary
 impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::DispatchSummary
 pub struct awaken_run_ingress_contract::Lease
@@ -445,6 +464,7 @@ impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::Lease
 impl core::marker::Send for awaken_run_ingress_contract::dispatch::Lease
 impl core::marker::Sync for awaken_run_ingress_contract::dispatch::Lease
 impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::Lease
+impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::Lease
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::Lease
 impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::Lease
 pub struct awaken_run_ingress_contract::PendingInput
@@ -469,6 +489,7 @@ impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::PendingInpu
 impl core::marker::Send for awaken_run_ingress_contract::dispatch::PendingInput
 impl core::marker::Sync for awaken_run_ingress_contract::dispatch::PendingInput
 impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::PendingInput
+impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::PendingInput
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::PendingInput
 impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::PendingInput
 pub struct awaken_run_ingress_contract::PendingRecord
@@ -485,6 +506,7 @@ impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::PendingReco
 impl core::marker::Send for awaken_run_ingress_contract::dispatch::PendingRecord
 impl core::marker::Sync for awaken_run_ingress_contract::dispatch::PendingRecord
 impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::PendingRecord
+impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::PendingRecord
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::PendingRecord
 impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::PendingRecord
 pub struct awaken_run_ingress_contract::RunExecutionRequest
@@ -510,6 +532,7 @@ impl core::marker::Freeze for awaken_run_ingress_contract::request::RunExecution
 impl core::marker::Send for awaken_run_ingress_contract::request::RunExecutionRequest
 impl core::marker::Sync for awaken_run_ingress_contract::request::RunExecutionRequest
 impl core::marker::Unpin for awaken_run_ingress_contract::request::RunExecutionRequest
+impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::request::RunExecutionRequest
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::request::RunExecutionRequest
 impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::request::RunExecutionRequest
 pub struct awaken_run_ingress_contract::SubmitOptions
@@ -534,6 +557,7 @@ impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::SubmitOptio
 impl core::marker::Send for awaken_run_ingress_contract::dispatch::SubmitOptions
 impl core::marker::Sync for awaken_run_ingress_contract::dispatch::SubmitOptions
 impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::SubmitOptions
+impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::SubmitOptions
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::SubmitOptions
 impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::SubmitOptions
 pub trait awaken_run_ingress_contract::Dispatch: awaken_run_ingress_contract::dispatch::DispatchQueue + awaken_run_ingress_contract::dispatch::Inbox + awaken_run_ingress_contract::dispatch::Outbox

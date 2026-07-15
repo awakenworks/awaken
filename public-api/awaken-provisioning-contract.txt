@@ -19,6 +19,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::AdmissionError
 impl core::marker::Send for awaken_provisioning_contract::AdmissionError
 impl core::marker::Sync for awaken_provisioning_contract::AdmissionError
 impl core::marker::Unpin for awaken_provisioning_contract::AdmissionError
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::AdmissionError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::AdmissionError
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::AdmissionError
 pub enum awaken_provisioning_contract::ApprovalDecision
@@ -37,6 +38,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::ApprovalDecision
 impl core::marker::Send for awaken_provisioning_contract::ApprovalDecision
 impl core::marker::Sync for awaken_provisioning_contract::ApprovalDecision
 impl core::marker::Unpin for awaken_provisioning_contract::ApprovalDecision
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::ApprovalDecision
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::ApprovalDecision
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::ApprovalDecision
 pub enum awaken_provisioning_contract::ApprovalPolicy
@@ -57,6 +59,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::ApprovalPolicy
 impl core::marker::Send for awaken_provisioning_contract::ApprovalPolicy
 impl core::marker::Sync for awaken_provisioning_contract::ApprovalPolicy
 impl core::marker::Unpin for awaken_provisioning_contract::ApprovalPolicy
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::ApprovalPolicy
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::ApprovalPolicy
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::ApprovalPolicy
 pub enum awaken_provisioning_contract::AttemptSignal
@@ -75,6 +78,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::AttemptSignal
 impl core::marker::Send for awaken_provisioning_contract::AttemptSignal
 impl core::marker::Sync for awaken_provisioning_contract::AttemptSignal
 impl core::marker::Unpin for awaken_provisioning_contract::AttemptSignal
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::AttemptSignal
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::AttemptSignal
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::AttemptSignal
 pub enum awaken_provisioning_contract::EnvValue
@@ -97,6 +101,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::EnvValue
 impl core::marker::Send for awaken_provisioning_contract::EnvValue
 impl core::marker::Sync for awaken_provisioning_contract::EnvValue
 impl core::marker::Unpin for awaken_provisioning_contract::EnvValue
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::EnvValue
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::EnvValue
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::EnvValue
 pub enum awaken_provisioning_contract::EnvVisibility
@@ -119,6 +124,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::EnvVisibility
 impl core::marker::Send for awaken_provisioning_contract::EnvVisibility
 impl core::marker::Sync for awaken_provisioning_contract::EnvVisibility
 impl core::marker::Unpin for awaken_provisioning_contract::EnvVisibility
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::EnvVisibility
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::EnvVisibility
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::EnvVisibility
 pub enum awaken_provisioning_contract::EnvironmentKind
@@ -146,6 +152,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::EnvironmentKind
 impl core::marker::Send for awaken_provisioning_contract::EnvironmentKind
 impl core::marker::Sync for awaken_provisioning_contract::EnvironmentKind
 impl core::marker::Unpin for awaken_provisioning_contract::EnvironmentKind
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::EnvironmentKind
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::EnvironmentKind
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::EnvironmentKind
 pub enum awaken_provisioning_contract::ExecutionShape
@@ -164,6 +171,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::ExecutionShape
 impl core::marker::Send for awaken_provisioning_contract::ExecutionShape
 impl core::marker::Sync for awaken_provisioning_contract::ExecutionShape
 impl core::marker::Unpin for awaken_provisioning_contract::ExecutionShape
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::ExecutionShape
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::ExecutionShape
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::ExecutionShape
 pub enum awaken_provisioning_contract::InFlightOutcome
@@ -182,6 +190,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::InFlightOutcome
 impl core::marker::Send for awaken_provisioning_contract::InFlightOutcome
 impl core::marker::Sync for awaken_provisioning_contract::InFlightOutcome
 impl core::marker::Unpin for awaken_provisioning_contract::InFlightOutcome
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::InFlightOutcome
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::InFlightOutcome
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::InFlightOutcome
 pub enum awaken_provisioning_contract::IsolationClass
@@ -209,6 +218,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::IsolationClass
 impl core::marker::Send for awaken_provisioning_contract::IsolationClass
 impl core::marker::Sync for awaken_provisioning_contract::IsolationClass
 impl core::marker::Unpin for awaken_provisioning_contract::IsolationClass
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::IsolationClass
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::IsolationClass
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::IsolationClass
 pub enum awaken_provisioning_contract::LeaseLiveness
@@ -228,6 +238,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::LeaseLiveness
 impl core::marker::Send for awaken_provisioning_contract::LeaseLiveness
 impl core::marker::Sync for awaken_provisioning_contract::LeaseLiveness
 impl core::marker::Unpin for awaken_provisioning_contract::LeaseLiveness
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::LeaseLiveness
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::LeaseLiveness
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::LeaseLiveness
 pub enum awaken_provisioning_contract::MountAccess
@@ -250,6 +261,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::MountAccess
 impl core::marker::Send for awaken_provisioning_contract::MountAccess
 impl core::marker::Sync for awaken_provisioning_contract::MountAccess
 impl core::marker::Unpin for awaken_provisioning_contract::MountAccess
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::MountAccess
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::MountAccess
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::MountAccess
 pub enum awaken_provisioning_contract::MountLifetime
@@ -273,6 +285,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::MountLifetime
 impl core::marker::Send for awaken_provisioning_contract::MountLifetime
 impl core::marker::Sync for awaken_provisioning_contract::MountLifetime
 impl core::marker::Unpin for awaken_provisioning_contract::MountLifetime
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::MountLifetime
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::MountLifetime
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::MountLifetime
 pub enum awaken_provisioning_contract::MountSource
@@ -303,6 +316,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::MountSource
 impl core::marker::Send for awaken_provisioning_contract::MountSource
 impl core::marker::Sync for awaken_provisioning_contract::MountSource
 impl core::marker::Unpin for awaken_provisioning_contract::MountSource
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::MountSource
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::MountSource
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::MountSource
 pub enum awaken_provisioning_contract::NetworkPolicy
@@ -329,6 +343,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::NetworkPolicy
 impl core::marker::Send for awaken_provisioning_contract::NetworkPolicy
 impl core::marker::Sync for awaken_provisioning_contract::NetworkPolicy
 impl core::marker::Unpin for awaken_provisioning_contract::NetworkPolicy
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::NetworkPolicy
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::NetworkPolicy
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::NetworkPolicy
 pub enum awaken_provisioning_contract::PoisonVerdict
@@ -347,6 +362,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::PoisonVerdict
 impl core::marker::Send for awaken_provisioning_contract::PoisonVerdict
 impl core::marker::Sync for awaken_provisioning_contract::PoisonVerdict
 impl core::marker::Unpin for awaken_provisioning_contract::PoisonVerdict
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::PoisonVerdict
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::PoisonVerdict
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::PoisonVerdict
 pub enum awaken_provisioning_contract::PrepareError
@@ -370,6 +386,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::PrepareError
 impl core::marker::Send for awaken_provisioning_contract::PrepareError
 impl core::marker::Sync for awaken_provisioning_contract::PrepareError
 impl core::marker::Unpin for awaken_provisioning_contract::PrepareError
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::PrepareError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::PrepareError
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::PrepareError
 pub enum awaken_provisioning_contract::Realization
@@ -393,6 +410,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::Realization
 impl core::marker::Send for awaken_provisioning_contract::Realization
 impl core::marker::Sync for awaken_provisioning_contract::Realization
 impl core::marker::Unpin for awaken_provisioning_contract::Realization
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::Realization
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::Realization
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::Realization
 pub enum awaken_provisioning_contract::ReapCause
@@ -414,6 +432,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::ReapCause
 impl core::marker::Send for awaken_provisioning_contract::ReapCause
 impl core::marker::Sync for awaken_provisioning_contract::ReapCause
 impl core::marker::Unpin for awaken_provisioning_contract::ReapCause
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::ReapCause
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::ReapCause
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::ReapCause
 pub enum awaken_provisioning_contract::RootfsSource
@@ -436,6 +455,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::RootfsSource
 impl core::marker::Send for awaken_provisioning_contract::RootfsSource
 impl core::marker::Sync for awaken_provisioning_contract::RootfsSource
 impl core::marker::Unpin for awaken_provisioning_contract::RootfsSource
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::RootfsSource
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::RootfsSource
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::RootfsSource
 pub enum awaken_provisioning_contract::SandboxAction
@@ -455,6 +475,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::SandboxAction
 impl core::marker::Send for awaken_provisioning_contract::SandboxAction
 impl core::marker::Sync for awaken_provisioning_contract::SandboxAction
 impl core::marker::Unpin for awaken_provisioning_contract::SandboxAction
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::SandboxAction
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::SandboxAction
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::SandboxAction
 pub enum awaken_provisioning_contract::SandboxStatus
@@ -478,6 +499,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::SandboxStatus
 impl core::marker::Send for awaken_provisioning_contract::SandboxStatus
 impl core::marker::Sync for awaken_provisioning_contract::SandboxStatus
 impl core::marker::Unpin for awaken_provisioning_contract::SandboxStatus
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::SandboxStatus
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::SandboxStatus
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::SandboxStatus
 pub enum awaken_provisioning_contract::SelectionError
@@ -495,6 +517,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::SelectionError
 impl core::marker::Send for awaken_provisioning_contract::SelectionError
 impl core::marker::Sync for awaken_provisioning_contract::SelectionError
 impl core::marker::Unpin for awaken_provisioning_contract::SelectionError
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::SelectionError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::SelectionError
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::SelectionError
 pub enum awaken_provisioning_contract::Signal
@@ -518,6 +541,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::Signal
 impl core::marker::Send for awaken_provisioning_contract::Signal
 impl core::marker::Sync for awaken_provisioning_contract::Signal
 impl core::marker::Unpin for awaken_provisioning_contract::Signal
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::Signal
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::Signal
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::Signal
 pub enum awaken_provisioning_contract::Stdio
@@ -541,6 +565,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::Stdio
 impl core::marker::Send for awaken_provisioning_contract::Stdio
 impl core::marker::Sync for awaken_provisioning_contract::Stdio
 impl core::marker::Unpin for awaken_provisioning_contract::Stdio
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::Stdio
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::Stdio
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::Stdio
 pub enum awaken_provisioning_contract::TokenError
@@ -561,6 +586,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::TokenError
 impl core::marker::Send for awaken_provisioning_contract::TokenError
 impl core::marker::Sync for awaken_provisioning_contract::TokenError
 impl core::marker::Unpin for awaken_provisioning_contract::TokenError
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::TokenError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::TokenError
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::TokenError
 pub struct awaken_provisioning_contract::AdoptionPlan
@@ -581,6 +607,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::AdoptionPlan
 impl core::marker::Send for awaken_provisioning_contract::AdoptionPlan
 impl core::marker::Sync for awaken_provisioning_contract::AdoptionPlan
 impl core::marker::Unpin for awaken_provisioning_contract::AdoptionPlan
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::AdoptionPlan
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::AdoptionPlan
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::AdoptionPlan
 pub struct awaken_provisioning_contract::Artifact
@@ -603,6 +630,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::Artifact
 impl core::marker::Send for awaken_provisioning_contract::Artifact
 impl core::marker::Sync for awaken_provisioning_contract::Artifact
 impl core::marker::Unpin for awaken_provisioning_contract::Artifact
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::Artifact
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::Artifact
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::Artifact
 pub struct awaken_provisioning_contract::Command
@@ -627,6 +655,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::Command
 impl core::marker::Send for awaken_provisioning_contract::Command
 impl core::marker::Sync for awaken_provisioning_contract::Command
 impl core::marker::Unpin for awaken_provisioning_contract::Command
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::Command
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::Command
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::Command
 pub struct awaken_provisioning_contract::EnvVar
@@ -648,6 +677,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::EnvVar
 impl core::marker::Send for awaken_provisioning_contract::EnvVar
 impl core::marker::Sync for awaken_provisioning_contract::EnvVar
 impl core::marker::Unpin for awaken_provisioning_contract::EnvVar
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::EnvVar
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::EnvVar
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::EnvVar
 pub struct awaken_provisioning_contract::EnvironmentDecl
@@ -669,6 +699,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::EnvironmentDecl
 impl core::marker::Send for awaken_provisioning_contract::EnvironmentDecl
 impl core::marker::Sync for awaken_provisioning_contract::EnvironmentDecl
 impl core::marker::Unpin for awaken_provisioning_contract::EnvironmentDecl
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::EnvironmentDecl
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::EnvironmentDecl
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::EnvironmentDecl
 pub struct awaken_provisioning_contract::EnvironmentPlan
@@ -689,6 +720,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::EnvironmentPlan
 impl core::marker::Send for awaken_provisioning_contract::EnvironmentPlan
 impl core::marker::Sync for awaken_provisioning_contract::EnvironmentPlan
 impl core::marker::Unpin for awaken_provisioning_contract::EnvironmentPlan
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::EnvironmentPlan
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::EnvironmentPlan
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::EnvironmentPlan
 pub struct awaken_provisioning_contract::ExitStatus
@@ -710,6 +742,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::ExitStatus
 impl core::marker::Send for awaken_provisioning_contract::ExitStatus
 impl core::marker::Sync for awaken_provisioning_contract::ExitStatus
 impl core::marker::Unpin for awaken_provisioning_contract::ExitStatus
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::ExitStatus
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::ExitStatus
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::ExitStatus
 pub struct awaken_provisioning_contract::LeaseCallbackClaims
@@ -733,6 +766,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::LeaseCallbackClaims
 impl core::marker::Send for awaken_provisioning_contract::LeaseCallbackClaims
 impl core::marker::Sync for awaken_provisioning_contract::LeaseCallbackClaims
 impl core::marker::Unpin for awaken_provisioning_contract::LeaseCallbackClaims
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::LeaseCallbackClaims
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::LeaseCallbackClaims
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::LeaseCallbackClaims
 pub struct awaken_provisioning_contract::LeaseCallbackToken
@@ -752,6 +786,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::LeaseCallbackToken
 impl core::marker::Send for awaken_provisioning_contract::LeaseCallbackToken
 impl core::marker::Sync for awaken_provisioning_contract::LeaseCallbackToken
 impl core::marker::Unpin for awaken_provisioning_contract::LeaseCallbackToken
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::LeaseCallbackToken
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::LeaseCallbackToken
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::LeaseCallbackToken
 pub struct awaken_provisioning_contract::LeaseGrant
@@ -773,6 +808,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::LeaseGrant
 impl core::marker::Send for awaken_provisioning_contract::LeaseGrant
 impl core::marker::Sync for awaken_provisioning_contract::LeaseGrant
 impl core::marker::Unpin for awaken_provisioning_contract::LeaseGrant
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::LeaseGrant
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::LeaseGrant
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::LeaseGrant
 pub struct awaken_provisioning_contract::LivenessSignals
@@ -792,6 +828,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::LivenessSignals
 impl core::marker::Send for awaken_provisioning_contract::LivenessSignals
 impl core::marker::Sync for awaken_provisioning_contract::LivenessSignals
 impl core::marker::Unpin for awaken_provisioning_contract::LivenessSignals
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::LivenessSignals
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::LivenessSignals
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::LivenessSignals
 pub struct awaken_provisioning_contract::MountRequirement
@@ -818,6 +855,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::MountRequirement
 impl core::marker::Send for awaken_provisioning_contract::MountRequirement
 impl core::marker::Sync for awaken_provisioning_contract::MountRequirement
 impl core::marker::Unpin for awaken_provisioning_contract::MountRequirement
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::MountRequirement
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::MountRequirement
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::MountRequirement
 pub struct awaken_provisioning_contract::NonceWatermark
@@ -832,6 +870,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::NonceWatermark
 impl core::marker::Send for awaken_provisioning_contract::NonceWatermark
 impl core::marker::Sync for awaken_provisioning_contract::NonceWatermark
 impl core::marker::Unpin for awaken_provisioning_contract::NonceWatermark
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::NonceWatermark
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::NonceWatermark
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::NonceWatermark
 pub struct awaken_provisioning_contract::RealizedMount
@@ -855,6 +894,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::RealizedMount
 impl core::marker::Send for awaken_provisioning_contract::RealizedMount
 impl core::marker::Sync for awaken_provisioning_contract::RealizedMount
 impl core::marker::Unpin for awaken_provisioning_contract::RealizedMount
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::RealizedMount
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::RealizedMount
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::RealizedMount
 pub struct awaken_provisioning_contract::ReconcileOutcome
@@ -876,6 +916,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::ReconcileOutcome
 impl core::marker::Send for awaken_provisioning_contract::ReconcileOutcome
 impl core::marker::Sync for awaken_provisioning_contract::ReconcileOutcome
 impl core::marker::Unpin for awaken_provisioning_contract::ReconcileOutcome
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::ReconcileOutcome
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::ReconcileOutcome
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::ReconcileOutcome
 pub struct awaken_provisioning_contract::ResourceLimits
@@ -903,6 +944,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::ResourceLimits
 impl core::marker::Send for awaken_provisioning_contract::ResourceLimits
 impl core::marker::Sync for awaken_provisioning_contract::ResourceLimits
 impl core::marker::Unpin for awaken_provisioning_contract::ResourceLimits
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::ResourceLimits
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::ResourceLimits
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::ResourceLimits
 pub struct awaken_provisioning_contract::SandboxCapabilities
@@ -932,6 +974,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::SandboxCapabilities
 impl core::marker::Send for awaken_provisioning_contract::SandboxCapabilities
 impl core::marker::Sync for awaken_provisioning_contract::SandboxCapabilities
 impl core::marker::Unpin for awaken_provisioning_contract::SandboxCapabilities
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::SandboxCapabilities
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::SandboxCapabilities
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::SandboxCapabilities
 pub struct awaken_provisioning_contract::SandboxError(pub alloc::string::String)
@@ -946,6 +989,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::SandboxError
 impl core::marker::Send for awaken_provisioning_contract::SandboxError
 impl core::marker::Sync for awaken_provisioning_contract::SandboxError
 impl core::marker::Unpin for awaken_provisioning_contract::SandboxError
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::SandboxError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::SandboxError
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::SandboxError
 pub struct awaken_provisioning_contract::SandboxHandle
@@ -970,6 +1014,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::SandboxHandle
 impl core::marker::Send for awaken_provisioning_contract::SandboxHandle
 impl core::marker::Sync for awaken_provisioning_contract::SandboxHandle
 impl core::marker::Unpin for awaken_provisioning_contract::SandboxHandle
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::SandboxHandle
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::SandboxHandle
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::SandboxHandle
 pub struct awaken_provisioning_contract::SandboxSpec
@@ -997,6 +1042,7 @@ impl core::marker::Freeze for awaken_provisioning_contract::SandboxSpec
 impl core::marker::Send for awaken_provisioning_contract::SandboxSpec
 impl core::marker::Sync for awaken_provisioning_contract::SandboxSpec
 impl core::marker::Unpin for awaken_provisioning_contract::SandboxSpec
+impl core::marker::UnsafeUnpin for awaken_provisioning_contract::SandboxSpec
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_provisioning_contract::SandboxSpec
 impl core::panic::unwind_safe::UnwindSafe for awaken_provisioning_contract::SandboxSpec
 pub const awaken_provisioning_contract::RESERVED_ENV_KEYS: &[&str]

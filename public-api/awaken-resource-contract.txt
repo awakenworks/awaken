@@ -16,6 +16,7 @@ impl core::marker::Freeze for awaken_resource_contract::MemErr
 impl core::marker::Send for awaken_resource_contract::MemErr
 impl core::marker::Sync for awaken_resource_contract::MemErr
 impl core::marker::Unpin for awaken_resource_contract::MemErr
+impl core::marker::UnsafeUnpin for awaken_resource_contract::MemErr
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_resource_contract::MemErr
 impl core::panic::unwind_safe::UnwindSafe for awaken_resource_contract::MemErr
 pub enum awaken_resource_contract::MemoryStoreError
@@ -30,6 +31,7 @@ impl core::marker::Freeze for awaken_resource_contract::MemoryStoreError
 impl core::marker::Send for awaken_resource_contract::MemoryStoreError
 impl core::marker::Sync for awaken_resource_contract::MemoryStoreError
 impl core::marker::Unpin for awaken_resource_contract::MemoryStoreError
+impl core::marker::UnsafeUnpin for awaken_resource_contract::MemoryStoreError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_resource_contract::MemoryStoreError
 impl core::panic::unwind_safe::UnwindSafe for awaken_resource_contract::MemoryStoreError
 pub enum awaken_resource_contract::SkillStoreError
@@ -44,6 +46,7 @@ impl core::marker::Freeze for awaken_resource_contract::SkillStoreError
 impl core::marker::Send for awaken_resource_contract::SkillStoreError
 impl core::marker::Sync for awaken_resource_contract::SkillStoreError
 impl core::marker::Unpin for awaken_resource_contract::SkillStoreError
+impl core::marker::UnsafeUnpin for awaken_resource_contract::SkillStoreError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_resource_contract::SkillStoreError
 impl core::panic::unwind_safe::UnwindSafe for awaken_resource_contract::SkillStoreError
 pub struct awaken_resource_contract::FileStoreError(pub alloc::string::String)
@@ -56,6 +59,7 @@ impl core::marker::Freeze for awaken_resource_contract::FileStoreError
 impl core::marker::Send for awaken_resource_contract::FileStoreError
 impl core::marker::Sync for awaken_resource_contract::FileStoreError
 impl core::marker::Unpin for awaken_resource_contract::FileStoreError
+impl core::marker::UnsafeUnpin for awaken_resource_contract::FileStoreError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_resource_contract::FileStoreError
 impl core::panic::unwind_safe::UnwindSafe for awaken_resource_contract::FileStoreError
 pub struct awaken_resource_contract::Memory
@@ -83,6 +87,7 @@ impl core::marker::Freeze for awaken_resource_contract::Memory
 impl core::marker::Send for awaken_resource_contract::Memory
 impl core::marker::Sync for awaken_resource_contract::Memory
 impl core::marker::Unpin for awaken_resource_contract::Memory
+impl core::marker::UnsafeUnpin for awaken_resource_contract::Memory
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_resource_contract::Memory
 impl core::panic::unwind_safe::UnwindSafe for awaken_resource_contract::Memory
 pub struct awaken_resource_contract::MemoryEntry
@@ -104,6 +109,7 @@ impl core::marker::Freeze for awaken_resource_contract::MemoryEntry
 impl core::marker::Send for awaken_resource_contract::MemoryEntry
 impl core::marker::Sync for awaken_resource_contract::MemoryEntry
 impl core::marker::Unpin for awaken_resource_contract::MemoryEntry
+impl core::marker::UnsafeUnpin for awaken_resource_contract::MemoryEntry
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_resource_contract::MemoryEntry
 impl core::panic::unwind_safe::UnwindSafe for awaken_resource_contract::MemoryEntry
 pub const awaken_resource_contract::MAX_MEMORY_BYTES: usize

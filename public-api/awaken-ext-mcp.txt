@@ -18,6 +18,7 @@ impl core::marker::Freeze for awaken_ext_mcp::client::McpConnection
 impl core::marker::Send for awaken_ext_mcp::client::McpConnection
 impl core::marker::Sync for awaken_ext_mcp::client::McpConnection
 impl core::marker::Unpin for awaken_ext_mcp::client::McpConnection
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::client::McpConnection
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::client::McpConnection
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::client::McpConnection
 pub async fn awaken_ext_mcp::client::connect_tools(&str, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>) -> core::result::Result<awaken_ext_mcp::client::McpConnection, awaken_ext_mcp::error::McpError>
@@ -55,6 +56,7 @@ impl core::marker::Freeze for awaken_ext_mcp::error::McpError
 impl core::marker::Send for awaken_ext_mcp::error::McpError
 impl core::marker::Sync for awaken_ext_mcp::error::McpError
 impl core::marker::Unpin for awaken_ext_mcp::error::McpError
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::error::McpError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::error::McpError
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::error::McpError
 pub mod awaken_ext_mcp::http
@@ -81,6 +83,7 @@ impl !core::marker::Freeze for awaken_ext_mcp::http::HttpTransport
 impl core::marker::Send for awaken_ext_mcp::http::HttpTransport
 impl core::marker::Sync for awaken_ext_mcp::http::HttpTransport
 impl core::marker::Unpin for awaken_ext_mcp::http::HttpTransport
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::http::HttpTransport
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::http::HttpTransport
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::http::HttpTransport
 pub struct awaken_ext_mcp::http::HttpTransportBuilder
@@ -97,6 +100,7 @@ impl core::marker::Freeze for awaken_ext_mcp::http::HttpTransportBuilder
 impl core::marker::Send for awaken_ext_mcp::http::HttpTransportBuilder
 impl core::marker::Sync for awaken_ext_mcp::http::HttpTransportBuilder
 impl core::marker::Unpin for awaken_ext_mcp::http::HttpTransportBuilder
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::http::HttpTransportBuilder
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::http::HttpTransportBuilder
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::http::HttpTransportBuilder
 pub mod awaken_ext_mcp::id_mapping
@@ -118,6 +122,7 @@ impl core::marker::Freeze for awaken_ext_mcp::manager::McpManager
 impl core::marker::Send for awaken_ext_mcp::manager::McpManager
 impl core::marker::Sync for awaken_ext_mcp::manager::McpManager
 impl core::marker::Unpin for awaken_ext_mcp::manager::McpManager
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::manager::McpManager
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::manager::McpManager
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::manager::McpManager
 pub struct awaken_ext_mcp::manager::ServerStatus
@@ -136,6 +141,7 @@ impl core::marker::Freeze for awaken_ext_mcp::manager::ServerStatus
 impl core::marker::Send for awaken_ext_mcp::manager::ServerStatus
 impl core::marker::Sync for awaken_ext_mcp::manager::ServerStatus
 impl core::marker::Unpin for awaken_ext_mcp::manager::ServerStatus
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::manager::ServerStatus
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::manager::ServerStatus
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::manager::ServerStatus
 pub mod awaken_ext_mcp::plugin
@@ -148,6 +154,7 @@ impl core::marker::Freeze for awaken_ext_mcp::plugin::McpPlugin
 impl core::marker::Send for awaken_ext_mcp::plugin::McpPlugin
 impl core::marker::Sync for awaken_ext_mcp::plugin::McpPlugin
 impl core::marker::Unpin for awaken_ext_mcp::plugin::McpPlugin
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::plugin::McpPlugin
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::plugin::McpPlugin
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::plugin::McpPlugin
 pub struct awaken_ext_mcp::plugin::McpServer
@@ -164,6 +171,7 @@ impl core::marker::Freeze for awaken_ext_mcp::plugin::McpServer
 impl core::marker::Send for awaken_ext_mcp::plugin::McpServer
 impl core::marker::Sync for awaken_ext_mcp::plugin::McpServer
 impl core::marker::Unpin for awaken_ext_mcp::plugin::McpServer
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::plugin::McpServer
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::plugin::McpServer
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::plugin::McpServer
 pub type awaken_ext_mcp::plugin::SensitiveFields = std::collections::hash::map::HashMap<alloc::string::String, alloc::vec::Vec<alloc::string::String>>
@@ -177,6 +185,7 @@ impl core::marker::Freeze for awaken_ext_mcp::sampling::SamplingBridge
 impl core::marker::Send for awaken_ext_mcp::sampling::SamplingBridge
 impl core::marker::Sync for awaken_ext_mcp::sampling::SamplingBridge
 impl core::marker::Unpin for awaken_ext_mcp::sampling::SamplingBridge
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::sampling::SamplingBridge
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::sampling::SamplingBridge
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::sampling::SamplingBridge
 pub struct awaken_ext_mcp::sampling::SamplingError(pub alloc::string::String)
@@ -188,6 +197,7 @@ impl core::marker::Freeze for awaken_ext_mcp::sampling::SamplingError
 impl core::marker::Send for awaken_ext_mcp::sampling::SamplingError
 impl core::marker::Sync for awaken_ext_mcp::sampling::SamplingError
 impl core::marker::Unpin for awaken_ext_mcp::sampling::SamplingError
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::sampling::SamplingError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::sampling::SamplingError
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::sampling::SamplingError
 pub struct awaken_ext_mcp::sampling::SamplingMessage
@@ -205,6 +215,7 @@ impl core::marker::Freeze for awaken_ext_mcp::sampling::SamplingMessage
 impl core::marker::Send for awaken_ext_mcp::sampling::SamplingMessage
 impl core::marker::Sync for awaken_ext_mcp::sampling::SamplingMessage
 impl core::marker::Unpin for awaken_ext_mcp::sampling::SamplingMessage
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::sampling::SamplingMessage
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::sampling::SamplingMessage
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::sampling::SamplingMessage
 pub struct awaken_ext_mcp::sampling::SamplingRequest
@@ -223,6 +234,7 @@ impl core::marker::Freeze for awaken_ext_mcp::sampling::SamplingRequest
 impl core::marker::Send for awaken_ext_mcp::sampling::SamplingRequest
 impl core::marker::Sync for awaken_ext_mcp::sampling::SamplingRequest
 impl core::marker::Unpin for awaken_ext_mcp::sampling::SamplingRequest
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::sampling::SamplingRequest
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::sampling::SamplingRequest
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::sampling::SamplingRequest
 pub struct awaken_ext_mcp::sampling::SamplingResponse
@@ -244,6 +256,7 @@ impl core::marker::Freeze for awaken_ext_mcp::sampling::SamplingResponse
 impl core::marker::Send for awaken_ext_mcp::sampling::SamplingResponse
 impl core::marker::Sync for awaken_ext_mcp::sampling::SamplingResponse
 impl core::marker::Unpin for awaken_ext_mcp::sampling::SamplingResponse
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::sampling::SamplingResponse
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::sampling::SamplingResponse
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::sampling::SamplingResponse
 pub const awaken_ext_mcp::sampling::SAMPLING_METHOD: &str
@@ -280,6 +293,7 @@ impl !core::marker::Freeze for awaken_ext_mcp::stdio::StdioTransport
 impl core::marker::Send for awaken_ext_mcp::stdio::StdioTransport
 impl core::marker::Sync for awaken_ext_mcp::stdio::StdioTransport
 impl core::marker::Unpin for awaken_ext_mcp::stdio::StdioTransport
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::stdio::StdioTransport
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::stdio::StdioTransport
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::stdio::StdioTransport
 pub const awaken_ext_mcp::stdio::DEFAULT_TIMEOUT: core::time::Duration
@@ -294,6 +308,7 @@ impl core::marker::Freeze for awaken_ext_mcp::tool::McpRawTool
 impl core::marker::Send for awaken_ext_mcp::tool::McpRawTool
 impl core::marker::Sync for awaken_ext_mcp::tool::McpRawTool
 impl core::marker::Unpin for awaken_ext_mcp::tool::McpRawTool
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::tool::McpRawTool
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::tool::McpRawTool
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::tool::McpRawTool
 pub fn awaken_ext_mcp::tool::mcp_tool_descriptor(&str, &model_context_protocol::protocol::McpToolDefinition) -> core::result::Result<awaken_runtime_contract::resolved::ToolDescriptor, awaken_ext_mcp::error::McpError>
@@ -315,6 +330,7 @@ impl core::marker::Freeze for awaken_ext_mcp::transport::ListChangedKind
 impl core::marker::Send for awaken_ext_mcp::transport::ListChangedKind
 impl core::marker::Sync for awaken_ext_mcp::transport::ListChangedKind
 impl core::marker::Unpin for awaken_ext_mcp::transport::ListChangedKind
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::transport::ListChangedKind
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::transport::ListChangedKind
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::transport::ListChangedKind
 pub trait awaken_ext_mcp::transport::McpToolTransport: core::marker::Send + core::marker::Sync
@@ -365,6 +381,7 @@ impl core::marker::Freeze for awaken_ext_mcp::types::McpPromptArgument
 impl core::marker::Send for awaken_ext_mcp::types::McpPromptArgument
 impl core::marker::Sync for awaken_ext_mcp::types::McpPromptArgument
 impl core::marker::Unpin for awaken_ext_mcp::types::McpPromptArgument
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::types::McpPromptArgument
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::types::McpPromptArgument
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::types::McpPromptArgument
 pub struct awaken_ext_mcp::types::McpPromptDefinition
@@ -388,6 +405,7 @@ impl core::marker::Freeze for awaken_ext_mcp::types::McpPromptDefinition
 impl core::marker::Send for awaken_ext_mcp::types::McpPromptDefinition
 impl core::marker::Sync for awaken_ext_mcp::types::McpPromptDefinition
 impl core::marker::Unpin for awaken_ext_mcp::types::McpPromptDefinition
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::types::McpPromptDefinition
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::types::McpPromptDefinition
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::types::McpPromptDefinition
 pub struct awaken_ext_mcp::types::McpPromptMessage
@@ -408,6 +426,7 @@ impl core::marker::Freeze for awaken_ext_mcp::types::McpPromptMessage
 impl core::marker::Send for awaken_ext_mcp::types::McpPromptMessage
 impl core::marker::Sync for awaken_ext_mcp::types::McpPromptMessage
 impl core::marker::Unpin for awaken_ext_mcp::types::McpPromptMessage
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::types::McpPromptMessage
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::types::McpPromptMessage
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::types::McpPromptMessage
 pub struct awaken_ext_mcp::types::McpPromptResult
@@ -428,6 +447,7 @@ impl core::marker::Freeze for awaken_ext_mcp::types::McpPromptResult
 impl core::marker::Send for awaken_ext_mcp::types::McpPromptResult
 impl core::marker::Sync for awaken_ext_mcp::types::McpPromptResult
 impl core::marker::Unpin for awaken_ext_mcp::types::McpPromptResult
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::types::McpPromptResult
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::types::McpPromptResult
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::types::McpPromptResult
 pub struct awaken_ext_mcp::types::McpResourceDefinition
@@ -453,6 +473,7 @@ impl core::marker::Freeze for awaken_ext_mcp::types::McpResourceDefinition
 impl core::marker::Send for awaken_ext_mcp::types::McpResourceDefinition
 impl core::marker::Sync for awaken_ext_mcp::types::McpResourceDefinition
 impl core::marker::Unpin for awaken_ext_mcp::types::McpResourceDefinition
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::types::McpResourceDefinition
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::types::McpResourceDefinition
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::types::McpResourceDefinition
 pub enum awaken_ext_mcp::ListChangedKind
@@ -472,6 +493,7 @@ impl core::marker::Freeze for awaken_ext_mcp::transport::ListChangedKind
 impl core::marker::Send for awaken_ext_mcp::transport::ListChangedKind
 impl core::marker::Sync for awaken_ext_mcp::transport::ListChangedKind
 impl core::marker::Unpin for awaken_ext_mcp::transport::ListChangedKind
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::transport::ListChangedKind
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::transport::ListChangedKind
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::transport::ListChangedKind
 pub enum awaken_ext_mcp::McpError
@@ -500,6 +522,7 @@ impl core::marker::Freeze for awaken_ext_mcp::error::McpError
 impl core::marker::Send for awaken_ext_mcp::error::McpError
 impl core::marker::Sync for awaken_ext_mcp::error::McpError
 impl core::marker::Unpin for awaken_ext_mcp::error::McpError
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::error::McpError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::error::McpError
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::error::McpError
 pub struct awaken_ext_mcp::HttpTransport
@@ -525,6 +548,7 @@ impl !core::marker::Freeze for awaken_ext_mcp::http::HttpTransport
 impl core::marker::Send for awaken_ext_mcp::http::HttpTransport
 impl core::marker::Sync for awaken_ext_mcp::http::HttpTransport
 impl core::marker::Unpin for awaken_ext_mcp::http::HttpTransport
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::http::HttpTransport
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::http::HttpTransport
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::http::HttpTransport
 pub struct awaken_ext_mcp::HttpTransportBuilder
@@ -541,6 +565,7 @@ impl core::marker::Freeze for awaken_ext_mcp::http::HttpTransportBuilder
 impl core::marker::Send for awaken_ext_mcp::http::HttpTransportBuilder
 impl core::marker::Sync for awaken_ext_mcp::http::HttpTransportBuilder
 impl core::marker::Unpin for awaken_ext_mcp::http::HttpTransportBuilder
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::http::HttpTransportBuilder
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::http::HttpTransportBuilder
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::http::HttpTransportBuilder
 pub struct awaken_ext_mcp::McpConnection
@@ -551,6 +576,7 @@ impl core::marker::Freeze for awaken_ext_mcp::client::McpConnection
 impl core::marker::Send for awaken_ext_mcp::client::McpConnection
 impl core::marker::Sync for awaken_ext_mcp::client::McpConnection
 impl core::marker::Unpin for awaken_ext_mcp::client::McpConnection
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::client::McpConnection
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::client::McpConnection
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::client::McpConnection
 pub struct awaken_ext_mcp::McpManager
@@ -568,6 +594,7 @@ impl core::marker::Freeze for awaken_ext_mcp::manager::McpManager
 impl core::marker::Send for awaken_ext_mcp::manager::McpManager
 impl core::marker::Sync for awaken_ext_mcp::manager::McpManager
 impl core::marker::Unpin for awaken_ext_mcp::manager::McpManager
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::manager::McpManager
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::manager::McpManager
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::manager::McpManager
 pub struct awaken_ext_mcp::McpPlugin
@@ -579,6 +606,7 @@ impl core::marker::Freeze for awaken_ext_mcp::plugin::McpPlugin
 impl core::marker::Send for awaken_ext_mcp::plugin::McpPlugin
 impl core::marker::Sync for awaken_ext_mcp::plugin::McpPlugin
 impl core::marker::Unpin for awaken_ext_mcp::plugin::McpPlugin
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::plugin::McpPlugin
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::plugin::McpPlugin
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::plugin::McpPlugin
 pub struct awaken_ext_mcp::McpPromptArgument
@@ -601,6 +629,7 @@ impl core::marker::Freeze for awaken_ext_mcp::types::McpPromptArgument
 impl core::marker::Send for awaken_ext_mcp::types::McpPromptArgument
 impl core::marker::Sync for awaken_ext_mcp::types::McpPromptArgument
 impl core::marker::Unpin for awaken_ext_mcp::types::McpPromptArgument
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::types::McpPromptArgument
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::types::McpPromptArgument
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::types::McpPromptArgument
 pub struct awaken_ext_mcp::McpPromptDefinition
@@ -624,6 +653,7 @@ impl core::marker::Freeze for awaken_ext_mcp::types::McpPromptDefinition
 impl core::marker::Send for awaken_ext_mcp::types::McpPromptDefinition
 impl core::marker::Sync for awaken_ext_mcp::types::McpPromptDefinition
 impl core::marker::Unpin for awaken_ext_mcp::types::McpPromptDefinition
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::types::McpPromptDefinition
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::types::McpPromptDefinition
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::types::McpPromptDefinition
 pub struct awaken_ext_mcp::McpPromptMessage
@@ -644,6 +674,7 @@ impl core::marker::Freeze for awaken_ext_mcp::types::McpPromptMessage
 impl core::marker::Send for awaken_ext_mcp::types::McpPromptMessage
 impl core::marker::Sync for awaken_ext_mcp::types::McpPromptMessage
 impl core::marker::Unpin for awaken_ext_mcp::types::McpPromptMessage
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::types::McpPromptMessage
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::types::McpPromptMessage
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::types::McpPromptMessage
 pub struct awaken_ext_mcp::McpPromptResult
@@ -664,6 +695,7 @@ impl core::marker::Freeze for awaken_ext_mcp::types::McpPromptResult
 impl core::marker::Send for awaken_ext_mcp::types::McpPromptResult
 impl core::marker::Sync for awaken_ext_mcp::types::McpPromptResult
 impl core::marker::Unpin for awaken_ext_mcp::types::McpPromptResult
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::types::McpPromptResult
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::types::McpPromptResult
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::types::McpPromptResult
 pub struct awaken_ext_mcp::McpRawTool
@@ -676,6 +708,7 @@ impl core::marker::Freeze for awaken_ext_mcp::tool::McpRawTool
 impl core::marker::Send for awaken_ext_mcp::tool::McpRawTool
 impl core::marker::Sync for awaken_ext_mcp::tool::McpRawTool
 impl core::marker::Unpin for awaken_ext_mcp::tool::McpRawTool
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::tool::McpRawTool
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::tool::McpRawTool
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::tool::McpRawTool
 pub struct awaken_ext_mcp::McpResourceDefinition
@@ -701,6 +734,7 @@ impl core::marker::Freeze for awaken_ext_mcp::types::McpResourceDefinition
 impl core::marker::Send for awaken_ext_mcp::types::McpResourceDefinition
 impl core::marker::Sync for awaken_ext_mcp::types::McpResourceDefinition
 impl core::marker::Unpin for awaken_ext_mcp::types::McpResourceDefinition
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::types::McpResourceDefinition
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::types::McpResourceDefinition
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::types::McpResourceDefinition
 pub struct awaken_ext_mcp::McpServer
@@ -717,6 +751,7 @@ impl core::marker::Freeze for awaken_ext_mcp::plugin::McpServer
 impl core::marker::Send for awaken_ext_mcp::plugin::McpServer
 impl core::marker::Sync for awaken_ext_mcp::plugin::McpServer
 impl core::marker::Unpin for awaken_ext_mcp::plugin::McpServer
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::plugin::McpServer
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::plugin::McpServer
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::plugin::McpServer
 pub struct awaken_ext_mcp::SamplingError(pub alloc::string::String)
@@ -728,6 +763,7 @@ impl core::marker::Freeze for awaken_ext_mcp::sampling::SamplingError
 impl core::marker::Send for awaken_ext_mcp::sampling::SamplingError
 impl core::marker::Sync for awaken_ext_mcp::sampling::SamplingError
 impl core::marker::Unpin for awaken_ext_mcp::sampling::SamplingError
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::sampling::SamplingError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::sampling::SamplingError
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::sampling::SamplingError
 pub struct awaken_ext_mcp::SamplingMessage
@@ -745,6 +781,7 @@ impl core::marker::Freeze for awaken_ext_mcp::sampling::SamplingMessage
 impl core::marker::Send for awaken_ext_mcp::sampling::SamplingMessage
 impl core::marker::Sync for awaken_ext_mcp::sampling::SamplingMessage
 impl core::marker::Unpin for awaken_ext_mcp::sampling::SamplingMessage
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::sampling::SamplingMessage
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::sampling::SamplingMessage
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::sampling::SamplingMessage
 pub struct awaken_ext_mcp::SamplingRequest
@@ -763,6 +800,7 @@ impl core::marker::Freeze for awaken_ext_mcp::sampling::SamplingRequest
 impl core::marker::Send for awaken_ext_mcp::sampling::SamplingRequest
 impl core::marker::Sync for awaken_ext_mcp::sampling::SamplingRequest
 impl core::marker::Unpin for awaken_ext_mcp::sampling::SamplingRequest
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::sampling::SamplingRequest
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::sampling::SamplingRequest
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::sampling::SamplingRequest
 pub struct awaken_ext_mcp::SamplingResponse
@@ -784,6 +822,7 @@ impl core::marker::Freeze for awaken_ext_mcp::sampling::SamplingResponse
 impl core::marker::Send for awaken_ext_mcp::sampling::SamplingResponse
 impl core::marker::Sync for awaken_ext_mcp::sampling::SamplingResponse
 impl core::marker::Unpin for awaken_ext_mcp::sampling::SamplingResponse
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::sampling::SamplingResponse
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::sampling::SamplingResponse
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::sampling::SamplingResponse
 pub struct awaken_ext_mcp::ServerStatus
@@ -802,6 +841,7 @@ impl core::marker::Freeze for awaken_ext_mcp::manager::ServerStatus
 impl core::marker::Send for awaken_ext_mcp::manager::ServerStatus
 impl core::marker::Sync for awaken_ext_mcp::manager::ServerStatus
 impl core::marker::Unpin for awaken_ext_mcp::manager::ServerStatus
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::manager::ServerStatus
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::manager::ServerStatus
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::manager::ServerStatus
 pub struct awaken_ext_mcp::StdioTransport
@@ -827,6 +867,7 @@ impl !core::marker::Freeze for awaken_ext_mcp::stdio::StdioTransport
 impl core::marker::Send for awaken_ext_mcp::stdio::StdioTransport
 impl core::marker::Sync for awaken_ext_mcp::stdio::StdioTransport
 impl core::marker::Unpin for awaken_ext_mcp::stdio::StdioTransport
+impl core::marker::UnsafeUnpin for awaken_ext_mcp::stdio::StdioTransport
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::stdio::StdioTransport
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::stdio::StdioTransport
 pub const awaken_ext_mcp::DEFAULT_TIMEOUT: core::time::Duration

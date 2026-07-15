@@ -17,6 +17,7 @@ impl core::marker::Freeze for awaken_tenancy::ScopeClaim
 impl core::marker::Send for awaken_tenancy::ScopeClaim
 impl core::marker::Sync for awaken_tenancy::ScopeClaim
 impl core::marker::Unpin for awaken_tenancy::ScopeClaim
+impl core::marker::UnsafeUnpin for awaken_tenancy::ScopeClaim
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_tenancy::ScopeClaim
 impl core::panic::unwind_safe::UnwindSafe for awaken_tenancy::ScopeClaim
 pub enum awaken_tenancy::ScopeRejection
@@ -38,6 +39,7 @@ impl core::marker::Freeze for awaken_tenancy::ScopeRejection
 impl core::marker::Send for awaken_tenancy::ScopeRejection
 impl core::marker::Sync for awaken_tenancy::ScopeRejection
 impl core::marker::Unpin for awaken_tenancy::ScopeRejection
+impl core::marker::UnsafeUnpin for awaken_tenancy::ScopeRejection
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_tenancy::ScopeRejection
 impl core::panic::unwind_safe::UnwindSafe for awaken_tenancy::ScopeRejection
 pub struct awaken_tenancy::Authority
@@ -58,6 +60,7 @@ impl core::marker::Freeze for awaken_tenancy::Authority
 impl core::marker::Send for awaken_tenancy::Authority
 impl core::marker::Sync for awaken_tenancy::Authority
 impl core::marker::Unpin for awaken_tenancy::Authority
+impl core::marker::UnsafeUnpin for awaken_tenancy::Authority
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_tenancy::Authority
 impl core::panic::unwind_safe::UnwindSafe for awaken_tenancy::Authority
 pub struct awaken_tenancy::ScopeId(pub alloc::string::String)
@@ -91,6 +94,7 @@ impl core::marker::Freeze for awaken_tenancy::ScopeId
 impl core::marker::Send for awaken_tenancy::ScopeId
 impl core::marker::Sync for awaken_tenancy::ScopeId
 impl core::marker::Unpin for awaken_tenancy::ScopeId
+impl core::marker::UnsafeUnpin for awaken_tenancy::ScopeId
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_tenancy::ScopeId
 impl core::panic::unwind_safe::UnwindSafe for awaken_tenancy::ScopeId
 pub fn awaken_tenancy::resolve_scope(&awaken_tenancy::Authority, &[awaken_tenancy::ScopeClaim]) -> core::result::Result<awaken_tenancy::ScopeId, awaken_tenancy::ScopeRejection>

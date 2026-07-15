@@ -25,6 +25,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::AdvanceOp
 impl core::marker::Send for awaken_ext_state_machine::AdvanceOp
 impl core::marker::Sync for awaken_ext_state_machine::AdvanceOp
 impl core::marker::Unpin for awaken_ext_state_machine::AdvanceOp
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::AdvanceOp
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::AdvanceOp
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::AdvanceOp
 pub enum awaken_ext_state_machine::ContentMatcher
@@ -40,6 +41,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::ContentMatcher
 impl core::marker::Send for awaken_ext_state_machine::ContentMatcher
 impl core::marker::Sync for awaken_ext_state_machine::ContentMatcher
 impl core::marker::Unpin for awaken_ext_state_machine::ContentMatcher
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::ContentMatcher
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::ContentMatcher
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::ContentMatcher
 pub enum awaken_ext_state_machine::EmitReason
@@ -58,6 +60,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::EmitReason
 impl core::marker::Send for awaken_ext_state_machine::EmitReason
 impl core::marker::Sync for awaken_ext_state_machine::EmitReason
 impl core::marker::Unpin for awaken_ext_state_machine::EmitReason
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::EmitReason
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::EmitReason
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::EmitReason
 pub enum awaken_ext_state_machine::EmitTarget
@@ -80,6 +83,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::EmitTarget
 impl core::marker::Send for awaken_ext_state_machine::EmitTarget
 impl core::marker::Sync for awaken_ext_state_machine::EmitTarget
 impl core::marker::Unpin for awaken_ext_state_machine::EmitTarget
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::EmitTarget
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::EmitTarget
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::EmitTarget
 pub enum awaken_ext_state_machine::FsmMetricEvent
@@ -101,6 +105,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::FsmMetricEvent
 impl core::marker::Send for awaken_ext_state_machine::FsmMetricEvent
 impl core::marker::Sync for awaken_ext_state_machine::FsmMetricEvent
 impl core::marker::Unpin for awaken_ext_state_machine::FsmMetricEvent
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::FsmMetricEvent
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::FsmMetricEvent
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::FsmMetricEvent
 pub enum awaken_ext_state_machine::KeyNormalizer
@@ -126,6 +131,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::KeyNormalizer
 impl core::marker::Send for awaken_ext_state_machine::KeyNormalizer
 impl core::marker::Sync for awaken_ext_state_machine::KeyNormalizer
 impl core::marker::Unpin for awaken_ext_state_machine::KeyNormalizer
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::KeyNormalizer
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::KeyNormalizer
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::KeyNormalizer
 pub enum awaken_ext_state_machine::KeyTemplateError
@@ -147,6 +153,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::KeyTemplateError
 impl core::marker::Send for awaken_ext_state_machine::KeyTemplateError
 impl core::marker::Sync for awaken_ext_state_machine::KeyTemplateError
 impl core::marker::Unpin for awaken_ext_state_machine::KeyTemplateError
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::KeyTemplateError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::KeyTemplateError
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::KeyTemplateError
 pub enum awaken_ext_state_machine::MachineEval
@@ -172,6 +179,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::MachineEval
 impl core::marker::Send for awaken_ext_state_machine::MachineEval
 impl core::marker::Sync for awaken_ext_state_machine::MachineEval
 impl core::marker::Unpin for awaken_ext_state_machine::MachineEval
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::MachineEval
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::MachineEval
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::MachineEval
 pub enum awaken_ext_state_machine::MachineScope
@@ -192,6 +200,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::MachineScope
 impl core::marker::Send for awaken_ext_state_machine::MachineScope
 impl core::marker::Sync for awaken_ext_state_machine::MachineScope
 impl core::marker::Unpin for awaken_ext_state_machine::MachineScope
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::MachineScope
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::MachineScope
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::MachineScope
 pub enum awaken_ext_state_machine::ResultMatcher
@@ -209,6 +218,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::ResultMatcher
 impl core::marker::Send for awaken_ext_state_machine::ResultMatcher
 impl core::marker::Sync for awaken_ext_state_machine::ResultMatcher
 impl core::marker::Unpin for awaken_ext_state_machine::ResultMatcher
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::ResultMatcher
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::ResultMatcher
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::ResultMatcher
 pub enum awaken_ext_state_machine::StateMachineConfigError
@@ -232,6 +242,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::StateMachineConfigError
 impl core::marker::Send for awaken_ext_state_machine::StateMachineConfigError
 impl core::marker::Sync for awaken_ext_state_machine::StateMachineConfigError
 impl core::marker::Unpin for awaken_ext_state_machine::StateMachineConfigError
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::StateMachineConfigError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::StateMachineConfigError
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::StateMachineConfigError
 pub enum awaken_ext_state_machine::StatusMatcher
@@ -251,6 +262,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::StatusMatcher
 impl core::marker::Send for awaken_ext_state_machine::StatusMatcher
 impl core::marker::Sync for awaken_ext_state_machine::StatusMatcher
 impl core::marker::Unpin for awaken_ext_state_machine::StatusMatcher
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::StatusMatcher
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::StatusMatcher
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::StatusMatcher
 pub enum awaken_ext_state_machine::ViolationAction
@@ -272,6 +284,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::ViolationAction
 impl core::marker::Send for awaken_ext_state_machine::ViolationAction
 impl core::marker::Sync for awaken_ext_state_machine::ViolationAction
 impl core::marker::Unpin for awaken_ext_state_machine::ViolationAction
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::ViolationAction
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::ViolationAction
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::ViolationAction
 pub enum awaken_ext_state_machine::ViolationAuditAction
@@ -295,6 +308,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::ViolationAuditAction
 impl core::marker::Send for awaken_ext_state_machine::ViolationAuditAction
 impl core::marker::Sync for awaken_ext_state_machine::ViolationAuditAction
 impl core::marker::Unpin for awaken_ext_state_machine::ViolationAuditAction
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::ViolationAuditAction
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::ViolationAuditAction
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::ViolationAuditAction
 pub struct awaken_ext_state_machine::ContinuationSettings
@@ -312,6 +326,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::ContinuationSettings
 impl core::marker::Send for awaken_ext_state_machine::ContinuationSettings
 impl core::marker::Sync for awaken_ext_state_machine::ContinuationSettings
 impl core::marker::Unpin for awaken_ext_state_machine::ContinuationSettings
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::ContinuationSettings
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::ContinuationSettings
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::ContinuationSettings
 pub struct awaken_ext_state_machine::Emit
@@ -327,6 +342,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::Emit
 impl core::marker::Send for awaken_ext_state_machine::Emit
 impl core::marker::Sync for awaken_ext_state_machine::Emit
 impl core::marker::Unpin for awaken_ext_state_machine::Emit
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::Emit
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::Emit
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::Emit
 pub struct awaken_ext_state_machine::FsmMetricCounts
@@ -354,6 +370,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::FsmMetricCounts
 impl core::marker::Send for awaken_ext_state_machine::FsmMetricCounts
 impl core::marker::Sync for awaken_ext_state_machine::FsmMetricCounts
 impl core::marker::Unpin for awaken_ext_state_machine::FsmMetricCounts
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::FsmMetricCounts
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::FsmMetricCounts
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::FsmMetricCounts
 pub struct awaken_ext_state_machine::FsmMetricUpdate
@@ -371,6 +388,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::FsmMetricUpdate
 impl core::marker::Send for awaken_ext_state_machine::FsmMetricUpdate
 impl core::marker::Sync for awaken_ext_state_machine::FsmMetricUpdate
 impl core::marker::Unpin for awaken_ext_state_machine::FsmMetricUpdate
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::FsmMetricUpdate
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::FsmMetricUpdate
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::FsmMetricUpdate
 pub struct awaken_ext_state_machine::FsmMetrics
@@ -394,6 +412,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::FsmMetrics
 impl core::marker::Send for awaken_ext_state_machine::FsmMetrics
 impl core::marker::Sync for awaken_ext_state_machine::FsmMetrics
 impl core::marker::Unpin for awaken_ext_state_machine::FsmMetrics
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::FsmMetrics
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::FsmMetrics
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::FsmMetrics
 pub struct awaken_ext_state_machine::FsmStore
@@ -418,6 +437,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::FsmStore
 impl core::marker::Send for awaken_ext_state_machine::FsmStore
 impl core::marker::Sync for awaken_ext_state_machine::FsmStore
 impl core::marker::Unpin for awaken_ext_state_machine::FsmStore
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::FsmStore
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::FsmStore
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::FsmStore
 pub struct awaken_ext_state_machine::FsmTransition
@@ -436,6 +456,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::FsmTransition
 impl core::marker::Send for awaken_ext_state_machine::FsmTransition
 impl core::marker::Sync for awaken_ext_state_machine::FsmTransition
 impl core::marker::Unpin for awaken_ext_state_machine::FsmTransition
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::FsmTransition
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::FsmTransition
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::FsmTransition
 pub struct awaken_ext_state_machine::FsmViolationLog
@@ -458,6 +479,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::FsmViolationLog
 impl core::marker::Send for awaken_ext_state_machine::FsmViolationLog
 impl core::marker::Sync for awaken_ext_state_machine::FsmViolationLog
 impl core::marker::Unpin for awaken_ext_state_machine::FsmViolationLog
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::FsmViolationLog
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::FsmViolationLog
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::FsmViolationLog
 pub struct awaken_ext_state_machine::FsmViolationRecord
@@ -482,6 +504,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::FsmViolationRecord
 impl core::marker::Send for awaken_ext_state_machine::FsmViolationRecord
 impl core::marker::Sync for awaken_ext_state_machine::FsmViolationRecord
 impl core::marker::Unpin for awaken_ext_state_machine::FsmViolationRecord
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::FsmViolationRecord
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::FsmViolationRecord
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::FsmViolationRecord
 pub struct awaken_ext_state_machine::GateViolation
@@ -501,6 +524,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::GateViolation
 impl core::marker::Send for awaken_ext_state_machine::GateViolation
 impl core::marker::Sync for awaken_ext_state_machine::GateViolation
 impl core::marker::Unpin for awaken_ext_state_machine::GateViolation
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::GateViolation
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::GateViolation
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::GateViolation
 pub struct awaken_ext_state_machine::KeyTemplate
@@ -521,6 +545,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::KeyTemplate
 impl core::marker::Send for awaken_ext_state_machine::KeyTemplate
 impl core::marker::Sync for awaken_ext_state_machine::KeyTemplate
 impl core::marker::Unpin for awaken_ext_state_machine::KeyTemplate
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::KeyTemplate
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::KeyTemplate
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::KeyTemplate
 pub struct awaken_ext_state_machine::Machine
@@ -545,6 +570,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::Machine
 impl core::marker::Send for awaken_ext_state_machine::Machine
 impl core::marker::Sync for awaken_ext_state_machine::Machine
 impl core::marker::Unpin for awaken_ext_state_machine::Machine
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::Machine
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::Machine
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::Machine
 pub struct awaken_ext_state_machine::Metrics
@@ -559,6 +585,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::Metrics
 impl core::marker::Send for awaken_ext_state_machine::Metrics
 impl core::marker::Sync for awaken_ext_state_machine::Metrics
 impl core::marker::Unpin for awaken_ext_state_machine::Metrics
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::Metrics
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::Metrics
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::Metrics
 pub struct awaken_ext_state_machine::RunInstances
@@ -573,6 +600,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::RunInstances
 impl core::marker::Send for awaken_ext_state_machine::RunInstances
 impl core::marker::Sync for awaken_ext_state_machine::RunInstances
 impl core::marker::Unpin for awaken_ext_state_machine::RunInstances
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::RunInstances
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::RunInstances
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::RunInstances
 pub struct awaken_ext_state_machine::StateMachineConfig
@@ -593,6 +621,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::StateMachineConfig
 impl core::marker::Send for awaken_ext_state_machine::StateMachineConfig
 impl core::marker::Sync for awaken_ext_state_machine::StateMachineConfig
 impl core::marker::Unpin for awaken_ext_state_machine::StateMachineConfig
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::StateMachineConfig
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::StateMachineConfig
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::StateMachineConfig
 pub struct awaken_ext_state_machine::StateMachinePlugin
@@ -608,6 +637,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::StateMachinePlugin
 impl core::marker::Send for awaken_ext_state_machine::StateMachinePlugin
 impl core::marker::Sync for awaken_ext_state_machine::StateMachinePlugin
 impl core::marker::Unpin for awaken_ext_state_machine::StateMachinePlugin
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::StateMachinePlugin
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::StateMachinePlugin
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::StateMachinePlugin
 pub struct awaken_ext_state_machine::ThreadInstances
@@ -622,6 +652,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::ThreadInstances
 impl core::marker::Send for awaken_ext_state_machine::ThreadInstances
 impl core::marker::Sync for awaken_ext_state_machine::ThreadInstances
 impl core::marker::Unpin for awaken_ext_state_machine::ThreadInstances
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::ThreadInstances
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::ThreadInstances
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::ThreadInstances
 pub struct awaken_ext_state_machine::ToolResultView<'a>
@@ -642,6 +673,7 @@ impl<'a> core::marker::Freeze for awaken_ext_state_machine::ToolResultView<'a>
 impl<'a> core::marker::Send for awaken_ext_state_machine::ToolResultView<'a>
 impl<'a> core::marker::Sync for awaken_ext_state_machine::ToolResultView<'a>
 impl<'a> core::marker::Unpin for awaken_ext_state_machine::ToolResultView<'a>
+impl<'a> core::marker::UnsafeUnpin for awaken_ext_state_machine::ToolResultView<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::ToolResultView<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::ToolResultView<'a>
 pub struct awaken_ext_state_machine::Transition
@@ -662,6 +694,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::Transition
 impl core::marker::Send for awaken_ext_state_machine::Transition
 impl core::marker::Sync for awaken_ext_state_machine::Transition
 impl core::marker::Unpin for awaken_ext_state_machine::Transition
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::Transition
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::Transition
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::Transition
 pub struct awaken_ext_state_machine::Violation
@@ -677,6 +710,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::Violation
 impl core::marker::Send for awaken_ext_state_machine::Violation
 impl core::marker::Sync for awaken_ext_state_machine::Violation
 impl core::marker::Unpin for awaken_ext_state_machine::Violation
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::Violation
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::Violation
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::Violation
 pub struct awaken_ext_state_machine::ViolationLog
@@ -691,6 +725,7 @@ impl core::marker::Freeze for awaken_ext_state_machine::ViolationLog
 impl core::marker::Send for awaken_ext_state_machine::ViolationLog
 impl core::marker::Sync for awaken_ext_state_machine::ViolationLog
 impl core::marker::Unpin for awaken_ext_state_machine::ViolationLog
+impl core::marker::UnsafeUnpin for awaken_ext_state_machine::ViolationLog
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::ViolationLog
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::ViolationLog
 pub const awaken_ext_state_machine::STATE_KEYS: &[&str]

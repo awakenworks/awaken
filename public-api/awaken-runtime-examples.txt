@@ -41,6 +41,7 @@ impl core::marker::Freeze for awaken_runtime_examples::EchoTool
 impl core::marker::Send for awaken_runtime_examples::EchoTool
 impl core::marker::Sync for awaken_runtime_examples::EchoTool
 impl core::marker::Unpin for awaken_runtime_examples::EchoTool
+impl core::marker::UnsafeUnpin for awaken_runtime_examples::EchoTool
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_examples::EchoTool
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_examples::EchoTool
 pub struct awaken_runtime_examples::prelude::GreeterLlm
@@ -50,6 +51,7 @@ impl core::marker::Freeze for awaken_runtime_examples::GreeterLlm
 impl core::marker::Send for awaken_runtime_examples::GreeterLlm
 impl core::marker::Sync for awaken_runtime_examples::GreeterLlm
 impl core::marker::Unpin for awaken_runtime_examples::GreeterLlm
+impl core::marker::UnsafeUnpin for awaken_runtime_examples::GreeterLlm
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_examples::GreeterLlm
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_examples::GreeterLlm
 pub struct awaken_runtime_examples::prelude::ScriptedLlm
@@ -61,6 +63,7 @@ impl !core::marker::Freeze for awaken_runtime_examples::ScriptedLlm
 impl core::marker::Send for awaken_runtime_examples::ScriptedLlm
 impl core::marker::Sync for awaken_runtime_examples::ScriptedLlm
 impl core::marker::Unpin for awaken_runtime_examples::ScriptedLlm
+impl core::marker::UnsafeUnpin for awaken_runtime_examples::ScriptedLlm
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_examples::ScriptedLlm
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_examples::ScriptedLlm
 pub struct awaken_runtime_examples::EchoTool
@@ -71,6 +74,7 @@ impl core::marker::Freeze for awaken_runtime_examples::EchoTool
 impl core::marker::Send for awaken_runtime_examples::EchoTool
 impl core::marker::Sync for awaken_runtime_examples::EchoTool
 impl core::marker::Unpin for awaken_runtime_examples::EchoTool
+impl core::marker::UnsafeUnpin for awaken_runtime_examples::EchoTool
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_examples::EchoTool
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_examples::EchoTool
 pub struct awaken_runtime_examples::GreeterLlm
@@ -80,6 +84,7 @@ impl core::marker::Freeze for awaken_runtime_examples::GreeterLlm
 impl core::marker::Send for awaken_runtime_examples::GreeterLlm
 impl core::marker::Sync for awaken_runtime_examples::GreeterLlm
 impl core::marker::Unpin for awaken_runtime_examples::GreeterLlm
+impl core::marker::UnsafeUnpin for awaken_runtime_examples::GreeterLlm
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_examples::GreeterLlm
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_examples::GreeterLlm
 pub struct awaken_runtime_examples::ScriptedLlm
@@ -91,5 +96,6 @@ impl !core::marker::Freeze for awaken_runtime_examples::ScriptedLlm
 impl core::marker::Send for awaken_runtime_examples::ScriptedLlm
 impl core::marker::Sync for awaken_runtime_examples::ScriptedLlm
 impl core::marker::Unpin for awaken_runtime_examples::ScriptedLlm
+impl core::marker::UnsafeUnpin for awaken_runtime_examples::ScriptedLlm
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_examples::ScriptedLlm
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_examples::ScriptedLlm

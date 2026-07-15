@@ -24,6 +24,7 @@ impl core::marker::Freeze for awaken_data_subject::ConsentStatus
 impl core::marker::Send for awaken_data_subject::ConsentStatus
 impl core::marker::Sync for awaken_data_subject::ConsentStatus
 impl core::marker::Unpin for awaken_data_subject::ConsentStatus
+impl core::marker::UnsafeUnpin for awaken_data_subject::ConsentStatus
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_data_subject::ConsentStatus
 impl core::panic::unwind_safe::UnwindSafe for awaken_data_subject::ConsentStatus
 pub enum awaken_data_subject::DataSubjectError
@@ -38,6 +39,7 @@ impl core::marker::Freeze for awaken_data_subject::DataSubjectError
 impl core::marker::Send for awaken_data_subject::DataSubjectError
 impl core::marker::Sync for awaken_data_subject::DataSubjectError
 impl core::marker::Unpin for awaken_data_subject::DataSubjectError
+impl core::marker::UnsafeUnpin for awaken_data_subject::DataSubjectError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_data_subject::DataSubjectError
 impl core::panic::unwind_safe::UnwindSafe for awaken_data_subject::DataSubjectError
 pub enum awaken_data_subject::LawfulBasis
@@ -63,6 +65,7 @@ impl core::marker::Freeze for awaken_data_subject::LawfulBasis
 impl core::marker::Send for awaken_data_subject::LawfulBasis
 impl core::marker::Sync for awaken_data_subject::LawfulBasis
 impl core::marker::Unpin for awaken_data_subject::LawfulBasis
+impl core::marker::UnsafeUnpin for awaken_data_subject::LawfulBasis
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_data_subject::LawfulBasis
 impl core::panic::unwind_safe::UnwindSafe for awaken_data_subject::LawfulBasis
 pub enum awaken_data_subject::StoreError
@@ -77,6 +80,7 @@ impl core::marker::Freeze for awaken_data_subject::StoreError
 impl core::marker::Send for awaken_data_subject::StoreError
 impl core::marker::Sync for awaken_data_subject::StoreError
 impl core::marker::Unpin for awaken_data_subject::StoreError
+impl core::marker::UnsafeUnpin for awaken_data_subject::StoreError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_data_subject::StoreError
 impl core::panic::unwind_safe::UnwindSafe for awaken_data_subject::StoreError
 pub struct awaken_data_subject::CapturedRecord
@@ -97,6 +101,7 @@ impl core::marker::Freeze for awaken_data_subject::CapturedRecord
 impl core::marker::Send for awaken_data_subject::CapturedRecord
 impl core::marker::Sync for awaken_data_subject::CapturedRecord
 impl core::marker::Unpin for awaken_data_subject::CapturedRecord
+impl core::marker::UnsafeUnpin for awaken_data_subject::CapturedRecord
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_data_subject::CapturedRecord
 impl core::panic::unwind_safe::UnwindSafe for awaken_data_subject::CapturedRecord
 pub struct awaken_data_subject::ConsentGrant
@@ -121,6 +126,7 @@ impl core::marker::Freeze for awaken_data_subject::ConsentGrant
 impl core::marker::Send for awaken_data_subject::ConsentGrant
 impl core::marker::Sync for awaken_data_subject::ConsentGrant
 impl core::marker::Unpin for awaken_data_subject::ConsentGrant
+impl core::marker::UnsafeUnpin for awaken_data_subject::ConsentGrant
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_data_subject::ConsentGrant
 impl core::panic::unwind_safe::UnwindSafe for awaken_data_subject::ConsentGrant
 pub struct awaken_data_subject::DataSubject
@@ -152,6 +158,7 @@ impl core::marker::Freeze for awaken_data_subject::DataSubject
 impl core::marker::Send for awaken_data_subject::DataSubject
 impl core::marker::Sync for awaken_data_subject::DataSubject
 impl core::marker::Unpin for awaken_data_subject::DataSubject
+impl core::marker::UnsafeUnpin for awaken_data_subject::DataSubject
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_data_subject::DataSubject
 impl core::panic::unwind_safe::UnwindSafe for awaken_data_subject::DataSubject
 pub struct awaken_data_subject::InMemoryCapturedContentStore
@@ -173,6 +180,7 @@ impl !core::marker::Freeze for awaken_data_subject::InMemoryCapturedContentStore
 impl core::marker::Send for awaken_data_subject::InMemoryCapturedContentStore
 impl core::marker::Sync for awaken_data_subject::InMemoryCapturedContentStore
 impl core::marker::Unpin for awaken_data_subject::InMemoryCapturedContentStore
+impl core::marker::UnsafeUnpin for awaken_data_subject::InMemoryCapturedContentStore
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_data_subject::InMemoryCapturedContentStore
 impl core::panic::unwind_safe::UnwindSafe for awaken_data_subject::InMemoryCapturedContentStore
 pub struct awaken_data_subject::InMemoryDataSubjectRepo
@@ -189,6 +197,7 @@ impl !core::marker::Freeze for awaken_data_subject::InMemoryDataSubjectRepo
 impl core::marker::Send for awaken_data_subject::InMemoryDataSubjectRepo
 impl core::marker::Sync for awaken_data_subject::InMemoryDataSubjectRepo
 impl core::marker::Unpin for awaken_data_subject::InMemoryDataSubjectRepo
+impl core::marker::UnsafeUnpin for awaken_data_subject::InMemoryDataSubjectRepo
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_data_subject::InMemoryDataSubjectRepo
 impl core::panic::unwind_safe::UnwindSafe for awaken_data_subject::InMemoryDataSubjectRepo
 pub struct awaken_data_subject::RepoDataSubjectResolver
@@ -202,6 +211,7 @@ impl core::marker::Freeze for awaken_data_subject::RepoDataSubjectResolver
 impl core::marker::Send for awaken_data_subject::RepoDataSubjectResolver
 impl core::marker::Sync for awaken_data_subject::RepoDataSubjectResolver
 impl core::marker::Unpin for awaken_data_subject::RepoDataSubjectResolver
+impl core::marker::UnsafeUnpin for awaken_data_subject::RepoDataSubjectResolver
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_data_subject::RepoDataSubjectResolver
 impl !core::panic::unwind_safe::UnwindSafe for awaken_data_subject::RepoDataSubjectResolver
 pub struct awaken_data_subject::SqliteCapturedContentStore
@@ -222,6 +232,7 @@ impl !core::marker::Freeze for awaken_data_subject::SqliteCapturedContentStore
 impl core::marker::Send for awaken_data_subject::SqliteCapturedContentStore
 impl core::marker::Sync for awaken_data_subject::SqliteCapturedContentStore
 impl core::marker::Unpin for awaken_data_subject::SqliteCapturedContentStore
+impl core::marker::UnsafeUnpin for awaken_data_subject::SqliteCapturedContentStore
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_data_subject::SqliteCapturedContentStore
 impl core::panic::unwind_safe::UnwindSafe for awaken_data_subject::SqliteCapturedContentStore
 pub struct awaken_data_subject::SqliteDataSubjectRepo
@@ -239,6 +250,7 @@ impl core::marker::Freeze for awaken_data_subject::SqliteDataSubjectRepo
 impl core::marker::Send for awaken_data_subject::SqliteDataSubjectRepo
 impl core::marker::Sync for awaken_data_subject::SqliteDataSubjectRepo
 impl core::marker::Unpin for awaken_data_subject::SqliteDataSubjectRepo
+impl core::marker::UnsafeUnpin for awaken_data_subject::SqliteDataSubjectRepo
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_data_subject::SqliteDataSubjectRepo
 impl core::panic::unwind_safe::UnwindSafe for awaken_data_subject::SqliteDataSubjectRepo
 pub const awaken_data_subject::BUNDLE_ID: &str

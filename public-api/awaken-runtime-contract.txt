@@ -32,6 +32,7 @@ impl core::marker::Freeze for awaken_runtime_contract::activation::RunActivation
 impl core::marker::Send for awaken_runtime_contract::activation::RunActivation
 impl core::marker::Sync for awaken_runtime_contract::activation::RunActivation
 impl core::marker::Unpin for awaken_runtime_contract::activation::RunActivation
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::activation::RunActivation
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::activation::RunActivation
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::activation::RunActivation
 pub struct awaken_runtime_contract::activation::TraceContext
@@ -54,6 +55,7 @@ impl core::marker::Freeze for awaken_runtime_contract::activation::TraceContext
 impl core::marker::Send for awaken_runtime_contract::activation::TraceContext
 impl core::marker::Sync for awaken_runtime_contract::activation::TraceContext
 impl core::marker::Unpin for awaken_runtime_contract::activation::TraceContext
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::activation::TraceContext
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::activation::TraceContext
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::activation::TraceContext
 pub mod awaken_runtime_contract::agent_resolver
@@ -67,6 +69,7 @@ impl core::marker::Freeze for awaken_runtime_contract::agent_resolver::AgentStep
 impl core::marker::Send for awaken_runtime_contract::agent_resolver::AgentStep
 impl core::marker::Sync for awaken_runtime_contract::agent_resolver::AgentStep
 impl core::marker::Unpin for awaken_runtime_contract::agent_resolver::AgentStep
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::agent_resolver::AgentStep
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::agent_resolver::AgentStep
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::agent_resolver::AgentStep
 pub struct awaken_runtime_contract::agent_resolver::AgentError(pub alloc::string::String)
@@ -81,6 +84,7 @@ impl core::marker::Freeze for awaken_runtime_contract::agent_resolver::AgentErro
 impl core::marker::Send for awaken_runtime_contract::agent_resolver::AgentError
 impl core::marker::Sync for awaken_runtime_contract::agent_resolver::AgentError
 impl core::marker::Unpin for awaken_runtime_contract::agent_resolver::AgentError
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::agent_resolver::AgentError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::agent_resolver::AgentError
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::agent_resolver::AgentError
 pub struct awaken_runtime_contract::agent_resolver::AgentRequest
@@ -90,6 +94,7 @@ impl core::marker::Freeze for awaken_runtime_contract::agent_resolver::AgentRequ
 impl core::marker::Send for awaken_runtime_contract::agent_resolver::AgentRequest
 impl core::marker::Sync for awaken_runtime_contract::agent_resolver::AgentRequest
 impl core::marker::Unpin for awaken_runtime_contract::agent_resolver::AgentRequest
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::agent_resolver::AgentRequest
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::agent_resolver::AgentRequest
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::agent_resolver::AgentRequest
 pub trait awaken_runtime_contract::agent_resolver::AgentResolver: core::marker::Send + core::marker::Sync
@@ -110,6 +115,7 @@ impl core::marker::Freeze for awaken_runtime_contract::boundary::BoundaryOutcome
 impl core::marker::Send for awaken_runtime_contract::boundary::BoundaryOutcome
 impl core::marker::Sync for awaken_runtime_contract::boundary::BoundaryOutcome
 impl core::marker::Unpin for awaken_runtime_contract::boundary::BoundaryOutcome
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::boundary::BoundaryOutcome
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::boundary::BoundaryOutcome
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::boundary::BoundaryOutcome
 pub fn awaken_runtime_contract::boundary::evaluate_boundary(&awaken_runtime_contract::runtime_context::RuntimeRunContext, &awaken_agent_contract::agent::run::Id, &[awaken_agent_contract::agent::message::Message]) -> awaken_runtime_contract::boundary::BoundaryOutcome
@@ -134,6 +140,7 @@ impl core::marker::Freeze for awaken_runtime_contract::capability::PluginCapabil
 impl core::marker::Send for awaken_runtime_contract::capability::PluginCapability
 impl core::marker::Sync for awaken_runtime_contract::capability::PluginCapability
 impl core::marker::Unpin for awaken_runtime_contract::capability::PluginCapability
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::capability::PluginCapability
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::capability::PluginCapability
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::capability::PluginCapability
 pub struct awaken_runtime_contract::capability::RuntimeCapabilityCatalog
@@ -156,6 +163,7 @@ impl core::marker::Freeze for awaken_runtime_contract::capability::RuntimeCapabi
 impl core::marker::Send for awaken_runtime_contract::capability::RuntimeCapabilityCatalog
 impl core::marker::Sync for awaken_runtime_contract::capability::RuntimeCapabilityCatalog
 impl core::marker::Unpin for awaken_runtime_contract::capability::RuntimeCapabilityCatalog
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::capability::RuntimeCapabilityCatalog
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::capability::RuntimeCapabilityCatalog
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::capability::RuntimeCapabilityCatalog
 pub struct awaken_runtime_contract::capability::ToolCapability
@@ -176,6 +184,7 @@ impl core::marker::Freeze for awaken_runtime_contract::capability::ToolCapabilit
 impl core::marker::Send for awaken_runtime_contract::capability::ToolCapability
 impl core::marker::Sync for awaken_runtime_contract::capability::ToolCapability
 impl core::marker::Unpin for awaken_runtime_contract::capability::ToolCapability
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::capability::ToolCapability
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::capability::ToolCapability
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::capability::ToolCapability
 pub trait awaken_runtime_contract::capability::RuntimeCapabilitySource
@@ -213,6 +222,7 @@ impl core::marker::Freeze for awaken_runtime_contract::capture::ContentCapture
 impl core::marker::Send for awaken_runtime_contract::capture::ContentCapture
 impl core::marker::Sync for awaken_runtime_contract::capture::ContentCapture
 impl core::marker::Unpin for awaken_runtime_contract::capture::ContentCapture
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::capture::ContentCapture
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::capture::ContentCapture
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::capture::ContentCapture
 pub enum awaken_runtime_contract::capture::ContentKind
@@ -235,6 +245,7 @@ impl core::marker::Freeze for awaken_runtime_contract::capture::ContentKind
 impl core::marker::Send for awaken_runtime_contract::capture::ContentKind
 impl core::marker::Sync for awaken_runtime_contract::capture::ContentKind
 impl core::marker::Unpin for awaken_runtime_contract::capture::ContentKind
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::capture::ContentKind
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::capture::ContentKind
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::capture::ContentKind
 pub struct awaken_runtime_contract::capture::CaptureDecision
@@ -254,6 +265,7 @@ impl core::marker::Freeze for awaken_runtime_contract::capture::CaptureDecision
 impl core::marker::Send for awaken_runtime_contract::capture::CaptureDecision
 impl core::marker::Sync for awaken_runtime_contract::capture::CaptureDecision
 impl core::marker::Unpin for awaken_runtime_contract::capture::CaptureDecision
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::capture::CaptureDecision
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::capture::CaptureDecision
 impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::capture::CaptureDecision
 pub struct awaken_runtime_contract::capture::NoopRedactor
@@ -270,6 +282,7 @@ impl core::marker::Freeze for awaken_runtime_contract::capture::NoopRedactor
 impl core::marker::Send for awaken_runtime_contract::capture::NoopRedactor
 impl core::marker::Sync for awaken_runtime_contract::capture::NoopRedactor
 impl core::marker::Unpin for awaken_runtime_contract::capture::NoopRedactor
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::capture::NoopRedactor
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::capture::NoopRedactor
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::capture::NoopRedactor
 pub trait awaken_runtime_contract::capture::ContentRedactor: core::marker::Send + core::marker::Sync
@@ -288,6 +301,7 @@ impl core::marker::Freeze for awaken_runtime_contract::catalog::Error
 impl core::marker::Send for awaken_runtime_contract::catalog::Error
 impl core::marker::Sync for awaken_runtime_contract::catalog::Error
 impl core::marker::Unpin for awaken_runtime_contract::catalog::Error
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::catalog::Error
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::catalog::Error
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::catalog::Error
 pub struct awaken_runtime_contract::catalog::InstalledCatalog
@@ -304,6 +318,7 @@ impl core::marker::Freeze for awaken_runtime_contract::catalog::InstalledCatalog
 impl core::marker::Send for awaken_runtime_contract::catalog::InstalledCatalog
 impl core::marker::Sync for awaken_runtime_contract::catalog::InstalledCatalog
 impl core::marker::Unpin for awaken_runtime_contract::catalog::InstalledCatalog
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::catalog::InstalledCatalog
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::catalog::InstalledCatalog
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::catalog::InstalledCatalog
 pub struct awaken_runtime_contract::catalog::RuntimeCatalogInstall
@@ -326,6 +341,7 @@ impl core::marker::Freeze for awaken_runtime_contract::catalog::RuntimeCatalogIn
 impl core::marker::Send for awaken_runtime_contract::catalog::RuntimeCatalogInstall
 impl core::marker::Sync for awaken_runtime_contract::catalog::RuntimeCatalogInstall
 impl core::marker::Unpin for awaken_runtime_contract::catalog::RuntimeCatalogInstall
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::catalog::RuntimeCatalogInstall
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::catalog::RuntimeCatalogInstall
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::catalog::RuntimeCatalogInstall
 pub trait awaken_runtime_contract::catalog::RuntimeCatalogInstaller
@@ -347,6 +363,7 @@ impl core::marker::Freeze for awaken_runtime_contract::control::Error
 impl core::marker::Send for awaken_runtime_contract::control::Error
 impl core::marker::Sync for awaken_runtime_contract::control::Error
 impl core::marker::Unpin for awaken_runtime_contract::control::Error
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::control::Error
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::control::Error
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::control::Error
 pub enum awaken_runtime_contract::control::LiveCommand
@@ -369,6 +386,7 @@ impl core::marker::Freeze for awaken_runtime_contract::control::LiveCommand
 impl core::marker::Send for awaken_runtime_contract::control::LiveCommand
 impl core::marker::Sync for awaken_runtime_contract::control::LiveCommand
 impl core::marker::Unpin for awaken_runtime_contract::control::LiveCommand
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::control::LiveCommand
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::control::LiveCommand
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::control::LiveCommand
 pub trait awaken_runtime_contract::control::LiveRunControl
@@ -396,6 +414,7 @@ impl core::marker::Freeze for awaken_runtime_contract::data_subject::Purpose
 impl core::marker::Send for awaken_runtime_contract::data_subject::Purpose
 impl core::marker::Sync for awaken_runtime_contract::data_subject::Purpose
 impl core::marker::Unpin for awaken_runtime_contract::data_subject::Purpose
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::data_subject::Purpose
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::data_subject::Purpose
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::data_subject::Purpose
 pub struct awaken_runtime_contract::data_subject::DataSubjectId(pub alloc::string::String)
@@ -419,6 +438,7 @@ impl core::marker::Freeze for awaken_runtime_contract::data_subject::DataSubject
 impl core::marker::Send for awaken_runtime_contract::data_subject::DataSubjectId
 impl core::marker::Sync for awaken_runtime_contract::data_subject::DataSubjectId
 impl core::marker::Unpin for awaken_runtime_contract::data_subject::DataSubjectId
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::data_subject::DataSubjectId
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::data_subject::DataSubjectId
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::data_subject::DataSubjectId
 pub struct awaken_runtime_contract::data_subject::ErasureReceipt
@@ -441,6 +461,7 @@ impl core::marker::Freeze for awaken_runtime_contract::data_subject::ErasureRece
 impl core::marker::Send for awaken_runtime_contract::data_subject::ErasureReceipt
 impl core::marker::Sync for awaken_runtime_contract::data_subject::ErasureReceipt
 impl core::marker::Unpin for awaken_runtime_contract::data_subject::ErasureReceipt
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::data_subject::ErasureReceipt
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::data_subject::ErasureReceipt
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::data_subject::ErasureReceipt
 pub struct awaken_runtime_contract::data_subject::NullResolver
@@ -458,6 +479,7 @@ impl core::marker::Freeze for awaken_runtime_contract::data_subject::NullResolve
 impl core::marker::Send for awaken_runtime_contract::data_subject::NullResolver
 impl core::marker::Sync for awaken_runtime_contract::data_subject::NullResolver
 impl core::marker::Unpin for awaken_runtime_contract::data_subject::NullResolver
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::data_subject::NullResolver
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::data_subject::NullResolver
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::data_subject::NullResolver
 pub trait awaken_runtime_contract::data_subject::CaptureSink: core::marker::Send + core::marker::Sync
@@ -488,6 +510,7 @@ impl core::marker::Freeze for awaken_runtime_contract::execution::Cancellation
 impl core::marker::Send for awaken_runtime_contract::execution::Cancellation
 impl core::marker::Sync for awaken_runtime_contract::execution::Cancellation
 impl core::marker::Unpin for awaken_runtime_contract::execution::Cancellation
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::execution::Cancellation
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::execution::Cancellation
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::execution::Cancellation
 pub enum awaken_runtime_contract::execution::Error
@@ -503,6 +526,7 @@ impl core::marker::Freeze for awaken_runtime_contract::execution::Error
 impl core::marker::Send for awaken_runtime_contract::execution::Error
 impl core::marker::Sync for awaken_runtime_contract::execution::Error
 impl core::marker::Unpin for awaken_runtime_contract::execution::Error
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::execution::Error
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::execution::Error
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::execution::Error
 pub enum awaken_runtime_contract::execution::Wait
@@ -523,6 +547,7 @@ impl core::marker::Freeze for awaken_runtime_contract::execution::Wait
 impl core::marker::Send for awaken_runtime_contract::execution::Wait
 impl core::marker::Sync for awaken_runtime_contract::execution::Wait
 impl core::marker::Unpin for awaken_runtime_contract::execution::Wait
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::execution::Wait
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::execution::Wait
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::execution::Wait
 pub struct awaken_runtime_contract::execution::ExecutorCapabilities
@@ -543,6 +568,7 @@ impl core::marker::Freeze for awaken_runtime_contract::execution::ExecutorCapabi
 impl core::marker::Send for awaken_runtime_contract::execution::ExecutorCapabilities
 impl core::marker::Sync for awaken_runtime_contract::execution::ExecutorCapabilities
 impl core::marker::Unpin for awaken_runtime_contract::execution::ExecutorCapabilities
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::execution::ExecutorCapabilities
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::execution::ExecutorCapabilities
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::execution::ExecutorCapabilities
 pub trait awaken_runtime_contract::execution::RunExecutor: core::marker::Send + core::marker::Sync
@@ -567,6 +593,7 @@ impl core::marker::Freeze for awaken_runtime_contract::live_inbox::EditError
 impl core::marker::Send for awaken_runtime_contract::live_inbox::EditError
 impl core::marker::Sync for awaken_runtime_contract::live_inbox::EditError
 impl core::marker::Unpin for awaken_runtime_contract::live_inbox::EditError
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::live_inbox::EditError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::live_inbox::EditError
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::live_inbox::EditError
 pub enum awaken_runtime_contract::live_inbox::MessageOrigin
@@ -591,6 +618,7 @@ impl core::marker::Freeze for awaken_runtime_contract::live_inbox::MessageOrigin
 impl core::marker::Send for awaken_runtime_contract::live_inbox::MessageOrigin
 impl core::marker::Sync for awaken_runtime_contract::live_inbox::MessageOrigin
 impl core::marker::Unpin for awaken_runtime_contract::live_inbox::MessageOrigin
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::live_inbox::MessageOrigin
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::live_inbox::MessageOrigin
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::live_inbox::MessageOrigin
 pub enum awaken_runtime_contract::live_inbox::Offer
@@ -609,6 +637,7 @@ impl core::marker::Freeze for awaken_runtime_contract::live_inbox::Offer
 impl core::marker::Send for awaken_runtime_contract::live_inbox::Offer
 impl core::marker::Sync for awaken_runtime_contract::live_inbox::Offer
 impl core::marker::Unpin for awaken_runtime_contract::live_inbox::Offer
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::live_inbox::Offer
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::live_inbox::Offer
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::live_inbox::Offer
 pub enum awaken_runtime_contract::live_inbox::WaitOutcome
@@ -627,6 +656,7 @@ impl core::marker::Freeze for awaken_runtime_contract::live_inbox::WaitOutcome
 impl core::marker::Send for awaken_runtime_contract::live_inbox::WaitOutcome
 impl core::marker::Sync for awaken_runtime_contract::live_inbox::WaitOutcome
 impl core::marker::Unpin for awaken_runtime_contract::live_inbox::WaitOutcome
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::live_inbox::WaitOutcome
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::live_inbox::WaitOutcome
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::live_inbox::WaitOutcome
 pub struct awaken_runtime_contract::live_inbox::LiveInbox
@@ -652,6 +682,7 @@ impl core::marker::Freeze for awaken_runtime_contract::live_inbox::LiveInbox
 impl core::marker::Send for awaken_runtime_contract::live_inbox::LiveInbox
 impl core::marker::Sync for awaken_runtime_contract::live_inbox::LiveInbox
 impl core::marker::Unpin for awaken_runtime_contract::live_inbox::LiveInbox
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::live_inbox::LiveInbox
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::live_inbox::LiveInbox
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::live_inbox::LiveInbox
 pub struct awaken_runtime_contract::live_inbox::LiveInboxMessage
@@ -669,6 +700,7 @@ impl core::marker::Freeze for awaken_runtime_contract::live_inbox::LiveInboxMess
 impl core::marker::Send for awaken_runtime_contract::live_inbox::LiveInboxMessage
 impl core::marker::Sync for awaken_runtime_contract::live_inbox::LiveInboxMessage
 impl core::marker::Unpin for awaken_runtime_contract::live_inbox::LiveInboxMessage
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::live_inbox::LiveInboxMessage
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::live_inbox::LiveInboxMessage
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::live_inbox::LiveInboxMessage
 pub struct awaken_runtime_contract::live_inbox::LiveInboxMessageId(pub u64)
@@ -691,6 +723,7 @@ impl core::marker::Freeze for awaken_runtime_contract::live_inbox::LiveInboxMess
 impl core::marker::Send for awaken_runtime_contract::live_inbox::LiveInboxMessageId
 impl core::marker::Sync for awaken_runtime_contract::live_inbox::LiveInboxMessageId
 impl core::marker::Unpin for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::live_inbox::LiveInboxMessageId
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::live_inbox::LiveInboxMessageId
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::live_inbox::LiveInboxMessageId
 pub mod awaken_runtime_contract::llm
@@ -729,6 +762,7 @@ impl core::marker::Freeze for awaken_runtime_contract::llm::Error
 impl core::marker::Send for awaken_runtime_contract::llm::Error
 impl core::marker::Sync for awaken_runtime_contract::llm::Error
 impl core::marker::Unpin for awaken_runtime_contract::llm::Error
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::llm::Error
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::Error
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::Error
 pub enum awaken_runtime_contract::llm::StopReason
@@ -754,6 +788,7 @@ impl core::marker::Freeze for awaken_runtime_contract::llm::StopReason
 impl core::marker::Send for awaken_runtime_contract::llm::StopReason
 impl core::marker::Sync for awaken_runtime_contract::llm::StopReason
 impl core::marker::Unpin for awaken_runtime_contract::llm::StopReason
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::llm::StopReason
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::StopReason
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::StopReason
 pub struct awaken_runtime_contract::llm::AssistantOutput
@@ -779,6 +814,7 @@ impl core::marker::Freeze for awaken_runtime_contract::llm::AssistantOutput
 impl core::marker::Send for awaken_runtime_contract::llm::AssistantOutput
 impl core::marker::Sync for awaken_runtime_contract::llm::AssistantOutput
 impl core::marker::Unpin for awaken_runtime_contract::llm::AssistantOutput
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::llm::AssistantOutput
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::AssistantOutput
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::AssistantOutput
 pub struct awaken_runtime_contract::llm::ChatMessage
@@ -799,6 +835,7 @@ impl core::marker::Freeze for awaken_runtime_contract::llm::ChatMessage
 impl core::marker::Send for awaken_runtime_contract::llm::ChatMessage
 impl core::marker::Sync for awaken_runtime_contract::llm::ChatMessage
 impl core::marker::Unpin for awaken_runtime_contract::llm::ChatMessage
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::llm::ChatMessage
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::ChatMessage
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::ChatMessage
 pub struct awaken_runtime_contract::llm::ChatRequest
@@ -820,6 +857,7 @@ impl core::marker::Freeze for awaken_runtime_contract::llm::ChatRequest
 impl core::marker::Send for awaken_runtime_contract::llm::ChatRequest
 impl core::marker::Sync for awaken_runtime_contract::llm::ChatRequest
 impl core::marker::Unpin for awaken_runtime_contract::llm::ChatRequest
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::llm::ChatRequest
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::ChatRequest
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::ChatRequest
 pub struct awaken_runtime_contract::llm::ChatResponse
@@ -841,6 +879,7 @@ impl core::marker::Freeze for awaken_runtime_contract::llm::ChatResponse
 impl core::marker::Send for awaken_runtime_contract::llm::ChatResponse
 impl core::marker::Sync for awaken_runtime_contract::llm::ChatResponse
 impl core::marker::Unpin for awaken_runtime_contract::llm::ChatResponse
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::llm::ChatResponse
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::ChatResponse
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::ChatResponse
 pub struct awaken_runtime_contract::llm::ThreadUsage
@@ -869,6 +908,7 @@ impl core::marker::Freeze for awaken_runtime_contract::llm::ThreadUsage
 impl core::marker::Send for awaken_runtime_contract::llm::ThreadUsage
 impl core::marker::Sync for awaken_runtime_contract::llm::ThreadUsage
 impl core::marker::Unpin for awaken_runtime_contract::llm::ThreadUsage
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::llm::ThreadUsage
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::ThreadUsage
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::ThreadUsage
 pub struct awaken_runtime_contract::llm::ThreadUsageKey
@@ -881,6 +921,7 @@ impl core::marker::Freeze for awaken_runtime_contract::llm::ThreadUsageKey
 impl core::marker::Send for awaken_runtime_contract::llm::ThreadUsageKey
 impl core::marker::Sync for awaken_runtime_contract::llm::ThreadUsageKey
 impl core::marker::Unpin for awaken_runtime_contract::llm::ThreadUsageKey
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::llm::ThreadUsageKey
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::ThreadUsageKey
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::ThreadUsageKey
 pub struct awaken_runtime_contract::llm::TokenUsage
@@ -909,6 +950,7 @@ impl core::marker::Freeze for awaken_runtime_contract::llm::TokenUsage
 impl core::marker::Send for awaken_runtime_contract::llm::TokenUsage
 impl core::marker::Sync for awaken_runtime_contract::llm::TokenUsage
 impl core::marker::Unpin for awaken_runtime_contract::llm::TokenUsage
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::llm::TokenUsage
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::TokenUsage
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::TokenUsage
 pub struct awaken_runtime_contract::llm::ToolCall
@@ -930,6 +972,7 @@ impl core::marker::Freeze for awaken_runtime_contract::llm::ToolCall
 impl core::marker::Send for awaken_runtime_contract::llm::ToolCall
 impl core::marker::Sync for awaken_runtime_contract::llm::ToolCall
 impl core::marker::Unpin for awaken_runtime_contract::llm::ToolCall
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::llm::ToolCall
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::ToolCall
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::ToolCall
 pub const awaken_runtime_contract::llm::THREAD_USAGE_STATE_KEY: &str
@@ -956,6 +999,7 @@ impl<'a> core::marker::Freeze for awaken_runtime_contract::metrics::InferenceMet
 impl<'a> core::marker::Send for awaken_runtime_contract::metrics::InferenceMetric<'a>
 impl<'a> core::marker::Sync for awaken_runtime_contract::metrics::InferenceMetric<'a>
 impl<'a> core::marker::Unpin for awaken_runtime_contract::metrics::InferenceMetric<'a>
+impl<'a> core::marker::UnsafeUnpin for awaken_runtime_contract::metrics::InferenceMetric<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::metrics::InferenceMetric<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::metrics::InferenceMetric<'a>
 pub struct awaken_runtime_contract::metrics::NoopRecorder
@@ -976,6 +1020,7 @@ impl core::marker::Freeze for awaken_runtime_contract::metrics::NoopRecorder
 impl core::marker::Send for awaken_runtime_contract::metrics::NoopRecorder
 impl core::marker::Sync for awaken_runtime_contract::metrics::NoopRecorder
 impl core::marker::Unpin for awaken_runtime_contract::metrics::NoopRecorder
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::metrics::NoopRecorder
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::metrics::NoopRecorder
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::metrics::NoopRecorder
 pub trait awaken_runtime_contract::metrics::MetricsRecorder: core::marker::Send + core::marker::Sync
@@ -1022,6 +1067,7 @@ impl core::marker::Freeze for awaken_runtime_contract::model_access::ModelAccess
 impl core::marker::Send for awaken_runtime_contract::model_access::ModelAccessGrant
 impl core::marker::Sync for awaken_runtime_contract::model_access::ModelAccessGrant
 impl core::marker::Unpin for awaken_runtime_contract::model_access::ModelAccessGrant
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::model_access::ModelAccessGrant
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::model_access::ModelAccessGrant
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::model_access::ModelAccessGrant
 pub struct awaken_runtime_contract::model_access::GatewayUnservable
@@ -1041,6 +1087,7 @@ impl core::marker::Freeze for awaken_runtime_contract::model_access::GatewayUnse
 impl core::marker::Send for awaken_runtime_contract::model_access::GatewayUnservable
 impl core::marker::Sync for awaken_runtime_contract::model_access::GatewayUnservable
 impl core::marker::Unpin for awaken_runtime_contract::model_access::GatewayUnservable
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::model_access::GatewayUnservable
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::model_access::GatewayUnservable
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::model_access::GatewayUnservable
 pub struct awaken_runtime_contract::model_access::ResolvedModelEndpoint
@@ -1060,6 +1107,7 @@ impl core::marker::Freeze for awaken_runtime_contract::model_access::ResolvedMod
 impl core::marker::Send for awaken_runtime_contract::model_access::ResolvedModelEndpoint
 impl core::marker::Sync for awaken_runtime_contract::model_access::ResolvedModelEndpoint
 impl core::marker::Unpin for awaken_runtime_contract::model_access::ResolvedModelEndpoint
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::model_access::ResolvedModelEndpoint
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::model_access::ResolvedModelEndpoint
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::model_access::ResolvedModelEndpoint
 pub mod awaken_runtime_contract::pause
@@ -1076,6 +1124,7 @@ impl core::marker::Freeze for awaken_runtime_contract::pause::PauseSignal
 impl core::marker::Send for awaken_runtime_contract::pause::PauseSignal
 impl core::marker::Sync for awaken_runtime_contract::pause::PauseSignal
 impl core::marker::Unpin for awaken_runtime_contract::pause::PauseSignal
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::pause::PauseSignal
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::pause::PauseSignal
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::pause::PauseSignal
 pub mod awaken_runtime_contract::permission
@@ -1102,6 +1151,7 @@ impl core::marker::Freeze for awaken_runtime_contract::permission::GateOutcome
 impl core::marker::Send for awaken_runtime_contract::permission::GateOutcome
 impl core::marker::Sync for awaken_runtime_contract::permission::GateOutcome
 impl core::marker::Unpin for awaken_runtime_contract::permission::GateOutcome
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::permission::GateOutcome
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::permission::GateOutcome
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::permission::GateOutcome
 pub enum awaken_runtime_contract::permission::PermissionDecision
@@ -1126,6 +1176,7 @@ impl core::marker::Freeze for awaken_runtime_contract::permission::PermissionDec
 impl core::marker::Send for awaken_runtime_contract::permission::PermissionDecision
 impl core::marker::Sync for awaken_runtime_contract::permission::PermissionDecision
 impl core::marker::Unpin for awaken_runtime_contract::permission::PermissionDecision
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::permission::PermissionDecision
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::permission::PermissionDecision
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::permission::PermissionDecision
 pub struct awaken_runtime_contract::permission::PermissionContext
@@ -1147,6 +1198,7 @@ impl core::marker::Freeze for awaken_runtime_contract::permission::PermissionCon
 impl core::marker::Send for awaken_runtime_contract::permission::PermissionContext
 impl core::marker::Sync for awaken_runtime_contract::permission::PermissionContext
 impl core::marker::Unpin for awaken_runtime_contract::permission::PermissionContext
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::permission::PermissionContext
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::permission::PermissionContext
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::permission::PermissionContext
 pub trait awaken_runtime_contract::permission::PermissionPolicy: core::marker::Send + core::marker::Sync
@@ -1189,6 +1241,7 @@ impl core::marker::Freeze for awaken_runtime_contract::plugin::BoundViolation
 impl core::marker::Send for awaken_runtime_contract::plugin::BoundViolation
 impl core::marker::Sync for awaken_runtime_contract::plugin::BoundViolation
 impl core::marker::Unpin for awaken_runtime_contract::plugin::BoundViolation
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::plugin::BoundViolation
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::BoundViolation
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::BoundViolation
 pub enum awaken_runtime_contract::plugin::IdBound
@@ -1219,6 +1272,7 @@ impl core::marker::Freeze for awaken_runtime_contract::IdBound
 impl core::marker::Send for awaken_runtime_contract::IdBound
 impl core::marker::Sync for awaken_runtime_contract::IdBound
 impl core::marker::Unpin for awaken_runtime_contract::IdBound
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::IdBound
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::IdBound
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::IdBound
 pub enum awaken_runtime_contract::plugin::MergeError
@@ -1254,6 +1308,7 @@ impl core::marker::Freeze for awaken_runtime_contract::plugin::MergeError
 impl core::marker::Send for awaken_runtime_contract::plugin::MergeError
 impl core::marker::Sync for awaken_runtime_contract::plugin::MergeError
 impl core::marker::Unpin for awaken_runtime_contract::plugin::MergeError
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::plugin::MergeError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::MergeError
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::MergeError
 pub enum awaken_runtime_contract::plugin::PhaseHookPoint
@@ -1281,6 +1336,7 @@ impl core::marker::Freeze for awaken_runtime_contract::PhaseHookPoint
 impl core::marker::Send for awaken_runtime_contract::PhaseHookPoint
 impl core::marker::Sync for awaken_runtime_contract::PhaseHookPoint
 impl core::marker::Unpin for awaken_runtime_contract::PhaseHookPoint
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::PhaseHookPoint
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::PhaseHookPoint
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::PhaseHookPoint
 pub enum awaken_runtime_contract::plugin::PhaseKind
@@ -1302,6 +1358,7 @@ impl core::marker::Freeze for awaken_runtime_contract::plugin::PhaseKind
 impl core::marker::Send for awaken_runtime_contract::plugin::PhaseKind
 impl core::marker::Sync for awaken_runtime_contract::plugin::PhaseKind
 impl core::marker::Unpin for awaken_runtime_contract::plugin::PhaseKind
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::plugin::PhaseKind
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::PhaseKind
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::PhaseKind
 pub enum awaken_runtime_contract::plugin::RunEndDecision
@@ -1314,6 +1371,7 @@ impl core::marker::Freeze for awaken_runtime_contract::RunEndDecision
 impl core::marker::Send for awaken_runtime_contract::RunEndDecision
 impl core::marker::Sync for awaken_runtime_contract::RunEndDecision
 impl core::marker::Unpin for awaken_runtime_contract::RunEndDecision
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::RunEndDecision
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::RunEndDecision
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::RunEndDecision
 pub struct awaken_runtime_contract::plugin::AfterToolContext
@@ -1330,6 +1388,7 @@ impl core::marker::Freeze for awaken_runtime_contract::plugin::AfterToolContext
 impl core::marker::Send for awaken_runtime_contract::plugin::AfterToolContext
 impl core::marker::Sync for awaken_runtime_contract::plugin::AfterToolContext
 impl core::marker::Unpin for awaken_runtime_contract::plugin::AfterToolContext
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::plugin::AfterToolContext
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::AfterToolContext
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::AfterToolContext
 pub struct awaken_runtime_contract::plugin::CapabilityBound
@@ -1357,6 +1416,7 @@ impl core::marker::Freeze for awaken_runtime_contract::CapabilityBound
 impl core::marker::Send for awaken_runtime_contract::CapabilityBound
 impl core::marker::Sync for awaken_runtime_contract::CapabilityBound
 impl core::marker::Unpin for awaken_runtime_contract::CapabilityBound
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::CapabilityBound
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::CapabilityBound
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::CapabilityBound
 pub struct awaken_runtime_contract::plugin::ContextMessages
@@ -1369,6 +1429,7 @@ impl core::marker::Freeze for awaken_runtime_contract::plugin::ContextMessages
 impl core::marker::Send for awaken_runtime_contract::plugin::ContextMessages
 impl core::marker::Sync for awaken_runtime_contract::plugin::ContextMessages
 impl core::marker::Unpin for awaken_runtime_contract::plugin::ContextMessages
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::plugin::ContextMessages
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::ContextMessages
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::ContextMessages
 pub struct awaken_runtime_contract::plugin::Contributions
@@ -1393,6 +1454,7 @@ impl core::marker::Freeze for awaken_runtime_contract::Contributions
 impl core::marker::Send for awaken_runtime_contract::Contributions
 impl core::marker::Sync for awaken_runtime_contract::Contributions
 impl core::marker::Unpin for awaken_runtime_contract::Contributions
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::Contributions
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::Contributions
 impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::Contributions
 pub struct awaken_runtime_contract::plugin::DynamicTool
@@ -1404,6 +1466,7 @@ impl core::marker::Freeze for awaken_runtime_contract::plugin::DynamicTool
 impl core::marker::Send for awaken_runtime_contract::plugin::DynamicTool
 impl core::marker::Sync for awaken_runtime_contract::plugin::DynamicTool
 impl core::marker::Unpin for awaken_runtime_contract::plugin::DynamicTool
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::plugin::DynamicTool
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::DynamicTool
 impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::DynamicTool
 pub struct awaken_runtime_contract::plugin::HookReaction
@@ -1422,6 +1485,7 @@ impl core::marker::Freeze for awaken_runtime_contract::plugin::HookReaction
 impl core::marker::Send for awaken_runtime_contract::plugin::HookReaction
 impl core::marker::Sync for awaken_runtime_contract::plugin::HookReaction
 impl core::marker::Unpin for awaken_runtime_contract::plugin::HookReaction
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::plugin::HookReaction
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::HookReaction
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::HookReaction
 pub struct awaken_runtime_contract::plugin::PhaseContext
@@ -1439,6 +1503,7 @@ impl core::marker::Freeze for awaken_runtime_contract::plugin::PhaseContext
 impl core::marker::Send for awaken_runtime_contract::plugin::PhaseContext
 impl core::marker::Sync for awaken_runtime_contract::plugin::PhaseContext
 impl core::marker::Unpin for awaken_runtime_contract::plugin::PhaseContext
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::plugin::PhaseContext
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::PhaseContext
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::PhaseContext
 pub struct awaken_runtime_contract::plugin::PluginConfigError
@@ -1461,6 +1526,7 @@ impl core::marker::Freeze for awaken_runtime_contract::plugin::PluginConfigError
 impl core::marker::Send for awaken_runtime_contract::plugin::PluginConfigError
 impl core::marker::Sync for awaken_runtime_contract::plugin::PluginConfigError
 impl core::marker::Unpin for awaken_runtime_contract::plugin::PluginConfigError
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::plugin::PluginConfigError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::PluginConfigError
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::PluginConfigError
 pub struct awaken_runtime_contract::plugin::PluginManifest
@@ -1486,6 +1552,7 @@ impl core::marker::Freeze for awaken_runtime_contract::PluginManifest
 impl core::marker::Send for awaken_runtime_contract::PluginManifest
 impl core::marker::Sync for awaken_runtime_contract::PluginManifest
 impl core::marker::Unpin for awaken_runtime_contract::PluginManifest
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::PluginManifest
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::PluginManifest
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::PluginManifest
 pub struct awaken_runtime_contract::plugin::ResolvedExecutionEnv
@@ -1509,6 +1576,7 @@ impl core::marker::Freeze for awaken_runtime_contract::ResolvedExecutionEnv
 impl core::marker::Send for awaken_runtime_contract::ResolvedExecutionEnv
 impl core::marker::Sync for awaken_runtime_contract::ResolvedExecutionEnv
 impl core::marker::Unpin for awaken_runtime_contract::ResolvedExecutionEnv
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::ResolvedExecutionEnv
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::ResolvedExecutionEnv
 impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::ResolvedExecutionEnv
 pub struct awaken_runtime_contract::plugin::RunEndContext<'a>
@@ -1521,6 +1589,7 @@ impl<'a> core::marker::Freeze for awaken_runtime_contract::RunEndContext<'a>
 impl<'a> core::marker::Send for awaken_runtime_contract::RunEndContext<'a>
 impl<'a> core::marker::Sync for awaken_runtime_contract::RunEndContext<'a>
 impl<'a> core::marker::Unpin for awaken_runtime_contract::RunEndContext<'a>
+impl<'a> core::marker::UnsafeUnpin for awaken_runtime_contract::RunEndContext<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::RunEndContext<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::RunEndContext<'a>
 pub trait awaken_runtime_contract::plugin::PhaseHook: core::marker::Send + core::marker::Sync
@@ -1558,6 +1627,7 @@ impl core::marker::Freeze for awaken_runtime_contract::resilience::Disposition
 impl core::marker::Send for awaken_runtime_contract::resilience::Disposition
 impl core::marker::Sync for awaken_runtime_contract::resilience::Disposition
 impl core::marker::Unpin for awaken_runtime_contract::resilience::Disposition
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::resilience::Disposition
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resilience::Disposition
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resilience::Disposition
 pub trait awaken_runtime_contract::resilience::Classify
@@ -1587,6 +1657,7 @@ impl core::marker::Freeze for awaken_runtime_contract::resolved::Backend
 impl core::marker::Send for awaken_runtime_contract::resolved::Backend
 impl core::marker::Sync for awaken_runtime_contract::resolved::Backend
 impl core::marker::Unpin for awaken_runtime_contract::resolved::Backend
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::resolved::Backend
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolved::Backend
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved::Backend
 pub enum awaken_runtime_contract::resolved::ContextPolicy
@@ -1611,6 +1682,7 @@ impl core::marker::Freeze for awaken_runtime_contract::resolved::ContextPolicy
 impl core::marker::Send for awaken_runtime_contract::resolved::ContextPolicy
 impl core::marker::Sync for awaken_runtime_contract::resolved::ContextPolicy
 impl core::marker::Unpin for awaken_runtime_contract::resolved::ContextPolicy
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::resolved::ContextPolicy
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolved::ContextPolicy
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved::ContextPolicy
 pub struct awaken_runtime_contract::resolved::CatalogFingerprint(pub alloc::string::String)
@@ -1632,6 +1704,7 @@ impl core::marker::Freeze for awaken_runtime_contract::resolved::CatalogFingerpr
 impl core::marker::Send for awaken_runtime_contract::resolved::CatalogFingerprint
 impl core::marker::Sync for awaken_runtime_contract::resolved::CatalogFingerprint
 impl core::marker::Unpin for awaken_runtime_contract::resolved::CatalogFingerprint
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::resolved::CatalogFingerprint
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolved::CatalogFingerprint
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved::CatalogFingerprint
 pub struct awaken_runtime_contract::resolved::ModelBinding
@@ -1658,6 +1731,7 @@ impl core::marker::Freeze for awaken_runtime_contract::resolved::ModelBinding
 impl core::marker::Send for awaken_runtime_contract::resolved::ModelBinding
 impl core::marker::Sync for awaken_runtime_contract::resolved::ModelBinding
 impl core::marker::Unpin for awaken_runtime_contract::resolved::ModelBinding
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::resolved::ModelBinding
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolved::ModelBinding
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved::ModelBinding
 pub struct awaken_runtime_contract::resolved::PresentedTools
@@ -1676,6 +1750,7 @@ impl core::marker::Freeze for awaken_runtime_contract::resolved::PresentedTools
 impl core::marker::Send for awaken_runtime_contract::resolved::PresentedTools
 impl core::marker::Sync for awaken_runtime_contract::resolved::PresentedTools
 impl core::marker::Unpin for awaken_runtime_contract::resolved::PresentedTools
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::resolved::PresentedTools
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolved::PresentedTools
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved::PresentedTools
 pub struct awaken_runtime_contract::resolved::ResolvedRun
@@ -1696,6 +1771,7 @@ impl core::marker::Freeze for awaken_runtime_contract::resolved::ResolvedRun
 impl core::marker::Send for awaken_runtime_contract::resolved::ResolvedRun
 impl core::marker::Sync for awaken_runtime_contract::resolved::ResolvedRun
 impl core::marker::Unpin for awaken_runtime_contract::resolved::ResolvedRun
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::resolved::ResolvedRun
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolved::ResolvedRun
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved::ResolvedRun
 pub struct awaken_runtime_contract::resolved::ResolvedSpec
@@ -1726,6 +1802,7 @@ impl core::marker::Freeze for awaken_runtime_contract::resolved::ResolvedSpec
 impl core::marker::Send for awaken_runtime_contract::resolved::ResolvedSpec
 impl core::marker::Sync for awaken_runtime_contract::resolved::ResolvedSpec
 impl core::marker::Unpin for awaken_runtime_contract::resolved::ResolvedSpec
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::resolved::ResolvedSpec
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolved::ResolvedSpec
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved::ResolvedSpec
 pub struct awaken_runtime_contract::resolved::ToolDescriptor
@@ -1750,6 +1827,7 @@ impl core::marker::Freeze for awaken_runtime_contract::resolved::ToolDescriptor
 impl core::marker::Send for awaken_runtime_contract::resolved::ToolDescriptor
 impl core::marker::Sync for awaken_runtime_contract::resolved::ToolDescriptor
 impl core::marker::Unpin for awaken_runtime_contract::resolved::ToolDescriptor
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::resolved::ToolDescriptor
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolved::ToolDescriptor
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved::ToolDescriptor
 pub struct awaken_runtime_contract::resolved::ToolFacet
@@ -1773,6 +1851,7 @@ impl core::marker::Freeze for awaken_runtime_contract::resolved::ToolFacet
 impl core::marker::Send for awaken_runtime_contract::resolved::ToolFacet
 impl core::marker::Sync for awaken_runtime_contract::resolved::ToolFacet
 impl core::marker::Unpin for awaken_runtime_contract::resolved::ToolFacet
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::resolved::ToolFacet
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolved::ToolFacet
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved::ToolFacet
 pub struct awaken_runtime_contract::resolved::ToolPresentation
@@ -1801,6 +1880,7 @@ impl core::marker::Freeze for awaken_runtime_contract::resolved::ToolPresentatio
 impl core::marker::Send for awaken_runtime_contract::resolved::ToolPresentation
 impl core::marker::Sync for awaken_runtime_contract::resolved::ToolPresentation
 impl core::marker::Unpin for awaken_runtime_contract::resolved::ToolPresentation
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::resolved::ToolPresentation
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolved::ToolPresentation
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved::ToolPresentation
 pub const awaken_runtime_contract::resolved::TOOL_OPEN_ID: &str
@@ -1822,6 +1902,7 @@ impl core::marker::Freeze for awaken_runtime_contract::resolver::Error
 impl core::marker::Send for awaken_runtime_contract::resolver::Error
 impl core::marker::Sync for awaken_runtime_contract::resolver::Error
 impl core::marker::Unpin for awaken_runtime_contract::resolver::Error
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::resolver::Error
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolver::Error
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolver::Error
 pub trait awaken_runtime_contract::resolver::AgentSnapshotCatalog
@@ -1852,6 +1933,7 @@ impl core::marker::Freeze for awaken_runtime_contract::resume::ResumeError
 impl core::marker::Send for awaken_runtime_contract::resume::ResumeError
 impl core::marker::Sync for awaken_runtime_contract::resume::ResumeError
 impl core::marker::Unpin for awaken_runtime_contract::resume::ResumeError
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::resume::ResumeError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resume::ResumeError
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resume::ResumeError
 pub enum awaken_runtime_contract::resume::ResumeResult
@@ -1878,6 +1960,7 @@ impl core::marker::Freeze for awaken_runtime_contract::resume::ResumeResult
 impl core::marker::Send for awaken_runtime_contract::resume::ResumeResult
 impl core::marker::Sync for awaken_runtime_contract::resume::ResumeResult
 impl core::marker::Unpin for awaken_runtime_contract::resume::ResumeResult
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::resume::ResumeResult
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resume::ResumeResult
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resume::ResumeResult
 pub struct awaken_runtime_contract::resume::ResumeCommand
@@ -1905,6 +1988,7 @@ impl core::marker::Freeze for awaken_runtime_contract::resume::ResumeCommand
 impl core::marker::Send for awaken_runtime_contract::resume::ResumeCommand
 impl core::marker::Sync for awaken_runtime_contract::resume::ResumeCommand
 impl core::marker::Unpin for awaken_runtime_contract::resume::ResumeCommand
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::resume::ResumeCommand
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resume::ResumeCommand
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resume::ResumeCommand
 pub fn awaken_runtime_contract::resume::validate_resume(&awaken_agent_contract::agent::waiting::WaitingTicket, &awaken_runtime_contract::resume::ResumeCommand) -> core::result::Result<(), awaken_runtime_contract::resume::ResumeError>
@@ -1924,6 +2008,7 @@ impl core::marker::Freeze for awaken_runtime_contract::runnable::RunnableConfig
 impl core::marker::Send for awaken_runtime_contract::runnable::RunnableConfig
 impl core::marker::Sync for awaken_runtime_contract::runnable::RunnableConfig
 impl core::marker::Unpin for awaken_runtime_contract::runnable::RunnableConfig
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::runnable::RunnableConfig
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::runnable::RunnableConfig
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::runnable::RunnableConfig
 pub struct awaken_runtime_contract::runnable::RunnableConfigBuilder
@@ -1949,6 +2034,7 @@ impl core::marker::Freeze for awaken_runtime_contract::runnable::RunnableConfigB
 impl core::marker::Send for awaken_runtime_contract::runnable::RunnableConfigBuilder
 impl core::marker::Sync for awaken_runtime_contract::runnable::RunnableConfigBuilder
 impl core::marker::Unpin for awaken_runtime_contract::runnable::RunnableConfigBuilder
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::runnable::RunnableConfigBuilder
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::runnable::RunnableConfigBuilder
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::runnable::RunnableConfigBuilder
 pub mod awaken_runtime_contract::runtime_context
@@ -1964,6 +2050,7 @@ impl core::marker::Freeze for awaken_runtime_contract::runtime_context::CaptureC
 impl core::marker::Send for awaken_runtime_contract::runtime_context::CaptureContext
 impl core::marker::Sync for awaken_runtime_contract::runtime_context::CaptureContext
 impl core::marker::Unpin for awaken_runtime_contract::runtime_context::CaptureContext
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::runtime_context::CaptureContext
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::runtime_context::CaptureContext
 impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::runtime_context::CaptureContext
 pub struct awaken_runtime_contract::runtime_context::RuntimeRunContext
@@ -2001,6 +2088,7 @@ impl core::marker::Freeze for awaken_runtime_contract::runtime_context::RuntimeR
 impl core::marker::Send for awaken_runtime_contract::runtime_context::RuntimeRunContext
 impl core::marker::Sync for awaken_runtime_contract::runtime_context::RuntimeRunContext
 impl core::marker::Unpin for awaken_runtime_contract::runtime_context::RuntimeRunContext
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::runtime_context::RuntimeRunContext
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::runtime_context::RuntimeRunContext
 impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::runtime_context::RuntimeRunContext
 pub mod awaken_runtime_contract::snapshot
@@ -2022,6 +2110,7 @@ impl core::marker::Freeze for awaken_runtime_contract::snapshot::AgentSnapshotIn
 impl core::marker::Send for awaken_runtime_contract::snapshot::AgentSnapshotInput
 impl core::marker::Sync for awaken_runtime_contract::snapshot::AgentSnapshotInput
 impl core::marker::Unpin for awaken_runtime_contract::snapshot::AgentSnapshotInput
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::snapshot::AgentSnapshotInput
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::snapshot::AgentSnapshotInput
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::snapshot::AgentSnapshotInput
 pub struct awaken_runtime_contract::snapshot::AgentId(pub alloc::string::String)
@@ -2043,6 +2132,7 @@ impl core::marker::Freeze for awaken_runtime_contract::snapshot::AgentId
 impl core::marker::Send for awaken_runtime_contract::snapshot::AgentId
 impl core::marker::Sync for awaken_runtime_contract::snapshot::AgentId
 impl core::marker::Unpin for awaken_runtime_contract::snapshot::AgentId
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::snapshot::AgentId
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::snapshot::AgentId
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::snapshot::AgentId
 pub struct awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
@@ -2065,6 +2155,7 @@ impl core::marker::Freeze for awaken_runtime_contract::snapshot::ExecutableAgent
 impl core::marker::Send for awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
 impl core::marker::Sync for awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
 impl core::marker::Unpin for awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
 pub struct awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId(pub alloc::string::String)
@@ -2086,6 +2177,7 @@ impl core::marker::Freeze for awaken_runtime_contract::snapshot::ExecutableAgent
 impl core::marker::Send for awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
 impl core::marker::Sync for awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
 impl core::marker::Unpin for awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
 pub mod awaken_runtime_contract::subagent_runner
@@ -2101,6 +2193,7 @@ impl core::marker::Freeze for awaken_runtime_contract::subagent_runner::Subagent
 impl core::marker::Send for awaken_runtime_contract::subagent_runner::SubagentError
 impl core::marker::Sync for awaken_runtime_contract::subagent_runner::SubagentError
 impl core::marker::Unpin for awaken_runtime_contract::subagent_runner::SubagentError
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::subagent_runner::SubagentError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::subagent_runner::SubagentError
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::subagent_runner::SubagentError
 pub struct awaken_runtime_contract::subagent_runner::SubagentReply
@@ -2109,6 +2202,7 @@ impl core::marker::Freeze for awaken_runtime_contract::subagent_runner::Subagent
 impl core::marker::Send for awaken_runtime_contract::subagent_runner::SubagentReply
 impl core::marker::Sync for awaken_runtime_contract::subagent_runner::SubagentReply
 impl core::marker::Unpin for awaken_runtime_contract::subagent_runner::SubagentReply
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::subagent_runner::SubagentReply
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::subagent_runner::SubagentReply
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::subagent_runner::SubagentReply
 pub struct awaken_runtime_contract::subagent_runner::SubagentRequest
@@ -2119,6 +2213,7 @@ impl core::marker::Freeze for awaken_runtime_contract::subagent_runner::Subagent
 impl core::marker::Send for awaken_runtime_contract::subagent_runner::SubagentRequest
 impl core::marker::Sync for awaken_runtime_contract::subagent_runner::SubagentRequest
 impl core::marker::Unpin for awaken_runtime_contract::subagent_runner::SubagentRequest
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::subagent_runner::SubagentRequest
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::subagent_runner::SubagentRequest
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::subagent_runner::SubagentRequest
 pub trait awaken_runtime_contract::subagent_runner::SubagentRunner: core::marker::Send + core::marker::Sync
@@ -2137,6 +2232,7 @@ impl core::marker::Freeze for awaken_runtime_contract::tool::ToolError
 impl core::marker::Send for awaken_runtime_contract::tool::ToolError
 impl core::marker::Sync for awaken_runtime_contract::tool::ToolError
 impl core::marker::Unpin for awaken_runtime_contract::tool::ToolError
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::tool::ToolError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::tool::ToolError
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::tool::ToolError
 pub struct awaken_runtime_contract::tool::ToolCall
@@ -2158,6 +2254,7 @@ impl core::marker::Freeze for awaken_runtime_contract::llm::ToolCall
 impl core::marker::Send for awaken_runtime_contract::llm::ToolCall
 impl core::marker::Sync for awaken_runtime_contract::llm::ToolCall
 impl core::marker::Unpin for awaken_runtime_contract::llm::ToolCall
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::llm::ToolCall
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::ToolCall
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::ToolCall
 pub struct awaken_runtime_contract::tool::ToolOutput
@@ -2184,6 +2281,7 @@ impl core::marker::Freeze for awaken_runtime_contract::tool::ToolOutput
 impl core::marker::Send for awaken_runtime_contract::tool::ToolOutput
 impl core::marker::Sync for awaken_runtime_contract::tool::ToolOutput
 impl core::marker::Unpin for awaken_runtime_contract::tool::ToolOutput
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::tool::ToolOutput
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::tool::ToolOutput
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::tool::ToolOutput
 pub trait awaken_runtime_contract::tool::RawTool: core::marker::Send + core::marker::Sync
@@ -2208,6 +2306,7 @@ impl core::marker::Freeze for awaken_runtime_contract::agent_resolver::AgentStep
 impl core::marker::Send for awaken_runtime_contract::agent_resolver::AgentStep
 impl core::marker::Sync for awaken_runtime_contract::agent_resolver::AgentStep
 impl core::marker::Unpin for awaken_runtime_contract::agent_resolver::AgentStep
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::agent_resolver::AgentStep
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::agent_resolver::AgentStep
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::agent_resolver::AgentStep
 pub enum awaken_runtime_contract::BoundaryOutcome
@@ -2223,6 +2322,7 @@ impl core::marker::Freeze for awaken_runtime_contract::boundary::BoundaryOutcome
 impl core::marker::Send for awaken_runtime_contract::boundary::BoundaryOutcome
 impl core::marker::Sync for awaken_runtime_contract::boundary::BoundaryOutcome
 impl core::marker::Unpin for awaken_runtime_contract::boundary::BoundaryOutcome
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::boundary::BoundaryOutcome
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::boundary::BoundaryOutcome
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::boundary::BoundaryOutcome
 pub enum awaken_runtime_contract::Cancellation
@@ -2242,6 +2342,7 @@ impl core::marker::Freeze for awaken_runtime_contract::execution::Cancellation
 impl core::marker::Send for awaken_runtime_contract::execution::Cancellation
 impl core::marker::Sync for awaken_runtime_contract::execution::Cancellation
 impl core::marker::Unpin for awaken_runtime_contract::execution::Cancellation
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::execution::Cancellation
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::execution::Cancellation
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::execution::Cancellation
 pub enum awaken_runtime_contract::ContentCapture
@@ -2276,6 +2377,7 @@ impl core::marker::Freeze for awaken_runtime_contract::capture::ContentCapture
 impl core::marker::Send for awaken_runtime_contract::capture::ContentCapture
 impl core::marker::Sync for awaken_runtime_contract::capture::ContentCapture
 impl core::marker::Unpin for awaken_runtime_contract::capture::ContentCapture
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::capture::ContentCapture
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::capture::ContentCapture
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::capture::ContentCapture
 pub enum awaken_runtime_contract::ContentKind
@@ -2298,6 +2400,7 @@ impl core::marker::Freeze for awaken_runtime_contract::capture::ContentKind
 impl core::marker::Send for awaken_runtime_contract::capture::ContentKind
 impl core::marker::Sync for awaken_runtime_contract::capture::ContentKind
 impl core::marker::Unpin for awaken_runtime_contract::capture::ContentKind
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::capture::ContentKind
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::capture::ContentKind
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::capture::ContentKind
 pub enum awaken_runtime_contract::GateOutcome
@@ -2323,6 +2426,7 @@ impl core::marker::Freeze for awaken_runtime_contract::permission::GateOutcome
 impl core::marker::Send for awaken_runtime_contract::permission::GateOutcome
 impl core::marker::Sync for awaken_runtime_contract::permission::GateOutcome
 impl core::marker::Unpin for awaken_runtime_contract::permission::GateOutcome
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::permission::GateOutcome
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::permission::GateOutcome
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::permission::GateOutcome
 pub enum awaken_runtime_contract::IdBound
@@ -2353,6 +2457,7 @@ impl core::marker::Freeze for awaken_runtime_contract::IdBound
 impl core::marker::Send for awaken_runtime_contract::IdBound
 impl core::marker::Sync for awaken_runtime_contract::IdBound
 impl core::marker::Unpin for awaken_runtime_contract::IdBound
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::IdBound
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::IdBound
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::IdBound
 pub enum awaken_runtime_contract::ModelAccessGrant
@@ -2386,6 +2491,7 @@ impl core::marker::Freeze for awaken_runtime_contract::model_access::ModelAccess
 impl core::marker::Send for awaken_runtime_contract::model_access::ModelAccessGrant
 impl core::marker::Sync for awaken_runtime_contract::model_access::ModelAccessGrant
 impl core::marker::Unpin for awaken_runtime_contract::model_access::ModelAccessGrant
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::model_access::ModelAccessGrant
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::model_access::ModelAccessGrant
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::model_access::ModelAccessGrant
 pub enum awaken_runtime_contract::PermissionDecision
@@ -2410,6 +2516,7 @@ impl core::marker::Freeze for awaken_runtime_contract::permission::PermissionDec
 impl core::marker::Send for awaken_runtime_contract::permission::PermissionDecision
 impl core::marker::Sync for awaken_runtime_contract::permission::PermissionDecision
 impl core::marker::Unpin for awaken_runtime_contract::permission::PermissionDecision
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::permission::PermissionDecision
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::permission::PermissionDecision
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::permission::PermissionDecision
 pub enum awaken_runtime_contract::PhaseHookPoint
@@ -2437,6 +2544,7 @@ impl core::marker::Freeze for awaken_runtime_contract::PhaseHookPoint
 impl core::marker::Send for awaken_runtime_contract::PhaseHookPoint
 impl core::marker::Sync for awaken_runtime_contract::PhaseHookPoint
 impl core::marker::Unpin for awaken_runtime_contract::PhaseHookPoint
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::PhaseHookPoint
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::PhaseHookPoint
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::PhaseHookPoint
 pub enum awaken_runtime_contract::Purpose
@@ -2461,6 +2569,7 @@ impl core::marker::Freeze for awaken_runtime_contract::data_subject::Purpose
 impl core::marker::Send for awaken_runtime_contract::data_subject::Purpose
 impl core::marker::Sync for awaken_runtime_contract::data_subject::Purpose
 impl core::marker::Unpin for awaken_runtime_contract::data_subject::Purpose
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::data_subject::Purpose
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::data_subject::Purpose
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::data_subject::Purpose
 pub enum awaken_runtime_contract::ResumeError
@@ -2484,6 +2593,7 @@ impl core::marker::Freeze for awaken_runtime_contract::resume::ResumeError
 impl core::marker::Send for awaken_runtime_contract::resume::ResumeError
 impl core::marker::Sync for awaken_runtime_contract::resume::ResumeError
 impl core::marker::Unpin for awaken_runtime_contract::resume::ResumeError
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::resume::ResumeError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resume::ResumeError
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resume::ResumeError
 pub enum awaken_runtime_contract::ResumeResult
@@ -2510,6 +2620,7 @@ impl core::marker::Freeze for awaken_runtime_contract::resume::ResumeResult
 impl core::marker::Send for awaken_runtime_contract::resume::ResumeResult
 impl core::marker::Sync for awaken_runtime_contract::resume::ResumeResult
 impl core::marker::Unpin for awaken_runtime_contract::resume::ResumeResult
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::resume::ResumeResult
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resume::ResumeResult
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resume::ResumeResult
 pub enum awaken_runtime_contract::RunEndDecision
@@ -2522,6 +2633,7 @@ impl core::marker::Freeze for awaken_runtime_contract::RunEndDecision
 impl core::marker::Send for awaken_runtime_contract::RunEndDecision
 impl core::marker::Sync for awaken_runtime_contract::RunEndDecision
 impl core::marker::Unpin for awaken_runtime_contract::RunEndDecision
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::RunEndDecision
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::RunEndDecision
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::RunEndDecision
 pub enum awaken_runtime_contract::Wait
@@ -2542,6 +2654,7 @@ impl core::marker::Freeze for awaken_runtime_contract::execution::Wait
 impl core::marker::Send for awaken_runtime_contract::execution::Wait
 impl core::marker::Sync for awaken_runtime_contract::execution::Wait
 impl core::marker::Unpin for awaken_runtime_contract::execution::Wait
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::execution::Wait
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::execution::Wait
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::execution::Wait
 pub struct awaken_runtime_contract::AgentError(pub alloc::string::String)
@@ -2556,6 +2669,7 @@ impl core::marker::Freeze for awaken_runtime_contract::agent_resolver::AgentErro
 impl core::marker::Send for awaken_runtime_contract::agent_resolver::AgentError
 impl core::marker::Sync for awaken_runtime_contract::agent_resolver::AgentError
 impl core::marker::Unpin for awaken_runtime_contract::agent_resolver::AgentError
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::agent_resolver::AgentError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::agent_resolver::AgentError
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::agent_resolver::AgentError
 pub struct awaken_runtime_contract::AgentRequest
@@ -2565,6 +2679,7 @@ impl core::marker::Freeze for awaken_runtime_contract::agent_resolver::AgentRequ
 impl core::marker::Send for awaken_runtime_contract::agent_resolver::AgentRequest
 impl core::marker::Sync for awaken_runtime_contract::agent_resolver::AgentRequest
 impl core::marker::Unpin for awaken_runtime_contract::agent_resolver::AgentRequest
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::agent_resolver::AgentRequest
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::agent_resolver::AgentRequest
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::agent_resolver::AgentRequest
 pub struct awaken_runtime_contract::CapabilityBound
@@ -2592,6 +2707,7 @@ impl core::marker::Freeze for awaken_runtime_contract::CapabilityBound
 impl core::marker::Send for awaken_runtime_contract::CapabilityBound
 impl core::marker::Sync for awaken_runtime_contract::CapabilityBound
 impl core::marker::Unpin for awaken_runtime_contract::CapabilityBound
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::CapabilityBound
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::CapabilityBound
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::CapabilityBound
 pub struct awaken_runtime_contract::CaptureContext
@@ -2606,6 +2722,7 @@ impl core::marker::Freeze for awaken_runtime_contract::runtime_context::CaptureC
 impl core::marker::Send for awaken_runtime_contract::runtime_context::CaptureContext
 impl core::marker::Sync for awaken_runtime_contract::runtime_context::CaptureContext
 impl core::marker::Unpin for awaken_runtime_contract::runtime_context::CaptureContext
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::runtime_context::CaptureContext
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::runtime_context::CaptureContext
 impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::runtime_context::CaptureContext
 pub struct awaken_runtime_contract::CaptureDecision
@@ -2625,6 +2742,7 @@ impl core::marker::Freeze for awaken_runtime_contract::capture::CaptureDecision
 impl core::marker::Send for awaken_runtime_contract::capture::CaptureDecision
 impl core::marker::Sync for awaken_runtime_contract::capture::CaptureDecision
 impl core::marker::Unpin for awaken_runtime_contract::capture::CaptureDecision
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::capture::CaptureDecision
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::capture::CaptureDecision
 impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::capture::CaptureDecision
 pub struct awaken_runtime_contract::CatalogFingerprint(pub alloc::string::String)
@@ -2646,6 +2764,7 @@ impl core::marker::Freeze for awaken_runtime_contract::resolved::CatalogFingerpr
 impl core::marker::Send for awaken_runtime_contract::resolved::CatalogFingerprint
 impl core::marker::Sync for awaken_runtime_contract::resolved::CatalogFingerprint
 impl core::marker::Unpin for awaken_runtime_contract::resolved::CatalogFingerprint
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::resolved::CatalogFingerprint
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolved::CatalogFingerprint
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved::CatalogFingerprint
 pub struct awaken_runtime_contract::ChatRequest
@@ -2667,6 +2786,7 @@ impl core::marker::Freeze for awaken_runtime_contract::llm::ChatRequest
 impl core::marker::Send for awaken_runtime_contract::llm::ChatRequest
 impl core::marker::Sync for awaken_runtime_contract::llm::ChatRequest
 impl core::marker::Unpin for awaken_runtime_contract::llm::ChatRequest
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::llm::ChatRequest
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::ChatRequest
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::ChatRequest
 pub struct awaken_runtime_contract::ChatResponse
@@ -2688,6 +2808,7 @@ impl core::marker::Freeze for awaken_runtime_contract::llm::ChatResponse
 impl core::marker::Send for awaken_runtime_contract::llm::ChatResponse
 impl core::marker::Sync for awaken_runtime_contract::llm::ChatResponse
 impl core::marker::Unpin for awaken_runtime_contract::llm::ChatResponse
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::llm::ChatResponse
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::ChatResponse
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::ChatResponse
 pub struct awaken_runtime_contract::Contributions
@@ -2712,6 +2833,7 @@ impl core::marker::Freeze for awaken_runtime_contract::Contributions
 impl core::marker::Send for awaken_runtime_contract::Contributions
 impl core::marker::Sync for awaken_runtime_contract::Contributions
 impl core::marker::Unpin for awaken_runtime_contract::Contributions
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::Contributions
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::Contributions
 impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::Contributions
 pub struct awaken_runtime_contract::DataSubjectId(pub alloc::string::String)
@@ -2735,6 +2857,7 @@ impl core::marker::Freeze for awaken_runtime_contract::data_subject::DataSubject
 impl core::marker::Send for awaken_runtime_contract::data_subject::DataSubjectId
 impl core::marker::Sync for awaken_runtime_contract::data_subject::DataSubjectId
 impl core::marker::Unpin for awaken_runtime_contract::data_subject::DataSubjectId
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::data_subject::DataSubjectId
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::data_subject::DataSubjectId
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::data_subject::DataSubjectId
 pub struct awaken_runtime_contract::ErasureReceipt
@@ -2757,6 +2880,7 @@ impl core::marker::Freeze for awaken_runtime_contract::data_subject::ErasureRece
 impl core::marker::Send for awaken_runtime_contract::data_subject::ErasureReceipt
 impl core::marker::Sync for awaken_runtime_contract::data_subject::ErasureReceipt
 impl core::marker::Unpin for awaken_runtime_contract::data_subject::ErasureReceipt
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::data_subject::ErasureReceipt
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::data_subject::ErasureReceipt
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::data_subject::ErasureReceipt
 pub struct awaken_runtime_contract::ExecutableAgentSnapshot
@@ -2779,6 +2903,7 @@ impl core::marker::Freeze for awaken_runtime_contract::snapshot::ExecutableAgent
 impl core::marker::Send for awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
 impl core::marker::Sync for awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
 impl core::marker::Unpin for awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
 pub struct awaken_runtime_contract::ExecutableAgentSnapshotId(pub alloc::string::String)
@@ -2800,6 +2925,7 @@ impl core::marker::Freeze for awaken_runtime_contract::snapshot::ExecutableAgent
 impl core::marker::Send for awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
 impl core::marker::Sync for awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
 impl core::marker::Unpin for awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
 pub struct awaken_runtime_contract::ExecutorCapabilities
@@ -2820,6 +2946,7 @@ impl core::marker::Freeze for awaken_runtime_contract::execution::ExecutorCapabi
 impl core::marker::Send for awaken_runtime_contract::execution::ExecutorCapabilities
 impl core::marker::Sync for awaken_runtime_contract::execution::ExecutorCapabilities
 impl core::marker::Unpin for awaken_runtime_contract::execution::ExecutorCapabilities
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::execution::ExecutorCapabilities
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::execution::ExecutorCapabilities
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::execution::ExecutorCapabilities
 pub struct awaken_runtime_contract::LiveInbox
@@ -2845,6 +2972,7 @@ impl core::marker::Freeze for awaken_runtime_contract::live_inbox::LiveInbox
 impl core::marker::Send for awaken_runtime_contract::live_inbox::LiveInbox
 impl core::marker::Sync for awaken_runtime_contract::live_inbox::LiveInbox
 impl core::marker::Unpin for awaken_runtime_contract::live_inbox::LiveInbox
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::live_inbox::LiveInbox
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::live_inbox::LiveInbox
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::live_inbox::LiveInbox
 pub struct awaken_runtime_contract::LiveInboxMessage
@@ -2862,6 +2990,7 @@ impl core::marker::Freeze for awaken_runtime_contract::live_inbox::LiveInboxMess
 impl core::marker::Send for awaken_runtime_contract::live_inbox::LiveInboxMessage
 impl core::marker::Sync for awaken_runtime_contract::live_inbox::LiveInboxMessage
 impl core::marker::Unpin for awaken_runtime_contract::live_inbox::LiveInboxMessage
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::live_inbox::LiveInboxMessage
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::live_inbox::LiveInboxMessage
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::live_inbox::LiveInboxMessage
 pub struct awaken_runtime_contract::LiveInboxMessageId(pub u64)
@@ -2884,6 +3013,7 @@ impl core::marker::Freeze for awaken_runtime_contract::live_inbox::LiveInboxMess
 impl core::marker::Send for awaken_runtime_contract::live_inbox::LiveInboxMessageId
 impl core::marker::Sync for awaken_runtime_contract::live_inbox::LiveInboxMessageId
 impl core::marker::Unpin for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::live_inbox::LiveInboxMessageId
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::live_inbox::LiveInboxMessageId
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::live_inbox::LiveInboxMessageId
 pub struct awaken_runtime_contract::ModelBinding
@@ -2910,6 +3040,7 @@ impl core::marker::Freeze for awaken_runtime_contract::resolved::ModelBinding
 impl core::marker::Send for awaken_runtime_contract::resolved::ModelBinding
 impl core::marker::Sync for awaken_runtime_contract::resolved::ModelBinding
 impl core::marker::Unpin for awaken_runtime_contract::resolved::ModelBinding
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::resolved::ModelBinding
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolved::ModelBinding
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved::ModelBinding
 pub struct awaken_runtime_contract::NoopRedactor
@@ -2926,6 +3057,7 @@ impl core::marker::Freeze for awaken_runtime_contract::capture::NoopRedactor
 impl core::marker::Send for awaken_runtime_contract::capture::NoopRedactor
 impl core::marker::Sync for awaken_runtime_contract::capture::NoopRedactor
 impl core::marker::Unpin for awaken_runtime_contract::capture::NoopRedactor
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::capture::NoopRedactor
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::capture::NoopRedactor
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::capture::NoopRedactor
 pub struct awaken_runtime_contract::NullResolver
@@ -2943,6 +3075,7 @@ impl core::marker::Freeze for awaken_runtime_contract::data_subject::NullResolve
 impl core::marker::Send for awaken_runtime_contract::data_subject::NullResolver
 impl core::marker::Sync for awaken_runtime_contract::data_subject::NullResolver
 impl core::marker::Unpin for awaken_runtime_contract::data_subject::NullResolver
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::data_subject::NullResolver
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::data_subject::NullResolver
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::data_subject::NullResolver
 pub struct awaken_runtime_contract::PauseSignal(_)
@@ -2958,6 +3091,7 @@ impl core::marker::Freeze for awaken_runtime_contract::pause::PauseSignal
 impl core::marker::Send for awaken_runtime_contract::pause::PauseSignal
 impl core::marker::Sync for awaken_runtime_contract::pause::PauseSignal
 impl core::marker::Unpin for awaken_runtime_contract::pause::PauseSignal
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::pause::PauseSignal
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::pause::PauseSignal
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::pause::PauseSignal
 pub struct awaken_runtime_contract::PluginManifest
@@ -2983,6 +3117,7 @@ impl core::marker::Freeze for awaken_runtime_contract::PluginManifest
 impl core::marker::Send for awaken_runtime_contract::PluginManifest
 impl core::marker::Sync for awaken_runtime_contract::PluginManifest
 impl core::marker::Unpin for awaken_runtime_contract::PluginManifest
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::PluginManifest
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::PluginManifest
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::PluginManifest
 pub struct awaken_runtime_contract::ResolvedExecutionEnv
@@ -3006,6 +3141,7 @@ impl core::marker::Freeze for awaken_runtime_contract::ResolvedExecutionEnv
 impl core::marker::Send for awaken_runtime_contract::ResolvedExecutionEnv
 impl core::marker::Sync for awaken_runtime_contract::ResolvedExecutionEnv
 impl core::marker::Unpin for awaken_runtime_contract::ResolvedExecutionEnv
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::ResolvedExecutionEnv
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::ResolvedExecutionEnv
 impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::ResolvedExecutionEnv
 pub struct awaken_runtime_contract::ResolvedModelEndpoint
@@ -3025,6 +3161,7 @@ impl core::marker::Freeze for awaken_runtime_contract::model_access::ResolvedMod
 impl core::marker::Send for awaken_runtime_contract::model_access::ResolvedModelEndpoint
 impl core::marker::Sync for awaken_runtime_contract::model_access::ResolvedModelEndpoint
 impl core::marker::Unpin for awaken_runtime_contract::model_access::ResolvedModelEndpoint
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::model_access::ResolvedModelEndpoint
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::model_access::ResolvedModelEndpoint
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::model_access::ResolvedModelEndpoint
 pub struct awaken_runtime_contract::ResolvedSpec
@@ -3055,6 +3192,7 @@ impl core::marker::Freeze for awaken_runtime_contract::resolved::ResolvedSpec
 impl core::marker::Send for awaken_runtime_contract::resolved::ResolvedSpec
 impl core::marker::Sync for awaken_runtime_contract::resolved::ResolvedSpec
 impl core::marker::Unpin for awaken_runtime_contract::resolved::ResolvedSpec
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::resolved::ResolvedSpec
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolved::ResolvedSpec
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved::ResolvedSpec
 pub struct awaken_runtime_contract::ResumeCommand
@@ -3082,6 +3220,7 @@ impl core::marker::Freeze for awaken_runtime_contract::resume::ResumeCommand
 impl core::marker::Send for awaken_runtime_contract::resume::ResumeCommand
 impl core::marker::Sync for awaken_runtime_contract::resume::ResumeCommand
 impl core::marker::Unpin for awaken_runtime_contract::resume::ResumeCommand
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::resume::ResumeCommand
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resume::ResumeCommand
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resume::ResumeCommand
 pub struct awaken_runtime_contract::RunActivation
@@ -3110,6 +3249,7 @@ impl core::marker::Freeze for awaken_runtime_contract::activation::RunActivation
 impl core::marker::Send for awaken_runtime_contract::activation::RunActivation
 impl core::marker::Sync for awaken_runtime_contract::activation::RunActivation
 impl core::marker::Unpin for awaken_runtime_contract::activation::RunActivation
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::activation::RunActivation
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::activation::RunActivation
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::activation::RunActivation
 pub struct awaken_runtime_contract::RunEndContext<'a>
@@ -3122,6 +3262,7 @@ impl<'a> core::marker::Freeze for awaken_runtime_contract::RunEndContext<'a>
 impl<'a> core::marker::Send for awaken_runtime_contract::RunEndContext<'a>
 impl<'a> core::marker::Sync for awaken_runtime_contract::RunEndContext<'a>
 impl<'a> core::marker::Unpin for awaken_runtime_contract::RunEndContext<'a>
+impl<'a> core::marker::UnsafeUnpin for awaken_runtime_contract::RunEndContext<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::RunEndContext<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::RunEndContext<'a>
 pub struct awaken_runtime_contract::RunnableConfig
@@ -3139,6 +3280,7 @@ impl core::marker::Freeze for awaken_runtime_contract::runnable::RunnableConfig
 impl core::marker::Send for awaken_runtime_contract::runnable::RunnableConfig
 impl core::marker::Sync for awaken_runtime_contract::runnable::RunnableConfig
 impl core::marker::Unpin for awaken_runtime_contract::runnable::RunnableConfig
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::runnable::RunnableConfig
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::runnable::RunnableConfig
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::runnable::RunnableConfig
 pub struct awaken_runtime_contract::RunnableConfigBuilder
@@ -3164,6 +3306,7 @@ impl core::marker::Freeze for awaken_runtime_contract::runnable::RunnableConfigB
 impl core::marker::Send for awaken_runtime_contract::runnable::RunnableConfigBuilder
 impl core::marker::Sync for awaken_runtime_contract::runnable::RunnableConfigBuilder
 impl core::marker::Unpin for awaken_runtime_contract::runnable::RunnableConfigBuilder
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::runnable::RunnableConfigBuilder
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::runnable::RunnableConfigBuilder
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::runnable::RunnableConfigBuilder
 pub struct awaken_runtime_contract::RuntimeCatalogInstall
@@ -3186,6 +3329,7 @@ impl core::marker::Freeze for awaken_runtime_contract::catalog::RuntimeCatalogIn
 impl core::marker::Send for awaken_runtime_contract::catalog::RuntimeCatalogInstall
 impl core::marker::Sync for awaken_runtime_contract::catalog::RuntimeCatalogInstall
 impl core::marker::Unpin for awaken_runtime_contract::catalog::RuntimeCatalogInstall
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::catalog::RuntimeCatalogInstall
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::catalog::RuntimeCatalogInstall
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::catalog::RuntimeCatalogInstall
 pub struct awaken_runtime_contract::RuntimeRunContext
@@ -3223,6 +3367,7 @@ impl core::marker::Freeze for awaken_runtime_contract::runtime_context::RuntimeR
 impl core::marker::Send for awaken_runtime_contract::runtime_context::RuntimeRunContext
 impl core::marker::Sync for awaken_runtime_contract::runtime_context::RuntimeRunContext
 impl core::marker::Unpin for awaken_runtime_contract::runtime_context::RuntimeRunContext
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::runtime_context::RuntimeRunContext
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::runtime_context::RuntimeRunContext
 impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::runtime_context::RuntimeRunContext
 pub struct awaken_runtime_contract::SubagentError(pub alloc::string::String)
@@ -3237,6 +3382,7 @@ impl core::marker::Freeze for awaken_runtime_contract::subagent_runner::Subagent
 impl core::marker::Send for awaken_runtime_contract::subagent_runner::SubagentError
 impl core::marker::Sync for awaken_runtime_contract::subagent_runner::SubagentError
 impl core::marker::Unpin for awaken_runtime_contract::subagent_runner::SubagentError
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::subagent_runner::SubagentError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::subagent_runner::SubagentError
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::subagent_runner::SubagentError
 pub struct awaken_runtime_contract::SubagentReply
@@ -3245,6 +3391,7 @@ impl core::marker::Freeze for awaken_runtime_contract::subagent_runner::Subagent
 impl core::marker::Send for awaken_runtime_contract::subagent_runner::SubagentReply
 impl core::marker::Sync for awaken_runtime_contract::subagent_runner::SubagentReply
 impl core::marker::Unpin for awaken_runtime_contract::subagent_runner::SubagentReply
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::subagent_runner::SubagentReply
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::subagent_runner::SubagentReply
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::subagent_runner::SubagentReply
 pub struct awaken_runtime_contract::SubagentRequest
@@ -3255,6 +3402,7 @@ impl core::marker::Freeze for awaken_runtime_contract::subagent_runner::Subagent
 impl core::marker::Send for awaken_runtime_contract::subagent_runner::SubagentRequest
 impl core::marker::Sync for awaken_runtime_contract::subagent_runner::SubagentRequest
 impl core::marker::Unpin for awaken_runtime_contract::subagent_runner::SubagentRequest
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::subagent_runner::SubagentRequest
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::subagent_runner::SubagentRequest
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::subagent_runner::SubagentRequest
 pub struct awaken_runtime_contract::ToolOutput
@@ -3281,6 +3429,7 @@ impl core::marker::Freeze for awaken_runtime_contract::tool::ToolOutput
 impl core::marker::Send for awaken_runtime_contract::tool::ToolOutput
 impl core::marker::Sync for awaken_runtime_contract::tool::ToolOutput
 impl core::marker::Unpin for awaken_runtime_contract::tool::ToolOutput
+impl core::marker::UnsafeUnpin for awaken_runtime_contract::tool::ToolOutput
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::tool::ToolOutput
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::tool::ToolOutput
 pub trait awaken_runtime_contract::AgentResolver: core::marker::Send + core::marker::Sync
