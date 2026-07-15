@@ -160,4 +160,208 @@ mod tests {
         assert!(owners.owner("mcp:calc") != Some("tenant-b".to_string()));
         assert_eq!(owners.owner("mcp:unknown"), None);
     }
+
+    // ---- CEG §10 additions: the middleware end-to-end (F33/F34) ------------
+
+    use axum::Router;
+    use axum::body::Body;
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
+
+    /// The ownership guard over a terminal handler that echoes the status named
+    /// by the `x-status` header (default 200) — so a test can drive a failed
+    /// author (OW5) as well as a successful one.
+    fn app(owners: ResourceOwners) -> Router {
+        async fn echo(request: Request) -> Response {
+            let status = request
+                .headers()
+                .get("x-status")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| StatusCode::from_bytes(s.as_bytes()).ok())
+                .unwrap_or(StatusCode::OK);
+            status.into_response()
+        }
+        Router::new()
+            .fallback(echo)
+            .layer(axum::middleware::from_fn_with_state(
+                owners,
+                resource_ownership_guard,
+            ))
+    }
+
+    /// Drive one request, optionally stamping a `WorkspaceScope` and forcing the
+    /// downstream handler's status; returns the response status.
+    async fn call(
+        app: &Router,
+        method: &str,
+        uri: &str,
+        scope: Option<&str>,
+        status: Option<u16>,
+    ) -> StatusCode {
+        let mut b = axum::http::Request::builder().method(method).uri(uri);
+        if let Some(code) = status {
+            b = b.header("x-status", code.to_string());
+        }
+        let mut req = b.body(Body::empty()).unwrap();
+        if let Some(scope) = scope {
+            req.extensions_mut()
+                .insert(WorkspaceScope(scope.to_string()));
+        }
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let status = resp.status();
+        // Drain the body so the connection future completes cleanly.
+        let _ = resp.into_body().collect().await;
+        status
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ow1_list_and_subaction_paths_pass_through_unfenced() {
+        // Even with an owner on file for one scope, the un-keyed paths (list, a
+        // resolve sub-action, the shared catalog) never fence another scope.
+        let owners = ResourceOwners::new();
+        owners.record("mcp:calc".into(), "tenant-a".into());
+        let app = app(owners);
+        for (m, uri) in [
+            ("GET", "/v1/config/mcp-servers"),
+            ("POST", "/v1/config/inference-profiles/p1/resolve"),
+            ("GET", "/v1/config/catalog"),
+        ] {
+            assert_eq!(
+                call(&app, m, uri, Some("tenant-b"), None).await,
+                StatusCode::OK,
+                "{m} {uri}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ow2_first_successful_put_records_the_owner() {
+        let owners = ResourceOwners::new();
+        let app = app(owners.clone());
+        assert_eq!(
+            call(
+                &app,
+                "PUT",
+                "/v1/config/mcp-servers/calc",
+                Some("tenant-a"),
+                None
+            )
+            .await,
+            StatusCode::OK
+        );
+        assert_eq!(owners.owner("mcp:calc").as_deref(), Some("tenant-a"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ow3_cross_tenant_access_is_404_no_disclosure() {
+        let owners = ResourceOwners::new();
+        owners.record("mcp:calc".into(), "tenant-a".into());
+        let app = app(owners);
+        // Neither a cross-tenant read nor a cross-tenant author is admitted —
+        // and both answer 404, not 403 (no existence disclosure).
+        assert_eq!(
+            call(
+                &app,
+                "GET",
+                "/v1/config/mcp-servers/calc",
+                Some("tenant-b"),
+                None
+            )
+            .await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            call(
+                &app,
+                "PUT",
+                "/v1/config/mcp-servers/calc",
+                Some("tenant-b"),
+                None
+            )
+            .await,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ow4_owner_reaccess_passes_through() {
+        let owners = ResourceOwners::new();
+        owners.record("mcp:calc".into(), "tenant-a".into());
+        let app = app(owners);
+        assert_eq!(
+            call(
+                &app,
+                "GET",
+                "/v1/config/mcp-servers/calc",
+                Some("tenant-a"),
+                None
+            )
+            .await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            call(
+                &app,
+                "PUT",
+                "/v1/config/mcp-servers/calc",
+                Some("tenant-a"),
+                None
+            )
+            .await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ow5_get_or_failed_put_does_not_record_ownership() {
+        let owners = ResourceOwners::new();
+        let app = app(owners.clone());
+        // A read never authors ownership…
+        assert_eq!(
+            call(
+                &app,
+                "GET",
+                "/v1/config/mcp-servers/calc",
+                Some("tenant-a"),
+                None
+            )
+            .await,
+            StatusCode::OK
+        );
+        assert_eq!(owners.owner("mcp:calc"), None);
+        // …nor does a PUT that the handler rejected.
+        assert_eq!(
+            call(
+                &app,
+                "PUT",
+                "/v1/config/mcp-servers/calc",
+                Some("tenant-a"),
+                Some(400)
+            )
+            .await,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(owners.owner("mcp:calc"), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ow6_default_single_tenant_never_self_fences() {
+        // No `WorkspaceScope` stamp → the seeded DEFAULT_SCOPE, throughout: a
+        // bare single-tenant deployment authors, re-reads, and re-authors freely.
+        let owners = ResourceOwners::new();
+        let app = app(owners.clone());
+        assert_eq!(
+            call(&app, "PUT", "/v1/config/mcp-servers/calc", None, None).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            call(&app, "GET", "/v1/config/mcp-servers/calc", None, None).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            call(&app, "PUT", "/v1/config/mcp-servers/calc", None, None).await,
+            StatusCode::OK
+        );
+        assert_eq!(owners.owner("mcp:calc").as_deref(), Some(DEFAULT_SCOPE));
+    }
 }

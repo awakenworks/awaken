@@ -1240,6 +1240,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "axum",
         # dev-only: the authz restart tests open a tempdir-backed iam.sqlite.
         "tempfile",
+        # dev-only: the management_guard / mint-route tests stand up a real axum
+        # router and drive it (tower util + response-body reading).
+        "tower",
+        "http-body-util",
     },
     # The single aggregated command + the single-machine composition root (Stage B2):
     # it weaves the authoring plane (awaken-control) and the data plane (awaken-server)

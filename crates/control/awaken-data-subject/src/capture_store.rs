@@ -221,6 +221,30 @@ mod tests {
         assert!(s.is_empty());
     }
 
+    // restrict/release (a)(b)(c)(d): restrict counts only currently-unrestricted
+    // rows (a) and is idempotent once they are frozen (b); release counts only
+    // currently-restricted rows (c) and is likewise idempotent (d).
+    #[test]
+    fn restrict_and_release_count_only_matching_and_are_idempotent() {
+        let s = InMemoryCapturedContentStore::new();
+        let a = DataSubjectId("a".into());
+        s.insert(a.clone(), Purpose::TelemetryContent, "x1", 100);
+        s.insert(a.clone(), Purpose::TelemetryContent, "x2", 100);
+
+        // (a) both fresh rows are unrestricted → counted.
+        assert_eq!(s.restrict(&a), 2);
+        // (b) already restricted → idempotent no-op.
+        assert_eq!(s.restrict(&a), 0);
+        // (a) a newly inserted row is the only unrestricted one → counted alone.
+        s.insert(a.clone(), Purpose::TelemetryContent, "x3", 100);
+        assert_eq!(s.restrict(&a), 1, "only the new unrestricted row counts");
+
+        // (c) all three restricted → released.
+        assert_eq!(s.release(&a), 3);
+        // (d) already released → idempotent no-op.
+        assert_eq!(s.release(&a), 0);
+    }
+
     #[test]
     fn ttl_sweep_removes_expired_records() {
         let s = store(); // all recorded at t=100

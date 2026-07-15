@@ -47,6 +47,8 @@ axum = { version = "0.8", features = ["multipart"] }
 
 [dev-dependencies]
 tempfile = "3"
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
 
 [lints]
 workspace = true

@@ -182,6 +182,17 @@ mod seal_key_tests {
     }
 
     #[test]
+    fn parse_maps_hex_digits_to_the_exact_key_bytes() {
+        // Value correctness, not just Ok: every byte of a 64-char hex string lands.
+        assert_eq!(parse_seal_key(&"0a".repeat(32)).unwrap(), [0x0au8; 32]);
+        let mixed = "00112233445566778899aabbccddeeff\
+                     ffeeddccbbaa99887766554433221100";
+        let key = parse_seal_key(mixed).unwrap();
+        assert_eq!(&key[..4], &[0x00, 0x11, 0x22, 0x33]);
+        assert_eq!(&key[28..], &[0x33, 0x22, 0x11, 0x00]);
+    }
+
+    #[test]
     fn an_unreadable_file_reports_the_path() {
         let err = resolve_seal_key_hex(None, Some("/nope".into()), |_| {
             Err(std::io::Error::new(
@@ -274,6 +285,46 @@ mod tests {
         let r = SecretRef("cred:1".into());
         // A blob shorter than the nonce cannot even be split, let alone opened.
         blobs.put_blob(&r, vec![0u8; NONCE_LEN - 1]).await.unwrap();
+        assert!(matches!(store.get(&r).await, Err(CredentialError::Seal)));
+    }
+
+    #[tokio::test]
+    async fn identical_plaintext_sealed_twice_both_open_to_the_original() {
+        // put(c): distinct blobs for the same secret (proven elsewhere) must each
+        // still decrypt back to the one original plaintext — nonce reuse-avoidance
+        // does not cost recoverability.
+        let (store, _blobs) = store_with_blobs(&[6u8; 32]);
+        let a = SecretRef("a".into());
+        let b = SecretRef("b".into());
+        store
+            .put(&a, RedactedString::new("same-secret"))
+            .await
+            .unwrap();
+        store
+            .put(&b, RedactedString::new("same-secret"))
+            .await
+            .unwrap();
+        assert_eq!(store.get(&a).await.unwrap().expose_secret(), "same-secret");
+        assert_eq!(store.get(&b).await.unwrap().expose_secret(), "same-secret");
+    }
+
+    #[tokio::test]
+    async fn a_ciphertext_opening_to_non_utf8_is_a_seal_error() {
+        // get(d): a blob that passes the AEAD tag but decrypts to non-UTF-8 bytes
+        // must still fail closed as Seal (not surface lossy/garbage text). Sealed
+        // here directly with the cipher so the AEAD tag is valid — only the UTF-8
+        // check downstream rejects it.
+        const KEY: [u8; 32] = [11u8; 32];
+        let (store, blobs) = store_with_blobs(&KEY);
+        let cipher = ChaCha20Poly1305::new(Key::from_slice(&KEY));
+        let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+        let ciphertext = cipher
+            .encrypt(&nonce, &[0xff, 0xfe, 0x00, 0x80][..])
+            .unwrap();
+        let mut blob = nonce.to_vec();
+        blob.extend_from_slice(&ciphertext);
+        let r = SecretRef("nonutf8".into());
+        blobs.put_blob(&r, blob).await.unwrap();
         assert!(matches!(store.get(&r).await, Err(CredentialError::Seal)));
     }
 

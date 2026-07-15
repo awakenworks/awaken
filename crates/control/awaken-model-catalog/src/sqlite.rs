@@ -14,7 +14,7 @@ use crate::repo::{CatalogRepo, RepoError};
 use crate::schema::catalog_bundle;
 use crate::{
     CatalogError, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderCatalog,
-    ProviderId,
+    ProviderId, ValidCatalog,
 };
 
 /// The catalog component's table namespace (its bundle prefix).
@@ -205,7 +205,9 @@ impl CatalogRepo for SqliteCatalogRepo {
                 params![model_id, endpoint_id, data],
             )
             .map_err(storage)?;
-            load_catalog(&tx, p)?.validate()?;
+            // Route the whole-catalog re-validation through the single construction
+            // boundary (`ValidCatalog::parse`) — same fail-closed check, funneled.
+            ValidCatalog::parse(load_catalog(&tx, p)?)?;
             tx.commit().map_err(storage)?;
             Ok(())
         })
@@ -248,9 +250,9 @@ impl CatalogRepo for SqliteCatalogRepo {
 
     async fn snapshot(&self) -> Result<ProviderCatalog, RepoError> {
         self.with_conn(move |conn, p| {
-            let cat = load_catalog(conn, p)?;
-            cat.validate()?;
-            Ok(cat)
+            // Load-time integrity guard against corrupt rows, funneled through the
+            // same `ValidCatalog::parse` boundary; hand back the checked inner.
+            Ok(ValidCatalog::parse(load_catalog(conn, p)?)?.into_inner())
         })
         .await
     }

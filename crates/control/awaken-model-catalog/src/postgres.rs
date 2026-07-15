@@ -16,7 +16,7 @@ use crate::repo::{CatalogRepo, RepoError};
 use crate::schema::catalog_bundle;
 use crate::{
     CatalogError, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderCatalog,
-    ProviderId,
+    ProviderId, ValidCatalog,
 };
 
 /// The catalog component's table namespace (its bundle prefix).
@@ -182,7 +182,9 @@ impl CatalogRepo for PostgresCatalogRepo {
         .execute(&mut *tx)
         .await
         .map_err(storage)?;
-        load_catalog(&mut tx, p).await?.validate()?; // Transaction derefs to PgConnection
+        // Route the whole-catalog re-validation through the single construction
+        // boundary (`ValidCatalog::parse`) — same fail-closed check, funneled.
+        ValidCatalog::parse(load_catalog(&mut tx, p).await?)?; // Transaction derefs to PgConnection
         tx.commit().await.map_err(storage)?;
         Ok(())
     }
@@ -215,8 +217,9 @@ impl CatalogRepo for PostgresCatalogRepo {
 
     async fn snapshot(&self) -> Result<ProviderCatalog, RepoError> {
         let mut conn = self.pool.acquire().await.map_err(storage)?;
+        // Load-time integrity guard against corrupt rows, funneled through the same
+        // `ValidCatalog::parse` boundary; hand back the checked inner.
         let cat = load_catalog(&mut conn, NS).await?;
-        cat.validate()?;
-        Ok(cat)
+        Ok(ValidCatalog::parse(cat)?.into_inner())
     }
 }
