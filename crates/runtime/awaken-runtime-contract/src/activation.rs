@@ -127,3 +127,82 @@ mod tests {
         assert_eq!(overridden.snapshot.fingerprint, fp);
     }
 }
+
+/// The serialization *contract* for the activation — the runtime-core input crosses
+/// the config/data/worker planes only as serialized bytes, so its wire shape is a
+/// compatibility boundary, not an implementation detail. These pin: a lossless
+/// round-trip, `model_ref_override`'s `skip_serializing_if` wire compaction, and —
+/// the two that a self-round-trip cannot catch — that an OLDER writer's payload
+/// (which predates the field) still loads, and a NEWER writer's unknown field does
+/// not dead-letter today's reader. Together they hold "planes exchange only
+/// serializable objects, evolvably" honest.
+#[cfg(test)]
+mod serde_contract {
+    use super::RunActivation;
+
+    #[test]
+    fn round_trips_lossless_with_and_without_an_override() {
+        for act in [
+            RunActivation::for_binding("bound"),
+            RunActivation::for_binding("bound").with_model_ref_override(Some("chosen".into())),
+        ] {
+            let json = serde_json::to_string(&act).expect("serializes");
+            let back: RunActivation = serde_json::from_str(&json).expect("deserializes");
+            assert_eq!(back, act, "round-trip is lossless");
+        }
+    }
+
+    #[test]
+    fn a_none_override_is_omitted_on_the_wire_but_a_set_one_is_written() {
+        let none = RunActivation::for_binding("bound");
+        let json = serde_json::to_string(&none).expect("serializes");
+        assert!(
+            !json.contains("model_ref_override"),
+            "a None override must not be written (skip_serializing_if): {json}"
+        );
+
+        let set = none.with_model_ref_override(Some("chosen".into()));
+        let json = serde_json::to_string(&set).expect("serializes");
+        assert!(
+            json.contains("model_ref_override"),
+            "a set override is written"
+        );
+    }
+
+    #[test]
+    fn a_legacy_payload_without_the_override_field_loads_as_none() {
+        // Simulate a writer that predates `model_ref_override`: take a full payload and
+        // strip the key. It must deserialize (that is what `#[serde(default)]` buys)
+        // and fall back to the snapshot binding — never a "missing field" error.
+        let full = RunActivation::for_binding("bound").with_model_ref_override(Some("x".into()));
+        let mut value = serde_json::to_value(&full).expect("to value");
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("model_ref_override")
+            .expect("the key was present to remove");
+
+        let legacy: RunActivation = serde_json::from_value(value).expect("a legacy row loads");
+        assert!(legacy.model_ref_override.is_none());
+        assert_eq!(
+            legacy.effective_model_ref(),
+            "bound",
+            "a legacy run falls back to its snapshot binding"
+        );
+    }
+
+    #[test]
+    fn an_unknown_future_field_is_ignored_not_rejected() {
+        // A newer writer may add fields this reader has never seen. Without
+        // `deny_unknown_fields`, today's reader must skip them rather than
+        // dead-letter the row — the forward half of the compatibility guarantee.
+        let mut value = serde_json::to_value(RunActivation::for_binding("bound")).expect("value");
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert("a_field_from_the_future".into(), serde_json::json!(42));
+        let back: RunActivation =
+            serde_json::from_value(value).expect("an unknown field is ignored");
+        assert_eq!(back.effective_model_ref(), "bound");
+    }
+}

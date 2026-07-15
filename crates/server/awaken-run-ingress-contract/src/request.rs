@@ -113,4 +113,71 @@ mod tests {
         let back: RunExecutionRequest = serde_json::from_str(&json).expect("legacy row loads");
         assert!(back.traceparent.is_none());
     }
+
+    /// A durable queue row written by an OLDER peer — no `traceparent`, no
+    /// `model_ref_override`. Frozen as bytes on purpose: unlike a self-round-trip
+    /// (where both sides move together), this pins the exact nested wire shape, so a
+    /// rename or retype anywhere down the tree (`model_binding`, `context_policy`'s
+    /// `kind`, a content block's `type`) breaks this test instead of silently
+    /// stranding every in-flight row a running deployment already persisted. Editing
+    /// it means acknowledging a queue-format break.
+    const LEGACY_QUEUE_ROW: &str = r#"{
+      "activation": {
+        "run_id": "run-1",
+        "thread_id": "thrd-1",
+        "snapshot": {
+          "id": "snap",
+          "root_agent_id": "agent",
+          "resolved_spec": {
+            "catalog_fingerprint": "fp",
+            "instructions": "be helpful",
+            "max_steps": 8,
+            "model_binding": {
+              "provider_identity_ref": "prov",
+              "model_ref": "model",
+              "backend_ref": "acp:test"
+            },
+            "model_candidates": [],
+            "tool_descriptors": [],
+            "plugin_ids": [],
+            "plugin_config": {},
+            "context_policy": { "kind": "keep_all" },
+            "tool_presentation": {}
+          },
+          "fingerprint": "fp"
+        },
+        "input": [
+          { "id": "u1", "role": "User", "content": [ { "type": "text", "text": "go" } ] }
+        ]
+      }
+    }"#;
+
+    #[test]
+    fn a_frozen_legacy_queue_row_still_deserializes_intact() {
+        let back: RunExecutionRequest =
+            serde_json::from_str(LEGACY_QUEUE_ROW).expect("a persisted legacy row must still load");
+        // The envelope's own newer field defaults.
+        assert!(back.traceparent.is_none());
+        // The activation's newer field defaults, and the run resolves to its pinned
+        // binding — exactly how a run admitted before per-turn overrides behaves.
+        assert!(back.activation.model_ref_override.is_none());
+        assert_eq!(back.activation.effective_model_ref(), "model");
+        assert_eq!(back.run_id().0, "run-1");
+        assert_eq!(back.thread_id().0, "thrd-1");
+    }
+
+    /// The golden bytes are not stale: today's writer, with both newer fields at their
+    /// defaults, still emits exactly the frozen legacy shape (compared as normalized
+    /// JSON, so whitespace in the literal does not matter). If this fails, the wire
+    /// shape moved and `LEGACY_QUEUE_ROW` — plus every deployed peer — is now behind.
+    #[test]
+    fn todays_default_writer_still_emits_the_frozen_legacy_shape() {
+        let today = serde_json::to_value(RunExecutionRequest::new(activation())).expect("value");
+        let frozen: serde_json::Value =
+            serde_json::from_str(LEGACY_QUEUE_ROW).expect("frozen parses");
+        assert_eq!(
+            today, frozen,
+            "the default wire shape drifted from the frozen legacy row"
+        );
+    }
 }
