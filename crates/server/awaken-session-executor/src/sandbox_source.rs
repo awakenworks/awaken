@@ -10,6 +10,12 @@
 //! registered deny-egress launches under `bwrap --unshare-net` (no route out, not
 //! even to the host loopback), the same [`ThreadEgress`] registrations that drive
 //! the native path's bash-tool jail.
+//!
+//! [`ContainerChannelSource`] is the sibling for a **user-supplied container image**:
+//! it runs the ACP CLI as a container's main process on a worker-configured
+//! [`AgentContainerProvider`](awaken_sandbox_container::AgentContainerProvider)
+//! (podman / docker / k8s), behind the same [`AgentChannelSource`] trait. The
+//! composition root wires whichever source a given worker is configured for.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -18,6 +24,7 @@ use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 use awaken_run_executor_acp::{AcpLaunch, AgentChannelSource, AgentSession, OpenError};
 use awaken_runtime_contract::activation::RunActivation;
+use awaken_sandbox_container::AgentContainerProvider;
 use awaken_sandbox_local::NamespaceProvider;
 
 /// Shared per-thread deny-egress registrations: the host writes a thread's policy
@@ -173,6 +180,107 @@ impl AgentChannelSource for SandboxChannelSource {
     }
 }
 
+/// Runs each turn's agent inside a **user-supplied container image** (ADR-0056 custom
+/// rootfs): it realizes a container from the worker-configured [`AgentContainerProvider`]
+/// (podman / docker / k8s) with the ACP CLI as the container's main process
+/// (process-as-container), then opens the ACP channel to it. The container counterpart
+/// of [`SandboxChannelSource`]; the composition root wires whichever a given worker is
+/// configured for, so one host binary drives any backend.
+pub struct ContainerChannelSource {
+    provider: Arc<dyn AgentContainerProvider>,
+    launch: AcpLaunch,
+    egress: ThreadEgress,
+    codec: awaken_run_executor_acp::Codec,
+}
+
+impl ContainerChannelSource {
+    /// A source whose containers are realized by `provider` (the worker's configured
+    /// runtime backend + default image). Defaults to the newline stand-in wire; a real
+    /// CLI sets [`Self::with_codec`] to `Codec::Acp`.
+    pub fn new(provider: Arc<dyn AgentContainerProvider>, launch: AcpLaunch) -> Self {
+        Self {
+            provider,
+            launch,
+            egress: ThreadEgress::default(),
+            codec: awaken_run_executor_acp::Codec::Newline,
+        }
+    }
+
+    /// Follow per-thread egress registrations (the host's [`ThreadEgress`] handle): a
+    /// deny-egress thread's container runs with a restricted network policy.
+    #[must_use]
+    pub fn with_thread_egress(mut self, egress: ThreadEgress) -> Self {
+        self.egress = egress;
+        self
+    }
+
+    /// The wire the containerized agent speaks (a real `claude --acp` → `Codec::Acp`).
+    #[must_use]
+    pub fn with_codec(mut self, codec: awaken_run_executor_acp::Codec) -> Self {
+        self.codec = codec;
+        self
+    }
+
+    /// The provisioning request for one run: a Container-tier spec scoped to the thread,
+    /// carrying the ACP CLI argv as the container's main command (process-as-container)
+    /// and the launch env as inline process vars; network from the thread's egress
+    /// registration. The image is the provider's worker-configured default.
+    fn spec(&self, thread: &str) -> pc::SandboxSpec {
+        let network = if self.egress.denies(thread) {
+            pc::NetworkPolicy::None
+        } else {
+            pc::NetworkPolicy::Unrestricted
+        };
+        let env = self
+            .launch
+            .env
+            .iter()
+            .map(|(name, value)| pc::EnvVar {
+                name: name.clone(),
+                value: pc::EnvValue::Inline {
+                    value: value.clone(),
+                },
+                visibility: pc::EnvVisibility::Process,
+            })
+            .collect();
+        pc::SandboxSpec {
+            scope: thread.to_string(),
+            isolation: pc::IsolationClass::Container,
+            mounts: Vec::new(),
+            env,
+            network,
+            outputs_path: "/mnt/session/outputs".to_string(),
+            limits: pc::ResourceLimits::default(),
+            lease_ttl_secs: None,
+            // Process-as-container: the agent argv IS the container's main command.
+            extra: Some(serde_json::json!({ "command": self.launch.argv })),
+        }
+    }
+}
+
+#[async_trait]
+impl AgentChannelSource for ContainerChannelSource {
+    async fn open(&self, activation: &RunActivation) -> Result<AgentSession, OpenError> {
+        let thread = activation.thread_id.0.as_str();
+        let session = self
+            .provider
+            .open_agent(&self.spec(thread))
+            .await
+            .map_err(|e| OpenError(format!("containerized agent launch: {e}")))?;
+        Ok(AgentSession {
+            channel: session.channel,
+            process: Arc::from(session.process),
+            codec: self.codec,
+            // The container image defines its own interior working directory; the
+            // fixed image makes the cwd-keyed session slug stable across relaunches.
+            workspace_cwd: None,
+            // A containerized AcpSession's session/new MCP projection is a follow-up
+            // (needs the CLI row + config-home write into the container interior).
+            mcp_session_servers: Vec::new(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,5 +342,58 @@ mod tests {
         assert!(e.denies("x"));
         e.set("x", false); // a later registration replaces the prior one
         assert!(!e.denies("x"));
+    }
+
+    /// A container provider stand-in — the spec-projection tests never open a
+    /// container, so `open_agent` is unreachable here (that path is covered in the
+    /// container crate's `open_agent` test against its scripted runtime).
+    struct UnusedContainerProvider;
+    #[async_trait]
+    impl AgentContainerProvider for UnusedContainerProvider {
+        async fn open_agent(
+            &self,
+            _spec: &pc::SandboxSpec,
+        ) -> Result<awaken_sandbox_container::AgentContainerSession, pc::SandboxError> {
+            unreachable!("spec-projection tests do not open a container")
+        }
+    }
+
+    fn container_source(argv: Vec<String>, env: Vec<(String, String)>) -> ContainerChannelSource {
+        ContainerChannelSource::new(
+            Arc::new(UnusedContainerProvider),
+            AcpLaunch::custom(argv, env),
+        )
+    }
+
+    #[test]
+    fn container_spec_is_process_as_container_on_the_container_tier() {
+        let src = container_source(vec!["claude".into(), "--acp".into()], vec![]);
+        let spec = src.spec("t");
+        assert_eq!(spec.isolation, pc::IsolationClass::Container);
+        assert_eq!(spec.scope, "t");
+        // The agent argv IS the container's main command (not exec-into-idle).
+        assert_eq!(
+            spec.extra
+                .as_ref()
+                .and_then(|v| v.get("command"))
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>()),
+            Some(vec!["claude", "--acp"])
+        );
+        // No egress registration → shares the host network.
+        assert!(matches!(spec.network, pc::NetworkPolicy::Unrestricted));
+    }
+
+    #[test]
+    fn container_spec_maps_deny_egress_to_no_network_and_env_to_inline_vars() {
+        let egress = ThreadEgress::new();
+        egress.set("iso", true);
+        let src = container_source(vec!["claude".into()], vec![("K".into(), "V".into())])
+            .with_thread_egress(egress);
+        let spec = src.spec("iso");
+        assert!(matches!(spec.network, pc::NetworkPolicy::None));
+        assert_eq!(spec.env.len(), 1);
+        assert_eq!(spec.env[0].name, "K");
+        assert!(matches!(spec.env[0].value, pc::EnvValue::Inline { .. }));
     }
 }
