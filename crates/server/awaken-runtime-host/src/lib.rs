@@ -101,7 +101,7 @@ pub use crate::binding_resolver::{
     AssistantBindingReconciler, ConfigServiceReconciler, ModelResolver, ResolvedModel,
 };
 pub use crate::capabilities::capabilities_router;
-pub use crate::config::{advertised_tools, block_text};
+pub use crate::config::{advertised_tools, block_text, platform_plugin_capabilities};
 pub use crate::config_plane::{
     ConfigPlane, ConfigService, ConfigServiceAgentSource, PublishError, config_router,
 };

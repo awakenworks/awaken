@@ -246,7 +246,7 @@ pub(crate) fn server_config(
 /// The plugins this server composes, advertised with their config schema so a
 /// config frontend can discover and author each section. One place declares a
 /// plugin's id and its schema, so registration and discovery cannot drift.
-pub(crate) fn platform_plugin_capabilities() -> Vec<PluginCapability> {
+pub fn platform_plugin_capabilities() -> Vec<PluginCapability> {
     vec![
         PluginCapability {
             id: STATE_MACHINE_PLUGIN_ID.to_string(),

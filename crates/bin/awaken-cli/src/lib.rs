@@ -625,7 +625,10 @@ async fn management_router_over(
         Arc::new(awaken_control::CatalogCapabilityReader::new(
             &seed_catalog,
             &global,
-            &[],
+            // The installable plugins (state_machine / memory / compact) so the assistant
+            // knows it CAN author a state machine etc. — not an empty list (it would
+            // otherwise refuse, thinking no plugins exist).
+            &awaken_runtime_host::platform_plugin_capabilities(),
         )),
         Arc::new(awaken_control::ConfigServiceDraftValidator::new(
             plane.clone(),
