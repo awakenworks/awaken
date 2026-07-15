@@ -5,96 +5,26 @@ pub awaken_tenancy::ScopeClaim::FromPath(alloc::string::String)
 pub awaken_tenancy::ScopeClaim::FromToken(awaken_tenancy::ScopeId)
 impl awaken_tenancy::ScopeClaim
 pub fn awaken_tenancy::ScopeClaim::selection(&self) -> core::option::Option<awaken_tenancy::ScopeId>
-impl core::clone::Clone for awaken_tenancy::ScopeClaim
-pub fn awaken_tenancy::ScopeClaim::clone(&self) -> awaken_tenancy::ScopeClaim
-impl core::cmp::Eq for awaken_tenancy::ScopeClaim
-impl core::cmp::PartialEq for awaken_tenancy::ScopeClaim
-pub fn awaken_tenancy::ScopeClaim::eq(&self, &awaken_tenancy::ScopeClaim) -> bool
-impl core::fmt::Debug for awaken_tenancy::ScopeClaim
-pub fn awaken_tenancy::ScopeClaim::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_tenancy::ScopeClaim
-impl core::marker::Freeze for awaken_tenancy::ScopeClaim
-impl core::marker::Send for awaken_tenancy::ScopeClaim
-impl core::marker::Sync for awaken_tenancy::ScopeClaim
-impl core::marker::Unpin for awaken_tenancy::ScopeClaim
-impl core::marker::UnsafeUnpin for awaken_tenancy::ScopeClaim
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_tenancy::ScopeClaim
-impl core::panic::unwind_safe::UnwindSafe for awaken_tenancy::ScopeClaim
 pub enum awaken_tenancy::ScopeRejection
 pub awaken_tenancy::ScopeRejection::NoAuthority
 pub awaken_tenancy::ScopeRejection::NotAuthorized
 pub awaken_tenancy::ScopeRejection::NotAuthorized::selected: awaken_tenancy::ScopeId
 pub awaken_tenancy::ScopeRejection::SelectionRequired
-impl core::clone::Clone for awaken_tenancy::ScopeRejection
-pub fn awaken_tenancy::ScopeRejection::clone(&self) -> awaken_tenancy::ScopeRejection
-impl core::cmp::Eq for awaken_tenancy::ScopeRejection
-impl core::cmp::PartialEq for awaken_tenancy::ScopeRejection
-pub fn awaken_tenancy::ScopeRejection::eq(&self, &awaken_tenancy::ScopeRejection) -> bool
-impl core::fmt::Debug for awaken_tenancy::ScopeRejection
-pub fn awaken_tenancy::ScopeRejection::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for awaken_tenancy::ScopeRejection
 pub fn awaken_tenancy::ScopeRejection::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_tenancy::ScopeRejection
-impl core::marker::Freeze for awaken_tenancy::ScopeRejection
-impl core::marker::Send for awaken_tenancy::ScopeRejection
-impl core::marker::Sync for awaken_tenancy::ScopeRejection
-impl core::marker::Unpin for awaken_tenancy::ScopeRejection
-impl core::marker::UnsafeUnpin for awaken_tenancy::ScopeRejection
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_tenancy::ScopeRejection
-impl core::panic::unwind_safe::UnwindSafe for awaken_tenancy::ScopeRejection
 pub struct awaken_tenancy::Authority
 impl awaken_tenancy::Authority
 pub fn awaken_tenancy::Authority::bound(awaken_tenancy::ScopeId) -> Self
 pub fn awaken_tenancy::Authority::covers(&self, &awaken_tenancy::ScopeId) -> bool
 pub fn awaken_tenancy::Authority::reachable(&self) -> &[awaken_tenancy::ScopeId]
 pub fn awaken_tenancy::Authority::reaching(impl core::iter::traits::collect::IntoIterator<Item = awaken_tenancy::ScopeId>) -> Self
-impl core::clone::Clone for awaken_tenancy::Authority
-pub fn awaken_tenancy::Authority::clone(&self) -> awaken_tenancy::Authority
-impl core::cmp::Eq for awaken_tenancy::Authority
-impl core::cmp::PartialEq for awaken_tenancy::Authority
-pub fn awaken_tenancy::Authority::eq(&self, &awaken_tenancy::Authority) -> bool
-impl core::fmt::Debug for awaken_tenancy::Authority
-pub fn awaken_tenancy::Authority::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_tenancy::Authority
-impl core::marker::Freeze for awaken_tenancy::Authority
-impl core::marker::Send for awaken_tenancy::Authority
-impl core::marker::Sync for awaken_tenancy::Authority
-impl core::marker::Unpin for awaken_tenancy::Authority
-impl core::marker::UnsafeUnpin for awaken_tenancy::Authority
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_tenancy::Authority
-impl core::panic::unwind_safe::UnwindSafe for awaken_tenancy::Authority
 pub struct awaken_tenancy::ScopeId(pub alloc::string::String)
 impl awaken_tenancy::ScopeId
 pub fn awaken_tenancy::ScopeId::as_str(&self) -> &str
-impl core::clone::Clone for awaken_tenancy::ScopeId
-pub fn awaken_tenancy::ScopeId::clone(&self) -> awaken_tenancy::ScopeId
-impl core::cmp::Eq for awaken_tenancy::ScopeId
-impl core::cmp::Ord for awaken_tenancy::ScopeId
-pub fn awaken_tenancy::ScopeId::cmp(&self, &awaken_tenancy::ScopeId) -> core::cmp::Ordering
-impl core::cmp::PartialEq for awaken_tenancy::ScopeId
-pub fn awaken_tenancy::ScopeId::eq(&self, &awaken_tenancy::ScopeId) -> bool
-impl core::cmp::PartialOrd for awaken_tenancy::ScopeId
-pub fn awaken_tenancy::ScopeId::partial_cmp(&self, &awaken_tenancy::ScopeId) -> core::option::Option<core::cmp::Ordering>
 impl core::convert::From<&str> for awaken_tenancy::ScopeId
 pub fn awaken_tenancy::ScopeId::from(&str) -> Self
 impl core::convert::From<alloc::string::String> for awaken_tenancy::ScopeId
 pub fn awaken_tenancy::ScopeId::from(alloc::string::String) -> Self
-impl core::fmt::Debug for awaken_tenancy::ScopeId
-pub fn awaken_tenancy::ScopeId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for awaken_tenancy::ScopeId
 pub fn awaken_tenancy::ScopeId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::hash::Hash for awaken_tenancy::ScopeId
-pub fn awaken_tenancy::ScopeId::hash<__H: core::hash::Hasher>(&self, &mut __H)
-impl core::marker::StructuralPartialEq for awaken_tenancy::ScopeId
-impl serde_core::ser::Serialize for awaken_tenancy::ScopeId
-pub fn awaken_tenancy::ScopeId::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_tenancy::ScopeId
-pub fn awaken_tenancy::ScopeId::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_tenancy::ScopeId
-impl core::marker::Send for awaken_tenancy::ScopeId
-impl core::marker::Sync for awaken_tenancy::ScopeId
-impl core::marker::Unpin for awaken_tenancy::ScopeId
-impl core::marker::UnsafeUnpin for awaken_tenancy::ScopeId
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_tenancy::ScopeId
-impl core::panic::unwind_safe::UnwindSafe for awaken_tenancy::ScopeId
 pub fn awaken_tenancy::resolve_scope(&awaken_tenancy::Authority, &[awaken_tenancy::ScopeClaim]) -> core::result::Result<awaken_tenancy::ScopeId, awaken_tenancy::ScopeRejection>

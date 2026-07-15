@@ -12,30 +12,12 @@ pub struct awaken_ext_memory::localfs::Entry
 pub awaken_ext_memory::localfs::Entry::content: alloc::string::String
 pub awaken_ext_memory::localfs::Entry::modified: std::time::SystemTime
 pub awaken_ext_memory::localfs::Entry::path: std::path::PathBuf
-impl core::clone::Clone for awaken_ext_memory::localfs::Entry
-pub fn awaken_ext_memory::localfs::Entry::clone(&self) -> awaken_ext_memory::localfs::Entry
-impl core::marker::Freeze for awaken_ext_memory::localfs::Entry
-impl core::marker::Send for awaken_ext_memory::localfs::Entry
-impl core::marker::Sync for awaken_ext_memory::localfs::Entry
-impl core::marker::Unpin for awaken_ext_memory::localfs::Entry
-impl core::marker::UnsafeUnpin for awaken_ext_memory::localfs::Entry
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_memory::localfs::Entry
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_memory::localfs::Entry
 pub struct awaken_ext_memory::localfs::MemoryDir
 impl awaken_ext_memory::localfs::MemoryDir
 pub fn awaken_ext_memory::localfs::MemoryDir::entries(&self) -> alloc::vec::Vec<awaken_ext_memory::localfs::Entry>
 pub fn awaken_ext_memory::localfs::MemoryDir::new(impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn awaken_ext_memory::localfs::MemoryDir::root(&self) -> &std::path::Path
-pub fn awaken_ext_memory::localfs::MemoryDir::write(&self, &str, &str) -> core::io::error::Result<std::path::PathBuf>
-impl core::clone::Clone for awaken_ext_memory::localfs::MemoryDir
-pub fn awaken_ext_memory::localfs::MemoryDir::clone(&self) -> awaken_ext_memory::localfs::MemoryDir
-impl core::marker::Freeze for awaken_ext_memory::localfs::MemoryDir
-impl core::marker::Send for awaken_ext_memory::localfs::MemoryDir
-impl core::marker::Sync for awaken_ext_memory::localfs::MemoryDir
-impl core::marker::Unpin for awaken_ext_memory::localfs::MemoryDir
-impl core::marker::UnsafeUnpin for awaken_ext_memory::localfs::MemoryDir
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_memory::localfs::MemoryDir
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_memory::localfs::MemoryDir
+pub fn awaken_ext_memory::localfs::MemoryDir::write(&self, &str, &str) -> std::io::error::Result<std::path::PathBuf>
 pub fn awaken_ext_memory::localfs::sanitize_stem(&str) -> alloc::string::String
 pub mod awaken_ext_memory::plugin
 pub struct awaken_ext_memory::plugin::MemoryPlugin
@@ -46,13 +28,6 @@ impl awaken_runtime_contract::plugin::contributions::Plugin for awaken_ext_memor
 pub fn awaken_ext_memory::plugin::MemoryPlugin::manifest(&self) -> awaken_runtime_contract::plugin::capability::PluginManifest
 pub fn awaken_ext_memory::plugin::MemoryPlugin::resolve(&self) -> awaken_runtime_contract::plugin::contributions::Contributions
 pub fn awaken_ext_memory::plugin::MemoryPlugin::resolve_configured(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<awaken_runtime_contract::plugin::contributions::Contributions, awaken_runtime_contract::plugin::contributions::PluginConfigError>
-impl core::marker::Freeze for awaken_ext_memory::plugin::MemoryPlugin
-impl core::marker::Send for awaken_ext_memory::plugin::MemoryPlugin
-impl core::marker::Sync for awaken_ext_memory::plugin::MemoryPlugin
-impl core::marker::Unpin for awaken_ext_memory::plugin::MemoryPlugin
-impl core::marker::UnsafeUnpin for awaken_ext_memory::plugin::MemoryPlugin
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_memory::plugin::MemoryPlugin
-impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_memory::plugin::MemoryPlugin
 pub const awaken_ext_memory::plugin::MEMORY_PLUGIN_ID: &str
 pub fn awaken_ext_memory::plugin::config_schema() -> serde_json::value::Value
 pub mod awaken_ext_memory::recall
@@ -61,27 +36,8 @@ pub awaken_ext_memory::recall::RecallBounds::max_entries: usize
 pub awaken_ext_memory::recall::RecallBounds::per_entry_chars: usize
 pub awaken_ext_memory::recall::RecallBounds::select_over: usize
 pub awaken_ext_memory::recall::RecallBounds::total_chars: usize
-impl core::clone::Clone for awaken_ext_memory::recall::RecallBounds
-pub fn awaken_ext_memory::recall::RecallBounds::clone(&self) -> awaken_ext_memory::recall::RecallBounds
-impl core::cmp::Eq for awaken_ext_memory::recall::RecallBounds
-impl core::cmp::PartialEq for awaken_ext_memory::recall::RecallBounds
-pub fn awaken_ext_memory::recall::RecallBounds::eq(&self, &awaken_ext_memory::recall::RecallBounds) -> bool
 impl core::default::Default for awaken_ext_memory::recall::RecallBounds
 pub fn awaken_ext_memory::recall::RecallBounds::default() -> Self
-impl core::fmt::Debug for awaken_ext_memory::recall::RecallBounds
-pub fn awaken_ext_memory::recall::RecallBounds::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_ext_memory::recall::RecallBounds
-impl serde_core::ser::Serialize for awaken_ext_memory::recall::RecallBounds
-pub fn awaken_ext_memory::recall::RecallBounds::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_memory::recall::RecallBounds where awaken_ext_memory::recall::RecallBounds: core::default::Default
-pub fn awaken_ext_memory::recall::RecallBounds::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_ext_memory::recall::RecallBounds
-impl core::marker::Send for awaken_ext_memory::recall::RecallBounds
-impl core::marker::Sync for awaken_ext_memory::recall::RecallBounds
-impl core::marker::Unpin for awaken_ext_memory::recall::RecallBounds
-impl core::marker::UnsafeUnpin for awaken_ext_memory::recall::RecallBounds
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_memory::recall::RecallBounds
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_memory::recall::RecallBounds
 pub fn awaken_ext_memory::recall::recall_block(&awaken_ext_memory::localfs::MemoryDir, &awaken_ext_memory::recall::RecallBounds) -> core::option::Option<alloc::string::String>
 pub async fn awaken_ext_memory::recall::recall_relevant(&awaken_ext_memory::localfs::MemoryDir, &awaken_ext_memory::recall::RecallBounds, &dyn awaken_runtime_contract::llm::LlmExecutor, &awaken_runtime_contract::resolved::ModelBinding, &str) -> core::option::Option<alloc::string::String>
 pub fn awaken_ext_memory::recall::render(&[awaken_ext_memory::localfs::Entry], &awaken_ext_memory::recall::RecallBounds) -> core::option::Option<alloc::string::String>
@@ -102,29 +58,13 @@ pub type awaken_ext_memory::tool::WriteMemoryTool::Args = serde_json::value::Val
 pub type awaken_ext_memory::tool::WriteMemoryTool::Output = alloc::string::String
 pub fn awaken_ext_memory::tool::WriteMemoryTool::call<'life0, 'async_trait>(&'life0 self, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_ext_memory::tool::WriteMemoryTool::id(&self) -> &str
-impl core::marker::Freeze for awaken_ext_memory::tool::WriteMemoryTool
-impl core::marker::Send for awaken_ext_memory::tool::WriteMemoryTool
-impl core::marker::Sync for awaken_ext_memory::tool::WriteMemoryTool
-impl core::marker::Unpin for awaken_ext_memory::tool::WriteMemoryTool
-impl core::marker::UnsafeUnpin for awaken_ext_memory::tool::WriteMemoryTool
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_memory::tool::WriteMemoryTool
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_memory::tool::WriteMemoryTool
 pub fn awaken_ext_memory::tool::write_memory_descriptor() -> awaken_runtime_contract::resolved::ToolDescriptor
 pub struct awaken_ext_memory::MemoryDir
 impl awaken_ext_memory::localfs::MemoryDir
 pub fn awaken_ext_memory::localfs::MemoryDir::entries(&self) -> alloc::vec::Vec<awaken_ext_memory::localfs::Entry>
 pub fn awaken_ext_memory::localfs::MemoryDir::new(impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn awaken_ext_memory::localfs::MemoryDir::root(&self) -> &std::path::Path
-pub fn awaken_ext_memory::localfs::MemoryDir::write(&self, &str, &str) -> core::io::error::Result<std::path::PathBuf>
-impl core::clone::Clone for awaken_ext_memory::localfs::MemoryDir
-pub fn awaken_ext_memory::localfs::MemoryDir::clone(&self) -> awaken_ext_memory::localfs::MemoryDir
-impl core::marker::Freeze for awaken_ext_memory::localfs::MemoryDir
-impl core::marker::Send for awaken_ext_memory::localfs::MemoryDir
-impl core::marker::Sync for awaken_ext_memory::localfs::MemoryDir
-impl core::marker::Unpin for awaken_ext_memory::localfs::MemoryDir
-impl core::marker::UnsafeUnpin for awaken_ext_memory::localfs::MemoryDir
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_memory::localfs::MemoryDir
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_memory::localfs::MemoryDir
+pub fn awaken_ext_memory::localfs::MemoryDir::write(&self, &str, &str) -> std::io::error::Result<std::path::PathBuf>
 pub struct awaken_ext_memory::MemoryPlugin
 impl awaken_ext_memory::plugin::MemoryPlugin
 pub fn awaken_ext_memory::plugin::MemoryPlugin::new(awaken_ext_memory::localfs::MemoryDir, awaken_ext_memory::recall::RecallBounds) -> Self
@@ -133,39 +73,13 @@ impl awaken_runtime_contract::plugin::contributions::Plugin for awaken_ext_memor
 pub fn awaken_ext_memory::plugin::MemoryPlugin::manifest(&self) -> awaken_runtime_contract::plugin::capability::PluginManifest
 pub fn awaken_ext_memory::plugin::MemoryPlugin::resolve(&self) -> awaken_runtime_contract::plugin::contributions::Contributions
 pub fn awaken_ext_memory::plugin::MemoryPlugin::resolve_configured(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<awaken_runtime_contract::plugin::contributions::Contributions, awaken_runtime_contract::plugin::contributions::PluginConfigError>
-impl core::marker::Freeze for awaken_ext_memory::plugin::MemoryPlugin
-impl core::marker::Send for awaken_ext_memory::plugin::MemoryPlugin
-impl core::marker::Sync for awaken_ext_memory::plugin::MemoryPlugin
-impl core::marker::Unpin for awaken_ext_memory::plugin::MemoryPlugin
-impl core::marker::UnsafeUnpin for awaken_ext_memory::plugin::MemoryPlugin
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_memory::plugin::MemoryPlugin
-impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_memory::plugin::MemoryPlugin
 pub struct awaken_ext_memory::RecallBounds
 pub awaken_ext_memory::RecallBounds::max_entries: usize
 pub awaken_ext_memory::RecallBounds::per_entry_chars: usize
 pub awaken_ext_memory::RecallBounds::select_over: usize
 pub awaken_ext_memory::RecallBounds::total_chars: usize
-impl core::clone::Clone for awaken_ext_memory::recall::RecallBounds
-pub fn awaken_ext_memory::recall::RecallBounds::clone(&self) -> awaken_ext_memory::recall::RecallBounds
-impl core::cmp::Eq for awaken_ext_memory::recall::RecallBounds
-impl core::cmp::PartialEq for awaken_ext_memory::recall::RecallBounds
-pub fn awaken_ext_memory::recall::RecallBounds::eq(&self, &awaken_ext_memory::recall::RecallBounds) -> bool
 impl core::default::Default for awaken_ext_memory::recall::RecallBounds
 pub fn awaken_ext_memory::recall::RecallBounds::default() -> Self
-impl core::fmt::Debug for awaken_ext_memory::recall::RecallBounds
-pub fn awaken_ext_memory::recall::RecallBounds::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_ext_memory::recall::RecallBounds
-impl serde_core::ser::Serialize for awaken_ext_memory::recall::RecallBounds
-pub fn awaken_ext_memory::recall::RecallBounds::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_memory::recall::RecallBounds where awaken_ext_memory::recall::RecallBounds: core::default::Default
-pub fn awaken_ext_memory::recall::RecallBounds::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_ext_memory::recall::RecallBounds
-impl core::marker::Send for awaken_ext_memory::recall::RecallBounds
-impl core::marker::Sync for awaken_ext_memory::recall::RecallBounds
-impl core::marker::Unpin for awaken_ext_memory::recall::RecallBounds
-impl core::marker::UnsafeUnpin for awaken_ext_memory::recall::RecallBounds
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_memory::recall::RecallBounds
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_memory::recall::RecallBounds
 pub struct awaken_ext_memory::WriteMemoryTool
 impl awaken_ext_memory::tool::WriteMemoryTool
 pub fn awaken_ext_memory::tool::WriteMemoryTool::new(awaken_ext_memory::localfs::MemoryDir) -> Self
@@ -174,13 +88,6 @@ pub type awaken_ext_memory::tool::WriteMemoryTool::Args = serde_json::value::Val
 pub type awaken_ext_memory::tool::WriteMemoryTool::Output = alloc::string::String
 pub fn awaken_ext_memory::tool::WriteMemoryTool::call<'life0, 'async_trait>(&'life0 self, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_ext_memory::tool::WriteMemoryTool::id(&self) -> &str
-impl core::marker::Freeze for awaken_ext_memory::tool::WriteMemoryTool
-impl core::marker::Send for awaken_ext_memory::tool::WriteMemoryTool
-impl core::marker::Sync for awaken_ext_memory::tool::WriteMemoryTool
-impl core::marker::Unpin for awaken_ext_memory::tool::WriteMemoryTool
-impl core::marker::UnsafeUnpin for awaken_ext_memory::tool::WriteMemoryTool
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_memory::tool::WriteMemoryTool
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_memory::tool::WriteMemoryTool
 pub const awaken_ext_memory::DEFAULT_MEMORY_INSTRUCTIONS: &str
 pub const awaken_ext_memory::DEFAULT_SELECTOR_INSTRUCTIONS: &str
 pub const awaken_ext_memory::EXTRACT_PROMPT: &str

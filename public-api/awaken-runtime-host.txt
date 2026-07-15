@@ -24,41 +24,9 @@ pub enum awaken_runtime_host::AcpStop
 pub awaken_runtime_host::AcpStop::EndTurn
 pub awaken_runtime_host::AcpStop::MaxTurns
 pub awaken_runtime_host::AcpStop::RequiresAction
-impl core::clone::Clone for awaken_runtime_host::AcpStop
-pub fn awaken_runtime_host::AcpStop::clone(&self) -> awaken_runtime_host::AcpStop
-impl core::cmp::Eq for awaken_runtime_host::AcpStop
-impl core::cmp::PartialEq for awaken_runtime_host::AcpStop
-pub fn awaken_runtime_host::AcpStop::eq(&self, &awaken_runtime_host::AcpStop) -> bool
-impl core::fmt::Debug for awaken_runtime_host::AcpStop
-pub fn awaken_runtime_host::AcpStop::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_runtime_host::AcpStop
-impl core::marker::StructuralPartialEq for awaken_runtime_host::AcpStop
-impl core::marker::Freeze for awaken_runtime_host::AcpStop
-impl core::marker::Send for awaken_runtime_host::AcpStop
-impl core::marker::Sync for awaken_runtime_host::AcpStop
-impl core::marker::Unpin for awaken_runtime_host::AcpStop
-impl core::marker::UnsafeUnpin for awaken_runtime_host::AcpStop
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::AcpStop
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::AcpStop
 pub enum awaken_runtime_host::DispatchBackend
 pub awaken_runtime_host::DispatchBackend::Postgres
 pub awaken_runtime_host::DispatchBackend::Sqlite
-impl core::clone::Clone for awaken_runtime_host::DispatchBackend
-pub fn awaken_runtime_host::DispatchBackend::clone(&self) -> awaken_runtime_host::DispatchBackend
-impl core::cmp::Eq for awaken_runtime_host::DispatchBackend
-impl core::cmp::PartialEq for awaken_runtime_host::DispatchBackend
-pub fn awaken_runtime_host::DispatchBackend::eq(&self, &awaken_runtime_host::DispatchBackend) -> bool
-impl core::fmt::Debug for awaken_runtime_host::DispatchBackend
-pub fn awaken_runtime_host::DispatchBackend::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_runtime_host::DispatchBackend
-impl core::marker::StructuralPartialEq for awaken_runtime_host::DispatchBackend
-impl core::marker::Freeze for awaken_runtime_host::DispatchBackend
-impl core::marker::Send for awaken_runtime_host::DispatchBackend
-impl core::marker::Sync for awaken_runtime_host::DispatchBackend
-impl core::marker::Unpin for awaken_runtime_host::DispatchBackend
-impl core::marker::UnsafeUnpin for awaken_runtime_host::DispatchBackend
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::DispatchBackend
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::DispatchBackend
 pub enum awaken_runtime_host::HostResume
 pub awaken_runtime_host::HostResume::ClientResult
 pub awaken_runtime_host::HostResume::ClientResult::content: alloc::string::String
@@ -66,33 +34,10 @@ pub awaken_runtime_host::HostResume::ClientResult::is_error: bool
 pub awaken_runtime_host::HostResume::Confirm
 pub awaken_runtime_host::HostResume::Confirm::allow: bool
 pub awaken_runtime_host::HostResume::Confirm::note: core::option::Option<alloc::string::String>
-impl core::marker::Freeze for awaken_runtime_host::HostResume
-impl core::marker::Send for awaken_runtime_host::HostResume
-impl core::marker::Sync for awaken_runtime_host::HostResume
-impl core::marker::Unpin for awaken_runtime_host::HostResume
-impl core::marker::UnsafeUnpin for awaken_runtime_host::HostResume
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::HostResume
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::HostResume
 pub enum awaken_runtime_host::StoreKind
 pub awaken_runtime_host::StoreKind::Fs
 pub awaken_runtime_host::StoreKind::Postgres
 pub awaken_runtime_host::StoreKind::Sqlite
-impl core::clone::Clone for awaken_runtime_host::StoreKind
-pub fn awaken_runtime_host::StoreKind::clone(&self) -> awaken_runtime_host::StoreKind
-impl core::cmp::Eq for awaken_runtime_host::StoreKind
-impl core::cmp::PartialEq for awaken_runtime_host::StoreKind
-pub fn awaken_runtime_host::StoreKind::eq(&self, &awaken_runtime_host::StoreKind) -> bool
-impl core::fmt::Debug for awaken_runtime_host::StoreKind
-pub fn awaken_runtime_host::StoreKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_runtime_host::StoreKind
-impl core::marker::StructuralPartialEq for awaken_runtime_host::StoreKind
-impl core::marker::Freeze for awaken_runtime_host::StoreKind
-impl core::marker::Send for awaken_runtime_host::StoreKind
-impl core::marker::Sync for awaken_runtime_host::StoreKind
-impl core::marker::Unpin for awaken_runtime_host::StoreKind
-impl core::marker::UnsafeUnpin for awaken_runtime_host::StoreKind
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::StoreKind
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::StoreKind
 pub enum awaken_runtime_host::ThreadEvent
 pub awaken_runtime_host::ThreadEvent::AgentLaunch
 pub awaken_runtime_host::ThreadEvent::AgentLaunch::detail: core::option::Option<alloc::string::String>
@@ -100,37 +45,10 @@ pub awaken_runtime_host::ThreadEvent::AgentLaunch::stage: alloc::string::String
 pub awaken_runtime_host::ThreadEvent::Committed(alloc::vec::Vec<awaken_agent_contract::agent::message::Message>)
 pub awaken_runtime_host::ThreadEvent::StepEnded
 pub awaken_runtime_host::ThreadEvent::StepEnded::waiting: bool
-impl core::clone::Clone for awaken_runtime_host::ThreadEvent
-pub fn awaken_runtime_host::ThreadEvent::clone(&self) -> awaken_runtime_host::ThreadEvent
-impl core::fmt::Debug for awaken_runtime_host::ThreadEvent
-pub fn awaken_runtime_host::ThreadEvent::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_runtime_host::ThreadEvent
-impl core::marker::Send for awaken_runtime_host::ThreadEvent
-impl core::marker::Sync for awaken_runtime_host::ThreadEvent
-impl core::marker::Unpin for awaken_runtime_host::ThreadEvent
-impl core::marker::UnsafeUnpin for awaken_runtime_host::ThreadEvent
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::ThreadEvent
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::ThreadEvent
 pub enum awaken_runtime_host::Wake
 pub awaken_runtime_host::Wake::Nats
 pub awaken_runtime_host::Wake::None
 pub awaken_runtime_host::Wake::PgNotify
-impl core::clone::Clone for awaken_runtime_host::Wake
-pub fn awaken_runtime_host::Wake::clone(&self) -> awaken_runtime_host::Wake
-impl core::cmp::Eq for awaken_runtime_host::Wake
-impl core::cmp::PartialEq for awaken_runtime_host::Wake
-pub fn awaken_runtime_host::Wake::eq(&self, &awaken_runtime_host::Wake) -> bool
-impl core::fmt::Debug for awaken_runtime_host::Wake
-pub fn awaken_runtime_host::Wake::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_runtime_host::Wake
-impl core::marker::StructuralPartialEq for awaken_runtime_host::Wake
-impl core::marker::Freeze for awaken_runtime_host::Wake
-impl core::marker::Send for awaken_runtime_host::Wake
-impl core::marker::Sync for awaken_runtime_host::Wake
-impl core::marker::Unpin for awaken_runtime_host::Wake
-impl core::marker::UnsafeUnpin for awaken_runtime_host::Wake
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::Wake
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::Wake
 pub struct awaken_runtime_host::AcpServeHost
 impl awaken_runtime_host::AcpServeHost
 pub fn awaken_runtime_host::AcpServeHost::model(&self) -> alloc::string::String
@@ -138,27 +56,9 @@ pub fn awaken_runtime_host::AcpServeHost::new(alloc::sync::Arc<dyn awaken_protoc
 pub fn awaken_runtime_host::AcpServeHost::new_session(&self) -> alloc::string::String
 pub async fn awaken_runtime_host::AcpServeHost::prompt(&self, &str, core::option::Option<alloc::string::String>, &str) -> core::result::Result<awaken_runtime_host::AcpTurn, awaken_protocol_transport::port::DriverError>
 pub async fn awaken_runtime_host::AcpServeHost::usage(&self, &str) -> (u64, u64)
-impl !core::marker::Freeze for awaken_runtime_host::AcpServeHost
-impl core::marker::Send for awaken_runtime_host::AcpServeHost
-impl core::marker::Sync for awaken_runtime_host::AcpServeHost
-impl core::marker::Unpin for awaken_runtime_host::AcpServeHost
-impl core::marker::UnsafeUnpin for awaken_runtime_host::AcpServeHost
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::AcpServeHost
-impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::AcpServeHost
 pub struct awaken_runtime_host::AcpTurn
 pub awaken_runtime_host::AcpTurn::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub awaken_runtime_host::AcpTurn::stop: awaken_runtime_host::AcpStop
-impl core::clone::Clone for awaken_runtime_host::AcpTurn
-pub fn awaken_runtime_host::AcpTurn::clone(&self) -> awaken_runtime_host::AcpTurn
-impl core::fmt::Debug for awaken_runtime_host::AcpTurn
-pub fn awaken_runtime_host::AcpTurn::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_runtime_host::AcpTurn
-impl core::marker::Send for awaken_runtime_host::AcpTurn
-impl core::marker::Sync for awaken_runtime_host::AcpTurn
-impl core::marker::Unpin for awaken_runtime_host::AcpTurn
-impl core::marker::UnsafeUnpin for awaken_runtime_host::AcpTurn
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::AcpTurn
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::AcpTurn
 pub struct awaken_runtime_host::DeploymentConfig
 pub awaken_runtime_host::DeploymentConfig::database_url: core::option::Option<alloc::string::String>
 pub awaken_runtime_host::DeploymentConfig::disable_local_pool: bool
@@ -174,44 +74,15 @@ pub awaken_runtime_host::DeploymentConfig::wake_channel: alloc::string::String
 impl awaken_runtime_host::DeploymentConfig
 pub fn awaken_runtime_host::DeploymentConfig::durable_needs_persistence_error(&self, bool) -> core::option::Option<&'static str>
 pub fn awaken_runtime_host::DeploymentConfig::from_env() -> Self
-impl core::clone::Clone for awaken_runtime_host::DeploymentConfig
-pub fn awaken_runtime_host::DeploymentConfig::clone(&self) -> awaken_runtime_host::DeploymentConfig
-impl core::cmp::Eq for awaken_runtime_host::DeploymentConfig
-impl core::cmp::PartialEq for awaken_runtime_host::DeploymentConfig
-pub fn awaken_runtime_host::DeploymentConfig::eq(&self, &awaken_runtime_host::DeploymentConfig) -> bool
-impl core::fmt::Debug for awaken_runtime_host::DeploymentConfig
-pub fn awaken_runtime_host::DeploymentConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_runtime_host::DeploymentConfig
-impl core::marker::Freeze for awaken_runtime_host::DeploymentConfig
-impl core::marker::Send for awaken_runtime_host::DeploymentConfig
-impl core::marker::Sync for awaken_runtime_host::DeploymentConfig
-impl core::marker::Unpin for awaken_runtime_host::DeploymentConfig
-impl core::marker::UnsafeUnpin for awaken_runtime_host::DeploymentConfig
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::DeploymentConfig
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::DeploymentConfig
 pub struct awaken_runtime_host::EnvLaunchResolver
 impl awaken_runtime_host::EnvLaunchResolver
 pub fn awaken_runtime_host::EnvLaunchResolver::from_process_env(awaken_run_executor_acp::acp_cli::AcpCli, core::option::Option<std::path::PathBuf>) -> Self
 impl awaken_run_executor_acp::subprocess::LaunchResolver for awaken_runtime_host::EnvLaunchResolver
 pub fn awaken_runtime_host::EnvLaunchResolver::extra_env(&self, &awaken_runtime_contract::activation::RunActivation) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
 pub fn awaken_runtime_host::EnvLaunchResolver::model(&self, &awaken_runtime_contract::activation::RunActivation) -> core::result::Result<awaken_run_executor_acp::acp_cli::ResolvedModel, awaken_run_executor_acp::OpenError>
-impl core::marker::Freeze for awaken_runtime_host::EnvLaunchResolver
-impl core::marker::Send for awaken_runtime_host::EnvLaunchResolver
-impl core::marker::Sync for awaken_runtime_host::EnvLaunchResolver
-impl core::marker::Unpin for awaken_runtime_host::EnvLaunchResolver
-impl core::marker::UnsafeUnpin for awaken_runtime_host::EnvLaunchResolver
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::EnvLaunchResolver
-impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::EnvLaunchResolver
 pub struct awaken_runtime_host::ExtMcpProbe
 impl awaken_protocol_managed::routes::vaults::McpProbe for awaken_runtime_host::ExtMcpProbe
 pub fn awaken_runtime_host::ExtMcpProbe::probe<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_agent_contract::secret::RedactedString) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_protocol_managed::routes::vaults::McpProbeStatus> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-impl core::marker::Freeze for awaken_runtime_host::ExtMcpProbe
-impl core::marker::Send for awaken_runtime_host::ExtMcpProbe
-impl core::marker::Sync for awaken_runtime_host::ExtMcpProbe
-impl core::marker::Unpin for awaken_runtime_host::ExtMcpProbe
-impl core::marker::UnsafeUnpin for awaken_runtime_host::ExtMcpProbe
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::ExtMcpProbe
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::ExtMcpProbe
 pub struct awaken_runtime_host::HttpDispatchQueue
 impl awaken_runtime_host::HttpDispatchQueue
 pub fn awaken_runtime_host::HttpDispatchQueue::new(impl core::convert::Into<alloc::string::String>) -> Self
@@ -238,13 +109,6 @@ pub fn awaken_runtime_host::HttpDispatchQueue::retract<'life0, 'life1, 'async_tr
 impl awaken_run_ingress_contract::dispatch::Outbox for awaken_runtime_host::HttpDispatchQueue
 pub fn awaken_runtime_host::HttpDispatchQueue::relay<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_host::HttpDispatchQueue::stage<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::dispatch::PendingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-impl core::marker::Freeze for awaken_runtime_host::HttpDispatchQueue
-impl core::marker::Send for awaken_runtime_host::HttpDispatchQueue
-impl core::marker::Sync for awaken_runtime_host::HttpDispatchQueue
-impl core::marker::Unpin for awaken_runtime_host::HttpDispatchQueue
-impl core::marker::UnsafeUnpin for awaken_runtime_host::HttpDispatchQueue
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::HttpDispatchQueue
-impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::HttpDispatchQueue
 pub struct awaken_runtime_host::ManagedHost
 impl awaken_runtime_host::ManagedHost
 pub fn awaken_runtime_host::ManagedHost::new(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> Self
@@ -272,48 +136,16 @@ pub fn awaken_runtime_host::ManagedHost::resume_custom<'life0, 'life1, 'life2, '
 pub fn awaken_runtime_host::ManagedHost::run<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::state::types::TurnOutcome, awaken_protocol_managed::state::types::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_host::ManagedHost::run_streaming<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::state::types::TurnOutcome, awaken_protocol_managed::state::types::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_host::ManagedHost::session_usage<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_protocol_managed::state::types::SessionUsage> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-impl core::marker::Freeze for awaken_runtime_host::ManagedHost
-impl core::marker::Send for awaken_runtime_host::ManagedHost
-impl core::marker::Sync for awaken_runtime_host::ManagedHost
-impl core::marker::Unpin for awaken_runtime_host::ManagedHost
-impl core::marker::UnsafeUnpin for awaken_runtime_host::ManagedHost
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::ManagedHost
-impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::ManagedHost
 pub struct awaken_runtime_host::ModelEntry
 pub awaken_runtime_host::ModelEntry::context_window: core::option::Option<u32>
 pub awaken_runtime_host::ModelEntry::display_name: alloc::string::String
 pub awaken_runtime_host::ModelEntry::id: alloc::string::String
 pub awaken_runtime_host::ModelEntry::max_output_tokens: core::option::Option<u32>
-impl core::clone::Clone for awaken_runtime_host::ModelEntry
-pub fn awaken_runtime_host::ModelEntry::clone(&self) -> awaken_runtime_host::ModelEntry
-impl core::fmt::Debug for awaken_runtime_host::ModelEntry
-pub fn awaken_runtime_host::ModelEntry::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_runtime_host::ModelEntry
-impl core::marker::Send for awaken_runtime_host::ModelEntry
-impl core::marker::Sync for awaken_runtime_host::ModelEntry
-impl core::marker::Unpin for awaken_runtime_host::ModelEntry
-impl core::marker::UnsafeUnpin for awaken_runtime_host::ModelEntry
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::ModelEntry
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::ModelEntry
 pub struct awaken_runtime_host::PiiRedactor
 impl awaken_runtime_host::PiiRedactor
 pub fn awaken_runtime_host::PiiRedactor::new() -> Self
 impl awaken_runtime_contract::capture::ContentRedactor for awaken_runtime_host::PiiRedactor
 pub fn awaken_runtime_host::PiiRedactor::redact<'a>(&self, awaken_runtime_contract::capture::ContentKind, &'a str) -> alloc::borrow::Cow<'a, str>
-impl core::clone::Clone for awaken_runtime_host::PiiRedactor
-pub fn awaken_runtime_host::PiiRedactor::clone(&self) -> awaken_runtime_host::PiiRedactor
-impl core::default::Default for awaken_runtime_host::PiiRedactor
-pub fn awaken_runtime_host::PiiRedactor::default() -> awaken_runtime_host::PiiRedactor
-impl core::fmt::Debug for awaken_runtime_host::PiiRedactor
-pub fn awaken_runtime_host::PiiRedactor::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_runtime_host::PiiRedactor
-impl core::marker::Freeze for awaken_runtime_host::PiiRedactor
-impl core::marker::Send for awaken_runtime_host::PiiRedactor
-impl core::marker::Sync for awaken_runtime_host::PiiRedactor
-impl core::marker::Unpin for awaken_runtime_host::PiiRedactor
-impl core::marker::UnsafeUnpin for awaken_runtime_host::PiiRedactor
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::PiiRedactor
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::PiiRedactor
 pub struct awaken_runtime_host::PostgresEnvRegistry
 impl awaken_runtime_host::PostgresEnvRegistry
 pub async fn awaken_runtime_host::PostgresEnvRegistry::connect(&str) -> core::result::Result<Self, alloc::string::String>
@@ -326,13 +158,6 @@ pub fn awaken_runtime_host::PostgresEnvRegistry::exists<'life0, 'life1, 'async_t
 pub fn awaken_runtime_host::PostgresEnvRegistry::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_protocol_managed::env_registry::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_host::PostgresEnvRegistry::list_active<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<awaken_protocol_managed::env_registry::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_host::PostgresEnvRegistry::update<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_protocol_managed::env_registry::EnvUpdate) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_protocol_managed::env_registry::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-impl core::marker::Freeze for awaken_runtime_host::PostgresEnvRegistry
-impl core::marker::Send for awaken_runtime_host::PostgresEnvRegistry
-impl core::marker::Sync for awaken_runtime_host::PostgresEnvRegistry
-impl core::marker::Unpin for awaken_runtime_host::PostgresEnvRegistry
-impl core::marker::UnsafeUnpin for awaken_runtime_host::PostgresEnvRegistry
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::PostgresEnvRegistry
-impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::PostgresEnvRegistry
 pub struct awaken_runtime_host::PostgresManagedSessionRepository
 impl awaken_runtime_host::PostgresManagedSessionRepository
 pub async fn awaken_runtime_host::PostgresManagedSessionRepository::connect(&str) -> core::result::Result<Self, alloc::string::String>
@@ -342,13 +167,6 @@ pub fn awaken_runtime_host::PostgresManagedSessionRepository::get<'life0, 'life1
 pub fn awaken_runtime_host::PostgresManagedSessionRepository::owner<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_host::PostgresManagedSessionRepository::save<'life0, 'async_trait>(&'life0 self, awaken_protocol_managed::session_repo::PersistedSession) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_host::PostgresManagedSessionRepository::set_owner<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-impl core::marker::Freeze for awaken_runtime_host::PostgresManagedSessionRepository
-impl core::marker::Send for awaken_runtime_host::PostgresManagedSessionRepository
-impl core::marker::Sync for awaken_runtime_host::PostgresManagedSessionRepository
-impl core::marker::Unpin for awaken_runtime_host::PostgresManagedSessionRepository
-impl core::marker::UnsafeUnpin for awaken_runtime_host::PostgresManagedSessionRepository
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::PostgresManagedSessionRepository
-impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::PostgresManagedSessionRepository
 pub struct awaken_runtime_host::PostgresWorkQueue
 impl awaken_runtime_host::PostgresWorkQueue
 pub async fn awaken_runtime_host::PostgresWorkQueue::connect(&str) -> core::result::Result<Self, alloc::string::String>
@@ -365,13 +183,6 @@ pub fn awaken_runtime_host::PostgresWorkQueue::remove_env<'life0, 'life1, 'async
 pub fn awaken_runtime_host::PostgresWorkQueue::stats<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_protocol_managed::types::environment::WorkQueueStats> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_host::PostgresWorkQueue::stop<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_protocol_managed::work_queue::WorkItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_host::PostgresWorkQueue::update_metadata<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_protocol_managed::work_queue::WorkItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-impl core::marker::Freeze for awaken_runtime_host::PostgresWorkQueue
-impl core::marker::Send for awaken_runtime_host::PostgresWorkQueue
-impl core::marker::Sync for awaken_runtime_host::PostgresWorkQueue
-impl core::marker::Unpin for awaken_runtime_host::PostgresWorkQueue
-impl core::marker::UnsafeUnpin for awaken_runtime_host::PostgresWorkQueue
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::PostgresWorkQueue
-impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::PostgresWorkQueue
 pub struct awaken_runtime_host::PreparedMcpRefresh
 pub awaken_runtime_host::PreparedMcpRefresh::access_token_ref: awaken_credential_vault::SecretRef
 pub awaken_runtime_host::PreparedMcpRefresh::client_id: alloc::string::String
@@ -381,15 +192,6 @@ pub awaken_runtime_host::PreparedMcpRefresh::scope: core::option::Option<alloc::
 pub awaken_runtime_host::PreparedMcpRefresh::secrets: alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>
 pub awaken_runtime_host::PreparedMcpRefresh::token_endpoint: alloc::string::String
 pub awaken_runtime_host::PreparedMcpRefresh::token_endpoint_auth: awaken_protocol_managed::routes::vaults::TokenEndpointAuthBinding
-impl core::clone::Clone for awaken_runtime_host::PreparedMcpRefresh
-pub fn awaken_runtime_host::PreparedMcpRefresh::clone(&self) -> awaken_runtime_host::PreparedMcpRefresh
-impl core::marker::Freeze for awaken_runtime_host::PreparedMcpRefresh
-impl core::marker::Send for awaken_runtime_host::PreparedMcpRefresh
-impl core::marker::Sync for awaken_runtime_host::PreparedMcpRefresh
-impl core::marker::Unpin for awaken_runtime_host::PreparedMcpRefresh
-impl core::marker::UnsafeUnpin for awaken_runtime_host::PreparedMcpRefresh
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::PreparedMcpRefresh
-impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::PreparedMcpRefresh
 pub struct awaken_runtime_host::ProtocolHost
 impl awaken_runtime_host::ProtocolHost
 pub fn awaken_runtime_host::ProtocolHost::new(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> Self
@@ -401,25 +203,11 @@ pub fn awaken_runtime_host::ProtocolHost::resume<'life0, 'life1, 'life2, 'async_
 pub fn awaken_runtime_host::ProtocolHost::run<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_transport::port::StepOutcome, awaken_protocol_transport::port::DriverError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_host::ProtocolHost::run_streaming<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_transport::port::StepOutcome, awaken_protocol_transport::port::DriverError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_host::ProtocolHost::usage<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = (u64, u64)> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-impl core::marker::Freeze for awaken_runtime_host::ProtocolHost
-impl core::marker::Send for awaken_runtime_host::ProtocolHost
-impl core::marker::Sync for awaken_runtime_host::ProtocolHost
-impl core::marker::Unpin for awaken_runtime_host::ProtocolHost
-impl core::marker::UnsafeUnpin for awaken_runtime_host::ProtocolHost
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::ProtocolHost
-impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::ProtocolHost
 pub struct awaken_runtime_host::RemoteCoordinator
 impl awaken_runtime_host::RemoteCoordinator
 pub fn awaken_runtime_host::RemoteCoordinator::new(impl core::convert::Into<alloc::string::String>) -> Self
 impl awaken_agent_contract::commit::coordinator::Coordinator for awaken_runtime_host::RemoteCoordinator
 pub fn awaken_runtime_host::RemoteCoordinator::commit<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::commit::staged::ThreadCommit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::commit::staged::CommitRecord, awaken_agent_contract::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-impl core::marker::Freeze for awaken_runtime_host::RemoteCoordinator
-impl core::marker::Send for awaken_runtime_host::RemoteCoordinator
-impl core::marker::Sync for awaken_runtime_host::RemoteCoordinator
-impl core::marker::Unpin for awaken_runtime_host::RemoteCoordinator
-impl core::marker::UnsafeUnpin for awaken_runtime_host::RemoteCoordinator
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::RemoteCoordinator
-impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::RemoteCoordinator
 pub struct awaken_runtime_host::SandboxChannelSource
 impl awaken_runtime_host::SandboxChannelSource
 pub fn awaken_runtime_host::SandboxChannelSource::new(impl core::convert::Into<std::path::PathBuf>, awaken_run_executor_acp::subprocess::AcpLaunch) -> Self
@@ -427,13 +215,6 @@ pub fn awaken_runtime_host::SandboxChannelSource::with_codec(self, awaken_protoc
 pub fn awaken_runtime_host::SandboxChannelSource::with_thread_egress(self, awaken_runtime_host::ThreadEgress) -> Self
 impl awaken_run_executor_acp::AgentChannelSource for awaken_runtime_host::SandboxChannelSource
 pub fn awaken_runtime_host::SandboxChannelSource::open<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::activation::RunActivation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_executor_acp::AgentSession, awaken_run_executor_acp::OpenError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-impl core::marker::Freeze for awaken_runtime_host::SandboxChannelSource
-impl core::marker::Send for awaken_runtime_host::SandboxChannelSource
-impl core::marker::Sync for awaken_runtime_host::SandboxChannelSource
-impl core::marker::Unpin for awaken_runtime_host::SandboxChannelSource
-impl core::marker::UnsafeUnpin for awaken_runtime_host::SandboxChannelSource
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::SandboxChannelSource
-impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::SandboxChannelSource
 pub struct awaken_runtime_host::SharedHost
 impl awaken_runtime_host::SharedHost
 pub fn awaken_runtime_host::SharedHost::acp_launch_observer(&self) -> alloc::sync::Arc<dyn awaken_protocol_acp::LaunchObserver>
@@ -474,7 +255,6 @@ pub fn awaken_runtime_host::SharedHost::with_config_service(self, alloc::sync::A
 pub fn awaken_runtime_host::SharedHost::with_delegates(self, std::collections::hash::set::HashSet<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_executor_provider(self, alloc::sync::Arc<dyn awaken_runtime_host::ExecutorProvider>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_gate_override(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>) -> Self
-pub fn awaken_runtime_host::SharedHost::with_gateway_executor_factory(self, alloc::sync::Arc<dyn awaken_runtime_host::GatewayExecutorFactory>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_judge(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_memory(self, impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_remote_a2a(self, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_protocol_a2a::client::Transport>) -> Self
@@ -508,13 +288,6 @@ impl awaken_runtime_host::SharedHost
 pub async fn awaken_runtime_host::SharedHost::live_inbox(&self, &str) -> core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
 impl awaken_runtime_host::SharedHost
 pub async fn awaken_runtime_host::SharedHost::remote_agent_card(&self, &str) -> core::result::Result<awaken_protocol_a2a::types::AgentCard, awaken_runtime_host::host::types::HostError>
-impl !core::marker::Freeze for awaken_runtime_host::SharedHost
-impl core::marker::Send for awaken_runtime_host::SharedHost
-impl core::marker::Sync for awaken_runtime_host::SharedHost
-impl core::marker::Unpin for awaken_runtime_host::SharedHost
-impl core::marker::UnsafeUnpin for awaken_runtime_host::SharedHost
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::SharedHost
-impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::SharedHost
 pub struct awaken_runtime_host::SqliteEnvRegistry
 impl awaken_runtime_host::SqliteEnvRegistry
 pub fn awaken_runtime_host::SqliteEnvRegistry::open(&str) -> core::result::Result<Self, alloc::string::String>
@@ -527,13 +300,6 @@ pub fn awaken_runtime_host::SqliteEnvRegistry::exists<'life0, 'life1, 'async_tra
 pub fn awaken_runtime_host::SqliteEnvRegistry::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_protocol_managed::env_registry::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_host::SqliteEnvRegistry::list_active<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<awaken_protocol_managed::env_registry::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_host::SqliteEnvRegistry::update<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_protocol_managed::env_registry::EnvUpdate) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_protocol_managed::env_registry::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-impl core::marker::Freeze for awaken_runtime_host::SqliteEnvRegistry
-impl core::marker::Send for awaken_runtime_host::SqliteEnvRegistry
-impl core::marker::Sync for awaken_runtime_host::SqliteEnvRegistry
-impl core::marker::Unpin for awaken_runtime_host::SqliteEnvRegistry
-impl core::marker::UnsafeUnpin for awaken_runtime_host::SqliteEnvRegistry
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::SqliteEnvRegistry
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::SqliteEnvRegistry
 pub struct awaken_runtime_host::SqliteManagedSessionRepository
 impl awaken_runtime_host::SqliteManagedSessionRepository
 pub fn awaken_runtime_host::SqliteManagedSessionRepository::open(&str) -> core::result::Result<Self, alloc::string::String>
@@ -543,13 +309,6 @@ pub fn awaken_runtime_host::SqliteManagedSessionRepository::get<'life0, 'life1, 
 pub fn awaken_runtime_host::SqliteManagedSessionRepository::owner<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_host::SqliteManagedSessionRepository::save<'life0, 'async_trait>(&'life0 self, awaken_protocol_managed::session_repo::PersistedSession) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_host::SqliteManagedSessionRepository::set_owner<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-impl core::marker::Freeze for awaken_runtime_host::SqliteManagedSessionRepository
-impl core::marker::Send for awaken_runtime_host::SqliteManagedSessionRepository
-impl core::marker::Sync for awaken_runtime_host::SqliteManagedSessionRepository
-impl core::marker::Unpin for awaken_runtime_host::SqliteManagedSessionRepository
-impl core::marker::UnsafeUnpin for awaken_runtime_host::SqliteManagedSessionRepository
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::SqliteManagedSessionRepository
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::SqliteManagedSessionRepository
 pub struct awaken_runtime_host::SqliteWorkQueue
 impl awaken_runtime_host::SqliteWorkQueue
 pub fn awaken_runtime_host::SqliteWorkQueue::open(&str) -> core::result::Result<Self, alloc::string::String>
@@ -566,59 +325,23 @@ pub fn awaken_runtime_host::SqliteWorkQueue::remove_env<'life0, 'life1, 'async_t
 pub fn awaken_runtime_host::SqliteWorkQueue::stats<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_protocol_managed::types::environment::WorkQueueStats> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_host::SqliteWorkQueue::stop<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_protocol_managed::work_queue::WorkItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_host::SqliteWorkQueue::update_metadata<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_protocol_managed::work_queue::WorkItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-impl core::marker::Freeze for awaken_runtime_host::SqliteWorkQueue
-impl core::marker::Send for awaken_runtime_host::SqliteWorkQueue
-impl core::marker::Sync for awaken_runtime_host::SqliteWorkQueue
-impl core::marker::Unpin for awaken_runtime_host::SqliteWorkQueue
-impl core::marker::UnsafeUnpin for awaken_runtime_host::SqliteWorkQueue
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::SqliteWorkQueue
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::SqliteWorkQueue
 pub struct awaken_runtime_host::ThreadEgress(_)
 impl awaken_runtime_host::ThreadEgress
 pub fn awaken_runtime_host::ThreadEgress::denies(&self, &str) -> bool
 pub fn awaken_runtime_host::ThreadEgress::new() -> Self
 pub fn awaken_runtime_host::ThreadEgress::set(&self, &str, bool)
-impl core::clone::Clone for awaken_runtime_host::ThreadEgress
-pub fn awaken_runtime_host::ThreadEgress::clone(&self) -> awaken_runtime_host::ThreadEgress
-impl core::default::Default for awaken_runtime_host::ThreadEgress
-pub fn awaken_runtime_host::ThreadEgress::default() -> awaken_runtime_host::ThreadEgress
-impl core::marker::Freeze for awaken_runtime_host::ThreadEgress
-impl core::marker::Send for awaken_runtime_host::ThreadEgress
-impl core::marker::Sync for awaken_runtime_host::ThreadEgress
-impl core::marker::Unpin for awaken_runtime_host::ThreadEgress
-impl core::marker::UnsafeUnpin for awaken_runtime_host::ThreadEgress
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::ThreadEgress
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::ThreadEgress
 pub struct awaken_runtime_host::ThreadEventHub
 impl awaken_runtime_host::ThreadEventHub
 pub fn awaken_runtime_host::ThreadEventHub::new() -> Self
 pub fn awaken_runtime_host::ThreadEventHub::publish(&self, &str, awaken_runtime_host::ThreadEvent)
 pub fn awaken_runtime_host::ThreadEventHub::subscribe(&self, &str) -> tokio::sync::broadcast::Receiver<awaken_runtime_host::ThreadEvent>
-impl core::default::Default for awaken_runtime_host::ThreadEventHub
-pub fn awaken_runtime_host::ThreadEventHub::default() -> awaken_runtime_host::ThreadEventHub
-impl !core::marker::Freeze for awaken_runtime_host::ThreadEventHub
-impl core::marker::Send for awaken_runtime_host::ThreadEventHub
-impl core::marker::Sync for awaken_runtime_host::ThreadEventHub
-impl core::marker::Unpin for awaken_runtime_host::ThreadEventHub
-impl core::marker::UnsafeUnpin for awaken_runtime_host::ThreadEventHub
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::ThreadEventHub
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::ThreadEventHub
 pub struct awaken_runtime_host::VaultRefresher
 impl awaken_runtime_host::VaultRefresher
 pub fn awaken_runtime_host::VaultRefresher::new(awaken_runtime_host::PreparedMcpRefresh) -> Self
 impl awaken_credential::CredentialRefresher for awaken_runtime_host::VaultRefresher
 pub fn awaken_runtime_host::VaultRefresher::refresh<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_credential::AuthChallenge) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_credential::Credential>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-impl core::marker::Freeze for awaken_runtime_host::VaultRefresher
-impl core::marker::Send for awaken_runtime_host::VaultRefresher
-impl core::marker::Sync for awaken_runtime_host::VaultRefresher
-impl core::marker::Unpin for awaken_runtime_host::VaultRefresher
-impl core::marker::UnsafeUnpin for awaken_runtime_host::VaultRefresher
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_host::VaultRefresher
-impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_host::VaultRefresher
 pub trait awaken_runtime_host::ExecutorProvider: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_host::ExecutorProvider::executor_for(&self, &str) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
-pub trait awaken_runtime_host::GatewayExecutorFactory: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_host::GatewayExecutorFactory::build(&self, &awaken_runtime_contract::model_access::ResolvedModelEndpoint) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
 pub fn awaken_runtime_host::advertised_tools(&std::collections::hash::set::HashSet<alloc::string::String>, &std::collections::hash::set::HashSet<alloc::string::String>, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub fn awaken_runtime_host::block_text(&[awaken_agent_contract::agent::content::ContentBlock]) -> alloc::string::String
 pub fn awaken_runtime_host::commit_ingest_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> axum::routing::Router

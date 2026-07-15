@@ -15,7 +15,7 @@ pub use awaken_memory_store::memfs::MemoryEntry
 pub use awaken_memory_store::memfs::MemoryFs
 pub struct awaken_memory_store::memfs::FsMemoryFs
 impl awaken_memory_store::memfs::FsMemoryFs
-pub fn awaken_memory_store::memfs::FsMemoryFs::open(impl core::convert::Into<std::path::PathBuf>) -> core::io::error::Result<Self>
+pub fn awaken_memory_store::memfs::FsMemoryFs::open(impl core::convert::Into<std::path::PathBuf>) -> std::io::error::Result<Self>
 impl awaken_resource_contract::MemoryFs for awaken_memory_store::memfs::FsMemoryFs
 pub fn awaken_memory_store::memfs::FsMemoryFs::create<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_memory_store::memfs::FsMemoryFs::delete_by_path<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
@@ -23,13 +23,6 @@ pub fn awaken_memory_store::memfs::FsMemoryFs::get_by_path<'life0, 'life1, 'life
 pub fn awaken_memory_store::memfs::FsMemoryFs::list<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_resource_contract::MemoryEntry>, awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_memory_store::memfs::FsMemoryFs::rename<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_memory_store::memfs::FsMemoryFs::update<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str, &'life4 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait
-impl !core::marker::Freeze for awaken_memory_store::memfs::FsMemoryFs
-impl core::marker::Send for awaken_memory_store::memfs::FsMemoryFs
-impl core::marker::Sync for awaken_memory_store::memfs::FsMemoryFs
-impl core::marker::Unpin for awaken_memory_store::memfs::FsMemoryFs
-impl core::marker::UnsafeUnpin for awaken_memory_store::memfs::FsMemoryFs
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_memory_store::memfs::FsMemoryFs
-impl core::panic::unwind_safe::UnwindSafe for awaken_memory_store::memfs::FsMemoryFs
 pub struct awaken_memory_store::memfs::InMemoryFs
 impl awaken_memory_store::memfs::InMemoryFs
 pub fn awaken_memory_store::memfs::InMemoryFs::new() -> Self
@@ -40,35 +33,19 @@ pub fn awaken_memory_store::memfs::InMemoryFs::get_by_path<'life0, 'life1, 'life
 pub fn awaken_memory_store::memfs::InMemoryFs::list<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_resource_contract::MemoryEntry>, awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_memory_store::memfs::InMemoryFs::rename<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_memory_store::memfs::InMemoryFs::update<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str, &'life4 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait
-impl core::default::Default for awaken_memory_store::memfs::InMemoryFs
-pub fn awaken_memory_store::memfs::InMemoryFs::default() -> awaken_memory_store::memfs::InMemoryFs
-impl !core::marker::Freeze for awaken_memory_store::memfs::InMemoryFs
-impl core::marker::Send for awaken_memory_store::memfs::InMemoryFs
-impl core::marker::Sync for awaken_memory_store::memfs::InMemoryFs
-impl core::marker::Unpin for awaken_memory_store::memfs::InMemoryFs
-impl core::marker::UnsafeUnpin for awaken_memory_store::memfs::InMemoryFs
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_memory_store::memfs::InMemoryFs
-impl core::panic::unwind_safe::UnwindSafe for awaken_memory_store::memfs::InMemoryFs
 pub fn awaken_memory_store::memfs::sha256_hex(&str) -> alloc::string::String
 pub struct awaken_memory_store::FsMemoryBlobStore
 impl awaken_memory_store::FsMemoryBlobStore
-pub fn awaken_memory_store::FsMemoryBlobStore::open(impl core::convert::Into<std::path::PathBuf>) -> core::io::error::Result<Self>
+pub fn awaken_memory_store::FsMemoryBlobStore::open(impl core::convert::Into<std::path::PathBuf>) -> std::io::error::Result<Self>
 pub fn awaken_memory_store::FsMemoryBlobStore::root(&self) -> &std::path::Path
 impl awaken_resource_contract::MemoryBlobStore for awaken_memory_store::FsMemoryBlobStore
 pub fn awaken_memory_store::FsMemoryBlobStore::create<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_resource_contract::MemoryStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_memory_store::FsMemoryBlobStore::exists<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_resource_contract::MemoryStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_memory_store::FsMemoryBlobStore::get<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, awaken_resource_contract::MemoryStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_memory_store::FsMemoryBlobStore::put<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 [u8]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_resource_contract::MemoryStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
-impl !core::marker::Freeze for awaken_memory_store::FsMemoryBlobStore
-impl core::marker::Send for awaken_memory_store::FsMemoryBlobStore
-impl core::marker::Sync for awaken_memory_store::FsMemoryBlobStore
-impl core::marker::Unpin for awaken_memory_store::FsMemoryBlobStore
-impl core::marker::UnsafeUnpin for awaken_memory_store::FsMemoryBlobStore
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_memory_store::FsMemoryBlobStore
-impl core::panic::unwind_safe::UnwindSafe for awaken_memory_store::FsMemoryBlobStore
 pub struct awaken_memory_store::FsMemoryFs
 impl awaken_memory_store::memfs::FsMemoryFs
-pub fn awaken_memory_store::memfs::FsMemoryFs::open(impl core::convert::Into<std::path::PathBuf>) -> core::io::error::Result<Self>
+pub fn awaken_memory_store::memfs::FsMemoryFs::open(impl core::convert::Into<std::path::PathBuf>) -> std::io::error::Result<Self>
 impl awaken_resource_contract::MemoryFs for awaken_memory_store::memfs::FsMemoryFs
 pub fn awaken_memory_store::memfs::FsMemoryFs::create<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_memory_store::memfs::FsMemoryFs::delete_by_path<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
@@ -76,13 +53,6 @@ pub fn awaken_memory_store::memfs::FsMemoryFs::get_by_path<'life0, 'life1, 'life
 pub fn awaken_memory_store::memfs::FsMemoryFs::list<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_resource_contract::MemoryEntry>, awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_memory_store::memfs::FsMemoryFs::rename<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_memory_store::memfs::FsMemoryFs::update<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str, &'life4 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait
-impl !core::marker::Freeze for awaken_memory_store::memfs::FsMemoryFs
-impl core::marker::Send for awaken_memory_store::memfs::FsMemoryFs
-impl core::marker::Sync for awaken_memory_store::memfs::FsMemoryFs
-impl core::marker::Unpin for awaken_memory_store::memfs::FsMemoryFs
-impl core::marker::UnsafeUnpin for awaken_memory_store::memfs::FsMemoryFs
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_memory_store::memfs::FsMemoryFs
-impl core::panic::unwind_safe::UnwindSafe for awaken_memory_store::memfs::FsMemoryFs
 pub struct awaken_memory_store::InMemoryBlobStore
 impl awaken_memory_store::InMemoryBlobStore
 pub fn awaken_memory_store::InMemoryBlobStore::new() -> Self
@@ -91,15 +61,6 @@ pub fn awaken_memory_store::InMemoryBlobStore::create<'life0, 'life1, 'async_tra
 pub fn awaken_memory_store::InMemoryBlobStore::exists<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_resource_contract::MemoryStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_memory_store::InMemoryBlobStore::get<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, awaken_resource_contract::MemoryStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_memory_store::InMemoryBlobStore::put<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 [u8]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_resource_contract::MemoryStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
-impl core::default::Default for awaken_memory_store::InMemoryBlobStore
-pub fn awaken_memory_store::InMemoryBlobStore::default() -> awaken_memory_store::InMemoryBlobStore
-impl !core::marker::Freeze for awaken_memory_store::InMemoryBlobStore
-impl core::marker::Send for awaken_memory_store::InMemoryBlobStore
-impl core::marker::Sync for awaken_memory_store::InMemoryBlobStore
-impl core::marker::Unpin for awaken_memory_store::InMemoryBlobStore
-impl core::marker::UnsafeUnpin for awaken_memory_store::InMemoryBlobStore
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_memory_store::InMemoryBlobStore
-impl core::panic::unwind_safe::UnwindSafe for awaken_memory_store::InMemoryBlobStore
 pub struct awaken_memory_store::InMemoryFs
 impl awaken_memory_store::memfs::InMemoryFs
 pub fn awaken_memory_store::memfs::InMemoryFs::new() -> Self
@@ -110,15 +71,6 @@ pub fn awaken_memory_store::memfs::InMemoryFs::get_by_path<'life0, 'life1, 'life
 pub fn awaken_memory_store::memfs::InMemoryFs::list<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_resource_contract::MemoryEntry>, awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_memory_store::memfs::InMemoryFs::rename<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_memory_store::memfs::InMemoryFs::update<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str, &'life4 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait
-impl core::default::Default for awaken_memory_store::memfs::InMemoryFs
-pub fn awaken_memory_store::memfs::InMemoryFs::default() -> awaken_memory_store::memfs::InMemoryFs
-impl !core::marker::Freeze for awaken_memory_store::memfs::InMemoryFs
-impl core::marker::Send for awaken_memory_store::memfs::InMemoryFs
-impl core::marker::Sync for awaken_memory_store::memfs::InMemoryFs
-impl core::marker::Unpin for awaken_memory_store::memfs::InMemoryFs
-impl core::marker::UnsafeUnpin for awaken_memory_store::memfs::InMemoryFs
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_memory_store::memfs::InMemoryFs
-impl core::panic::unwind_safe::UnwindSafe for awaken_memory_store::memfs::InMemoryFs
 pub fn awaken_memory_store::memory_scope_root(impl core::convert::AsRef<std::path::Path>) -> std::path::PathBuf
 pub fn awaken_memory_store::sanitize_stem(&str) -> alloc::string::String
 pub fn awaken_memory_store::sha256_hex(&str) -> alloc::string::String

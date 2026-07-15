@@ -4,59 +4,11 @@ pub enum awaken_run_ingress_contract::dispatch::CasOutcome
 pub awaken_run_ingress_contract::dispatch::CasOutcome::Applied
 pub awaken_run_ingress_contract::dispatch::CasOutcome::NotFound
 pub awaken_run_ingress_contract::dispatch::CasOutcome::RevisionMismatch
-impl core::clone::Clone for awaken_run_ingress_contract::dispatch::CasOutcome
-pub fn awaken_run_ingress_contract::dispatch::CasOutcome::clone(&self) -> awaken_run_ingress_contract::dispatch::CasOutcome
-impl core::cmp::Eq for awaken_run_ingress_contract::dispatch::CasOutcome
-impl core::cmp::PartialEq for awaken_run_ingress_contract::dispatch::CasOutcome
-pub fn awaken_run_ingress_contract::dispatch::CasOutcome::eq(&self, &awaken_run_ingress_contract::dispatch::CasOutcome) -> bool
-impl core::fmt::Debug for awaken_run_ingress_contract::dispatch::CasOutcome
-pub fn awaken_run_ingress_contract::dispatch::CasOutcome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_run_ingress_contract::dispatch::CasOutcome
-impl core::marker::StructuralPartialEq for awaken_run_ingress_contract::dispatch::CasOutcome
-impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::CasOutcome
-impl core::marker::Send for awaken_run_ingress_contract::dispatch::CasOutcome
-impl core::marker::Sync for awaken_run_ingress_contract::dispatch::CasOutcome
-impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::CasOutcome
-impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::CasOutcome
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::CasOutcome
-impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::CasOutcome
 pub enum awaken_run_ingress_contract::dispatch::DispatchError
 pub awaken_run_ingress_contract::dispatch::DispatchError::Rejected(alloc::string::String)
-impl core::error::Error for awaken_run_ingress_contract::dispatch::DispatchError
-impl core::fmt::Debug for awaken_run_ingress_contract::dispatch::DispatchError
-pub fn awaken_run_ingress_contract::dispatch::DispatchError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for awaken_run_ingress_contract::dispatch::DispatchError
-pub fn awaken_run_ingress_contract::dispatch::DispatchError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::DispatchError
-impl core::marker::Send for awaken_run_ingress_contract::dispatch::DispatchError
-impl core::marker::Sync for awaken_run_ingress_contract::dispatch::DispatchError
-impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::DispatchError
-impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::DispatchError
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::DispatchError
-impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::DispatchError
 pub enum awaken_run_ingress_contract::dispatch::DispatchOutcome
 pub awaken_run_ingress_contract::dispatch::DispatchOutcome::Done
 pub awaken_run_ingress_contract::dispatch::DispatchOutcome::Parked
-impl core::clone::Clone for awaken_run_ingress_contract::dispatch::DispatchOutcome
-pub fn awaken_run_ingress_contract::dispatch::DispatchOutcome::clone(&self) -> awaken_run_ingress_contract::dispatch::DispatchOutcome
-impl core::cmp::Eq for awaken_run_ingress_contract::dispatch::DispatchOutcome
-impl core::cmp::PartialEq for awaken_run_ingress_contract::dispatch::DispatchOutcome
-pub fn awaken_run_ingress_contract::dispatch::DispatchOutcome::eq(&self, &awaken_run_ingress_contract::dispatch::DispatchOutcome) -> bool
-impl core::fmt::Debug for awaken_run_ingress_contract::dispatch::DispatchOutcome
-pub fn awaken_run_ingress_contract::dispatch::DispatchOutcome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_run_ingress_contract::dispatch::DispatchOutcome
-impl core::marker::StructuralPartialEq for awaken_run_ingress_contract::dispatch::DispatchOutcome
-impl serde_core::ser::Serialize for awaken_run_ingress_contract::dispatch::DispatchOutcome
-pub fn awaken_run_ingress_contract::dispatch::DispatchOutcome::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_run_ingress_contract::dispatch::DispatchOutcome
-pub fn awaken_run_ingress_contract::dispatch::DispatchOutcome::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::DispatchOutcome
-impl core::marker::Send for awaken_run_ingress_contract::dispatch::DispatchOutcome
-impl core::marker::Sync for awaken_run_ingress_contract::dispatch::DispatchOutcome
-impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::DispatchOutcome
-impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::DispatchOutcome
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::DispatchOutcome
-impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::DispatchOutcome
 pub enum awaken_run_ingress_contract::dispatch::DispatchStatus
 pub awaken_run_ingress_contract::dispatch::DispatchStatus::DeadLetter
 pub awaken_run_ingress_contract::dispatch::DispatchStatus::Parked
@@ -65,114 +17,26 @@ pub awaken_run_ingress_contract::dispatch::DispatchStatus::Running
 pub awaken_run_ingress_contract::dispatch::DispatchStatus::Superseded
 impl awaken_run_ingress_contract::dispatch::DispatchStatus
 pub fn awaken_run_ingress_contract::dispatch::DispatchStatus::from_db(&str) -> Self
-impl core::clone::Clone for awaken_run_ingress_contract::dispatch::DispatchStatus
-pub fn awaken_run_ingress_contract::dispatch::DispatchStatus::clone(&self) -> awaken_run_ingress_contract::dispatch::DispatchStatus
-impl core::cmp::Eq for awaken_run_ingress_contract::dispatch::DispatchStatus
-impl core::cmp::PartialEq for awaken_run_ingress_contract::dispatch::DispatchStatus
-pub fn awaken_run_ingress_contract::dispatch::DispatchStatus::eq(&self, &awaken_run_ingress_contract::dispatch::DispatchStatus) -> bool
-impl core::fmt::Debug for awaken_run_ingress_contract::dispatch::DispatchStatus
-pub fn awaken_run_ingress_contract::dispatch::DispatchStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_run_ingress_contract::dispatch::DispatchStatus
-impl core::marker::StructuralPartialEq for awaken_run_ingress_contract::dispatch::DispatchStatus
-impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::DispatchStatus
-impl core::marker::Send for awaken_run_ingress_contract::dispatch::DispatchStatus
-impl core::marker::Sync for awaken_run_ingress_contract::dispatch::DispatchStatus
-impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::DispatchStatus
-impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::DispatchStatus
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::DispatchStatus
-impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::DispatchStatus
 pub enum awaken_run_ingress_contract::dispatch::SettleOutcome
 pub awaken_run_ingress_contract::dispatch::SettleOutcome::Applied
 pub awaken_run_ingress_contract::dispatch::SettleOutcome::Fenced
 impl awaken_run_ingress_contract::dispatch::SettleOutcome
 pub fn awaken_run_ingress_contract::dispatch::SettleOutcome::applied(self) -> bool
-impl core::clone::Clone for awaken_run_ingress_contract::dispatch::SettleOutcome
-pub fn awaken_run_ingress_contract::dispatch::SettleOutcome::clone(&self) -> awaken_run_ingress_contract::dispatch::SettleOutcome
-impl core::cmp::Eq for awaken_run_ingress_contract::dispatch::SettleOutcome
-impl core::cmp::PartialEq for awaken_run_ingress_contract::dispatch::SettleOutcome
-pub fn awaken_run_ingress_contract::dispatch::SettleOutcome::eq(&self, &awaken_run_ingress_contract::dispatch::SettleOutcome) -> bool
-impl core::fmt::Debug for awaken_run_ingress_contract::dispatch::SettleOutcome
-pub fn awaken_run_ingress_contract::dispatch::SettleOutcome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_run_ingress_contract::dispatch::SettleOutcome
-impl core::marker::StructuralPartialEq for awaken_run_ingress_contract::dispatch::SettleOutcome
-impl serde_core::ser::Serialize for awaken_run_ingress_contract::dispatch::SettleOutcome
-pub fn awaken_run_ingress_contract::dispatch::SettleOutcome::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_run_ingress_contract::dispatch::SettleOutcome
-pub fn awaken_run_ingress_contract::dispatch::SettleOutcome::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::SettleOutcome
-impl core::marker::Send for awaken_run_ingress_contract::dispatch::SettleOutcome
-impl core::marker::Sync for awaken_run_ingress_contract::dispatch::SettleOutcome
-impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::SettleOutcome
-impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::SettleOutcome
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::SettleOutcome
-impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::SettleOutcome
 pub struct awaken_run_ingress_contract::dispatch::Claimed
 pub awaken_run_ingress_contract::dispatch::Claimed::lease: awaken_run_ingress_contract::dispatch::Lease
 pub awaken_run_ingress_contract::dispatch::Claimed::pending: alloc::vec::Vec<awaken_run_ingress_contract::dispatch::PendingInput>
 pub awaken_run_ingress_contract::dispatch::Claimed::request: awaken_run_ingress_contract::request::RunExecutionRequest
 pub awaken_run_ingress_contract::dispatch::Claimed::sandbox: core::option::Option<alloc::string::String>
-impl core::clone::Clone for awaken_run_ingress_contract::dispatch::Claimed
-pub fn awaken_run_ingress_contract::dispatch::Claimed::clone(&self) -> awaken_run_ingress_contract::dispatch::Claimed
-impl core::cmp::PartialEq for awaken_run_ingress_contract::dispatch::Claimed
-pub fn awaken_run_ingress_contract::dispatch::Claimed::eq(&self, &awaken_run_ingress_contract::dispatch::Claimed) -> bool
-impl core::fmt::Debug for awaken_run_ingress_contract::dispatch::Claimed
-pub fn awaken_run_ingress_contract::dispatch::Claimed::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_run_ingress_contract::dispatch::Claimed
-impl serde_core::ser::Serialize for awaken_run_ingress_contract::dispatch::Claimed
-pub fn awaken_run_ingress_contract::dispatch::Claimed::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_run_ingress_contract::dispatch::Claimed
-pub fn awaken_run_ingress_contract::dispatch::Claimed::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::Claimed
-impl core::marker::Send for awaken_run_ingress_contract::dispatch::Claimed
-impl core::marker::Sync for awaken_run_ingress_contract::dispatch::Claimed
-impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::Claimed
-impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::Claimed
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::Claimed
-impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::Claimed
 pub struct awaken_run_ingress_contract::dispatch::DispatchSummary
 pub awaken_run_ingress_contract::dispatch::DispatchSummary::attempt_count: u64
 pub awaken_run_ingress_contract::dispatch::DispatchSummary::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_run_ingress_contract::dispatch::DispatchSummary::status: awaken_run_ingress_contract::dispatch::DispatchStatus
 pub awaken_run_ingress_contract::dispatch::DispatchSummary::thread_id: awaken_agent_contract::agent::thread::Id
-impl core::clone::Clone for awaken_run_ingress_contract::dispatch::DispatchSummary
-pub fn awaken_run_ingress_contract::dispatch::DispatchSummary::clone(&self) -> awaken_run_ingress_contract::dispatch::DispatchSummary
-impl core::cmp::Eq for awaken_run_ingress_contract::dispatch::DispatchSummary
-impl core::cmp::PartialEq for awaken_run_ingress_contract::dispatch::DispatchSummary
-pub fn awaken_run_ingress_contract::dispatch::DispatchSummary::eq(&self, &awaken_run_ingress_contract::dispatch::DispatchSummary) -> bool
-impl core::fmt::Debug for awaken_run_ingress_contract::dispatch::DispatchSummary
-pub fn awaken_run_ingress_contract::dispatch::DispatchSummary::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_run_ingress_contract::dispatch::DispatchSummary
-impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::DispatchSummary
-impl core::marker::Send for awaken_run_ingress_contract::dispatch::DispatchSummary
-impl core::marker::Sync for awaken_run_ingress_contract::dispatch::DispatchSummary
-impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::DispatchSummary
-impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::DispatchSummary
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::DispatchSummary
-impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::DispatchSummary
 pub struct awaken_run_ingress_contract::dispatch::Lease
 pub awaken_run_ingress_contract::dispatch::Lease::epoch: u64
 pub awaken_run_ingress_contract::dispatch::Lease::expires_ms: u64
 pub awaken_run_ingress_contract::dispatch::Lease::owner: alloc::string::String
 pub awaken_run_ingress_contract::dispatch::Lease::run_id: awaken_agent_contract::agent::run::Id
-impl core::clone::Clone for awaken_run_ingress_contract::dispatch::Lease
-pub fn awaken_run_ingress_contract::dispatch::Lease::clone(&self) -> awaken_run_ingress_contract::dispatch::Lease
-impl core::cmp::Eq for awaken_run_ingress_contract::dispatch::Lease
-impl core::cmp::PartialEq for awaken_run_ingress_contract::dispatch::Lease
-pub fn awaken_run_ingress_contract::dispatch::Lease::eq(&self, &awaken_run_ingress_contract::dispatch::Lease) -> bool
-impl core::fmt::Debug for awaken_run_ingress_contract::dispatch::Lease
-pub fn awaken_run_ingress_contract::dispatch::Lease::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_run_ingress_contract::dispatch::Lease
-impl serde_core::ser::Serialize for awaken_run_ingress_contract::dispatch::Lease
-pub fn awaken_run_ingress_contract::dispatch::Lease::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_run_ingress_contract::dispatch::Lease
-pub fn awaken_run_ingress_contract::dispatch::Lease::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::Lease
-impl core::marker::Send for awaken_run_ingress_contract::dispatch::Lease
-impl core::marker::Sync for awaken_run_ingress_contract::dispatch::Lease
-impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::Lease
-impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::Lease
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::Lease
-impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::Lease
 pub struct awaken_run_ingress_contract::dispatch::PendingInput
 pub awaken_run_ingress_contract::dispatch::PendingInput::available_at_ms: core::option::Option<u64>
 pub awaken_run_ingress_contract::dispatch::PendingInput::correlation_id: alloc::string::String
@@ -180,75 +44,24 @@ pub awaken_run_ingress_contract::dispatch::PendingInput::message_id: alloc::stri
 pub awaken_run_ingress_contract::dispatch::PendingInput::result: awaken_runtime_contract::resume::ResumeResult
 pub awaken_run_ingress_contract::dispatch::PendingInput::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_run_ingress_contract::dispatch::PendingInput::thread_id: awaken_agent_contract::agent::thread::Id
-impl core::clone::Clone for awaken_run_ingress_contract::dispatch::PendingInput
-pub fn awaken_run_ingress_contract::dispatch::PendingInput::clone(&self) -> awaken_run_ingress_contract::dispatch::PendingInput
-impl core::cmp::PartialEq for awaken_run_ingress_contract::dispatch::PendingInput
-pub fn awaken_run_ingress_contract::dispatch::PendingInput::eq(&self, &awaken_run_ingress_contract::dispatch::PendingInput) -> bool
-impl core::fmt::Debug for awaken_run_ingress_contract::dispatch::PendingInput
-pub fn awaken_run_ingress_contract::dispatch::PendingInput::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_run_ingress_contract::dispatch::PendingInput
-impl serde_core::ser::Serialize for awaken_run_ingress_contract::dispatch::PendingInput
-pub fn awaken_run_ingress_contract::dispatch::PendingInput::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_run_ingress_contract::dispatch::PendingInput
-pub fn awaken_run_ingress_contract::dispatch::PendingInput::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::PendingInput
-impl core::marker::Send for awaken_run_ingress_contract::dispatch::PendingInput
-impl core::marker::Sync for awaken_run_ingress_contract::dispatch::PendingInput
-impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::PendingInput
-impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::PendingInput
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::PendingInput
-impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::PendingInput
 pub struct awaken_run_ingress_contract::dispatch::PendingRecord
 pub awaken_run_ingress_contract::dispatch::PendingRecord::input: awaken_run_ingress_contract::dispatch::PendingInput
 pub awaken_run_ingress_contract::dispatch::PendingRecord::revision: u64
-impl core::clone::Clone for awaken_run_ingress_contract::dispatch::PendingRecord
-pub fn awaken_run_ingress_contract::dispatch::PendingRecord::clone(&self) -> awaken_run_ingress_contract::dispatch::PendingRecord
-impl core::cmp::PartialEq for awaken_run_ingress_contract::dispatch::PendingRecord
-pub fn awaken_run_ingress_contract::dispatch::PendingRecord::eq(&self, &awaken_run_ingress_contract::dispatch::PendingRecord) -> bool
-impl core::fmt::Debug for awaken_run_ingress_contract::dispatch::PendingRecord
-pub fn awaken_run_ingress_contract::dispatch::PendingRecord::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_run_ingress_contract::dispatch::PendingRecord
-impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::PendingRecord
-impl core::marker::Send for awaken_run_ingress_contract::dispatch::PendingRecord
-impl core::marker::Sync for awaken_run_ingress_contract::dispatch::PendingRecord
-impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::PendingRecord
-impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::PendingRecord
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::PendingRecord
-impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::PendingRecord
 pub struct awaken_run_ingress_contract::dispatch::SubmitOptions
 pub awaken_run_ingress_contract::dispatch::SubmitOptions::dedupe_key: core::option::Option<alloc::string::String>
 pub awaken_run_ingress_contract::dispatch::SubmitOptions::priority: i64
 pub awaken_run_ingress_contract::dispatch::SubmitOptions::supersede: bool
-impl core::clone::Clone for awaken_run_ingress_contract::dispatch::SubmitOptions
-pub fn awaken_run_ingress_contract::dispatch::SubmitOptions::clone(&self) -> awaken_run_ingress_contract::dispatch::SubmitOptions
-impl core::cmp::Eq for awaken_run_ingress_contract::dispatch::SubmitOptions
-impl core::cmp::PartialEq for awaken_run_ingress_contract::dispatch::SubmitOptions
-pub fn awaken_run_ingress_contract::dispatch::SubmitOptions::eq(&self, &awaken_run_ingress_contract::dispatch::SubmitOptions) -> bool
-impl core::default::Default for awaken_run_ingress_contract::dispatch::SubmitOptions
-pub fn awaken_run_ingress_contract::dispatch::SubmitOptions::default() -> awaken_run_ingress_contract::dispatch::SubmitOptions
-impl core::fmt::Debug for awaken_run_ingress_contract::dispatch::SubmitOptions
-pub fn awaken_run_ingress_contract::dispatch::SubmitOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_run_ingress_contract::dispatch::SubmitOptions
-impl serde_core::ser::Serialize for awaken_run_ingress_contract::dispatch::SubmitOptions
-pub fn awaken_run_ingress_contract::dispatch::SubmitOptions::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_run_ingress_contract::dispatch::SubmitOptions
-pub fn awaken_run_ingress_contract::dispatch::SubmitOptions::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::SubmitOptions
-impl core::marker::Send for awaken_run_ingress_contract::dispatch::SubmitOptions
-impl core::marker::Sync for awaken_run_ingress_contract::dispatch::SubmitOptions
-impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::SubmitOptions
-impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::SubmitOptions
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::SubmitOptions
-impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::SubmitOptions
 pub trait awaken_run_ingress_contract::dispatch::Dispatch: awaken_run_ingress_contract::dispatch::DispatchQueue + awaken_run_ingress_contract::dispatch::Inbox + awaken_run_ingress_contract::dispatch::Outbox
 impl<T: awaken_run_ingress_contract::dispatch::DispatchQueue + awaken_run_ingress_contract::dispatch::Inbox + awaken_run_ingress_contract::dispatch::Outbox> awaken_run_ingress_contract::dispatch::Dispatch for T
 pub trait awaken_run_ingress_contract::dispatch::DispatchQueue: core::marker::Send + core::marker::Sync
 pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::bind_sandbox<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::cancel<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_contract::agent::thread::Id>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::claim<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_run_ingress_contract::dispatch::Claimed>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::current_epoch<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<u64>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::dead_letters<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::run::Id>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::enqueue<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::request::RunExecutionRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::enqueue_with<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::request::RunExecutionRequest, awaken_run_ingress_contract::dispatch::SubmitOptions) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::holds_current_epoch<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::list_dispatches<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_run_ingress_contract::dispatch::DispatchSummary>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::parked_run<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::thread::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_contract::agent::run::Id>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::purge_dead_letters<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
@@ -276,81 +89,15 @@ pub fn awaken_run_ingress_contract::request::RunExecutionRequest::new(awaken_run
 pub fn awaken_run_ingress_contract::request::RunExecutionRequest::run_id(&self) -> &awaken_agent_contract::agent::run::Id
 pub fn awaken_run_ingress_contract::request::RunExecutionRequest::thread_id(&self) -> &awaken_agent_contract::agent::thread::Id
 pub fn awaken_run_ingress_contract::request::RunExecutionRequest::with_traceparent(self, core::option::Option<alloc::string::String>) -> Self
-impl core::clone::Clone for awaken_run_ingress_contract::request::RunExecutionRequest
-pub fn awaken_run_ingress_contract::request::RunExecutionRequest::clone(&self) -> awaken_run_ingress_contract::request::RunExecutionRequest
-impl core::cmp::PartialEq for awaken_run_ingress_contract::request::RunExecutionRequest
-pub fn awaken_run_ingress_contract::request::RunExecutionRequest::eq(&self, &awaken_run_ingress_contract::request::RunExecutionRequest) -> bool
-impl core::fmt::Debug for awaken_run_ingress_contract::request::RunExecutionRequest
-pub fn awaken_run_ingress_contract::request::RunExecutionRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_run_ingress_contract::request::RunExecutionRequest
-impl serde_core::ser::Serialize for awaken_run_ingress_contract::request::RunExecutionRequest
-pub fn awaken_run_ingress_contract::request::RunExecutionRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_run_ingress_contract::request::RunExecutionRequest
-pub fn awaken_run_ingress_contract::request::RunExecutionRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_run_ingress_contract::request::RunExecutionRequest
-impl core::marker::Send for awaken_run_ingress_contract::request::RunExecutionRequest
-impl core::marker::Sync for awaken_run_ingress_contract::request::RunExecutionRequest
-impl core::marker::Unpin for awaken_run_ingress_contract::request::RunExecutionRequest
-impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::request::RunExecutionRequest
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::request::RunExecutionRequest
-impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::request::RunExecutionRequest
 pub enum awaken_run_ingress_contract::CasOutcome
 pub awaken_run_ingress_contract::CasOutcome::Applied
 pub awaken_run_ingress_contract::CasOutcome::NotFound
 pub awaken_run_ingress_contract::CasOutcome::RevisionMismatch
-impl core::clone::Clone for awaken_run_ingress_contract::dispatch::CasOutcome
-pub fn awaken_run_ingress_contract::dispatch::CasOutcome::clone(&self) -> awaken_run_ingress_contract::dispatch::CasOutcome
-impl core::cmp::Eq for awaken_run_ingress_contract::dispatch::CasOutcome
-impl core::cmp::PartialEq for awaken_run_ingress_contract::dispatch::CasOutcome
-pub fn awaken_run_ingress_contract::dispatch::CasOutcome::eq(&self, &awaken_run_ingress_contract::dispatch::CasOutcome) -> bool
-impl core::fmt::Debug for awaken_run_ingress_contract::dispatch::CasOutcome
-pub fn awaken_run_ingress_contract::dispatch::CasOutcome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_run_ingress_contract::dispatch::CasOutcome
-impl core::marker::StructuralPartialEq for awaken_run_ingress_contract::dispatch::CasOutcome
-impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::CasOutcome
-impl core::marker::Send for awaken_run_ingress_contract::dispatch::CasOutcome
-impl core::marker::Sync for awaken_run_ingress_contract::dispatch::CasOutcome
-impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::CasOutcome
-impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::CasOutcome
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::CasOutcome
-impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::CasOutcome
 pub enum awaken_run_ingress_contract::DispatchError
 pub awaken_run_ingress_contract::DispatchError::Rejected(alloc::string::String)
-impl core::error::Error for awaken_run_ingress_contract::dispatch::DispatchError
-impl core::fmt::Debug for awaken_run_ingress_contract::dispatch::DispatchError
-pub fn awaken_run_ingress_contract::dispatch::DispatchError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for awaken_run_ingress_contract::dispatch::DispatchError
-pub fn awaken_run_ingress_contract::dispatch::DispatchError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::DispatchError
-impl core::marker::Send for awaken_run_ingress_contract::dispatch::DispatchError
-impl core::marker::Sync for awaken_run_ingress_contract::dispatch::DispatchError
-impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::DispatchError
-impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::DispatchError
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::DispatchError
-impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::DispatchError
 pub enum awaken_run_ingress_contract::DispatchOutcome
 pub awaken_run_ingress_contract::DispatchOutcome::Done
 pub awaken_run_ingress_contract::DispatchOutcome::Parked
-impl core::clone::Clone for awaken_run_ingress_contract::dispatch::DispatchOutcome
-pub fn awaken_run_ingress_contract::dispatch::DispatchOutcome::clone(&self) -> awaken_run_ingress_contract::dispatch::DispatchOutcome
-impl core::cmp::Eq for awaken_run_ingress_contract::dispatch::DispatchOutcome
-impl core::cmp::PartialEq for awaken_run_ingress_contract::dispatch::DispatchOutcome
-pub fn awaken_run_ingress_contract::dispatch::DispatchOutcome::eq(&self, &awaken_run_ingress_contract::dispatch::DispatchOutcome) -> bool
-impl core::fmt::Debug for awaken_run_ingress_contract::dispatch::DispatchOutcome
-pub fn awaken_run_ingress_contract::dispatch::DispatchOutcome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_run_ingress_contract::dispatch::DispatchOutcome
-impl core::marker::StructuralPartialEq for awaken_run_ingress_contract::dispatch::DispatchOutcome
-impl serde_core::ser::Serialize for awaken_run_ingress_contract::dispatch::DispatchOutcome
-pub fn awaken_run_ingress_contract::dispatch::DispatchOutcome::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_run_ingress_contract::dispatch::DispatchOutcome
-pub fn awaken_run_ingress_contract::dispatch::DispatchOutcome::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::DispatchOutcome
-impl core::marker::Send for awaken_run_ingress_contract::dispatch::DispatchOutcome
-impl core::marker::Sync for awaken_run_ingress_contract::dispatch::DispatchOutcome
-impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::DispatchOutcome
-impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::DispatchOutcome
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::DispatchOutcome
-impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::DispatchOutcome
 pub enum awaken_run_ingress_contract::DispatchStatus
 pub awaken_run_ingress_contract::DispatchStatus::DeadLetter
 pub awaken_run_ingress_contract::DispatchStatus::Parked
@@ -359,114 +106,26 @@ pub awaken_run_ingress_contract::DispatchStatus::Running
 pub awaken_run_ingress_contract::DispatchStatus::Superseded
 impl awaken_run_ingress_contract::dispatch::DispatchStatus
 pub fn awaken_run_ingress_contract::dispatch::DispatchStatus::from_db(&str) -> Self
-impl core::clone::Clone for awaken_run_ingress_contract::dispatch::DispatchStatus
-pub fn awaken_run_ingress_contract::dispatch::DispatchStatus::clone(&self) -> awaken_run_ingress_contract::dispatch::DispatchStatus
-impl core::cmp::Eq for awaken_run_ingress_contract::dispatch::DispatchStatus
-impl core::cmp::PartialEq for awaken_run_ingress_contract::dispatch::DispatchStatus
-pub fn awaken_run_ingress_contract::dispatch::DispatchStatus::eq(&self, &awaken_run_ingress_contract::dispatch::DispatchStatus) -> bool
-impl core::fmt::Debug for awaken_run_ingress_contract::dispatch::DispatchStatus
-pub fn awaken_run_ingress_contract::dispatch::DispatchStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_run_ingress_contract::dispatch::DispatchStatus
-impl core::marker::StructuralPartialEq for awaken_run_ingress_contract::dispatch::DispatchStatus
-impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::DispatchStatus
-impl core::marker::Send for awaken_run_ingress_contract::dispatch::DispatchStatus
-impl core::marker::Sync for awaken_run_ingress_contract::dispatch::DispatchStatus
-impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::DispatchStatus
-impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::DispatchStatus
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::DispatchStatus
-impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::DispatchStatus
 pub enum awaken_run_ingress_contract::SettleOutcome
 pub awaken_run_ingress_contract::SettleOutcome::Applied
 pub awaken_run_ingress_contract::SettleOutcome::Fenced
 impl awaken_run_ingress_contract::dispatch::SettleOutcome
 pub fn awaken_run_ingress_contract::dispatch::SettleOutcome::applied(self) -> bool
-impl core::clone::Clone for awaken_run_ingress_contract::dispatch::SettleOutcome
-pub fn awaken_run_ingress_contract::dispatch::SettleOutcome::clone(&self) -> awaken_run_ingress_contract::dispatch::SettleOutcome
-impl core::cmp::Eq for awaken_run_ingress_contract::dispatch::SettleOutcome
-impl core::cmp::PartialEq for awaken_run_ingress_contract::dispatch::SettleOutcome
-pub fn awaken_run_ingress_contract::dispatch::SettleOutcome::eq(&self, &awaken_run_ingress_contract::dispatch::SettleOutcome) -> bool
-impl core::fmt::Debug for awaken_run_ingress_contract::dispatch::SettleOutcome
-pub fn awaken_run_ingress_contract::dispatch::SettleOutcome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_run_ingress_contract::dispatch::SettleOutcome
-impl core::marker::StructuralPartialEq for awaken_run_ingress_contract::dispatch::SettleOutcome
-impl serde_core::ser::Serialize for awaken_run_ingress_contract::dispatch::SettleOutcome
-pub fn awaken_run_ingress_contract::dispatch::SettleOutcome::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_run_ingress_contract::dispatch::SettleOutcome
-pub fn awaken_run_ingress_contract::dispatch::SettleOutcome::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::SettleOutcome
-impl core::marker::Send for awaken_run_ingress_contract::dispatch::SettleOutcome
-impl core::marker::Sync for awaken_run_ingress_contract::dispatch::SettleOutcome
-impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::SettleOutcome
-impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::SettleOutcome
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::SettleOutcome
-impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::SettleOutcome
 pub struct awaken_run_ingress_contract::Claimed
 pub awaken_run_ingress_contract::Claimed::lease: awaken_run_ingress_contract::dispatch::Lease
 pub awaken_run_ingress_contract::Claimed::pending: alloc::vec::Vec<awaken_run_ingress_contract::dispatch::PendingInput>
 pub awaken_run_ingress_contract::Claimed::request: awaken_run_ingress_contract::request::RunExecutionRequest
 pub awaken_run_ingress_contract::Claimed::sandbox: core::option::Option<alloc::string::String>
-impl core::clone::Clone for awaken_run_ingress_contract::dispatch::Claimed
-pub fn awaken_run_ingress_contract::dispatch::Claimed::clone(&self) -> awaken_run_ingress_contract::dispatch::Claimed
-impl core::cmp::PartialEq for awaken_run_ingress_contract::dispatch::Claimed
-pub fn awaken_run_ingress_contract::dispatch::Claimed::eq(&self, &awaken_run_ingress_contract::dispatch::Claimed) -> bool
-impl core::fmt::Debug for awaken_run_ingress_contract::dispatch::Claimed
-pub fn awaken_run_ingress_contract::dispatch::Claimed::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_run_ingress_contract::dispatch::Claimed
-impl serde_core::ser::Serialize for awaken_run_ingress_contract::dispatch::Claimed
-pub fn awaken_run_ingress_contract::dispatch::Claimed::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_run_ingress_contract::dispatch::Claimed
-pub fn awaken_run_ingress_contract::dispatch::Claimed::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::Claimed
-impl core::marker::Send for awaken_run_ingress_contract::dispatch::Claimed
-impl core::marker::Sync for awaken_run_ingress_contract::dispatch::Claimed
-impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::Claimed
-impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::Claimed
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::Claimed
-impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::Claimed
 pub struct awaken_run_ingress_contract::DispatchSummary
 pub awaken_run_ingress_contract::DispatchSummary::attempt_count: u64
 pub awaken_run_ingress_contract::DispatchSummary::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_run_ingress_contract::DispatchSummary::status: awaken_run_ingress_contract::dispatch::DispatchStatus
 pub awaken_run_ingress_contract::DispatchSummary::thread_id: awaken_agent_contract::agent::thread::Id
-impl core::clone::Clone for awaken_run_ingress_contract::dispatch::DispatchSummary
-pub fn awaken_run_ingress_contract::dispatch::DispatchSummary::clone(&self) -> awaken_run_ingress_contract::dispatch::DispatchSummary
-impl core::cmp::Eq for awaken_run_ingress_contract::dispatch::DispatchSummary
-impl core::cmp::PartialEq for awaken_run_ingress_contract::dispatch::DispatchSummary
-pub fn awaken_run_ingress_contract::dispatch::DispatchSummary::eq(&self, &awaken_run_ingress_contract::dispatch::DispatchSummary) -> bool
-impl core::fmt::Debug for awaken_run_ingress_contract::dispatch::DispatchSummary
-pub fn awaken_run_ingress_contract::dispatch::DispatchSummary::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_run_ingress_contract::dispatch::DispatchSummary
-impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::DispatchSummary
-impl core::marker::Send for awaken_run_ingress_contract::dispatch::DispatchSummary
-impl core::marker::Sync for awaken_run_ingress_contract::dispatch::DispatchSummary
-impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::DispatchSummary
-impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::DispatchSummary
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::DispatchSummary
-impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::DispatchSummary
 pub struct awaken_run_ingress_contract::Lease
 pub awaken_run_ingress_contract::Lease::epoch: u64
 pub awaken_run_ingress_contract::Lease::expires_ms: u64
 pub awaken_run_ingress_contract::Lease::owner: alloc::string::String
 pub awaken_run_ingress_contract::Lease::run_id: awaken_agent_contract::agent::run::Id
-impl core::clone::Clone for awaken_run_ingress_contract::dispatch::Lease
-pub fn awaken_run_ingress_contract::dispatch::Lease::clone(&self) -> awaken_run_ingress_contract::dispatch::Lease
-impl core::cmp::Eq for awaken_run_ingress_contract::dispatch::Lease
-impl core::cmp::PartialEq for awaken_run_ingress_contract::dispatch::Lease
-pub fn awaken_run_ingress_contract::dispatch::Lease::eq(&self, &awaken_run_ingress_contract::dispatch::Lease) -> bool
-impl core::fmt::Debug for awaken_run_ingress_contract::dispatch::Lease
-pub fn awaken_run_ingress_contract::dispatch::Lease::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_run_ingress_contract::dispatch::Lease
-impl serde_core::ser::Serialize for awaken_run_ingress_contract::dispatch::Lease
-pub fn awaken_run_ingress_contract::dispatch::Lease::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_run_ingress_contract::dispatch::Lease
-pub fn awaken_run_ingress_contract::dispatch::Lease::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::Lease
-impl core::marker::Send for awaken_run_ingress_contract::dispatch::Lease
-impl core::marker::Sync for awaken_run_ingress_contract::dispatch::Lease
-impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::Lease
-impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::Lease
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::Lease
-impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::Lease
 pub struct awaken_run_ingress_contract::PendingInput
 pub awaken_run_ingress_contract::PendingInput::available_at_ms: core::option::Option<u64>
 pub awaken_run_ingress_contract::PendingInput::correlation_id: alloc::string::String
@@ -474,41 +133,9 @@ pub awaken_run_ingress_contract::PendingInput::message_id: alloc::string::String
 pub awaken_run_ingress_contract::PendingInput::result: awaken_runtime_contract::resume::ResumeResult
 pub awaken_run_ingress_contract::PendingInput::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_run_ingress_contract::PendingInput::thread_id: awaken_agent_contract::agent::thread::Id
-impl core::clone::Clone for awaken_run_ingress_contract::dispatch::PendingInput
-pub fn awaken_run_ingress_contract::dispatch::PendingInput::clone(&self) -> awaken_run_ingress_contract::dispatch::PendingInput
-impl core::cmp::PartialEq for awaken_run_ingress_contract::dispatch::PendingInput
-pub fn awaken_run_ingress_contract::dispatch::PendingInput::eq(&self, &awaken_run_ingress_contract::dispatch::PendingInput) -> bool
-impl core::fmt::Debug for awaken_run_ingress_contract::dispatch::PendingInput
-pub fn awaken_run_ingress_contract::dispatch::PendingInput::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_run_ingress_contract::dispatch::PendingInput
-impl serde_core::ser::Serialize for awaken_run_ingress_contract::dispatch::PendingInput
-pub fn awaken_run_ingress_contract::dispatch::PendingInput::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_run_ingress_contract::dispatch::PendingInput
-pub fn awaken_run_ingress_contract::dispatch::PendingInput::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::PendingInput
-impl core::marker::Send for awaken_run_ingress_contract::dispatch::PendingInput
-impl core::marker::Sync for awaken_run_ingress_contract::dispatch::PendingInput
-impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::PendingInput
-impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::PendingInput
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::PendingInput
-impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::PendingInput
 pub struct awaken_run_ingress_contract::PendingRecord
 pub awaken_run_ingress_contract::PendingRecord::input: awaken_run_ingress_contract::dispatch::PendingInput
 pub awaken_run_ingress_contract::PendingRecord::revision: u64
-impl core::clone::Clone for awaken_run_ingress_contract::dispatch::PendingRecord
-pub fn awaken_run_ingress_contract::dispatch::PendingRecord::clone(&self) -> awaken_run_ingress_contract::dispatch::PendingRecord
-impl core::cmp::PartialEq for awaken_run_ingress_contract::dispatch::PendingRecord
-pub fn awaken_run_ingress_contract::dispatch::PendingRecord::eq(&self, &awaken_run_ingress_contract::dispatch::PendingRecord) -> bool
-impl core::fmt::Debug for awaken_run_ingress_contract::dispatch::PendingRecord
-pub fn awaken_run_ingress_contract::dispatch::PendingRecord::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_run_ingress_contract::dispatch::PendingRecord
-impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::PendingRecord
-impl core::marker::Send for awaken_run_ingress_contract::dispatch::PendingRecord
-impl core::marker::Sync for awaken_run_ingress_contract::dispatch::PendingRecord
-impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::PendingRecord
-impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::PendingRecord
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::PendingRecord
-impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::PendingRecord
 pub struct awaken_run_ingress_contract::RunExecutionRequest
 pub awaken_run_ingress_contract::RunExecutionRequest::activation: awaken_runtime_contract::activation::RunActivation
 pub awaken_run_ingress_contract::RunExecutionRequest::traceparent: core::option::Option<alloc::string::String>
@@ -517,58 +144,21 @@ pub fn awaken_run_ingress_contract::request::RunExecutionRequest::new(awaken_run
 pub fn awaken_run_ingress_contract::request::RunExecutionRequest::run_id(&self) -> &awaken_agent_contract::agent::run::Id
 pub fn awaken_run_ingress_contract::request::RunExecutionRequest::thread_id(&self) -> &awaken_agent_contract::agent::thread::Id
 pub fn awaken_run_ingress_contract::request::RunExecutionRequest::with_traceparent(self, core::option::Option<alloc::string::String>) -> Self
-impl core::clone::Clone for awaken_run_ingress_contract::request::RunExecutionRequest
-pub fn awaken_run_ingress_contract::request::RunExecutionRequest::clone(&self) -> awaken_run_ingress_contract::request::RunExecutionRequest
-impl core::cmp::PartialEq for awaken_run_ingress_contract::request::RunExecutionRequest
-pub fn awaken_run_ingress_contract::request::RunExecutionRequest::eq(&self, &awaken_run_ingress_contract::request::RunExecutionRequest) -> bool
-impl core::fmt::Debug for awaken_run_ingress_contract::request::RunExecutionRequest
-pub fn awaken_run_ingress_contract::request::RunExecutionRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_run_ingress_contract::request::RunExecutionRequest
-impl serde_core::ser::Serialize for awaken_run_ingress_contract::request::RunExecutionRequest
-pub fn awaken_run_ingress_contract::request::RunExecutionRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_run_ingress_contract::request::RunExecutionRequest
-pub fn awaken_run_ingress_contract::request::RunExecutionRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_run_ingress_contract::request::RunExecutionRequest
-impl core::marker::Send for awaken_run_ingress_contract::request::RunExecutionRequest
-impl core::marker::Sync for awaken_run_ingress_contract::request::RunExecutionRequest
-impl core::marker::Unpin for awaken_run_ingress_contract::request::RunExecutionRequest
-impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::request::RunExecutionRequest
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::request::RunExecutionRequest
-impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::request::RunExecutionRequest
 pub struct awaken_run_ingress_contract::SubmitOptions
 pub awaken_run_ingress_contract::SubmitOptions::dedupe_key: core::option::Option<alloc::string::String>
 pub awaken_run_ingress_contract::SubmitOptions::priority: i64
 pub awaken_run_ingress_contract::SubmitOptions::supersede: bool
-impl core::clone::Clone for awaken_run_ingress_contract::dispatch::SubmitOptions
-pub fn awaken_run_ingress_contract::dispatch::SubmitOptions::clone(&self) -> awaken_run_ingress_contract::dispatch::SubmitOptions
-impl core::cmp::Eq for awaken_run_ingress_contract::dispatch::SubmitOptions
-impl core::cmp::PartialEq for awaken_run_ingress_contract::dispatch::SubmitOptions
-pub fn awaken_run_ingress_contract::dispatch::SubmitOptions::eq(&self, &awaken_run_ingress_contract::dispatch::SubmitOptions) -> bool
-impl core::default::Default for awaken_run_ingress_contract::dispatch::SubmitOptions
-pub fn awaken_run_ingress_contract::dispatch::SubmitOptions::default() -> awaken_run_ingress_contract::dispatch::SubmitOptions
-impl core::fmt::Debug for awaken_run_ingress_contract::dispatch::SubmitOptions
-pub fn awaken_run_ingress_contract::dispatch::SubmitOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_run_ingress_contract::dispatch::SubmitOptions
-impl serde_core::ser::Serialize for awaken_run_ingress_contract::dispatch::SubmitOptions
-pub fn awaken_run_ingress_contract::dispatch::SubmitOptions::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_run_ingress_contract::dispatch::SubmitOptions
-pub fn awaken_run_ingress_contract::dispatch::SubmitOptions::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_run_ingress_contract::dispatch::SubmitOptions
-impl core::marker::Send for awaken_run_ingress_contract::dispatch::SubmitOptions
-impl core::marker::Sync for awaken_run_ingress_contract::dispatch::SubmitOptions
-impl core::marker::Unpin for awaken_run_ingress_contract::dispatch::SubmitOptions
-impl core::marker::UnsafeUnpin for awaken_run_ingress_contract::dispatch::SubmitOptions
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_run_ingress_contract::dispatch::SubmitOptions
-impl core::panic::unwind_safe::UnwindSafe for awaken_run_ingress_contract::dispatch::SubmitOptions
 pub trait awaken_run_ingress_contract::Dispatch: awaken_run_ingress_contract::dispatch::DispatchQueue + awaken_run_ingress_contract::dispatch::Inbox + awaken_run_ingress_contract::dispatch::Outbox
 impl<T: awaken_run_ingress_contract::dispatch::DispatchQueue + awaken_run_ingress_contract::dispatch::Inbox + awaken_run_ingress_contract::dispatch::Outbox> awaken_run_ingress_contract::dispatch::Dispatch for T
 pub trait awaken_run_ingress_contract::DispatchQueue: core::marker::Send + core::marker::Sync
 pub fn awaken_run_ingress_contract::DispatchQueue::bind_sandbox<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_run_ingress_contract::DispatchQueue::cancel<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_contract::agent::thread::Id>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_run_ingress_contract::DispatchQueue::claim<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_run_ingress_contract::dispatch::Claimed>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_run_ingress_contract::DispatchQueue::current_epoch<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<u64>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_run_ingress_contract::DispatchQueue::dead_letters<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::run::Id>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_run_ingress_contract::DispatchQueue::enqueue<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::request::RunExecutionRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_run_ingress_contract::DispatchQueue::enqueue_with<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::request::RunExecutionRequest, awaken_run_ingress_contract::dispatch::SubmitOptions) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_run_ingress_contract::DispatchQueue::holds_current_epoch<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_run_ingress_contract::DispatchQueue::list_dispatches<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_run_ingress_contract::dispatch::DispatchSummary>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_run_ingress_contract::DispatchQueue::parked_run<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::thread::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_contract::agent::run::Id>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_run_ingress_contract::DispatchQueue::purge_dead_letters<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

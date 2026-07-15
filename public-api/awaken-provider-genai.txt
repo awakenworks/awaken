@@ -4,22 +4,6 @@ pub enum awaken_provider_genai::CredentialProbe
 pub awaken_provider_genai::CredentialProbe::Invalid
 pub awaken_provider_genai::CredentialProbe::Unknown
 pub awaken_provider_genai::CredentialProbe::Valid
-impl core::clone::Clone for awaken_provider_genai::CredentialProbe
-pub fn awaken_provider_genai::CredentialProbe::clone(&self) -> awaken_provider_genai::CredentialProbe
-impl core::cmp::Eq for awaken_provider_genai::CredentialProbe
-impl core::cmp::PartialEq for awaken_provider_genai::CredentialProbe
-pub fn awaken_provider_genai::CredentialProbe::eq(&self, &awaken_provider_genai::CredentialProbe) -> bool
-impl core::fmt::Debug for awaken_provider_genai::CredentialProbe
-pub fn awaken_provider_genai::CredentialProbe::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_provider_genai::CredentialProbe
-impl core::marker::StructuralPartialEq for awaken_provider_genai::CredentialProbe
-impl core::marker::Freeze for awaken_provider_genai::CredentialProbe
-impl core::marker::Send for awaken_provider_genai::CredentialProbe
-impl core::marker::Sync for awaken_provider_genai::CredentialProbe
-impl core::marker::Unpin for awaken_provider_genai::CredentialProbe
-impl core::marker::UnsafeUnpin for awaken_provider_genai::CredentialProbe
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_provider_genai::CredentialProbe
-impl core::panic::unwind_safe::UnwindSafe for awaken_provider_genai::CredentialProbe
 pub struct awaken_provider_genai::GenaiExecutor
 impl awaken_provider_genai::GenaiExecutor
 pub fn awaken_provider_genai::GenaiExecutor::anthropic_compatible(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
@@ -34,13 +18,6 @@ pub fn awaken_provider_genai::GenaiExecutor::infer<'life0, 'async_trait>(&'life0
 pub fn awaken_provider_genai::GenaiExecutor::infer_streaming<'life0, 'life1, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest, &'life1 dyn awaken_runtime_contract::llm::DeltaSink) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl core::default::Default for awaken_provider_genai::GenaiExecutor
 pub fn awaken_provider_genai::GenaiExecutor::default() -> Self
-impl core::marker::Freeze for awaken_provider_genai::GenaiExecutor
-impl core::marker::Send for awaken_provider_genai::GenaiExecutor
-impl core::marker::Sync for awaken_provider_genai::GenaiExecutor
-impl core::marker::Unpin for awaken_provider_genai::GenaiExecutor
-impl core::marker::UnsafeUnpin for awaken_provider_genai::GenaiExecutor
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_provider_genai::GenaiExecutor
-impl !core::panic::unwind_safe::UnwindSafe for awaken_provider_genai::GenaiExecutor
 pub fn awaken_provider_genai::classify_error(&str) -> awaken_runtime_contract::llm::Error
 pub fn awaken_provider_genai::from_genai_response(genai::chat::chat_response::ChatResponse) -> awaken_runtime_contract::llm::ChatResponse
 pub fn awaken_provider_genai::from_genai_tool_call(&genai::chat::tool::tool_call::ToolCall) -> awaken_runtime_contract::llm::ToolCall

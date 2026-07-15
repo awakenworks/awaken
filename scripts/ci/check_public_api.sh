@@ -59,10 +59,18 @@ excluded="awaken-store-postgres awaken-store-schema awaken-store-sqlite awaken-r
 fail=0
 drifted=()      # crates whose surface changed
 compute_fail=0  # a crate whose surface could not be computed
+# Omit the compiler-derived impls (blanket, auto-trait, and auto-derived). These are
+# NOT part of the crate's authored surface and their rendering is NIGHTLY-VERSION
+# SENSITIVE (e.g. `impl UnsafeUnpin`, `impl Send/Sync/Unpin` blocks appear or vanish
+# between rustdoc versions). Without this, a bless on one nightly diffs against a
+# check on another by hundreds of spurious lines — the snapshots become
+# non-reproducible across machines. Omitting them makes the gate depend only on the
+# authored API (structs, fns, real trait impls), so any nightly yields the same file.
+omit_flags="--omit blanket-impls,auto-trait-impls,auto-derived-impls"
 for c in $crates; do
   case " $excluded " in *" $c "*) echo "skipped $c (excluded from public-API gate)"; continue;; esac
   snap="public-api/$c.txt"
-  if ! cur=$(cargo +nightly public-api -p "$c" --simplified 2>/dev/null); then
+  if ! cur=$(cargo +nightly public-api -p "$c" --simplified $omit_flags 2>/dev/null); then
     echo "✗ failed to compute public API for $c"; fail=1; compute_fail=1; continue
   fi
   if [ "$bless" = 1 ] || [ ! -f "$snap" ]; then

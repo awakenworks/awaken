@@ -14,13 +14,6 @@ pub struct awaken_ext_mcp::client::McpConnection
 pub awaken_ext_mcp::client::McpConnection::descriptors: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub awaken_ext_mcp::client::McpConnection::server_name: alloc::string::String
 pub awaken_ext_mcp::client::McpConnection::tools: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
-impl core::marker::Freeze for awaken_ext_mcp::client::McpConnection
-impl core::marker::Send for awaken_ext_mcp::client::McpConnection
-impl core::marker::Sync for awaken_ext_mcp::client::McpConnection
-impl core::marker::Unpin for awaken_ext_mcp::client::McpConnection
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::client::McpConnection
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::client::McpConnection
-impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::client::McpConnection
 pub async fn awaken_ext_mcp::client::connect_tools(&str, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>) -> core::result::Result<awaken_ext_mcp::client::McpConnection, awaken_ext_mcp::error::McpError>
 pub mod awaken_ext_mcp::config
 pub use awaken_ext_mcp::config::McpServerConnectionConfig
@@ -47,18 +40,6 @@ pub awaken_ext_mcp::error::McpError::UnsupportedCapability::capability: &'static
 pub awaken_ext_mcp::error::McpError::UnsupportedCapability::server_name: alloc::string::String
 impl core::convert::From<model_context_protocol::transport::McpTransportError> for awaken_ext_mcp::error::McpError
 pub fn awaken_ext_mcp::error::McpError::from(model_context_protocol::transport::McpTransportError) -> Self
-impl core::error::Error for awaken_ext_mcp::error::McpError
-impl core::fmt::Debug for awaken_ext_mcp::error::McpError
-pub fn awaken_ext_mcp::error::McpError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for awaken_ext_mcp::error::McpError
-pub fn awaken_ext_mcp::error::McpError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_ext_mcp::error::McpError
-impl core::marker::Send for awaken_ext_mcp::error::McpError
-impl core::marker::Sync for awaken_ext_mcp::error::McpError
-impl core::marker::Unpin for awaken_ext_mcp::error::McpError
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::error::McpError
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::error::McpError
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::error::McpError
 pub mod awaken_ext_mcp::http
 pub struct awaken_ext_mcp::http::HttpTransport
 impl awaken_ext_mcp::http::HttpTransport
@@ -79,13 +60,6 @@ pub fn awaken_ext_mcp::http::HttpTransport::list_tools<'life0, 'async_trait>(&'l
 pub fn awaken_ext_mcp::http::HttpTransport::read_resource<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, model_context_protocol::transport::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl core::ops::drop::Drop for awaken_ext_mcp::http::HttpTransport
 pub fn awaken_ext_mcp::http::HttpTransport::drop(&mut self)
-impl !core::marker::Freeze for awaken_ext_mcp::http::HttpTransport
-impl core::marker::Send for awaken_ext_mcp::http::HttpTransport
-impl core::marker::Sync for awaken_ext_mcp::http::HttpTransport
-impl core::marker::Unpin for awaken_ext_mcp::http::HttpTransport
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::http::HttpTransport
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::http::HttpTransport
-impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::http::HttpTransport
 pub struct awaken_ext_mcp::http::HttpTransportBuilder
 impl awaken_ext_mcp::http::HttpTransportBuilder
 pub fn awaken_ext_mcp::http::HttpTransportBuilder::build(self) -> awaken_ext_mcp::http::HttpTransport
@@ -96,13 +70,6 @@ pub fn awaken_ext_mcp::http::HttpTransportBuilder::header(self, impl core::conve
 pub fn awaken_ext_mcp::http::HttpTransportBuilder::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_ext_mcp::http::HttpTransportBuilder::refresher(self, alloc::sync::Arc<dyn awaken_credential::CredentialRefresher>) -> Self
 pub fn awaken_ext_mcp::http::HttpTransportBuilder::sampling(self, alloc::sync::Arc<dyn awaken_ext_mcp::sampling::SamplingHandler>) -> Self
-impl core::marker::Freeze for awaken_ext_mcp::http::HttpTransportBuilder
-impl core::marker::Send for awaken_ext_mcp::http::HttpTransportBuilder
-impl core::marker::Sync for awaken_ext_mcp::http::HttpTransportBuilder
-impl core::marker::Unpin for awaken_ext_mcp::http::HttpTransportBuilder
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::http::HttpTransportBuilder
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::http::HttpTransportBuilder
-impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::http::HttpTransportBuilder
 pub mod awaken_ext_mcp::id_mapping
 pub fn awaken_ext_mcp::id_mapping::to_tool_id(&str, &str) -> core::result::Result<alloc::string::String, awaken_ext_mcp::error::McpError>
 pub fn awaken_ext_mcp::id_mapping::tool_namespace(&str) -> core::result::Result<alloc::string::String, awaken_ext_mcp::error::McpError>
@@ -116,47 +83,16 @@ pub fn awaken_ext_mcp::manager::McpManager::new() -> Self
 pub fn awaken_ext_mcp::manager::McpManager::plugins(&self) -> alloc::vec::Vec<awaken_ext_mcp::plugin::McpPlugin>
 pub fn awaken_ext_mcp::manager::McpManager::server_names(&self) -> alloc::vec::Vec<alloc::string::String>
 pub fn awaken_ext_mcp::manager::McpManager::status(&self) -> alloc::vec::Vec<awaken_ext_mcp::manager::ServerStatus>
-impl core::default::Default for awaken_ext_mcp::manager::McpManager
-pub fn awaken_ext_mcp::manager::McpManager::default() -> awaken_ext_mcp::manager::McpManager
-impl core::marker::Freeze for awaken_ext_mcp::manager::McpManager
-impl core::marker::Send for awaken_ext_mcp::manager::McpManager
-impl core::marker::Sync for awaken_ext_mcp::manager::McpManager
-impl core::marker::Unpin for awaken_ext_mcp::manager::McpManager
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::manager::McpManager
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::manager::McpManager
-impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::manager::McpManager
 pub struct awaken_ext_mcp::manager::ServerStatus
 pub awaken_ext_mcp::manager::ServerStatus::alive: bool
 pub awaken_ext_mcp::manager::ServerStatus::name: alloc::string::String
 pub awaken_ext_mcp::manager::ServerStatus::tool_version: u64
-impl core::clone::Clone for awaken_ext_mcp::manager::ServerStatus
-pub fn awaken_ext_mcp::manager::ServerStatus::clone(&self) -> awaken_ext_mcp::manager::ServerStatus
-impl core::cmp::Eq for awaken_ext_mcp::manager::ServerStatus
-impl core::cmp::PartialEq for awaken_ext_mcp::manager::ServerStatus
-pub fn awaken_ext_mcp::manager::ServerStatus::eq(&self, &awaken_ext_mcp::manager::ServerStatus) -> bool
-impl core::fmt::Debug for awaken_ext_mcp::manager::ServerStatus
-pub fn awaken_ext_mcp::manager::ServerStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_ext_mcp::manager::ServerStatus
-impl core::marker::Freeze for awaken_ext_mcp::manager::ServerStatus
-impl core::marker::Send for awaken_ext_mcp::manager::ServerStatus
-impl core::marker::Sync for awaken_ext_mcp::manager::ServerStatus
-impl core::marker::Unpin for awaken_ext_mcp::manager::ServerStatus
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::manager::ServerStatus
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::manager::ServerStatus
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::manager::ServerStatus
 pub mod awaken_ext_mcp::plugin
 pub struct awaken_ext_mcp::plugin::McpPlugin
 impl awaken_runtime_contract::plugin::contributions::Plugin for awaken_ext_mcp::plugin::McpPlugin
 pub fn awaken_ext_mcp::plugin::McpPlugin::live_version(&self) -> core::option::Option<u64>
 pub fn awaken_ext_mcp::plugin::McpPlugin::manifest(&self) -> awaken_runtime_contract::plugin::capability::PluginManifest
 pub fn awaken_ext_mcp::plugin::McpPlugin::resolve(&self) -> awaken_runtime_contract::plugin::contributions::Contributions
-impl core::marker::Freeze for awaken_ext_mcp::plugin::McpPlugin
-impl core::marker::Send for awaken_ext_mcp::plugin::McpPlugin
-impl core::marker::Sync for awaken_ext_mcp::plugin::McpPlugin
-impl core::marker::Unpin for awaken_ext_mcp::plugin::McpPlugin
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::plugin::McpPlugin
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::plugin::McpPlugin
-impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::plugin::McpPlugin
 pub struct awaken_ext_mcp::plugin::McpServer
 impl awaken_ext_mcp::plugin::McpServer
 pub async fn awaken_ext_mcp::plugin::McpServer::connect_http(impl core::convert::Into<alloc::string::String>, awaken_ext_mcp::http::HttpTransport) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
@@ -167,13 +103,6 @@ pub fn awaken_ext_mcp::plugin::McpServer::plugin(&self) -> awaken_ext_mcp::plugi
 pub async fn awaken_ext_mcp::plugin::McpServer::start(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>, tokio::sync::broadcast::Receiver<awaken_ext_mcp::transport::ListChangedKind>) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
 pub async fn awaken_ext_mcp::plugin::McpServer::start_with_sensitive(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>, tokio::sync::broadcast::Receiver<awaken_ext_mcp::transport::ListChangedKind>, awaken_ext_mcp::plugin::SensitiveFields) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
 pub fn awaken_ext_mcp::plugin::McpServer::version(&self) -> u64
-impl core::marker::Freeze for awaken_ext_mcp::plugin::McpServer
-impl core::marker::Send for awaken_ext_mcp::plugin::McpServer
-impl core::marker::Sync for awaken_ext_mcp::plugin::McpServer
-impl core::marker::Unpin for awaken_ext_mcp::plugin::McpServer
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::plugin::McpServer
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::plugin::McpServer
-impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::plugin::McpServer
 pub type awaken_ext_mcp::plugin::SensitiveFields = std::collections::hash::map::HashMap<alloc::string::String, alloc::vec::Vec<alloc::string::String>>
 pub mod awaken_ext_mcp::sampling
 pub struct awaken_ext_mcp::sampling::SamplingBridge
@@ -181,62 +110,14 @@ impl awaken_ext_mcp::sampling::SamplingBridge
 pub fn awaken_ext_mcp::sampling::SamplingBridge::new(alloc::sync::Arc<dyn awaken_ext_mcp::sampling::SamplingHandler>) -> Self
 impl awaken_mcp_wire::jsonrpc::ServerRequestHandler for awaken_ext_mcp::sampling::SamplingBridge
 pub fn awaken_ext_mcp::sampling::SamplingBridge::handle<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::jsonrpc::ServerRequestError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-impl core::marker::Freeze for awaken_ext_mcp::sampling::SamplingBridge
-impl core::marker::Send for awaken_ext_mcp::sampling::SamplingBridge
-impl core::marker::Sync for awaken_ext_mcp::sampling::SamplingBridge
-impl core::marker::Unpin for awaken_ext_mcp::sampling::SamplingBridge
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::sampling::SamplingBridge
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::sampling::SamplingBridge
-impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::sampling::SamplingBridge
 pub struct awaken_ext_mcp::sampling::SamplingError(pub alloc::string::String)
-impl core::clone::Clone for awaken_ext_mcp::sampling::SamplingError
-pub fn awaken_ext_mcp::sampling::SamplingError::clone(&self) -> awaken_ext_mcp::sampling::SamplingError
-impl core::fmt::Debug for awaken_ext_mcp::sampling::SamplingError
-pub fn awaken_ext_mcp::sampling::SamplingError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_ext_mcp::sampling::SamplingError
-impl core::marker::Send for awaken_ext_mcp::sampling::SamplingError
-impl core::marker::Sync for awaken_ext_mcp::sampling::SamplingError
-impl core::marker::Unpin for awaken_ext_mcp::sampling::SamplingError
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::sampling::SamplingError
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::sampling::SamplingError
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::sampling::SamplingError
 pub struct awaken_ext_mcp::sampling::SamplingMessage
 pub awaken_ext_mcp::sampling::SamplingMessage::content: alloc::string::String
 pub awaken_ext_mcp::sampling::SamplingMessage::role: alloc::string::String
-impl core::clone::Clone for awaken_ext_mcp::sampling::SamplingMessage
-pub fn awaken_ext_mcp::sampling::SamplingMessage::clone(&self) -> awaken_ext_mcp::sampling::SamplingMessage
-impl core::cmp::Eq for awaken_ext_mcp::sampling::SamplingMessage
-impl core::cmp::PartialEq for awaken_ext_mcp::sampling::SamplingMessage
-pub fn awaken_ext_mcp::sampling::SamplingMessage::eq(&self, &awaken_ext_mcp::sampling::SamplingMessage) -> bool
-impl core::fmt::Debug for awaken_ext_mcp::sampling::SamplingMessage
-pub fn awaken_ext_mcp::sampling::SamplingMessage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_ext_mcp::sampling::SamplingMessage
-impl core::marker::Freeze for awaken_ext_mcp::sampling::SamplingMessage
-impl core::marker::Send for awaken_ext_mcp::sampling::SamplingMessage
-impl core::marker::Sync for awaken_ext_mcp::sampling::SamplingMessage
-impl core::marker::Unpin for awaken_ext_mcp::sampling::SamplingMessage
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::sampling::SamplingMessage
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::sampling::SamplingMessage
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::sampling::SamplingMessage
 pub struct awaken_ext_mcp::sampling::SamplingRequest
 pub awaken_ext_mcp::sampling::SamplingRequest::max_tokens: core::option::Option<u64>
 pub awaken_ext_mcp::sampling::SamplingRequest::messages: alloc::vec::Vec<awaken_ext_mcp::sampling::SamplingMessage>
 pub awaken_ext_mcp::sampling::SamplingRequest::system_prompt: core::option::Option<alloc::string::String>
-impl core::clone::Clone for awaken_ext_mcp::sampling::SamplingRequest
-pub fn awaken_ext_mcp::sampling::SamplingRequest::clone(&self) -> awaken_ext_mcp::sampling::SamplingRequest
-impl core::cmp::Eq for awaken_ext_mcp::sampling::SamplingRequest
-impl core::cmp::PartialEq for awaken_ext_mcp::sampling::SamplingRequest
-pub fn awaken_ext_mcp::sampling::SamplingRequest::eq(&self, &awaken_ext_mcp::sampling::SamplingRequest) -> bool
-impl core::fmt::Debug for awaken_ext_mcp::sampling::SamplingRequest
-pub fn awaken_ext_mcp::sampling::SamplingRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_ext_mcp::sampling::SamplingRequest
-impl core::marker::Freeze for awaken_ext_mcp::sampling::SamplingRequest
-impl core::marker::Send for awaken_ext_mcp::sampling::SamplingRequest
-impl core::marker::Sync for awaken_ext_mcp::sampling::SamplingRequest
-impl core::marker::Unpin for awaken_ext_mcp::sampling::SamplingRequest
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::sampling::SamplingRequest
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::sampling::SamplingRequest
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::sampling::SamplingRequest
 pub struct awaken_ext_mcp::sampling::SamplingResponse
 pub awaken_ext_mcp::sampling::SamplingResponse::content: alloc::string::String
 pub awaken_ext_mcp::sampling::SamplingResponse::model: core::option::Option<alloc::string::String>
@@ -244,21 +125,6 @@ pub awaken_ext_mcp::sampling::SamplingResponse::role: alloc::string::String
 pub awaken_ext_mcp::sampling::SamplingResponse::stop_reason: core::option::Option<alloc::string::String>
 impl awaken_ext_mcp::sampling::SamplingResponse
 pub fn awaken_ext_mcp::sampling::SamplingResponse::assistant(impl core::convert::Into<alloc::string::String>) -> Self
-impl core::clone::Clone for awaken_ext_mcp::sampling::SamplingResponse
-pub fn awaken_ext_mcp::sampling::SamplingResponse::clone(&self) -> awaken_ext_mcp::sampling::SamplingResponse
-impl core::cmp::Eq for awaken_ext_mcp::sampling::SamplingResponse
-impl core::cmp::PartialEq for awaken_ext_mcp::sampling::SamplingResponse
-pub fn awaken_ext_mcp::sampling::SamplingResponse::eq(&self, &awaken_ext_mcp::sampling::SamplingResponse) -> bool
-impl core::fmt::Debug for awaken_ext_mcp::sampling::SamplingResponse
-pub fn awaken_ext_mcp::sampling::SamplingResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_ext_mcp::sampling::SamplingResponse
-impl core::marker::Freeze for awaken_ext_mcp::sampling::SamplingResponse
-impl core::marker::Send for awaken_ext_mcp::sampling::SamplingResponse
-impl core::marker::Sync for awaken_ext_mcp::sampling::SamplingResponse
-impl core::marker::Unpin for awaken_ext_mcp::sampling::SamplingResponse
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::sampling::SamplingResponse
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::sampling::SamplingResponse
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::sampling::SamplingResponse
 pub const awaken_ext_mcp::sampling::SAMPLING_METHOD: &str
 pub trait awaken_ext_mcp::sampling::SamplingHandler: core::marker::Send + core::marker::Sync
 pub fn awaken_ext_mcp::sampling::SamplingHandler::create_message<'life0, 'async_trait>(&'life0 self, awaken_ext_mcp::sampling::SamplingRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_mcp::sampling::SamplingResponse, awaken_ext_mcp::sampling::SamplingError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
@@ -289,13 +155,6 @@ pub fn awaken_ext_mcp::stdio::StdioTransport::list_prompts<'life0, 'async_trait>
 pub fn awaken_ext_mcp::stdio::StdioTransport::list_resources<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_mcp::types::McpResourceDefinition>, model_context_protocol::transport::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_ext_mcp::stdio::StdioTransport::list_tools<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<model_context_protocol::protocol::McpToolDefinition>, model_context_protocol::transport::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_ext_mcp::stdio::StdioTransport::read_resource<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, model_context_protocol::transport::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-impl !core::marker::Freeze for awaken_ext_mcp::stdio::StdioTransport
-impl core::marker::Send for awaken_ext_mcp::stdio::StdioTransport
-impl core::marker::Sync for awaken_ext_mcp::stdio::StdioTransport
-impl core::marker::Unpin for awaken_ext_mcp::stdio::StdioTransport
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::stdio::StdioTransport
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::stdio::StdioTransport
-impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::stdio::StdioTransport
 pub const awaken_ext_mcp::stdio::DEFAULT_TIMEOUT: core::time::Duration
 pub mod awaken_ext_mcp::tool
 pub struct awaken_ext_mcp::tool::McpRawTool
@@ -304,35 +163,12 @@ pub fn awaken_ext_mcp::tool::McpRawTool::new(&str, &str, alloc::sync::Arc<dyn aw
 impl awaken_runtime_contract::tool::RawTool for awaken_ext_mcp::tool::McpRawTool
 pub fn awaken_ext_mcp::tool::McpRawTool::id(&self) -> &str
 pub fn awaken_ext_mcp::tool::McpRawTool::invoke<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-impl core::marker::Freeze for awaken_ext_mcp::tool::McpRawTool
-impl core::marker::Send for awaken_ext_mcp::tool::McpRawTool
-impl core::marker::Sync for awaken_ext_mcp::tool::McpRawTool
-impl core::marker::Unpin for awaken_ext_mcp::tool::McpRawTool
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::tool::McpRawTool
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::tool::McpRawTool
-impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::tool::McpRawTool
 pub fn awaken_ext_mcp::tool::mcp_tool_descriptor(&str, &model_context_protocol::protocol::McpToolDefinition) -> core::result::Result<awaken_runtime_contract::resolved::ToolDescriptor, awaken_ext_mcp::error::McpError>
 pub mod awaken_ext_mcp::transport
 pub enum awaken_ext_mcp::transport::ListChangedKind
 pub awaken_ext_mcp::transport::ListChangedKind::Prompts
 pub awaken_ext_mcp::transport::ListChangedKind::Resources
 pub awaken_ext_mcp::transport::ListChangedKind::Tools
-impl core::clone::Clone for awaken_ext_mcp::transport::ListChangedKind
-pub fn awaken_ext_mcp::transport::ListChangedKind::clone(&self) -> awaken_ext_mcp::transport::ListChangedKind
-impl core::cmp::Eq for awaken_ext_mcp::transport::ListChangedKind
-impl core::cmp::PartialEq for awaken_ext_mcp::transport::ListChangedKind
-pub fn awaken_ext_mcp::transport::ListChangedKind::eq(&self, &awaken_ext_mcp::transport::ListChangedKind) -> bool
-impl core::fmt::Debug for awaken_ext_mcp::transport::ListChangedKind
-pub fn awaken_ext_mcp::transport::ListChangedKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_ext_mcp::transport::ListChangedKind
-impl core::marker::StructuralPartialEq for awaken_ext_mcp::transport::ListChangedKind
-impl core::marker::Freeze for awaken_ext_mcp::transport::ListChangedKind
-impl core::marker::Send for awaken_ext_mcp::transport::ListChangedKind
-impl core::marker::Sync for awaken_ext_mcp::transport::ListChangedKind
-impl core::marker::Unpin for awaken_ext_mcp::transport::ListChangedKind
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::transport::ListChangedKind
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::transport::ListChangedKind
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::transport::ListChangedKind
 pub trait awaken_ext_mcp::transport::McpToolTransport: core::marker::Send + core::marker::Sync
 pub fn awaken_ext_mcp::transport::McpToolTransport::call_tool<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<model_context_protocol::protocol::CallToolResult, model_context_protocol::transport::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_ext_mcp::transport::McpToolTransport::call_tool_with_progress<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value, tokio::sync::mpsc::bounded::Sender<awaken_mcp_wire::progress::McpProgressUpdate>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<model_context_protocol::protocol::CallToolResult, model_context_protocol::transport::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -365,91 +201,17 @@ pub struct awaken_ext_mcp::types::McpPromptArgument
 pub awaken_ext_mcp::types::McpPromptArgument::description: core::option::Option<alloc::string::String>
 pub awaken_ext_mcp::types::McpPromptArgument::name: alloc::string::String
 pub awaken_ext_mcp::types::McpPromptArgument::required: bool
-impl core::clone::Clone for awaken_ext_mcp::types::McpPromptArgument
-pub fn awaken_ext_mcp::types::McpPromptArgument::clone(&self) -> awaken_ext_mcp::types::McpPromptArgument
-impl core::cmp::Eq for awaken_ext_mcp::types::McpPromptArgument
-impl core::cmp::PartialEq for awaken_ext_mcp::types::McpPromptArgument
-pub fn awaken_ext_mcp::types::McpPromptArgument::eq(&self, &awaken_ext_mcp::types::McpPromptArgument) -> bool
-impl core::fmt::Debug for awaken_ext_mcp::types::McpPromptArgument
-pub fn awaken_ext_mcp::types::McpPromptArgument::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_ext_mcp::types::McpPromptArgument
-impl serde_core::ser::Serialize for awaken_ext_mcp::types::McpPromptArgument
-pub fn awaken_ext_mcp::types::McpPromptArgument::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_mcp::types::McpPromptArgument
-pub fn awaken_ext_mcp::types::McpPromptArgument::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_ext_mcp::types::McpPromptArgument
-impl core::marker::Send for awaken_ext_mcp::types::McpPromptArgument
-impl core::marker::Sync for awaken_ext_mcp::types::McpPromptArgument
-impl core::marker::Unpin for awaken_ext_mcp::types::McpPromptArgument
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::types::McpPromptArgument
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::types::McpPromptArgument
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::types::McpPromptArgument
 pub struct awaken_ext_mcp::types::McpPromptDefinition
 pub awaken_ext_mcp::types::McpPromptDefinition::arguments: alloc::vec::Vec<awaken_ext_mcp::types::McpPromptArgument>
 pub awaken_ext_mcp::types::McpPromptDefinition::description: core::option::Option<alloc::string::String>
 pub awaken_ext_mcp::types::McpPromptDefinition::name: alloc::string::String
 pub awaken_ext_mcp::types::McpPromptDefinition::title: core::option::Option<alloc::string::String>
-impl core::clone::Clone for awaken_ext_mcp::types::McpPromptDefinition
-pub fn awaken_ext_mcp::types::McpPromptDefinition::clone(&self) -> awaken_ext_mcp::types::McpPromptDefinition
-impl core::cmp::Eq for awaken_ext_mcp::types::McpPromptDefinition
-impl core::cmp::PartialEq for awaken_ext_mcp::types::McpPromptDefinition
-pub fn awaken_ext_mcp::types::McpPromptDefinition::eq(&self, &awaken_ext_mcp::types::McpPromptDefinition) -> bool
-impl core::fmt::Debug for awaken_ext_mcp::types::McpPromptDefinition
-pub fn awaken_ext_mcp::types::McpPromptDefinition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_ext_mcp::types::McpPromptDefinition
-impl serde_core::ser::Serialize for awaken_ext_mcp::types::McpPromptDefinition
-pub fn awaken_ext_mcp::types::McpPromptDefinition::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_mcp::types::McpPromptDefinition
-pub fn awaken_ext_mcp::types::McpPromptDefinition::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_ext_mcp::types::McpPromptDefinition
-impl core::marker::Send for awaken_ext_mcp::types::McpPromptDefinition
-impl core::marker::Sync for awaken_ext_mcp::types::McpPromptDefinition
-impl core::marker::Unpin for awaken_ext_mcp::types::McpPromptDefinition
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::types::McpPromptDefinition
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::types::McpPromptDefinition
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::types::McpPromptDefinition
 pub struct awaken_ext_mcp::types::McpPromptMessage
 pub awaken_ext_mcp::types::McpPromptMessage::content: serde_json::value::Value
 pub awaken_ext_mcp::types::McpPromptMessage::role: alloc::string::String
-impl core::clone::Clone for awaken_ext_mcp::types::McpPromptMessage
-pub fn awaken_ext_mcp::types::McpPromptMessage::clone(&self) -> awaken_ext_mcp::types::McpPromptMessage
-impl core::cmp::PartialEq for awaken_ext_mcp::types::McpPromptMessage
-pub fn awaken_ext_mcp::types::McpPromptMessage::eq(&self, &awaken_ext_mcp::types::McpPromptMessage) -> bool
-impl core::fmt::Debug for awaken_ext_mcp::types::McpPromptMessage
-pub fn awaken_ext_mcp::types::McpPromptMessage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_ext_mcp::types::McpPromptMessage
-impl serde_core::ser::Serialize for awaken_ext_mcp::types::McpPromptMessage
-pub fn awaken_ext_mcp::types::McpPromptMessage::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_mcp::types::McpPromptMessage
-pub fn awaken_ext_mcp::types::McpPromptMessage::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_ext_mcp::types::McpPromptMessage
-impl core::marker::Send for awaken_ext_mcp::types::McpPromptMessage
-impl core::marker::Sync for awaken_ext_mcp::types::McpPromptMessage
-impl core::marker::Unpin for awaken_ext_mcp::types::McpPromptMessage
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::types::McpPromptMessage
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::types::McpPromptMessage
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::types::McpPromptMessage
 pub struct awaken_ext_mcp::types::McpPromptResult
 pub awaken_ext_mcp::types::McpPromptResult::description: core::option::Option<alloc::string::String>
 pub awaken_ext_mcp::types::McpPromptResult::messages: alloc::vec::Vec<awaken_ext_mcp::types::McpPromptMessage>
-impl core::clone::Clone for awaken_ext_mcp::types::McpPromptResult
-pub fn awaken_ext_mcp::types::McpPromptResult::clone(&self) -> awaken_ext_mcp::types::McpPromptResult
-impl core::cmp::PartialEq for awaken_ext_mcp::types::McpPromptResult
-pub fn awaken_ext_mcp::types::McpPromptResult::eq(&self, &awaken_ext_mcp::types::McpPromptResult) -> bool
-impl core::fmt::Debug for awaken_ext_mcp::types::McpPromptResult
-pub fn awaken_ext_mcp::types::McpPromptResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_ext_mcp::types::McpPromptResult
-impl serde_core::ser::Serialize for awaken_ext_mcp::types::McpPromptResult
-pub fn awaken_ext_mcp::types::McpPromptResult::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_mcp::types::McpPromptResult
-pub fn awaken_ext_mcp::types::McpPromptResult::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_ext_mcp::types::McpPromptResult
-impl core::marker::Send for awaken_ext_mcp::types::McpPromptResult
-impl core::marker::Sync for awaken_ext_mcp::types::McpPromptResult
-impl core::marker::Unpin for awaken_ext_mcp::types::McpPromptResult
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::types::McpPromptResult
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::types::McpPromptResult
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::types::McpPromptResult
 pub struct awaken_ext_mcp::types::McpResourceDefinition
 pub awaken_ext_mcp::types::McpResourceDefinition::description: core::option::Option<alloc::string::String>
 pub awaken_ext_mcp::types::McpResourceDefinition::mime_type: core::option::Option<alloc::string::String>
@@ -457,45 +219,10 @@ pub awaken_ext_mcp::types::McpResourceDefinition::name: alloc::string::String
 pub awaken_ext_mcp::types::McpResourceDefinition::size: core::option::Option<u64>
 pub awaken_ext_mcp::types::McpResourceDefinition::title: core::option::Option<alloc::string::String>
 pub awaken_ext_mcp::types::McpResourceDefinition::uri: alloc::string::String
-impl core::clone::Clone for awaken_ext_mcp::types::McpResourceDefinition
-pub fn awaken_ext_mcp::types::McpResourceDefinition::clone(&self) -> awaken_ext_mcp::types::McpResourceDefinition
-impl core::cmp::Eq for awaken_ext_mcp::types::McpResourceDefinition
-impl core::cmp::PartialEq for awaken_ext_mcp::types::McpResourceDefinition
-pub fn awaken_ext_mcp::types::McpResourceDefinition::eq(&self, &awaken_ext_mcp::types::McpResourceDefinition) -> bool
-impl core::fmt::Debug for awaken_ext_mcp::types::McpResourceDefinition
-pub fn awaken_ext_mcp::types::McpResourceDefinition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_ext_mcp::types::McpResourceDefinition
-impl serde_core::ser::Serialize for awaken_ext_mcp::types::McpResourceDefinition
-pub fn awaken_ext_mcp::types::McpResourceDefinition::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_mcp::types::McpResourceDefinition
-pub fn awaken_ext_mcp::types::McpResourceDefinition::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_ext_mcp::types::McpResourceDefinition
-impl core::marker::Send for awaken_ext_mcp::types::McpResourceDefinition
-impl core::marker::Sync for awaken_ext_mcp::types::McpResourceDefinition
-impl core::marker::Unpin for awaken_ext_mcp::types::McpResourceDefinition
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::types::McpResourceDefinition
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::types::McpResourceDefinition
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::types::McpResourceDefinition
 pub enum awaken_ext_mcp::ListChangedKind
 pub awaken_ext_mcp::ListChangedKind::Prompts
 pub awaken_ext_mcp::ListChangedKind::Resources
 pub awaken_ext_mcp::ListChangedKind::Tools
-impl core::clone::Clone for awaken_ext_mcp::transport::ListChangedKind
-pub fn awaken_ext_mcp::transport::ListChangedKind::clone(&self) -> awaken_ext_mcp::transport::ListChangedKind
-impl core::cmp::Eq for awaken_ext_mcp::transport::ListChangedKind
-impl core::cmp::PartialEq for awaken_ext_mcp::transport::ListChangedKind
-pub fn awaken_ext_mcp::transport::ListChangedKind::eq(&self, &awaken_ext_mcp::transport::ListChangedKind) -> bool
-impl core::fmt::Debug for awaken_ext_mcp::transport::ListChangedKind
-pub fn awaken_ext_mcp::transport::ListChangedKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_ext_mcp::transport::ListChangedKind
-impl core::marker::StructuralPartialEq for awaken_ext_mcp::transport::ListChangedKind
-impl core::marker::Freeze for awaken_ext_mcp::transport::ListChangedKind
-impl core::marker::Send for awaken_ext_mcp::transport::ListChangedKind
-impl core::marker::Sync for awaken_ext_mcp::transport::ListChangedKind
-impl core::marker::Unpin for awaken_ext_mcp::transport::ListChangedKind
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::transport::ListChangedKind
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::transport::ListChangedKind
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::transport::ListChangedKind
 pub enum awaken_ext_mcp::McpError
 pub awaken_ext_mcp::McpError::DuplicateServerName(alloc::string::String)
 pub awaken_ext_mcp::McpError::EmptyServerName
@@ -513,18 +240,6 @@ pub awaken_ext_mcp::McpError::UnsupportedCapability::capability: &'static str
 pub awaken_ext_mcp::McpError::UnsupportedCapability::server_name: alloc::string::String
 impl core::convert::From<model_context_protocol::transport::McpTransportError> for awaken_ext_mcp::error::McpError
 pub fn awaken_ext_mcp::error::McpError::from(model_context_protocol::transport::McpTransportError) -> Self
-impl core::error::Error for awaken_ext_mcp::error::McpError
-impl core::fmt::Debug for awaken_ext_mcp::error::McpError
-pub fn awaken_ext_mcp::error::McpError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for awaken_ext_mcp::error::McpError
-pub fn awaken_ext_mcp::error::McpError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_ext_mcp::error::McpError
-impl core::marker::Send for awaken_ext_mcp::error::McpError
-impl core::marker::Sync for awaken_ext_mcp::error::McpError
-impl core::marker::Unpin for awaken_ext_mcp::error::McpError
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::error::McpError
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::error::McpError
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::error::McpError
 pub struct awaken_ext_mcp::HttpTransport
 impl awaken_ext_mcp::http::HttpTransport
 pub async fn awaken_ext_mcp::http::HttpTransport::connect(impl core::convert::Into<alloc::string::String>, awaken_credential::Credential) -> core::result::Result<Self, model_context_protocol::transport::McpTransportError>
@@ -544,13 +259,6 @@ pub fn awaken_ext_mcp::http::HttpTransport::list_tools<'life0, 'async_trait>(&'l
 pub fn awaken_ext_mcp::http::HttpTransport::read_resource<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, model_context_protocol::transport::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl core::ops::drop::Drop for awaken_ext_mcp::http::HttpTransport
 pub fn awaken_ext_mcp::http::HttpTransport::drop(&mut self)
-impl !core::marker::Freeze for awaken_ext_mcp::http::HttpTransport
-impl core::marker::Send for awaken_ext_mcp::http::HttpTransport
-impl core::marker::Sync for awaken_ext_mcp::http::HttpTransport
-impl core::marker::Unpin for awaken_ext_mcp::http::HttpTransport
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::http::HttpTransport
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::http::HttpTransport
-impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::http::HttpTransport
 pub struct awaken_ext_mcp::HttpTransportBuilder
 impl awaken_ext_mcp::http::HttpTransportBuilder
 pub fn awaken_ext_mcp::http::HttpTransportBuilder::build(self) -> awaken_ext_mcp::http::HttpTransport
@@ -561,24 +269,10 @@ pub fn awaken_ext_mcp::http::HttpTransportBuilder::header(self, impl core::conve
 pub fn awaken_ext_mcp::http::HttpTransportBuilder::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_ext_mcp::http::HttpTransportBuilder::refresher(self, alloc::sync::Arc<dyn awaken_credential::CredentialRefresher>) -> Self
 pub fn awaken_ext_mcp::http::HttpTransportBuilder::sampling(self, alloc::sync::Arc<dyn awaken_ext_mcp::sampling::SamplingHandler>) -> Self
-impl core::marker::Freeze for awaken_ext_mcp::http::HttpTransportBuilder
-impl core::marker::Send for awaken_ext_mcp::http::HttpTransportBuilder
-impl core::marker::Sync for awaken_ext_mcp::http::HttpTransportBuilder
-impl core::marker::Unpin for awaken_ext_mcp::http::HttpTransportBuilder
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::http::HttpTransportBuilder
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::http::HttpTransportBuilder
-impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::http::HttpTransportBuilder
 pub struct awaken_ext_mcp::McpConnection
 pub awaken_ext_mcp::McpConnection::descriptors: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub awaken_ext_mcp::McpConnection::server_name: alloc::string::String
 pub awaken_ext_mcp::McpConnection::tools: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
-impl core::marker::Freeze for awaken_ext_mcp::client::McpConnection
-impl core::marker::Send for awaken_ext_mcp::client::McpConnection
-impl core::marker::Sync for awaken_ext_mcp::client::McpConnection
-impl core::marker::Unpin for awaken_ext_mcp::client::McpConnection
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::client::McpConnection
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::client::McpConnection
-impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::client::McpConnection
 pub struct awaken_ext_mcp::McpManager
 impl awaken_ext_mcp::manager::McpManager
 pub fn awaken_ext_mcp::manager::McpManager::add(&mut self, awaken_ext_mcp::plugin::McpServer) -> core::result::Result<(), awaken_ext_mcp::error::McpError>
@@ -588,129 +282,32 @@ pub fn awaken_ext_mcp::manager::McpManager::new() -> Self
 pub fn awaken_ext_mcp::manager::McpManager::plugins(&self) -> alloc::vec::Vec<awaken_ext_mcp::plugin::McpPlugin>
 pub fn awaken_ext_mcp::manager::McpManager::server_names(&self) -> alloc::vec::Vec<alloc::string::String>
 pub fn awaken_ext_mcp::manager::McpManager::status(&self) -> alloc::vec::Vec<awaken_ext_mcp::manager::ServerStatus>
-impl core::default::Default for awaken_ext_mcp::manager::McpManager
-pub fn awaken_ext_mcp::manager::McpManager::default() -> awaken_ext_mcp::manager::McpManager
-impl core::marker::Freeze for awaken_ext_mcp::manager::McpManager
-impl core::marker::Send for awaken_ext_mcp::manager::McpManager
-impl core::marker::Sync for awaken_ext_mcp::manager::McpManager
-impl core::marker::Unpin for awaken_ext_mcp::manager::McpManager
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::manager::McpManager
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::manager::McpManager
-impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::manager::McpManager
 pub struct awaken_ext_mcp::McpPlugin
 impl awaken_runtime_contract::plugin::contributions::Plugin for awaken_ext_mcp::plugin::McpPlugin
 pub fn awaken_ext_mcp::plugin::McpPlugin::live_version(&self) -> core::option::Option<u64>
 pub fn awaken_ext_mcp::plugin::McpPlugin::manifest(&self) -> awaken_runtime_contract::plugin::capability::PluginManifest
 pub fn awaken_ext_mcp::plugin::McpPlugin::resolve(&self) -> awaken_runtime_contract::plugin::contributions::Contributions
-impl core::marker::Freeze for awaken_ext_mcp::plugin::McpPlugin
-impl core::marker::Send for awaken_ext_mcp::plugin::McpPlugin
-impl core::marker::Sync for awaken_ext_mcp::plugin::McpPlugin
-impl core::marker::Unpin for awaken_ext_mcp::plugin::McpPlugin
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::plugin::McpPlugin
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::plugin::McpPlugin
-impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::plugin::McpPlugin
 pub struct awaken_ext_mcp::McpPromptArgument
 pub awaken_ext_mcp::McpPromptArgument::description: core::option::Option<alloc::string::String>
 pub awaken_ext_mcp::McpPromptArgument::name: alloc::string::String
 pub awaken_ext_mcp::McpPromptArgument::required: bool
-impl core::clone::Clone for awaken_ext_mcp::types::McpPromptArgument
-pub fn awaken_ext_mcp::types::McpPromptArgument::clone(&self) -> awaken_ext_mcp::types::McpPromptArgument
-impl core::cmp::Eq for awaken_ext_mcp::types::McpPromptArgument
-impl core::cmp::PartialEq for awaken_ext_mcp::types::McpPromptArgument
-pub fn awaken_ext_mcp::types::McpPromptArgument::eq(&self, &awaken_ext_mcp::types::McpPromptArgument) -> bool
-impl core::fmt::Debug for awaken_ext_mcp::types::McpPromptArgument
-pub fn awaken_ext_mcp::types::McpPromptArgument::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_ext_mcp::types::McpPromptArgument
-impl serde_core::ser::Serialize for awaken_ext_mcp::types::McpPromptArgument
-pub fn awaken_ext_mcp::types::McpPromptArgument::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_mcp::types::McpPromptArgument
-pub fn awaken_ext_mcp::types::McpPromptArgument::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_ext_mcp::types::McpPromptArgument
-impl core::marker::Send for awaken_ext_mcp::types::McpPromptArgument
-impl core::marker::Sync for awaken_ext_mcp::types::McpPromptArgument
-impl core::marker::Unpin for awaken_ext_mcp::types::McpPromptArgument
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::types::McpPromptArgument
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::types::McpPromptArgument
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::types::McpPromptArgument
 pub struct awaken_ext_mcp::McpPromptDefinition
 pub awaken_ext_mcp::McpPromptDefinition::arguments: alloc::vec::Vec<awaken_ext_mcp::types::McpPromptArgument>
 pub awaken_ext_mcp::McpPromptDefinition::description: core::option::Option<alloc::string::String>
 pub awaken_ext_mcp::McpPromptDefinition::name: alloc::string::String
 pub awaken_ext_mcp::McpPromptDefinition::title: core::option::Option<alloc::string::String>
-impl core::clone::Clone for awaken_ext_mcp::types::McpPromptDefinition
-pub fn awaken_ext_mcp::types::McpPromptDefinition::clone(&self) -> awaken_ext_mcp::types::McpPromptDefinition
-impl core::cmp::Eq for awaken_ext_mcp::types::McpPromptDefinition
-impl core::cmp::PartialEq for awaken_ext_mcp::types::McpPromptDefinition
-pub fn awaken_ext_mcp::types::McpPromptDefinition::eq(&self, &awaken_ext_mcp::types::McpPromptDefinition) -> bool
-impl core::fmt::Debug for awaken_ext_mcp::types::McpPromptDefinition
-pub fn awaken_ext_mcp::types::McpPromptDefinition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_ext_mcp::types::McpPromptDefinition
-impl serde_core::ser::Serialize for awaken_ext_mcp::types::McpPromptDefinition
-pub fn awaken_ext_mcp::types::McpPromptDefinition::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_mcp::types::McpPromptDefinition
-pub fn awaken_ext_mcp::types::McpPromptDefinition::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_ext_mcp::types::McpPromptDefinition
-impl core::marker::Send for awaken_ext_mcp::types::McpPromptDefinition
-impl core::marker::Sync for awaken_ext_mcp::types::McpPromptDefinition
-impl core::marker::Unpin for awaken_ext_mcp::types::McpPromptDefinition
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::types::McpPromptDefinition
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::types::McpPromptDefinition
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::types::McpPromptDefinition
 pub struct awaken_ext_mcp::McpPromptMessage
 pub awaken_ext_mcp::McpPromptMessage::content: serde_json::value::Value
 pub awaken_ext_mcp::McpPromptMessage::role: alloc::string::String
-impl core::clone::Clone for awaken_ext_mcp::types::McpPromptMessage
-pub fn awaken_ext_mcp::types::McpPromptMessage::clone(&self) -> awaken_ext_mcp::types::McpPromptMessage
-impl core::cmp::PartialEq for awaken_ext_mcp::types::McpPromptMessage
-pub fn awaken_ext_mcp::types::McpPromptMessage::eq(&self, &awaken_ext_mcp::types::McpPromptMessage) -> bool
-impl core::fmt::Debug for awaken_ext_mcp::types::McpPromptMessage
-pub fn awaken_ext_mcp::types::McpPromptMessage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_ext_mcp::types::McpPromptMessage
-impl serde_core::ser::Serialize for awaken_ext_mcp::types::McpPromptMessage
-pub fn awaken_ext_mcp::types::McpPromptMessage::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_mcp::types::McpPromptMessage
-pub fn awaken_ext_mcp::types::McpPromptMessage::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_ext_mcp::types::McpPromptMessage
-impl core::marker::Send for awaken_ext_mcp::types::McpPromptMessage
-impl core::marker::Sync for awaken_ext_mcp::types::McpPromptMessage
-impl core::marker::Unpin for awaken_ext_mcp::types::McpPromptMessage
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::types::McpPromptMessage
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::types::McpPromptMessage
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::types::McpPromptMessage
 pub struct awaken_ext_mcp::McpPromptResult
 pub awaken_ext_mcp::McpPromptResult::description: core::option::Option<alloc::string::String>
 pub awaken_ext_mcp::McpPromptResult::messages: alloc::vec::Vec<awaken_ext_mcp::types::McpPromptMessage>
-impl core::clone::Clone for awaken_ext_mcp::types::McpPromptResult
-pub fn awaken_ext_mcp::types::McpPromptResult::clone(&self) -> awaken_ext_mcp::types::McpPromptResult
-impl core::cmp::PartialEq for awaken_ext_mcp::types::McpPromptResult
-pub fn awaken_ext_mcp::types::McpPromptResult::eq(&self, &awaken_ext_mcp::types::McpPromptResult) -> bool
-impl core::fmt::Debug for awaken_ext_mcp::types::McpPromptResult
-pub fn awaken_ext_mcp::types::McpPromptResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_ext_mcp::types::McpPromptResult
-impl serde_core::ser::Serialize for awaken_ext_mcp::types::McpPromptResult
-pub fn awaken_ext_mcp::types::McpPromptResult::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_mcp::types::McpPromptResult
-pub fn awaken_ext_mcp::types::McpPromptResult::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_ext_mcp::types::McpPromptResult
-impl core::marker::Send for awaken_ext_mcp::types::McpPromptResult
-impl core::marker::Sync for awaken_ext_mcp::types::McpPromptResult
-impl core::marker::Unpin for awaken_ext_mcp::types::McpPromptResult
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::types::McpPromptResult
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::types::McpPromptResult
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::types::McpPromptResult
 pub struct awaken_ext_mcp::McpRawTool
 impl awaken_ext_mcp::tool::McpRawTool
 pub fn awaken_ext_mcp::tool::McpRawTool::new(&str, &str, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
 impl awaken_runtime_contract::tool::RawTool for awaken_ext_mcp::tool::McpRawTool
 pub fn awaken_ext_mcp::tool::McpRawTool::id(&self) -> &str
 pub fn awaken_ext_mcp::tool::McpRawTool::invoke<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-impl core::marker::Freeze for awaken_ext_mcp::tool::McpRawTool
-impl core::marker::Send for awaken_ext_mcp::tool::McpRawTool
-impl core::marker::Sync for awaken_ext_mcp::tool::McpRawTool
-impl core::marker::Unpin for awaken_ext_mcp::tool::McpRawTool
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::tool::McpRawTool
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::tool::McpRawTool
-impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::tool::McpRawTool
 pub struct awaken_ext_mcp::McpResourceDefinition
 pub awaken_ext_mcp::McpResourceDefinition::description: core::option::Option<alloc::string::String>
 pub awaken_ext_mcp::McpResourceDefinition::mime_type: core::option::Option<alloc::string::String>
@@ -718,25 +315,6 @@ pub awaken_ext_mcp::McpResourceDefinition::name: alloc::string::String
 pub awaken_ext_mcp::McpResourceDefinition::size: core::option::Option<u64>
 pub awaken_ext_mcp::McpResourceDefinition::title: core::option::Option<alloc::string::String>
 pub awaken_ext_mcp::McpResourceDefinition::uri: alloc::string::String
-impl core::clone::Clone for awaken_ext_mcp::types::McpResourceDefinition
-pub fn awaken_ext_mcp::types::McpResourceDefinition::clone(&self) -> awaken_ext_mcp::types::McpResourceDefinition
-impl core::cmp::Eq for awaken_ext_mcp::types::McpResourceDefinition
-impl core::cmp::PartialEq for awaken_ext_mcp::types::McpResourceDefinition
-pub fn awaken_ext_mcp::types::McpResourceDefinition::eq(&self, &awaken_ext_mcp::types::McpResourceDefinition) -> bool
-impl core::fmt::Debug for awaken_ext_mcp::types::McpResourceDefinition
-pub fn awaken_ext_mcp::types::McpResourceDefinition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_ext_mcp::types::McpResourceDefinition
-impl serde_core::ser::Serialize for awaken_ext_mcp::types::McpResourceDefinition
-pub fn awaken_ext_mcp::types::McpResourceDefinition::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_mcp::types::McpResourceDefinition
-pub fn awaken_ext_mcp::types::McpResourceDefinition::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_ext_mcp::types::McpResourceDefinition
-impl core::marker::Send for awaken_ext_mcp::types::McpResourceDefinition
-impl core::marker::Sync for awaken_ext_mcp::types::McpResourceDefinition
-impl core::marker::Unpin for awaken_ext_mcp::types::McpResourceDefinition
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::types::McpResourceDefinition
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::types::McpResourceDefinition
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::types::McpResourceDefinition
 pub struct awaken_ext_mcp::McpServer
 impl awaken_ext_mcp::plugin::McpServer
 pub async fn awaken_ext_mcp::plugin::McpServer::connect_http(impl core::convert::Into<alloc::string::String>, awaken_ext_mcp::http::HttpTransport) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
@@ -747,62 +325,14 @@ pub fn awaken_ext_mcp::plugin::McpServer::plugin(&self) -> awaken_ext_mcp::plugi
 pub async fn awaken_ext_mcp::plugin::McpServer::start(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>, tokio::sync::broadcast::Receiver<awaken_ext_mcp::transport::ListChangedKind>) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
 pub async fn awaken_ext_mcp::plugin::McpServer::start_with_sensitive(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>, tokio::sync::broadcast::Receiver<awaken_ext_mcp::transport::ListChangedKind>, awaken_ext_mcp::plugin::SensitiveFields) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
 pub fn awaken_ext_mcp::plugin::McpServer::version(&self) -> u64
-impl core::marker::Freeze for awaken_ext_mcp::plugin::McpServer
-impl core::marker::Send for awaken_ext_mcp::plugin::McpServer
-impl core::marker::Sync for awaken_ext_mcp::plugin::McpServer
-impl core::marker::Unpin for awaken_ext_mcp::plugin::McpServer
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::plugin::McpServer
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::plugin::McpServer
-impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::plugin::McpServer
 pub struct awaken_ext_mcp::SamplingError(pub alloc::string::String)
-impl core::clone::Clone for awaken_ext_mcp::sampling::SamplingError
-pub fn awaken_ext_mcp::sampling::SamplingError::clone(&self) -> awaken_ext_mcp::sampling::SamplingError
-impl core::fmt::Debug for awaken_ext_mcp::sampling::SamplingError
-pub fn awaken_ext_mcp::sampling::SamplingError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_ext_mcp::sampling::SamplingError
-impl core::marker::Send for awaken_ext_mcp::sampling::SamplingError
-impl core::marker::Sync for awaken_ext_mcp::sampling::SamplingError
-impl core::marker::Unpin for awaken_ext_mcp::sampling::SamplingError
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::sampling::SamplingError
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::sampling::SamplingError
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::sampling::SamplingError
 pub struct awaken_ext_mcp::SamplingMessage
 pub awaken_ext_mcp::SamplingMessage::content: alloc::string::String
 pub awaken_ext_mcp::SamplingMessage::role: alloc::string::String
-impl core::clone::Clone for awaken_ext_mcp::sampling::SamplingMessage
-pub fn awaken_ext_mcp::sampling::SamplingMessage::clone(&self) -> awaken_ext_mcp::sampling::SamplingMessage
-impl core::cmp::Eq for awaken_ext_mcp::sampling::SamplingMessage
-impl core::cmp::PartialEq for awaken_ext_mcp::sampling::SamplingMessage
-pub fn awaken_ext_mcp::sampling::SamplingMessage::eq(&self, &awaken_ext_mcp::sampling::SamplingMessage) -> bool
-impl core::fmt::Debug for awaken_ext_mcp::sampling::SamplingMessage
-pub fn awaken_ext_mcp::sampling::SamplingMessage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_ext_mcp::sampling::SamplingMessage
-impl core::marker::Freeze for awaken_ext_mcp::sampling::SamplingMessage
-impl core::marker::Send for awaken_ext_mcp::sampling::SamplingMessage
-impl core::marker::Sync for awaken_ext_mcp::sampling::SamplingMessage
-impl core::marker::Unpin for awaken_ext_mcp::sampling::SamplingMessage
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::sampling::SamplingMessage
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::sampling::SamplingMessage
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::sampling::SamplingMessage
 pub struct awaken_ext_mcp::SamplingRequest
 pub awaken_ext_mcp::SamplingRequest::max_tokens: core::option::Option<u64>
 pub awaken_ext_mcp::SamplingRequest::messages: alloc::vec::Vec<awaken_ext_mcp::sampling::SamplingMessage>
 pub awaken_ext_mcp::SamplingRequest::system_prompt: core::option::Option<alloc::string::String>
-impl core::clone::Clone for awaken_ext_mcp::sampling::SamplingRequest
-pub fn awaken_ext_mcp::sampling::SamplingRequest::clone(&self) -> awaken_ext_mcp::sampling::SamplingRequest
-impl core::cmp::Eq for awaken_ext_mcp::sampling::SamplingRequest
-impl core::cmp::PartialEq for awaken_ext_mcp::sampling::SamplingRequest
-pub fn awaken_ext_mcp::sampling::SamplingRequest::eq(&self, &awaken_ext_mcp::sampling::SamplingRequest) -> bool
-impl core::fmt::Debug for awaken_ext_mcp::sampling::SamplingRequest
-pub fn awaken_ext_mcp::sampling::SamplingRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_ext_mcp::sampling::SamplingRequest
-impl core::marker::Freeze for awaken_ext_mcp::sampling::SamplingRequest
-impl core::marker::Send for awaken_ext_mcp::sampling::SamplingRequest
-impl core::marker::Sync for awaken_ext_mcp::sampling::SamplingRequest
-impl core::marker::Unpin for awaken_ext_mcp::sampling::SamplingRequest
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::sampling::SamplingRequest
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::sampling::SamplingRequest
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::sampling::SamplingRequest
 pub struct awaken_ext_mcp::SamplingResponse
 pub awaken_ext_mcp::SamplingResponse::content: alloc::string::String
 pub awaken_ext_mcp::SamplingResponse::model: core::option::Option<alloc::string::String>
@@ -810,40 +340,10 @@ pub awaken_ext_mcp::SamplingResponse::role: alloc::string::String
 pub awaken_ext_mcp::SamplingResponse::stop_reason: core::option::Option<alloc::string::String>
 impl awaken_ext_mcp::sampling::SamplingResponse
 pub fn awaken_ext_mcp::sampling::SamplingResponse::assistant(impl core::convert::Into<alloc::string::String>) -> Self
-impl core::clone::Clone for awaken_ext_mcp::sampling::SamplingResponse
-pub fn awaken_ext_mcp::sampling::SamplingResponse::clone(&self) -> awaken_ext_mcp::sampling::SamplingResponse
-impl core::cmp::Eq for awaken_ext_mcp::sampling::SamplingResponse
-impl core::cmp::PartialEq for awaken_ext_mcp::sampling::SamplingResponse
-pub fn awaken_ext_mcp::sampling::SamplingResponse::eq(&self, &awaken_ext_mcp::sampling::SamplingResponse) -> bool
-impl core::fmt::Debug for awaken_ext_mcp::sampling::SamplingResponse
-pub fn awaken_ext_mcp::sampling::SamplingResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_ext_mcp::sampling::SamplingResponse
-impl core::marker::Freeze for awaken_ext_mcp::sampling::SamplingResponse
-impl core::marker::Send for awaken_ext_mcp::sampling::SamplingResponse
-impl core::marker::Sync for awaken_ext_mcp::sampling::SamplingResponse
-impl core::marker::Unpin for awaken_ext_mcp::sampling::SamplingResponse
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::sampling::SamplingResponse
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::sampling::SamplingResponse
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::sampling::SamplingResponse
 pub struct awaken_ext_mcp::ServerStatus
 pub awaken_ext_mcp::ServerStatus::alive: bool
 pub awaken_ext_mcp::ServerStatus::name: alloc::string::String
 pub awaken_ext_mcp::ServerStatus::tool_version: u64
-impl core::clone::Clone for awaken_ext_mcp::manager::ServerStatus
-pub fn awaken_ext_mcp::manager::ServerStatus::clone(&self) -> awaken_ext_mcp::manager::ServerStatus
-impl core::cmp::Eq for awaken_ext_mcp::manager::ServerStatus
-impl core::cmp::PartialEq for awaken_ext_mcp::manager::ServerStatus
-pub fn awaken_ext_mcp::manager::ServerStatus::eq(&self, &awaken_ext_mcp::manager::ServerStatus) -> bool
-impl core::fmt::Debug for awaken_ext_mcp::manager::ServerStatus
-pub fn awaken_ext_mcp::manager::ServerStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_ext_mcp::manager::ServerStatus
-impl core::marker::Freeze for awaken_ext_mcp::manager::ServerStatus
-impl core::marker::Send for awaken_ext_mcp::manager::ServerStatus
-impl core::marker::Sync for awaken_ext_mcp::manager::ServerStatus
-impl core::marker::Unpin for awaken_ext_mcp::manager::ServerStatus
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::manager::ServerStatus
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::manager::ServerStatus
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::manager::ServerStatus
 pub struct awaken_ext_mcp::StdioTransport
 impl awaken_ext_mcp::stdio::StdioTransport
 pub async fn awaken_ext_mcp::stdio::StdioTransport::connect(&str, &[alloc::string::String], core::time::Duration) -> core::result::Result<Self, model_context_protocol::transport::McpTransportError>
@@ -863,13 +363,6 @@ pub fn awaken_ext_mcp::stdio::StdioTransport::list_prompts<'life0, 'async_trait>
 pub fn awaken_ext_mcp::stdio::StdioTransport::list_resources<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_mcp::types::McpResourceDefinition>, model_context_protocol::transport::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_ext_mcp::stdio::StdioTransport::list_tools<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<model_context_protocol::protocol::McpToolDefinition>, model_context_protocol::transport::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_ext_mcp::stdio::StdioTransport::read_resource<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, model_context_protocol::transport::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-impl !core::marker::Freeze for awaken_ext_mcp::stdio::StdioTransport
-impl core::marker::Send for awaken_ext_mcp::stdio::StdioTransport
-impl core::marker::Sync for awaken_ext_mcp::stdio::StdioTransport
-impl core::marker::Unpin for awaken_ext_mcp::stdio::StdioTransport
-impl core::marker::UnsafeUnpin for awaken_ext_mcp::stdio::StdioTransport
-impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::stdio::StdioTransport
-impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::stdio::StdioTransport
 pub const awaken_ext_mcp::DEFAULT_TIMEOUT: core::time::Duration
 pub const awaken_ext_mcp::REDACTED: &str
 pub trait awaken_ext_mcp::McpToolTransport: core::marker::Send + core::marker::Sync
