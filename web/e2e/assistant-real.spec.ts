@@ -45,3 +45,14 @@ test("Admin Assistant authors an agent with tools + a memory-store binding (real
   const res = await (await request.get(`/v1/config/agents/${agentId}/resources`)).json();
   expect(res.resources?.[0]).toMatchObject({ kind: "memory_store", resource_id: ms });
 });
+
+test("Admin Assistant answers a how-to question as an in-console manual (real model)", async ({ page, request }) => {
+  await configureKimi(request);
+  await page.goto("/w/default/assistant");
+  const composer = page.getByPlaceholder(/Describe the agent you want|描述你想要的 agent/);
+  await expect(composer).toBeVisible({ timeout: 20_000 });
+  await composer.fill("How do I connect a model to this platform? Keep it short.");
+  await composer.press("Enter");
+  // A grounded answer (from admin_explain_console) names the real Models/Credentials flow.
+  await expect(page.getByText(/Models|Inference credentials|Provider|Offering/i).first()).toBeVisible({ timeout: 90_000 });
+});

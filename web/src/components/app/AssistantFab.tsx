@@ -8,6 +8,7 @@
 import { useEffect, useState } from "react";
 import { useLocation } from "react-router";
 import { AssistantPanel } from "../../surfaces/assistant";
+import { titleForPath } from "../../lib/navigation/paths";
 import { useApp } from "../../lib/app-state";
 
 const OPEN_KEY = "awaken.console.assistantOpen";
@@ -50,6 +51,8 @@ export default function AssistantFab() {
   // The assistant is a workspace tool; hide the FAB on the workspace picker / root.
   if (!location.pathname.startsWith("/w/")) return null;
   const { wsId, targetAgentId } = routeContext(location.pathname);
+  // The current page's name, so a how-to question defaults to explaining this surface.
+  const surfaceHint = targetAgentId ? undefined : titleForPath(location.pathname).title || undefined;
 
   return (
     <>
@@ -68,7 +71,12 @@ export default function AssistantFab() {
           <div className="assistant-fab-body">
             {/* Remount the panel per (workspace, target) so a fresh session picks up the
                 current context — cheap, and keeps "refining X" honest as you navigate. */}
-            <AssistantPanel key={`${wsId}:${targetAgentId ?? ""}`} wsId={wsId} targetAgentId={targetAgentId} />
+            <AssistantPanel
+              key={`${wsId}:${targetAgentId ?? surfaceHint ?? ""}`}
+              wsId={wsId}
+              targetAgentId={targetAgentId}
+              surfaceHint={surfaceHint}
+            />
           </div>
         </section>
       )}
