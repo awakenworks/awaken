@@ -387,6 +387,45 @@ async fn set_plugin_config_reports_validation_failure_after_attach() {
 
 // existing: PL4 legit attach → emit_draft — `set_plugin_config_attaches_and_validates`.
 
+// PL5 — SetPluginConfig on a plugin the draft ALREADY carries: the id is not
+// duplicated in `plugin_ids` (the `contains` dedup guard) and the new section
+// REPLACES the prior one (`insert` overwrites) — the "or replace" the descriptor
+// promises. Last write wins; the earlier section is gone, not merged.
+#[tokio::test]
+async fn set_plugin_config_replaces_existing_section_without_duplicating_the_id() {
+    let draft = serde_json::json!({
+        "id": "support", "instructions": "be helpful", "max_steps": 8,
+        "model_binding": { "mode": "auto" }, "tool_ids": [],
+        // The draft already has this plugin attached, with an OLD section.
+        "plugin_ids": ["state_machine"],
+        "plugin_config": { "state_machine": { "machines": [{ "old": true }] } }
+    });
+    let out = tool(SET_PLUGIN_TOOL)
+        .invoke(call(
+            SET_PLUGIN_TOOL,
+            serde_json::json!({
+                "draft": draft,
+                "plugin_id": "state_machine",
+                "config": { "machines": [] }
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        !out.is_error,
+        "re-attaching a valid section succeeds: {}",
+        out.content
+    );
+    let updated: AgentConfig = serde_json::from_str(&out.content).unwrap();
+    // Not duplicated: the id appears exactly once.
+    assert_eq!(updated.plugin_ids, vec!["state_machine".to_string()]);
+    // Replaced, not merged: the new section wins and the old `{old:true}` is gone.
+    assert_eq!(
+        updated.plugin_config.get("state_machine"),
+        Some(&serde_json::json!({ "machines": [] }))
+    );
+}
+
 // CreateAgentDraft (a) — parse failure is a soft error AND is not audited.
 // (existing `create_draft_rejects_bad_arguments_without_aborting` covers the soft error;
 //  this adds the not-audited invariant.)

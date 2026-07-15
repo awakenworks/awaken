@@ -131,4 +131,34 @@ mod tests {
         ];
         assert_eq!(extract_text(&blocks), "ab");
     }
+
+    #[test]
+    fn extract_text_recurses_into_tool_result_and_ignores_tool_use() {
+        // Text nested inside a ToolResult contributes; a ToolUse's args do not.
+        let blocks = vec![
+            ContentBlock::text("head-"),
+            ContentBlock::tool_use("c1", "run", serde_json::json!({"secret": "x"})),
+            ContentBlock::tool_result(
+                "c1",
+                vec![
+                    ContentBlock::text("nested-"),
+                    ContentBlock::image_url("https://example.test/y.png"),
+                    ContentBlock::text("tail"),
+                ],
+            ),
+        ];
+        assert_eq!(extract_text(&blocks), "head-nested-tail");
+    }
+
+    #[test]
+    fn image_source_url_and_base64_round_trip_tagged() {
+        let src = ImageSource::Base64 {
+            media_type: "image/png".into(),
+            data: "AA==".into(),
+        };
+        let json = serde_json::to_value(&src).unwrap();
+        assert_eq!(json["type"], "base64");
+        let back: ImageSource = serde_json::from_value(json).unwrap();
+        assert_eq!(back, src);
+    }
 }

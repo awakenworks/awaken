@@ -8,5 +8,8 @@ description = "Host-side credential vocabulary shared by Awaken's outbound wire 
 [dependencies]
 async-trait.workspace = true
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+
 [lints]
 workspace = true

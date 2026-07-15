@@ -467,6 +467,7 @@ name = "awaken-credential"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "tokio",
 ]
 
 [[package]]
@@ -970,6 +971,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 
@@ -1039,6 +1041,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

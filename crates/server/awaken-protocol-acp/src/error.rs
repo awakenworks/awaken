@@ -582,6 +582,76 @@ mod tests {
     }
 
     #[test]
+    fn each_failure_class_has_distinct_prompt_wording() {
+        // The `prompt()` decision table: every class renders its own operator-facing
+        // explanation, and each appends the raw message tail. Only SubscriptionDisabled
+        // was covered before; the other credential kinds and the transient/timeout/
+        // permanent/rate-limited-without-retry arms were not.
+        let rl = AcpFailure {
+            class: AcpFailureClass::RateLimited {
+                retry_after_secs: None,
+            },
+            message: "quota gone".into(),
+        };
+        assert!(rl.prompt().contains("quota is exhausted"));
+        assert!(rl.prompt().contains("(quota gone)"), "message tail present");
+        assert!(
+            !rl.prompt().contains("retry after"),
+            "no retry hint without a reset: {}",
+            rl.prompt()
+        );
+
+        let login = AcpFailure {
+            class: AcpFailureClass::CredentialRejected {
+                kind: CredentialKind::LoginRequired,
+            },
+            message: String::new(),
+        };
+        assert!(login.prompt().contains("re-authentication"));
+
+        let auth = AcpFailure {
+            class: AcpFailureClass::CredentialRejected {
+                kind: CredentialKind::AuthenticationError,
+            },
+            message: String::new(),
+        };
+        assert!(auth.prompt().contains("rejected the credential"));
+
+        let transient = AcpFailure {
+            class: AcpFailureClass::Transient,
+            message: String::new(),
+        };
+        assert!(transient.prompt().contains("transient"));
+
+        let timeout = AcpFailure {
+            class: AcpFailureClass::Timeout,
+            message: String::new(),
+        };
+        assert!(timeout.prompt().contains("wall-clock deadline"));
+
+        let permanent = AcpFailure {
+            class: AcpFailureClass::Permanent,
+            message: String::new(),
+        };
+        // The empty-message branch renders no ` (...)` tail.
+        assert_eq!(permanent.prompt(), "The agent turn failed.");
+    }
+
+    #[test]
+    fn a_session_limit_message_with_a_foreign_jsonrpc_code_is_not_rate_limited() {
+        // The quota discriminator requires the JSON-RPC code to be absent or the
+        // rate-limit code; a `session limit` message tagged with an unrelated code
+        // must NOT classify as RateLimited (it falls through to Permanent here).
+        let mut e = err("session limit reached for this window");
+        e.code = Some(-32000);
+        assert_eq!(
+            classify_error(Stage::Prompt, &e).class,
+            AcpFailureClass::Permanent,
+            "a foreign code disqualifies the quota match"
+        );
+    }
+
+    #[test]
     fn deadline_and_refusal_map_to_their_terminations() {
         assert_eq!(
             deadline_exceeded(120).termination(),

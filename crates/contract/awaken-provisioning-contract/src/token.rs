@@ -214,6 +214,21 @@ mod tests {
     }
 
     #[test]
+    fn a_bad_signature_is_reported_before_expiry() {
+        // Cause-effect precedence: the MAC is verified *before* the time window, so a
+        // token with the right tuple but a corrupt signature that is ALSO past expiry
+        // reports `BadSignature`, not `Expired` — an unauthenticated token never has its
+        // (in)validity in time leaked. Completes the tuple > signature > time chain.
+        let mut token = claims(1).sign(signer(7));
+        token.mac[1] ^= 0xFF; // corrupt the signature
+        assert_eq!(
+            // now=2_500 is past expires_ms=2_000, so expiry would also fire.
+            token.verify("lease-1", "run-1", "w-1", 2_500, 100, signer(7)),
+            Err(TokenError::BadSignature)
+        );
+    }
+
+    #[test]
     fn a_tuple_mismatch_on_run_or_worker_is_rejected() {
         // The full tuple is fenced — previously only a differing lease_id was tested.
         let token = claims(1).sign(signer(7));

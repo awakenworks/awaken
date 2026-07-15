@@ -3,6 +3,7 @@
 //! unblocks the parked tool with `allow: false` and reports the task `canceled`.
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
@@ -118,6 +119,92 @@ async fn message_send_on_a_parked_context_resumes_it_rather_than_starting_a_fres
     )
     .await;
     assert_eq!(r["result"]["status"]["state"], "completed", "{r}");
+}
+
+/// A runtime parked on a *client-executed* tool `c2`, recording the content of the
+/// `ClientResult` it is resumed with (the router's non-approval resume path).
+struct ClientToolRuntime {
+    delivered: Arc<Mutex<Option<String>>>,
+}
+
+#[async_trait]
+impl ProtocolRuntime for ClientToolRuntime {
+    async fn run(
+        &self,
+        _thread: &str,
+        _agent: Option<String>,
+        _messages: Vec<Message>,
+    ) -> Result<StepOutcome, DriverError> {
+        unreachable!("the context is already parked, so send takes the resume branch")
+    }
+
+    async fn resume(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        resume: Resume,
+    ) -> Result<StepOutcome, DriverError> {
+        if let Resume::ClientResult { content, is_error } = resume {
+            assert!(!is_error, "a plain answer is not an error result");
+            *self.delivered.lock().unwrap() = Some(content);
+        } else {
+            panic!("a client-executed tool must be resumed with a ClientResult, got {resume:?}");
+        }
+        Ok(StepOutcome {
+            new_messages: Vec::new(),
+            terminal: Terminal::Finished,
+        })
+    }
+
+    async fn pending(&self, _thread: &str) -> Option<Pending> {
+        Some(Pending {
+            tool_use_id: "c2".into(),
+            name: "submit_answer".into(),
+            input: Value::Null,
+            client_executed: true,
+        })
+    }
+
+    async fn history(&self, _thread: &str) -> Vec<Message> {
+        Vec::new()
+    }
+
+    fn model(&self) -> String {
+        "test".into()
+    }
+}
+
+#[tokio::test]
+async fn message_send_delivers_the_text_as_the_client_tool_result_on_resume() {
+    // A message on a context parked on a client-executed tool is delivered as that
+    // tool's result (not read as an approval): the router's `ClientResult` branch.
+    let delivered = Arc::new(Mutex::new(None));
+    let app = router(Arc::new(ClientToolRuntime {
+        delivered: delivered.clone(),
+    }));
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/a2a")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": 4,
+                        "method": "message/send",
+                        "params": { "message": { "messageId": "m1", "contextId": "ctx", "role": "user", "parts": [{ "kind": "text", "text": "42" }] } }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let r: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(r["result"]["status"]["state"], "completed", "{r}");
+    assert_eq!(delivered.lock().unwrap().as_deref(), Some("42"));
 }
 
 #[tokio::test]

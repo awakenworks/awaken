@@ -702,3 +702,201 @@ impl LlmExecutor for CompactionModel {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Unit pins on the deterministic model zoo's *decision logic* — the fixture
+    //! contracts the e2e scenarios rely on (which tool a turn calls, how a marker is
+    //! parsed, when a turn fails). These are network-free `infer(request)` functions,
+    //! so a silent drift here (e.g. the `add a b` parser breaking) is caught locally
+    //! rather than only as a hard-to-localize e2e failure driving a real binary.
+    use super::*;
+    use awaken_runtime_contract::llm::{ChatMessage, Error};
+    use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
+
+    fn msg(role: Role, text: &str) -> ChatMessage {
+        ChatMessage {
+            role,
+            content: vec![ContentBlock::text(text)],
+        }
+    }
+
+    /// A `Tool`-role message carrying one tool result (the shape a run appends after
+    /// executing a model's tool call).
+    fn tool_result(call_id: &str, text: &str) -> ChatMessage {
+        ChatMessage {
+            role: Role::Tool,
+            content: vec![ContentBlock::tool_result(
+                call_id,
+                vec![ContentBlock::text(text)],
+            )],
+        }
+    }
+
+    fn req(messages: Vec<ChatMessage>) -> ChatRequest {
+        ChatRequest {
+            model_binding: ModelBinding::new("id", "m", "default"),
+            messages,
+            tools: vec![],
+        }
+    }
+
+    fn tool(id: &str) -> ToolDescriptor {
+        ToolDescriptor {
+            id: id.into(),
+            description: String::new(),
+            parameters: serde_json::json!({}),
+            content_hash: String::new(),
+        }
+    }
+
+    async fn infer(model: &impl LlmExecutor, request: ChatRequest) -> ChatResponse {
+        model
+            .infer(request)
+            .await
+            .expect("deterministic model replies")
+    }
+
+    #[tokio::test]
+    async fn echo_model_reflects_the_last_user_turn() {
+        let resp = infer(
+            &EchoModel,
+            req(vec![msg(Role::User, "first"), msg(Role::User, "second")]),
+        )
+        .await;
+        assert_eq!(resp.output.text_content(), "Echo: second");
+    }
+
+    #[tokio::test]
+    async fn error_model_fails_on_boom_and_echoes_otherwise() {
+        // BOOM → a permanent (non-retryable) provider error the run maps to internal.
+        let err = ErrorModel
+            .infer(req(vec![msg(Role::User, "please BOOM now")]))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidRequest(_)), "{err:?}");
+        // Anything else stays a usable echo turn.
+        let ok = infer(&ErrorModel, req(vec![msg(Role::User, "hello")])).await;
+        assert_eq!(ok.output.text_content(), "Echo: hello");
+    }
+
+    #[tokio::test]
+    async fn probe_model_sequences_write_then_read_then_done_by_tool_result_count() {
+        // 0 results → write probe.txt with the user's text.
+        let r0 = infer(&ProbeModel, req(vec![msg(Role::User, "payload")])).await;
+        let calls = r0.output.tool_calls();
+        assert_eq!(calls[0].tool_id, "write");
+        assert_eq!(calls[0].arguments["path"], "probe.txt");
+        assert_eq!(calls[0].arguments["content"], "payload");
+        // 1 result → read it back.
+        let r1 = infer(
+            &ProbeModel,
+            req(vec![msg(Role::User, "payload"), tool_result("w", "ok")]),
+        )
+        .await;
+        assert_eq!(r1.output.tool_calls()[0].tool_id, "read");
+        // 2 results → done (no more tool calls).
+        let r2 = infer(
+            &ProbeModel,
+            req(vec![
+                msg(Role::User, "payload"),
+                tool_result("w", "ok"),
+                tool_result("r", "payload"),
+            ]),
+        )
+        .await;
+        assert!(r2.output.tool_calls().is_empty());
+        assert_eq!(r2.output.text_content(), "done");
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_model_parses_add_and_reports_results() {
+        // `add <int> <int>` → the namespaced MCP calculator tool with parsed operands.
+        let call = infer(&McpToolModel, req(vec![msg(Role::User, "add 2 3")])).await;
+        let calls = call.output.tool_calls();
+        assert_eq!(calls[0].tool_id, "mcp__calc__add");
+        assert_eq!(calls[0].arguments["a"], 2);
+        assert_eq!(calls[0].arguments["b"], 3);
+        // Non-integer operands do NOT match the calculator: fall through to echo.
+        let echo = infer(&McpToolModel, req(vec![msg(Role::User, "add x y")])).await;
+        assert!(echo.output.tool_calls().is_empty());
+        assert_eq!(echo.output.text_content(), "Echo: add x y");
+        // A returned tool result is reported as `result: <text>`.
+        let reported = infer(
+            &McpToolModel,
+            req(vec![msg(Role::User, "add 2 3"), tool_result("mcp-1", "5")]),
+        )
+        .await;
+        assert_eq!(reported.output.text_content(), "result: 5");
+    }
+
+    #[tokio::test]
+    async fn delegating_model_routes_by_tool_presence_and_target() {
+        // Without the `agent_run` tool it is the delegate sub-agent: it answers plainly.
+        let plain = infer(&DelegatingModel, req(vec![msg(Role::User, "research")])).await;
+        assert_eq!(plain.output.text_content(), "researched: 42");
+        // With `agent_run` it delegates — to `researcher` by default…
+        let mut r = req(vec![msg(Role::User, "go research this")]);
+        r.tools = vec![tool("agent_run")];
+        let deleg = infer(&DelegatingModel, r).await;
+        assert_eq!(
+            deleg.output.tool_calls()[0].arguments["agent_id"],
+            "researcher"
+        );
+        // …and to `ghost` when the user names it (the missing-agent fail path).
+        let mut rg = req(vec![msg(Role::User, "delegate to the ghost agent")]);
+        rg.tools = vec![tool("agent_run")];
+        let ghost = infer(&DelegatingModel, rg).await;
+        assert_eq!(ghost.output.tool_calls()[0].arguments["agent_id"], "ghost");
+        // With a delegate result present it reports it.
+        let mut rr = req(vec![msg(Role::User, "go"), tool_result("d1", "the answer")]);
+        rr.tools = vec![tool("agent_run")];
+        let reported = infer(&DelegatingModel, rr).await;
+        assert_eq!(reported.output.text_content(), "delegate said: the answer");
+    }
+
+    #[tokio::test]
+    async fn memory_probe_names_a_memory_after_a_fact_tag_else_falls_back() {
+        let extractor = |text: &str| {
+            req(vec![
+                msg(Role::System, "you are a memory extraction sub-agent"),
+                msg(Role::User, text),
+            ])
+        };
+        // A `fact-<tag>` token in the transcript names the saved memory…
+        let tagged = infer(&MemoryProbeModel, extractor("remember fact-blue please")).await;
+        let call = &tagged.output.tool_calls()[0];
+        assert_eq!(call.tool_id, "write_memory");
+        assert_eq!(call.arguments["name"], "fact-blue");
+        // …otherwise it falls back to the fixed sky-color memory.
+        let fallback = infer(&MemoryProbeModel, extractor("no tag here")).await;
+        assert_eq!(
+            fallback.output.tool_calls()[0].arguments["name"],
+            "sky-color"
+        );
+        // Once a tool result is present (already saved), the extractor sub-run ends.
+        let saved = infer(
+            &MemoryProbeModel,
+            req(vec![
+                msg(Role::System, "you are a memory extraction sub-agent"),
+                msg(Role::User, "remember fact-blue"),
+                tool_result("memwrite-1", "ok"),
+            ]),
+        )
+        .await;
+        assert!(saved.output.tool_calls().is_empty());
+        assert_eq!(saved.output.text_content(), "memory saved");
+    }
+
+    #[tokio::test]
+    async fn revise_model_finalizes_only_after_goal_feedback() {
+        let draft = infer(&ReviseModel, req(vec![msg(Role::User, "write it")])).await;
+        assert_eq!(draft.output.text_content(), "a rough draft");
+        let finalized = infer(
+            &ReviseModel,
+            req(vec![msg(Role::User, "that did not meet the goal, revise")]),
+        )
+        .await;
+        assert_eq!(finalized.output.text_content(), "FINAL answer");
+    }
+}

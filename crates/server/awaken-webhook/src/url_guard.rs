@@ -174,6 +174,29 @@ mod tests {
     }
 
     #[test]
+    fn userinfo_never_masks_the_real_host() {
+        // The host is the authority AFTER any `user:pass@` userinfo (URL spec). An
+        // attacker who prefixes a public-looking userinfo must NOT smuggle a private
+        // target past admission, and a private-looking userinfo must NOT poison an
+        // otherwise-public host. This exercises the userinfo-stripping path directly.
+        assert_eq!(
+            validate_endpoint_url("https://public.example.com@127.0.0.1/steal"),
+            Err(UrlRejected::PrivateHost),
+            "a public userinfo cannot mask a loopback host"
+        );
+        assert_eq!(
+            validate_endpoint_url("https://169.254.169.254@evil.example.com/x"),
+            Ok(()),
+            "a private-looking userinfo does not taint a public host (host is after @)"
+        );
+        assert_eq!(
+            validate_endpoint_url("https://user:pass@hooks.example.com/ingest"),
+            Ok(()),
+            "ordinary user:pass userinfo is stripped, public host passes"
+        );
+    }
+
+    #[test]
     fn a_malformed_url_is_rejected() {
         for url in ["not a url", "https://", "https:///path"] {
             assert!(

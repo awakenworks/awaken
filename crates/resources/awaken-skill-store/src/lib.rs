@@ -227,6 +227,27 @@ mod tests {
         std::env::temp_dir().join(format!("awaken-skillstore-{tag}-{stamp}"))
     }
 
+    #[test]
+    fn sanitize_stem_edge_cases() {
+        // Safe characters survive verbatim, including case, `_`, `-`, and digits.
+        assert_eq!(sanitize_stem("greet"), "greet");
+        assert_eq!(sanitize_stem("a_b-C9"), "a_b-C9");
+        // Every run of unsafe chars collapses to a single `-`.
+        assert_eq!(sanitize_stem("a b"), "a-b");
+        assert_eq!(sanitize_stem("a....b"), "a-b");
+        // Leading/trailing separators are trimmed off the stem.
+        assert_eq!(sanitize_stem("--foo_bar--"), "foo_bar");
+        // Empty and all-unsafe ids both collapse to the shared "skill" fallback.
+        assert_eq!(sanitize_stem(""), "skill");
+        assert_eq!(sanitize_stem("***"), "skill");
+        assert_eq!(sanitize_stem("/"), "skill");
+        // Collision domain: distinct raw ids can sanitize onto the SAME stem.
+        assert_eq!(sanitize_stem("a b"), sanitize_stem("a/b"));
+        assert_ne!(sanitize_stem("a"), sanitize_stem("b"));
+        // Length is bounded so a crafted long id cannot blow up a filename.
+        assert!(sanitize_stem(&"x".repeat(300)).len() <= 120);
+    }
+
     #[tokio::test]
     async fn crafted_ids_cannot_escape_root() {
         let root = scratch("escape");

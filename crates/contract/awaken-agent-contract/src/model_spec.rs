@@ -160,4 +160,60 @@ mod tests {
         let s: ModelSpec = serde_json::from_str(r#"{"id":"m"}"#).unwrap();
         assert!(s.knowledge_cutoff.is_none());
     }
+
+    // CEG rows for is_valid_cutoff not covered by the two happy/injection cases:
+    // month lower-bound, day range, non-two-digit day, 4 parts, empty, and the
+    // valid day/month boundaries.
+    #[test]
+    fn month_zero_is_rejected() {
+        assert!(!is_valid_cutoff("2026-00"));
+        assert!(
+            serde_json::from_str::<ModelSpec>(r#"{"id":"m","knowledge_cutoff":"2026-00"}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn day_out_of_range_is_rejected() {
+        assert!(!is_valid_cutoff("2026-01-00"), "day 00 must fail");
+        assert!(!is_valid_cutoff("2026-01-32"), "day 32 must fail");
+    }
+
+    #[test]
+    fn day_must_be_two_digits() {
+        assert!(!is_valid_cutoff("2026-01-1"), "single-digit day must fail");
+    }
+
+    #[test]
+    fn four_parts_is_rejected() {
+        assert!(!is_valid_cutoff("2026-01-01-01"));
+    }
+
+    #[test]
+    fn empty_and_non_digit_parts_are_rejected() {
+        assert!(!is_valid_cutoff(""), "empty string is one part, must fail");
+        assert!(!is_valid_cutoff("abcd-01"), "non-digit year must fail");
+        assert!(!is_valid_cutoff("2026-1a"), "non-digit month must fail");
+    }
+
+    #[test]
+    fn valid_month_and_day_boundaries_pass() {
+        assert!(is_valid_cutoff("2026-01"));
+        assert!(is_valid_cutoff("2026-12"));
+        assert!(is_valid_cutoff("2026-12-01"));
+        assert!(is_valid_cutoff("2026-12-31"));
+    }
+
+    #[test]
+    fn valid_cutoff_round_trips_and_absent_is_skipped_on_serialize() {
+        let spec = ModelSpec {
+            knowledge_cutoff: Some("2026-01".to_string()),
+            ..ModelSpec::new("m")
+        };
+        let json = serde_json::to_value(&spec).unwrap();
+        assert_eq!(json["knowledge_cutoff"], "2026-01");
+        // A bare spec omits the field entirely (skip_serializing_if none).
+        let bare = serde_json::to_value(ModelSpec::new("m")).unwrap();
+        assert!(bare.get("knowledge_cutoff").is_none());
+    }
 }

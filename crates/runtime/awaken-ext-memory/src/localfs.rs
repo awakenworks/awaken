@@ -113,6 +113,57 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_stem_collapses_trims_truncates_and_drops_non_ascii() {
+        // Leading/trailing runs of non-word chars collapse then trim away entirely.
+        assert_eq!(sanitize_stem("--a--b--"), "a-b");
+        // Non-ASCII is not a word char: it maps to '-', which then trims off.
+        assert_eq!(sanitize_stem("café"), "caf");
+        // Bounded to 120 chars (all word chars, so no trim shrinkage).
+        assert_eq!(sanitize_stem(&"x".repeat(200)).len(), 120);
+    }
+
+    #[test]
+    fn entries_skips_empty_and_non_md_trims_content_and_tolerates_missing_root() {
+        let stamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("awaken-mem-entries-{stamp}"));
+        let store = MemoryDir::new(&root);
+
+        // A never-created root reads back as no memories (not an error).
+        assert!(store.entries().is_empty());
+
+        // A whitespace-only memory file is skipped as empty.
+        store.write("blank", "   \n  ").unwrap();
+        // A non-.md sibling file is ignored by the extension filter.
+        std::fs::write(root.join("note.txt"), "ignored").unwrap();
+        // A real memory, with surrounding whitespace trimmed on read-back.
+        store.write("real", "  hello  ").unwrap();
+
+        let entries = store.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].content, "hello");
+    }
+
+    #[test]
+    fn write_overwrites_the_same_stem_in_place() {
+        let stamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("awaken-mem-overwrite-{stamp}"));
+        let store = MemoryDir::new(&root);
+        // Two names that sanitize to the same stem share one file; the second
+        // write replaces the first rather than appending a new memory.
+        store.write("dup", "v1").unwrap();
+        store.write("dup!!!", "v2").unwrap();
+        let entries = store.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].content, "v2");
+    }
+
+    #[test]
     fn write_scopes_to_root_and_entries_read_back_newest_first() {
         let stamp = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)

@@ -221,4 +221,61 @@ mod tests {
         let picked = select_relevant(&ErrModel, &model(), "q", &e, 3).await;
         assert_eq!(picked, vec![0, 1, 2]); // newest `max`, memory not lost
     }
+
+    #[test]
+    fn parse_indices_upper_bound_is_exclusive_and_multi_digit() {
+        // index == n is out of range (exclusive); n-1 is in range.
+        assert_eq!(parse_indices("[5]", 5, 10), Vec::<usize>::new());
+        assert_eq!(parse_indices("[4]", 5, 10), vec![4]);
+        // Multi-digit indices parse as whole numbers, not per-digit.
+        assert_eq!(parse_indices("10, 3", 20, 10), vec![10, 3]);
+    }
+
+    #[tokio::test]
+    async fn store_exactly_at_max_selects_all_without_a_call() {
+        // entries.len() == max → the small-store shortcut keeps all, no model call.
+        // ErrModel would fail-open to newest-max; that it returns *all* proves no call.
+        let e = entries(5);
+        let picked = select_relevant(&ErrModel, &model(), "q", &e, 5).await;
+        assert_eq!(picked, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn query_from_takes_the_last_user_message_or_empty() {
+        use awaken_agent_contract::agent::message::Id as MessageId;
+        assert_eq!(query_from(&[]), "");
+        let convo = vec![
+            Message::text(MessageId("u1".into()), Role::User, "first"),
+            Message::text(MessageId("a1".into()), Role::Assistant, "reply"),
+            Message::text(MessageId("u2".into()), Role::User, "second"),
+        ];
+        assert_eq!(query_from(&convo), "second");
+    }
+
+    #[test]
+    fn manifest_gist_is_first_nonempty_line() {
+        let root = std::env::temp_dir().join(format!(
+            "awaken-manifest-{}",
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let store = MemoryDir::new(&root);
+        store.write("m", "first line\nsecond line").unwrap();
+        let m = manifest(&store.entries());
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].0, 0);
+        assert_eq!(m[0].1, "first line");
+    }
+
+    #[test]
+    fn select_input_numbers_the_manifest() {
+        let m = vec![(0usize, "alpha".to_string()), (1usize, "beta".to_string())];
+        let s = select_input("hi", &m, 2);
+        assert!(s.contains("User message:\nhi"), "{s}");
+        assert!(s.contains("[0] alpha"), "{s}");
+        assert!(s.contains("[1] beta"), "{s}");
+        assert!(s.contains("up to 2 relevant"), "{s}");
+    }
 }

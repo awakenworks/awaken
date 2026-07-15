@@ -368,6 +368,28 @@ mod cgroup_caps_tests {
         assert!(!argv.iter().any(|a| a == "--rootfs"));
         assert!(argv.contains(&"ghcr.io/awaken/agent:1".to_string()));
     }
+
+    #[test]
+    fn podman_run_argv_allowlist_keeps_bridge_egress_to_reach_the_proxy() {
+        // Allowlist is enforced at the brokered proxy; the container itself keeps
+        // default bridge egress to reach that chokepoint. It must NOT be severed with
+        // `--network none` (that would block the proxy) nor left flagless like Open —
+        // a mismap here silently breaks controlled egress.
+        let mut plan = podman_plan();
+        plan.network = NetworkMode::Allowlist(vec!["api.anthropic.com".into()]);
+        let argv = podman_run_argv("r", &plan, &RootfsPlan::HostUserland);
+        assert_eq!(arg_after(&argv, "--network"), Some("bridge"));
+    }
+
+    #[test]
+    fn podman_run_argv_maps_a_disk_cap_to_storage_opt() {
+        // A declared disk cap must reach the writable-layer limit (`--storage-opt
+        // size=`), otherwise the advertised resource limit is never enforced.
+        let mut plan = podman_plan();
+        plan.limits.disk_bytes = Some(1 << 30);
+        let argv = podman_run_argv("r", &plan, &RootfsPlan::HostUserland);
+        assert_eq!(arg_after(&argv, "--storage-opt"), Some("size=1073741824"));
+    }
 }
 
 fn image_of(spec: &pc::SandboxSpec, default_image: &str) -> String {

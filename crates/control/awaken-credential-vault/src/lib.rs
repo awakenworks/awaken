@@ -616,6 +616,50 @@ mod tests {
         assert_eq!(SelectionPolicy::default(), SelectionPolicy::FirstHealthy);
     }
 
+    /// CredentialBinding is the internally-tagged "which credential" wire vocab
+    /// (`type` discriminant, snake_case). Pin every arm's wire shape and its
+    /// round-trip so a persisted/wire binding stays loadable — a silent tag drift
+    /// would fail-open a run onto the wrong (or no) credential.
+    #[test]
+    fn credential_binding_round_trips_with_its_tagged_wire_shape() {
+        let cases = [
+            (CredentialBinding::None, r#"{"type":"none"}"#),
+            (
+                CredentialBinding::Exact {
+                    credential_source_id: CredentialSourceId("cred:1".into()),
+                },
+                r#"{"type":"exact","credential_source_id":"cred:1"}"#,
+            ),
+            (
+                CredentialBinding::OneOfCredentialPool {
+                    credential_pool_id: CredentialPoolId("pool:1".into()),
+                },
+                r#"{"type":"one_of_credential_pool","credential_pool_id":"pool:1"}"#,
+            ),
+        ];
+        for (binding, wire) in cases {
+            assert_eq!(serde_json::to_string(&binding).unwrap(), wire);
+            assert_eq!(
+                serde_json::from_str::<CredentialBinding>(wire).unwrap(),
+                binding
+            );
+        }
+    }
+
+    /// CredentialKind is the materialization wire vocab (snake_case, all kinds). A
+    /// drift here would mis-route materialization (e.g. read a vault ref as env).
+    #[test]
+    fn credential_kind_wire_form_is_snake_case_for_every_kind() {
+        for (kind, wire) in [
+            (CredentialKind::Vault, "\"vault\""),
+            (CredentialKind::Env, "\"env\""),
+            (CredentialKind::Oauth, "\"oauth\""),
+        ] {
+            assert_eq!(serde_json::to_string(&kind).unwrap(), wire);
+            assert_eq!(serde_json::from_str::<CredentialKind>(wire).unwrap(), kind);
+        }
+    }
+
     #[test]
     fn a_pool_json_without_policy_loads_as_first_healthy() {
         // A row written before the `policy` field existed must still load — the

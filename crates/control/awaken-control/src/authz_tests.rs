@@ -557,6 +557,235 @@ fn af2_credential_id_routes_map_read_and_write_sub_actions() {
     assert_eq!(action_for(&Method::PUT, "/v1/config/credentials/c1"), None);
 }
 
+#[test]
+fn af_covers_the_deployment_environment_agent_and_project_families() {
+    // The route table is the authz decision point: a mutation accidentally
+    // mapped to a `*.read` action would be a silent authz fail-open. These
+    // families were unasserted; lock every read→read / mutation→write row (and
+    // the fail-closed `None` rows) so a regression cannot loosen them.
+    fn scoped(method: Method, path: &str) -> Option<&'static str> {
+        match super::action_for(&method, path) {
+            Some(RouteAuthz::Scoped(a)) => Some(a),
+            Some(RouteAuthz::TokenAdmin) => panic!("{path} is TokenAdmin, not Scoped"),
+            None => None,
+        }
+    }
+    let get = Method::GET;
+    let post = Method::POST;
+    let put = Method::PUT;
+
+    // -- config: endpoints / mcp-servers / inference-profiles / authoring agents / projects --
+    assert_eq!(
+        scoped(get.clone(), "/v1/config/endpoints/ep1"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        scoped(put.clone(), "/v1/config/endpoints/ep1"),
+        Some(WORKSPACE_WRITE)
+    );
+    assert_eq!(
+        scoped(get.clone(), "/v1/config/mcp-servers"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        scoped(get.clone(), "/v1/config/mcp-servers/m1"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        scoped(put.clone(), "/v1/config/mcp-servers/m1"),
+        Some(WORKSPACE_WRITE)
+    );
+    assert_eq!(
+        scoped(get.clone(), "/v1/config/inference-profiles/p1"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        scoped(put.clone(), "/v1/config/inference-profiles/p1"),
+        Some(WORKSPACE_WRITE)
+    );
+    assert_eq!(
+        scoped(get.clone(), "/v1/config/agents"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        scoped(post.clone(), "/v1/config/agents/a1/validate"),
+        Some(WORKSPACE_WRITE)
+    );
+    assert_eq!(
+        scoped(post.clone(), "/v1/config/agents/a1/publish"),
+        Some(WORKSPACE_WRITE)
+    );
+    assert_eq!(
+        scoped(get.clone(), "/v1/config/agents/a1"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        scoped(put.clone(), "/v1/config/agents/a1"),
+        Some(WORKSPACE_WRITE)
+    );
+    assert_eq!(
+        scoped(get.clone(), "/v1/config/projects"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        scoped(get.clone(), "/v1/config/projects/pr1"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        scoped(put.clone(), "/v1/config/projects/pr1"),
+        Some(WORKSPACE_WRITE)
+    );
+    assert_eq!(
+        scoped(get.clone(), "/v1/config/projects/pr1/agents/a1/mcp"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        scoped(put.clone(), "/v1/config/projects/pr1/agents/a1/mcp"),
+        Some(WORKSPACE_WRITE)
+    );
+
+    // -- the vault credential archive sub-action writes --
+    assert_eq!(
+        scoped(post.clone(), "/v1/vaults/v1/credentials/c1/archive"),
+        Some(APIKEY_WRITE)
+    );
+
+    // -- the public agent registry (distinct from /v1/config/agents authoring) --
+    assert_eq!(scoped(get.clone(), "/v1/agents"), Some(WORKSPACE_READ));
+    assert_eq!(scoped(post.clone(), "/v1/agents"), Some(WORKSPACE_WRITE));
+    assert_eq!(scoped(get.clone(), "/v1/agents/a1"), Some(WORKSPACE_READ));
+    assert_eq!(scoped(put.clone(), "/v1/agents/a1"), Some(WORKSPACE_WRITE));
+    assert_eq!(
+        scoped(get.clone(), "/v1/agents/a1/versions"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        scoped(post.clone(), "/v1/agents/a1/archive"),
+        Some(WORKSPACE_WRITE)
+    );
+
+    // -- deployments + deployment runs --
+    assert_eq!(scoped(get.clone(), "/v1/deployments"), Some(WORKSPACE_READ));
+    assert_eq!(
+        scoped(post.clone(), "/v1/deployments"),
+        Some(WORKSPACE_WRITE)
+    );
+    assert_eq!(
+        scoped(get.clone(), "/v1/deployments/d1"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        scoped(put.clone(), "/v1/deployments/d1"),
+        Some(WORKSPACE_WRITE)
+    );
+    for action in ["archive", "pause", "unpause", "run"] {
+        assert_eq!(
+            scoped(post.clone(), &format!("/v1/deployments/d1/{action}")),
+            Some(WORKSPACE_WRITE),
+            "deployments/{action} must write"
+        );
+    }
+    assert_eq!(
+        scoped(get.clone(), "/v1/deployment_runs"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        scoped(get.clone(), "/v1/deployment_runs/r1"),
+        Some(WORKSPACE_READ)
+    );
+    // deployment_runs is read-only: a POST has no write mapping and fails closed.
+    assert_eq!(scoped(post.clone(), "/v1/deployment_runs"), None);
+
+    // -- environments + the self-hosted work queue --
+    assert_eq!(
+        scoped(get.clone(), "/v1/environments"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        scoped(post.clone(), "/v1/environments"),
+        Some(WORKSPACE_WRITE)
+    );
+    assert_eq!(
+        scoped(get.clone(), "/v1/environments/e1"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        scoped(put.clone(), "/v1/environments/e1"),
+        Some(WORKSPACE_WRITE)
+    );
+    assert_eq!(
+        scoped(post.clone(), "/v1/environments/e1/archive"),
+        Some(WORKSPACE_WRITE)
+    );
+    assert_eq!(
+        scoped(get.clone(), "/v1/environments/e1/work"),
+        Some(WORKSPACE_READ)
+    );
+    // poll + stats are GET reads (they lease/observe, not mutate).
+    assert_eq!(
+        scoped(get.clone(), "/v1/environments/e1/work/poll"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        scoped(get.clone(), "/v1/environments/e1/work/stats"),
+        Some(WORKSPACE_READ)
+    );
+    // the bare work item: GET retrieves (read), POST updates (write).
+    assert_eq!(
+        scoped(get.clone(), "/v1/environments/e1/work/w1"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        scoped(post.clone(), "/v1/environments/e1/work/w1"),
+        Some(WORKSPACE_WRITE)
+    );
+    for action in ["ack", "heartbeat", "stop"] {
+        assert_eq!(
+            scoped(
+                post.clone(),
+                &format!("/v1/environments/e1/work/w1/{action}")
+            ),
+            Some(WORKSPACE_WRITE),
+            "work/{action} must write"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mg12_read_only_role_reads_but_a_workspace_write_denies() {
+    // A fresh preset role (`workspace_restricted_developer`) that holds
+    // `workspace.read` but no write: it passes a deployments read yet is denied
+    // a deployments write at a NON-credential surface — the write-deny mirror of
+    // the existing credential-read-deny (mg11c), proving the deny path is not
+    // credential-namespace-specific.
+    let (_dir, iam) = fresh_iam();
+    let dev = mint(
+        &iam,
+        "tok_ro_dev",
+        BOOTSTRAP_WORKSPACE,
+        "workspace_restricted_developer",
+    );
+    let app = guarded_app(iam);
+
+    let (s, body) = call(&app, "GET", "/v1/deployments", Some(&dev), None).await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "read-only role reads deployments: {body}"
+    );
+
+    let (s, err) = call(&app, "PUT", "/v1/deployments/d1", Some(&dev), None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+    assert_eq!(err["error"]["type"], json!("permission_error"));
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("does not authorize"),
+        "{err}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn af6_workspace_user_reading_credentials_denies() {
     // Role adaptation: workspace_user cannot reach the apikey namespace, so

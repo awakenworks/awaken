@@ -413,6 +413,103 @@ mod tests {
     }
 
     #[test]
+    fn commutative_replaces_when_existing_is_not_an_object() {
+        // A commutative shallow-merge only applies object-into-object; a scalar
+        // sitting in the slot is replaced wholesale by an incoming object.
+        let store = Store::rebuild(&[
+            Command::set(
+                Scope::Thread,
+                MergePolicy::Commutative,
+                "k",
+                serde_json::json!(1),
+            ),
+            Command::set(
+                Scope::Thread,
+                MergePolicy::Commutative,
+                "k",
+                serde_json::json!({"a": 1}),
+            ),
+        ]);
+        assert_eq!(
+            store.get(Scope::Thread, &Key("k".into())),
+            Some(&serde_json::json!({"a": 1}))
+        );
+    }
+
+    #[test]
+    fn commutative_replaces_when_incoming_is_not_an_object() {
+        // Object sitting in the slot, scalar incoming: no merge, wholesale replace.
+        let store = Store::rebuild(&[
+            Command::set(
+                Scope::Thread,
+                MergePolicy::Commutative,
+                "k",
+                serde_json::json!({"a": 1}),
+            ),
+            Command::set(
+                Scope::Thread,
+                MergePolicy::Commutative,
+                "k",
+                serde_json::json!(9),
+            ),
+        ]);
+        assert_eq!(
+            store.get(Scope::Thread, &Key("k".into())),
+            Some(&serde_json::json!(9))
+        );
+    }
+
+    #[test]
+    fn removing_an_absent_key_is_a_noop() {
+        let mut store = Store::new();
+        store.apply(&Command::remove(Scope::Run, MergePolicy::Disjoint, "ghost"));
+        assert!(store.is_empty());
+    }
+
+    #[test]
+    fn validate_batch_exclusive_remove_repeats_are_allowed() {
+        // Only repeated *Set* of an exclusive key conflicts; repeated Remove does not.
+        let batch = vec![
+            Command::remove(Scope::Run, MergePolicy::Exclusive, "lock"),
+            Command::remove(Scope::Run, MergePolicy::Exclusive, "lock"),
+        ];
+        assert!(validate_batch(&batch).is_ok());
+    }
+
+    #[test]
+    fn validate_batch_exclusive_same_key_different_scope_is_allowed() {
+        // The conflict key is (scope, key); a different scope is a different slot.
+        let batch = vec![
+            Command::set(
+                Scope::Run,
+                MergePolicy::Exclusive,
+                "once",
+                serde_json::json!(1),
+            ),
+            Command::set(
+                Scope::Thread,
+                MergePolicy::Exclusive,
+                "once",
+                serde_json::json!(2),
+            ),
+        ];
+        assert!(validate_batch(&batch).is_ok());
+    }
+
+    #[test]
+    fn state_error_display_names_key_scope_and_detail() {
+        let err = StateError {
+            key: "counter".into(),
+            scope: Scope::Run,
+            detail: "expected u64".into(),
+        };
+        let text = err.to_string();
+        assert!(text.contains("counter"));
+        assert!(text.contains("Run"));
+        assert!(text.contains("expected u64"));
+    }
+
+    #[test]
     fn validate_batch_allows_commutative_repeats_and_single_exclusive() {
         let batch = vec![
             Command::set(

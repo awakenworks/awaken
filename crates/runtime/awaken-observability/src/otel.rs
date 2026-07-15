@@ -78,8 +78,14 @@ pub fn init_otlp_tracer(
     use opentelemetry_sdk::trace::span_processor_with_async_runtime::BatchSpanProcessor;
 
     // Only HTTP/protobuf is compiled in (the `http-proto` exporter feature); a grpc
-    // request would need the tonic transport, so fall back to HTTP either way.
-    let _ = matches!(config.effective_traces_protocol(), OtelProtocol::Grpc);
+    // request would need the tonic transport, so we fall back to HTTP. Surface the
+    // downgrade so a `grpc` misconfiguration is observable instead of silent.
+    if matches!(config.effective_traces_protocol(), OtelProtocol::Grpc) {
+        tracing::warn!(
+            "OTLP traces protocol 'grpc' requested but only http/protobuf is compiled in; \
+             exporting traces over HTTP"
+        );
+    }
 
     let endpoint = config
         .effective_traces_endpoint()

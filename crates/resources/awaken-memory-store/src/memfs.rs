@@ -818,6 +818,73 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// Ids are monotonic across a delete: deleting the highest-ordinal memory and then
+    /// creating must mint a FRESH id, never re-hand-out the deleted one. Holds within a
+    /// live handle for both the in-memory and (in-process) filesystem backends because
+    /// their `next` counter only advances. (The sqlite/postgres backends derive the
+    /// high-water from live rows and therefore reuse a deleted top ordinal — pinned as a
+    /// divergence in `sqlite::memfs_tests`.)
+    async fn ids_stay_monotonic_across_delete(fs: &dyn MemoryFs) {
+        let a = fs.create("s", "/a.md", "a").await.unwrap();
+        let b = fs.create("s", "/b.md", "b").await.unwrap();
+        assert_eq!((a.id.as_str(), b.id.as_str()), ("mem_1", "mem_2"));
+        // Delete the highest-ordinal memory, then create again.
+        fs.delete_by_path("s", "/b.md").await.unwrap();
+        let c = fs.create("s", "/c.md", "c").await.unwrap();
+        assert_eq!(
+            c.id, "mem_3",
+            "a create after deleting the top id must not reuse it"
+        );
+    }
+
+    #[tokio::test]
+    async fn in_memory_ids_stay_monotonic_across_delete() {
+        ids_stay_monotonic_across_delete(&InMemoryFs::new()).await;
+    }
+
+    #[tokio::test]
+    async fn fs_ids_stay_monotonic_across_delete() {
+        let root = temp_root("mono");
+        ids_stay_monotonic_across_delete(&FsMemoryFs::open(&root).unwrap()).await;
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A rename-replace masks the destination entirely: after moving `src` over `dst`,
+    /// the memory formerly at `dst` (its id) is gone — an update on that stale id is
+    /// `NotFound`, and the destination path now carries the source's id and content.
+    /// This is the "who masks whom" edge of the POSIX-replace contract.
+    async fn rename_replace_orphans_the_destination_id(fs: &dyn MemoryFs) {
+        let dst = fs.create("s", "/dst.md", "old-dst").await.unwrap();
+        let src = fs.create("s", "/src.md", "src").await.unwrap();
+        assert_ne!(dst.id, src.id);
+        let moved = fs.rename("s", "/src.md", "/dst.md").await.unwrap();
+        assert_eq!(moved.id, src.id, "the surviving memory keeps the source id");
+        assert_eq!(moved.content.as_deref(), Some("src"));
+        // The replaced destination's id no longer addresses anything.
+        assert!(
+            matches!(
+                fs.update("s", &dst.id, "zombie", &dst.content_sha256).await,
+                Err(MemErr::NotFound(_))
+            ),
+            "the replaced destination id must be unaddressable after the move"
+        );
+        let at_dst = fs.get_by_path("s", "/dst.md").await.unwrap().unwrap();
+        assert_eq!(at_dst.id, src.id);
+        assert_eq!(at_dst.content.as_deref(), Some("src"));
+    }
+
+    #[tokio::test]
+    async fn in_memory_rename_replace_orphans_destination_id() {
+        rename_replace_orphans_the_destination_id(&InMemoryFs::new()).await;
+    }
+
+    #[tokio::test]
+    async fn fs_rename_replace_orphans_destination_id() {
+        let root = temp_root("orphan");
+        rename_replace_orphans_the_destination_id(&FsMemoryFs::open(&root).unwrap()).await;
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     #[tokio::test]
     async fn fs_backend_survives_reopen() {
         let root = temp_root("reopen");

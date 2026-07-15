@@ -245,6 +245,40 @@ mod tests {
         assert_eq!(s.release(&a), 0);
     }
 
+    // TTL boundary: a record whose age is exactly `ttl_millis` is expired and
+    // swept (the retain predicate keeps only `age < ttl`). Guards the off-by-one.
+    #[test]
+    fn ttl_sweep_at_exact_boundary_age_is_swept() {
+        let s = InMemoryCapturedContentStore::new();
+        s.insert(
+            DataSubjectId("a".into()),
+            Purpose::TelemetryContent,
+            "x",
+            100,
+        );
+        // age = now - recorded = 200 - 100 = 100 == ttl → swept.
+        assert_eq!(s.sweep_expired(100, 200), 1, "age == ttl is expired");
+        assert!(s.is_empty());
+    }
+
+    // restrict/release of a subject with no matching rows are counted no-ops
+    // (return 0) and do not touch another subject's rows.
+    #[test]
+    fn restrict_and_release_unknown_subject_are_noops() {
+        let s = store(); // subjects "a" (x2) and "b" (x1)
+        assert_eq!(s.restrict(&DataSubjectId("ghost".into())), 0);
+        assert_eq!(s.release(&DataSubjectId("ghost".into())), 0);
+        // A real subject with nothing restricted yet: release finds none.
+        assert_eq!(s.release(&DataSubjectId("a".into())), 0);
+        // ...and restricting only "a" leaves "b" free to be erased.
+        assert_eq!(s.restrict(&DataSubjectId("a".into())), 2);
+        assert_eq!(
+            s.restrict(&DataSubjectId("b".into())),
+            1,
+            "b untouched by a's restrict"
+        );
+    }
+
     #[test]
     fn ttl_sweep_removes_expired_records() {
         let s = store(); // all recorded at t=100

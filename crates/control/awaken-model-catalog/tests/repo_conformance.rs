@@ -148,6 +148,40 @@ async fn put_is_upsert(repo: &dyn CatalogRepo) {
     assert_eq!(repo.snapshot().await.unwrap().endpoints.len(), 1);
 }
 
+/// Re-putting an offering on its primary key `(model_id, protocol_endpoint_id)`
+/// replaces the row rather than accumulating a duplicate — the durable backends
+/// key on exactly that pair, so an in-memory push must not diverge.
+async fn offering_put_is_upsert(repo: &dyn CatalogRepo) {
+    repo.put_provider(provider("anthropic")).await.unwrap();
+    repo.put_endpoint(endpoint("ep1", "anthropic", ApiDialect::AnthropicMessages))
+        .await
+        .unwrap();
+    let mut first = offering("claude-opus-4-8", "ep1", ApiDialect::AnthropicMessages);
+    first.upstream_model = Some("v1".into());
+    repo.put_offering(first).await.unwrap();
+    let mut second = offering("claude-opus-4-8", "ep1", ApiDialect::AnthropicMessages);
+    second.upstream_model = Some("v2".into());
+    repo.put_offering(second).await.unwrap();
+
+    let snap = repo.snapshot().await.unwrap();
+    // Same key ⇒ one offering, carrying the second write's payload.
+    assert_eq!(snap.offerings.len(), 1);
+    assert_eq!(snap.offerings[0].upstream_model.as_deref(), Some("v2"));
+
+    // A distinct endpoint is a distinct key ⇒ a second offering, not a replace.
+    repo.put_endpoint(endpoint("ep2", "anthropic", ApiDialect::AnthropicMessages))
+        .await
+        .unwrap();
+    repo.put_offering(offering(
+        "claude-opus-4-8",
+        "ep2",
+        ApiDialect::AnthropicMessages,
+    ))
+    .await
+    .unwrap();
+    assert_eq!(repo.snapshot().await.unwrap().offerings.len(), 2);
+}
+
 /// Run every suite, each on a fresh repo from `make`.
 async fn run_all(make: impl Fn() -> Box<dyn CatalogRepo>) {
     crud_round_trip_and_snapshot(&*make()).await;
@@ -156,6 +190,7 @@ async fn run_all(make: impl Fn() -> Box<dyn CatalogRepo>) {
     offering_needs_existing_endpoint(&*make()).await;
     rejected_offering_leaves_no_trace(&*make()).await;
     put_is_upsert(&*make()).await;
+    offering_put_is_upsert(&*make()).await;
 }
 
 #[tokio::test]
@@ -226,6 +261,7 @@ mod postgres {
         offering_needs_existing_endpoint(&repo("t_cat_off").await.unwrap()).await;
         rejected_offering_leaves_no_trace(&repo("t_cat_reject").await.unwrap()).await;
         put_is_upsert(&repo("t_cat_upsert").await.unwrap()).await;
+        offering_put_is_upsert(&repo("t_cat_off_upsert").await.unwrap()).await;
     }
 }
 

@@ -72,9 +72,69 @@ async fn put_get_list_delete_and_scope_by_workspace(store: &dyn SkillStore) {
     assert_eq!(store.list("wsO").await.unwrap().len(), 1);
 }
 
+/// Sanitize collisions, the empty-stem fallback, and cross-workspace isolation with
+/// safe (collation-agnostic, lowercase) ids — so it holds identically on every backend
+/// including postgres regardless of the database's default collation.
+async fn sanitize_collisions_scope_and_empty(store: &dyn SkillStore) {
+    // An empty id → the "skill" fallback stem (same collapse as an all-illegal id).
+    assert_eq!(store.put("c", "", "E").await.unwrap(), "skill");
+    // Distinct raw ids that sanitize to the same stem collide onto ONE entry; last wins.
+    assert_eq!(store.put("c", "a b", "one").await.unwrap(), "a-b");
+    assert_eq!(store.put("c", "a/b", "two").await.unwrap(), "a-b");
+    assert_eq!(store.put("c", "a....b", "three").await.unwrap(), "a-b");
+    assert_eq!(
+        store.get("c", "a-b").await.unwrap().as_deref(),
+        Some("three")
+    );
+    // Outer separators are trimmed on the stored stem.
+    assert_eq!(store.put("c", "--foo_bar--", "F").await.unwrap(), "foo_bar");
+    // Exactly the three distinct stems, ascending, no duplicates from the collisions.
+    let ids: Vec<String> = store
+        .list("c")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(ids, vec!["a-b", "foo_bar", "skill"]);
+
+    // Cross-workspace isolation: a skill under one workspace is invisible in another,
+    // by both point lookup and listing.
+    store.put("wsA", "secret", "A-ONLY").await.unwrap();
+    assert_eq!(store.get("wsB", "secret").await.unwrap(), None);
+    assert!(store.list("wsB").await.unwrap().is_empty());
+}
+
+/// The three *local* backends (in-mem `BTreeMap`, fs `str::cmp`, sqlite `BINARY`
+/// collation) all order `list` by raw byte value — uppercase < `_` < lowercase, and a
+/// shorter id sorts before its extension. Pinned here so they cannot silently diverge.
+/// Deliberately NOT run against postgres, whose default collation may order these
+/// mixed-case/punctuation ids differently (see the divergence note in the report).
+async fn list_is_byte_ordered(store: &dyn SkillStore) {
+    for (id, body) in [
+        ("Zed", "z"),
+        ("apex", "a"),
+        ("Beta", "b"),
+        ("_hidden", "h"),
+        ("Zed-2", "z2"),
+    ] {
+        store.put("w", id, body).await.unwrap();
+    }
+    let ids: Vec<String> = store
+        .list("w")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(ids, vec!["Beta", "Zed", "Zed-2", "_hidden", "apex"]);
+}
+
 #[tokio::test]
 async fn in_memory_conforms() {
     put_get_list_delete_and_scope_by_workspace(&InMemorySkillStore::new()).await;
+    sanitize_collisions_scope_and_empty(&InMemorySkillStore::new()).await;
+    list_is_byte_ordered(&InMemorySkillStore::new()).await;
 }
 
 #[tokio::test]
@@ -82,6 +142,8 @@ async fn fs_conforms_and_survives_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_path_buf();
     put_get_list_delete_and_scope_by_workspace(&FsSkillStore::open(&root).unwrap()).await;
+    sanitize_collisions_scope_and_empty(&FsSkillStore::open(&root).unwrap()).await;
+    list_is_byte_ordered(&FsSkillStore::open(&root).unwrap()).await;
 
     // A fresh handle over the same root (a restart) reads the committed catalog.
     let reopened = FsSkillStore::open(&root).unwrap();
@@ -98,6 +160,8 @@ async fn fs_conforms_and_survives_reopen() {
 async fn sqlite_conforms() {
     use awaken_skill_store::SqliteSkillStore;
     put_get_list_delete_and_scope_by_workspace(&SqliteSkillStore::open_in_memory().unwrap()).await;
+    sanitize_collisions_scope_and_empty(&SqliteSkillStore::open_in_memory().unwrap()).await;
+    list_is_byte_ordered(&SqliteSkillStore::open_in_memory().unwrap()).await;
 }
 
 /// Live Postgres conformance on a fresh schema. Skips when no Postgres is reachable
@@ -152,5 +216,9 @@ mod postgres {
         let store = PgSkillStore::with_pool(pool);
         store.ensure_schema().await.unwrap();
         put_get_list_delete_and_scope_by_workspace(&store).await;
+        // Collation-agnostic (lowercase-only) ordering, so it holds on postgres too. The
+        // mixed-case `list_is_byte_ordered` is intentionally NOT run here: postgres uses
+        // its default collation, not raw byte order (see report divergence note).
+        sanitize_collisions_scope_and_empty(&store).await;
     }
 }

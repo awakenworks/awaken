@@ -146,6 +146,16 @@ impl Tool for EditTool {
         "edit"
     }
     async fn call(&self, args: EditArgs) -> Result<String, ToolError> {
+        // An empty `old` is a degenerate anchor: `"".matches("")` is 1, so on an
+        // empty file the "exactly one occurrence" arm would silently *insert*
+        // `new`. Reject it up front so an edit always replaces a real, located
+        // substring rather than mutating on a no-op anchor.
+        if args.old.is_empty() {
+            return Err(ToolError::InvalidArguments(format!(
+                "edit {}: `old` must be a non-empty substring to locate",
+                args.path
+            )));
+        }
         let content = std::fs::read_to_string(&args.path)
             .map_err(|err| ToolError::Execution(format!("read {}: {err}", args.path)))?;
         let matches = content.matches(&args.old).count();

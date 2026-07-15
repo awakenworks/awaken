@@ -84,13 +84,28 @@ impl FsCommitCoordinator {
 #[async_trait]
 impl Coordinator for FsCommitCoordinator {
     async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
-        // Terminal-is-final (exactly-once committed LOG under a stale reclaim):
+        // Every rejection the inner reference model would raise MUST be raised HERE
+        // first — before the durable append below — so the append-only log never
+        // records a line that the read model would then reject when it is rebuilt on
+        // open. If a rejectable line reached the log, replaying it on the next
+        // `open` would fail and the store would be permanently unopenable. The two
+        // rejection paths inner enforces are (1) plan validation and (2) the
+        // terminal fence; we mirror both, in the same order, before writing.
+
+        // (1) Plan validation: empty ids / a cross-run|thread waiting ticket are
+        // rejected up front, exactly as the inner model does.
+        commit
+            .validate()
+            .map_err(|err| Error::Rejected(err.to_string()))?;
+
+        // (2) Terminal-is-final (exactly-once committed LOG under a stale reclaim):
         // reject a post-terminal commit for a run whose committed phase is already
-        // `Ended`. The inner reference model enforces the same invariant, but it is
-        // checked HERE first — before the durable append below — so the append-only
-        // log never records a post-terminal line that would then be rejected when
-        // the read model is rebuilt on open. (See awaken-store-inmem for the full
-        // rationale on why a stale owner's duplicate commit must be fenced.)
+        // `Ended`. (See awaken-store-inmem for the full rationale on why a stale
+        // owner's duplicate commit must be fenced.) This uses the per-run fact
+        // lookup (`CheckpointReader::run`), not the latest-run cache
+        // (`RunStore::get`): a run that ended is fenced even after a *different*
+        // run committed afterwards and became the thread's latest — matching what
+        // inner's own run-fact scan enforces.
         //
         // This read is process-LOCAL (the inner in-memory model), which is correct
         // here because the fs store is single-writer / single-process by
@@ -100,7 +115,7 @@ impl Coordinator for FsCommitCoordinator {
         // holds across processes sharing a log directory.
         if self
             .inner
-            .get(&commit.run_fact.run_id)
+            .run(&commit.run_fact.run_id)
             .is_some_and(|record| {
                 matches!(
                     record.phase,

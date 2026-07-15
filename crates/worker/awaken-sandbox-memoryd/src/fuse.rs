@@ -1588,4 +1588,197 @@ mod tests {
             "the old path is gone"
         );
     }
+
+    #[test]
+    fn child_path_joins_valid_names_and_rejects_traversal() {
+        // Path safety: a child name must be a single, non-empty segment. `.`/`..`/an
+        // embedded slash are rejected so a lookup/create/rename cannot escape the store.
+        assert_eq!(
+            MemoryFuse::child_path("/", OsStr::new("a.md")).as_deref(),
+            Some("/a.md")
+        );
+        assert_eq!(
+            MemoryFuse::child_path("/notes", OsStr::new("a.md")).as_deref(),
+            Some("/notes/a.md")
+        );
+        // A trailing slash on the parent does not double up.
+        assert_eq!(
+            MemoryFuse::child_path("/notes/", OsStr::new("a.md")).as_deref(),
+            Some("/notes/a.md")
+        );
+        for bad in ["", "a/b", ".", ".."] {
+            assert_eq!(
+                MemoryFuse::child_path("/", OsStr::new(bad)),
+                None,
+                "{bad:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn write_and_read_at_offsets_splice_and_clamp_the_fd_buffer() {
+        let store = "s";
+        let backend = Arc::new(InMemoryFs::new());
+        let rt = setup_rt();
+        rt.block_on(backend.create(store, "/f.md", "abcdef"))
+            .unwrap();
+        let fuse = MemoryFuse::new(backend, store.into()).unwrap();
+        let fh = fuse.open_file_for_path("/f.md", 0).unwrap();
+
+        // An overwrite in the middle of the buffer.
+        fuse.write_fh_bytes(fh, 2, b"XY").unwrap();
+        assert_eq!(fuse.read_fh_bytes(fh, 0, 64).unwrap(), b"abXYef");
+        // A write past the end zero-fills the gap.
+        fuse.write_fh_bytes(fh, 8, b"Z").unwrap();
+        assert_eq!(fuse.read_fh_bytes(fh, 0, 64).unwrap(), b"abXYef\0\0Z");
+        // A read clamps: an offset past the end yields nothing…
+        assert_eq!(fuse.read_fh_bytes(fh, 100, 10).unwrap(), b"");
+        // …and a size that overruns the end is truncated to what exists.
+        assert_eq!(fuse.read_fh_bytes(fh, 6, 100).unwrap(), b"\0\0Z");
+        fuse.remove_fh(fh);
+    }
+
+    #[test]
+    fn a_flush_conflict_keeps_the_buffer_dirty_for_a_re_drive() {
+        // On a CAS conflict the flush returns EAGAIN but must NOT drop the buffer or
+        // mark the fd clean — the agent's write is preserved for a re-drive, and a
+        // second flush conflicts again (proving the fd was never silently cleared).
+        let store = "s";
+        let backend = Arc::new(InMemoryFs::new());
+        let rt = setup_rt();
+        let created = rt.block_on(backend.create(store, "/c.md", "v1")).unwrap();
+        let fuse = MemoryFuse::new(backend.clone(), store.into()).unwrap();
+        let fh = fuse.open_file_for_path("/c.md", 0).unwrap();
+
+        // Advance the store out from under the open fd, then write + flush the stale fd.
+        rt.block_on(backend.update(store, &created.id, "server", &created.content_sha256))
+            .unwrap();
+        fuse.write_fh_bytes(fh, 0, b"mine").unwrap();
+        assert!(matches!(
+            fuse.flush_fh(fh),
+            Err(FuseError::Mem(MemErr::Conflict { .. }))
+        ));
+        // The buffer survives the conflict…
+        assert_eq!(fuse.read_fh_bytes(fh, 0, 64).unwrap(), b"mine");
+        // …and the fd is still dirty, so re-flushing conflicts again (not a clean no-op).
+        assert!(matches!(
+            fuse.flush_fh(fh),
+            Err(FuseError::Mem(MemErr::Conflict { .. }))
+        ));
+        fuse.remove_fh(fh);
+    }
+
+    #[test]
+    fn apply_setattr_grow_zero_fills_through_the_store() {
+        // Truncation that GROWS a file (no open fd) zero-fills to the new size and
+        // writes it through the store — the mirror of the shrink case.
+        let store = "s";
+        let backend = Arc::new(InMemoryFs::new());
+        let rt = setup_rt();
+        rt.block_on(backend.create(store, "/g.md", "hi")).unwrap();
+        let fuse = MemoryFuse::new(backend.clone(), store.into()).unwrap();
+        let (ino, _) = fuse.lookup_path("/g.md").unwrap();
+
+        assert_eq!(fuse.apply_setattr(ino, Some(5), None).unwrap().size, 5);
+        assert_eq!(
+            rt.block_on(backend.get_by_path(store, "/g.md"))
+                .unwrap()
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("hi\0\0\0"),
+            "grow zero-fills to the requested length"
+        );
+    }
+
+    #[test]
+    fn content_lru_handles_zero_capacity_prefix_clear_and_removal() {
+        // A zero-capacity cache never stores anything (defensive: a misconfigured cap
+        // must not panic on eviction).
+        let mut zero = ContentLruCache::new(0);
+        zero.put(memory("/a.md", "a"));
+        assert!(zero.get("/a.md").is_none());
+
+        let mut cache = ContentLruCache::new(8);
+        cache.put(memory("/notes/a.md", "a"));
+        cache.put(memory("/notes/deep/b.md", "b"));
+        cache.put(memory("/other.md", "o"));
+        // `clear_path_prefix` (used by rmdir) drops only the matching subtree.
+        cache.clear_path_prefix("/notes/");
+        assert!(cache.get("/notes/a.md").is_none());
+        assert!(cache.get("/notes/deep/b.md").is_none());
+        assert!(cache.get("/other.md").is_some(), "a sibling survives");
+        // `remove_path` drops one entry; `clear` drops all.
+        cache.remove_path("/other.md");
+        assert!(cache.get("/other.md").is_none());
+        cache.put(memory("/x.md", "x"));
+        cache.clear();
+        assert!(cache.get("/x.md").is_none());
+    }
+
+    #[test]
+    fn a_lagged_listener_clears_the_whole_cache() {
+        use crate::LocalInvalidator;
+        use crate::invalidate::Invalidator;
+        // A listener that fell behind by more than the bus capacity has missed
+        // invalidations, so it cannot know which paths are stale — it clears the
+        // whole cache rather than risk serving a stale entry.
+        let cache = Arc::new(Mutex::new(ContentLruCache::new(8)));
+        cache.lock().unwrap().put(memory("/a.md", "a"));
+        cache.lock().unwrap().put(memory("/b.md", "b"));
+
+        // Capacity-2 bus; publish far more than that BEFORE the listener drains, so
+        // its first `try_recv` observes `Lagged`.
+        let bus = LocalInvalidator::new(2);
+        let rx = bus.subscribe();
+        for i in 0..20 {
+            bus.publish("s", &format!("/p{i}.md"));
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let listener = {
+            let (cache, stop) = (cache.clone(), stop.clone());
+            std::thread::spawn(move || run_invalidation_listener(cache, "s".into(), rx, stop))
+        };
+
+        let mut waited = Duration::ZERO;
+        while cache.lock().unwrap().get("/a.md").is_some() && waited < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(10));
+            waited += Duration::from_millis(10);
+        }
+        assert!(
+            cache.lock().unwrap().get("/a.md").is_none(),
+            "a lagged listener clears the cache"
+        );
+        assert!(cache.lock().unwrap().get("/b.md").is_none());
+
+        stop.store(true, Ordering::SeqCst);
+        listener.join().unwrap();
+    }
+
+    #[test]
+    fn a_closed_bus_stops_the_listener_without_the_stop_flag() {
+        use crate::LocalInvalidator;
+        // Dropping the sender closes the bus; the listener observes `Closed` and exits
+        // on its own (the drop-without-explicit-unmount path relies on this).
+        let cache = Arc::new(Mutex::new(ContentLruCache::new(4)));
+        let bus = LocalInvalidator::new(4);
+        let rx = bus.subscribe();
+        let stop = Arc::new(AtomicBool::new(false));
+        let handle = {
+            let (cache, stop) = (cache.clone(), stop.clone());
+            std::thread::spawn(move || run_invalidation_listener(cache, "s".into(), rx, stop))
+        };
+
+        drop(bus);
+        let start = std::time::Instant::now();
+        handle.join().unwrap();
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "a closed bus exits the listener promptly"
+        );
+        assert!(
+            !stop.load(Ordering::SeqCst),
+            "it exited via Closed, not the stop flag"
+        );
+    }
 }

@@ -175,6 +175,26 @@ mod tests {
     }
 
     #[test]
+    fn limit_is_clamped_to_the_upper_bound() {
+        // A request larger than MAX_PAGE_LIMIT returns exactly MAX_PAGE_LIMIT so
+        // one request can never ask for an unbounded collection.
+        let v = items(MAX_PAGE_LIMIT + 100);
+        let p = paginate_by_id(&v, None, Some(MAX_PAGE_LIMIT + 50), id).unwrap();
+        assert_eq!(p.items.len(), MAX_PAGE_LIMIT);
+        assert!(p.has_more);
+        assert_eq!(p.next_page.as_deref(), Some(v[MAX_PAGE_LIMIT - 1].as_str()));
+    }
+
+    #[test]
+    fn default_limit_applies_when_size_is_absent() {
+        // No limit => DEFAULT_PAGE_LIMIT items when the collection is larger.
+        let v = items(DEFAULT_PAGE_LIMIT + 10);
+        let p = paginate_by_id(&v, None, None, id).unwrap();
+        assert_eq!(p.items.len(), DEFAULT_PAGE_LIMIT);
+        assert!(p.has_more);
+    }
+
+    #[test]
     fn empty_collection_is_a_single_empty_page() {
         let v = items(0);
         let p = paginate_by_id(&v, None, None, id).unwrap();

@@ -177,4 +177,123 @@ mod tests {
         assert!(!block.contains(&"O".repeat(50)));
         assert!(block.contains("+1 older memories not shown"));
     }
+
+    #[test]
+    fn per_entry_cap_is_exact_at_the_boundary() {
+        // Content length == cap: kept verbatim, no truncation marker (off-by-one).
+        let store = store_with(&[("a", "abcd")]);
+        let bounds = RecallBounds {
+            per_entry_chars: 4,
+            ..RecallBounds::default()
+        };
+        let block = recall_block(&store, &bounds).unwrap();
+        assert!(block.contains("abcd"), "got: {block}");
+        assert!(
+            !block.contains("[truncated]"),
+            "content exactly at the cap must not be truncated: {block}"
+        );
+    }
+
+    #[test]
+    fn max_entries_zero_still_shows_one() {
+        // `max_entries.max(1)` guarantees at least one memory even at zero.
+        let store = store_with(&[("old", "OLD"), ("new", "NEW")]);
+        let bounds = RecallBounds {
+            max_entries: 0,
+            ..RecallBounds::default()
+        };
+        let block = recall_block(&store, &bounds).unwrap();
+        assert!(block.contains("NEW"), "newest is the one kept: {block}");
+        assert!(!block.contains("OLD"));
+        assert!(block.contains("+1 older memories not shown"));
+    }
+
+    #[test]
+    fn single_entry_over_total_cap_is_still_shown_without_an_omit_note() {
+        // The first memory is always kept even when it alone exceeds total_chars,
+        // and nothing was omitted so there is no trailing note.
+        let store = store_with(&[("big", &"Z".repeat(100))]);
+        let bounds = RecallBounds {
+            total_chars: 10,
+            per_entry_chars: 0,
+            ..RecallBounds::default()
+        };
+        let block = recall_block(&store, &bounds).unwrap();
+        assert!(block.contains(&"Z".repeat(100)), "first entry always kept");
+        assert!(!block.contains("older memories not shown"));
+    }
+
+    // --- recall_relevant: the select_over threshold and empty-selection path ---
+
+    use async_trait::async_trait;
+    use awaken_runtime_contract::llm::{
+        AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
+    };
+    use awaken_runtime_contract::resolved::ModelBinding;
+
+    struct PanicModel;
+    #[async_trait]
+    impl LlmExecutor for PanicModel {
+        async fn infer(&self, _r: ChatRequest) -> LlmResult<ChatResponse> {
+            panic!("the model must not be called at or below select_over");
+        }
+    }
+    struct ReplyModel(&'static str);
+    #[async_trait]
+    impl LlmExecutor for ReplyModel {
+        async fn infer(&self, _r: ChatRequest) -> LlmResult<ChatResponse> {
+            Ok(ChatResponse {
+                output: AssistantOutput::text(self.0),
+                usage: None,
+                stop_reason: None,
+            })
+        }
+    }
+    fn model() -> ModelBinding {
+        ModelBinding::new("p", "m", "b")
+    }
+
+    #[tokio::test]
+    async fn recall_relevant_at_or_below_select_over_skips_the_model() {
+        // 2 entries, select_over == 2 → entries.len() <= select_over → render, no call.
+        let store = store_with(&[("a", "AAA"), ("b", "BBB")]);
+        let bounds = RecallBounds {
+            select_over: 2,
+            ..RecallBounds::default()
+        };
+        let block = recall_relevant(&store, &bounds, &PanicModel, &model(), "q")
+            .await
+            .unwrap();
+        assert!(block.contains("AAA") && block.contains("BBB"));
+    }
+
+    #[tokio::test]
+    async fn recall_relevant_above_select_over_selects_via_the_model() {
+        // 3 entries > select_over(1); max_entries(2) < 3 forces a real model call.
+        let store = store_with(&[("a", "AAA"), ("b", "BBB"), ("c", "CCC")]);
+        let bounds = RecallBounds {
+            select_over: 1,
+            max_entries: 2,
+            ..RecallBounds::default()
+        };
+        // Entries are newest-first (c,b,a); index 0 is "CCC".
+        let block = recall_relevant(&store, &bounds, &ReplyModel("[0]"), &model(), "q")
+            .await
+            .unwrap();
+        assert!(block.contains("CCC"), "picked memory shown: {block}");
+        assert!(!block.contains("AAA"), "unpicked memory absent: {block}");
+    }
+
+    #[tokio::test]
+    async fn recall_relevant_returns_none_when_selection_picks_nothing() {
+        let store = store_with(&[("a", "AAA"), ("b", "BBB"), ("c", "CCC")]);
+        let bounds = RecallBounds {
+            select_over: 1,
+            max_entries: 2,
+            ..RecallBounds::default()
+        };
+        // Model replies NONE → no indices parsed → recall_relevant yields None.
+        let out = recall_relevant(&store, &bounds, &ReplyModel("NONE"), &model(), "q").await;
+        assert!(out.is_none());
+    }
 }

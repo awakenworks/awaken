@@ -459,6 +459,17 @@ mod tests {
     }
 
     #[test]
+    fn normalize_path_boundary_cases() {
+        // Collapsing to nothing yields "." (not the empty string).
+        assert_eq!(KeyNormalizer::Path.normalize(String::new()), ".");
+        assert_eq!(KeyNormalizer::Path.normalize(".".to_string()), ".");
+        assert_eq!(KeyNormalizer::Path.normalize("src/..".to_string()), ".");
+        // `..` that cannot pop past the start is preserved as a literal segment.
+        assert_eq!(KeyNormalizer::Path.normalize("a/../..".to_string()), "..");
+        assert_eq!(KeyNormalizer::Path.normalize("../x".to_string()), "../x");
+    }
+
+    #[test]
     fn transition_allows_from() {
         let t = Transition {
             pattern: ToolCallPattern::tool("Write"),

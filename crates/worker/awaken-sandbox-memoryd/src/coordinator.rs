@@ -231,4 +231,29 @@ mod tests {
         coord.release("never-acquired");
         assert_eq!(unmounts.load(Ordering::SeqCst), 0);
     }
+
+    #[test]
+    fn a_failing_mount_propagates_and_registers_no_entry() {
+        // When the factory cannot mount (e.g. /dev/fuse refused, spawn failed),
+        // `acquire` must surface that error AND leave the coordinator clean: no
+        // half-registered entry, refcount 0, so a later retry starts from scratch
+        // rather than inheriting a phantom reference.
+        struct FailingFactory;
+        impl MountFactory for FailingFactory {
+            fn mount(&self, _store_id: &str) -> Result<(PathBuf, Box<dyn Mount>), FuseError> {
+                Err(FuseError::Internal("mount refused".into()))
+            }
+        }
+        let coord = MountCoordinator::new(Box::new(FailingFactory));
+        assert!(matches!(
+            coord.acquire("memstore_x"),
+            Err(FuseError::Internal(_))
+        ));
+        assert_eq!(
+            coord.active_mounts(),
+            0,
+            "a failed mount registers no entry"
+        );
+        assert_eq!(coord.refcount("memstore_x"), 0);
+    }
 }

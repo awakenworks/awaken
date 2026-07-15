@@ -162,6 +162,31 @@ impl ScopedConfigRegistry for PostgresConfigStore {
             None => Ok(None),
         }
     }
+
+    async fn list_published_scoped(
+        &self,
+        scope: &ScopeId,
+    ) -> Result<Vec<StoredPublication>, ConfigStoreError> {
+        // Postgres is a durable store, so it must reload published publications for
+        // warm-install (the default trait impl returns empty and is only right for
+        // the in-memory store). Oldest-first by insertion (`created_at` ascending, the
+        // Postgres analogue of SQLite's `rowid`), so a map keyed by agent keeps the
+        // latest publication per agent.
+        let rows = sqlx::query(&format!(
+            "SELECT record FROM {NS}_publication \
+             WHERE scope_id = $1 AND state = 'published' ORDER BY created_at ASC"
+        ))
+        .bind(&scope.0)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(reject)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let Json(record): Json<StoredPublication> = row.try_get("record").map_err(reject)?;
+            out.push(record);
+        }
+        Ok(out)
+    }
 }
 
 /// The scope-free [`ConfigRegistry`] over Postgres operates in the seeded

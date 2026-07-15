@@ -12,7 +12,7 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_config_store::{
     AgentConfig, ConfigRegistry, DEFAULT_SCOPE, ModelSelection, PublicationState, ScopeId,
-    ScopedConfig, SqliteConfigStore, StoredPublication, compile,
+    ScopedConfig, ScopedConfigRegistry, SqliteConfigStore, StoredPublication, compile,
 };
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
@@ -278,4 +278,248 @@ async fn scoped_config_default_scope_shares_the_owner_with_scope_free_writes() {
     );
     assert!(other.get_config("d").await.expect("get other").is_none());
     assert_eq!(default.scope(), &ScopeId::from(DEFAULT_SCOPE));
+}
+
+// --- CEG: scoped agent CRUD data-integrity + ordering ------------------------
+
+/// An authoring aggregate with a chosen id and (fingerprint-affecting) instructions.
+fn agent_with(id: &str, instructions: &str) -> AgentConfig {
+    AgentConfig {
+        id: id.to_string(),
+        instructions: instructions.to_string(),
+        max_steps: 8,
+        model_binding: ModelSelection::pinned("p", "m", "b"),
+        tool_ids: Vec::new(),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn a_same_scope_re_put_updates_the_config_data() {
+    // put_config_scoped ON CONFLICT … DO UPDATE (same-scope branch): a re-put by the
+    // owner replaces the stored data (upsert, not insert-only).
+    let store = SqliteConfigStore::open_in_memory().expect("store");
+    let a = ScopeId::from("ws_a");
+    store
+        .put_config_scoped(&a, &agent_with("x", "v1"))
+        .await
+        .expect("put v1");
+    store
+        .put_config_scoped(&a, &agent_with("x", "v2"))
+        .await
+        .expect("put v2");
+    let got = store
+        .get_config_scoped(&a, "x")
+        .await
+        .expect("get")
+        .expect("row");
+    assert_eq!(got.instructions, "v2");
+}
+
+#[tokio::test]
+async fn a_cross_scope_write_leaves_the_owners_data_intact() {
+    // The isolation fence must protect DATA, not merely visibility: a foreign scope's
+    // write to the owner's id is a no-op even when it carries different data.
+    let store = SqliteConfigStore::open_in_memory().expect("store");
+    let a = ScopeId::from("ws_a");
+    let b = ScopeId::from("ws_b");
+    store
+        .put_config_scoped(&a, &agent_with("x", "A-data"))
+        .await
+        .expect("put a");
+    // ws_b tries to hijack id "x" with different data — the conflict guard blocks it.
+    store
+        .put_config_scoped(&b, &agent_with("x", "B-data"))
+        .await
+        .expect("put b");
+    let owner = store
+        .get_config_scoped(&a, "x")
+        .await
+        .expect("get a")
+        .expect("row a");
+    assert_eq!(owner.instructions, "A-data"); // untouched by the foreign write
+    assert!(
+        store
+            .get_config_scoped(&b, "x")
+            .await
+            .expect("get b")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn list_configs_scoped_returns_ids_ascending() {
+    // list_configs_scoped ORDER BY id ASC, filtered to the scope.
+    let store = SqliteConfigStore::open_in_memory().expect("store");
+    let a = ScopeId::from("ws_a");
+    for id in ["c", "a", "b"] {
+        store
+            .put_config_scoped(&a, &agent_with(id, "x"))
+            .await
+            .expect("put");
+    }
+    // A row under another scope must not leak into A's list.
+    store
+        .put_config_scoped(&ScopeId::from("ws_b"), &agent_with("aaa", "x"))
+        .await
+        .expect("put b");
+    let ids: Vec<String> = store
+        .list_configs_scoped(&a)
+        .await
+        .expect("list")
+        .into_iter()
+        .map(|c| c.id)
+        .collect();
+    assert_eq!(ids, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+}
+
+// --- CEG: publication scope isolation + idempotency + warm-load list ---------
+
+fn publication_for(cfg: &AgentConfig) -> StoredPublication {
+    let runnable = compile(cfg, &tool_catalog()).expect("compile");
+    StoredPublication::published(runnable, &cfg.id)
+}
+
+#[tokio::test]
+async fn a_publication_written_under_scope_a_is_invisible_to_scope_b() {
+    // get_publication_scoped carries `AND scope_id = ?`: a publication owned by A is
+    // unreadable by B even by its exact fingerprint (the tenancy fence on the
+    // compiled artifact, not just the authoring aggregate).
+    let store = Arc::new(SqliteConfigStore::open_in_memory().expect("store"));
+    let a = ScopedConfig::new(store.clone(), ScopeId::from("ws_a"));
+    let b = ScopedConfig::new(store.clone(), ScopeId::from("ws_b"));
+    let publication = publication_for(&agent_with("shared", "hello"));
+    let fp = publication.fingerprint.clone();
+    a.put_publication(&publication).await.expect("put a");
+    assert!(a.get_publication(&fp).await.expect("get a").is_some());
+    assert!(b.get_publication(&fp).await.expect("get b").is_none());
+}
+
+#[tokio::test]
+async fn a_publication_fingerprint_belongs_to_its_first_writer_across_scopes() {
+    // Fingerprints are global content addresses (the publication PK), so two scopes
+    // compiling the same config collide. ON CONFLICT(fingerprint) DO NOTHING means the
+    // first writer owns the row: B's identical write is a silent no-op and B still
+    // cannot read it — a fail-safe (no cross-tenant leak), never a takeover.
+    let store = Arc::new(SqliteConfigStore::open_in_memory().expect("store"));
+    let a = ScopedConfig::new(store.clone(), ScopeId::from("ws_a"));
+    let b = ScopedConfig::new(store.clone(), ScopeId::from("ws_b"));
+    let pub_a = publication_for(&agent_with("shared", "same-bytes"));
+    let pub_b = publication_for(&agent_with("shared", "same-bytes"));
+    assert_eq!(pub_a.fingerprint, pub_b.fingerprint); // content-addressed → identical
+    a.put_publication(&pub_a).await.expect("put a");
+    b.put_publication(&pub_b).await.expect("put b (no-op)");
+    assert!(
+        a.get_publication(&pub_a.fingerprint)
+            .await
+            .expect("get a")
+            .is_some()
+    );
+    assert!(
+        b.get_publication(&pub_b.fingerprint)
+            .await
+            .expect("get b")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn put_publication_scoped_is_idempotent_by_fingerprint() {
+    // Re-putting the same publication is a no-op (DO NOTHING), not an error.
+    let store = SqliteConfigStore::open_in_memory().expect("store");
+    let a = ScopeId::from("ws_a");
+    let publication = publication_for(&agent_with("agent", "body"));
+    store
+        .put_publication_scoped(&a, &publication)
+        .await
+        .expect("put");
+    store
+        .put_publication_scoped(&a, &publication)
+        .await
+        .expect("re-put idempotent");
+    assert!(
+        store
+            .get_publication_scoped(&a, &publication.fingerprint)
+            .await
+            .expect("get")
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn list_published_returns_only_published_rows_of_the_scope_in_insertion_order() {
+    // list_published_scoped: WHERE scope_id AND state='published' ORDER BY insertion.
+    // Covers the state filter (compiled excluded), scope isolation, ordering, and the
+    // empty-scope case — the warm-install reload contract.
+    let store = SqliteConfigStore::open_in_memory().expect("store");
+    let a = ScopeId::from("ws_a");
+    let b = ScopeId::from("ws_b");
+
+    let p1 = publication_for(&agent_with("a1", "first"));
+    let p2 = publication_for(&agent_with("a2", "second"));
+    let mut p_compiled = publication_for(&agent_with("a3", "third"));
+    p_compiled.state = PublicationState::Compiled; // must be excluded
+    let p_b = publication_for(&agent_with("b1", "other-scope"));
+
+    store.put_publication_scoped(&a, &p1).await.expect("p1");
+    store.put_publication_scoped(&a, &p2).await.expect("p2");
+    store
+        .put_publication_scoped(&a, &p_compiled)
+        .await
+        .expect("p_compiled");
+    store.put_publication_scoped(&b, &p_b).await.expect("p_b");
+
+    // A: only the two published rows, oldest-first (insertion order).
+    let a_fps: Vec<String> = store
+        .list_published_scoped(&a)
+        .await
+        .expect("list a")
+        .into_iter()
+        .map(|p| p.fingerprint)
+        .collect();
+    assert_eq!(a_fps, vec![p1.fingerprint.clone(), p2.fingerprint.clone()]);
+
+    // B: only its own published row (scope isolation on the list path).
+    let b_list = store.list_published_scoped(&b).await.expect("list b");
+    assert_eq!(b_list.len(), 1);
+    assert_eq!(b_list[0].fingerprint, p_b.fingerprint);
+
+    // An untouched scope reloads nothing.
+    assert!(
+        store
+            .list_published_scoped(&ScopeId::from("ws_empty"))
+            .await
+            .expect("list empty")
+            .is_empty()
+    );
+}
+
+// --- CEG: migration idempotency ----------------------------------------------
+
+#[tokio::test]
+async fn reopening_the_same_file_reruns_migrations_idempotently_and_keeps_data() {
+    // Opening a store runs the migration bundle; the ledger makes a second open a
+    // no-op (no error) and the previously written config survives the reopen.
+    let path =
+        std::env::temp_dir().join(format!("awaken_config_migidem_{}.db", std::process::id()));
+    let path = path.to_str().unwrap().to_string();
+    let _ = std::fs::remove_file(&path);
+
+    {
+        let store = SqliteConfigStore::open(&path).expect("first open");
+        store
+            .put_config(&agent_with("persist", "keep-me"))
+            .await
+            .expect("put");
+    }
+    // Second open re-applies the bundle; idempotent, and the row is still readable.
+    let store2 = SqliteConfigStore::open(&path).expect("second open");
+    let got = store2
+        .get_config("persist")
+        .await
+        .expect("get")
+        .expect("row survives reopen");
+    assert_eq!(got.instructions, "keep-me");
+
+    let _ = std::fs::remove_file(&path);
 }

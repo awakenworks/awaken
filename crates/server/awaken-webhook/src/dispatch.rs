@@ -642,6 +642,52 @@ mod tests {
         );
     }
 
+    /// The retry classification's 2xx upper boundary: `(200..300)` is exclusive at
+    /// 300, so `299` is still a success accepted on the first attempt, while `300`
+    /// (a redirect status — reqwest follows none, so it surfaces as-is) is NOT 2xx
+    /// and is retried to exhaustion then failed.
+    #[tokio::test]
+    async fn the_2xx_success_band_is_closed_at_300() {
+        let source = TestSource::with(resolved("wh_1"));
+        let ok = CodeSender::new(299);
+        let d = WebhookDispatcher::new(source, ok.clone()).with_thresholds(3, 20);
+        let r = d.dispatch(&event(), 1).await;
+        assert_eq!(r.delivered, vec!["wh_1".to_string()]);
+        assert_eq!(ok.calls(), 1, "299 is a 2xx ack on the first attempt");
+
+        let source = TestSource::with(resolved("wh_1"));
+        let redirect = CodeSender::new(300);
+        let d = WebhookDispatcher::new(source, redirect.clone()).with_thresholds(3, 20);
+        let r = d.dispatch(&event(), 1).await;
+        assert_eq!(r.failed, vec!["wh_1".to_string()]);
+        assert!(r.delivered.is_empty());
+        assert_eq!(
+            redirect.calls(),
+            3,
+            "300 is not a success — retried then failed"
+        );
+    }
+
+    /// Retry classification: a permanent 4xx client error (e.g. `404`/`410`) is
+    /// currently retried exactly like a transient 5xx — the dispatcher's only
+    /// success predicate is `2xx`, with no terminal-vs-retryable split. This pins
+    /// that observable contract (see the design note in the report).
+    #[tokio::test]
+    async fn a_permanent_4xx_is_retried_like_a_transient_5xx() {
+        for code in [400u16, 404, 410, 422] {
+            let source = TestSource::with(resolved("wh_1"));
+            let sender = CodeSender::new(code);
+            let d = WebhookDispatcher::new(source, sender.clone()).with_thresholds(3, 20);
+            let r = d.dispatch(&event(), 1).await;
+            assert_eq!(r.failed, vec!["wh_1".to_string()], "{code} is a failure");
+            assert_eq!(
+                sender.calls(),
+                3,
+                "{code} (permanent) is retried to max_attempts, not given up early"
+            );
+        }
+    }
+
     // ── Delivery-time SSRF / DNS-rebinding guard (ReqwestSender::guarded) ──────
 
     #[tokio::test]

@@ -773,6 +773,60 @@ mod memfs_tests {
             .unwrap();
     }
 
+    /// The same "who masks whom" edge as `memfs::tests`: a rename-replace over SQLite
+    /// drops the destination row entirely, so the replaced destination's id is
+    /// `NotFound` and the destination path carries the source id + content.
+    #[tokio::test]
+    async fn sqlite_rename_replace_orphans_destination_id() {
+        let fs = SqliteMemoryFs::open_in_memory().unwrap();
+        let dst = fs.create("s", "/dst.md", "old-dst").await.unwrap();
+        let src = fs.create("s", "/src.md", "src").await.unwrap();
+        assert_ne!(dst.id, src.id);
+        let moved = fs.rename("s", "/src.md", "/dst.md").await.unwrap();
+        assert_eq!(moved.id, src.id);
+        assert!(matches!(
+            fs.update("s", &dst.id, "zombie", &dst.content_sha256).await,
+            Err(MemErr::NotFound(_))
+        ));
+        let at_dst = fs.get_by_path("s", "/dst.md").await.unwrap().unwrap();
+        assert_eq!(at_dst.id, src.id);
+        assert_eq!(at_dst.content.as_deref(), Some("src"));
+    }
+
+    /// KNOWN DIVERGENCE / TRIPWIRE (see the CEG report): the SQLite (and Postgres)
+    /// backend mints the next id from `MAX(ordinal)` over the *live* rows, so deleting
+    /// the highest-ordinal memory and creating again **reuses the deleted id**
+    /// (`mem_2`), whereas the in-memory backend advances a monotonic counter and mints
+    /// a fresh `mem_3`. The contract calls the id "globally-unique", and every other
+    /// backend honors monotonicity in-process, so this reuse is a bug: an in-flight
+    /// reference (e.g. a cached FUSE inode→id) to the deleted memory would silently
+    /// re-resolve to the new one. This test pins the current behavior so a durable-
+    /// counter fix (see report) flips it deliberately — update `mem_2` → `mem_3` then.
+    #[tokio::test]
+    async fn id_reuse_after_delete_diverges_from_monotonic_backends() {
+        use crate::memfs::InMemoryFs;
+
+        async fn top_delete_then_create(fs: &dyn MemoryFs) -> String {
+            fs.create("s", "/a.md", "a").await.unwrap();
+            fs.create("s", "/b.md", "b").await.unwrap(); // mem_2 (top ordinal)
+            fs.delete_by_path("s", "/b.md").await.unwrap();
+            fs.create("s", "/c.md", "c").await.unwrap().id
+        }
+
+        let monotonic = top_delete_then_create(&InMemoryFs::new()).await;
+        assert_eq!(monotonic, "mem_3", "in-memory never reuses a deleted id");
+
+        let sqlite = top_delete_then_create(&SqliteMemoryFs::open_in_memory().unwrap()).await;
+        assert_eq!(
+            sqlite, "mem_2",
+            "BUG(pinned): sqlite reuses the deleted top ordinal instead of minting mem_3"
+        );
+        assert_ne!(
+            monotonic, sqlite,
+            "the two backends disagree on the id after a top-ordinal delete"
+        );
+    }
+
     #[tokio::test]
     async fn sqlite_memory_fs_survives_reopen() {
         let dir = std::env::temp_dir().join(format!("awaken-sqlmemfs-{}", std::process::id()));

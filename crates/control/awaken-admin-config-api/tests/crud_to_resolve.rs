@@ -200,6 +200,31 @@ async fn author_catalog_and_credential_then_resolve_a_run() {
     );
 }
 
+/// put_endpoint fail-closed ref integrity: an endpoint referencing an unknown
+/// provider is a 404 (ProviderNotFound → repo_problem), and the dangling endpoint is
+/// never stored — the mirror of the offering→endpoint guard, whose endpoint→provider
+/// leg the existing suite never drives (it always authors the provider first).
+#[tokio::test]
+async fn put_endpoint_with_unknown_provider_is_404_and_not_stored() {
+    let h = harness();
+    let (s, err) = call(
+        &h.app,
+        "PUT",
+        "/v1/config/endpoints/ep-dangling",
+        Some(json!({
+            "id": "ep-dangling", "provider_id": "ghost-provider",
+            "dialect": "anthropic_messages", "base_url": "https://x/",
+            "timeout_secs": 30, "display_name": "e", "version": 1
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert_eq!(err["code"], "not_found");
+    // The endpoint was never persisted (a dangling reference is not stored).
+    let (s, _) = call(&h.app, "GET", "/v1/config/endpoints/ep-dangling", None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
 #[tokio::test]
 async fn get_missing_provider_is_problem_json_404() {
     let h = harness();

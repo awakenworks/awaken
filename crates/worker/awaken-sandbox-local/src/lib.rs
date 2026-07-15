@@ -975,6 +975,15 @@ mod repo_tests {
             "file:///tmp/r.git"
         );
     }
+
+    #[test]
+    fn authed_url_never_double_splices_an_already_authed_url() {
+        // The `!url.contains('@')` guard: a URL that already carries credentials (an `@`)
+        // is passed through untouched, so a token is never spliced in twice (which would
+        // both corrupt the URL and duplicate the secret in the argv).
+        let already = "https://x-access-token:existing@github.com/o/r";
+        assert_eq!(authed_url(already, Some("ghp_new")), already);
+    }
 }
 
 #[cfg(test)]
@@ -1089,6 +1098,83 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn deny_egress_bash_is_wrapped_in_a_no_network_bwrap_and_shell_quoted() {
+        // The egress-denied bash path: instead of the legacy `cd '<root>' && <cmd>`
+        // lexical jail (host network shared), the command must be re-rendered to run
+        // inside a `bwrap --unshare-net` namespace rooted at the env dir, with every
+        // token single-quoted so the outer `sh -c` hands bwrap a clean argv. This is the
+        // deterministic construction the gated isolation e2e can only assert behaviorally.
+        let root = IsolatedRoot::new("/env");
+        let out = jail_args("bash", serde_json::json!({ "command": "id" }), &root, true).unwrap();
+        let cmd = out["command"].as_str().unwrap();
+        // Runs under bwrap with the network namespace unshared (egress denied).
+        assert!(cmd.starts_with("'bwrap' '--ro-bind' '/' '/'"), "got: {cmd}");
+        assert!(
+            cmd.contains("'--unshare-net'"),
+            "egress must be denied: {cmd}"
+        );
+        // Rooted at the env dir, and the user command reaches the inner shell.
+        assert!(cmd.contains("'--chdir' '/env'"));
+        assert!(cmd.contains("'--bind' '/env' '/env'"));
+        assert!(cmd.ends_with("'/bin/sh' '-c' 'id'"), "got: {cmd}");
+        // It is NOT the legacy lexical `cd && ...` form.
+        assert!(!cmd.contains("cd '/env' &&"));
+    }
+
+    #[test]
+    fn deny_egress_bash_escapes_an_embedded_quote_so_the_command_cannot_break_out() {
+        // Injection safety: a single quote inside the user command must be escaped
+        // (`'` → `'\''`) so it cannot terminate the outer `sh -c` quoting and smuggle
+        // tokens past the bwrap wrapper.
+        let root = IsolatedRoot::new("/env");
+        let out = jail_args("bash", serde_json::json!({ "command": "a'b" }), &root, true).unwrap();
+        let cmd = out["command"].as_str().unwrap();
+        // The user command lands as a single fully-quoted token with the quote escaped.
+        assert!(cmd.ends_with(r#"'-c' 'a'\''b'"#), "got: {cmd}");
+    }
+
+    #[test]
+    fn mount_from_value_ignores_unknown_kinds_and_missing_fields_and_round_trips() {
+        // Forward-compat contract (ADR-0035 D1): an unknown `kind` or a resource missing
+        // a required field parses to `None` (ignored, never an error); `content_hash` is
+        // optional (defaults empty); and a well-formed resource round-trips through the
+        // opaque `Value` carrier byte-for-byte.
+        assert_eq!(
+            Mount::from_value(&serde_json::json!({ "kind": "future_thing", "x": 1 })),
+            None,
+            "an unknown kind is ignored, not an error"
+        );
+        // kind=resource but no `id` / `logical_path` / `content` → None (skipped).
+        assert_eq!(
+            Mount::from_value(&serde_json::json!({ "kind": "resource", "id": "r" })),
+            None,
+            "a resource missing logical_path/content is ignored"
+        );
+        // A hashless resource is admitted with an empty content_hash (unwrap_or_default).
+        let hashless = Mount::from_value(&serde_json::json!({
+            "kind": "resource", "id": "r", "logical_path": "a.txt", "content": "hi",
+        }))
+        .unwrap();
+        assert_eq!(
+            hashless,
+            Mount::Resource(ResourceMount {
+                id: "r".into(),
+                content_hash: String::new(),
+                logical_path: "a.txt".into(),
+                content: "hi".into(),
+            })
+        );
+        // Round-trip: to_value → from_value is the identity on a full resource.
+        let full = Mount::Resource(ResourceMount {
+            id: "r1".into(),
+            content_hash: "h".into(),
+            logical_path: "dir/a.txt".into(),
+            content: "bytes".into(),
+        });
+        assert_eq!(Mount::from_value(&full.to_value()), Some(full));
     }
 
     // ---- HandOutput ----
