@@ -22,6 +22,32 @@ test("Environment: create in the UI and see it listed", async ({ page }) => {
   await expect(page.getByText(name)).toBeVisible();
 });
 
+test("Environment work queue: a fresh env shows its seeded healthcheck queued", async ({ page }) => {
+  // Creating an environment seeds one `healthcheck` work item into its durable queue
+  // (EnvRegistry + WorkQueue). The env row's Queue cell projects GET …/work/stats, so
+  // a fresh env reads `depth: 1` and the cell shows "1 queued".
+  const name = `envq-${Date.now()}`;
+  await page.goto("/w/default/environments");
+  await page.getByRole("button", { name: /New environment/ }).click();
+  await page.getByPlaceholder("my-dev-env").fill(name);
+  await page.getByRole("button", { name: "Create", exact: true }).click();
+  const row = page.locator("tr", { hasText: name });
+  await expect(row).toContainText(/1 queued|1 排队/);
+});
+
+test("Models: publish a model's context window and see it in the catalog", async ({ page }) => {
+  // The context window is a per-model_id catalog attribute (feeds the compaction token
+  // budget). Authoring an offering with a context window PUTs /v1/config/model-attributes
+  // and the catalog list projects it back — proving the publish→read round-trip.
+  const model = `ctx-model-${Date.now()}`;
+  await page.goto("/w/default/models");
+  await page.getByPlaceholder("model-id").fill(model);
+  await page.getByPlaceholder("200000").fill("200000");
+  await page.getByRole("button", { name: /Author|写入/ }).click();
+  const row = page.locator("tr", { hasText: model });
+  await expect(row).toContainText("200k");
+});
+
 test("Skills: the surface reads the delivered-skill catalog", async ({ page }) => {
   await page.goto("/w/default/skills");
   // Skills come from a durable skill store (SKILL.md), not the console — with none
