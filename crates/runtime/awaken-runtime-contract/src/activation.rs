@@ -8,7 +8,6 @@ pub struct RunActivation {
     pub thread_id: awaken_agent_contract::agent::thread::Id,
     pub snapshot: crate::snapshot::ExecutableAgentSnapshot,
     pub input: Vec<awaken_agent_contract::agent::message::Message>,
-    pub trace: TraceContext,
     /// How this run is authorized to reach its model (ADR-0004). A per-run,
     /// secret-free grant carried on the activation envelope (never on the
     /// fingerprinted spec, so an ephemeral lease token cannot pollute catalog
@@ -19,10 +18,14 @@ pub struct RunActivation {
 }
 
 impl RunActivation {
-    /// A fresh activation with the default (local self-credentialed) model access
-    /// and an empty trace context. Use the `with_*` builders to set either. This is
-    /// the single construction seam so a new activation field never reopens every
-    /// call site.
+    /// A fresh activation with the default (local self-credentialed) model access.
+    /// Use [`with_model_access`](Self::with_model_access) to set a gateway grant.
+    ///
+    /// Distributed *trace* propagation is NOT carried here: the admitting request's
+    /// W3C `traceparent` rides the ingress envelope (`RunExecutionRequest`) across
+    /// the durable queue and is restored as the `wake.dispatch` span's remote
+    /// parent, so a durably-drained run still nests under the trace that submitted
+    /// it. The runtime core never reads a trace field.
     #[must_use]
     pub fn new(
         run_id: awaken_agent_contract::agent::run::Id,
@@ -35,7 +38,6 @@ impl RunActivation {
             thread_id,
             snapshot,
             input,
-            trace: TraceContext::default(),
             model_access: ModelAccessGrant::default(),
         }
     }
@@ -46,16 +48,4 @@ impl RunActivation {
         self.model_access = grant;
         self
     }
-
-    /// Set the trace context.
-    #[must_use]
-    pub fn with_trace(mut self, trace: TraceContext) -> Self {
-        self.trace = trace;
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct TraceContext {
-    pub trace_id: Option<String>,
 }

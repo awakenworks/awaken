@@ -154,7 +154,6 @@ async fn drive(
             role: Role::User,
             content: vec![ContentBlock::text("hi")],
         }],
-        trace: Default::default(),
         model_access: Default::default(),
     };
     let phase = runtime.execute(activation, context).await.expect("runs");

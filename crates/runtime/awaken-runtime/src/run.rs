@@ -121,7 +121,6 @@ impl Runtime {
             thread_id: ThreadId(thread),
             snapshot: config.snapshot().clone(),
             input: input.into().0,
-            trace: Default::default(),
             model_access: Default::default(),
         };
         Ok((run_id, activation))

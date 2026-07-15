@@ -300,7 +300,6 @@ mod tests {
                 fingerprint: CatalogFingerprint("fp".into()),
             },
             input: Vec::new(),
-            trace: Default::default(),
             model_access: Default::default(),
         };
         assert_eq!(r.model(&act).unwrap().model, "run-model");

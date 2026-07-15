@@ -43,7 +43,6 @@ fn activation(run: &str, thread: &str) -> RunActivation {
             fingerprint: fp,
         },
         input: vec![],
-        trace: Default::default(),
         model_access: Default::default(),
     }
 }

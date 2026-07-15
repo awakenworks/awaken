@@ -114,7 +114,6 @@ async fn a_system_role_message_is_carried_into_inference() {
                 content: vec![ContentBlock::text("hi")],
             },
         ],
-        trace: Default::default(),
         model_access: Default::default(),
     };
 
