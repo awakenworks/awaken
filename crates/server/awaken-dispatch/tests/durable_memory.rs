@@ -835,6 +835,14 @@ async fn settle_fences_stale_epoch_store_spec() {
 }
 
 #[tokio::test]
+async fn concurrent_recovery_yields_one_winner_on_memory() {
+    harness::assert_concurrent_recovery_yields_one_winner(std::sync::Arc::new(
+        MemoryDispatchStore::new(),
+    ))
+    .await;
+}
+
+#[tokio::test]
 async fn parked_settle_fences_stale_epoch_store_spec() {
     harness::assert_parked_settle_fences_stale_epoch(&MemoryDispatchStore::new()).await;
 }

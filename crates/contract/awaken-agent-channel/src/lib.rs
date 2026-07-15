@@ -107,6 +107,60 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    /// A half that always faults, to prove `SplitChannel` surfaces underlying I/O
+    /// errors (not just EOF) from each direction.
+    struct ErrHalf;
+    impl AsyncRead for ErrHalf {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "read boom",
+            )))
+        }
+    }
+    impl AsyncWrite for ErrHalf {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "write boom",
+            )))
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn split_channel_propagates_read_and_write_errors_not_just_eof() {
+        let mut chan = SplitChannel::new(ErrHalf, ErrHalf);
+        let mut buf = [0u8; 4];
+        assert!(
+            chan.read(&mut buf).await.is_err(),
+            "a read-half fault surfaces through the channel"
+        );
+        assert!(
+            chan.write(b"x").await.is_err(),
+            "a write-half fault surfaces through the channel"
+        );
+    }
+
     /// A split channel round-trips bytes in both directions over piped halves.
     #[tokio::test]
     async fn split_channel_reads_and_writes_as_one_duplex() {

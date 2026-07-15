@@ -492,6 +492,18 @@ mod tests {
         assert!(weak.satisfies(&s));
     }
 
+    #[test]
+    fn satisfies_requires_network_isolation_for_an_allowlist_too() {
+        // An Allowlist is restricted (rank 1), so it needs network isolation just like
+        // `None` — the middle egress class the other satisfies tests skipped.
+        let mut s = spec();
+        s.network = NetworkPolicy::Allowlist {
+            hosts: vec!["api.anthropic.com".into()],
+        };
+        assert!(!caps(IsolationClass::Workdir, false).satisfies(&s));
+        assert!(caps(IsolationClass::Workdir, true).satisfies(&s));
+    }
+
     /// A provider whose readiness probe can be toggled, to exercise `select_provider`.
     struct ProbeProvider {
         caps: SandboxCapabilities,
@@ -560,6 +572,57 @@ mod tests {
         ];
         let result = select_provider(&candidates, &s).await;
         assert!(matches!(result, Err(SelectionError::NoCapableBackend)));
+    }
+
+    #[tokio::test]
+    async fn select_provider_with_no_candidates_fails_closed() {
+        // Boundary: an empty candidate list never downgrades to an unisolated run.
+        let candidates: Vec<Box<dyn SandboxProvider>> = Vec::new();
+        let result = select_provider(&candidates, &spec()).await;
+        assert!(matches!(result, Err(SelectionError::NoCapableBackend)));
+    }
+
+    #[test]
+    fn every_sandbox_status_variant_round_trips_on_the_wire() {
+        // Status crosses the reconnect boundary (queried idempotently after a takeover),
+        // so its wire tags are load-bearing. `Provisioning`/`Terminated` were never
+        // exercised (fakes always return `Ready`).
+        for (s, tag) in [
+            (SandboxStatus::Provisioning, "provisioning"),
+            (SandboxStatus::Ready, "ready"),
+            (SandboxStatus::Terminated, "terminated"),
+        ] {
+            let wire = serde_json::to_string(&s).unwrap();
+            assert_eq!(wire, format!("\"{tag}\""));
+            assert_eq!(serde_json::from_str::<SandboxStatus>(&wire).unwrap(), s);
+        }
+    }
+
+    #[test]
+    fn a_signal_killed_exit_status_round_trips() {
+        // A process reaped by a signal has no exit code and `signaled = true` — the
+        // shape every fake elided by always returning `code: Some(0)`.
+        let killed = ExitStatus {
+            code: None,
+            signaled: true,
+        };
+        let wire = serde_json::to_string(&killed).unwrap();
+        assert_eq!(serde_json::from_str::<ExitStatus>(&wire).unwrap(), killed);
+        assert!(killed.code.is_none() && killed.signaled);
+    }
+
+    #[test]
+    fn every_signal_variant_round_trips_on_the_wire() {
+        // Only `Term` was ever delivered in a test; pin all three wire tags.
+        for (sig, tag) in [
+            (Signal::Term, "term"),
+            (Signal::Kill, "kill"),
+            (Signal::Int, "int"),
+        ] {
+            let wire = serde_json::to_string(&sig).unwrap();
+            assert_eq!(wire, format!("\"{tag}\""));
+            assert_eq!(serde_json::from_str::<Signal>(&wire).unwrap(), sig);
+        }
     }
 
     #[tokio::test]
