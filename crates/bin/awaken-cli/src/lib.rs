@@ -559,8 +559,7 @@ async fn management_router_over(
     // resolves an environment's networking policy (egress on/off) at creation.
     let env_state = environments;
 
-    // The server's default model for the window before a publish; and the seed
-    // catalog carrying it so the assistant's `Auto` selection resolves at seed/publish.
+    // The server's default model for the window before a publish.
     let (model, model_ref) = (fallback_model, fallback_model_ref);
     let global = advertised_tools(&HashSet::new(), &HashSet::new(), &[]);
     let tool_catalog: Arc<dyn ToolCatalogSource> = Arc::new(ScopedToolCatalog::new(
@@ -568,16 +567,6 @@ async fn management_router_over(
         RESERVED_ADMIN_SCOPE,
         awaken_admin_assistant::admin_tool_descriptors(),
     ));
-    let seed_catalog = awaken_model_catalog::ProviderCatalog {
-        offerings: vec![awaken_model_catalog::Offering {
-            model_id: model_ref.clone(),
-            provider_id: awaken_model_catalog::ProviderId::new("default"),
-            protocol_endpoint_id: awaken_model_catalog::ProtocolEndpointId::new("ep"),
-            dialect: awaken_model_catalog::ApiDialect::AnthropicMessages,
-            upstream_model: None,
-        }],
-        ..Default::default()
-    };
     let config_service = Arc::new(
         ConfigService::new()
             // Resolve `Auto` against the LIVE catalog repo (not the frozen seed), so a
@@ -623,12 +612,24 @@ async fn management_router_over(
     // check on drafts in the tenant scope; every call is audited.
     let admin_execs = awaken_admin_assistant::admin_tools(
         Arc::new(awaken_control::CatalogCapabilityReader::new(
-            &seed_catalog,
+            // The LIVE catalog repo — models/providers an operator adds after startup
+            // are visible on the next capabilities call (not a frozen seed snapshot).
+            catalog.clone(),
             &global,
             // The installable plugins (state_machine / memory / compact) so the assistant
             // knows it CAN author a state machine etc. — not an empty list (it would
             // otherwise refuse, thinking no plugins exist).
             &awaken_runtime_host::authorable_config_sections(),
+            // The LIVE authored MCP servers.
+            mcp_store.clone(),
+            // The config plane, to list existing agent ids in the tenant scope.
+            plane.clone(),
+            // Data-plane inventory (memory stores + skills) is not cleanly reachable at
+            // this wire point (the skill store + memory registry are assembled INSIDE the
+            // SharedHost built below, after these admin execs are consumed by it), so it
+            // stays `None` here — memory_stores/skills come back empty. Models, MCP
+            // servers, and agents are all LIVE.
+            None,
         )),
         Arc::new(awaken_control::ConfigServiceDraftValidator::new(
             plane.clone(),

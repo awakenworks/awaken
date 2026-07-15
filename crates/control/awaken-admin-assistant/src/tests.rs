@@ -16,8 +16,9 @@ fn call(id: &str, args: serde_json::Value) -> ToolCall {
 }
 
 struct FakeCaps;
+#[async_trait]
 impl CapabilityReader for FakeCaps {
-    fn capabilities(&self) -> PlatformCapabilities {
+    async fn capabilities(&self) -> PlatformCapabilities {
         PlatformCapabilities {
             agents: vec!["assistant".into()],
             models: vec!["m-1".into(), "m-2".into()],
@@ -30,6 +31,7 @@ impl CapabilityReader for FakeCaps {
             }],
             skills: vec!["greet".into()],
             mcp_servers: vec![],
+            memory_stores: vec![],
         }
     }
 }

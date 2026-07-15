@@ -1260,23 +1260,47 @@ pub async fn build_config_router() -> Router {
         awaken_runtime_host::RESERVED_ADMIN_SCOPE,
         awaken_admin_assistant::admin_tool_descriptors(),
     ));
-    // A minimal provider catalog with an offering for the scenario model, so an
-    // `Auto` config (the management assistant) resolves to a concrete binding at
-    // publish (ADR-0052 D5).
-    let catalog = awaken_model_catalog::ProviderCatalog {
-        offerings: vec![awaken_model_catalog::Offering {
+    // A minimal LIVE catalog repo with one provider + endpoint + offering for the
+    // scenario model, so an `Auto` config (the management assistant) resolves to a
+    // concrete binding at publish (ADR-0052 D5) AND the capability reader reports the
+    // scenario model live.
+    let catalog_repo: Arc<dyn awaken_model_catalog::repo::CatalogRepo> =
+        Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new());
+    catalog_repo
+        .put_provider(awaken_model_catalog::Provider {
+            id: awaken_model_catalog::ProviderId::new("default"),
+            slug: "default".into(),
+            display_name: "Default".into(),
+            version: 1,
+        })
+        .await
+        .expect("put provider");
+    catalog_repo
+        .put_endpoint(awaken_model_catalog::ProtocolEndpoint {
+            id: awaken_model_catalog::ProtocolEndpointId::new("ep"),
+            provider_id: awaken_model_catalog::ProviderId::new("default"),
+            dialect: awaken_model_catalog::ApiDialect::AnthropicMessages,
+            base_url: None,
+            timeout_secs: 30,
+            display_name: "ep".into(),
+            version: 1,
+        })
+        .await
+        .expect("put endpoint");
+    catalog_repo
+        .put_offering(awaken_model_catalog::Offering {
             model_id: model_ref.clone(),
             provider_id: awaken_model_catalog::ProviderId::new("default"),
             protocol_endpoint_id: awaken_model_catalog::ProtocolEndpointId::new("ep"),
             dialect: awaken_model_catalog::ApiDialect::AnthropicMessages,
             upstream_model: None,
-        }],
-        ..Default::default()
-    };
+        })
+        .await
+        .expect("put offering");
     // The service is scope-free (ADR-0051); `ConfigPlane` is the scope edge that binds
     // the request scope (a `ScopedConfig` registry + the scope's tool catalog) onto it.
     let service = Arc::new(ConfigService::new().with_model_resolver(Arc::new(
-        awaken_server::model_resolver::CatalogModelResolver::new(catalog.clone()),
+        awaken_server::model_resolver::CatalogModelResolver::from_repo(catalog_repo.clone()),
     )));
     let plane = awaken_runtime_host::ConfigPlane::new(service.clone(), store, tools);
     // Seed the management assistant as an ordinary published agent in the reserved
@@ -1289,9 +1313,15 @@ pub async fn build_config_router() -> Router {
     // reader reads the shared catalog + advertised tools; the validator runs the same
     // compile check as `/v1/config/agents/validate` on drafts (in the tenant scope).
     let reader = Arc::new(awaken_control::CatalogCapabilityReader::new(
-        &catalog,
+        catalog_repo.clone(),
         &global,
         &awaken_runtime_host::authorable_config_sections(),
+        // No authored MCP servers in the scenario host.
+        Arc::new(awaken_config_resolver::InMemoryMcpStore::new()),
+        // The config plane, to list existing agent ids in the tenant scope.
+        plane.clone(),
+        // No data-plane inventory wired here (scenario host); memory/skills stay empty.
+        None,
     ));
     let validator = Arc::new(awaken_control::ConfigServiceDraftValidator::new(
         plane.clone(),

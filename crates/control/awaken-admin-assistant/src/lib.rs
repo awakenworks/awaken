@@ -118,9 +118,24 @@ const MAX_PLUGIN_CONFIG_BYTES: usize = 64 * 1024;
 /// A redacted, **org-shared** snapshot of what the platform can do (D4). The host
 /// implements this over the shared provider/model catalog, the advertised tool ids,
 /// and the plugin capabilities. It never crosses scope to read a tenant's private
-/// detail and never carries a key, credential, or header.
+/// detail and never carries a key, credential, or header. It is async because the
+/// LIVE snapshot is read from durable stores (the catalog repo, the config plane).
+#[async_trait]
 pub trait CapabilityReader: Send + Sync {
-    fn capabilities(&self) -> PlatformCapabilities;
+    async fn capabilities(&self) -> PlatformCapabilities;
+}
+
+/// A read port over the DATA-PLANE resource inventory (memory stores + skills), which
+/// live outside the control plane. The host implements it over the memory-store
+/// registry and the skill store; keeping it a port lets `awaken-control` compose a LIVE
+/// [`CapabilityReader`] without depending on any data-plane crate. Carries only
+/// ids/names — never a secret.
+#[async_trait]
+pub trait ResourceInventory: Send + Sync {
+    /// Ids of the memory stores the platform can bind onto an agent.
+    async fn memory_stores(&self) -> Vec<String>;
+    /// Ids of the skills discoverable at run time.
+    async fn skills(&self) -> Vec<String>;
 }
 
 /// Validate a drafted [`AgentConfig`] exactly as `/v1/config/agents/validate` does —
@@ -195,6 +210,9 @@ pub struct PlatformCapabilities {
     pub skills: Vec<String>,
     /// Connected MCP server ids.
     pub mcp_servers: Vec<String>,
+    /// Ids of the memory stores an agent may bind (data-plane inventory).
+    #[serde(default)]
+    pub memory_stores: Vec<String>,
 }
 
 /// One composable plugin and the config-section keys it reads, plus its full JSON
@@ -223,8 +241,10 @@ pub fn admin_tool_descriptors() -> Vec<ToolDescriptor> {
         ToolDescriptor::pinned(
             "admin",
             CAPABILITIES_TOOL,
-            "List the platform's available models, providers, tools, plugins, skills, \
-             and MCP servers (redacted; no secrets). Call this before proposing a config.",
+            "List the platform's LIVE building blocks: available models, providers, \
+             tools, plugins, skills, MCP servers, memory stores, and the ids of agents \
+             already published in the org (redacted; no secrets). Reference these \
+             existing blocks when authoring — call this before proposing a config.",
             serde_json::json!({ "type": "object", "properties": {} }),
         ),
         ToolDescriptor::pinned(
@@ -416,7 +436,7 @@ impl RawTool for GetPlatformCapabilities {
             &call.call_id,
             "list platform capabilities",
         );
-        let caps = self.reader.capabilities();
+        let caps = self.reader.capabilities().await;
         let content = serde_json::to_string(&caps)
             .map_err(|e| ToolError::Execution(format!("serialize capabilities: {e}")))?;
         Ok(ToolOutput::ok(call.call_id, content))
