@@ -67,16 +67,15 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
     where
         C: CommitCoordinator + ThreadReader + RunStore + Send + Sync + 'static,
     {
-        Self::with_owner_and_gateway(runtime, store, commit, owner, stream_checkpoint, None, None)
+        Self::with_owner_and_resolver(runtime, store, commit, owner, stream_checkpoint, None)
     }
 
     /// Like [`with_owner`](Self::with_owner) but also installs the model→executor
-    /// resolver (R1) and the cloud-managed gateway executor builder (ADR-0004), so
-    /// this ingress's worker runs the configured model without a config service and
-    /// honors a per-run gateway grant credential-free (the secretless-worker path).
-    /// A `None` resolver leaves the worker on the runtime's bound default; a `None`
-    /// gateway leaves it unable to honor a gateway grant (it fails closed on one).
-    pub fn with_owner_and_gateway<C>(
+    /// resolver (R1), so this ingress's worker runs the run's configured model without
+    /// a config service — the provider owns how the model is reached (local
+    /// credentials or a gateway offering). A `None` resolver leaves the worker on the
+    /// runtime's bound (host default) executor.
+    pub fn with_owner_and_resolver<C>(
         runtime: Arc<Runtime>,
         store: Arc<S>,
         commit: Arc<C>,
@@ -84,7 +83,6 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         stream_checkpoint: Option<
             Arc<dyn awaken_agent_contract::store::stream_checkpoint::StreamCheckpointStore>,
         >,
-        gateway: Option<crate::request::GatewayExecutorFn>,
         model_resolver: Option<crate::request::ModelResolverFn>,
     ) -> Self
     where
@@ -95,9 +93,6 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
             DispatchWorker::new(runtime, store, commit, owner).with_live_inbox(live_inbox.clone());
         if let Some(store) = stream_checkpoint {
             worker = worker.with_stream_checkpoint(store);
-        }
-        if let Some(gateway) = gateway {
-            worker = worker.with_gateway_executor(gateway);
         }
         if let Some(model_resolver) = model_resolver {
             worker = worker.with_model_resolver(model_resolver);

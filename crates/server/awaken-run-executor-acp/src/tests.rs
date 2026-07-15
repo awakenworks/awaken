@@ -116,7 +116,6 @@ pub(crate) fn activation() -> RunActivation {
             fingerprint: CatalogFingerprint("fp".into()),
         },
         input: vec![Message::text(MessageId("u1".into()), Role::User, "do it")],
-        model_access: Default::default(),
         model_ref_override: None,
     }
 }
