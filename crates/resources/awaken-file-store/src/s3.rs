@@ -106,4 +106,46 @@ mod tests {
         assert!(store.delete(&id).await.unwrap());
         assert!(!store.delete(&id).await.unwrap());
     }
+
+    /// Live round-trip against a real object store (MinIO/S3). Skips unless
+    /// `AWAKEN_TEST_S3_ENDPOINT` is set (see `crates/resources/docker-compose.test.yml`),
+    /// proving the same `FileStore` contract holds over the network backend — including
+    /// the content id, which is computed in the core and so matches every other backend.
+    #[tokio::test]
+    async fn minio_round_trip() {
+        let Ok(endpoint) = std::env::var("AWAKEN_TEST_S3_ENDPOINT") else {
+            println!("[skip] no object store reachable (AWAKEN_TEST_S3_ENDPOINT)");
+            return;
+        };
+        use object_store::aws::AmazonS3Builder;
+        let s3 = AmazonS3Builder::new()
+            .with_endpoint(endpoint)
+            .with_region("us-east-1")
+            .with_bucket_name("awaken-blobs")
+            .with_access_key_id("minioadmin")
+            .with_secret_access_key("minioadmin")
+            .with_allow_http(true) // path-style plain-HTTP MinIO
+            .build()
+            .expect("build MinIO client");
+        let store = S3FileStore::new(Arc::new(s3), "blobs");
+
+        let id = store.put(b"hello minio").await.unwrap();
+        assert_eq!(id, store.put(b"hello minio").await.unwrap(), "idempotent");
+        assert_eq!(
+            store.get(&id).await.unwrap().as_deref(),
+            Some(&b"hello minio"[..])
+        );
+        assert!(store.get("blobs/missing").await.unwrap().is_none());
+        assert!(store.list().await.unwrap().contains(&id));
+        assert!(store.delete(&id).await.unwrap());
+        assert!(!store.delete(&id).await.unwrap(), "delete is idempotent");
+        assert!(store.get(&id).await.unwrap().is_none());
+
+        // Same content id as the core (and thus every backend): copy-by-id migration.
+        assert_eq!(
+            store.put(b"portable").await.unwrap(),
+            content_id(b"portable")
+        );
+        store.delete(&content_id(b"portable")).await.unwrap();
+    }
 }

@@ -1,0 +1,52 @@
+# Durable-backend test fixtures for the resources plane (postgres + s3/minio).
+#
+#   docker compose -f crates/resources/docker-compose.test.yml up -d
+#   AWAKEN_TEST_DATABASE_URL=postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test \
+#   AWAKEN_TEST_S3_ENDPOINT=http://127.0.0.1:9000 \
+#     cargo test -p awaken-file-store -p awaken-memory-store -p awaken-skill-store \
+#       --features postgres,sqlite,s3
+#
+# The postgres port (32771) and creds match the in-code defaults, so the postgres
+# conformance runs even with no env set. The s3 tests skip unless AWAKEN_TEST_S3_ENDPOINT
+# is set. Tear down with `docker compose -f … down -v`.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: oversight
+      POSTGRES_PASSWORD: oversight
+      POSTGRES_DB: awaken_store_test
+    ports:
+      - "32771:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oversight -d awaken_store_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --address ":9000"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  # One-shot: create the bucket the s3 tests write into (object_store cannot make one).
+  createbucket:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb --ignore-existing local/awaken-blobs &&
+      echo 'bucket ready'
+      "
