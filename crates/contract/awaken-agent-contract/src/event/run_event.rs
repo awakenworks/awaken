@@ -96,4 +96,21 @@ mod tests {
         assert_eq!(d.kind, Kind::Continuation);
         assert_eq!(d.payload, detail);
     }
+
+    #[test]
+    fn run_phase_changed_lowers_with_the_phase_in_its_payload() {
+        use crate::agent::run::{EndCause, Phase};
+        let d: Draft = RunEvent::RunPhaseChanged {
+            phase: Phase::Ended(EndCause::NaturalEnd),
+        }
+        .into();
+        assert_eq!(d.kind, Kind::RunPhaseChanged);
+        // The phase serializes under a "phase" key; a bare Running is the "Running"
+        // string form pinned by the serde-boundary test.
+        let d2: Draft = RunEvent::RunPhaseChanged {
+            phase: Phase::Running,
+        }
+        .into();
+        assert_eq!(d2.payload, serde_json::json!({ "phase": "Running" }));
+    }
 }

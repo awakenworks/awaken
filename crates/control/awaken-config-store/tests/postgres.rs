@@ -2,7 +2,8 @@
 //! each test in a fresh schema (the store takes no prefix; ADR-0029/ADR-0031).
 
 use awaken_config_store::{
-    AgentConfig, ConfigRegistry, PostgresConfigStore, StoredPublication, compile,
+    AgentConfig, ConfigRegistry, PostgresConfigStore, PublicationState, ScopeId,
+    ScopedConfigRegistry, StoredPublication, compile,
 };
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use sqlx::Executor;
@@ -99,4 +100,68 @@ async fn postgres_config_store_round_trips_config_and_publication() {
         loaded.snapshot.fingerprint.0,
         publication.snapshot().fingerprint.0
     );
+}
+
+/// Regression: Postgres is a durable store, so `list_published_scoped` must reload
+/// published publications (it previously fell through to the empty default trait
+/// impl, silently breaking warm-install after a restart on Postgres deployments).
+/// Substrate-bound: skips when no Postgres is reachable.
+#[tokio::test]
+async fn postgres_list_published_reloads_published_rows_of_the_scope() {
+    let Some(pool) = schema_pool("t_config_listpub").await else {
+        return;
+    };
+    let store = PostgresConfigStore::with_pool(pool).await.expect("store");
+    let a = ScopeId::from("ws_a");
+    let b = ScopeId::from("ws_b");
+
+    let tools = vec![ToolDescriptor::pinned(
+        "test",
+        "echo",
+        "Echo",
+        serde_json::json!({"type": "object"}),
+    )];
+    let publication_for = |id: &str| -> StoredPublication {
+        let cfg = AgentConfig {
+            id: id.to_string(),
+            instructions: format!("body-{id}"),
+            max_steps: 8,
+            model_binding: awaken_config_store::ModelSelection::pinned("p", "m", "b"),
+            tool_ids: vec!["echo".to_string()],
+            ..Default::default()
+        };
+        StoredPublication::published(compile(&cfg, &tools).expect("compile"), &cfg.id)
+    };
+
+    let p1 = publication_for("a1");
+    let p2 = publication_for("a2");
+    let mut p_compiled = publication_for("a3");
+    p_compiled.state = PublicationState::Compiled; // excluded from list_published
+    let p_b = publication_for("b1");
+
+    store.put_publication_scoped(&a, &p1).await.expect("p1");
+    store.put_publication_scoped(&a, &p2).await.expect("p2");
+    store
+        .put_publication_scoped(&a, &p_compiled)
+        .await
+        .expect("p_compiled");
+    store.put_publication_scoped(&b, &p_b).await.expect("p_b");
+
+    let a_ids: Vec<String> = store
+        .list_published_scoped(&a)
+        .await
+        .expect("list a")
+        .into_iter()
+        .map(|p| p.fingerprint)
+        .collect();
+    // Both published A rows are reloaded (the previous empty default would fail here);
+    // the compiled row is excluded.
+    assert_eq!(a_ids.len(), 2);
+    assert!(a_ids.contains(&p1.fingerprint));
+    assert!(a_ids.contains(&p2.fingerprint));
+
+    // Scope isolation on the list path.
+    let b_list = store.list_published_scoped(&b).await.expect("list b");
+    assert_eq!(b_list.len(), 1);
+    assert_eq!(b_list[0].fingerprint, p_b.fingerprint);
 }

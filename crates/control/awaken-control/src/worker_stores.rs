@@ -146,3 +146,64 @@ fn mgmt_seal_key_from_env() -> [u8; 32] {
         panic!("the management seal key is malformed: {reason}. Provide 64 hex characters (a 32-byte key).")
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_agent_contract::RedactedString;
+    use awaken_credential_vault::{SecretRef, SecretStore};
+    use awaken_model_catalog::repo::CatalogRepo;
+
+    /// A [`ControlStoreConfig`] whose sqlite files live under a *nested,
+    /// not-yet-existing* directory, so opening must exercise `ensure_parent`.
+    fn nested_sqlite_cfg(root: &Path) -> ControlStoreConfig {
+        let dir = root.join("deep").join("nested");
+        ControlStoreConfig {
+            catalog: StoreBackend::Sqlite(dir.join("catalog.db")),
+            credential: StoreBackend::Sqlite(dir.join("credential.db")),
+            config: StoreBackend::Sqlite(dir.join("config.db")),
+            admin: StoreBackend::Sqlite(dir.join("admin.db")),
+            sessions: StoreBackend::Sqlite(dir.join("sessions.db")),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sqlite_backends_open_under_a_missing_parent_and_the_seal_round_trips() {
+        // The worker's model-resolution store subset must open cleanly from a
+        // durable sqlite config (creating the missing parent dir), migrate, and
+        // seal/reveal a secret under the provided key — the end-to-end wiring a
+        // drained run relies on, with no live DB.
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = nested_sqlite_cfg(tmp.path());
+        let key = [7u8; 32];
+
+        let stores = open_shared_config_stores(&cfg, &key).await;
+
+        // The nested parent was created by ensure_parent (else the opens panic).
+        assert!(tmp.path().join("deep").join("nested").is_dir());
+
+        // A freshly-opened catalog migrates to an empty, valid snapshot.
+        let snapshot = stores.catalog.snapshot().await.expect("catalog snapshot");
+        assert!(snapshot.offerings.is_empty());
+        // And the credential repo reads an empty workspace without error.
+        assert!(
+            stores
+                .credentials
+                .list("wrkspc_default")
+                .await
+                .expect("credential list")
+                .is_empty()
+        );
+
+        // The sealed-AEAD secret store round-trips through the credential backend
+        // under the supplied key: put ciphertext, reveal the original plaintext.
+        let secret_ref = SecretRef("worker-seal-probe".to_string());
+        stores
+            .secrets
+            .put(&secret_ref, RedactedString::new("s3cr3t-value"))
+            .await
+            .expect("seal a secret");
+        let revealed = stores.secrets.get(&secret_ref).await.expect("reveal");
+        assert_eq!(revealed.expose_secret(), "s3cr3t-value");
+    }
+}

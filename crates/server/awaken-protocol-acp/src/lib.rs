@@ -612,6 +612,22 @@ mod tests {
         }
     }
 
+    /// Records the launch lifecycle events emitted for a scope — the otherwise
+    /// untested `LaunchObserver`/`LaunchSink`/`notify_launch` observability seam.
+    #[derive(Default)]
+    struct RecordingLaunch {
+        events: Mutex<Vec<(String, AcpLaunchEvent)>>,
+    }
+
+    impl LaunchObserver for RecordingLaunch {
+        fn on_launch(&self, scope: &str, event: &AcpLaunchEvent) {
+            self.events
+                .lock()
+                .unwrap()
+                .push((scope.to_string(), event.clone()));
+        }
+    }
+
     /// A fake agent: read one prompt line, emit the scripted frames, then hang or exit.
     async fn fake_agent(mut side: DuplexStream, frames: Vec<String>, hang: bool) {
         let mut reader = BufReader::new(&mut side);
@@ -750,6 +766,89 @@ mod tests {
             matches!(err, AcpError::Io(_)),
             "a write failure is Io, got {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_blank_line_between_frames_is_skipped_not_projected() {
+        // A blank and a whitespace-only line arrive between two real frames: each
+        // must be skipped (no event, no seq bump, no error), and the real frames
+        // still project in order — the newline codec's `trimmed.is_empty()` branch.
+        let (mut ours, theirs) = combined();
+        let agent = tokio::spawn(fake_agent(
+            theirs,
+            vec![
+                r#"{"type":"message","text":"one"}"#.into(),
+                String::new(),
+                "   ".into(),
+                r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
+            ],
+            false,
+        ));
+        let mut sink = RecordingSink::default();
+        let reason = AcpBridge::run_turn(ours.as_mut(), "go", &mut sink, Codec::Newline, None)
+            .await
+            .unwrap();
+        assert_eq!(reason, TerminationReason::NaturalEnd);
+        assert_eq!(
+            sink.events.len(),
+            2,
+            "only the two non-blank frames project"
+        );
+        assert_eq!(sink.events[0].0, 1);
+        assert_eq!(sink.events[1].0, 2, "seq skips the blank lines");
+        agent.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_newline_turn_emits_a_ready_launch_event_to_the_scoped_observer() {
+        // The newline stand-in has no handshake, so writing the prompt is when the
+        // agent becomes live: exactly one `Ready` lifecycle event, tagged with the
+        // run scope, reaches the observer.
+        let (mut ours, theirs) = combined();
+        let agent = tokio::spawn(fake_agent(
+            theirs,
+            vec![r#"{"type":"turn_end","reason":"natural_end"}"#.into()],
+            false,
+        ));
+        let observer = RecordingLaunch::default();
+        let mut sink = RecordingSink::default();
+        AcpBridge::run_turn(
+            ours.as_mut(),
+            "go",
+            &mut sink,
+            Codec::Newline,
+            Some(LaunchSink::new(&observer, "run-7")),
+        )
+        .await
+        .unwrap();
+        let events = observer.events.lock().unwrap();
+        assert_eq!(
+            events.len(),
+            1,
+            "the newline turn emits one lifecycle event"
+        );
+        assert_eq!(events[0].0, "run-7", "the event carries the run scope");
+        assert_eq!(events[0].1.stage, AcpLaunchStage::Ready);
+        agent.await.unwrap();
+    }
+
+    #[test]
+    fn an_acp_launch_event_omits_absent_detail_and_round_trips() {
+        // A stageless bring-up event omits `detail` on the wire; one with detail
+        // round-trips losslessly (the UI progress affordance's contract).
+        let bare = AcpLaunchEvent::stage(AcpLaunchStage::Installing);
+        let value = serde_json::to_value(&bare).unwrap();
+        assert!(
+            value.get("detail").is_none(),
+            "absent detail omitted: {value}"
+        );
+        assert_eq!(value["stage"], "installing");
+
+        let detailed = AcpLaunchEvent::with_detail(AcpLaunchStage::Failed, "spawn failed");
+        let back: AcpLaunchEvent =
+            serde_json::from_value(serde_json::to_value(&detailed).unwrap()).unwrap();
+        assert_eq!(back, detailed);
+        assert_eq!(back.detail.as_deref(), Some("spawn failed"));
     }
 
     // ── AgentEvent wire contract ─────────────────────────────────────────────

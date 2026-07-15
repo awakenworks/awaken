@@ -61,3 +61,85 @@ pub fn dispatch_span(traceparent: Option<&str>) -> tracing::Span {
     }
     span
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opentelemetry::trace::TracerProvider as _;
+    use opentelemetry_sdk::propagation::TraceContextPropagator;
+    use opentelemetry_sdk::trace::SdkTracerProvider;
+    use tracing_subscriber::Registry;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    /// Run `f` under a scoped subscriber carrying a real (collector-free, in-memory)
+    /// OpenTelemetry layer plus the globally-installed W3C propagator, so `set_parent`
+    /// actually stores an otel context and `current_traceparent` can re-inject it.
+    fn with_otel_subscriber<T>(f: impl FnOnce() -> T) -> T {
+        opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
+        let provider = SdkTracerProvider::builder().build();
+        let tracer = provider.tracer("awaken-observability-test");
+        let subscriber =
+            Registry::default().with(tracing_opentelemetry::layer().with_tracer(tracer));
+        tracing::subscriber::with_default(subscriber, f)
+    }
+
+    #[test]
+    fn valid_traceparent_continues_the_same_trace() {
+        let tp = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+        let out = with_otel_subscriber(|| {
+            let span = dispatch_span(Some(tp));
+            span.in_scope(current_traceparent)
+        });
+        let out = out.expect("a sampled remote parent yields a re-injectable traceparent");
+        // The child span keeps the inbound trace id (its own span id differs).
+        assert!(
+            out.contains("0af7651916cd43dd8448eb211c80319c"),
+            "trace id must continue across the queue boundary: {out}"
+        );
+        assert!(
+            !out.contains("b7ad6b7169203331"),
+            "the child must mint its own span id, not reuse the parent's: {out}"
+        );
+    }
+
+    #[test]
+    fn malformed_traceparent_does_not_fail_open() {
+        // An all-zero trace id is invalid per W3C; a fail-open parser would accept and
+        // propagate it. The standard propagator must reject it and start a fresh trace.
+        let bogus = "00-00000000000000000000000000000000-b7ad6b7169203331-01";
+        let out = with_otel_subscriber(|| {
+            let span = dispatch_span(Some(bogus));
+            span.in_scope(current_traceparent)
+        });
+        // Either no context, or a freshly-minted (non-zero) trace id — never the
+        // invalid all-zero one presented on the wire.
+        if let Some(out) = out {
+            assert!(
+                !out.contains("00000000000000000000000000000000"),
+                "an invalid all-zero trace id must not be accepted (fail-open): {out}"
+            );
+        }
+    }
+
+    #[test]
+    fn garbage_traceparent_does_not_panic_and_roots_fresh() {
+        let out = with_otel_subscriber(|| {
+            let span = dispatch_span(Some("this-is-not-a-traceparent"));
+            span.in_scope(current_traceparent)
+        });
+        // Unparseable input is dropped; the worker still roots a valid fresh trace.
+        assert!(
+            out.is_some(),
+            "a fresh root trace is still created: {out:?}"
+        );
+    }
+
+    #[test]
+    fn no_traceparent_starts_a_fresh_root_trace() {
+        let out = with_otel_subscriber(|| {
+            let span = dispatch_span(None);
+            span.in_scope(current_traceparent)
+        });
+        assert!(out.is_some(), "no inbound context still roots one trace");
+    }
+}

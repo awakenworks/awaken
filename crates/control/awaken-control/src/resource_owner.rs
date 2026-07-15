@@ -153,6 +153,29 @@ mod tests {
     }
 
     #[test]
+    fn keys_webhook_subscriptions_and_ignores_empty_or_trailing_ids() {
+        // Webhook subscriptions (ADR-0048) are the third owned resource family;
+        // dropping this key would silently un-fence webhooks across tenants — a
+        // tenant-isolation fail-open. Lock the mapping and the empty-id guard.
+        assert_eq!(
+            owned_resource_key("/v1/config/webhook-subscriptions/wh1"),
+            Some("webhook:wh1".to_string())
+        );
+        // A trailing empty id (no id segment) is not an owned resource → None,
+        // so it passes through rather than fencing on the empty key `"webhook:"`.
+        assert_eq!(
+            owned_resource_key("/v1/config/webhook-subscriptions/"),
+            None
+        );
+        assert_eq!(owned_resource_key("/v1/config/webhook-subscriptions"), None);
+        // A sub-action under a webhook id is not the bare resource → None.
+        assert_eq!(
+            owned_resource_key("/v1/config/webhook-subscriptions/wh1/rotate"),
+            None
+        );
+    }
+
+    #[test]
     fn owner_records_and_fences_by_scope() {
         let owners = ResourceOwners::new();
         owners.record("mcp:calc".into(), "tenant-a".into());
@@ -275,6 +298,49 @@ mod tests {
                 &app,
                 "PUT",
                 "/v1/config/mcp-servers/calc",
+                Some("tenant-b"),
+                None
+            )
+            .await,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ow7_webhook_subscription_is_tenant_fenced() {
+        // The same cross-tenant fence must cover webhook subscriptions: a first
+        // author records the owner, then a foreign tenant's read AND author both
+        // answer 404 (no existence disclosure) — matching profiles/MCP (ow3).
+        let owners = ResourceOwners::new();
+        let app = app(owners.clone());
+        assert_eq!(
+            call(
+                &app,
+                "PUT",
+                "/v1/config/webhook-subscriptions/wh1",
+                Some("tenant-a"),
+                None
+            )
+            .await,
+            StatusCode::OK
+        );
+        assert_eq!(owners.owner("webhook:wh1").as_deref(), Some("tenant-a"));
+        assert_eq!(
+            call(
+                &app,
+                "GET",
+                "/v1/config/webhook-subscriptions/wh1",
+                Some("tenant-b"),
+                None
+            )
+            .await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            call(
+                &app,
+                "PUT",
+                "/v1/config/webhook-subscriptions/wh1",
                 Some("tenant-b"),
                 None
             )

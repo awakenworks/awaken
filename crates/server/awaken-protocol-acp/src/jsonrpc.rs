@@ -901,6 +901,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn configured_mcp_servers_are_projected_onto_session_new() {
+        // `to_acp_mcp_servers` is never exercised elsewhere (every other test leaves
+        // `mcp_servers` empty). An HTTP server carries its url + auth as a header; a
+        // stdio server carries command/args + auth as an env var. Capture the
+        // session/new params and assert both shapes reach the wire.
+        let (mut ours, theirs) = channel();
+        let params = Arc::new(Mutex::new(serde_json::Value::Null));
+        let p2 = params.clone();
+        let agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            io.read().await; // initialize
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#,
+            )
+            .await;
+            let new = io.read().await.unwrap(); // session/new
+            *p2.lock().unwrap() = new
+                .get("params")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1"}}"#)
+                .await;
+            io.read().await; // prompt
+            io.write_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#)
+                .await;
+        });
+
+        let mut sink = RecordingSink::default();
+        let mut config = TurnConfig::new(&AllowAll);
+        config.mcp_servers = vec![
+            crate::SessionMcpServer {
+                name: "search".into(),
+                command: None,
+                args: Vec::new(),
+                url: Some("https://mcp.example/sse".into()),
+                auth: Some(("Authorization".into(), "Bearer tok".into())),
+            },
+            crate::SessionMcpServer {
+                name: "fs".into(),
+                command: Some("mcp-fs".into()),
+                args: vec!["--root".into(), "/w".into()],
+                url: None,
+                auth: Some(("API_KEY".into(), "k1".into())),
+            },
+        ];
+        run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
+            .await
+            .unwrap();
+
+        let params = params.lock().unwrap();
+        let servers = params
+            .get("mcpServers")
+            .and_then(|v| v.as_array())
+            .expect("mcpServers array present");
+        assert_eq!(servers.len(), 2, "{params}");
+        let text = params.to_string();
+        // HTTP server: its url and the auth carried as a header.
+        assert!(text.contains("https://mcp.example/sse"), "{text}");
+        assert!(
+            text.contains("Authorization") && text.contains("Bearer tok"),
+            "http auth is a header: {text}"
+        );
+        // Stdio server: command + args, and the auth carried as an env var.
+        assert!(text.contains("mcp-fs"), "{text}");
+        assert!(text.contains("--root") && text.contains("/w"), "{text}");
+        assert!(
+            text.contains("API_KEY") && text.contains("k1"),
+            "stdio auth is an env var: {text}"
+        );
+        agent.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn a_prior_session_falls_back_to_new_when_the_agent_lacks_load() {
         // The agent does not advertise loadSession, so even with a prior id we open
         // a fresh session (fail-safe — the neutral thread history is the authority).

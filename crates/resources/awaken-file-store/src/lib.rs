@@ -302,6 +302,64 @@ mod tests {
         assert_eq!(store.list().await.unwrap(), vec![id0]);
     }
 
+    /// The contract's ascending-sort guarantee, exercised with several distinct blobs
+    /// inserted out of sorted-id order plus a duplicate: `list` must return the *exact*
+    /// id set, strictly ascending, with no duplicate for the repeated bytes. Stronger
+    /// than "the returned list happens to be sorted": it pins the set and the order.
+    async fn list_sorted_and_dedup(store: &dyn FileStore) {
+        let inputs: [&[u8]; 5] = [b"delta", b"alpha", b"charlie", b"bravo", b"echo"];
+        let mut expected = Vec::new();
+        for bytes in inputs {
+            let id = store.put(bytes).await.unwrap();
+            // idempotent dedup: the same bytes a second time add no second entry.
+            assert_eq!(store.put(bytes).await.unwrap(), id, "put is idempotent");
+            expected.push(id);
+        }
+        expected.sort();
+        let listed = store.list().await.unwrap();
+        assert_eq!(
+            listed, expected,
+            "list returns the exact id set, ascending, deduped"
+        );
+        assert!(
+            listed.windows(2).all(|w| w[0] < w[1]),
+            "strictly ascending, no duplicate entries"
+        );
+    }
+
+    /// Empty bytes are a legitimate blob: they hash to a stable id and round-trip like
+    /// any other (the fs backend writes and renames a zero-length file).
+    async fn empty_bytes_round_trip(store: &dyn FileStore) {
+        let id = store.put(b"").await.unwrap();
+        assert_eq!(id, content_id(b""));
+        assert_eq!(store.get(&id).await.unwrap().as_deref(), Some(&b""[..]));
+        assert!(store.list().await.unwrap().contains(&id));
+        assert!(store.delete(&id).await.unwrap());
+        assert!(store.get(&id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn in_memory_list_sorted_and_dedup() {
+        list_sorted_and_dedup(&InMemoryFileStore::new()).await;
+    }
+
+    #[tokio::test]
+    async fn fs_list_sorted_and_dedup() {
+        let tmp = tempfile::tempdir().unwrap();
+        list_sorted_and_dedup(&FsFileStore::open(tmp.path()).await.unwrap()).await;
+    }
+
+    #[tokio::test]
+    async fn in_memory_empty_bytes_round_trip() {
+        empty_bytes_round_trip(&InMemoryFileStore::new()).await;
+    }
+
+    #[tokio::test]
+    async fn fs_empty_bytes_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        empty_bytes_round_trip(&FsFileStore::open(tmp.path()).await.unwrap()).await;
+    }
+
     #[tokio::test]
     async fn same_bytes_same_id_across_backends() {
         let mem = InMemoryFileStore::new();
@@ -358,6 +416,16 @@ mod tests {
         #[tokio::test]
         async fn sqlite_round_trip() {
             round_trip(&SqliteFileStore::open_in_memory().unwrap()).await;
+        }
+
+        #[tokio::test]
+        async fn sqlite_list_sorted_and_dedup() {
+            list_sorted_and_dedup(&SqliteFileStore::open_in_memory().unwrap()).await;
+        }
+
+        #[tokio::test]
+        async fn sqlite_empty_bytes_round_trip() {
+            empty_bytes_round_trip(&SqliteFileStore::open_in_memory().unwrap()).await;
         }
 
         #[tokio::test]

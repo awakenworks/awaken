@@ -336,4 +336,74 @@ mod tests {
             Err(CredentialError::SecretNotFound(id)) if id == "cred:absent"
         ));
     }
+
+    /// get(nonce-tamper): flipping a byte *inside* the 12-byte nonce prefix (not the
+    /// ciphertext) makes the AEAD decrypt under the wrong nonce — the Poly1305 tag no
+    /// longer verifies, so it fails closed as `Seal` and never surfaces plaintext.
+    /// Distinct from the ciphertext-tamper row: here the ciphertext bytes are
+    /// untouched and only the associated nonce is corrupted.
+    #[tokio::test]
+    async fn a_tampered_nonce_is_rejected() {
+        let (store, blobs) = store_with_blobs(&[12u8; 32]);
+        let r = SecretRef("cred:1".into());
+        store
+            .put(&r, RedactedString::new("sk-secret"))
+            .await
+            .unwrap();
+        let mut blob = blobs.get_blob(&r).await.unwrap();
+        blob[0] ^= 0x01; // a byte within [0, NONCE_LEN)
+        blobs.put_blob(&r, blob).await.unwrap();
+        assert!(matches!(store.get(&r).await, Err(CredentialError::Seal)));
+    }
+
+    /// get(boundary): a blob of *exactly* `NONCE_LEN` bytes clears the `< NONCE_LEN`
+    /// length guard but leaves an empty ciphertext — too short to carry the 16-byte
+    /// Poly1305 tag — so the AEAD open fails closed as `Seal`. Pins the boundary the
+    /// truncated-blob row (`NONCE_LEN - 1`) sits just below.
+    #[tokio::test]
+    async fn a_blob_of_exactly_the_nonce_length_is_a_seal_error() {
+        let (store, blobs) = store_with_blobs(&[13u8; 32]);
+        let r = SecretRef("cred:1".into());
+        blobs.put_blob(&r, vec![0u8; NONCE_LEN]).await.unwrap();
+        assert!(matches!(store.get(&r).await, Err(CredentialError::Seal)));
+    }
+
+    /// put/get(empty): an empty secret is still sealed (nonce ‖ tag) and round-trips
+    /// back to the empty string — the AEAD layer never special-cases it into a
+    /// plaintext-empty at-rest blob, and the at-rest bytes are non-empty.
+    #[tokio::test]
+    async fn an_empty_secret_seals_and_round_trips() {
+        let (store, blobs) = store_with_blobs(&[14u8; 32]);
+        let r = SecretRef("cred:empty".into());
+        store.put(&r, RedactedString::new("")).await.unwrap();
+        // At rest: nonce (12) + Poly1305 tag (16), never a zero-length blob.
+        let blob = blobs.get_blob(&r).await.unwrap();
+        assert!(blob.len() > NONCE_LEN);
+        assert_eq!(store.get(&r).await.unwrap().expose_secret(), "");
+    }
+
+    /// put(rotate): re-sealing the same `SecretRef` replaces the secret — a later
+    /// `get` yields the new plaintext, and the old plaintext is nowhere in the
+    /// at-rest blob. Pins secret rotation: no stale ciphertext lingers to be opened.
+    #[tokio::test]
+    async fn re_sealing_a_ref_replaces_the_secret_and_leaves_no_stale_plaintext() {
+        let (store, blobs) = store_with_blobs(&[15u8; 32]);
+        let r = SecretRef("cred:rotate".into());
+        store
+            .put(&r, RedactedString::new("old-secret-value"))
+            .await
+            .unwrap();
+        store
+            .put(&r, RedactedString::new("new-secret-value"))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get(&r).await.unwrap().expose_secret(),
+            "new-secret-value"
+        );
+        // The rotated-out plaintext must not survive anywhere at rest.
+        let blob = blobs.get_blob(&r).await.unwrap();
+        let old = b"old-secret-value";
+        assert!(!blob.windows(old.len()).any(|w| w == old));
+    }
 }

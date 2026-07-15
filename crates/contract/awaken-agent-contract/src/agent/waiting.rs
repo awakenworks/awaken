@@ -83,3 +83,59 @@ pub struct PendingTool {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_handle: Option<serde_json::Value>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_reason_has_a_distinct_stable_stream_token() {
+        let all = [
+            (WaitingReason::ToolPermission, "tool_permission"),
+            (WaitingReason::UserInput, "user_input"),
+            (WaitingReason::BackgroundTasks, "background_tasks"),
+            (WaitingReason::ExternalEvent, "external_event"),
+            (WaitingReason::RateLimit, "rate_limit"),
+            (WaitingReason::ManualPause, "manual_pause"),
+            (WaitingReason::ScheduledAction, "scheduled_action"),
+            (WaitingReason::Delegation, "delegation"),
+        ];
+        for (reason, token) in &all {
+            assert_eq!(reason.as_stream_str(), *token);
+        }
+        // Tokens are unique across the closed set.
+        let mut tokens: Vec<&str> = all.iter().map(|(_, t)| *t).collect();
+        tokens.sort_unstable();
+        tokens.dedup();
+        assert_eq!(tokens.len(), all.len(), "stream tokens must be unique");
+    }
+
+    #[test]
+    fn pending_tool_omits_resume_handle_when_absent() {
+        let pt = PendingTool {
+            tool_id: "t".into(),
+            arguments: serde_json::json!({"a": 1}),
+            resume_handle: None,
+        };
+        let json = serde_json::to_value(&pt).unwrap();
+        assert!(
+            json.get("resume_handle").is_none(),
+            "absent handle is skipped on the wire"
+        );
+        // A ticket without a pending_tool round-trips (serde default fills None).
+        let ticket = WaitingTicket {
+            correlation_id: "c".into(),
+            run_id: crate::agent::run::Id("r".into()),
+            thread_id: crate::agent::thread::Id("th".into()),
+            snapshot_id: "s".into(),
+            catalog_fingerprint: "f".into(),
+            reason: WaitingReason::ToolPermission,
+            call_id: Some("call".into()),
+            pending_tool: Some(pt),
+            deadline_ms: Some(42),
+        };
+        let back: WaitingTicket =
+            serde_json::from_str(&serde_json::to_string(&ticket).unwrap()).unwrap();
+        assert_eq!(back, ticket);
+    }
+}

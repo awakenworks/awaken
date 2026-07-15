@@ -445,4 +445,146 @@ mod tests {
             Err(CatalogError::OfferingDialectMismatch { .. })
         ));
     }
+
+    #[test]
+    fn api_dialect_adapter_kind_maps_each_variant() {
+        assert_eq!(ApiDialect::AnthropicMessages.adapter_kind(), "anthropic");
+        assert_eq!(ApiDialect::OpenAiChat.adapter_kind(), "openai");
+        assert_eq!(ApiDialect::Gemini.adapter_kind(), "gemini");
+    }
+
+    #[test]
+    fn api_dialect_serde_is_snake_case_on_the_wire() {
+        // The wire tokens the console/config API round-trips — `rename_all = snake_case`.
+        for (dialect, wire) in [
+            (ApiDialect::AnthropicMessages, "\"anthropic_messages\""),
+            (ApiDialect::OpenAiChat, "\"open_ai_chat\""),
+            (ApiDialect::Gemini, "\"gemini\""),
+        ] {
+            assert_eq!(serde_json::to_string(&dialect).unwrap(), wire);
+            assert_eq!(serde_json::from_str::<ApiDialect>(wire).unwrap(), dialect);
+        }
+        // An unknown dialect token is rejected (fail-closed), not silently defaulted.
+        assert!(serde_json::from_str::<ApiDialect>("\"cohere\"").is_err());
+    }
+
+    #[test]
+    fn id_newtype_accessors_display_and_transparent_serde() {
+        let id = ProviderId::new("anthropic");
+        assert_eq!(id.as_str(), "anthropic");
+        assert_eq!(id.to_string(), "anthropic");
+        // `serde(transparent)` ⇒ the id is a bare string on the wire, not `{"0": …}`.
+        assert_eq!(serde_json::to_string(&id).unwrap(), "\"anthropic\"");
+        assert_eq!(
+            serde_json::from_str::<ProtocolEndpointId>("\"ep1\"").unwrap(),
+            ProtocolEndpointId::new("ep1")
+        );
+    }
+
+    #[test]
+    fn catalog_error_display_messages_are_stable() {
+        assert_eq!(
+            CatalogError::EndpointProviderUnknown("ep1".into(), "ghost".into()).to_string(),
+            "endpoint `ep1` references unknown provider `ghost`"
+        );
+        assert_eq!(
+            CatalogError::OfferingEndpointUnknown {
+                model: "m".into(),
+                endpoint: "ghost".into(),
+            }
+            .to_string(),
+            "offering `m` references unknown endpoint `ghost`"
+        );
+        assert_eq!(
+            CatalogError::OfferingDialectMismatch {
+                model: "m".into(),
+                offering: ApiDialect::OpenAiChat,
+                endpoint: ApiDialect::AnthropicMessages,
+            }
+            .to_string(),
+            "offering `m` dialect OpenAiChat disagrees with endpoint dialect AnthropicMessages"
+        );
+        assert_eq!(
+            CatalogError::Storage("disk full".into()).to_string(),
+            "catalog storage: disk full"
+        );
+    }
+
+    #[test]
+    fn optional_fields_are_omitted_when_absent_and_round_trip() {
+        // ProtocolEndpoint: absent `base_url` is skipped on the wire; ModelAttributes
+        // defaults skip both; Offering skips absent `upstream_model`.
+        let ep = endpoint("ep1", "anthropic", ApiDialect::AnthropicMessages);
+        let json = serde_json::to_string(&ep).unwrap();
+        assert!(
+            !json.contains("base_url"),
+            "absent base_url must be omitted"
+        );
+        assert_eq!(serde_json::from_str::<ProtocolEndpoint>(&json).unwrap(), ep);
+
+        let attrs = ModelAttributes::default();
+        assert_eq!(serde_json::to_string(&attrs).unwrap(), "{}");
+
+        let off = Offering {
+            model_id: "m".into(),
+            provider_id: ProviderId::new("anthropic"),
+            protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
+            dialect: ApiDialect::AnthropicMessages,
+            upstream_model: None,
+        };
+        assert!(
+            !serde_json::to_string(&off)
+                .unwrap()
+                .contains("upstream_model")
+        );
+    }
+
+    #[test]
+    fn catalog_omits_empty_model_attributes_but_carries_populated_ones() {
+        let mut c = catalog();
+        // Empty map ⇒ the whole field is skipped (older consumers see no key).
+        assert!(
+            !serde_json::to_string(&c)
+                .unwrap()
+                .contains("model_attributes")
+        );
+        c.model_attributes.insert(
+            "claude-opus-4-8".into(),
+            ModelAttributes {
+                context_window: Some(200_000),
+                max_output_tokens: None,
+            },
+        );
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(json.contains("model_attributes"));
+        // A populated attribute round-trips; the absent max_output_tokens stays absent.
+        let back: ProviderCatalog = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.context_window("claude-opus-4-8"), Some(200_000));
+        assert_eq!(
+            back.model_attributes["claude-opus-4-8"].max_output_tokens,
+            None
+        );
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    fn gemini_offering_and_endpoint_validate_and_resolve() {
+        // Exercises the third dialect end-to-end through validate + resolve.
+        let mut c = ProviderCatalog::default();
+        c.providers.insert("google".into(), provider("google"));
+        c.endpoints
+            .insert("g1".into(), endpoint("g1", "google", ApiDialect::Gemini));
+        c.offerings.push(Offering {
+            model_id: "gemini-2.5-pro".into(),
+            provider_id: ProviderId::new("google"),
+            protocol_endpoint_id: ProtocolEndpointId::new("g1"),
+            dialect: ApiDialect::Gemini,
+            upstream_model: Some("models/gemini-2.5-pro".into()),
+        });
+        assert!(c.validate().is_ok());
+        let got = c
+            .resolve_offering("gemini-2.5-pro", ApiDialect::Gemini)
+            .expect("gemini offering resolves");
+        assert_eq!(got.upstream_model.as_deref(), Some("models/gemini-2.5-pro"));
+    }
 }

@@ -100,7 +100,17 @@ impl CatalogRepo for InMemoryCatalogRepo {
             ));
         }
         let mut next = guard.get().clone();
-        next.offerings.push(offering);
+        // Upsert on the offering's primary key `(model_id, protocol_endpoint_id)`
+        // — the durable backends key their row on exactly this pair (schema PK,
+        // `ON CONFLICT … DO UPDATE`), so an in-memory push would diverge by
+        // accumulating a duplicate row instead of replacing it.
+        match next.offerings.iter_mut().find(|o| {
+            o.model_id == offering.model_id
+                && o.protocol_endpoint_id == offering.protocol_endpoint_id
+        }) {
+            Some(existing) => *existing = offering,
+            None => next.offerings.push(offering),
+        }
         // `ValidCatalog::parse` IS the write-time integrity check: if the new
         // offering breaks an invariant, parse fails and the stored `ValidCatalog`
         // is never reassigned, so a rejected write leaves no trace (fail-closed).
@@ -211,5 +221,60 @@ mod tests {
             upstream_model: None,
         };
         assert!(repo.put_offering(bad).await.is_err());
+    }
+
+    #[test]
+    fn repo_error_display_and_from_catalog_error() {
+        assert_eq!(
+            RepoError::ProviderNotFound("anthropic".into()).to_string(),
+            "provider `anthropic` not found"
+        );
+        assert_eq!(
+            RepoError::EndpointNotFound("ep1".into()).to_string(),
+            "endpoint `ep1` not found"
+        );
+        // `#[from]` lifts a CatalogError, and `#[error(transparent)]` forwards its
+        // Display verbatim (so the admin API surfaces the invariant message).
+        let lifted: RepoError = CatalogError::OfferingEndpointUnknown {
+            model: "m".into(),
+            endpoint: "ghost".into(),
+        }
+        .into();
+        assert!(matches!(lifted, RepoError::Invariant(_)));
+        assert_eq!(
+            lifted.to_string(),
+            "offering `m` references unknown endpoint `ghost`"
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_of_an_empty_repo_is_a_valid_empty_catalog() {
+        let repo = InMemoryCatalogRepo::new();
+        let snap = repo.snapshot().await.unwrap();
+        assert!(snap.providers.is_empty());
+        assert!(snap.endpoints.is_empty());
+        assert!(snap.offerings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn put_offering_is_upsert_on_its_key_not_a_duplicate_push() {
+        let repo = InMemoryCatalogRepo::new();
+        repo.put_provider(provider()).await.unwrap();
+        repo.put_endpoint(endpoint()).await.unwrap();
+        let mut first = Offering {
+            model_id: "claude-opus-4-8".into(),
+            provider_id: ProviderId::new("anthropic"),
+            protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
+            dialect: ApiDialect::AnthropicMessages,
+            upstream_model: Some("v1".into()),
+        };
+        repo.put_offering(first.clone()).await.unwrap();
+        first.upstream_model = Some("v2".into());
+        repo.put_offering(first).await.unwrap();
+        let snap = repo.snapshot().await.unwrap();
+        // Regression: an in-memory push accumulated a duplicate; the durable
+        // backends upsert on `(model_id, protocol_endpoint_id)`. One row, latest data.
+        assert_eq!(snap.offerings.len(), 1);
+        assert_eq!(snap.offerings[0].upstream_model.as_deref(), Some("v2"));
     }
 }

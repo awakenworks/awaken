@@ -832,6 +832,12 @@ mod resource_prompt_tests {
         ) -> Result<Option<StoredPublication>, ConfigStoreError> {
             Err(ConfigStoreError("boom".into()))
         }
+        async fn list_published_scoped(
+            &self,
+            _s: &ScopeId,
+        ) -> Result<Vec<StoredPublication>, ConfigStoreError> {
+            Err(ConfigStoreError("boom".into()))
+        }
     }
 
     fn failing_scoped_plane() -> ConfigPlane {

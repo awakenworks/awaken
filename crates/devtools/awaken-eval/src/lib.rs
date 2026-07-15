@@ -160,10 +160,13 @@ pub struct CaseScore {
 }
 
 impl CaseScore {
-    /// The case passes when every expectation passes.
+    /// The case passes when it has at least one expectation and every one passes.
+    /// A case that asserts nothing is NOT a pass: an empty expectation set verifies
+    /// nothing, so scoring it green would be a false positive (a freshly recorded
+    /// case carries no expectations until an author adds them — see [`record`]).
     #[must_use]
     pub fn passed(&self) -> bool {
-        self.results.iter().all(|r| r.passed)
+        !self.results.is_empty() && self.results.iter().all(|r| r.passed)
     }
 }
 
@@ -276,6 +279,123 @@ mod tests {
         let fail = score_case(&c, "the answer is 42", true, &[]);
         assert!(!fail.passed());
         assert!(fail.results[0].detail.contains("search"));
+    }
+
+    #[test]
+    fn not_contains_fails_when_the_substring_is_present() {
+        // The forbidden substring IS in the output → the expectation fails and its
+        // detail names what was not allowed.
+        let c = case(vec![Expectation::OutputNotContains {
+            substring: "42".into(),
+        }]);
+        let score = score_case(&c, "the answer is 42", true, &[]);
+        assert!(!score.passed(), "output contains the forbidden substring");
+        assert!(score.results[0].detail.contains("42"));
+    }
+
+    #[test]
+    fn output_equals_trims_both_sides_and_fails_on_mismatch() {
+        // Equality is after trimming BOTH the output and the expected text, so
+        // surrounding whitespace on either side does not matter.
+        let c = case(vec![Expectation::OutputEquals {
+            text: "  the answer is 42\n".into(),
+        }]);
+        let pass = score_case(&c, "\tthe answer is 42  ", true, &[]);
+        assert!(pass.passed(), "trimmed both sides are equal");
+        assert_eq!(pass.results[0].detail, "ok", "a pass records an ok detail");
+        // A genuinely different (non-whitespace) output fails.
+        let fail = score_case(&c, "the answer is 43", true, &[]);
+        assert!(!fail.passed());
+    }
+
+    #[test]
+    fn judge_score_is_a_pure_failure_that_names_the_threshold() {
+        // The pure scoring path cannot run an LLM judge, so a JudgeScore fails with a
+        // detail that names the needed threshold (the async Evaluator overrides it
+        // when a judge is injected).
+        let c = case(vec![Expectation::JudgeScore {
+            rubric: "is it good?".into(),
+            min_score: 70,
+        }]);
+        let score = score_case(&c, "the answer is 42", true, &[]);
+        assert!(!score.passed(), "no judge in the pure path");
+        assert_eq!(score.results[0].expectation_kind, "judge_score");
+        assert!(
+            score.results[0].detail.contains(">= 70"),
+            "detail names the threshold: {}",
+            score.results[0].detail
+        );
+    }
+
+    #[test]
+    fn kind_maps_each_variant_to_its_stable_snake_case() {
+        assert_eq!(
+            Expectation::OutputContains {
+                substring: "x".into()
+            }
+            .kind(),
+            "output_contains"
+        );
+        assert_eq!(
+            Expectation::OutputNotContains {
+                substring: "x".into()
+            }
+            .kind(),
+            "output_not_contains"
+        );
+        assert_eq!(
+            Expectation::OutputEquals { text: "x".into() }.kind(),
+            "output_equals"
+        );
+        assert_eq!(
+            Expectation::ToolCalled {
+                tool_id: "x".into()
+            }
+            .kind(),
+            "tool_called"
+        );
+        assert_eq!(
+            Expectation::JudgeScore {
+                rubric: "r".into(),
+                min_score: 1
+            }
+            .kind(),
+            "judge_score"
+        );
+        assert_eq!(Expectation::Succeeded.kind(), "succeeded");
+    }
+
+    #[test]
+    fn judge_spec_is_some_only_for_judge_score() {
+        assert_eq!(
+            Expectation::JudgeScore {
+                rubric: "r".into(),
+                min_score: 55
+            }
+            .judge_spec(),
+            Some(("r", 55))
+        );
+        assert!(Expectation::Succeeded.judge_spec().is_none());
+        assert!(
+            Expectation::OutputContains {
+                substring: "x".into()
+            }
+            .judge_spec()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn a_case_that_asserts_nothing_is_not_a_pass() {
+        // Regression: a case with zero expectations verifies nothing, so scoring it
+        // must NOT report green (fail-closed against a false positive).
+        let c = case(vec![]);
+        let score = score_case(&c, "anything", true, &[]);
+        assert!(score.results.is_empty());
+        assert!(
+            !score.passed(),
+            "an unasserted case is not a pass — nothing was checked"
+        );
     }
 
     #[test]

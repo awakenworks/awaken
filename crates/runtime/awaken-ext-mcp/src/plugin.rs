@@ -310,6 +310,57 @@ mod tests {
         );
     }
 
+    /// A transport whose tool set mixes a valid tool with one whose name sanitizes
+    /// to an empty id component (all separators), to prove per-tool fault isolation.
+    struct MixedTransport;
+
+    #[async_trait]
+    impl McpToolTransport for MixedTransport {
+        async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+            Ok(vec![
+                serde_json::from_value(serde_json::json!({ "name": "good" })).unwrap(),
+                // "---" sanitizes to an empty component ⇒ to_tool_id errors.
+                serde_json::from_value(serde_json::json!({ "name": "---" })).unwrap(),
+            ])
+        }
+        async fn call_tool(
+            &self,
+            _tool_name: &str,
+            _arguments: Value,
+        ) -> Result<CallToolResult, McpTransportError> {
+            Ok(CallToolResult {
+                content: vec![ToolContent::Text {
+                    text: "ok".to_string(),
+                    annotations: None,
+                    meta: None,
+                }],
+                structured_content: None,
+                is_error: Some(false),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_skips_an_unmappable_tool_without_dropping_the_rest() {
+        // A tool whose name cannot form a valid namespaced id is skipped, but the
+        // projection of the *other* tools survives — one malformed tool must never
+        // blank the whole server's tool face.
+        let (_tx, rx) = broadcast::channel(4);
+        let server = McpServer::start("srv", Arc::new(MixedTransport), rx)
+            .await
+            .expect("starts");
+        let contributions = server.plugin().resolve();
+        assert_eq!(
+            contributions.dynamic_tools.len(),
+            1,
+            "the unmappable tool is skipped, the valid one kept"
+        );
+        assert_eq!(
+            contributions.dynamic_tools[0].descriptor.id,
+            "mcp__srv__good"
+        );
+    }
+
     #[tokio::test]
     async fn host_declared_sensitive_fields_mark_the_descriptor_across_refreshes() {
         let transport = Arc::new(SwappingTransport {

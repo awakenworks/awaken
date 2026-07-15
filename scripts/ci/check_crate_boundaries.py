@@ -85,7 +85,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # the value/error types in their signatures — mirrors awaken-provisioning-contract.
     # A foundation leaf: no backend, SQL driver, or filesystem, so an adapter reusing
     # these stores depends on the traits alone. The backends re-export it.
-    "awaken-resource-contract": {"async-trait", "thiserror", "serde"},
+    # dev-only: serde_json drives the Memory wire-contract round-trip tests.
+    "awaken-resource-contract": {"async-trait", "thiserror", "serde", "serde_json"},
     # Cross-cutting telemetry infrastructure (NOT an `ext-*`): the process-global
     # tracing subscriber + OTLP / AWAKEN_TRACE_FILE span export + W3C traceparent
     # propagator + the axum ingress span middleware. A foundation leaf consumed by
@@ -113,7 +114,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # CredentialRefresher) shared by the outbound wire clients (awaken-ext-mcp,
     # awaken-protocol-a2a). A leaf like the contracts: names no wire, store, or
     # runtime type, so clients depend on it without pulling anything upward.
-    "awaken-credential": {"async-trait"},
+    "awaken-credential": {"async-trait", "tokio"},
     # Management plane (ADR-0043), agents bucket — orthogonal to execution; the
     # runtime never depends on these (I4 / D6/D9, enforced by check_bucket_direction).
     "awaken-model-catalog": {
@@ -320,6 +321,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "async-trait",
         "serde",
         "thiserror",
+        # Dev-only: drive the async port default methods in unit tests.
+        "tokio",
     },
     # Provisioning contract: the neutral, data-only sandbox vocabulary and ports
     # (SandboxProvider / Sandbox / prepare_environment / admission). Names no OS

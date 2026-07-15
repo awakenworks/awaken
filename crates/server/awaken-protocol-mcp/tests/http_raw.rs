@@ -172,6 +172,37 @@ async fn the_get_stream_enforces_the_bearer() {
 }
 
 #[tokio::test]
+async fn a_post_without_the_bearer_is_unauthorized() {
+    // The bearer guard runs before dispatch: an unauthenticated `tools/list`
+    // POST is refused (401 + challenge), never executed.
+    let resp = app(Some("secret"))
+        .oneshot(post(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert!(
+        resp.headers().contains_key("www-authenticate"),
+        "a 401 carries the bearer challenge the client's refresh path consumes"
+    );
+}
+
+#[tokio::test]
+async fn a_delete_without_the_bearer_is_unauthorized() {
+    // DELETE (session teardown) is guarded too — a caller cannot end a session
+    // without presenting the bearer.
+    let req = Request::builder()
+        .method("DELETE")
+        .uri("/mcp")
+        .header("Mcp-Session-Id", "whatever")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app(Some("secret")).oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn an_oversized_body_is_rejected() {
     // A POST body beyond axum's default request-body limit (2 MiB) is refused by
     // the extractor before dispatch, bounding memory per request.

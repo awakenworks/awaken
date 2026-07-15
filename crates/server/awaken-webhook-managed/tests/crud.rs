@@ -17,6 +17,8 @@ use awaken_webhook_managed::{
 };
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use axum::routing::get;
+use axum::{Extension, Router};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -489,4 +491,164 @@ async fn emit_without_a_workspace_owner_does_not_fan_out() {
     // no owner means no spawn, so the source is never consulted).
     sink.emit("sesn_1", None, "session.created").await;
     assert_eq!(*calls.lock().unwrap(), 0, "no owner → no fan-out");
+}
+
+/// A sender that reports the delivered body over a channel, so the out-of-band
+/// (spawned) dispatch is observable deterministically.
+struct RecordingSender(tokio::sync::mpsc::UnboundedSender<String>);
+#[async_trait]
+impl WebhookSender for RecordingSender {
+    async fn post(&self, _u: &str, _h: Vec<(String, String)>, body: String) -> Result<u16, String> {
+        let _ = self.0.send(body);
+        Ok(200)
+    }
+}
+
+/// A source that always yields one live, signable subscription.
+struct OneSubSource(String);
+#[async_trait]
+impl SubscriptionSource for OneSubSource {
+    async fn matching(&self, _ws: &str, _event: &str) -> Vec<ResolvedSubscription> {
+        vec![ResolvedSubscription {
+            id: "wh1".into(),
+            url: "https://x.example/hook".into(),
+            secret: self.0.clone(),
+        }]
+    }
+    async fn disable(&self, _id: &str) {}
+}
+
+#[tokio::test]
+async fn emit_with_a_workspace_owner_fans_out_a_stamped_monotonic_event() {
+    // The lifecycle→webhook bridge: a committed fact with an owner builds the
+    // Anthropic-shaped event (session id, event type, workspace, org stamped) and
+    // delivers it out-of-band. The event id is `event_<n>`, monotonic from zero.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let dispatcher = Arc::new(WebhookDispatcher::new(
+        Arc::new(OneSubSource(awaken_webhook::generate_secret())),
+        Arc::new(RecordingSender(tx)),
+    ));
+    let sink = WebhookLifecycleSink::new(dispatcher, Some("org_root".into()));
+
+    sink.emit("sesn_1", Some("ws_a"), "session.status_idled")
+        .await;
+    let body = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("delivery within the deadline")
+        .expect("a body was delivered");
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["type"], "event");
+    assert_eq!(v["id"], "event_0", "first event id counts from zero");
+    assert_eq!(v["data"]["type"], "session.status_idled");
+    assert_eq!(v["data"]["id"], "sesn_1", "the object id is the session");
+    assert_eq!(v["data"]["workspace_id"], "ws_a");
+    assert_eq!(v["data"]["organization_id"], "org_root", "org is stamped");
+
+    // A second emit advances the monotonic sequence.
+    sink.emit("sesn_2", Some("ws_a"), "session.status_terminated")
+        .await;
+    let body2 = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("second delivery")
+        .expect("a second body");
+    let v2: Value = serde_json::from_str(&body2).unwrap();
+    assert_eq!(v2["id"], "event_1", "the event id is monotonic");
+    assert_eq!(v2["data"]["id"], "sesn_2");
+}
+
+#[tokio::test]
+async fn stamp_workspace_scope_maps_resolved_tenancy_to_the_scope() {
+    // The aspect→core seam: the guard-resolved `RequestTenancy` becomes the
+    // handler-visible `WorkspaceScope`; a request with no resolved tenancy passes
+    // through unstamped (the handler then falls back to the default scope).
+    async fn probe(scope: Option<Extension<WorkspaceScope>>) -> String {
+        scope
+            .map(|Extension(WorkspaceScope(w))| w)
+            .unwrap_or_else(|| "<none>".into())
+    }
+    let app = Router::new()
+        .route("/p", get(probe))
+        .layer(axum::middleware::from_fn(
+            awaken_webhook_managed::stamp_workspace_scope,
+        ));
+
+    // Tenancy stamped upstream → mapped to WorkspaceScope("ws_x").
+    let mut stamped = Request::builder()
+        .method("GET")
+        .uri("/p")
+        .body(Body::empty())
+        .unwrap();
+    stamped
+        .extensions_mut()
+        .insert(awaken_authz_enforce::RequestTenancy {
+            workspace_id: "ws_x".into(),
+        });
+    let resp = app.clone().oneshot(stamped).await.unwrap();
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&body[..], b"ws_x", "resolved tenancy maps to the scope");
+
+    // No tenancy → passes through unstamped; the handler sees no scope.
+    let bare = Request::builder()
+        .method("GET")
+        .uri("/p")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(bare).await.unwrap();
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&body[..], b"<none>", "a bare request is not stamped");
+}
+
+#[tokio::test]
+async fn an_unscoped_request_falls_back_to_the_default_scope() {
+    // A flat / single-tenant deployment stamps no WorkspaceScope: create and read
+    // both resolve to the seeded `default` scope, so the row is self-consistent.
+    let store = Arc::new(MemStore::default());
+    let secrets = Arc::new(MemSecrets::ok());
+    let (status, body) = call(
+        store.clone(),
+        secrets.clone(),
+        "PUT",
+        "/v1/config/webhook-subscriptions/wh1",
+        None,
+        Some(json!({ "url": "https://x.example/y" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(body["workspace_id"], "default", "unscoped → default scope");
+    assert_eq!(store.get("wh1").unwrap().workspace_id, "default");
+
+    // An equally-unscoped GET reads it back under the same default scope.
+    let (gstatus, gbody) = call(
+        store,
+        secrets,
+        "GET",
+        "/v1/config/webhook-subscriptions/wh1",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(gstatus, StatusCode::OK);
+    assert_eq!(gbody["url"], "https://x.example/y");
+}
+
+#[tokio::test]
+async fn delete_of_an_owned_row_removes_it() {
+    // The happy-path unsubscribe: a tenant deleting its own subscription tears the
+    // row out (the counterpart to the cross-tenant no-op).
+    let store = Arc::new(MemStore::default());
+    seed(&store, "wh1", "ws_a");
+    let (status, _) = call(
+        store.clone(),
+        Arc::new(MemSecrets::ok()),
+        "DELETE",
+        "/v1/config/webhook-subscriptions/wh1",
+        Some("ws_a"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(
+        store.get("wh1").is_none(),
+        "the tenant's own row is actually removed"
+    );
 }

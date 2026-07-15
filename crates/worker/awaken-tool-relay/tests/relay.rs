@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use async_trait::async_trait;
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolExecutor, ToolOutput};
-use awaken_tool_relay::wire::{HandErrorKind, HandReply, HandRequest, HandResult};
+use awaken_tool_relay::wire::{HandError, HandErrorKind, HandReply, HandRequest, HandResult};
 use awaken_tool_relay::{HandSession, RemoteToolExecutor, serve_hand};
 
 /// A tool that echoes its `text` argument and counts how many times it ran, so a
@@ -350,6 +350,137 @@ async fn a_brain_fingerprint_drift_is_rejected_end_to_end() {
     );
     drop(executor);
     let _ = hand.await;
+}
+
+#[tokio::test]
+async fn invoke_maps_an_indeterminate_outcome_to_a_named_execution_error() {
+    // `call_hand` returning Indeterminate is exercised elsewhere; this covers the
+    // `ToolExecutor::invoke` *mapping* row: Indeterminate → ToolError::Execution
+    // whose message names the tool and says the connection was lost. The kernel
+    // loop sees a definite error string, never a silent success.
+    let (brain_end, hand_end) = tokio::io::duplex(64 * 1024);
+    tokio::spawn(async move {
+        use futures_util::StreamExt;
+        use tokio_util::codec::{Framed, LengthDelimitedCodec};
+        let mut framed = Framed::new(hand_end, LengthDelimitedCodec::new());
+        let _ = framed.next().await; // read the request, then drop without replying
+    });
+    let executor = RemoteToolExecutor::new(brain_end);
+    let err = executor
+        .invoke(&call("c1", "echo", "x"))
+        .await
+        .expect_err("an indeterminate outcome is surfaced as an error");
+    let msg = err.to_string();
+    assert!(msg.contains("indeterminate"), "got: {msg}");
+    assert!(msg.contains("echo"), "the message names the tool: {msg}");
+}
+
+#[tokio::test]
+async fn a_hand_fingerprint_with_an_unstamped_request_runs_permissively() {
+    // The hand fails closed only when BOTH sides carry a fingerprint and they
+    // differ (`if let (Some, Some)`). A request that omits its fingerprint runs —
+    // this locks that documented permissive row so a future tightening is a
+    // deliberate, test-visible change.
+    let runs = Arc::new(AtomicU32::new(0));
+    let mut session = HandSession::new([Arc::new(CountingEcho {
+        id: "echo".into(),
+        runs: runs.clone(),
+    }) as Arc<dyn RawTool>])
+    .with_catalog_fingerprint("hand-v1");
+
+    // HandRequest::new leaves catalog_fingerprint = None.
+    let reply = session
+        .handle(HandRequest::new(7, call("c1", "echo", "ok")))
+        .await;
+    match reply.result {
+        HandResult::Ok { output } => assert_eq!(output.content, "ok"),
+        other => panic!("an unstamped request should run, got {other:?}"),
+    }
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_re_drive_of_a_failed_execution_returns_the_cached_error_without_re_running() {
+    // The idempotency ledger caches *errors* too: a second identical request to a
+    // failing tool returns the recorded HandError without invoking the tool again.
+    struct CountingFail {
+        runs: Arc<AtomicU32>,
+    }
+    #[async_trait]
+    impl RawTool for CountingFail {
+        fn id(&self) -> &str {
+            "fail"
+        }
+        async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
+            self.runs.fetch_add(1, Ordering::SeqCst);
+            Err(ToolError::Execution("boom".to_string()))
+        }
+    }
+    let runs = Arc::new(AtomicU32::new(0));
+    let mut session =
+        HandSession::new([Arc::new(CountingFail { runs: runs.clone() }) as Arc<dyn RawTool>]);
+
+    let request = HandRequest::new(99, call("c1", "fail", "x"));
+    let first = session.handle(request.clone()).await;
+    let second = session.handle(request).await;
+
+    assert_eq!(first, second, "a re-drive returns the recorded error reply");
+    assert!(matches!(first.result, HandResult::Err { .. }));
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        1,
+        "the failing effect ran at most once"
+    );
+}
+
+#[test]
+fn hand_result_serializes_with_an_internally_tagged_snake_case_status() {
+    // Wire-shape lock: HandResult is `#[serde(tag = "status", rename_all = "snake_case")]`.
+    let ok = serde_json::to_value(HandResult::ok(ToolOutput::ok("c1", "hi"))).unwrap();
+    assert_eq!(ok["status"], "ok");
+    assert_eq!(ok["output"]["content"], "hi");
+
+    let err = serde_json::to_value(HandResult::err(HandError::new(
+        HandErrorKind::FingerprintMismatch,
+        "drift",
+    )))
+    .unwrap();
+    assert_eq!(err["status"], "err");
+    assert_eq!(err["error"]["kind"], "fingerprint_mismatch");
+    assert_eq!(err["error"]["message"], "drift");
+
+    let ind = serde_json::to_value(HandResult::Indeterminate).unwrap();
+    assert_eq!(ind["status"], "indeterminate");
+    // A unit-like variant carries no payload key beyond the tag.
+    assert_eq!(ind.as_object().unwrap().len(), 1);
+}
+
+#[test]
+fn hand_request_omits_absent_optionals_and_defaults_them_on_decode() {
+    // On the wire, an absent fingerprint/deadline are dropped (skip_serializing_if)
+    // and default back to None on decode (#[serde(default)]) — so a minimal
+    // producer and this struct interoperate.
+    let req = HandRequest::new(1, call("c1", "echo", "x"));
+    let json = serde_json::to_value(&req).unwrap();
+    assert!(
+        !json
+            .as_object()
+            .unwrap()
+            .contains_key("catalog_fingerprint"),
+        "an absent fingerprint is not serialized"
+    );
+    assert!(!json.as_object().unwrap().contains_key("deadline_unix_ms"));
+
+    // A minimal frame with only the required fields round-trips to None optionals.
+    let minimal = serde_json::json!({
+        "correlation_id": 5,
+        "call": { "call_id": "c1", "tool_id": "echo", "arguments": { "text": "x" } }
+    });
+    let decoded: HandRequest = serde_json::from_value(minimal).unwrap();
+    assert_eq!(decoded.correlation_id, 5);
+    assert_eq!(decoded.catalog_fingerprint, None);
+    assert_eq!(decoded.deadline_unix_ms, None);
+    assert_eq!(decoded.call.tool_id, "echo");
 }
 
 #[tokio::test]

@@ -858,4 +858,122 @@ mod tests {
         // Multi-key objects get stringified
         assert!(pattern_matches(&p, "Tool", &json!({"a": 1, "b": 2})).is_match());
     }
+
+    // --- Characterization: negated op on a MISSING field never matches --------
+    //
+    // `evaluate_field_condition` returns `false` for an unresolved field path
+    // *regardless of operator polarity* (matcher.rs `resolved.is_empty()` guard).
+    // So a negated condition (`!~`, `!=`, `!=~`) matches only when the field is
+    // PRESENT and differs; against an ABSENT field it does NOT match. A rule like
+    // "deny Bash unless command != rm" therefore does NOT fire when `command` is
+    // absent — the root of a permission fail-open. Pinned here; do not "fix" the
+    // shared matcher (a permission-layer fix is planned separately).
+    #[test]
+    fn negated_op_present_field_matches_absent_field_does_not() {
+        for (op, present_hit, present_miss) in [
+            (
+                MatchOp::NotExact,
+                json!({"command": "ls"}),
+                json!({"command": "rm"}),
+            ),
+            (
+                MatchOp::NotGlob,
+                json!({"command": "ls"}),
+                json!({"command": "rm -rf /"}),
+            ),
+            (
+                MatchOp::NotRegex,
+                json!({"command": "ls"}),
+                json!({"command": "rm -rf"}),
+            ),
+        ] {
+            let value = match op {
+                MatchOp::NotExact => "rm",
+                MatchOp::NotGlob => "rm *",
+                MatchOp::NotRegex => "^rm",
+                _ => unreachable!(),
+            };
+            let p = field_rule("Bash", "command", op, value);
+            // Present & differing ⇒ the negated condition matches.
+            assert!(
+                pattern_matches(&p, "Bash", &present_hit).is_match(),
+                "present differing field should match for {op:?}"
+            );
+            // Present & equal/covered ⇒ negated condition fails.
+            assert!(
+                !pattern_matches(&p, "Bash", &present_miss).is_match(),
+                "present matching field should not match for {op:?}"
+            );
+            // ABSENT ⇒ negated condition does NOT match (the fail-open pin).
+            assert!(
+                !pattern_matches(&p, "Bash", &json!({})).is_match(),
+                "absent field must NOT match even for negated op {op:?}"
+            );
+        }
+    }
+
+    // --- Characterization: negated op over an array path is EXISTENTIAL -------
+    //
+    // `evaluate_field_condition` is `resolved.iter().any(...)`. With a multi-value
+    // path (`items[*].name`) a negated condition matches when *at least one*
+    // element differs — NOT when *all* differ. So `items[*].name != "x"` matches
+    // even if some element equals "x", as long as another differs.
+    #[test]
+    fn negated_op_over_array_matches_if_any_element_differs() {
+        let p = ToolCallPattern {
+            tool: ToolMatcher::Exact("Tool".into()),
+            args: ArgMatcher::Fields(vec![FieldCondition {
+                path: vec![
+                    PathSegment::Field("items".into()),
+                    PathSegment::AnyIndex,
+                    PathSegment::Field("name".into()),
+                ],
+                op: MatchOp::NotExact,
+                value: "x".into(),
+            }]),
+        };
+        // One element equals "x", another differs ⇒ existential `any` ⇒ MATCH.
+        assert!(
+            pattern_matches(
+                &p,
+                "Tool",
+                &json!({"items": [{"name": "x"}, {"name": "y"}]})
+            )
+            .is_match()
+        );
+        // Every element equals "x" ⇒ no element differs ⇒ no match.
+        assert!(
+            !pattern_matches(
+                &p,
+                "Tool",
+                &json!({"items": [{"name": "x"}, {"name": "x"}]})
+            )
+            .is_match()
+        );
+    }
+
+    // --- Characterization: tool_kind dominates arg specificity ----------------
+    //
+    // `Specificity` derives `Ord` field-by-field in declaration order, so
+    // `tool_kind` outranks `has_args`: an exact-tool/no-args match is MORE
+    // specific than a glob-tool/with-args match.
+    #[test]
+    fn specificity_tool_kind_outranks_args() {
+        let exact_no_args = pattern_matches(&exact("Bash"), "Bash", &json!({"command": "npm i"}));
+        let glob_with_args = pattern_matches(
+            &ToolCallPattern::tool_glob("Bas*").with_args(ArgMatcher::Primary {
+                op: MatchOp::Glob,
+                value: "npm *".into(),
+            }),
+            "Bash",
+            &json!({"command": "npm i"}),
+        );
+        if let (MatchResult::Match { specificity: a }, MatchResult::Match { specificity: b }) =
+            (&exact_no_args, &glob_with_args)
+        {
+            assert!(a > b, "exact-tool/no-args outranks glob-tool/with-args");
+        } else {
+            panic!("both should match");
+        }
+    }
 }

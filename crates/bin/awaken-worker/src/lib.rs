@@ -187,4 +187,15 @@ mod grace_tests {
             "the grace window is configurable"
         );
     }
+
+    // Boundary: an explicitly configured zero grace collapses SIGTERM to the
+    // prompt-exit behavior — the orchestrator asked for no in-flight wait, so a
+    // graceful stop must not silently substitute the 20s default.
+    #[test]
+    fn a_configured_zero_grace_exits_immediately_even_on_sigterm() {
+        assert!(
+            grace_window(true, Some(0)).is_zero(),
+            "grace of 0 means no wait, not the default"
+        );
+    }
 }

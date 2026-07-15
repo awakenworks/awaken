@@ -783,5 +783,19 @@ mod tests {
                 .map(String::as_str),
             Some("open")
         );
+
+        // No-network policy is also `restricted`, never `open` — a fail-open label
+        // here would let a NetworkPolicy grant egress to a pod that asked for none.
+        plan.network = crate::NetworkMode::None;
+        let denied = build_pod("r", &plan, &None, "m", None, false);
+        assert_eq!(
+            denied
+                .metadata
+                .labels
+                .unwrap()
+                .get("awaken-egress")
+                .map(String::as_str),
+            Some("restricted")
+        );
     }
 }

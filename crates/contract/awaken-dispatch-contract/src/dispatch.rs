@@ -400,6 +400,40 @@ impl<T: DispatchQueue + Inbox + Outbox> Dispatch for T {}
 mod tests {
     use super::*;
     use awaken_runtime_contract::resume::ResumeResult;
+    use std::sync::Mutex;
+
+    use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+    use awaken_runtime_contract::activation::RunActivation;
+    use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
+    use awaken_runtime_contract::snapshot::{
+        AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
+    };
+
+    fn a_request() -> RunExecutionRequest {
+        let activation = RunActivation::new(
+            RunId("run-1".into()),
+            ThreadId("thrd-1".into()),
+            ExecutableAgentSnapshot {
+                id: ExecutableAgentSnapshotId("snap".into()),
+                root_agent_id: AgentId("agent".into()),
+                resolved_spec: ResolvedSpec {
+                    model_candidates: Vec::new(),
+                    catalog_fingerprint: CatalogFingerprint("fp".into()),
+                    instructions: "be helpful".into(),
+                    max_steps: 8,
+                    model_binding: ModelBinding::new("prov", "model", "acp:test"),
+                    tool_descriptors: Vec::new(),
+                    plugin_ids: Vec::new(),
+                    plugin_config: Default::default(),
+                    context_policy: Default::default(),
+                    tool_presentation: Default::default(),
+                },
+                fingerprint: CatalogFingerprint("fp".into()),
+            },
+            vec![Message::text(MessageId("u1".into()), Role::User, "go")],
+        );
+        RunExecutionRequest::new(activation)
+    }
 
     /// The SQL backends' `status` column maps to the public enum, and any value
     /// outside the known set (a typo, a future status this build predates) falls
@@ -496,5 +530,163 @@ mod tests {
                     .expect("deserializes");
             assert_eq!(back, outcome);
         }
+    }
+
+    /// `applied()` is the single predicate the worker branches on after a settle: it
+    /// is true only for `Applied`, so a `Fenced` (stale-owner) settle never reads as
+    /// success and the stale owner abandons the run.
+    #[test]
+    fn settle_outcome_applied_is_true_only_when_applied() {
+        assert!(SettleOutcome::Applied.applied());
+        assert!(!SettleOutcome::Fenced.applied());
+    }
+
+    /// `SettleOutcome` is a settle *response*; a cross-node worker settles over the
+    /// wire, so both variants must survive a JSON round-trip intact.
+    #[test]
+    fn settle_outcome_round_trips_through_serde() {
+        for o in [SettleOutcome::Applied, SettleOutcome::Fenced] {
+            let back: SettleOutcome =
+                serde_json::from_str(&serde_json::to_string(&o).expect("serializes"))
+                    .expect("deserializes");
+            assert_eq!(back, o);
+        }
+    }
+
+    /// The full claim payload — request + lease + pending + a bound sandbox ref —
+    /// round-trips through JSON, since a cross-node worker receives `Claimed` over the
+    /// dispatch transport, not out of the DB.
+    #[test]
+    fn claimed_round_trips_through_serde_including_sandbox_binding() {
+        let claimed = Claimed {
+            request: a_request(),
+            lease: Lease {
+                run_id: RunId("run-1".into()),
+                owner: "host-7".into(),
+                expires_ms: 5_000,
+                epoch: 2,
+            },
+            pending: vec![pending()],
+            sandbox: Some("sbx-opaque-ref".into()),
+        };
+        let back: Claimed =
+            serde_json::from_str(&serde_json::to_string(&claimed).expect("serializes"))
+                .expect("deserializes");
+        assert_eq!(back, claimed);
+        assert_eq!(back.sandbox.as_deref(), Some("sbx-opaque-ref"));
+
+        // An unplaced run (no sandbox yet) round-trips with `sandbox: None`.
+        let unplaced = Claimed {
+            sandbox: None,
+            ..claimed
+        };
+        let back: Claimed =
+            serde_json::from_str(&serde_json::to_string(&unplaced).expect("serializes"))
+                .expect("deserializes");
+        assert_eq!(back.sandbox, None);
+    }
+
+    /// A `DispatchQueue` that records the options its `enqueue_with` was called with,
+    /// to prove the default `enqueue` delegates at `SubmitOptions::default()` and that
+    /// `bind_sandbox` defaults to a no-op `Ok(())`. Every other method is out of scope
+    /// for this test and left `unimplemented!()`.
+    #[derive(Default)]
+    struct CapturingQueue {
+        last_options: Mutex<Option<SubmitOptions>>,
+    }
+
+    #[async_trait]
+    impl DispatchQueue for CapturingQueue {
+        async fn enqueue_with(
+            &self,
+            _request: RunExecutionRequest,
+            options: SubmitOptions,
+        ) -> Result<(), DispatchError> {
+            *self.last_options.lock().unwrap() = Some(options);
+            Ok(())
+        }
+        async fn claim(
+            &self,
+            _owner: &str,
+            _lease_ms: u64,
+            _now_ms: u64,
+        ) -> Result<Option<Claimed>, DispatchError> {
+            unimplemented!()
+        }
+        async fn renew_lease(
+            &self,
+            _run_id: &RunId,
+            _owner: &str,
+            _lease_ms: u64,
+            _now_ms: u64,
+        ) -> Result<bool, DispatchError> {
+            unimplemented!()
+        }
+        async fn renew_owned_leases(
+            &self,
+            _owner: &str,
+            _lease_ms: u64,
+            _now_ms: u64,
+        ) -> Result<usize, DispatchError> {
+            unimplemented!()
+        }
+        async fn settle(
+            &self,
+            _run_id: &RunId,
+            _epoch: u64,
+            _outcome: DispatchOutcome,
+            _consumed: &[String],
+        ) -> Result<SettleOutcome, DispatchError> {
+            unimplemented!()
+        }
+        async fn reap(&self, _max_attempts: u64, _now_ms: u64) -> Result<usize, DispatchError> {
+            unimplemented!()
+        }
+        async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
+            unimplemented!()
+        }
+        async fn requeue(&self, _run_id: &RunId) -> Result<bool, DispatchError> {
+            unimplemented!()
+        }
+        async fn cancel(&self, _run_id: &RunId) -> Result<Option<ThreadId>, DispatchError> {
+            unimplemented!()
+        }
+        async fn parked_run(&self, _thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError> {
+            unimplemented!()
+        }
+        async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
+            unimplemented!()
+        }
+        async fn purge_dead_letters_before(&self, _cutoff_ms: u64) -> Result<usize, DispatchError> {
+            unimplemented!()
+        }
+        async fn superseded(&self) -> Result<Vec<RunId>, DispatchError> {
+            unimplemented!()
+        }
+        async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError> {
+            unimplemented!()
+        }
+    }
+
+    #[tokio::test]
+    async fn enqueue_delegates_to_enqueue_with_at_default_options() {
+        let q = CapturingQueue::default();
+        q.enqueue(a_request()).await.expect("enqueue ok");
+        assert_eq!(
+            q.last_options.lock().unwrap().clone(),
+            Some(SubmitOptions::default()),
+            "the convenience enqueue must submit at default priority/dedupe/supersede"
+        );
+    }
+
+    #[tokio::test]
+    async fn bind_sandbox_defaults_to_a_no_op_ok() {
+        // Backends that do not persist the binding inherit the neutral no-op seam.
+        let q = CapturingQueue::default();
+        assert!(
+            q.bind_sandbox(&RunId("run-1".into()), "sbx-ref")
+                .await
+                .is_ok()
+        );
     }
 }

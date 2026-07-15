@@ -369,6 +369,123 @@ mod tests {
     }
 
     #[test]
+    fn role_parse_covers_every_alias_case_insensitively_and_trims() {
+        // Serve aliases.
+        for s in [
+            "serve",
+            "coordinator",
+            "all-in-one",
+            "  SERVE ",
+            "Coordinator",
+        ] {
+            assert_eq!(Role::parse(s), Some(Role::Serve), "{s:?}");
+        }
+        assert_eq!(Role::parse("worker"), Some(Role::Worker));
+        assert_eq!(Role::parse(" WORKER"), Some(Role::Worker));
+        assert_eq!(Role::parse("hand"), Some(Role::Hand));
+        assert_eq!(Role::parse("HAND "), Some(Role::Hand));
+        // An unknown token is not a role.
+        assert_eq!(Role::parse("bogus"), None);
+        // And an unknown AWAKEN_ROLE falls back to the Serve default at from_lookup.
+        let cfg = AwakenConfig::from_lookup(map_lookup(&[("AWAKEN_ROLE", "bogus")]));
+        assert_eq!(cfg.role, Role::Serve);
+    }
+
+    #[test]
+    fn the_hand_role_has_no_cross_field_invariants() {
+        // A hand is a remote executor endpoint: it holds no store and drains no queue,
+        // so none of the Serve/Worker invariants apply — it always boots.
+        let cfg = AwakenConfig::from_lookup(map_lookup(&[("AWAKEN_ROLE", "hand")]));
+        assert_eq!(cfg.role, Role::Hand);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn run_local_pool_honors_every_falsey_spelling() {
+        for v in ["false", "0", "no", "FALSE", "No"] {
+            let cfg = AwakenConfig::from_lookup(map_lookup(&[("AWAKEN_SERVER_RUN_LOCAL_POOL", v)]));
+            assert!(!cfg.run_local_pool, "{v:?} disables the local pool");
+        }
+        // Anything else (including a stray value) leaves the pool on.
+        for v in ["true", "1", "yes", "on"] {
+            let cfg = AwakenConfig::from_lookup(map_lookup(&[("AWAKEN_SERVER_RUN_LOCAL_POOL", v)]));
+            assert!(cfg.run_local_pool, "{v:?} keeps the local pool on");
+        }
+    }
+
+    #[test]
+    fn the_positive_pool_flag_wins_over_the_legacy_negated_one() {
+        // Both set, contradictory: the new positive flag (=true) wins and the legacy
+        // negated flag is ignored (no deprecation warning, since the new name read).
+        let cfg = AwakenConfig::from_lookup(map_lookup(&[
+            ("AWAKEN_SERVER_RUN_LOCAL_POOL", "true"),
+            ("AWAKEN_DISABLE_LOCAL_POOL", "1"),
+        ]));
+        assert!(cfg.run_local_pool, "the new positive flag wins");
+        assert!(
+            !cfg.deprecations
+                .iter()
+                .any(|d| d.contains("AWAKEN_DISABLE_LOCAL_POOL")),
+            "the legacy negated flag is not consulted when the new one is set"
+        );
+    }
+
+    #[test]
+    fn a_seal_key_is_present_from_any_of_its_four_env_sources() {
+        // New inline, new file, legacy inline, legacy file — each alone suffices.
+        for key in [
+            "AWAKEN_CONTROL_SEAL_KEY",
+            "AWAKEN_CONTROL_SEAL_KEY_FILE",
+            "AWAKEN_MGMT_SEAL_KEY",
+            "AWAKEN_MGMT_SEAL_KEY_FILE",
+        ] {
+            let cfg = AwakenConfig::from_lookup(map_lookup(&[(key, "deadbeef")]));
+            assert!(cfg.seal_key_present, "{key} marks a seal key present");
+        }
+        // A durable serve with the new inline key validates (the file variant is
+        // already covered above).
+        let ok = AwakenConfig::from_lookup(map_lookup(&[
+            ("AWAKEN_DEPLOYMENT_DATA_DIR", "/var/lib/awaken"),
+            ("AWAKEN_CONTROL_SEAL_KEY", "deadbeef"),
+        ]));
+        assert!(ok.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_reports_every_violated_invariant_at_once() {
+        // A durable coordinator with no local pool, no shared queue, and no seal key
+        // violates BOTH Serve invariants — both are reported in one refusal.
+        let bad = AwakenConfig::from_lookup(map_lookup(&[
+            ("AWAKEN_SERVER_RUN_LOCAL_POOL", "false"),
+            ("AWAKEN_DEPLOYMENT_DATA_DIR", "/var/lib/awaken"),
+        ]));
+        let errs = bad.validate().unwrap_err();
+        assert_eq!(errs.len(), 2, "both invariants reported at once: {errs:?}");
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("shared Postgres dispatch queue"))
+        );
+        assert!(errs.iter().any(|e| e.contains("seal key")));
+    }
+
+    #[test]
+    fn an_empty_env_value_reads_as_unset() {
+        // `from_env` filters empty strings; `from_lookup`'s map lookup does the same,
+        // so an empty AWAKEN_WORKER_SERVE_URL leaves a worker refused, not "configured".
+        let cfg = AwakenConfig::from_lookup(map_lookup(&[
+            ("AWAKEN_ROLE", "worker"),
+            ("AWAKEN_WORKER_SERVE_URL", ""),
+        ]));
+        assert!(cfg.serve_url.is_none(), "an empty value is not a URL");
+        assert!(
+            cfg.validate()
+                .unwrap_err()
+                .iter()
+                .any(|e| e.contains("AWAKEN_WORKER_SERVE_URL"))
+        );
+    }
+
+    #[test]
     fn summary_reads_as_a_deployment_shape() {
         let cfg = AwakenConfig::from_lookup(map_lookup(&[
             (

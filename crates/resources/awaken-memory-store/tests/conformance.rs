@@ -51,6 +51,29 @@ async fn create_put_get_exists_and_scope_by_workspace(store: &dyn MemoryBlobStor
     );
 }
 
+/// Ids are dense AND monotonic AND globally-unique across workspaces: the first three
+/// creates on a fresh store yield `memstore_1`, `memstore_2`, `memstore_3` regardless
+/// of which workspace mints them (the counter is store-global, not per-workspace).
+/// Pins the "dense `memstore_<n>`" clause of the port contract across every backend.
+async fn mints_dense_global_monotonic_ids(store: &dyn MemoryBlobStore) {
+    assert_eq!(store.create("ws1").await.unwrap(), "memstore_1");
+    assert_eq!(store.create("ws1").await.unwrap(), "memstore_2");
+    // A different workspace shares the same monotonic counter — no reset, no gap.
+    assert_eq!(store.create("ws2").await.unwrap(), "memstore_3");
+    assert_eq!(store.create("ws1").await.unwrap(), "memstore_4");
+}
+
+#[tokio::test]
+async fn in_memory_mints_dense_ids() {
+    mints_dense_global_monotonic_ids(&InMemoryBlobStore::new()).await;
+}
+
+#[tokio::test]
+async fn fs_mints_dense_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    mints_dense_global_monotonic_ids(&FsMemoryBlobStore::open(dir.path()).unwrap()).await;
+}
+
 #[tokio::test]
 async fn in_memory_conforms() {
     create_put_get_exists_and_scope_by_workspace(&InMemoryBlobStore::new()).await;
@@ -82,6 +105,13 @@ async fn sqlite_conforms() {
     use awaken_memory_store::SqliteMemoryBlobStore;
     create_put_get_exists_and_scope_by_workspace(&SqliteMemoryBlobStore::open_in_memory().unwrap())
         .await;
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn sqlite_mints_dense_ids() {
+    use awaken_memory_store::SqliteMemoryBlobStore;
+    mints_dense_global_monotonic_ids(&SqliteMemoryBlobStore::open_in_memory().unwrap()).await;
 }
 
 /// Live Postgres conformance on a fresh schema. Skips when no Postgres is reachable
