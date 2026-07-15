@@ -188,6 +188,114 @@ pub async fn select_provider<'a>(
     Err(SelectionError::NoCapableBackend)
 }
 
+/// What to do when no configured backend meets the isolation floor (ADR-0056 §5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnUnmet {
+    /// Never place below the floor — a silent isolation downgrade is a security
+    /// regression, so an unmet floor fails closed (the never-downgrade default).
+    FailClosed,
+    /// Place on the strongest available weaker tier, but ONLY as a *recorded*
+    /// degradation: the caller must emit the audit event + metric + run marker
+    /// ([`PolicySelection::degraded_to`]). Degradation becomes representable and
+    /// logged, never invisible.
+    DegradeWithConsent,
+}
+
+/// The isolation floor as a policy input, so one selection mechanism serves two trust
+/// models (ADR-0056 §5): local single-user (`require = Workdir`, soft) and multi-tenant
+/// hosting (`require = Namespace|Container`, `on_unmet = FailClosed`). The floor is a
+/// parameter, not a hardcoded default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IsolationPolicy {
+    /// The minimum isolation to place on; a weaker backend is used only under
+    /// [`OnUnmet::DegradeWithConsent`].
+    pub require: IsolationClass,
+    /// The preferred isolation when several qualify — the exact-`prefer` tier wins a
+    /// tie, else the strongest floor-meeting tier is chosen.
+    pub prefer: IsolationClass,
+    /// How to handle a spec no backend can place at or above `require`.
+    pub on_unmet: OnUnmet,
+}
+
+/// The outcome of a policy-driven selection: the chosen provider, and — when the floor
+/// could not be met and [`OnUnmet::DegradeWithConsent`] allowed it — the weaker
+/// isolation class actually placed on. `degraded_to = Some(..)` obliges the caller to
+/// emit the degradation audit event + metric + run marker (never silent).
+pub struct PolicySelection<'a> {
+    pub provider: &'a dyn SandboxProvider,
+    pub degraded_to: Option<IsolationClass>,
+}
+
+// A backend honors the spec's non-isolation requirements (network) — the isolation
+// floor is decided by the policy, so it is checked separately here.
+fn non_isolation_ok(caps: &SandboxCapabilities, spec: &SandboxSpec) -> bool {
+    let network_ok =
+        matches!(spec.network, crate::vocab::NetworkPolicy::Unrestricted) || caps.network_isolation;
+    // Resource caps are load-bearing like isolation: a spec asking for cgroup limits
+    // must not be placed on a tier that cannot enforce them, even under a degrade.
+    let limits_ok = !spec.limits.is_set() || caps.resource_limits;
+    network_ok && limits_ok
+}
+
+/// Fail-closed provider selection with an explicit **policy floor** (ADR-0056 §5). It
+/// first places on the strongest ready backend that meets `policy.require` (the exact
+/// `prefer` class winning a tie). If none meets the floor, `on_unmet` decides: `FailClosed`
+/// returns [`SelectionError::NoCapableBackend`] (the never-downgrade guarantee);
+/// `DegradeWithConsent` places on the strongest ready backend *below* the floor and
+/// reports `degraded_to` so the caller records the degradation. A spec is never silently
+/// placed below its floor.
+pub async fn select_provider_with_policy<'a>(
+    candidates: &'a [Box<dyn SandboxProvider>],
+    spec: &SandboxSpec,
+    policy: &IsolationPolicy,
+) -> Result<PolicySelection<'a>, SelectionError> {
+    // Ready backends meeting the floor (isolation >= require) and the spec's network.
+    let mut at_or_above: Vec<&dyn SandboxProvider> = Vec::new();
+    // Ready backends below the floor but network-sound — the degrade candidates.
+    let mut below: Vec<&dyn SandboxProvider> = Vec::new();
+    for provider in candidates {
+        let caps = provider.capabilities();
+        if !non_isolation_ok(&caps, spec) || provider.probe_ready().await.is_err() {
+            continue;
+        }
+        if caps.isolation >= policy.require {
+            at_or_above.push(provider.as_ref());
+        } else {
+            below.push(provider.as_ref());
+        }
+    }
+
+    if !at_or_above.is_empty() {
+        // Prefer the exact `prefer` tier, else the strongest available.
+        let chosen = at_or_above
+            .iter()
+            .find(|p| p.capabilities().isolation == policy.prefer)
+            .copied()
+            .unwrap_or_else(|| {
+                *at_or_above
+                    .iter()
+                    .max_by_key(|p| p.capabilities().isolation)
+                    .expect("non-empty")
+            });
+        return Ok(PolicySelection {
+            provider: chosen,
+            degraded_to: None,
+        });
+    }
+
+    match policy.on_unmet {
+        OnUnmet::FailClosed => Err(SelectionError::NoCapableBackend),
+        OnUnmet::DegradeWithConsent => below
+            .iter()
+            .max_by_key(|p| p.capabilities().isolation)
+            .map(|p| PolicySelection {
+                provider: *p,
+                degraded_to: Some(p.capabilities().isolation),
+            })
+            .ok_or(SelectionError::NoCapableBackend),
+    }
+}
+
 /// Realizes environments. The local impl lives in `awaken-sandbox-local`; a
 /// remote/container impl lives in a distributed repo and plugs in here.
 #[async_trait]
@@ -579,6 +687,154 @@ mod tests {
         // Boundary: an empty candidate list never downgrades to an unisolated run.
         let candidates: Vec<Box<dyn SandboxProvider>> = Vec::new();
         let result = select_provider(&candidates, &spec()).await;
+        assert!(matches!(result, Err(SelectionError::NoCapableBackend)));
+    }
+
+    // --- IsolationPolicy (ADR-0056 §5): the floor is a policy input. Decision table
+    // over (floor met? × on_unmet × candidates), preserving never-downgrade for
+    // FailClosed and making DegradeWithConsent a recorded, non-silent placement.
+
+    fn policy(
+        require: IsolationClass,
+        prefer: IsolationClass,
+        on_unmet: OnUnmet,
+    ) -> IsolationPolicy {
+        IsolationPolicy {
+            require,
+            prefer,
+            on_unmet,
+        }
+    }
+
+    #[tokio::test]
+    async fn policy_places_at_the_floor_and_prefers_the_preferred_tier() {
+        // require=Namespace floor is met by both Namespace and Container; prefer=Namespace
+        // picks the exact preferred tier (not the strongest), and it is not degraded.
+        let candidates: Vec<Box<dyn SandboxProvider>> = vec![
+            Box::new(ProbeProvider {
+                caps: caps(IsolationClass::Container, true),
+                ready: true,
+            }),
+            Box::new(ProbeProvider {
+                caps: caps(IsolationClass::Namespace, true),
+                ready: true,
+            }),
+        ];
+        let sel = select_provider_with_policy(
+            &candidates,
+            &spec(),
+            &policy(
+                IsolationClass::Namespace,
+                IsolationClass::Namespace,
+                OnUnmet::FailClosed,
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            sel.provider.capabilities().isolation,
+            IsolationClass::Namespace
+        );
+        assert_eq!(
+            sel.degraded_to, None,
+            "a floor-meeting placement is not a degrade"
+        );
+    }
+
+    #[tokio::test]
+    async fn policy_fail_closed_refuses_when_the_floor_is_unmet() {
+        // require=Container, only Namespace available, FailClosed → never downgrade.
+        let candidates: Vec<Box<dyn SandboxProvider>> = vec![Box::new(ProbeProvider {
+            caps: caps(IsolationClass::Namespace, true),
+            ready: true,
+        })];
+        let result = select_provider_with_policy(
+            &candidates,
+            &spec(),
+            &policy(
+                IsolationClass::Container,
+                IsolationClass::Container,
+                OnUnmet::FailClosed,
+            ),
+        )
+        .await;
+        assert!(matches!(result, Err(SelectionError::NoCapableBackend)));
+    }
+
+    #[tokio::test]
+    async fn policy_degrade_with_consent_places_below_the_floor_and_records_it() {
+        // require=Container, only Namespace + Workdir available, DegradeWithConsent →
+        // the STRONGEST below-floor tier (Namespace) is placed, and degraded_to reports
+        // it so the caller emits the audit/metric/marker.
+        let candidates: Vec<Box<dyn SandboxProvider>> = vec![
+            Box::new(ProbeProvider {
+                caps: caps(IsolationClass::Workdir, true),
+                ready: true,
+            }),
+            Box::new(ProbeProvider {
+                caps: caps(IsolationClass::Namespace, true),
+                ready: true,
+            }),
+        ];
+        let sel = select_provider_with_policy(
+            &candidates,
+            &spec(),
+            &policy(
+                IsolationClass::Container,
+                IsolationClass::Container,
+                OnUnmet::DegradeWithConsent,
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            sel.provider.capabilities().isolation,
+            IsolationClass::Namespace
+        );
+        assert_eq!(
+            sel.degraded_to,
+            Some(IsolationClass::Namespace),
+            "a consented degrade is recorded, never silent"
+        );
+    }
+
+    #[tokio::test]
+    async fn policy_degrade_with_consent_still_fails_closed_with_no_backend_at_all() {
+        // Even DegradeWithConsent cannot place a run with zero ready backends.
+        let candidates: Vec<Box<dyn SandboxProvider>> = Vec::new();
+        let result = select_provider_with_policy(
+            &candidates,
+            &spec(),
+            &policy(
+                IsolationClass::Container,
+                IsolationClass::Container,
+                OnUnmet::DegradeWithConsent,
+            ),
+        )
+        .await;
+        assert!(matches!(result, Err(SelectionError::NoCapableBackend)));
+    }
+
+    #[tokio::test]
+    async fn policy_excludes_a_backend_that_cannot_meet_the_specs_network() {
+        // A restricted-egress spec needs network isolation; a non-isolating backend is
+        // excluded from the floor set even if its isolation class qualifies.
+        let mut s = spec();
+        s.network = NetworkPolicy::None;
+        let candidates: Vec<Box<dyn SandboxProvider>> = vec![Box::new(ProbeProvider {
+            caps: caps(IsolationClass::Container, false), // no network isolation
+            ready: true,
+        })];
+        let result = select_provider_with_policy(
+            &candidates,
+            &s,
+            &policy(
+                IsolationClass::Workdir,
+                IsolationClass::Workdir,
+                OnUnmet::FailClosed,
+            ),
+        )
+        .await;
         assert!(matches!(result, Err(SelectionError::NoCapableBackend)));
     }
 
