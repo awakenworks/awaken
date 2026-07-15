@@ -107,7 +107,17 @@ rename or re-explain a tool.
 - Permissions: prefer least privilege. If the operator wants approval or bans, put it in \
 the `permission` section (a `default_behavior` of `ask`/`deny`, and/or ordered `rules`).
 - Select the minimum tools the task needs; omit tools entirely when none are needed.
-- Only pin a model if the operator names one; otherwise leave it auto-bound.";
+- Only pin a model if the operator names one; otherwise leave it auto-bound.
+- You can fill in EVERY part of a config, matching the manual editor: besides tools and \
+plugins you may set `mcp_servers`, `skills`, `multiagent`, and `metadata`, and BIND \
+data-plane `resources` (memory stores, files, git repos, skills) onto the agent.
+- Resource binding: each `resources` entry is `{ kind (memory_store|file|\
+github_repository|skill), resource_id, mount_path?, access? (read_only|read_write, \
+default read_write), instructions? }`. Prefer a `resource_id` from the capability view \
+(its `memory_stores`/`skills`/etc.). If the operator explicitly gives you a specific \
+resource_id, bind it as given — they have confirmed it. Only ask when the operator is \
+vague about which resource. Omit `mount_path` to accept the per-kind default. On \
+`admin_patch_agent`, a present `resources` array REPLACES the agent's whole binding set.";
 
 /// A cap on a single plugin-config section, so a draft/patch cannot be used to stuff
 /// an unbounded blob into a config (D4: size-bounded).
@@ -146,16 +156,46 @@ pub trait DraftValidator: Send + Sync {
     fn validate(&self, draft: &AgentConfig) -> Result<(), String>;
 }
 
+/// A neutral, transport-shaped resource-binding spec (ADR-0038): one resource an agent
+/// mounts, authored by the assistant from the flattened `resources` intent. It is a
+/// leaf value in THIS crate — deliberately NOT the config-resolver's `ResourceBinding`
+/// — so the assistant crate stays a leaf that names only the neutral tool contract; the
+/// host's [`DraftStore`] adapter maps this onto the real binding (kind/access enums +
+/// per-kind default mount path). `kind` is `memory_store`/`file`/`github_repository`/
+/// `skill`; `access` is `read_only`/`read_write` (defaults to `read_write`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResourceSpec {
+    pub kind: String,
+    pub resource_id: String,
+    #[serde(default)]
+    pub mount_path: Option<String>,
+    #[serde(default)]
+    pub access: Option<String>,
+    #[serde(default)]
+    pub instructions: Option<String>,
+}
+
 /// Persist and read back **unpublished** draft agent configs (ADR-0052). The host
 /// implements this over the same config plane the editor's Save uses, in the tenant/
 /// default scope. A draft *is* an unpublished config agent — persisting it here makes
-/// it appear in the console's agent list, still awaiting the operator's publish.
+/// it appear in the console's agent list, still awaiting the operator's publish. It also
+/// carries the SEPARATE data-plane resource bindings (ADR-0038), which live in their own
+/// store; the assistant authors both through this one port so a single tool call fills
+/// in a whole agent — config plus its mounted resources.
 #[async_trait]
 pub trait DraftStore: Send + Sync {
     /// Persist an UNPUBLISHED draft agent config (same effect as the editor's Save).
     async fn put(&self, draft: &AgentConfig) -> Result<(), String>;
     /// Read a persisted draft agent config back by id (`None` if absent).
     async fn get(&self, id: &str) -> Result<Option<AgentConfig>, String>;
+    /// Replace the whole set of resource bindings for `agent_id` (data-plane store).
+    async fn put_resources(
+        &self,
+        agent_id: &str,
+        resources: Vec<ResourceSpec>,
+    ) -> Result<(), String>;
+    /// Read back the agent's resource bindings (empty when none are bound).
+    async fn get_resources(&self, agent_id: &str) -> Result<Vec<ResourceSpec>, String>;
 }
 
 /// A structured record of one management tool invocation (ADR-0052 D6). Emitted on
@@ -251,8 +291,10 @@ pub fn admin_tool_descriptors() -> Vec<ToolDescriptor> {
             "admin",
             CREATE_DRAFT_TOOL,
             "Author a full agent configuration from the operator's intent and SAVE it \
-             as an unpublished draft. Accepts the whole config as flat fields \
-             (instructions, model, tools, tool_overrides, plugin_config, …). Validates \
+             as an unpublished draft. Accepts the WHOLE config as flat fields: \
+             instructions, model, tools, tool_overrides, plugin_config, mcp_servers, \
+             skills, multiagent, metadata, and `resources` (data-plane bindings — \
+             memory stores, files, git repos, skills — by resource_id). Validates \
              before saving; on a validation error nothing is saved. Never publishes.",
             serde_json::json!({
                 "type": "object",
@@ -286,7 +328,58 @@ pub fn admin_tool_descriptors() -> Vec<ToolDescriptor> {
                         "description": "Per-plugin config sections keyed by plugin id \
                                         (permission/state_machine/compact/memory)."
                     },
-                    "context_policy": { "type": "object" }
+                    "context_policy": { "type": "object" },
+                    "mcp_servers": {
+                        "type": "array",
+                        "items": { "type": "object" },
+                        "description": "MCP server sections to attach (each an object \
+                                        conforming to the MCP config shape). Reference \
+                                        only server ids listed in capabilities."
+                    },
+                    "skills": {
+                        "type": "array",
+                        "items": { "type": "object" },
+                        "description": "Skill config sections to attach."
+                    },
+                    "multiagent": {
+                        "type": "object",
+                        "description": "The multiagent/orchestration section, if any."
+                    },
+                    "metadata": {
+                        "type": "object",
+                        "description": "Free-form string→string metadata for the agent."
+                    },
+                    "resources": {
+                        "type": "array",
+                        "description": "Data-plane resources to mount onto the agent \
+                                        (memory stores, files, git repos, skills). Bind \
+                                        only resource_ids present in the capability view.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "kind": {
+                                    "type": "string",
+                                    "enum": ["memory_store", "file", "github_repository", "skill"],
+                                    "description": "The resource kind to bind."
+                                },
+                                "resource_id": {
+                                    "type": "string",
+                                    "description": "Id of the resource from the capability view."
+                                },
+                                "mount_path": {
+                                    "type": "string",
+                                    "description": "Where it mounts (defaulted per kind if omitted)."
+                                },
+                                "access": {
+                                    "type": "string",
+                                    "enum": ["read_only", "read_write"],
+                                    "description": "Access mode (default read_write)."
+                                },
+                                "instructions": { "type": "string" }
+                            },
+                            "required": ["kind", "resource_id"]
+                        }
+                    }
                 },
                 "required": ["id", "instructions"]
             }),
@@ -295,8 +388,11 @@ pub fn admin_tool_descriptors() -> Vec<ToolDescriptor> {
             "admin",
             PATCH_TOOL,
             "Incrementally refine a SAVED draft: apply only the fields present in \
-             `patch` (same flat field set as admin_draft_agent) to the stored draft, \
-             re-validate, and save. plugin_config sections merge by key. Never publishes.",
+             `patch` (same flat field set as admin_draft_agent — instructions, model, \
+             tools, plugin_config, mcp_servers, skills, multiagent, metadata, resources) \
+             to the stored draft, re-validate, and save. plugin_config sections merge by \
+             key; a present `resources` array REPLACES the whole binding set (an absent \
+             one leaves bindings untouched). Never publishes.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -416,6 +512,30 @@ async fn validate_persist_emit(
     Ok(ToolOutput::ok(call_id, body.to_string()))
 }
 
+/// Bind the SEPARATE data-plane resources after the config was saved. Fail-safe: if the
+/// config save already errored (`out.is_error`) or the caller passed `None` (nothing to
+/// change), resources are left untouched; a present set REPLACES the agent's bindings.
+async fn persist_resources_after(
+    out: ToolOutput,
+    agent_id: &str,
+    resources: Option<Vec<ResourceSpec>>,
+    store: &Arc<dyn DraftStore>,
+) -> Result<ToolOutput, ToolError> {
+    if out.is_error {
+        return Ok(out);
+    }
+    let Some(resources) = resources else {
+        return Ok(out);
+    };
+    if let Err(error) = store.put_resources(agent_id, resources).await {
+        return Ok(ToolOutput::error(
+            out.call_id,
+            format!("draft saved but its resources could not be bound: {error}"),
+        ));
+    }
+    Ok(out)
+}
+
 // ---- Tool 1: admin_get_platform_capabilities ------------------------------------
 
 struct GetPlatformCapabilities {
@@ -469,6 +589,16 @@ struct DraftArgs {
     plugin_config: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     context_policy: Option<ContextPolicy>,
+    #[serde(default)]
+    mcp_servers: Vec<serde_json::Value>,
+    #[serde(default)]
+    skills: Vec<serde_json::Value>,
+    #[serde(default)]
+    multiagent: Option<serde_json::Value>,
+    #[serde(default)]
+    metadata: BTreeMap<String, String>,
+    #[serde(default)]
+    resources: Vec<ResourceSpec>,
 }
 
 struct DraftAgent {
@@ -508,6 +638,8 @@ impl RawTool for DraftAgent {
             .map(|m| ModelSelection::pinned("default", m, "default"))
             .unwrap_or(ModelSelection::Auto);
         let plugin_ids = plugin_ids_of(&args.plugin_config);
+        let id = args.id.clone();
+        let resources = args.resources;
         let config = AgentConfig {
             id: args.id,
             instructions: args.instructions,
@@ -522,9 +654,18 @@ impl RawTool for DraftAgent {
             name: args.name,
             description: args.description,
             tool_overrides: args.tool_overrides,
+            mcp_servers: args.mcp_servers,
+            skills: args.skills,
+            multiagent: args.multiagent,
+            metadata: args.metadata,
             ..Default::default()
         };
-        validate_persist_emit(call.call_id, config, &self.validator, &self.store).await
+        let out = validate_persist_emit(call.call_id, config, &self.validator, &self.store).await?;
+        // Resources are a SEPARATE store: only bind them once the config validated + was
+        // saved (a validation/save error already short-circuited above). On create we
+        // bind only when the operator named at least one resource.
+        let to_bind = (!resources.is_empty()).then_some(resources);
+        persist_resources_after(out, &id, to_bind, &self.store).await
     }
 }
 
@@ -561,6 +702,18 @@ struct PatchFields {
     plugin_config: Option<BTreeMap<String, serde_json::Value>>,
     #[serde(default)]
     context_policy: Option<ContextPolicy>,
+    #[serde(default)]
+    mcp_servers: Option<Vec<serde_json::Value>>,
+    #[serde(default)]
+    skills: Option<Vec<serde_json::Value>>,
+    #[serde(default)]
+    multiagent: Option<serde_json::Value>,
+    #[serde(default)]
+    metadata: Option<BTreeMap<String, String>>,
+    /// When present, REPLACES the agent's whole resource-binding set (data-plane store);
+    /// when absent, the existing bindings are left untouched.
+    #[serde(default)]
+    resources: Option<Vec<ResourceSpec>>,
 }
 
 struct PatchAgent {
@@ -636,6 +789,18 @@ impl RawTool for PatchAgent {
         if let Some(cp) = patch.context_policy {
             config.context_policy = cp;
         }
+        if let Some(v) = patch.mcp_servers {
+            config.mcp_servers = v;
+        }
+        if let Some(v) = patch.skills {
+            config.skills = v;
+        }
+        if let Some(v) = patch.multiagent {
+            config.multiagent = Some(v);
+        }
+        if let Some(v) = patch.metadata {
+            config.metadata = v;
+        }
         if let Some(sections) = patch.plugin_config {
             // Merge by key: each provided section is inserted/overwritten, and the
             // rest of the map is preserved (incremental refine, not wholesale replace).
@@ -648,7 +813,12 @@ impl RawTool for PatchAgent {
         if let Err(error) = check_plugin_config_size(&config.plugin_config) {
             return Ok(ToolOutput::error(call.call_id, error));
         }
-        validate_persist_emit(call.call_id, config, &self.validator, &self.store).await
+        let id = config.id.clone();
+        let resources = patch.resources;
+        let out = validate_persist_emit(call.call_id, config, &self.validator, &self.store).await?;
+        // A present `resources` array REPLACES the whole binding set (even an empty array
+        // clears it); an absent one leaves the existing bindings untouched.
+        persist_resources_after(out, &id, resources, &self.store).await
     }
 }
 

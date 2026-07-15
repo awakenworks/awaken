@@ -1335,6 +1335,9 @@ pub async fn build_config_router() -> Router {
         Arc::new(awaken_control::ConfigServiceDraftStore::new(
             plane.clone(),
             awaken_config_store::DEFAULT_SCOPE,
+            // The scenario host has no durable resource store in scope; an in-memory one
+            // satisfies the port so the assistant can bind resources onto a draft.
+            Arc::new(awaken_config_resolver::InMemoryResourceStore::new()),
         )),
         Arc::new(awaken_admin_assistant::TracingAuditSink),
     );

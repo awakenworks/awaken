@@ -640,6 +640,7 @@ async fn management_router_over(
         Arc::new(awaken_control::ConfigServiceDraftStore::new(
             plane.clone(),
             awaken_config_store::DEFAULT_SCOPE,
+            resource_store.clone(),
         )),
         Arc::new(awaken_admin_assistant::TracingAuditSink),
     );

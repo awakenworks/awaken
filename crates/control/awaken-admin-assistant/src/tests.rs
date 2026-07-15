@@ -51,29 +51,62 @@ impl DraftValidator for FakeValidator {
 
 /// An in-memory stand-in for the host's `ConfigServiceDraftStore`: `put` overwrites by
 /// id, `get` reads back. Lets a test assert exactly what was persisted (unpublished).
+/// The `resources` map stands in for the SEPARATE data-plane resource store so a test
+/// can assert a binding was authored alongside the config.
 #[derive(Default)]
-struct MemDraftStore(Mutex<HashMap<String, AgentConfig>>);
+struct MemDraftStore {
+    configs: Mutex<HashMap<String, AgentConfig>>,
+    resources: Mutex<HashMap<String, Vec<ResourceSpec>>>,
+}
 
 #[async_trait]
 impl DraftStore for MemDraftStore {
     async fn put(&self, draft: &AgentConfig) -> Result<(), String> {
-        self.0
+        self.configs
             .lock()
             .unwrap()
             .insert(draft.id.clone(), draft.clone());
         Ok(())
     }
     async fn get(&self, id: &str) -> Result<Option<AgentConfig>, String> {
-        Ok(self.0.lock().unwrap().get(id).cloned())
+        Ok(self.configs.lock().unwrap().get(id).cloned())
+    }
+    async fn put_resources(
+        &self,
+        agent_id: &str,
+        resources: Vec<ResourceSpec>,
+    ) -> Result<(), String> {
+        self.resources
+            .lock()
+            .unwrap()
+            .insert(agent_id.to_string(), resources);
+        Ok(())
+    }
+    async fn get_resources(&self, agent_id: &str) -> Result<Vec<ResourceSpec>, String> {
+        Ok(self
+            .resources
+            .lock()
+            .unwrap()
+            .get(agent_id)
+            .cloned()
+            .unwrap_or_default())
     }
 }
 
 impl MemDraftStore {
     fn stored(&self, id: &str) -> Option<AgentConfig> {
-        self.0.lock().unwrap().get(id).cloned()
+        self.configs.lock().unwrap().get(id).cloned()
     }
     fn is_empty(&self) -> bool {
-        self.0.lock().unwrap().is_empty()
+        self.configs.lock().unwrap().is_empty()
+    }
+    fn stored_resources(&self, id: &str) -> Vec<ResourceSpec> {
+        self.resources
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .unwrap_or_default()
     }
 }
 
@@ -259,6 +292,144 @@ async fn draft_agent_round_trips_tool_overrides() {
     // And the returned envelope reflects it too.
     let returned = parse_saved(&out.content);
     assert_eq!(returned.tool_overrides, stored.tool_overrides);
+}
+
+#[tokio::test]
+async fn draft_agent_binds_a_resource_into_the_separate_store() {
+    let h = Harness::new();
+    let out = h
+        .tool(CREATE_DRAFT_TOOL)
+        .invoke(call(
+            CREATE_DRAFT_TOOL,
+            serde_json::json!({
+                "id": "researcher",
+                "instructions": "research",
+                "resources": [
+                    { "kind": "memory_store", "resource_id": "mem_1", "access": "read_write" }
+                ]
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    // The config persisted, AND the binding landed in the SEPARATE resource store.
+    assert!(h.store.stored("researcher").is_some());
+    let bound = h.store.stored_resources("researcher");
+    assert_eq!(bound.len(), 1);
+    assert_eq!(bound[0].kind, "memory_store");
+    assert_eq!(bound[0].resource_id, "mem_1");
+    assert_eq!(bound[0].access.as_deref(), Some("read_write"));
+}
+
+#[tokio::test]
+async fn draft_agent_round_trips_mcp_skills_multiagent_and_metadata() {
+    let h = Harness::new();
+    let out = h
+        .tool(CREATE_DRAFT_TOOL)
+        .invoke(call(
+            CREATE_DRAFT_TOOL,
+            serde_json::json!({
+                "id": "full",
+                "instructions": "do it all",
+                "mcp_servers": [{ "id": "github" }],
+                "skills": [{ "id": "greet" }],
+                "multiagent": { "workers": ["a", "b"] },
+                "metadata": { "team": "platform", "tier": "gold" }
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    let stored = h.store.stored("full").unwrap();
+    assert_eq!(
+        stored.mcp_servers,
+        vec![serde_json::json!({ "id": "github" })]
+    );
+    assert_eq!(stored.skills, vec![serde_json::json!({ "id": "greet" })]);
+    assert_eq!(
+        stored.multiagent,
+        Some(serde_json::json!({ "workers": ["a", "b"] }))
+    );
+    assert_eq!(
+        stored.metadata.get("team").map(String::as_str),
+        Some("platform")
+    );
+    assert_eq!(
+        stored.metadata.get("tier").map(String::as_str),
+        Some("gold")
+    );
+    // No resources named → the separate store stays empty for this agent.
+    assert!(h.store.stored_resources("full").is_empty());
+}
+
+#[tokio::test]
+async fn patch_agent_replaces_the_whole_resource_set() {
+    let h = Harness::new();
+    // Draft with one memory-store binding.
+    h.tool(CREATE_DRAFT_TOOL)
+        .invoke(call(
+            CREATE_DRAFT_TOOL,
+            serde_json::json!({
+                "id": "r",
+                "instructions": "hi",
+                "resources": [{ "kind": "memory_store", "resource_id": "mem_1" }]
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(h.store.stored_resources("r").len(), 1);
+
+    // Patch replaces the whole set with a different binding.
+    let out = h
+        .tool(PATCH_TOOL)
+        .invoke(call(
+            PATCH_TOOL,
+            serde_json::json!({
+                "id": "r",
+                "patch": {
+                    "resources": [
+                        { "kind": "github_repository", "resource_id": "repo_1", "access": "read_only" }
+                    ]
+                }
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    let bound = h.store.stored_resources("r");
+    assert_eq!(bound.len(), 1);
+    assert_eq!(bound[0].kind, "github_repository");
+    assert_eq!(bound[0].resource_id, "repo_1");
+    assert_eq!(bound[0].access.as_deref(), Some("read_only"));
+}
+
+#[tokio::test]
+async fn patch_agent_leaves_resources_untouched_when_absent() {
+    let h = Harness::new();
+    h.tool(CREATE_DRAFT_TOOL)
+        .invoke(call(
+            CREATE_DRAFT_TOOL,
+            serde_json::json!({
+                "id": "r",
+                "instructions": "hi",
+                "resources": [{ "kind": "memory_store", "resource_id": "mem_1" }]
+            }),
+        ))
+        .await
+        .unwrap();
+    // A patch with no `resources` key must not disturb the existing binding.
+    let out = h
+        .tool(PATCH_TOOL)
+        .invoke(call(
+            PATCH_TOOL,
+            serde_json::json!({ "id": "r", "patch": { "max_steps": 3 } }),
+        ))
+        .await
+        .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    let bound = h.store.stored_resources("r");
+    assert_eq!(bound.len(), 1);
+    assert_eq!(bound[0].resource_id, "mem_1");
 }
 
 #[tokio::test]
