@@ -142,4 +142,122 @@ mod tests {
         });
         assert!(out.is_some(), "no inbound context still roots one trace");
     }
+
+    // --- S14: trace-as-oracle. The tests above prove trace-id continuity by
+    // re-injecting a traceparent. This one is stronger: it CAPTURES the exported span
+    // tree and asserts the real parent→child topology (span-id linkage), the way a
+    // cluster e2e would read OTLP output — but in-process and deterministic. It is the
+    // oracle that "the worker's dispatch span nests the execution under the admitting
+    // request's trace", not merely "the trace id string matches".
+
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Debug)]
+    struct CapturedSpan {
+        name: String,
+        trace_id: String,
+        span_id: String,
+        parent_span_id: Option<String>,
+    }
+
+    /// A collector-free in-memory `SpanExporter` that records each finished span's
+    /// identity + parentage, so a test can assert the exported trace tree.
+    #[derive(Clone, Debug)]
+    struct CapturingExporter(Arc<Mutex<Vec<CapturedSpan>>>);
+
+    impl opentelemetry_sdk::trace::SpanExporter for CapturingExporter {
+        fn export(
+            &mut self,
+            batch: Vec<opentelemetry_sdk::trace::SpanData>,
+        ) -> futures::future::BoxFuture<'static, opentelemetry_sdk::error::OTelSdkResult> {
+            use opentelemetry::trace::SpanId;
+            let sink = self.0.clone();
+            let mut out = sink.lock().unwrap();
+            for span in &batch {
+                let parent = span.parent_span_id;
+                out.push(CapturedSpan {
+                    name: span.name.to_string(),
+                    trace_id: format!(
+                        "{:032x}",
+                        u128::from_be_bytes(span.span_context.trace_id().to_bytes())
+                    ),
+                    span_id: format!(
+                        "{:016x}",
+                        u64::from_be_bytes(span.span_context.span_id().to_bytes())
+                    ),
+                    parent_span_id: (parent != SpanId::INVALID)
+                        .then(|| format!("{:016x}", u64::from_be_bytes(parent.to_bytes()))),
+                });
+            }
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[test]
+    fn the_exported_span_tree_nests_execution_under_the_dispatch_span() {
+        use opentelemetry::trace::TracerProvider as _;
+        use opentelemetry_sdk::propagation::TraceContextPropagator;
+        use opentelemetry_sdk::trace::SdkTracerProvider;
+        use tracing_subscriber::Registry;
+        use tracing_subscriber::layer::SubscriberExt;
+
+        opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(CapturingExporter(captured.clone()))
+            .build();
+        let tracer = provider.tracer("awaken-observability-trace-oracle");
+        let subscriber =
+            Registry::default().with(tracing_opentelemetry::layer().with_tracer(tracer));
+
+        // The admitting request's traceparent (as persisted on the durable instruction).
+        let admit_trace = "0af7651916cd43dd8448eb211c80319c";
+        let tp = format!("00-{admit_trace}-b7ad6b7169203331-01");
+
+        tracing::subscriber::with_default(subscriber, || {
+            // The worker rebuilds the dispatch span from the persisted traceparent, then
+            // drives the run (its inference) INSIDE that span — the exact nesting
+            // `drive_claimed` performs via `.instrument(dispatch)`.
+            let dispatch = dispatch_span(Some(&tp));
+            dispatch.in_scope(|| {
+                let run = tracing::info_span!("chat", model = "stub");
+                run.in_scope(|| {});
+            });
+        });
+        provider.force_flush().expect("flush the captured spans");
+
+        let spans = captured.lock().unwrap().clone();
+        let dispatch = spans
+            .iter()
+            .find(|s| s.name == "wake.dispatch")
+            .expect("the wake.dispatch span was exported");
+        let chat = spans
+            .iter()
+            .find(|s| s.name == "chat")
+            .expect("the execution (chat) span was exported");
+
+        // Oracle 1: both spans belong to the ADMITTING request's trace (continuity).
+        assert_eq!(
+            dispatch.trace_id, admit_trace,
+            "the dispatch span continues the admitting trace: {dispatch:?}"
+        );
+        assert_eq!(
+            chat.trace_id, admit_trace,
+            "the execution span is in the same trace: {chat:?}"
+        );
+        // Oracle 2: real TREE nesting — the execution's parent IS the dispatch span,
+        // by span-id linkage (not merely a shared trace id). This is what a cluster
+        // e2e reads from OTLP; asserted here in-process.
+        assert_eq!(
+            chat.parent_span_id.as_deref(),
+            Some(dispatch.span_id.as_str()),
+            "the execution span nests directly under wake.dispatch: {chat:?} / {dispatch:?}"
+        );
+        // And the dispatch span mints its own id (a real remote-parent child), never
+        // reusing the wire parent's span id.
+        assert_ne!(
+            dispatch.span_id, "b7ad6b7169203331",
+            "the dispatch span mints its own id, not the wire parent's"
+        );
+    }
 }
