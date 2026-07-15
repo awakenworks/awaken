@@ -4,21 +4,59 @@
 //! binding, the rest are pool candidates — so a `ModelSelection::Auto` config resolves
 //! to a concrete, reproducible binding at publish without an operator picking a model.
 
+use std::sync::Arc;
+
+use awaken_model_catalog::repo::CatalogRepo;
 use awaken_model_catalog::{Offering, ProviderCatalog};
 use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_runtime_host::{ModelResolver, ResolvedModel};
+
+/// The catalog the resolver reads. Either a frozen `ProviderCatalog` snapshot (the
+/// original constructor, still used by tests) or a live `CatalogRepo` re-read on every
+/// resolve — so an offering an operator adds AFTER startup is visible without a restart.
+enum CatalogSource {
+    Static(ProviderCatalog),
+    Live(Arc<dyn CatalogRepo>),
+}
 
 /// Resolves `Auto` against a snapshot of the org-shared provider catalog. Every
 /// catalog offering is provider-backed (the catalog has no "scripted" dialect), so the
 /// first offering is the first provider-backed model.
 pub struct CatalogModelResolver {
-    catalog: ProviderCatalog,
+    source: CatalogSource,
 }
 
 impl CatalogModelResolver {
+    /// Resolve against a frozen catalog snapshot (deterministic; used by tests).
     #[must_use]
     pub fn new(catalog: ProviderCatalog) -> Self {
-        Self { catalog }
+        Self {
+            source: CatalogSource::Static(catalog),
+        }
+    }
+
+    /// Resolve against the LIVE catalog repo: every resolve re-reads a fresh snapshot,
+    /// so a model published after startup is picked up without re-seeding the resolver.
+    #[must_use]
+    pub fn from_repo(repo: Arc<dyn CatalogRepo>) -> Self {
+        Self {
+            source: CatalogSource::Live(repo),
+        }
+    }
+
+    /// A fresh catalog snapshot for this resolve. The `ModelResolver` trait methods are
+    /// SYNC but resolve happens inside async publish handlers on a multi-threaded tokio
+    /// runtime, so we bridge the async `CatalogRepo::snapshot()` via `block_in_place` +
+    /// `Handle::block_on` (valid only on a multi-thread runtime). The static path just
+    /// clones its frozen snapshot.
+    fn snapshot(&self) -> Result<ProviderCatalog, String> {
+        match &self.source {
+            CatalogSource::Static(catalog) => Ok(catalog.clone()),
+            CatalogSource::Live(repo) => tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(repo.snapshot())
+            })
+            .map_err(|e| e.to_string()),
+        }
     }
 }
 
@@ -33,11 +71,12 @@ impl ModelResolver for CatalogModelResolver {
     /// The model's published context window from the catalog's `ModelAttributes` (E: the
     /// source an agent's compaction window and the ACP auto-compact window derive from).
     fn context_window(&self, model_id: &str) -> Option<u32> {
-        self.catalog.context_window(model_id)
+        self.snapshot().ok()?.context_window(model_id)
     }
 
     fn resolve_auto(&self) -> Result<ResolvedModel, String> {
-        let mut offerings = self.catalog.offerings.iter();
+        let catalog = self.snapshot()?;
+        let mut offerings = catalog.offerings.iter();
         let primary = offerings.next().ok_or_else(|| {
             "no provider-backed model in the catalog; configure and publish a model first"
                 .to_string()

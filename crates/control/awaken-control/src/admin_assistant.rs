@@ -6,9 +6,10 @@
 //! seeding here is exactly a `put` + `publish` through `ConfigService`, in the reserved
 //! scope (D2), where the scope-keyed catalog makes the four admin tools nameable (D3).
 
+use async_trait::async_trait;
 use awaken_admin_assistant::{
-    ADMIN_ASSISTANT_AGENT_ID, CapabilityReader, DraftValidator, PlatformCapabilities, PluginInfo,
-    admin_assistant_config,
+    ADMIN_ASSISTANT_AGENT_ID, CapabilityReader, DraftStore, DraftValidator, PlatformCapabilities,
+    PluginInfo, admin_assistant_config,
 };
 use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
 use awaken_config_store::AgentConfig;
@@ -108,6 +109,36 @@ impl DraftValidator for ConfigServiceDraftValidator {
         self.plane
             .validate(&self.scope, draft)
             .map_err(|issue| issue.message)
+    }
+}
+
+/// Persists and reads back the admin assistant's drafts as **unpublished** config
+/// agents, through the same [`ConfigPlane`] `put`/`get` the editor's Save + the
+/// `/v1/config/agents/:id` GET use, in the tenant/default scope. `put` is the
+/// unpublished store write (no `publish`), so a drafted agent appears in the console's
+/// agent list awaiting the operator's publish; `get` reads that stored draft back.
+pub struct ConfigServiceDraftStore {
+    plane: ConfigPlane,
+    scope: ScopeId,
+}
+
+impl ConfigServiceDraftStore {
+    pub fn new(plane: ConfigPlane, scope: impl Into<ScopeId>) -> Self {
+        Self {
+            plane,
+            scope: scope.into(),
+        }
+    }
+}
+
+#[async_trait]
+impl DraftStore for ConfigServiceDraftStore {
+    async fn put(&self, draft: &AgentConfig) -> Result<(), String> {
+        self.plane.put(&self.scope, draft).await
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<AgentConfig>, String> {
+        self.plane.get(&self.scope, id).await
     }
 }
 

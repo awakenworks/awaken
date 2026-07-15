@@ -1,9 +1,11 @@
 //! Unit tests for the four management tools. The `CapabilityReader` /
-//! `DraftValidator` ports are exercised with in-crate test doubles; the real
-//! adapters (over the shared catalog and `ConfigService`) are wired and tested in
-//! the host.
+//! `DraftValidator` / `DraftStore` ports are exercised with in-crate test doubles; the
+//! real adapters (over the shared catalog and `ConfigService`/`ConfigPlane`) are wired
+//! and tested in the host.
 
 use super::*;
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 fn call(id: &str, args: serde_json::Value) -> ToolCall {
     ToolCall {
@@ -44,28 +46,81 @@ impl DraftValidator for FakeValidator {
     }
 }
 
+/// An in-memory stand-in for the host's `ConfigServiceDraftStore`: `put` overwrites by
+/// id, `get` reads back. Lets a test assert exactly what was persisted (unpublished).
+#[derive(Default)]
+struct MemDraftStore(Mutex<HashMap<String, AgentConfig>>);
+
+#[async_trait]
+impl DraftStore for MemDraftStore {
+    async fn put(&self, draft: &AgentConfig) -> Result<(), String> {
+        self.0
+            .lock()
+            .unwrap()
+            .insert(draft.id.clone(), draft.clone());
+        Ok(())
+    }
+    async fn get(&self, id: &str) -> Result<Option<AgentConfig>, String> {
+        Ok(self.0.lock().unwrap().get(id).cloned())
+    }
+}
+
+impl MemDraftStore {
+    fn stored(&self, id: &str) -> Option<AgentConfig> {
+        self.0.lock().unwrap().get(id).cloned()
+    }
+    fn is_empty(&self) -> bool {
+        self.0.lock().unwrap().is_empty()
+    }
+}
+
 /// Captures audit records so a test can assert every privileged call is recorded.
 #[derive(Default)]
-struct CapturingAudit(std::sync::Mutex<Vec<AdminAuditEvent>>);
+struct CapturingAudit(Mutex<Vec<AdminAuditEvent>>);
 impl AuditSink for CapturingAudit {
     fn record(&self, event: AdminAuditEvent) {
         self.0.lock().unwrap().push(event);
     }
 }
 
-fn tools() -> Vec<Arc<dyn RawTool>> {
-    admin_tools(
-        Arc::new(FakeCaps),
-        Arc::new(FakeValidator),
-        Arc::new(CapturingAudit::default()),
-    )
+/// The parsed `{ config, note }` envelope a draft/patch tool returns on success.
+fn parse_saved(content: &str) -> AgentConfig {
+    let v: serde_json::Value = serde_json::from_str(content).expect("saved envelope is JSON");
+    assert!(
+        v.get("note").and_then(|n| n.as_str()).is_some(),
+        "envelope carries a pointer note: {content}"
+    );
+    serde_json::from_value(v["config"].clone()).expect("envelope carries the config")
 }
 
-fn tool(id: &str) -> Arc<dyn RawTool> {
-    tools()
-        .into_iter()
-        .find(|t| t.id() == id)
-        .expect("tool exists")
+/// A full toolset over a shared store + audit so a test can inspect both.
+struct Harness {
+    tools: Vec<Arc<dyn RawTool>>,
+    store: Arc<MemDraftStore>,
+    audit: Arc<CapturingAudit>,
+}
+
+impl Harness {
+    fn new() -> Self {
+        Self::with_validator(Arc::new(FakeValidator))
+    }
+    fn with_validator(validator: Arc<dyn DraftValidator>) -> Self {
+        let store = Arc::new(MemDraftStore::default());
+        let audit = Arc::new(CapturingAudit::default());
+        let tools = admin_tools(Arc::new(FakeCaps), validator, store.clone(), audit.clone());
+        Self {
+            tools,
+            store,
+            audit,
+        }
+    }
+    fn tool(&self, id: &str) -> Arc<dyn RawTool> {
+        self.tools
+            .iter()
+            .find(|t| t.id() == id)
+            .expect("tool exists")
+            .clone()
+    }
 }
 
 #[test]
@@ -79,7 +134,7 @@ fn descriptors_are_the_four_admin_tools_and_carry_no_publish_tool() {
         vec![
             CAPABILITIES_TOOL,
             CREATE_DRAFT_TOOL,
-            SET_PLUGIN_TOOL,
+            PATCH_TOOL,
             VALIDATE_TOOL
         ]
     );
@@ -91,14 +146,29 @@ fn descriptors_are_the_four_admin_tools_and_carry_no_publish_tool() {
             .iter()
             .all(|d| d.content_hash.starts_with("admin:"))
     );
+    // No descriptor schema uses `additionalProperties` (Gemini rejects it).
+    for d in admin_tool_descriptors() {
+        let schema = serde_json::to_string(&d.parameters).unwrap();
+        assert!(
+            !schema.contains("additionalProperties"),
+            "{}: {schema}",
+            d.id
+        );
+    }
     // The executable set matches the advertised descriptor set one-to-one.
-    let exec_ids: Vec<String> = tools().iter().map(|t| t.id().to_string()).collect();
+    let exec_ids: Vec<String> = Harness::new()
+        .tools
+        .iter()
+        .map(|t| t.id().to_string())
+        .collect();
     assert_eq!(exec_ids, ids);
 }
 
 #[tokio::test]
 async fn capabilities_returns_the_redacted_org_shared_view() {
-    let out = tool(CAPABILITIES_TOOL)
+    let h = Harness::new();
+    let out = h
+        .tool(CAPABILITIES_TOOL)
         .invoke(call(CAPABILITIES_TOOL, serde_json::json!({})))
         .await
         .unwrap();
@@ -111,8 +181,10 @@ async fn capabilities_returns_the_redacted_org_shared_view() {
 }
 
 #[tokio::test]
-async fn create_draft_auto_binds_the_model_and_never_publishes() {
-    let out = tool(CREATE_DRAFT_TOOL)
+async fn draft_agent_persists_an_unpublished_draft_and_returns_it() {
+    let h = Harness::new();
+    let out = h
+        .tool(CREATE_DRAFT_TOOL)
         .invoke(call(
             CREATE_DRAFT_TOOL,
             serde_json::json!({
@@ -124,128 +196,352 @@ async fn create_draft_auto_binds_the_model_and_never_publishes() {
         ))
         .await
         .unwrap();
-    assert!(!out.is_error);
-    let draft: AgentConfig = serde_json::from_str(&out.content).unwrap();
-    assert_eq!(draft.id, "support");
-    assert_eq!(draft.max_steps, 5);
-    assert_eq!(draft.tool_ids, vec!["read".to_string()]);
-    // The draft is auto-bound (D5) — the operator never hand-picks a model.
-    assert!(draft.model_binding.is_auto());
-    // A draft is data only: the wire carries {"mode":"auto"} for the binding.
-    assert!(out.content.contains("\"mode\":\"auto\""));
+    assert!(!out.is_error, "{}", out.content);
+    let returned = parse_saved(&out.content);
+    assert_eq!(returned.id, "support");
+    assert_eq!(returned.max_steps, 5);
+    assert_eq!(returned.tool_ids, vec!["read".to_string()]);
+    // Omitting `model` leaves the draft auto-bound (D5).
+    assert!(returned.model_binding.is_auto());
+    // It was PERSISTED (unpublished): the store holds the same config.
+    let stored = h.store.stored("support").expect("persisted");
+    assert_eq!(stored, returned);
 }
 
 #[tokio::test]
-async fn create_draft_rejects_bad_arguments_without_aborting() {
-    let out = tool(CREATE_DRAFT_TOOL)
-        .invoke(call(CREATE_DRAFT_TOOL, serde_json::json!({ "id": "x" })))
+async fn draft_agent_pins_a_model_when_given_one() {
+    let h = Harness::new();
+    let out = h
+        .tool(CREATE_DRAFT_TOOL)
+        .invoke(call(
+            CREATE_DRAFT_TOOL,
+            serde_json::json!({ "id": "a", "instructions": "hi", "model": "m-1" }),
+        ))
         .await
         .unwrap();
-    // Missing `instructions` is a model-visible error, not a hard abort.
-    assert!(out.is_error);
-    assert!(out.content.contains("invalid arguments"));
+    assert!(!out.is_error);
+    let stored = h.store.stored("a").unwrap();
+    assert_eq!(
+        stored.model_binding,
+        ModelSelection::pinned("default", "m-1", "default")
+    );
 }
 
 #[tokio::test]
-async fn set_plugin_config_attaches_and_validates() {
-    let draft = serde_json::json!({
-        "id": "support",
-        "instructions": "be helpful",
-        "max_steps": 8,
-        "model_binding": { "mode": "auto" },
-        "tool_ids": []
-    });
-    let out = tool(SET_PLUGIN_TOOL)
+async fn draft_agent_round_trips_tool_overrides() {
+    let h = Harness::new();
+    let out = h
+        .tool(CREATE_DRAFT_TOOL)
         .invoke(call(
-            SET_PLUGIN_TOOL,
+            CREATE_DRAFT_TOOL,
             serde_json::json!({
-                "draft": draft,
-                "plugin_id": "state_machine",
-                "config": { "machines": [] }
+                "id": "authoring",
+                "instructions": "author configs",
+                "tool_ids": ["read"],
+                "tool_overrides": [
+                    { "target": "read", "alias": "peek", "description": "look", "defer": true }
+                ]
             }),
         ))
         .await
         .unwrap();
-    assert!(
-        !out.is_error,
-        "attaching a valid section succeeds: {}",
-        out.content
-    );
-    let updated: AgentConfig = serde_json::from_str(&out.content).unwrap();
-    assert_eq!(updated.plugin_ids, vec!["state_machine".to_string()]);
-    assert_eq!(
-        updated.plugin_config.get("state_machine"),
-        Some(&serde_json::json!({ "machines": [] }))
-    );
+    assert!(!out.is_error, "{}", out.content);
+    // The persisted config carries the override (previously impossible to set at all).
+    let stored = h.store.stored("authoring").expect("persisted");
+    assert_eq!(stored.tool_overrides.len(), 1);
+    let ov = &stored.tool_overrides[0];
+    assert_eq!(ov.target, "read");
+    assert_eq!(ov.alias.as_deref(), Some("peek"));
+    assert!(ov.defer);
+    // And the returned envelope reflects it too.
+    let returned = parse_saved(&out.content);
+    assert_eq!(returned.tool_overrides, stored.tool_overrides);
 }
 
 #[tokio::test]
-async fn set_plugin_config_size_bounds_the_section() {
-    let draft = serde_json::json!({
-        "id": "support", "instructions": "be helpful", "max_steps": 8,
-        "model_binding": { "mode": "auto" }, "tool_ids": []
-    });
-    let big = "x".repeat(MAX_PLUGIN_CONFIG_BYTES + 1);
-    let out = tool(SET_PLUGIN_TOOL)
+async fn draft_agent_derives_plugin_ids_and_size_bounds_sections() {
+    let h = Harness::new();
+    let out = h
+        .tool(CREATE_DRAFT_TOOL)
         .invoke(call(
-            SET_PLUGIN_TOOL,
+            CREATE_DRAFT_TOOL,
             serde_json::json!({
-                "draft": draft,
-                "plugin_id": "state_machine",
-                "config": { "blob": big }
+                "id": "p",
+                "instructions": "hi",
+                "plugin_config": { "state_machine": { "machines": [] } }
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    let stored = h.store.stored("p").unwrap();
+    // plugin_ids are derived from the plugin_config keys.
+    assert_eq!(stored.plugin_ids, vec!["state_machine".to_string()]);
+
+    // A section over the byte cap is rejected and NOT persisted.
+    let big = "x".repeat(MAX_PLUGIN_CONFIG_BYTES + 1);
+    let out = h
+        .tool(CREATE_DRAFT_TOOL)
+        .invoke(call(
+            CREATE_DRAFT_TOOL,
+            serde_json::json!({
+                "id": "toobig",
+                "instructions": "hi",
+                "plugin_config": { "state_machine": { "blob": big } }
             }),
         ))
         .await
         .unwrap();
     assert!(out.is_error);
     assert!(out.content.contains("over the"));
+    assert!(
+        h.store.stored("toobig").is_none(),
+        "oversized not persisted"
+    );
 }
 
 #[tokio::test]
-async fn validate_agent_reports_valid_and_invalid() {
-    let ok_draft = serde_json::json!({
-        "id": "a", "instructions": "hi", "max_steps": 8,
-        "model_binding": { "mode": "auto" }, "tool_ids": ["read"]
-    });
-    let ok = tool(VALIDATE_TOOL)
+async fn draft_agent_that_fails_validation_does_not_persist() {
+    let h = Harness::new();
+    let out = h
+        .tool(CREATE_DRAFT_TOOL)
         .invoke(call(
-            VALIDATE_TOOL,
-            serde_json::json!({ "draft": ok_draft }),
+            CREATE_DRAFT_TOOL,
+            serde_json::json!({
+                "id": "bad",
+                "instructions": "hi",
+                "tool_ids": ["ghost_tool"]
+            }),
         ))
         .await
         .unwrap();
+    // Fail-closed: a validation failure is a soft error and nothing is written.
+    assert!(out.is_error);
+    assert!(out.content.contains("does not validate"));
+    assert!(out.content.contains("unknown tool"));
+    assert!(h.store.is_empty(), "invalid draft must not be persisted");
+}
+
+#[tokio::test]
+async fn draft_agent_rejects_bad_arguments_without_aborting() {
+    let h = Harness::new();
+    let out = h
+        .tool(CREATE_DRAFT_TOOL)
+        .invoke(call(CREATE_DRAFT_TOOL, serde_json::json!({ "id": "x" })))
+        .await
+        .unwrap();
+    // Missing `instructions` is a model-visible error, not a hard abort.
+    assert!(out.is_error);
+    assert!(out.content.contains("invalid arguments"));
+    assert!(h.store.is_empty());
+}
+
+#[tokio::test]
+async fn draft_agent_defaults_max_steps_to_eight() {
+    let h = Harness::new();
+    let out = h
+        .tool(CREATE_DRAFT_TOOL)
+        .invoke(call(
+            CREATE_DRAFT_TOOL,
+            serde_json::json!({ "id": "support", "instructions": "be helpful" }),
+        ))
+        .await
+        .unwrap();
+    assert!(!out.is_error);
+    let stored = h.store.stored("support").unwrap();
+    assert_eq!(stored.max_steps, 8);
+    assert!(stored.model_binding.is_auto());
+}
+
+#[tokio::test]
+async fn draft_agent_parse_failure_is_not_audited() {
+    let h = Harness::new();
+    let out = h
+        .tool(CREATE_DRAFT_TOOL)
+        .invoke(call(CREATE_DRAFT_TOOL, serde_json::json!({ "id": "x" })))
+        .await
+        .unwrap();
+    assert!(out.is_error);
+    assert!(h.audit.0.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn patch_agent_reads_merges_and_persists() {
+    let h = Harness::new();
+    // Draft first, with an existing plugin section.
+    h.tool(CREATE_DRAFT_TOOL)
+        .invoke(call(
+            CREATE_DRAFT_TOOL,
+            serde_json::json!({
+                "id": "support",
+                "instructions": "be helpful",
+                "max_steps": 5,
+                "tool_ids": ["read"],
+                "plugin_config": { "compact": { "keep": 10 } }
+            }),
+        ))
+        .await
+        .unwrap();
+
+    // Patch: change max_steps and ADD a permission section (merge by key).
+    let out = h
+        .tool(PATCH_TOOL)
+        .invoke(call(
+            PATCH_TOOL,
+            serde_json::json!({
+                "id": "support",
+                "patch": {
+                    "max_steps": 9,
+                    "plugin_config": { "permission": { "allow": ["read"] } }
+                }
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+
+    let stored = h.store.stored("support").unwrap();
+    // Patched field applied.
+    assert_eq!(stored.max_steps, 9);
+    // Untouched fields preserved.
+    assert_eq!(stored.tool_ids, vec!["read".to_string()]);
+    // plugin_config merged by key: BOTH the old compact and the new permission survive.
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&ok.content).unwrap()["valid"],
+        stored.plugin_config.get("compact"),
+        Some(&serde_json::json!({ "keep": 10 }))
+    );
+    assert_eq!(
+        stored.plugin_config.get("permission"),
+        Some(&serde_json::json!({ "allow": ["read"] }))
+    );
+    // plugin_ids re-derived from the merged map (sorted BTreeMap order).
+    assert_eq!(
+        stored.plugin_ids,
+        vec!["compact".to_string(), "permission".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn patch_agent_errors_when_the_draft_is_absent() {
+    let h = Harness::new();
+    let out = h
+        .tool(PATCH_TOOL)
+        .invoke(call(
+            PATCH_TOOL,
+            serde_json::json!({ "id": "nope", "patch": { "max_steps": 3 } }),
+        ))
+        .await
+        .unwrap();
+    assert!(out.is_error);
+    assert!(out.content.contains("no saved draft"));
+}
+
+#[tokio::test]
+async fn patch_agent_failing_validation_does_not_overwrite() {
+    let h = Harness::new();
+    h.tool(CREATE_DRAFT_TOOL)
+        .invoke(call(
+            CREATE_DRAFT_TOOL,
+            serde_json::json!({ "id": "s", "instructions": "hi", "tool_ids": ["read"] }),
+        ))
+        .await
+        .unwrap();
+    let before = h.store.stored("s").unwrap();
+    // Patch that introduces a ghost tool → validation fails → store unchanged.
+    let out = h
+        .tool(PATCH_TOOL)
+        .invoke(call(
+            PATCH_TOOL,
+            serde_json::json!({ "id": "s", "patch": { "tool_ids": ["ghost_tool"] } }),
+        ))
+        .await
+        .unwrap();
+    assert!(out.is_error);
+    assert!(out.content.contains("does not validate"));
+    assert_eq!(h.store.stored("s").unwrap(), before, "not overwritten");
+}
+
+#[tokio::test]
+async fn validate_reads_the_saved_draft_by_id() {
+    let h = Harness::new();
+    h.tool(CREATE_DRAFT_TOOL)
+        .invoke(call(
+            CREATE_DRAFT_TOOL,
+            serde_json::json!({ "id": "a", "instructions": "hi", "tool_ids": ["read"] }),
+        ))
+        .await
+        .unwrap();
+    let out = h
+        .tool(VALIDATE_TOOL)
+        .invoke(call(VALIDATE_TOOL, serde_json::json!({ "id": "a" })))
+        .await
+        .unwrap();
+    assert!(!out.is_error);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&out.content).unwrap()["valid"],
         true
     );
+}
 
-    let bad_draft = serde_json::json!({
-        "id": "a", "instructions": "hi", "max_steps": 8,
-        "model_binding": { "mode": "auto" }, "tool_ids": ["ghost_tool"]
-    });
-    let bad = tool(VALIDATE_TOOL)
-        .invoke(call(
-            VALIDATE_TOOL,
-            serde_json::json!({ "draft": bad_draft }),
-        ))
+#[tokio::test]
+async fn validate_reports_invalid_for_a_saved_draft_with_an_unknown_tool() {
+    let h = Harness::new();
+    // Persist a draft directly so we can validate a config the draft tool would reject.
+    h.store
+        .put(&AgentConfig {
+            id: "a".into(),
+            instructions: "hi".into(),
+            max_steps: 8,
+            model_binding: ModelSelection::Auto,
+            tool_ids: vec!["ghost_tool".into()],
+            ..Default::default()
+        })
         .await
         .unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(&bad.content).unwrap();
+    let out = h
+        .tool(VALIDATE_TOOL)
+        .invoke(call(VALIDATE_TOOL, serde_json::json!({ "id": "a" })))
+        .await
+        .unwrap();
+    // A failed validation is still a successful (soft) tool call — verdict is the body.
+    assert!(!out.is_error);
+    let parsed: serde_json::Value = serde_json::from_str(&out.content).unwrap();
     assert_eq!(parsed["valid"], false);
     assert!(parsed["error"].as_str().unwrap().contains("unknown tool"));
 }
 
 #[tokio::test]
-async fn every_tool_call_emits_an_audit_record() {
-    let audit = Arc::new(CapturingAudit::default());
-    let toolset = admin_tools(Arc::new(FakeCaps), Arc::new(FakeValidator), audit.clone());
-    let get = |id: &str| toolset.iter().find(|t| t.id() == id).unwrap().clone();
+async fn validate_errors_when_the_draft_is_absent() {
+    let h = Harness::new();
+    let out = h
+        .tool(VALIDATE_TOOL)
+        .invoke(call(VALIDATE_TOOL, serde_json::json!({ "id": "nope" })))
+        .await
+        .unwrap();
+    assert!(out.is_error);
+    assert!(out.content.contains("no saved draft"));
+}
 
-    get(CAPABILITIES_TOOL)
+#[tokio::test]
+async fn validate_rejects_bad_arguments() {
+    let h = Harness::new();
+    let out = h
+        .tool(VALIDATE_TOOL)
+        .invoke(call(VALIDATE_TOOL, serde_json::json!({ "draft": "x" })))
+        .await
+        .unwrap();
+    assert!(out.is_error);
+    assert!(out.content.contains("invalid arguments"));
+}
+
+#[tokio::test]
+async fn every_tool_call_emits_an_audit_record() {
+    let h = Harness::new();
+    h.tool(CAPABILITIES_TOOL)
         .invoke(call(CAPABILITIES_TOOL, serde_json::json!({})))
         .await
         .unwrap();
-    get(CREATE_DRAFT_TOOL)
+    h.tool(CREATE_DRAFT_TOOL)
         .invoke(call(
             CREATE_DRAFT_TOOL,
             serde_json::json!({ "id": "x", "instructions": "hi" }),
@@ -253,8 +549,7 @@ async fn every_tool_call_emits_an_audit_record() {
         .await
         .unwrap();
 
-    let events = audit.0.lock().unwrap();
-    // Every privileged call is recorded (ADR-0052 D6), tagged with its tool id.
+    let events = h.audit.0.lock().unwrap();
     assert_eq!(events.len(), 2);
     assert_eq!(events[0].tool, CAPABILITIES_TOOL);
     assert_eq!(events[1].tool, CREATE_DRAFT_TOOL);
@@ -265,15 +560,13 @@ async fn every_tool_call_emits_an_audit_record() {
 fn seed_config_is_an_ordinary_auto_bound_config_naming_the_four_tools() {
     let cfg = admin_assistant_config();
     assert_eq!(cfg.id, ADMIN_ASSISTANT_AGENT_ID);
-    // Auto-bound (D5), names exactly the four admin tools (D3), no plugins, no
-    // sandbox concept — an ordinary AgentConfig (D1/D4).
     assert!(cfg.model_binding.is_auto());
     assert_eq!(
         cfg.tool_ids,
         vec![
             CAPABILITIES_TOOL,
             CREATE_DRAFT_TOOL,
-            SET_PLUGIN_TOOL,
+            PATCH_TOOL,
             VALIDATE_TOOL
         ]
     );
@@ -284,21 +577,6 @@ fn seed_config_is_an_ordinary_auto_bound_config_naming_the_four_tools() {
 fn seeded_instructions_are_authorable_and_mention_no_publish() {
     assert!(ADMIN_ASSISTANT_INSTRUCTIONS.contains("management assistant"));
     assert!(ADMIN_ASSISTANT_INSTRUCTIONS.contains("never publish"));
-}
-
-// ---- CEG spec 08: additional cases ------------------------------------------------
-
-/// Build the admin toolset over a specific audit sink so a test can inspect what was
-/// recorded, and fetch one tool by id.
-fn tools_with_audit(audit: Arc<CapturingAudit>) -> Vec<Arc<dyn RawTool>> {
-    admin_tools(Arc::new(FakeCaps), Arc::new(FakeValidator), audit)
-}
-
-fn pick(set: &[Arc<dyn RawTool>], id: &str) -> Arc<dyn RawTool> {
-    set.iter()
-        .find(|t| t.id() == id)
-        .expect("tool exists")
-        .clone()
 }
 
 /// A validator that mimics the real default/tenant-scope catalog projection: the four
@@ -314,266 +592,43 @@ impl DraftValidator for ScopeFenceValidator {
     }
 }
 
-// PL1 — SetPluginConfig: invalid JSON args → soft error, and NOT audited (parse-fail
-// short-circuits before the audit seam).
+// AA-a — a draft that names an admin tool in a non-reserved scope is rejected before
+// it can be persisted (the scope fence surfaces UnknownTool through DraftAgent).
 #[tokio::test]
-async fn set_plugin_config_bad_arguments_error_without_audit() {
-    let audit = Arc::new(CapturingAudit::default());
-    let set = tools_with_audit(audit.clone());
-    let out = pick(&set, SET_PLUGIN_TOOL)
-        // Missing `plugin_id`/`config`, and `draft` the wrong shape.
-        .invoke(call(SET_PLUGIN_TOOL, serde_json::json!({ "draft": 7 })))
-        .await
-        .unwrap();
-    assert!(out.is_error);
-    assert!(out.content.contains("invalid arguments"));
-    // Parse failure is a soft ToolOutput::error that short-circuits before audit.
-    assert!(audit.0.lock().unwrap().is_empty());
-}
-
-// PL2 — SetPluginConfig: section over 64 KiB → error, and IS audited (audit precedes
-// the size check). Error path covered by `set_plugin_config_size_bounds_the_section`;
-// this asserts the audit-ordering half.
-#[tokio::test]
-async fn set_plugin_config_over_limit_is_audited() {
-    let audit = Arc::new(CapturingAudit::default());
-    let set = tools_with_audit(audit.clone());
-    let draft = serde_json::json!({
-        "id": "support", "instructions": "be helpful", "max_steps": 8,
-        "model_binding": { "mode": "auto" }, "tool_ids": []
-    });
-    let big = "x".repeat(MAX_PLUGIN_CONFIG_BYTES + 1);
-    let out = pick(&set, SET_PLUGIN_TOOL)
+async fn draft_naming_an_admin_tool_is_rejected_and_not_persisted() {
+    let h = Harness::with_validator(Arc::new(ScopeFenceValidator));
+    let out = h
+        .tool(CREATE_DRAFT_TOOL)
         .invoke(call(
-            SET_PLUGIN_TOOL,
+            CREATE_DRAFT_TOOL,
             serde_json::json!({
-                "draft": draft,
-                "plugin_id": "state_machine",
-                "config": { "blob": big }
-            }),
-        ))
-        .await
-        .unwrap();
-    assert!(out.is_error);
-    assert!(out.content.contains("over the"));
-    // A well-formed-but-oversized call is a privileged call: it is audited.
-    let events = audit.0.lock().unwrap();
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].tool, SET_PLUGIN_TOOL);
-}
-
-// PL3 — SetPluginConfig: attaching leaves a draft that does not validate → error.
-#[tokio::test]
-async fn set_plugin_config_reports_validation_failure_after_attach() {
-    let draft = serde_json::json!({
-        "id": "support", "instructions": "be helpful", "max_steps": 8,
-        "model_binding": { "mode": "auto" }, "tool_ids": ["ghost_tool"]
-    });
-    let out = tool(SET_PLUGIN_TOOL)
-        .invoke(call(
-            SET_PLUGIN_TOOL,
-            serde_json::json!({
-                "draft": draft,
-                "plugin_id": "state_machine",
-                "config": { "machines": [] }
+                "id": "sneaky", "instructions": "hi", "tool_ids": [CAPABILITIES_TOOL]
             }),
         ))
         .await
         .unwrap();
     assert!(out.is_error);
     assert!(out.content.contains("does not validate"));
-    assert!(out.content.contains("unknown tool"));
-}
-
-// existing: PL4 legit attach → emit_draft — `set_plugin_config_attaches_and_validates`.
-
-// PL5 — SetPluginConfig on a plugin the draft ALREADY carries: the id is not
-// duplicated in `plugin_ids` (the `contains` dedup guard) and the new section
-// REPLACES the prior one (`insert` overwrites) — the "or replace" the descriptor
-// promises. Last write wins; the earlier section is gone, not merged.
-#[tokio::test]
-async fn set_plugin_config_replaces_existing_section_without_duplicating_the_id() {
-    let draft = serde_json::json!({
-        "id": "support", "instructions": "be helpful", "max_steps": 8,
-        "model_binding": { "mode": "auto" }, "tool_ids": [],
-        // The draft already has this plugin attached, with an OLD section.
-        "plugin_ids": ["state_machine"],
-        "plugin_config": { "state_machine": { "machines": [{ "old": true }] } }
-    });
-    let out = tool(SET_PLUGIN_TOOL)
-        .invoke(call(
-            SET_PLUGIN_TOOL,
-            serde_json::json!({
-                "draft": draft,
-                "plugin_id": "state_machine",
-                "config": { "machines": [] }
-            }),
-        ))
-        .await
-        .unwrap();
-    assert!(
-        !out.is_error,
-        "re-attaching a valid section succeeds: {}",
-        out.content
-    );
-    let updated: AgentConfig = serde_json::from_str(&out.content).unwrap();
-    // Not duplicated: the id appears exactly once.
-    assert_eq!(updated.plugin_ids, vec!["state_machine".to_string()]);
-    // Replaced, not merged: the new section wins and the old `{old:true}` is gone.
-    assert_eq!(
-        updated.plugin_config.get("state_machine"),
-        Some(&serde_json::json!({ "machines": [] }))
-    );
-}
-
-// CreateAgentDraft (a) — parse failure is a soft error AND is not audited.
-// (existing `create_draft_rejects_bad_arguments_without_aborting` covers the soft error;
-//  this adds the not-audited invariant.)
-#[tokio::test]
-async fn create_draft_parse_failure_is_not_audited() {
-    let audit = Arc::new(CapturingAudit::default());
-    let set = tools_with_audit(audit.clone());
-    let out = pick(&set, CREATE_DRAFT_TOOL)
-        .invoke(call(CREATE_DRAFT_TOOL, serde_json::json!({ "id": "x" })))
-        .await
-        .unwrap();
-    assert!(out.is_error);
-    assert!(audit.0.lock().unwrap().is_empty());
-}
-
-// CreateAgentDraft (c) — missing max_steps defaults to 8.
-#[tokio::test]
-async fn create_draft_defaults_max_steps_to_eight() {
-    let out = tool(CREATE_DRAFT_TOOL)
-        .invoke(call(
-            CREATE_DRAFT_TOOL,
-            serde_json::json!({ "id": "support", "instructions": "be helpful" }),
-        ))
-        .await
-        .unwrap();
-    assert!(!out.is_error);
-    let draft: AgentConfig = serde_json::from_str(&out.content).unwrap();
-    assert_eq!(draft.max_steps, 8);
-    assert!(draft.model_binding.is_auto());
-}
-
-// ValidateAgent (a) — parse failure → soft error.
-#[tokio::test]
-async fn validate_agent_rejects_bad_arguments() {
-    let out = tool(VALIDATE_TOOL)
-        .invoke(call(
-            VALIDATE_TOOL,
-            serde_json::json!({ "draft": "not-a-config" }),
-        ))
-        .await
-        .unwrap();
-    assert!(out.is_error);
-    assert!(out.content.contains("invalid arguments"));
-}
-
-// ValidateAgent (b)/(c) — both a passing and a failing validation return
-// ToolOutput::ok (soft): the {valid:bool} verdict is data, not a tool error.
-// (existing `validate_agent_reports_valid_and_invalid` asserts the verdict bodies;
-//  this asserts the is_error==false half for both outcomes.)
-#[tokio::test]
-async fn validate_agent_is_soft_ok_for_both_verdicts() {
-    let ok_draft = serde_json::json!({
-        "id": "a", "instructions": "hi", "max_steps": 8,
-        "model_binding": { "mode": "auto" }, "tool_ids": ["read"]
-    });
-    let ok = tool(VALIDATE_TOOL)
-        .invoke(call(
-            VALIDATE_TOOL,
-            serde_json::json!({ "draft": ok_draft }),
-        ))
-        .await
-        .unwrap();
-    assert!(!ok.is_error);
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&ok.content).unwrap()["valid"],
-        true
-    );
-
-    let bad_draft = serde_json::json!({
-        "id": "a", "instructions": "hi", "max_steps": 8,
-        "model_binding": { "mode": "auto" }, "tool_ids": ["ghost_tool"]
-    });
-    let bad = tool(VALIDATE_TOOL)
-        .invoke(call(
-            VALIDATE_TOOL,
-            serde_json::json!({ "draft": bad_draft }),
-        ))
-        .await
-        .unwrap();
-    // A failed validation is still a successful (soft) tool call — verdict is the body.
-    assert!(!bad.is_error);
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&bad.content).unwrap()["valid"],
-        false
-    );
-}
-
-// AA-a — a draft that names an admin tool in a non-reserved scope is correctly
-// rejected by validation (the scope fence surfaces UnknownTool through ValidateAgent).
-#[tokio::test]
-async fn validate_agent_rejects_draft_naming_an_admin_tool() {
-    let set = admin_tools(
-        Arc::new(FakeCaps),
-        Arc::new(ScopeFenceValidator),
-        Arc::new(CapturingAudit::default()),
-    );
-    let draft = serde_json::json!({
-        "id": "sneaky", "instructions": "hi", "max_steps": 8,
-        "model_binding": { "mode": "auto" }, "tool_ids": [CAPABILITIES_TOOL]
-    });
-    let out = pick(&set, VALIDATE_TOOL)
-        .invoke(call(VALIDATE_TOOL, serde_json::json!({ "draft": draft })))
-        .await
-        .unwrap();
-    // Soft ok, but the verdict is a rejection naming the offending tool.
-    assert!(!out.is_error);
-    let parsed: serde_json::Value = serde_json::from_str(&out.content).unwrap();
-    assert_eq!(parsed["valid"], false);
-    let msg = parsed["error"].as_str().unwrap();
-    assert!(msg.contains("unknown tool"));
-    assert!(msg.contains(CAPABILITIES_TOOL));
+    assert!(out.content.contains(CAPABILITIES_TOOL));
+    assert!(h.store.is_empty());
 }
 
 // AA-b — never-publish invariant: no tool exposes a publish action, and every draft a
-// tool emits stays an unpublished, auto-bound source config (never a compiled/pinned
+// tool persists stays an unpublished, source config (never a compiled/pinned
 // publication). Publication is a console action, never an LLM tool call (ADR-0052 D4).
 #[tokio::test]
 async fn no_tool_call_ever_publishes() {
-    // 1) The toolset carries no publish tool.
-    assert!(tools().iter().all(|t| !t.id().contains("publish")));
+    let h = Harness::new();
+    assert!(h.tools.iter().all(|t| !t.id().contains("publish")));
 
-    // 2) Draft-emitting tools return an unpublished, auto-bound draft (not a pinned /
-    //    resolved publication).
-    let created = tool(CREATE_DRAFT_TOOL)
+    h.tool(CREATE_DRAFT_TOOL)
         .invoke(call(
             CREATE_DRAFT_TOOL,
             serde_json::json!({ "id": "support", "instructions": "be helpful" }),
         ))
         .await
         .unwrap();
-    let created_draft: AgentConfig = serde_json::from_str(&created.content).unwrap();
-    assert!(created_draft.model_binding.is_auto());
-
-    let amended = tool(SET_PLUGIN_TOOL)
-        .invoke(call(
-            SET_PLUGIN_TOOL,
-            serde_json::json!({
-                "draft": {
-                    "id": "support", "instructions": "be helpful", "max_steps": 8,
-                    "model_binding": { "mode": "auto" }, "tool_ids": []
-                },
-                "plugin_id": "state_machine",
-                "config": { "machines": [] }
-            }),
-        ))
-        .await
-        .unwrap();
-    let amended_draft: AgentConfig = serde_json::from_str(&amended.content).unwrap();
-    // Still Auto after amendment: the tool never resolves/pins/publishes the draft.
-    assert!(amended_draft.model_binding.is_auto());
+    // The persisted draft is an ordinary unpublished source config (auto-bound here).
+    let stored = h.store.stored("support").unwrap();
+    assert!(stored.model_binding.is_auto());
 }

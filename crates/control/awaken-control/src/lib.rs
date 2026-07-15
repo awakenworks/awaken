@@ -24,7 +24,8 @@ pub mod worker_stores;
 use std::sync::Arc;
 
 pub use crate::admin_assistant::{
-    CatalogCapabilityReader, ConfigServiceDraftValidator, seed_admin_assistant,
+    CatalogCapabilityReader, ConfigServiceDraftStore, ConfigServiceDraftValidator,
+    seed_admin_assistant,
 };
 // Embedded management-plane IAM (ADR-0042/0043 P1): the authorizer, its boot
 // fn, the mint spec (tests / operator embeddings), and the bootstrap constants.

@@ -580,8 +580,12 @@ async fn management_router_over(
     };
     let config_service = Arc::new(
         ConfigService::new()
+            // Resolve `Auto` against the LIVE catalog repo (not the frozen seed), so a
+            // model an operator adds AFTER startup is visible when we re-publish the
+            // reserved-scope assistant. `catalog` is still in scope here (moved into the
+            // control router below); clone the Arc for the resolver.
             .with_model_resolver(Arc::new(
-                awaken_server::model_resolver::CatalogModelResolver::new(seed_catalog.clone()),
+                awaken_server::model_resolver::CatalogModelResolver::from_repo(catalog.clone()),
             ))
             .with_resources(resource_store.clone()),
     );
@@ -604,6 +608,16 @@ async fn management_router_over(
     if let Err(err) = awaken_control::seed_admin_assistant(&plane).await {
         eprintln!("admin assistant not seeded (configure a model, then republish): {err}");
     }
+    // When an operator adds a model AFTER startup, re-publish the reserved-scope
+    // assistant so its `Auto` binding resolves off `unconfigured` onto the new model.
+    // Same reserved scope + agent id `seed_admin_assistant` published under, so the
+    // reconcile targets exactly the seeded agent (ADR-0052 D2). Fired by the middleware
+    // layer below on a successful catalog write. `ConfigPlane` is `Clone`.
+    let reconciler = Arc::new(awaken_runtime_host::ConfigServiceReconciler::new(
+        plane.clone(),
+        RESERVED_ADMIN_SCOPE,
+        vec![awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID.to_string()],
+    ));
     // The management tool executables (ADR-0052 D3/D4): the capability reader reads the
     // shared catalog + advertised tools; the validator runs the publish-time compile
     // check on drafts in the tenant scope; every call is audited.
@@ -614,6 +628,12 @@ async fn management_router_over(
             &[],
         )),
         Arc::new(awaken_control::ConfigServiceDraftValidator::new(
+            plane.clone(),
+            awaken_config_store::DEFAULT_SCOPE,
+        )),
+        // Persist/read drafts as unpublished config agents through the same plane the
+        // editor's Save uses, in the tenant/default scope (ADR-0052).
+        Arc::new(awaken_control::ConfigServiceDraftStore::new(
             plane.clone(),
             awaken_config_store::DEFAULT_SCOPE,
         )),
@@ -694,6 +714,36 @@ async fn management_router_over(
     // `/v1/…` form, and its `{ws}` stamped as the edge scope before it re-enters
     // routing. Flat requests fall through unchanged.
     let flat = awaken_server::mount_with_managed(host, managed_state).merge(mgmt);
+    // After a successful catalog-mutating write, re-publish the reserved-scope assistant
+    // so its `Auto` model binding picks up the model the operator just added. The layer
+    // sits on the flat surface INSIDE the workspace path rewrite (which rewrites a
+    // `/v1/workspaces/{ws}/config/...` request to its flat `/v1/config/...` form BEFORE
+    // re-entering this router), so matching the flat shape covers both address forms.
+    // Best-effort: a failed reconcile never fails the operator's request.
+    let reconcile_on_catalog_write = axum::middleware::from_fn(
+        move |req: axum::extract::Request, next: axum::middleware::Next| {
+            let reconciler = reconciler.clone();
+            async move {
+                let method = req.method().clone();
+                let path = req.uri().path().to_string();
+                let is_write =
+                    method == axum::http::Method::POST || method == axum::http::Method::PUT;
+                let is_catalog = path.contains("/config/offerings")
+                    || path.contains("/config/providers")
+                    || path.contains("/config/endpoints")
+                    || path.contains("/config/model-attributes");
+                let should_reconcile = is_write && is_catalog;
+                let resp = next.run(req).await;
+                if should_reconcile && resp.status().is_success() {
+                    // Ignore the Result — reconcile is best-effort.
+                    use awaken_runtime_host::AssistantBindingReconciler;
+                    let _ = reconciler.reconcile().await;
+                }
+                resp
+            }
+        },
+    );
+    let flat = flat.layer(reconcile_on_catalog_write);
     awaken_server::workspace_path::with_workspace_path_addressing(flat)
 }
 
