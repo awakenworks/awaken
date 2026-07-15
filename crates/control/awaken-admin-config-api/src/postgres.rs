@@ -24,7 +24,7 @@ use tokio::runtime::{Builder, Handle, Runtime};
 
 use awaken_config_resolver::{
     AgentMcpConfig, AgentResourceConfig, InferenceProfile, InferenceProfileStore, McpServerDef,
-    McpStore, ResourceStore, WebhookEndpointDef, WebhookStore,
+    McpStore, MemoryStoreDef, MemoryStoreRegistry, ResourceStore, WebhookEndpointDef, WebhookStore,
 };
 
 use crate::schema::admin_bundle;
@@ -246,6 +246,23 @@ impl InferenceProfileStore for PostgresAdminStore {
     }
     fn get(&self, id: &str) -> Option<InferenceProfile> {
         self.get_json("inference_profile", "id", id)
+    }
+}
+
+impl MemoryStoreRegistry for PostgresAdminStore {
+    fn put_memory_store(&self, def: MemoryStoreDef) {
+        self.put_json("memory_store", "id", &def.id.clone(), &def);
+    }
+    fn get_memory_store(&self, id: &str) -> Option<MemoryStoreDef> {
+        self.get_json("memory_store", "id", id)
+    }
+    fn list_memory_stores(&self) -> Vec<MemoryStoreDef> {
+        // Sorted by id via the shared list bridge, then fence out archived rows in Rust
+        // (the archived flag lives inside the JSON, not a column).
+        self.list_json::<MemoryStoreDef>("memory_store", "id")
+            .into_iter()
+            .filter(|d| !d.archived)
+            .collect()
     }
 }
 

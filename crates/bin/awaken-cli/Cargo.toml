@@ -39,6 +39,9 @@ awaken-credential-vault = { workspace = true, features = ["sqlite", "sealed-aead
 awaken-admin-config-api = { workspace = true, features = ["sqlite", "postgres"] }
 awaken-config-store = { workspace = true }
 awaken-config-resolver = { workspace = true }
+# The durable skill catalog: one store shared by the host (delivered skills) and the
+# capability inventory (skill enumeration for the admin assistant).
+awaken-skill-store = { workspace = true }
 # The management assistant executables the host carries (ADR-0052).
 awaken-admin-assistant = { workspace = true }
 # The opaque scope id the warm-load + reserved-scope seeding are keyed by.

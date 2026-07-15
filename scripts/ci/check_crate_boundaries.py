@@ -1224,6 +1224,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-protocol-managed",
         "awaken-config-store",
         "awaken-config-resolver",
+        # The data-plane skill catalog port: the capability inventory lists skill ids.
+        "awaken-skill-store",
         "awaken-admin-config-api",
         "awaken-model-catalog",
         "awaken-credential-vault",
@@ -1267,6 +1269,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-admin-config-api",
         "awaken-config-store",
         "awaken-config-resolver",
+        # The durable skill catalog, shared by the host and the capability inventory.
+        "awaken-skill-store",
         "awaken-admin-assistant",
         "awaken-tenancy",
         "awaken-provider-genai",
