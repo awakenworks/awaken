@@ -46,6 +46,43 @@ pub enum Wake {
     Nats,
 }
 
+/// The sandbox tier a worker realizes an ACP agent on (ADR-0041/0056). The default is
+/// the namespace (bubblewrap) tier; a container tier runs the agent inside a
+/// user-supplied image via the matching `ContainerRuntime`. Different workers can be
+/// configured differently (`AWAKEN_SANDBOX_TIER`), so one fleet mixes backends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SandboxTier {
+    /// Bubblewrap namespace isolation on the worker host (`AWAKEN_SANDBOX_TIER=namespace`,
+    /// the default) — no user image, the agent runs under `bwrap`.
+    #[default]
+    Namespace,
+    /// A Docker container from the configured image (`AWAKEN_SANDBOX_TIER=docker`).
+    Docker,
+    /// A rootless Podman container (`AWAKEN_SANDBOX_TIER=podman`).
+    Podman,
+    /// A Kubernetes Pod (`AWAKEN_SANDBOX_TIER=k8s`), for a multi-node cloud fleet.
+    K8s,
+}
+
+impl SandboxTier {
+    /// Parse the `AWAKEN_SANDBOX_TIER` value; unknown/absent → the namespace default.
+    fn from_env_str(value: Option<&str>) -> Self {
+        match value {
+            Some("docker") => Self::Docker,
+            Some("podman") => Self::Podman,
+            Some("k8s") | Some("kubernetes") => Self::K8s,
+            _ => Self::Namespace,
+        }
+    }
+
+    /// Whether this tier runs the agent inside a container image (vs. the namespace
+    /// tier on the worker host) — the composition root builds a container ACP source.
+    #[must_use]
+    pub fn is_container(self) -> bool {
+        !matches!(self, Self::Namespace)
+    }
+}
+
 /// The deployment axes a single binary composes from — parsed once, injected into
 /// the runtime rather than re-read from the environment at each call site.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +109,11 @@ pub struct DeploymentConfig {
     /// When set, this process is a database-less **worker** of the cell server at
     /// this url (`AWAKEN_UPSTREAM_URL`): commits and dispatch go to the server.
     pub upstream: Option<String>,
+    /// The sandbox tier this worker realizes ACP agents on (`AWAKEN_SANDBOX_TIER`).
+    pub sandbox_tier: SandboxTier,
+    /// The container image an ACP agent runs in on a container tier
+    /// (`AWAKEN_CONTAINER_IMAGE`); `None` on the namespace tier / when unset.
+    pub container_image: Option<String>,
     /// A coordinator-only server (`AWAKEN_DISABLE_LOCAL_POOL=1`): own the store + HTTP
     /// but run no local pool, so remote workers are the sole drainers.
     pub disable_local_pool: bool,
@@ -101,6 +143,7 @@ impl DeploymentConfig {
             Some("nats") => Wake::Nats,
             _ => Wake::None,
         };
+        let sandbox_tier = SandboxTier::from_env_str(env("AWAKEN_SANDBOX_TIER").as_deref());
         Self {
             durable: env("AWAKEN_INGRESS").as_deref() == Some("durable"),
             storage_dir: env("AWAKEN_STORAGE_DIR").map(PathBuf::from),
@@ -113,6 +156,8 @@ impl DeploymentConfig {
             database_url: env("AWAKEN_DATABASE_URL"),
             dispatch_owner: env("AWAKEN_DISPATCH_OWNER").unwrap_or_else(default_owner),
             upstream: env("AWAKEN_UPSTREAM_URL"),
+            sandbox_tier,
+            container_image: env("AWAKEN_CONTAINER_IMAGE"),
             disable_local_pool: env("AWAKEN_DISABLE_LOCAL_POOL").as_deref() == Some("1"),
         }
     }
@@ -164,7 +209,36 @@ mod tests {
             database_url: None,
             dispatch_owner: "host-1".into(),
             upstream: None,
+            sandbox_tier: SandboxTier::Namespace,
+            container_image: None,
             disable_local_pool: false,
+        }
+    }
+
+    #[test]
+    fn sandbox_tier_parses_the_worker_backend_and_defaults_to_namespace() {
+        assert_eq!(
+            SandboxTier::from_env_str(Some("docker")),
+            SandboxTier::Docker
+        );
+        assert_eq!(
+            SandboxTier::from_env_str(Some("podman")),
+            SandboxTier::Podman
+        );
+        assert_eq!(SandboxTier::from_env_str(Some("k8s")), SandboxTier::K8s);
+        assert_eq!(
+            SandboxTier::from_env_str(Some("kubernetes")),
+            SandboxTier::K8s
+        );
+        // Unknown / absent → the namespace (bwrap) default; the host tier stays local.
+        assert_eq!(SandboxTier::from_env_str(Some("?")), SandboxTier::Namespace);
+        assert_eq!(SandboxTier::from_env_str(None), SandboxTier::Namespace);
+        assert_eq!(SandboxTier::default(), SandboxTier::Namespace);
+
+        // Only the container tiers run the agent inside an image.
+        assert!(!SandboxTier::Namespace.is_container());
+        for t in [SandboxTier::Docker, SandboxTier::Podman, SandboxTier::K8s] {
+            assert!(t.is_container());
         }
     }
 

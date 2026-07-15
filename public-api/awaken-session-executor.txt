@@ -67,12 +67,14 @@ pub fn awaken_session_executor::ContainerChannelSource::with_thread_egress(self,
 impl awaken_run_executor_acp::AgentChannelSource for awaken_session_executor::ContainerChannelSource
 pub fn awaken_session_executor::ContainerChannelSource::open<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::activation::RunActivation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_executor_acp::AgentSession, awaken_run_executor_acp::OpenError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_session_executor::DeploymentConfig
+pub awaken_session_executor::DeploymentConfig::container_image: core::option::Option<alloc::string::String>
 pub awaken_session_executor::DeploymentConfig::database_url: core::option::Option<alloc::string::String>
 pub awaken_session_executor::DeploymentConfig::disable_local_pool: bool
 pub awaken_session_executor::DeploymentConfig::dispatch_backend: awaken_session_executor::DispatchBackend
 pub awaken_session_executor::DeploymentConfig::dispatch_owner: alloc::string::String
 pub awaken_session_executor::DeploymentConfig::durable: bool
 pub awaken_session_executor::DeploymentConfig::nats_url: core::option::Option<alloc::string::String>
+pub awaken_session_executor::DeploymentConfig::sandbox_tier: awaken_session_executor::deployment_config::SandboxTier
 pub awaken_session_executor::DeploymentConfig::storage_dir: core::option::Option<std::path::PathBuf>
 pub awaken_session_executor::DeploymentConfig::store: awaken_session_executor::StoreKind
 pub awaken_session_executor::DeploymentConfig::upstream: core::option::Option<alloc::string::String>
