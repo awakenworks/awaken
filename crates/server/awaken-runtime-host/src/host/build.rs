@@ -86,7 +86,20 @@ impl SharedHost {
             gateway_executor_factory: None,
             capture_sink: None,
             admin_tools: Vec::new(),
+            // Default α: never hand a raw MCP bearer to the CLI — a trusted-local
+            // deployment opts into β with `with_trusted_acp_mcp`.
+            mcp_trusted_inline: false,
         }
+    }
+
+    /// Opt this host into **β** (trusted-inline) MCP credential delivery for its ACP
+    /// runs: a staged server's raw bearer is handed to the CLI inline instead of as a
+    /// secretless α reference. Only sound when the CLI is a trusted-local (non-sandboxed)
+    /// process — the host owns the isolation decision. Default (unset) is α.
+    #[must_use]
+    pub fn with_trusted_acp_mcp(mut self, trusted: bool) -> Self {
+        self.mcp_trusted_inline = trusted;
+        self
     }
 
     /// Register the management assistant's tool executables globally (ADR-0052). They

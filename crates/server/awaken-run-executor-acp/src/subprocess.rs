@@ -155,7 +155,37 @@ fn spawn(
         // Unsandboxed local launch runs in the process cwd; the sandboxed source is
         // what pins a stable interior workspace path for cross-directory recovery.
         workspace_cwd: None,
+        // Populated by `ProjectingChannelSource::open` for an `AcpSession` CLI.
+        mcp_session_servers: Vec::new(),
     })
+}
+
+/// Map a neutral [`crate::McpServerConfig`] onto the protocol's `session/new` shape: the
+/// α/β credential becomes an `Authorization: Bearer …` header (α: a broker reference the
+/// gateway resolves; β: a raw secret on a trusted launch — the trust decision is made
+/// upstream by the host's projection). Pure, so the mapping is unit-testable.
+fn to_session_mcp_server(cfg: &crate::McpServerConfig) -> awaken_protocol_acp::SessionMcpServer {
+    use crate::{McpCredential, McpTransport};
+    let (command, args, url) = match &cfg.transport {
+        McpTransport::Stdio { command, args } => (Some(command.clone()), args.clone(), None),
+        McpTransport::Http { url } => (None, Vec::new(), Some(url.clone())),
+    };
+    let auth = match &cfg.credential {
+        McpCredential::Reference { reference } => {
+            Some(("Authorization".to_string(), format!("Bearer {reference}")))
+        }
+        McpCredential::TrustedInline { secret } => {
+            Some(("Authorization".to_string(), format!("Bearer {secret}")))
+        }
+        McpCredential::None => None,
+    };
+    awaken_protocol_acp::SessionMcpServer {
+        name: cfg.name.clone(),
+        command,
+        args,
+        url,
+        auth,
+    }
 }
 
 /// The wire a real ACP CLI (`claude --acp`, `codex acp`) speaks: official
@@ -237,6 +267,257 @@ fn compact_window(spec: &awaken_runtime_contract::resolved::ResolvedSpec) -> Opt
         .as_u64()
 }
 
+/// The MCP servers a run declares for its ACP CLI, read from the config plane
+/// (`plugin_config.acp.mcp_servers`). The host binds these from a session's
+/// `mcp_servers`; empty when none declared or the shape is unrecognized.
+fn mcp_servers_of(
+    plugin_config: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> Vec<crate::McpServerConfig> {
+    plugin_config
+        .get("acp")
+        .and_then(|v| v.get("mcp_servers"))
+        .and_then(|v| serde_json::from_value::<Vec<crate::McpServerConfig>>(v.clone()).ok())
+        .unwrap_or_default()
+}
+
+/// Project the run's declared MCP servers onto its CLI's delivery mechanism — a config
+/// file for a `ConfigFileToml` CLI (codex), `session/new` params for an `AcpSession`
+/// CLI (claude/gemini/opencode). `None` when the run declares none. The host consumes
+/// this before/at launch: writing [`crate::McpDelivery::ConfigFile`] into the config
+/// home, or threading [`crate::McpDelivery::SessionServers`] into `session/new`. This
+/// is the seam that finally carries config-plane MCP servers to the projection core.
+pub(crate) fn mcp_delivery(
+    cli: &AcpCli,
+    plugin_config: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> Option<crate::McpDelivery> {
+    let servers = mcp_servers_of(plugin_config);
+    (!servers.is_empty()).then(|| cli.project_mcp(&servers))
+}
+
+/// Write a `ConfigFileToml` CLI's MCP config into its config home before launch (codex
+/// `config.toml`). The config-home dir is the value the projection put in the launch env
+/// under the CLI's `config_home_env`. No-op when the run declares no MCP servers, the CLI
+/// uses the `session/new` interface, or no config home was resolved.
+fn write_mcp_config(
+    cli: &AcpCli,
+    plugin_config: &std::collections::BTreeMap<String, serde_json::Value>,
+    launch_env: &[(String, String)],
+) -> std::result::Result<(), OpenError> {
+    let Some(crate::McpDelivery::ConfigFile { path, contents }) = mcp_delivery(cli, plugin_config)
+    else {
+        return Ok(());
+    };
+    let Some(dir) = launch_env
+        .iter()
+        .find(|(k, _)| k == cli.config_home_env)
+        .map(|(_, v)| v.as_str())
+    else {
+        return Ok(());
+    };
+    let full = std::path::Path::new(dir).join(path);
+    if let Some(parent) = full.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| OpenError(format!("mcp config dir: {e}")))?;
+    }
+    std::fs::write(&full, contents).map_err(|e| OpenError(format!("write mcp config: {e}")))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod mcp_wiring_tests {
+    use super::*;
+    use crate::{McpDelivery, acp_cli};
+
+    fn plugin_config_with_mcp() -> std::collections::BTreeMap<String, serde_json::Value> {
+        let mut pc = std::collections::BTreeMap::new();
+        pc.insert(
+            "acp".to_string(),
+            serde_json::json!({
+                "mcp_servers": [{
+                    "name": "github",
+                    "transport": { "kind": "stdio", "command": "npx", "args": ["-y", "@mcp/github"] },
+                    "credential": { "auth": "reference", "reference": "broker://gh" }
+                }]
+            }),
+        );
+        pc
+    }
+
+    #[test]
+    fn mcp_delivery_reads_the_config_plane_and_projects_to_the_cli() {
+        let pc = plugin_config_with_mcp();
+        // codex (ConfigFileToml) → a config.toml carrying the server + a secretless ref.
+        match mcp_delivery(acp_cli("codex").unwrap(), &pc) {
+            Some(McpDelivery::ConfigFile { path, contents }) => {
+                assert_eq!(path, "config.toml");
+                assert!(contents.contains("[mcp_servers.github]"));
+                assert!(contents.contains("broker://gh"));
+            }
+            other => panic!("codex should deliver a config file, got {other:?}"),
+        }
+        // claude (AcpSession) → the servers pass through for session/new.
+        match mcp_delivery(acp_cli("claude").unwrap(), &pc) {
+            Some(McpDelivery::SessionServers(s)) => {
+                assert_eq!(s.len(), 1);
+                assert_eq!(s[0].name, "github");
+            }
+            other => panic!("claude should deliver session servers, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn to_session_mcp_server_maps_transport_and_carries_the_credential_as_a_bearer() {
+        use crate::{McpCredential, McpServerConfig, McpTransport};
+        // α reference over stdio → command/args pass through, ref becomes a bearer header.
+        let alpha = to_session_mcp_server(&McpServerConfig {
+            name: "github".into(),
+            transport: McpTransport::Stdio {
+                command: "npx".into(),
+                args: vec!["-y".into(), "@mcp/github".into()],
+            },
+            credential: McpCredential::Reference {
+                reference: "broker://gh".into(),
+            },
+        });
+        assert_eq!(alpha.name, "github");
+        assert_eq!(alpha.command.as_deref(), Some("npx"));
+        assert_eq!(
+            alpha.args,
+            vec!["-y".to_string(), "@mcp/github".to_string()]
+        );
+        assert!(alpha.url.is_none());
+        assert_eq!(
+            alpha.auth,
+            Some(("Authorization".into(), "Bearer broker://gh".into()))
+        );
+
+        // β trusted-inline over http → url set, raw secret becomes the bearer.
+        let beta = to_session_mcp_server(&McpServerConfig {
+            name: "internal".into(),
+            transport: McpTransport::Http {
+                url: "https://mcp.internal/sse".into(),
+            },
+            credential: McpCredential::TrustedInline {
+                secret: "sk-raw".into(),
+            },
+        });
+        assert!(beta.command.is_none());
+        assert_eq!(beta.url.as_deref(), Some("https://mcp.internal/sse"));
+        assert_eq!(
+            beta.auth,
+            Some(("Authorization".into(), "Bearer sk-raw".into()))
+        );
+
+        // no credential → no auth header.
+        let none = to_session_mcp_server(&McpServerConfig {
+            name: "open".into(),
+            transport: McpTransport::Http {
+                url: "https://mcp.open/sse".into(),
+            },
+            credential: McpCredential::None,
+        });
+        assert!(none.auth.is_none());
+    }
+
+    #[test]
+    fn no_declared_servers_yields_no_delivery() {
+        let empty = std::collections::BTreeMap::new();
+        assert!(mcp_delivery(acp_cli("codex").unwrap(), &empty).is_none());
+    }
+
+    #[test]
+    fn write_mcp_config_writes_codex_config_toml_into_the_config_home() {
+        let dir = std::env::temp_dir().join(format!("awaken-mcpcfg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let env = vec![("CODEX_HOME".to_string(), dir.to_string_lossy().to_string())];
+
+        write_mcp_config(acp_cli("codex").unwrap(), &plugin_config_with_mcp(), &env).unwrap();
+
+        let written = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+        assert!(written.contains("[mcp_servers.github]"));
+        assert!(written.contains("broker://gh"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_mcp_config_writes_only_into_the_isolated_home_never_the_host_default() {
+        // A stand-in for the operator's real `~/.codex`: it holds a config the ACP run
+        // must never touch. The isolated per-thread home is a *different* directory.
+        let root = std::env::temp_dir().join(format!("awaken-noclobber-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let host_default = root.join("host-codex");
+        let isolated = root.join("thread-config-home");
+        std::fs::create_dir_all(&host_default).unwrap();
+        std::fs::create_dir_all(&isolated).unwrap();
+        std::fs::write(
+            host_default.join("config.toml"),
+            b"HOST DEFAULT - DO NOT TOUCH",
+        )
+        .unwrap();
+
+        // The launch points the CLI's config-home env at the ISOLATED dir (what the host's
+        // resolver does), so the MCP config lands there.
+        let env = vec![(
+            "CODEX_HOME".to_string(),
+            isolated.to_string_lossy().to_string(),
+        )];
+        write_mcp_config(acp_cli("codex").unwrap(), &plugin_config_with_mcp(), &env).unwrap();
+
+        // The isolated home got the injected server; the host default is byte-unchanged.
+        assert!(
+            std::fs::read_to_string(isolated.join("config.toml"))
+                .unwrap()
+                .contains("[mcp_servers.github]"),
+            "the isolated config home received the MCP config"
+        );
+        assert_eq!(
+            std::fs::read_to_string(host_default.join("config.toml")).unwrap(),
+            "HOST DEFAULT - DO NOT TOUCH",
+            "the host's default config was never overwritten"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn write_mcp_config_is_a_noop_when_no_isolated_home_is_in_the_launch_env() {
+        // Fail-closed: without the CLI's config-home env in the launch (no isolated home
+        // resolved), the writer must not fall back to a default / CWD location — it writes
+        // NOTHING rather than risk clobbering the host's real config. Sentinel a host
+        // default and prove it stays untouched with an empty launch env.
+        let root =
+            std::env::temp_dir().join(format!("awaken-noclobber-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let host_default = root.join("host-codex");
+        std::fs::create_dir_all(&host_default).unwrap();
+        std::fs::write(host_default.join("config.toml"), b"HOST DEFAULT").unwrap();
+
+        // No CODEX_HOME in the launch env → no isolated home.
+        write_mcp_config(acp_cli("codex").unwrap(), &plugin_config_with_mcp(), &[]).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(host_default.join("config.toml")).unwrap(),
+            "HOST DEFAULT",
+            "with no isolated home, nothing is written — the host default is safe"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn write_mcp_config_is_a_noop_for_a_session_new_cli() {
+        // claude delivers at session/new, not a config file → nothing is written.
+        let dir = std::env::temp_dir().join(format!("awaken-mcpnoop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let env = vec![(
+            "CLAUDE_CONFIG_DIR".to_string(),
+            dir.to_string_lossy().to_string(),
+        )];
+        write_mcp_config(acp_cli("claude").unwrap(), &plugin_config_with_mcp(), &env).unwrap();
+        assert!(!dir.join("config.toml").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 #[async_trait]
 impl AgentChannelSource for ProjectingChannelSource {
     async fn open(
@@ -244,7 +525,20 @@ impl AgentChannelSource for ProjectingChannelSource {
         activation: &RunActivation,
     ) -> std::result::Result<AgentSession, OpenError> {
         // A real CLI (`claude --acp`, `codex acp`) speaks official ACP JSON-RPC.
-        spawn(&self.plan(activation)?, CLI_CODEC)
+        let launch = self.plan(activation)?;
+        // A `ConfigFileToml` CLI (codex) gets its MCP servers written into the config
+        // home before launch; an `AcpSession` CLI carries them at `session/new` instead.
+        let plugin_config = &activation.snapshot.resolved_spec.plugin_config;
+        write_mcp_config(&self.cli, plugin_config, &launch.env)?;
+        let mut session = spawn(&launch, CLI_CODEC)?;
+        // An `AcpSession` CLI (claude/gemini/opencode) carries its MCP servers at
+        // `session/new`; the driver reads them off the session into the turn config.
+        if let Some(crate::McpDelivery::SessionServers(servers)) =
+            mcp_delivery(&self.cli, plugin_config)
+        {
+            session.mcp_session_servers = servers.iter().map(to_session_mcp_server).collect();
+        }
+        Ok(session)
     }
 }
 

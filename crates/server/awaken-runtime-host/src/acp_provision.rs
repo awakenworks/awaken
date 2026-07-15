@@ -311,6 +311,30 @@ mod tests {
     }
 
     #[test]
+    fn the_config_home_is_rooted_under_the_store_dir_never_the_host_home() {
+        // The launch's config-home env must point INSIDE the provided store dir (the
+        // per-thread isolated home), never at the operator's real `$HOME` — so a launched
+        // CLI reads/writes its own config there and cannot touch the host default.
+        let base = std::env::temp_dir().join(format!("awaken-chroot-{}", std::process::id()));
+        let r = EnvLaunchResolver::from_process_env(claude(), Some(base.clone()));
+        let env = r.config_home_env("thread-xyz");
+        assert_eq!(env[0].0, "CLAUDE_CONFIG_DIR");
+        let dir = &env[0].1;
+        assert!(
+            dir.starts_with(&base.to_string_lossy().to_string()),
+            "config home {dir} must live under the store dir {base:?}"
+        );
+        assert!(dir.contains("thread-xyz"), "keyed by the thread id");
+        if let Ok(home) = std::env::var("HOME") {
+            assert!(
+                !dir.starts_with(&format!("{home}/.claude")),
+                "config home must never be the host's ~/.claude"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn config_home_open_failure_yields_no_env_not_a_panic() {
         // The store dir is a regular FILE, so `ConfigHome::open`'s `create_dir_all`
         // fails. The resolver must degrade to no env (the CLI falls back to its own

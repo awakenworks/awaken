@@ -314,6 +314,18 @@ impl SharedHost {
                 context_policy,
             )
         });
+        // D6: for an ACP run, hand the session's staged MCP servers to the CLI's own MCP
+        // client via `plugin_config.acp.mcp_servers`. Whether this run executes on ACP is
+        // the host's runtime registration (`AcpBackend::is_acp`), not the config's
+        // `backend_ref` — the managed `server_config` stamps a fixed backend_ref, so the
+        // routing decision is the only reliable signal. The credential form is the host's
+        // isolation decision: a managed/sandboxed host keeps the α default (secretless
+        // reference; the raw bearer never reaches the CLI), while a trusted-local host may
+        // opt into β (`with_trusted_acp_mcp`) and hand the bearer inline. A native run is
+        // untouched (its MCP servers are already the in-process tools connected above).
+        let is_acp = self.acp.as_ref().is_some_and(|a| a.is_acp(thread));
+        let config =
+            crate::mcp::overlay_acp_mcp(config, &staged_mcp, is_acp, self.mcp_trusted_inline);
         // Install this session's catalog on its runtime NOW, so any node can resolve a
         // run it drives — not only the node that submitted it. The in-process path
         // installs via `prepare` on submit, but a durable run is driven by whichever

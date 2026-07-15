@@ -414,6 +414,7 @@ pub async fn build_management_router_with_fallback(
                 iam,
                 fallback_model,
                 fallback_model_ref,
+                None,
             )
             .await
         }
@@ -423,10 +424,31 @@ pub async fn build_management_router_with_fallback(
                 iam,
                 fallback_model,
                 fallback_model_ref,
+                None,
             )
             .await
         }
     }
+}
+
+/// [`build_management_router_with_model`] plus a last-mile hook on the assembled host
+/// (`customize_host`) — the seam a composition root uses to wire a runtime backend the
+/// management plane does not assemble itself, e.g. `host.with_acp(executor)` so `acp:*`
+/// threads run on an external CLI while the full managed plane (vault + MCP staging +
+/// config plane) is still in play. Keeps the ACP executor's crate out of this module.
+pub async fn build_management_router_with_host_customizer(
+    model: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+    customize_host: impl FnOnce(SharedHost) -> SharedHost + Send + 'static,
+) -> Router {
+    management_router_over(
+        in_memory_management_stores(),
+        None,
+        model,
+        model_ref.into(),
+        Some(Box::new(customize_host)),
+    )
+    .await
 }
 
 /// Build the management router over in-memory stores with an explicit host default
@@ -437,7 +459,14 @@ pub async fn build_management_router_with_model(
     model: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
 ) -> Router {
-    management_router_over(in_memory_management_stores(), None, model, model_ref.into()).await
+    management_router_over(
+        in_memory_management_stores(),
+        None,
+        model,
+        model_ref.into(),
+        None,
+    )
+    .await
 }
 
 /// [`build_management_router`] with explicit persistence inputs (no environment
@@ -451,6 +480,7 @@ pub async fn build_durable_management_router(dir: &std::path::Path, key: &[u8; 3
         None,
         Arc::new(awaken_server::no_model::NoModelConfiguredExecutor),
         awaken_server::no_model::UNCONFIGURED_MODEL_REF.to_string(),
+        None,
     )
     .await
 }
@@ -469,6 +499,7 @@ pub async fn build_secured_management_router(
         Some(iam.clone()),
         Arc::new(awaken_server::no_model::NoModelConfiguredExecutor),
         awaken_server::no_model::UNCONFIGURED_MODEL_REF.to_string(),
+        None,
     )
     .await;
     (router, iam)
@@ -487,6 +518,12 @@ async fn management_router_over(
     // never a mock); a test may inject a deterministic model.
     fallback_model: Arc<dyn LlmExecutor>,
     fallback_model_ref: String,
+    // An optional last-mile hook on the assembled data-plane host, applied before it is
+    // shared. The composition root uses it to wire a runtime backend the management plane
+    // does not assemble itself (e.g. an ACP executor for `acp:*` threads) without this
+    // module naming that backend's crate. `None` in production; `Some` in a scenario that
+    // serves external-CLI sessions.
+    customize_host: Option<Box<dyn FnOnce(SharedHost) -> SharedHost + Send>>,
 ) -> Router {
     let ManagementStores {
         catalog,
@@ -613,27 +650,32 @@ async fn management_router_over(
         .unwrap_or_else(|_| {
             std::env::temp_dir().join(format!("awaken-skills-{}", std::process::id()))
         });
-    let host = Arc::new(
-        SharedHost::new(model, model_ref)
-            .with_config_service(config_service.clone())
-            .with_admin_tools(admin_execs)
-            .with_skill_store(skill_dir)
-            // Resolve a session's model to a real executor from the config plane (M2):
-            // an unconfigured/unresolvable model falls back to the scenario model above.
-            .with_executor_provider(Arc::new(
-                awaken_server::config_executor::ConfigExecutorProvider::new(
-                    exec_catalog,
-                    exec_credentials,
-                    exec_secrets,
-                    awaken_control::BOOTSTRAP_WORKSPACE,
-                ),
-            ))
-            // Honor a per-run cloud-managed gateway grant (ADR-0004) on the direct
-            // path: build a genai executor that dials the gateway with the run's
-            // lease token, so the real provider key is injected at the gateway, not
-            // held here. Absent a grant, runs use the config-plane executor above.
-            .with_gateway_executor_factory(Arc::new(awaken_server::GenaiGatewayExecutorFactory)),
-    );
+    let host_builder = SharedHost::new(model, model_ref)
+        .with_config_service(config_service.clone())
+        .with_admin_tools(admin_execs)
+        .with_skill_store(skill_dir)
+        // Resolve a session's model to a real executor from the config plane (M2):
+        // an unconfigured/unresolvable model falls back to the scenario model above.
+        .with_executor_provider(Arc::new(
+            awaken_server::config_executor::ConfigExecutorProvider::new(
+                exec_catalog,
+                exec_credentials,
+                exec_secrets,
+                awaken_control::BOOTSTRAP_WORKSPACE,
+            ),
+        ))
+        // Honor a per-run cloud-managed gateway grant (ADR-0004) on the direct
+        // path: build a genai executor that dials the gateway with the run's
+        // lease token, so the real provider key is injected at the gateway, not
+        // held here. Absent a grant, runs use the config-plane executor above.
+        .with_gateway_executor_factory(Arc::new(awaken_server::GenaiGatewayExecutorFactory));
+    // Last-mile backend wiring the management plane does not assemble itself (e.g. an
+    // ACP executor for `acp:*` threads), injected by the composition root.
+    let host_builder = match customize_host {
+        Some(customize) => customize(host_builder),
+        None => host_builder,
+    };
+    let host = Arc::new(host_builder);
     let managed_state = Arc::new(
         ManagedState::new(
             ManagedHost::new(host.clone())

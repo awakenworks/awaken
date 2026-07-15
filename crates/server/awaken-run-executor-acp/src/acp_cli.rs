@@ -168,6 +168,127 @@ impl AcpCli {
     }
 }
 
+/// A neutral MCP server a run wants an ACP CLI to reach. Serializable so it rides the
+/// config plane into `ResolvedSpec.plugin_config` (the seam `mcp_servers_of` reads back).
+/// The `credential` models the trust boundary explicitly (α vs β) — see [`McpCredential`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct McpServerConfig {
+    pub name: String,
+    pub transport: McpTransport,
+    #[serde(default, skip_serializing_if = "McpCredential::is_none")]
+    pub credential: McpCredential,
+}
+
+impl McpServerConfig {
+    /// Safe to hand to a **sandboxed** CLI: it carries no raw secret (α or none). A
+    /// `TrustedInline` (β) credential is rejected — a raw secret must never enter a
+    /// sandboxed delivery (G3/D-R2). The host asserts this before a sandboxed launch.
+    #[must_use]
+    pub fn is_sandbox_safe(&self) -> bool {
+        !matches!(self.credential, McpCredential::TrustedInline { .. })
+    }
+}
+
+/// The server's auth, modeling the trust boundary of *how* the ACP CLI gets it:
+/// - **α — [`Reference`](McpCredential::Reference)**: secretless (G3/D-R2). A
+///   broker/gateway reference the host resolves out of the sandbox's address space —
+///   the same rule the model key follows via [`ResolvedModel::cloud_managed_gateway`].
+///   The only credential form valid for a **sandboxed** CLI.
+/// - **β — [`TrustedInline`](McpCredential::TrustedInline)**: a raw secret, valid ONLY
+///   on a **non-sandboxed trusted** launch (a local trusted CLI). Never emitted into a
+///   sandboxed delivery — [`McpServerConfig::is_sandbox_safe`] fails closed on it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "auth", rename_all = "snake_case")]
+pub enum McpCredential {
+    /// No credential — an unauthenticated server.
+    #[default]
+    None,
+    /// α: a secretless broker/gateway reference.
+    Reference { reference: String },
+    /// β: a raw secret, trusted-launch-only.
+    TrustedInline { secret: String },
+}
+
+impl McpCredential {
+    #[must_use]
+    fn is_none(&self) -> bool {
+        matches!(self, McpCredential::None)
+    }
+}
+
+/// How an MCP server is reached — a stdio child or an HTTP endpoint.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum McpTransport {
+    Stdio { command: String, args: Vec<String> },
+    Http { url: String },
+}
+
+/// How the projected MCP servers are handed to a launched CLI — the realization of the
+/// row's [`McpInterface`]. A `ConfigFileToml` CLI (codex) gets a file to write into its
+/// config home before launch; an `AcpSession` CLI (claude/gemini/opencode) gets the
+/// servers to pass at `session/new`. Data, not a `match adapter_kind`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpDelivery {
+    /// Write `contents` to `<config_home>/<path>` before launch.
+    ConfigFile {
+        path: &'static str,
+        contents: String,
+    },
+    /// Pass these servers in the ACP `session/new` `mcpServers` param.
+    SessionServers(Vec<McpServerConfig>),
+}
+
+/// Render an MCP server set as a codex `config.toml` fragment (`[mcp_servers.<name>]`).
+/// Only the transport and a credential *reference* are written — never a secret.
+fn render_mcp_config_toml(servers: &[McpServerConfig]) -> String {
+    let mut out = String::new();
+    for s in servers {
+        out.push_str(&format!("[mcp_servers.{}]\n", s.name));
+        match &s.transport {
+            McpTransport::Stdio { command, args } => {
+                out.push_str(&format!("command = {command:?}\n"));
+                let rendered: Vec<String> = args.iter().map(|a| format!("{a:?}")).collect();
+                out.push_str(&format!("args = [{}]\n", rendered.join(", ")));
+            }
+            McpTransport::Http { url } => {
+                out.push_str(&format!("url = {url:?}\n"));
+            }
+        }
+        match &s.credential {
+            // α: a broker reference the host resolves out-of-band; never the bytes.
+            McpCredential::Reference { reference } => {
+                out.push_str(&format!("credential_ref = {reference:?}\n"));
+            }
+            // β: a raw secret — only ever reached on a trusted (non-sandboxed) launch;
+            // a sandboxed delivery is refused upstream by `is_sandbox_safe`.
+            McpCredential::TrustedInline { secret } => {
+                out.push_str(&format!("credential = {secret:?}\n"));
+            }
+            McpCredential::None => {}
+        }
+        out.push('\n');
+    }
+    out
+}
+
+impl AcpCli {
+    /// Project the MCP servers a run needs onto this CLI's delivery mechanism, branching
+    /// on the row's [`McpInterface`] — not on an adapter kind. This is what finally
+    /// consumes `mcp_interface`: the host writes the [`McpDelivery::ConfigFile`] before
+    /// launch, or threads [`McpDelivery::SessionServers`] into `session/new`.
+    #[must_use]
+    pub fn project_mcp(&self, servers: &[McpServerConfig]) -> McpDelivery {
+        match self.mcp_interface {
+            McpInterface::ConfigFileToml { path } => McpDelivery::ConfigFile {
+                path,
+                contents: render_mcp_config_toml(servers),
+            },
+            McpInterface::AcpSession => McpDelivery::SessionServers(servers.to_vec()),
+        }
+    }
+}
+
 // Claude Code does NOT speak ACP natively (there is no `claude --acp`). It is
 // fronted by the official adapter package `@agentclientprotocol/claude-agent-acp`,
 // launched via `npx`. The version is pinned to a MAJOR.MINOR (never `@latest`,
@@ -262,6 +383,35 @@ const GEMINI: AcpCli = AcpCli {
     env: &[],
 };
 
+// opencode (sst/opencode) is a native, provider-agnostic coding agent that exposes an
+// ACP server. Modeled as a Direct launch (no npm wrapper) reading an OpenAI-compatible
+// endpoint — the most common opencode provider shape. The exact ACP invocation flag and
+// the session subtree are PROVISIONAL (confirm by capability probe, same discipline as
+// the Gemini row) — the projection/session/egress contract below is exercised regardless.
+const OPENCODE: AcpCli = AcpCli {
+    id: "opencode",
+    command: "opencode",
+    args: &["acp"],
+    model_delivery: ModelDelivery {
+        base_url: "OPENAI_BASE_URL",
+        model: "OPENAI_MODEL",
+        key: "OPENAI_API_KEY",
+        aliases: &[],
+    },
+    mcp_interface: McpInterface::AcpSession,
+    config_home_env: "OPENCODE_CONFIG_DIR",
+    memory_entrypoint: "AGENTS.md",
+    retained_paths: &["auth.json"],
+    // opencode keeps conversation state in a local store, keyed by an internal id
+    // (provisional subtree — confirm the exact path by capability probe).
+    session_persistence: SessionPersistence::LocalDir {
+        session_subpath: "storage",
+        keyed_by: SessionKey::InternalId,
+    },
+    context_window_env: None,
+    env: &[],
+};
+
 /// Whether a launch command dynamically installs its agent on first run (an `npx`
 /// wrapper pulls the pinned package into the npm cache), so a caller can surface an
 /// "installing…" phase before the process is usable. A native CLI (Gemini) is not.
@@ -273,7 +423,7 @@ pub fn is_dynamic_install(cli: &AcpCli) -> bool {
 /// The known ACP CLIs. Adding one is a row here — never a branch elsewhere.
 #[must_use]
 pub fn known_acp_clis() -> &'static [AcpCli] {
-    &[CLAUDE, CODEX, GEMINI]
+    &[CLAUDE, CODEX, GEMINI, OPENCODE]
 }
 
 /// Resolve an ACP CLI by id (`Backend::Acp { cli }`); `None` is a fail-closed
@@ -308,7 +458,343 @@ mod tests {
         assert!(acp_cli("claude").is_some());
         assert!(acp_cli("codex").is_some());
         assert!(acp_cli("gemini").is_some());
+        assert!(acp_cli("opencode").is_some());
         assert!(acp_cli("no_such_cli").is_none());
+    }
+
+    // ── Property tests over EVERY catalog row ────────────────────────────────────
+    // These hold for every current and future CLI, so adding a row (opencode, …) is
+    // covered by construction — the invariants a new agent must satisfy, not a
+    // per-agent copy of the same assertions.
+
+    #[test]
+    fn every_cli_has_a_unique_id_and_a_nonempty_launch() {
+        let mut ids: Vec<&str> = known_acp_clis().iter().map(|c| c.id).collect();
+        let n = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), n, "catalog has a duplicate CLI id");
+        for cli in known_acp_clis() {
+            assert!(!cli.command.is_empty(), "{}: command is set", cli.id);
+            assert!(
+                !cli.config_home_env.is_empty(),
+                "{}: config_home_env is set",
+                cli.id
+            );
+        }
+    }
+
+    #[test]
+    fn every_cli_injects_the_resolved_model_base_url_and_secret_key() {
+        let m = resolved();
+        for cli in known_acp_clis() {
+            let launch = cli.project(&m, None, &[]);
+            let d = &cli.model_delivery;
+            assert_eq!(
+                env_of(&launch, d.base_url).as_deref(),
+                Some(m.base_url.as_str()),
+                "{}: base_url",
+                cli.id
+            );
+            assert_eq!(
+                env_of(&launch, d.model).as_deref(),
+                Some(m.model.as_str()),
+                "{}: model",
+                cli.id
+            );
+            assert_eq!(
+                env_of(&launch, d.key).as_deref(),
+                Some(m.api_key.as_str()),
+                "{}: key",
+                cli.id
+            );
+            for alias in d.aliases {
+                assert_eq!(
+                    env_of(&launch, alias).as_deref(),
+                    Some(m.model.as_str()),
+                    "{}: alias {alias}",
+                    cli.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_cli_keeps_the_secret_unshadowable_by_passthrough() {
+        let m = resolved();
+        for cli in known_acp_clis() {
+            let d = cli.model_delivery;
+            // A hostile passthrough tries to override the modeled model + the secret.
+            let extra = vec![
+                (d.model.to_string(), "attacker-model".to_string()),
+                (d.key.to_string(), "attacker-key".to_string()),
+            ];
+            let launch = cli.project(&m, None, &extra);
+            assert_eq!(
+                env_of(&launch, d.model).as_deref(),
+                Some(m.model.as_str()),
+                "{}: typed model wins",
+                cli.id
+            );
+            assert_eq!(
+                env_of(&launch, d.key).as_deref(),
+                Some(m.api_key.as_str()),
+                "{}: secret unshadowable",
+                cli.id
+            );
+        }
+    }
+
+    #[test]
+    fn every_cli_egresses_through_the_gateway_with_a_lease_never_a_raw_key() {
+        // D-R2 for the whole catalog: no matter which CLI runs in the sandbox, a
+        // cloud-managed launch carries only a lease token, never a raw provider key.
+        let raw = "sk-RAW-PROVIDER-SECRET"; // awaken-allow: secret
+        for cli in known_acp_clis() {
+            let model = ResolvedModel::cloud_managed_gateway(
+                "https://gateway.awaken.internal",
+                "some-model",
+                "lease-tok-123", // awaken-allow: secret
+            );
+            let launch = cli.project(&model, None, &[]);
+            assert!(
+                launch.env.iter().all(|(_, v)| v != raw),
+                "{}: raw key must never appear",
+                cli.id
+            );
+            assert_eq!(
+                env_of(&launch, cli.model_delivery.key).as_deref(),
+                Some("lease-tok-123"),
+                "{}: key env holds the lease token",
+                cli.id
+            );
+            assert_eq!(
+                env_of(&launch, cli.model_delivery.base_url).as_deref(),
+                Some("https://gateway.awaken.internal"),
+                "{}: base_url is the gateway",
+                cli.id
+            );
+        }
+    }
+
+    #[test]
+    fn every_local_dir_cli_declares_a_subtree_and_never_harvests_its_credentials() {
+        // A LocalDir CLI must name a harvestable session subtree; its credentials
+        // (retained_paths) must live OUTSIDE that subtree, so a cross-machine session
+        // blob never carries an auth file.
+        for cli in known_acp_clis() {
+            if let SessionPersistence::LocalDir {
+                session_subpath, ..
+            } = cli.session_persistence
+            {
+                assert!(
+                    !session_subpath.is_empty(),
+                    "{}: LocalDir needs a session subpath",
+                    cli.id
+                );
+                for cred in cli.retained_paths {
+                    assert!(
+                        !cred.starts_with(session_subpath),
+                        "{}: credential {cred} must not live under the harvested session subtree {session_subpath}",
+                        cli.id
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_cli_declares_a_coherent_mcp_interface() {
+        // The built side of the MCP-delivery capability: every CLI declares HOW it
+        // receives MCP servers. A `ConfigFileToml` CLI writes them into a file in its
+        // config home, so that file must be a retained path (it lives across sessions
+        // alongside the CLI's own config); an `AcpSession` CLI takes them at
+        // `session/new`, so no config file is named.
+        for cli in known_acp_clis() {
+            match cli.mcp_interface {
+                McpInterface::AcpSession => {}
+                McpInterface::ConfigFileToml { path } => {
+                    assert!(
+                        !path.is_empty(),
+                        "{}: ConfigFileToml needs a config path",
+                        cli.id
+                    );
+                    assert!(
+                        cli.retained_paths.contains(&path),
+                        "{}: MCP config file {path} must be a retained config-home path",
+                        cli.id
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn project_mcp_writes_a_config_file_for_a_config_toml_cli() {
+        let codex = acp_cli("codex").unwrap();
+        let servers = vec![McpServerConfig {
+            name: "github".into(),
+            transport: McpTransport::Stdio {
+                command: "npx".into(),
+                args: vec!["-y".into(), "@mcp/github".into()],
+            },
+            credential: McpCredential::Reference {
+                reference: "broker://gh-token".into(),
+            },
+        }];
+        match codex.project_mcp(&servers) {
+            McpDelivery::ConfigFile { path, contents } => {
+                assert_eq!(path, "config.toml");
+                assert!(contents.contains("[mcp_servers.github]"));
+                assert!(contents.contains("command = \"npx\""));
+                assert!(contents.contains("\"@mcp/github\""));
+                assert!(contents.contains("broker://gh-token"));
+            }
+            other => panic!("codex delivers MCP via a config file, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sandbox_safety_admits_alpha_and_none_but_rejects_beta_inline() {
+        // α (Reference) and None are sandbox-safe; β (TrustedInline, a raw secret) is not.
+        let server = |cred: McpCredential| McpServerConfig {
+            name: "s".into(),
+            transport: McpTransport::Http {
+                url: "https://s".into(),
+            },
+            credential: cred,
+        };
+        assert!(server(McpCredential::None).is_sandbox_safe());
+        assert!(
+            server(McpCredential::Reference {
+                reference: "broker://x".into()
+            })
+            .is_sandbox_safe()
+        );
+        assert!(
+            !server(McpCredential::TrustedInline {
+                secret: "sk-RAW".into()
+            })
+            .is_sandbox_safe(),
+            "a raw inline secret must never be sandbox-safe"
+        );
+    }
+
+    #[test]
+    fn a_beta_inline_credential_renders_a_raw_secret_only_on_the_trusted_path() {
+        // β is reachable only on a trusted (non-sandboxed) launch; the config-file render
+        // emits the raw secret then. Sandboxed callers are gated by `is_sandbox_safe`.
+        let servers = vec![McpServerConfig {
+            name: "local".into(),
+            transport: McpTransport::Stdio {
+                command: "mcp".into(),
+                args: vec![],
+            },
+            credential: McpCredential::TrustedInline {
+                secret: "sk-trusted".into(), // awaken-allow: secret
+            },
+        }];
+        let McpDelivery::ConfigFile { contents, .. } =
+            acp_cli("codex").unwrap().project_mcp(&servers)
+        else {
+            panic!("codex is a config-file CLI");
+        };
+        assert!(contents.contains("credential = \"sk-trusted\""));
+        // Serde round-trips the trust boundary (rides the config plane).
+        let wire = serde_json::to_string(&servers[0]).unwrap();
+        assert!(wire.contains("trusted_inline"));
+        assert_eq!(
+            serde_json::from_str::<McpServerConfig>(&wire).unwrap(),
+            servers[0]
+        );
+    }
+
+    #[test]
+    fn project_mcp_passes_session_servers_for_an_acp_session_cli() {
+        let claude = acp_cli("claude").unwrap();
+        let servers = vec![McpServerConfig {
+            name: "fs".into(),
+            transport: McpTransport::Http {
+                url: "https://mcp.internal/fs".into(),
+            },
+            credential: McpCredential::None,
+        }];
+        match claude.project_mcp(&servers) {
+            McpDelivery::SessionServers(s) => assert_eq!(s, servers),
+            other => panic!("claude delivers MCP at session/new, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_projected_mcp_config_carries_a_reference_never_a_raw_secret() {
+        // D-R2 for MCP: even a config-file delivery holds only the broker reference.
+        let raw = "sk-RAW-MCP-TOKEN"; // awaken-allow: secret
+        let servers = vec![McpServerConfig {
+            name: "x".into(),
+            transport: McpTransport::Http {
+                url: "https://x".into(),
+            },
+            credential: McpCredential::Reference {
+                reference: "broker://x".into(),
+            },
+        }];
+        let McpDelivery::ConfigFile { contents, .. } =
+            acp_cli("codex").unwrap().project_mcp(&servers)
+        else {
+            panic!("codex is a config-file CLI");
+        };
+        assert!(
+            !contents.contains(raw),
+            "a raw secret must never enter the MCP config"
+        );
+        assert!(contents.contains("broker://x"));
+    }
+
+    #[test]
+    fn every_cli_projects_mcp_consistently_with_its_declared_interface() {
+        // Property over the catalog: a ConfigFileToml CLI yields a ConfigFile at its
+        // declared path; an AcpSession CLI passes the servers through. Adding a CLI is
+        // covered by construction.
+        let servers = vec![McpServerConfig {
+            name: "s".into(),
+            transport: McpTransport::Http {
+                url: "https://s".into(),
+            },
+            credential: McpCredential::None,
+        }];
+        for cli in known_acp_clis() {
+            match (cli.mcp_interface, cli.project_mcp(&servers)) {
+                (
+                    McpInterface::ConfigFileToml { path },
+                    McpDelivery::ConfigFile { path: p, .. },
+                ) => {
+                    assert_eq!(p, path, "{}", cli.id)
+                }
+                (McpInterface::AcpSession, McpDelivery::SessionServers(s)) => {
+                    assert_eq!(s, servers, "{}", cli.id)
+                }
+                (_, d) => panic!("{}: delivery {d:?} disagrees with its interface", cli.id),
+            }
+        }
+    }
+
+    #[test]
+    fn opencode_resolves_and_projects_like_a_native_openai_compatible_cli() {
+        let cli = acp_cli("opencode").unwrap();
+        assert_eq!(cli.command, "opencode");
+        assert!(
+            !is_dynamic_install(cli),
+            "a native CLI has no npm install step"
+        );
+        let launch = cli.project(&resolved(), None, &[]);
+        assert_eq!(
+            env_of(&launch, "OPENAI_BASE_URL").as_deref(),
+            Some("https://api.minimaxi.com/anthropic")
+        );
+        assert_eq!(
+            env_of(&launch, "OPENAI_API_KEY").as_deref(),
+            Some("test-materialized-key")
+        );
     }
 
     #[test]

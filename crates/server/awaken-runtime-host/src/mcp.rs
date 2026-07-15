@@ -44,6 +44,98 @@ pub struct PreparedMcpServer {
     pub refresh: Option<PreparedMcpRefresh>,
 }
 
+/// Project a staged MCP server to the neutral ACP config the ACP executor reads back
+/// from `plugin_config.acp.mcp_servers`, choosing the credential form by **trust**:
+/// - a **trusted** (non-sandboxed local) run may carry the raw bearer **inline** (β);
+/// - a **sandboxed** (untrusted) run gets a **secretless reference** (α) — the raw bearer
+///   never enters the sandbox; a broker/gateway resolves the reference out-of-band. A
+///   server with no bearer is `None`.
+///
+/// This is the α/β decision point: the host owns the raw secret and decides, per the
+/// run's isolation, whether the CLI may see it. (For an ACP run the servers are the
+/// CLI's own MCP client's; native runs still connect them in-process via `connect_staged`.)
+#[must_use]
+pub fn project_staged_mcp(
+    prepared: &PreparedMcpServer,
+    trusted: bool,
+) -> awaken_run_executor_acp::McpServerConfig {
+    use awaken_run_executor_acp::{McpCredential, McpServerConfig, McpTransport};
+    let credential = match (&prepared.bearer, trusted) {
+        (Some(bearer), true) => McpCredential::TrustedInline {
+            secret: bearer.expose_secret().to_string(),
+        },
+        // α: a secretless broker/gateway reference the sandbox's egress route resolves.
+        (Some(_), false) => McpCredential::Reference {
+            reference: format!("session-mcp:{}", prepared.name),
+        },
+        (None, _) => McpCredential::None,
+    };
+    McpServerConfig {
+        name: prepared.name.clone(),
+        transport: McpTransport::Http {
+            url: prepared.url.clone(),
+        },
+        credential,
+    }
+}
+
+/// The `plugin_config.acp.mcp_servers` value carrying the staged servers for an ACP run,
+/// or `None` when there are none. Fail-closed on a serialize error (the ACP CLI then
+/// simply gets no MCP servers rather than a corrupt config).
+#[must_use]
+pub fn acp_mcp_plugin_value(
+    staged: &[PreparedMcpServer],
+    trusted: bool,
+) -> Option<serde_json::Value> {
+    if staged.is_empty() {
+        return None;
+    }
+    let servers: Vec<_> = staged
+        .iter()
+        .map(|p| project_staged_mcp(p, trusted))
+        .collect();
+    serde_json::to_value(servers).ok()
+}
+
+/// Overlay a session's staged MCP servers into an **ACP** run's config so the ACP CLI
+/// executor reads them from `plugin_config.acp.mcp_servers` (D6). A no-op for a native
+/// run (those servers are already connected in-process via [`connect_staged`]) or when
+/// there are none. The managed session build is the untrusted/sandboxed path, so callers
+/// pass `trusted = false` → **α** (secretless reference); the raw bearer never leaves the
+/// host. Rebuilds the config from its parts so the mutated plugin_config rides the run's
+/// snapshot the same way the authored config does.
+///
+/// `is_acp` is the caller's authoritative "this run executes on an external ACP CLI"
+/// decision — the host's runtime registration (`AcpBackend::is_acp`), NOT the config's
+/// `backend_ref`. The managed `server_config` stamps a fixed `backend_ref` ("default")
+/// regardless of the selected runtime, so gating on it here would silently skip every
+/// managed ACP session; only a native run (`is_acp == false`) is left untouched, since
+/// its MCP servers are already the in-process tools connected by `connect_staged`.
+#[must_use]
+pub fn overlay_acp_mcp(
+    config: awaken_runtime_contract::runnable::RunnableConfig,
+    staged: &[PreparedMcpServer],
+    is_acp: bool,
+    trusted: bool,
+) -> awaken_runtime_contract::runnable::RunnableConfig {
+    use awaken_runtime_contract::runnable::RunnableConfig;
+    if staged.is_empty() || !is_acp {
+        return config;
+    }
+    let (mut snapshot, install) = config.into_parts();
+    if let Some(value) = acp_mcp_plugin_value(staged, trusted) {
+        let acp = snapshot
+            .resolved_spec
+            .plugin_config
+            .entry("acp".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(obj) = acp.as_object_mut() {
+            obj.insert("mcp_servers".to_string(), value);
+        }
+    }
+    RunnableConfig::from_parts(snapshot, install)
+}
+
 /// The refresh half of a prepared MCP server (an `mcp_oauth` vault credential
 /// entered with a refresh object — public or confidential client): everything
 /// [`VaultRefresher`] needs to run the `refresh_token` grant and reseal the
@@ -278,4 +370,80 @@ pub async fn connect_staged(staged: &[PreparedMcpServer]) -> Result<McpWiring, H
         wiring.tools.extend(connection.tools);
     }
     Ok(wiring)
+}
+
+#[cfg(test)]
+mod alpha_beta_tests {
+    use super::*;
+    use awaken_agent_contract::RedactedString;
+    use awaken_run_executor_acp::McpCredential;
+
+    fn prepared(bearer: Option<&str>) -> PreparedMcpServer {
+        PreparedMcpServer {
+            name: "gh".into(),
+            url: "https://mcp.gh".into(),
+            bearer: bearer.map(RedactedString::new),
+            refresh: None,
+        }
+    }
+
+    #[test]
+    fn trusted_gets_beta_inline_sandboxed_gets_alpha_reference() {
+        let p = prepared(Some("sk-RAW-SECRET"));
+        // β: trusted may carry the raw bearer inline (NOT sandbox-safe).
+        let t = project_staged_mcp(&p, true);
+        assert!(matches!(t.credential, McpCredential::TrustedInline { .. }));
+        assert!(!t.is_sandbox_safe());
+        // α: a sandboxed run gets a secretless reference (sandbox-safe).
+        let s = project_staged_mcp(&p, false);
+        assert!(matches!(s.credential, McpCredential::Reference { .. }));
+        assert!(s.is_sandbox_safe());
+        // No bearer → None.
+        assert!(matches!(
+            project_staged_mcp(&prepared(None), false).credential,
+            McpCredential::None
+        ));
+    }
+
+    #[test]
+    fn the_plugin_value_never_carries_a_raw_secret_for_a_sandboxed_run() {
+        assert!(acp_mcp_plugin_value(&[], false).is_none());
+        let v = acp_mcp_plugin_value(&[prepared(Some("sk-RAW-SECRET"))], false).unwrap();
+        assert!(v.is_array());
+        assert!(
+            !v.to_string().contains("sk-RAW-SECRET"),
+            "a sandboxed projection must never serialize the raw bearer"
+        );
+    }
+
+    #[test]
+    fn overlay_injects_into_an_acp_run_and_leaves_a_native_run_untouched() {
+        use awaken_runtime_contract::resolved::ModelBinding;
+        use awaken_runtime_contract::runnable::RunnableConfig;
+
+        // ACP run (is_acp = true) → the servers land under plugin_config.acp.mcp_servers,
+        // secretless. The backend_ref is the fixed managed "default" — proving the overlay
+        // keys off the caller's runtime decision, not backend_ref.
+        let acp = RunnableConfig::builder("a")
+            .model(ModelBinding::new("default", "m", "default"))
+            .build();
+        let out = overlay_acp_mcp(acp, &[prepared(Some("sk-RAW-SECRET"))], true, false);
+        let pc = &out.snapshot().resolved_spec.plugin_config;
+        assert!(pc["acp"]["mcp_servers"].is_array());
+        assert!(!serde_json::to_string(pc).unwrap().contains("sk-RAW-SECRET"));
+
+        // Native run (is_acp = false) → untouched (its MCP servers are already in-process
+        // tools), even though its backend_ref happens to read "acp:claude".
+        let native = RunnableConfig::builder("b")
+            .model(ModelBinding::new("p", "m", "acp:claude"))
+            .build();
+        let out2 = overlay_acp_mcp(native, &[prepared(Some("sk"))], false, false);
+        assert!(
+            out2.snapshot()
+                .resolved_spec
+                .plugin_config
+                .get("acp")
+                .is_none()
+        );
+    }
 }
