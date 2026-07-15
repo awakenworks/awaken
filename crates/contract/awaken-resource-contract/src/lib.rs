@@ -38,7 +38,8 @@ pub trait FileStore: Send + Sync {
     async fn put(&self, bytes: &[u8]) -> Result<String, FileStoreError>;
     /// Fetch by id, `None` if absent.
     async fn get(&self, id: &str) -> Result<Option<Vec<u8>>, FileStoreError>;
-    /// List all ids (unordered by contract; backends may sort).
+    /// List all ids, **sorted ascending**. Every backend returns the same stable
+    /// order, so two stores' listings are directly comparable (mirror/migration diff).
     async fn list(&self) -> Result<Vec<String>, FileStoreError>;
     /// Delete by id; returns whether it existed. GC/admin only — not a mutation.
     async fn delete(&self, id: &str) -> Result<bool, FileStoreError>;

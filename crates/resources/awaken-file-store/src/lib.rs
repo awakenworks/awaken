@@ -215,7 +215,12 @@ mod tests {
             Some(&b"hello world"[..])
         );
         assert!(store.get("nonexistent").await.unwrap().is_none());
-        assert!(store.list().await.unwrap().contains(&id));
+        let listed = store.list().await.unwrap();
+        assert!(listed.contains(&id));
+        // Contract guarantee (uniform across backends): ids come back sorted ascending.
+        let mut sorted = listed.clone();
+        sorted.sort();
+        assert_eq!(listed, sorted, "list is sorted ascending");
         assert!(store.delete(&id).await.unwrap());
         assert!(!store.delete(&id).await.unwrap());
         assert!(store.get(&id).await.unwrap().is_none());
