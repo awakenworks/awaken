@@ -30,6 +30,12 @@ run "file-limits" python3 scripts/ci/check_file_limits.py
 run "commit-message self-test" python3 scripts/ci/check_commit_message.py --self-test
 run "documentation" scripts/ci/check-docs.sh
 run "rust" scripts/ci/check-rust.sh --full
+# Postgres-backed suites against a throwaway database. Docker-gated: SKIPS (passes)
+# where docker is unavailable — so `cargo test --workspace` above still covers the
+# no-DB path, and a docker-equipped CI additionally runs the ~half of
+# distributed-correctness tests that only exercise real behaviour on Postgres (and
+# otherwise self-skip into a false green). See scripts/ci/pg_tests.sh.
+run "postgres" scripts/ci/pg_tests.sh
 run "frontend" scripts/ci/check-frontend.sh --full
 
 if [ "${#failed[@]}" -ne 0 ]; then
