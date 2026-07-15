@@ -4,7 +4,10 @@
 // `:ws` segment is the active workspace; data calls carry the scope via ws().
 
 export type Scope = "global" | "workspace";
-export type NavGroup = "global" | "run" | "supply" | "observe" | "govern";
+// IA by altitude (not by object type): Author what an agent IS, from reusable
+// Building blocks; Operate agents at runtime; Supply the inference layer; Observe;
+// Govern. The assistant is an authoring aid (an Agents entry), not a nav peer.
+export type NavGroup = "global" | "author" | "blocks" | "operate" | "supply" | "observe" | "govern";
 
 export interface NavItem {
   key: string;
@@ -21,23 +24,27 @@ export interface NavItem {
 export const NAV: NavItem[] = [
   { key: "home", label: "Home", labelZh: "总览", group: "global", path: "/" },
 
-  // Run: the workspace's Managed Agents runtime — sessions, agents, environments,
-  // vaults, memory stores, deployments, skills.
-  { key: "overview", label: "Overview", labelZh: "工作区概览", group: "run", path: "/w/:ws/overview" },
-  { key: "sessions", label: "Sessions", labelZh: "会话", group: "run", path: "/w/:ws/sessions" },
-  { key: "agents", label: "Agents", labelZh: "Agents", group: "run", path: "/w/:ws/agents" },
-  { key: "assistant", label: "Assistant", labelZh: "助手", group: "run", path: "/w/:ws/assistant" },
-  { key: "environments", label: "Environments", labelZh: "运行环境", group: "run", path: "/w/:ws/environments" },
-  { key: "vaults", label: "Vaults", labelZh: "运行凭证", group: "run", path: "/w/:ws/vaults" },
-  { key: "memory", label: "Memory stores", labelZh: "记忆库", group: "run", path: "/w/:ws/memory" },
-  { key: "deployments", label: "Deployments", labelZh: "调度部署", group: "run", path: "/w/:ws/deployments" },
-  { key: "skills", label: "Skills", labelZh: "技能", group: "run", path: "/w/:ws/skills" },
+  // Author: the agent is the hero object you design. (The Admin Assistant — "draft
+  // with AI" — is reached from the Agents list, not the rail: it's an aid, not an object.)
+  { key: "agents", label: "Agents", labelZh: "Agents", group: "author", path: "/w/:ws/agents", agentBadge: true },
 
-  // Supply: the workspace's shared config the run plane references by id.
+  // Building blocks: the reusable resources an agent references, shared across agents.
+  { key: "environments", label: "Environments", labelZh: "运行环境", group: "blocks", path: "/w/:ws/environments" },
+  { key: "skills", label: "Skills", labelZh: "技能", group: "blocks", path: "/w/:ws/skills" },
+  { key: "memory", label: "Memory stores", labelZh: "记忆库", group: "blocks", path: "/w/:ws/memory" },
+  { key: "mcp", label: "MCP servers", labelZh: "MCP 服务", group: "blocks", path: "/w/:ws/mcp-servers" },
+  { key: "a2a", label: "A2A servers", labelZh: "A2A 服务", group: "blocks", path: "/w/:ws/a2a-servers" },
+
+  // Operate: agents put into operation. A Deployment is a standing rule (agent ×
+  // environment × trigger) that PRODUCES sessions; a Session is one run instance.
+  { key: "overview", label: "Overview", labelZh: "工作区概览", group: "operate", path: "/w/:ws/overview" },
+  { key: "deployments", label: "Deployments", labelZh: "调度部署", group: "operate", path: "/w/:ws/deployments" },
+  { key: "sessions", label: "Sessions", labelZh: "会话", group: "operate", path: "/w/:ws/sessions" },
+
+  // Supply: the inference layer — infrastructure, not agent-bound building blocks.
   { key: "models", label: "Models", labelZh: "模型", group: "supply", path: "/w/:ws/models" },
   { key: "credentials", label: "Inference credentials", labelZh: "推理凭证", group: "supply", path: "/w/:ws/credentials" },
-  { key: "mcp", label: "MCP catalog", labelZh: "MCP 目录", group: "supply", path: "/w/:ws/mcp-servers" },
-  { key: "a2a", label: "A2A catalog", labelZh: "A2A 目录", group: "supply", path: "/w/:ws/a2a-servers" },
+  { key: "vaults", label: "Vaults", labelZh: "运行凭证", group: "supply", path: "/w/:ws/vaults" },
 
   { key: "dashboard", label: "Dashboard", labelZh: "看板", group: "observe", path: "/w/:ws/dashboard", gated: true },
   { key: "evals", label: "Eval runs", labelZh: "评测", group: "observe", path: "/w/:ws/eval-runs", gated: true },
@@ -60,6 +67,10 @@ export function titleForPath(pathname: string): { scope: string; title: string }
   }
   if (pathname.match(/^\/w\/[^/]+\/agents\/.+/)) {
     return { scope: ws, title: "Agent" };
+  }
+  // The assistant is an authoring aid (reached from Agents), not a rail item.
+  if (pathname.match(/^\/w\/[^/]+\/assistant$/)) {
+    return { scope: ws, title: "Draft with AI" };
   }
   const hit = NAV.find((n) => {
     const pattern = "^" + n.path.replace(":ws", "[^/]+") + "$";

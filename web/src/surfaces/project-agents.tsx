@@ -59,7 +59,12 @@ export default function ProjectAgentsSurface() {
           "对接自有配置面(管理 API)作者:基础、工具、插件、策略、上下文。发布即编译并安装,session 随即以该配置运行。",
         )}
       </p>
-      <div className="row" style={{ justifyContent: "flex-end" }}>
+      <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
+        {/* The Admin Assistant is an authoring aid, reached from here (not the rail):
+            describe an agent in plain English and it drafts one for you. */}
+        <Button variant="ghost" onClick={() => nav(`/w/${wsId}/assistant`)}>
+          ✦ {app.t("Draft with AI", "用 AI 起草")}
+        </Button>
         <Button variant="primary" onClick={() => nav(`/w/${wsId}/agents/new`)}>
           + {app.t("New agent", "新建 Agent")}
         </Button>
