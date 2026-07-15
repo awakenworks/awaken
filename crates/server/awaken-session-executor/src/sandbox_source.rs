@@ -34,8 +34,15 @@ use awaken_sandbox_local::NamespaceProvider;
 /// projection** of the run's `acp:<cli>` backend_ref through its [`AcpCli`] row — so
 /// the CLI the config plane selected *for that agent* runs inside the isolation, with
 /// its model/env projected, rather than a single fixed command.
-enum LaunchSource {
+///
+/// This is the public factory input to [`build_acp_channel_source`] (ADR-0057
+/// `serve-selected-cli`): a composition root picks `Projected` to serve each run's
+/// config-plane-selected CLI, or `Fixed` for a trusted/test single argv.
+pub enum LaunchSource {
+    /// One CLI for every `acp:*` thread (trusted/test; `AWAKEN_ACP_ARGV`).
     Fixed(AcpLaunch),
+    /// The run's config-plane-selected CLI, projected per run through its [`AcpCli`]
+    /// row + `resolver` (production; `AWAKEN_ACP_CLI`).
     Projected {
         cli: AcpCli,
         resolver: Arc<dyn LaunchResolver>,
@@ -145,6 +152,16 @@ impl SandboxChannelSource {
             launch: LaunchSource::Projected { cli, resolver },
             egress: ThreadEgress::default(),
             codec: awaken_run_executor_acp::Codec::Acp,
+        }
+    }
+
+    /// Build from a [`LaunchSource`] chosen by the composition root: `Projected` →
+    /// the projecting path (real-ACP codec), `Fixed` → the trusted/test argv (newline
+    /// codec). The single seam [`build_acp_channel_source`] threads through.
+    pub fn from_source(base: impl Into<std::path::PathBuf>, source: LaunchSource) -> Self {
+        match source {
+            LaunchSource::Fixed(launch) => Self::new(base, launch),
+            LaunchSource::Projected { cli, resolver } => Self::projecting(base, cli, resolver),
         }
     }
 
@@ -282,6 +299,15 @@ impl ContainerChannelSource {
         }
     }
 
+    /// Build from a [`LaunchSource`] chosen by the composition root: `Projected` →
+    /// the projecting path (real-ACP codec), `Fixed` → the trusted/test argv.
+    pub fn from_source(provider: Arc<dyn AgentContainerProvider>, source: LaunchSource) -> Self {
+        match source {
+            LaunchSource::Fixed(launch) => Self::new(provider, launch),
+            LaunchSource::Projected { cli, resolver } => Self::projecting(provider, cli, resolver),
+        }
+    }
+
     /// Follow per-thread egress registrations (the host's [`ThreadEgress`] handle): a
     /// deny-egress thread's container runs with a restricted network policy.
     #[must_use]
@@ -372,18 +398,36 @@ const CONTAINER_AGENT_PORT: u16 = 8080;
 pub async fn build_acp_channel_source(
     tier: crate::deployment_config::SandboxTier,
     image: Option<&str>,
-    launch: AcpLaunch,
+    source: LaunchSource,
     egress: ThreadEgress,
     namespace_base: std::path::PathBuf,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
     use crate::deployment_config::SandboxTier;
     match tier {
+        // No OS isolation: the ACP CLI runs as a plain child of the runtime, driven by
+        // the same environment-agnostic executor over an unsandboxed source (ADR-0057).
+        SandboxTier::Local => Ok(local_source(source)),
         SandboxTier::Namespace => Ok(Arc::new(
-            SandboxChannelSource::new(namespace_base, launch).with_thread_egress(egress),
+            SandboxChannelSource::from_source(namespace_base, source).with_thread_egress(egress),
         )),
-        SandboxTier::Docker => build_docker_source(image, launch, egress),
-        SandboxTier::Podman => build_podman_source(image, launch, egress),
-        SandboxTier::K8s => build_k8s_source(image, launch, egress).await,
+        SandboxTier::Docker => build_docker_source(image, source, egress),
+        SandboxTier::Podman => build_podman_source(image, source, egress),
+        SandboxTier::K8s => build_k8s_source(image, source, egress).await,
+    }
+}
+
+/// The unsandboxed local source for [`SandboxTier::Local`]: the run's projected CLI
+/// (`ProjectingChannelSource`) or a fixed argv (`SubprocessChannelSource`, real-ACP
+/// codec). The executor is identical either way — only the source differs.
+fn local_source(source: LaunchSource) -> Arc<dyn AgentChannelSource> {
+    match source {
+        LaunchSource::Fixed(launch) => Arc::new(
+            awaken_run_executor_acp::SubprocessChannelSource::new(launch)
+                .with_codec(awaken_run_executor_acp::Codec::Acp),
+        ),
+        LaunchSource::Projected { cli, resolver } => Arc::new(
+            awaken_run_executor_acp::ProjectingChannelSource::new(cli, resolver),
+        ),
     }
 }
 
@@ -408,16 +452,16 @@ fn container_image(image: Option<&str>) -> Result<String, String> {
 ))]
 fn container_source(
     provider: Arc<dyn AgentContainerProvider>,
-    launch: AcpLaunch,
+    source: LaunchSource,
     egress: ThreadEgress,
 ) -> Arc<dyn AgentChannelSource> {
-    Arc::new(ContainerChannelSource::new(provider, launch).with_thread_egress(egress))
+    Arc::new(ContainerChannelSource::from_source(provider, source).with_thread_egress(egress))
 }
 
 #[cfg(feature = "container-docker")]
 fn build_docker_source(
     image: Option<&str>,
-    launch: AcpLaunch,
+    source: LaunchSource,
     egress: ThreadEgress,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
     let runtime =
@@ -427,13 +471,13 @@ fn build_docker_source(
         std::sync::Arc::new(runtime),
         container_image(image)?,
     );
-    Ok(container_source(Arc::new(provider), launch, egress))
+    Ok(container_source(Arc::new(provider), source, egress))
 }
 
 #[cfg(not(feature = "container-docker"))]
 fn build_docker_source(
     _image: Option<&str>,
-    _launch: AcpLaunch,
+    _source: LaunchSource,
     _egress: ThreadEgress,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
     Err("AWAKEN_SANDBOX_TIER=docker needs the `container-docker` feature".into())
@@ -442,7 +486,7 @@ fn build_docker_source(
 #[cfg(feature = "container-podman")]
 fn build_podman_source(
     image: Option<&str>,
-    launch: AcpLaunch,
+    source: LaunchSource,
     egress: ThreadEgress,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
     let runtime = awaken_sandbox_container::podman::PodmanRuntime::new(CONTAINER_AGENT_PORT);
@@ -450,13 +494,13 @@ fn build_podman_source(
         std::sync::Arc::new(runtime),
         container_image(image)?,
     );
-    Ok(container_source(Arc::new(provider), launch, egress))
+    Ok(container_source(Arc::new(provider), source, egress))
 }
 
 #[cfg(not(feature = "container-podman"))]
 fn build_podman_source(
     _image: Option<&str>,
-    _launch: AcpLaunch,
+    _source: LaunchSource,
     _egress: ThreadEgress,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
     Err("AWAKEN_SANDBOX_TIER=podman needs the `container-podman` feature".into())
@@ -465,7 +509,7 @@ fn build_podman_source(
 #[cfg(feature = "container-k8s")]
 async fn build_k8s_source(
     image: Option<&str>,
-    launch: AcpLaunch,
+    source: LaunchSource,
     egress: ThreadEgress,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
     // The Pod's reachable agent address + namespace come from the worker's env; the
@@ -485,13 +529,13 @@ async fn build_k8s_source(
         std::sync::Arc::new(runtime),
         container_image(image)?,
     );
-    Ok(container_source(Arc::new(provider), launch, egress))
+    Ok(container_source(Arc::new(provider), source, egress))
 }
 
 #[cfg(not(feature = "container-k8s"))]
 async fn build_k8s_source(
     _image: Option<&str>,
-    _launch: AcpLaunch,
+    _source: LaunchSource,
     _egress: ThreadEgress,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
     Err("AWAKEN_SANDBOX_TIER=k8s needs the `container-k8s` feature".into())
@@ -775,12 +819,28 @@ mod tests {
         let src = build_acp_channel_source(
             SandboxTier::Namespace,
             None,
-            AcpLaunch::custom(vec!["claude".into()], vec![]),
+            LaunchSource::Fixed(AcpLaunch::custom(vec!["claude".into()], vec![])),
             ThreadEgress::new(),
             base(),
         )
         .await;
         assert!(src.is_ok(), "namespace tier must always build");
+    }
+
+    #[tokio::test]
+    async fn the_local_tier_builds_an_unsandboxed_source() {
+        use crate::deployment_config::SandboxTier;
+        // The `local` tier needs no bwrap and no container feature — the same executor
+        // drives it over a plain subprocess source (ADR-0057: executor is tier-unaware).
+        let src = build_acp_channel_source(
+            SandboxTier::Local,
+            None,
+            LaunchSource::Fixed(AcpLaunch::custom(vec!["claude".into()], vec![])),
+            ThreadEgress::new(),
+            base(),
+        )
+        .await;
+        assert!(src.is_ok(), "local tier must always build");
     }
 
     #[tokio::test]
@@ -792,7 +852,7 @@ mod tests {
             let out = build_acp_channel_source(
                 tier,
                 Some("ghcr.io/x/agent:1"),
-                AcpLaunch::custom(vec!["claude".into()], vec![]),
+                LaunchSource::Fixed(AcpLaunch::custom(vec!["claude".into()], vec![])),
                 ThreadEgress::new(),
                 base(),
             )

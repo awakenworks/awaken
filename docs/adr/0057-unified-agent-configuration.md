@@ -719,8 +719,16 @@ Done when: an A2A config declaring `skills` fails publish with
 
 **C `serve-selected-cli`** — *The config plane's CLI choice takes effect in
 production, on server AND worker roots.*
+Principle (user-affirmed): the ACP executor runs both **directly in the runtime
+(unsandboxed)** and **inside a sandbox**, and is **unaware of which** — it drives
+whatever `AgentChannelSource` it is handed. Selecting the environment is a
+worker + provisioning concern at the composition root, never the executor's. So
+`SandboxTier` gains a `Local` (unsandboxed subprocess) member beside
+`Namespace`/`Docker`/`Podman`/`K8s`, and `build_acp_channel_source` yields the
+matching source for each — the executor construction is identical across all.
 Adds: `AWAKEN_ACP_CLI` wiring in `awaken serve` and `awaken_worker::run`;
-`LaunchSource{Fixed,Projected}` publicized as the factory input for all tiers.
+`SandboxTier::Local`; `LaunchSource{Fixed,Projected}` publicized as the factory
+input for all tiers.
 Retires: the dead-code status of `with_projected_acp`/`projecting` (scenario-only
 today) — they become the production path; `AWAKEN_ACP_ARGV` demoted to
 trusted/test-only (documented as such).
