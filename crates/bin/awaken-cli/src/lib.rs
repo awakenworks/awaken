@@ -365,6 +365,16 @@ fn acp_launch_argv() -> Option<Vec<String>> {
         .map(|v| v.split_whitespace().map(String::from).collect())
 }
 
+/// The ACP CLI id this worker serves (`AWAKEN_ACP_CLI`, e.g. `claude`/`codex`),
+/// selecting the production projecting path: each run's config-plane `acp:<cli>` is
+/// launched through this CLI's catalog row with its model/env projected per run.
+/// Takes precedence over the fixed `AWAKEN_ACP_ARGV`; `None` when unset/blank.
+fn acp_serve_cli() -> Option<String> {
+    std::env::var("AWAKEN_ACP_CLI")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+}
+
 /// The base dir the namespace-tier ACP sandbox roots live under (`AWAKEN_SANDBOX_DIR`),
 /// or a per-process temp dir when unset. Ignored by the container tiers.
 fn acp_sandbox_base() -> std::path::PathBuf {
@@ -739,26 +749,44 @@ async fn management_router_over(
                 awaken_control::BOOTSTRAP_WORKSPACE,
             ),
         ));
-    // Production ACP wiring (`acp:*` threads): when `AWAKEN_ACP_ARGV` names an agent
-    // CLI, launch it in the worker's configured sandbox tier (`AWAKEN_SANDBOX_TIER` —
-    // the namespace/bwrap tier by default, or a user container image on docker/podman/
-    // k8s). Egress follows each session's policy via the host's shared `ThreadEgress`.
-    // A misconfigured tier (e.g. a container backend whose feature is not compiled in)
-    // fails the process start with a clear message, never a silent fallback.
-    let host_builder = match acp_launch_argv() {
-        Some(argv) => {
+    // Production ACP wiring (`acp:*` threads). Two selectors, projected first:
+    //   `AWAKEN_ACP_CLI=<id>` — serve each run's config-plane-selected CLI, projected
+    //     per run through its catalog row (the production path, ADR-0057).
+    //   `AWAKEN_ACP_ARGV=<argv>` — one fixed CLI for every `acp:*` thread (trusted/test).
+    // Either is realized in the worker's configured sandbox tier (`AWAKEN_SANDBOX_TIER`:
+    // `local` unsandboxed, `namespace`/bwrap default, or a container image on docker/
+    // podman/k8s). The executor is unaware of the tier — the source it drives is chosen
+    // here (worker + provisioning own the environment). A misconfigured tier fails the
+    // process start with a clear message, never a silent fallback.
+    let acp_source = match (acp_serve_cli(), acp_launch_argv()) {
+        (Some(id), _) => {
+            let cli = *awaken_run_executor_acp::acp_cli(&id)
+                .unwrap_or_else(|| panic!("AWAKEN_ACP_CLI={id} is not a known ACP CLI"));
+            let resolver =
+                std::sync::Arc::new(awaken_runtime_host::EnvLaunchResolver::from_process_env(
+                    cli,
+                    Some(acp_sandbox_base()),
+                ));
+            Some(awaken_runtime_host::LaunchSource::Projected { cli, resolver })
+        }
+        (None, Some(argv)) => Some(awaken_runtime_host::LaunchSource::Fixed(
+            awaken_run_executor_acp::AcpLaunch::custom(argv, Vec::new()),
+        )),
+        (None, None) => None,
+    };
+    let host_builder = match acp_source {
+        Some(source) => {
             let dep = awaken_runtime_host::DeploymentConfig::from_env();
-            let launch = awaken_run_executor_acp::AcpLaunch::custom(argv, Vec::new());
-            let source = awaken_runtime_host::build_acp_channel_source(
+            let channel = awaken_runtime_host::build_acp_channel_source(
                 dep.sandbox_tier,
                 dep.container_image.as_deref(),
-                launch,
+                source,
                 host_builder.thread_egress(),
                 acp_sandbox_base(),
             )
             .await
             .unwrap_or_else(|e| panic!("configure the ACP sandbox tier: {e}"));
-            let acp = std::sync::Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
+            let acp = std::sync::Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(channel));
             host_builder.with_acp(acp)
         }
         None => host_builder,
