@@ -40,6 +40,7 @@ pub use crate::resource_owner::{ResourceOwners, resource_ownership_guard};
 // Serve composition opens them (Option A, shared-DB).
 pub use crate::worker_stores::{
     SharedConfigStores, open_shared_config_stores, open_shared_config_stores_from_env,
+    warm_config_service_from_env,
 };
 
 use awaken_admin_config_api::{

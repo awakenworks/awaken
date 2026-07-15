@@ -43,7 +43,7 @@ impl WorkerResolver<MemoryDispatchStore> for MapResolver {
     async fn worker_for(
         &self,
         thread_id: &ThreadId,
-        _model_ref: Option<&str>,
+        _agent_id: Option<&str>,
     ) -> Result<Arc<MemWorker>, Error> {
         self.workers.get(&thread_id.0).cloned().ok_or_else(|| {
             Error::Execution(awaken_runtime_contract::execution::Error::Execution(
@@ -72,9 +72,10 @@ async fn wait_for(cond: impl Fn() -> bool) -> bool {
     cond()
 }
 
-/// A resolver that delegates to a real worker map but RECORDS the `model_ref` the
-/// pool forwarded for each claimed run — the seam a cold worker needs so it resolves
-/// the run's own configured model rather than the host default.
+/// A resolver that delegates to a real worker map but RECORDS the `agent_id` the
+/// pool forwarded for each claimed run — the seam a cold worker needs so it opens the
+/// session bound to the run's own agent (its published config) rather than the host
+/// default.
 struct RecordingResolver {
     inner: MapResolver,
     seen: Arc<std::sync::Mutex<Vec<Option<String>>>>,
@@ -85,22 +86,19 @@ impl WorkerResolver<MemoryDispatchStore> for RecordingResolver {
     async fn worker_for(
         &self,
         thread_id: &ThreadId,
-        model_ref: Option<&str>,
+        agent_id: Option<&str>,
     ) -> Result<Arc<MemWorker>, Error> {
-        self.seen
-            .lock()
-            .unwrap()
-            .push(model_ref.map(str::to_string));
-        self.inner.worker_for(thread_id, model_ref).await
+        self.seen.lock().unwrap().push(agent_id.map(str::to_string));
+        self.inner.worker_for(thread_id, agent_id).await
     }
 }
 
-/// The pool must hand a claimed run's OWN model binding (from its activation
-/// snapshot) to `worker_for`, so a cold worker resolves that run's configured model
-/// through its executor provider instead of falling back to the host default. The
-/// harness snapshot binds `model_ref = "m"`.
+/// The pool must hand a claimed run's OWN agent identity (its activation snapshot's
+/// `root_agent_id`) to `worker_for`, so a cold worker opens the session bound to that
+/// agent's published config instead of the host default. The harness snapshot's
+/// `root_agent_id = "agent-1"`.
 #[tokio::test]
-async fn the_pool_forwards_a_claimed_runs_model_ref_to_the_resolver() {
+async fn the_pool_forwards_a_claimed_runs_agent_to_the_resolver() {
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = worker_over(text_runtime(), store.clone(), commit.clone());
@@ -130,11 +128,12 @@ async fn the_pool_forwards_a_claimed_runs_model_ref_to_the_resolver() {
     );
     pool.shutdown().await;
 
-    // The pool extracted the activation snapshot's model_ref ("m") and forwarded it.
+    // The pool extracted the activation snapshot's root_agent_id ("agent-1") and
+    // forwarded it, so the worker opens the session bound to that agent.
     let seen = seen.lock().unwrap();
     assert!(
-        seen.iter().any(|m| m.as_deref() == Some("m")),
-        "worker_for received the run's model_ref; got {seen:?}"
+        seen.iter().any(|a| a.as_deref() == Some("agent-1")),
+        "worker_for received the run's agent id; got {seen:?}"
     );
 }
 
