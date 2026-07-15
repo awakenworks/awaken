@@ -20,6 +20,8 @@
 
 #![forbid(unsafe_code)]
 
+mod console_help;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -39,12 +41,15 @@ pub const CREATE_DRAFT_TOOL: &str = "admin_draft_agent";
 pub const PATCH_TOOL: &str = "admin_patch_agent";
 /// Validate a persisted draft by id.
 pub const VALIDATE_TOOL: &str = "admin_validate_agent";
+/// Explain how to use the console (read-only help): return a curated topic, or the
+/// topic index. Lets the assistant double as an in-console user manual.
+pub const EXPLAIN_TOOL: &str = "admin_explain_console";
 
 /// The reserved agent id the management assistant is published under. It is a
 /// deliberately un-tenant-like id, seeded once into the reserved scope (ADR-0052 D2).
 pub const ADMIN_ASSISTANT_AGENT_ID: &str = "__admin_assistant";
 
-/// All four management tool ids, in advertised order.
+/// All management tool ids, in advertised order.
 #[must_use]
 pub fn admin_tool_ids() -> Vec<String> {
     vec![
@@ -52,6 +57,7 @@ pub fn admin_tool_ids() -> Vec<String> {
         CREATE_DRAFT_TOOL.to_string(),
         PATCH_TOOL.to_string(),
         VALIDATE_TOOL.to_string(),
+        EXPLAIN_TOOL.to_string(),
     ]
 }
 
@@ -82,10 +88,16 @@ pub fn admin_assistant_config() -> AgentConfig {
 /// assistant's ordinary `AgentConfig` like any agent's instructions (D4) — no locked
 /// prompt, no policy overlay.
 pub const ADMIN_ASSISTANT_INSTRUCTIONS: &str = "\
-You are the platform's management assistant. You turn an operator's plain-English intent \
-into a valid agent configuration for this platform.
+You are the platform's management assistant. You do two things: (1) turn an operator's \
+plain-English intent into a valid agent configuration, and (2) act as an in-console user \
+manual — answer 'how do I…' / 'what is…' questions about the console.
 
-WORKFLOW (follow in order):
+For a how-to or concept question, call `admin_explain_console` (with a `topic`, or with no \
+topic to see the topic list) and answer from what it returns — do not guess how the \
+console works. If the operator is on a specific page, explain that page's topic. Keep help \
+answers short and point them at where to click.
+
+To AUTHOR an agent, follow this WORKFLOW (in order):
 1. ALWAYS call `admin_get_platform_capabilities` first. It returns the available tools \
 and the installable plugins, each WITH its `config_schema` (a JSON Schema for that \
 plugin's config section). Never invent a tool or plugin id that is not listed.
@@ -418,6 +430,19 @@ pub fn admin_tool_descriptors() -> Vec<ToolDescriptor> {
                 "required": ["id"]
             }),
         ),
+        ToolDescriptor::pinned(
+            "admin",
+            EXPLAIN_TOOL,
+            "Explain how to use this console (read-only user manual). Call with a `topic` \
+             to get a curated explanation (what/why/where/how/gotchas); call with no \
+             topic to list the available topics. Use it to answer 'how do I…' questions.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "topic": { "type": "string", "description": "A help topic id (omit to list topics)." }
+                }
+            }),
+        ),
     ]
 }
 
@@ -449,9 +474,48 @@ pub fn admin_tools(
         Arc::new(ValidateAgent {
             validator,
             store,
-            audit,
+            audit: audit.clone(),
         }),
+        Arc::new(ExplainConsole { audit }),
     ]
+}
+
+// ---- Tool 5: admin_explain_console (read-only in-console user manual) ------------
+
+struct ExplainConsole {
+    audit: Arc<dyn AuditSink>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExplainArgs {
+    #[serde(default)]
+    topic: Option<String>,
+}
+
+#[async_trait]
+impl RawTool for ExplainConsole {
+    fn id(&self) -> &str {
+        EXPLAIN_TOOL
+    }
+
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        // Tolerant of a missing/empty arg object — an index request is well-formed.
+        let args: ExplainArgs =
+            serde_json::from_value(call.arguments.clone()).unwrap_or(ExplainArgs { topic: None });
+        audit(
+            &self.audit,
+            EXPLAIN_TOOL,
+            &call.call_id,
+            format!(
+                "explain console `{}`",
+                args.topic.as_deref().unwrap_or("(index)")
+            ),
+        );
+        Ok(ToolOutput::ok(
+            call.call_id,
+            console_help::explain(args.topic.as_deref()).to_string(),
+        ))
+    }
 }
 
 /// Emit the audit record for one management tool call (ADR-0052 D6).
