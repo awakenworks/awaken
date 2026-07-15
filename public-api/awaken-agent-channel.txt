@@ -11,23 +11,25 @@ impl core::marker::Freeze for awaken_agent_channel::ChannelError
 impl core::marker::Send for awaken_agent_channel::ChannelError
 impl core::marker::Sync for awaken_agent_channel::ChannelError
 impl core::marker::Unpin for awaken_agent_channel::ChannelError
+impl core::marker::UnsafeUnpin for awaken_agent_channel::ChannelError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_channel::ChannelError
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_channel::ChannelError
 pub struct awaken_agent_channel::SplitChannel<R, W>
 impl<R, W> awaken_agent_channel::SplitChannel<R, W>
 pub fn awaken_agent_channel::SplitChannel<R, W>::new(R, W) -> Self
 impl<R, W> tokio::io::async_read::AsyncRead for awaken_agent_channel::SplitChannel<R, W> where R: tokio::io::async_read::AsyncRead + core::marker::Unpin, W: core::marker::Unpin
-pub fn awaken_agent_channel::SplitChannel<R, W>::poll_read(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>, &mut tokio::io::read_buf::ReadBuf<'_>) -> core::task::poll::Poll<std::io::error::Result<()>>
+pub fn awaken_agent_channel::SplitChannel<R, W>::poll_read(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>, &mut tokio::io::read_buf::ReadBuf<'_>) -> core::task::poll::Poll<core::io::error::Result<()>>
 impl<R, W> tokio::io::async_write::AsyncWrite for awaken_agent_channel::SplitChannel<R, W> where R: core::marker::Unpin, W: tokio::io::async_write::AsyncWrite + core::marker::Unpin
-pub fn awaken_agent_channel::SplitChannel<R, W>::poll_flush(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>) -> core::task::poll::Poll<std::io::error::Result<()>>
-pub fn awaken_agent_channel::SplitChannel<R, W>::poll_shutdown(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>) -> core::task::poll::Poll<std::io::error::Result<()>>
-pub fn awaken_agent_channel::SplitChannel<R, W>::poll_write(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>, &[u8]) -> core::task::poll::Poll<std::io::error::Result<usize>>
+pub fn awaken_agent_channel::SplitChannel<R, W>::poll_flush(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>) -> core::task::poll::Poll<core::io::error::Result<()>>
+pub fn awaken_agent_channel::SplitChannel<R, W>::poll_shutdown(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>) -> core::task::poll::Poll<core::io::error::Result<()>>
+pub fn awaken_agent_channel::SplitChannel<R, W>::poll_write(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>, &[u8]) -> core::task::poll::Poll<core::io::error::Result<usize>>
 impl<R: core::fmt::Debug, W: core::fmt::Debug> core::fmt::Debug for awaken_agent_channel::SplitChannel<R, W>
 pub fn awaken_agent_channel::SplitChannel<R, W>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<R, W> core::marker::Freeze for awaken_agent_channel::SplitChannel<R, W> where R: core::marker::Freeze, W: core::marker::Freeze
 impl<R, W> core::marker::Send for awaken_agent_channel::SplitChannel<R, W> where R: core::marker::Send, W: core::marker::Send
 impl<R, W> core::marker::Sync for awaken_agent_channel::SplitChannel<R, W> where R: core::marker::Sync, W: core::marker::Sync
 impl<R, W> core::marker::Unpin for awaken_agent_channel::SplitChannel<R, W> where R: core::marker::Unpin, W: core::marker::Unpin
+impl<R, W> core::marker::UnsafeUnpin for awaken_agent_channel::SplitChannel<R, W> where R: core::marker::UnsafeUnpin, W: core::marker::UnsafeUnpin
 impl<R, W> core::panic::unwind_safe::RefUnwindSafe for awaken_agent_channel::SplitChannel<R, W> where R: core::panic::unwind_safe::RefUnwindSafe, W: core::panic::unwind_safe::RefUnwindSafe
 impl<R, W> core::panic::unwind_safe::UnwindSafe for awaken_agent_channel::SplitChannel<R, W> where R: core::panic::unwind_safe::UnwindSafe, W: core::panic::unwind_safe::UnwindSafe
 pub trait awaken_agent_channel::AgentChannel: tokio::io::async_read::AsyncRead + tokio::io::async_write::AsyncWrite + core::marker::Unpin + core::marker::Send

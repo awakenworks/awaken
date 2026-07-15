@@ -3,7 +3,7 @@ pub use awaken_skill_store::SkillStore
 pub use awaken_skill_store::SkillStoreError
 pub struct awaken_skill_store::FsSkillStore
 impl awaken_skill_store::FsSkillStore
-pub fn awaken_skill_store::FsSkillStore::open(impl core::convert::Into<std::path::PathBuf>) -> std::io::error::Result<Self>
+pub fn awaken_skill_store::FsSkillStore::open(impl core::convert::Into<std::path::PathBuf>) -> core::io::error::Result<Self>
 pub fn awaken_skill_store::FsSkillStore::root(&self) -> &std::path::Path
 impl awaken_resource_contract::SkillStore for awaken_skill_store::FsSkillStore
 pub fn awaken_skill_store::FsSkillStore::delete<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_resource_contract::SkillStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
@@ -14,6 +14,7 @@ impl core::marker::Freeze for awaken_skill_store::FsSkillStore
 impl core::marker::Send for awaken_skill_store::FsSkillStore
 impl core::marker::Sync for awaken_skill_store::FsSkillStore
 impl core::marker::Unpin for awaken_skill_store::FsSkillStore
+impl core::marker::UnsafeUnpin for awaken_skill_store::FsSkillStore
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_skill_store::FsSkillStore
 impl core::panic::unwind_safe::UnwindSafe for awaken_skill_store::FsSkillStore
 pub struct awaken_skill_store::InMemorySkillStore
@@ -30,6 +31,7 @@ impl !core::marker::Freeze for awaken_skill_store::InMemorySkillStore
 impl core::marker::Send for awaken_skill_store::InMemorySkillStore
 impl core::marker::Sync for awaken_skill_store::InMemorySkillStore
 impl core::marker::Unpin for awaken_skill_store::InMemorySkillStore
+impl core::marker::UnsafeUnpin for awaken_skill_store::InMemorySkillStore
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_skill_store::InMemorySkillStore
 impl core::panic::unwind_safe::UnwindSafe for awaken_skill_store::InMemorySkillStore
 pub fn awaken_skill_store::sanitize_stem(&str) -> alloc::string::String

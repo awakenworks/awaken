@@ -34,6 +34,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::content::ContentBloc
 impl core::marker::Send for awaken_agent_contract::agent::content::ContentBlock
 impl core::marker::Sync for awaken_agent_contract::agent::content::ContentBlock
 impl core::marker::Unpin for awaken_agent_contract::agent::content::ContentBlock
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::content::ContentBlock
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::content::ContentBlock
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::content::ContentBlock
 pub enum awaken_agent_contract::agent::content::ImageSource
@@ -58,6 +59,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::content::ImageSource
 impl core::marker::Send for awaken_agent_contract::agent::content::ImageSource
 impl core::marker::Sync for awaken_agent_contract::agent::content::ImageSource
 impl core::marker::Unpin for awaken_agent_contract::agent::content::ImageSource
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::content::ImageSource
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::content::ImageSource
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::content::ImageSource
 pub fn awaken_agent_contract::agent::content::extract_text(&[awaken_agent_contract::agent::content::ContentBlock]) -> alloc::string::String
@@ -84,6 +86,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::message::Role
 impl core::marker::Send for awaken_agent_contract::agent::message::Role
 impl core::marker::Sync for awaken_agent_contract::agent::message::Role
 impl core::marker::Unpin for awaken_agent_contract::agent::message::Role
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::message::Role
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::message::Role
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::message::Role
 pub struct awaken_agent_contract::agent::message::Id(pub alloc::string::String)
@@ -114,6 +117,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::message::Id
 impl core::marker::Send for awaken_agent_contract::agent::message::Id
 impl core::marker::Sync for awaken_agent_contract::agent::message::Id
 impl core::marker::Unpin for awaken_agent_contract::agent::message::Id
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::message::Id
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::message::Id
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::message::Id
 pub struct awaken_agent_contract::agent::message::Message
@@ -139,6 +143,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::message::Message
 impl core::marker::Send for awaken_agent_contract::agent::message::Message
 impl core::marker::Sync for awaken_agent_contract::agent::message::Message
 impl core::marker::Unpin for awaken_agent_contract::agent::message::Message
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::message::Message
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::message::Message
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::message::Message
 pub mod awaken_agent_contract::agent::run
@@ -165,6 +170,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::run::EndCause
 impl core::marker::Send for awaken_agent_contract::agent::run::EndCause
 impl core::marker::Sync for awaken_agent_contract::agent::run::EndCause
 impl core::marker::Unpin for awaken_agent_contract::agent::run::EndCause
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::run::EndCause
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::run::EndCause
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::run::EndCause
 pub enum awaken_agent_contract::agent::run::Failure
@@ -192,6 +198,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::run::Failure
 impl core::marker::Send for awaken_agent_contract::agent::run::Failure
 impl core::marker::Sync for awaken_agent_contract::agent::run::Failure
 impl core::marker::Unpin for awaken_agent_contract::agent::run::Failure
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::run::Failure
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::run::Failure
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::run::Failure
 pub enum awaken_agent_contract::agent::run::Phase
@@ -214,6 +221,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::run::Phase
 impl core::marker::Send for awaken_agent_contract::agent::run::Phase
 impl core::marker::Sync for awaken_agent_contract::agent::run::Phase
 impl core::marker::Unpin for awaken_agent_contract::agent::run::Phase
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::run::Phase
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::run::Phase
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::run::Phase
 pub struct awaken_agent_contract::agent::run::Id(pub alloc::string::String)
@@ -235,6 +243,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::run::Id
 impl core::marker::Send for awaken_agent_contract::agent::run::Id
 impl core::marker::Sync for awaken_agent_contract::agent::run::Id
 impl core::marker::Unpin for awaken_agent_contract::agent::run::Id
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::run::Id
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::run::Id
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::run::Id
 pub struct awaken_agent_contract::agent::run::Record
@@ -257,6 +266,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::run::Record
 impl core::marker::Send for awaken_agent_contract::agent::run::Record
 impl core::marker::Sync for awaken_agent_contract::agent::run::Record
 impl core::marker::Unpin for awaken_agent_contract::agent::run::Record
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::run::Record
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::run::Record
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::run::Record
 pub mod awaken_agent_contract::agent::state
@@ -278,6 +288,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::state::Action
 impl core::marker::Send for awaken_agent_contract::agent::state::Action
 impl core::marker::Sync for awaken_agent_contract::agent::state::Action
 impl core::marker::Unpin for awaken_agent_contract::agent::state::Action
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::state::Action
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::state::Action
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::state::Action
 pub enum awaken_agent_contract::agent::state::MergePolicy
@@ -301,6 +312,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::state::MergePolicy
 impl core::marker::Send for awaken_agent_contract::agent::state::MergePolicy
 impl core::marker::Sync for awaken_agent_contract::agent::state::MergePolicy
 impl core::marker::Unpin for awaken_agent_contract::agent::state::MergePolicy
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::state::MergePolicy
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::state::MergePolicy
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::state::MergePolicy
 pub enum awaken_agent_contract::agent::state::Scope
@@ -331,6 +343,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::state::Scope
 impl core::marker::Send for awaken_agent_contract::agent::state::Scope
 impl core::marker::Sync for awaken_agent_contract::agent::state::Scope
 impl core::marker::Unpin for awaken_agent_contract::agent::state::Scope
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::state::Scope
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::state::Scope
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::state::Scope
 pub struct awaken_agent_contract::agent::state::Command
@@ -356,6 +369,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::state::Command
 impl core::marker::Send for awaken_agent_contract::agent::state::Command
 impl core::marker::Sync for awaken_agent_contract::agent::state::Command
 impl core::marker::Unpin for awaken_agent_contract::agent::state::Command
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::state::Command
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::state::Command
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::state::Command
 pub struct awaken_agent_contract::agent::state::Conflict
@@ -377,6 +391,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::state::Conflict
 impl core::marker::Send for awaken_agent_contract::agent::state::Conflict
 impl core::marker::Sync for awaken_agent_contract::agent::state::Conflict
 impl core::marker::Unpin for awaken_agent_contract::agent::state::Conflict
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::state::Conflict
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::state::Conflict
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::state::Conflict
 pub struct awaken_agent_contract::agent::state::Key(pub alloc::string::String)
@@ -402,6 +417,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::state::Key
 impl core::marker::Send for awaken_agent_contract::agent::state::Key
 impl core::marker::Sync for awaken_agent_contract::agent::state::Key
 impl core::marker::Unpin for awaken_agent_contract::agent::state::Key
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::state::Key
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::state::Key
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::state::Key
 pub struct awaken_agent_contract::agent::state::StateError
@@ -423,6 +439,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::state::StateError
 impl core::marker::Send for awaken_agent_contract::agent::state::StateError
 impl core::marker::Sync for awaken_agent_contract::agent::state::StateError
 impl core::marker::Unpin for awaken_agent_contract::agent::state::StateError
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::state::StateError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::state::StateError
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::state::StateError
 pub struct awaken_agent_contract::agent::state::Store
@@ -446,6 +463,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::state::Store
 impl core::marker::Send for awaken_agent_contract::agent::state::Store
 impl core::marker::Sync for awaken_agent_contract::agent::state::Store
 impl core::marker::Unpin for awaken_agent_contract::agent::state::Store
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::state::Store
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::state::Store
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::state::Store
 pub trait awaken_agent_contract::agent::state::FoldStateKey: awaken_agent_contract::agent::state::StateKey
@@ -482,6 +500,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::thread::Id
 impl core::marker::Send for awaken_agent_contract::agent::thread::Id
 impl core::marker::Sync for awaken_agent_contract::agent::thread::Id
 impl core::marker::Unpin for awaken_agent_contract::agent::thread::Id
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::thread::Id
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::thread::Id
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::thread::Id
 pub struct awaken_agent_contract::agent::thread::Record
@@ -503,6 +522,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::thread::Record
 impl core::marker::Send for awaken_agent_contract::agent::thread::Record
 impl core::marker::Sync for awaken_agent_contract::agent::thread::Record
 impl core::marker::Unpin for awaken_agent_contract::agent::thread::Record
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::thread::Record
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::thread::Record
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::thread::Record
 pub mod awaken_agent_contract::agent::waiting
@@ -533,6 +553,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::waiting::WaitingReas
 impl core::marker::Send for awaken_agent_contract::agent::waiting::WaitingReason
 impl core::marker::Sync for awaken_agent_contract::agent::waiting::WaitingReason
 impl core::marker::Unpin for awaken_agent_contract::agent::waiting::WaitingReason
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::waiting::WaitingReason
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::waiting::WaitingReason
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::waiting::WaitingReason
 pub struct awaken_agent_contract::agent::waiting::PendingTool
@@ -554,6 +575,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::waiting::PendingTool
 impl core::marker::Send for awaken_agent_contract::agent::waiting::PendingTool
 impl core::marker::Sync for awaken_agent_contract::agent::waiting::PendingTool
 impl core::marker::Unpin for awaken_agent_contract::agent::waiting::PendingTool
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::waiting::PendingTool
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::waiting::PendingTool
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::waiting::PendingTool
 pub struct awaken_agent_contract::agent::waiting::WaitingTicket
@@ -581,6 +603,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::waiting::WaitingTick
 impl core::marker::Send for awaken_agent_contract::agent::waiting::WaitingTicket
 impl core::marker::Sync for awaken_agent_contract::agent::waiting::WaitingTicket
 impl core::marker::Unpin for awaken_agent_contract::agent::waiting::WaitingTicket
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::waiting::WaitingTicket
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::waiting::WaitingTicket
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::waiting::WaitingTicket
 pub mod awaken_agent_contract::commit
@@ -596,6 +619,7 @@ impl core::marker::Freeze for awaken_agent_contract::commit::coordinator::Error
 impl core::marker::Send for awaken_agent_contract::commit::coordinator::Error
 impl core::marker::Sync for awaken_agent_contract::commit::coordinator::Error
 impl core::marker::Unpin for awaken_agent_contract::commit::coordinator::Error
+impl core::marker::UnsafeUnpin for awaken_agent_contract::commit::coordinator::Error
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::commit::coordinator::Error
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::commit::coordinator::Error
 pub trait awaken_agent_contract::commit::coordinator::Coordinator: core::marker::Send + core::marker::Sync
@@ -621,6 +645,7 @@ impl core::marker::Freeze for awaken_agent_contract::commit::staged::CommitRecor
 impl core::marker::Send for awaken_agent_contract::commit::staged::CommitRecord
 impl core::marker::Sync for awaken_agent_contract::commit::staged::CommitRecord
 impl core::marker::Unpin for awaken_agent_contract::commit::staged::CommitRecord
+impl core::marker::UnsafeUnpin for awaken_agent_contract::commit::staged::CommitRecord
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::commit::staged::CommitRecord
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::commit::staged::CommitRecord
 pub struct awaken_agent_contract::commit::staged::ThreadCommit
@@ -648,6 +673,7 @@ impl core::marker::Freeze for awaken_agent_contract::commit::staged::ThreadCommi
 impl core::marker::Send for awaken_agent_contract::commit::staged::ThreadCommit
 impl core::marker::Sync for awaken_agent_contract::commit::staged::ThreadCommit
 impl core::marker::Unpin for awaken_agent_contract::commit::staged::ThreadCommit
+impl core::marker::UnsafeUnpin for awaken_agent_contract::commit::staged::ThreadCommit
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::commit::staged::ThreadCommit
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::commit::staged::ThreadCommit
 pub struct awaken_agent_contract::commit::staged::ValidationError(_)
@@ -659,6 +685,7 @@ impl core::marker::Freeze for awaken_agent_contract::commit::staged::ValidationE
 impl core::marker::Send for awaken_agent_contract::commit::staged::ValidationError
 impl core::marker::Sync for awaken_agent_contract::commit::staged::ValidationError
 impl core::marker::Unpin for awaken_agent_contract::commit::staged::ValidationError
+impl core::marker::UnsafeUnpin for awaken_agent_contract::commit::staged::ValidationError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::commit::staged::ValidationError
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::commit::staged::ValidationError
 pub async fn awaken_agent_contract::commit::commit_run(&dyn awaken_agent_contract::commit::coordinator::Coordinator, &awaken_agent_contract::agent::thread::Id, &awaken_agent_contract::agent::run::Id, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, awaken_agent_contract::agent::run::Phase, core::option::Option<awaken_agent_contract::agent::waiting::WaitingTicket>, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>) -> core::result::Result<awaken_agent_contract::commit::staged::CommitRecord, awaken_agent_contract::commit::coordinator::Error>
@@ -684,6 +711,7 @@ impl core::marker::Freeze for awaken_agent_contract::event::draft::Draft
 impl core::marker::Send for awaken_agent_contract::event::draft::Draft
 impl core::marker::Sync for awaken_agent_contract::event::draft::Draft
 impl core::marker::Unpin for awaken_agent_contract::event::draft::Draft
+impl core::marker::UnsafeUnpin for awaken_agent_contract::event::draft::Draft
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::event::draft::Draft
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::event::draft::Draft
 pub mod awaken_agent_contract::event::kind
@@ -711,6 +739,7 @@ impl core::marker::Freeze for awaken_agent_contract::event::kind::Kind
 impl core::marker::Send for awaken_agent_contract::event::kind::Kind
 impl core::marker::Sync for awaken_agent_contract::event::kind::Kind
 impl core::marker::Unpin for awaken_agent_contract::event::kind::Kind
+impl core::marker::UnsafeUnpin for awaken_agent_contract::event::kind::Kind
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::event::kind::Kind
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::event::kind::Kind
 pub mod awaken_agent_contract::event::record
@@ -734,6 +763,7 @@ impl core::marker::Freeze for awaken_agent_contract::event::record::Record
 impl core::marker::Send for awaken_agent_contract::event::record::Record
 impl core::marker::Sync for awaken_agent_contract::event::record::Record
 impl core::marker::Unpin for awaken_agent_contract::event::record::Record
+impl core::marker::UnsafeUnpin for awaken_agent_contract::event::record::Record
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::event::record::Record
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::event::record::Record
 pub mod awaken_agent_contract::event::run_event
@@ -763,6 +793,7 @@ impl core::marker::Freeze for awaken_agent_contract::event::run_event::RunEvent
 impl core::marker::Send for awaken_agent_contract::event::run_event::RunEvent
 impl core::marker::Sync for awaken_agent_contract::event::run_event::RunEvent
 impl core::marker::Unpin for awaken_agent_contract::event::run_event::RunEvent
+impl core::marker::UnsafeUnpin for awaken_agent_contract::event::run_event::RunEvent
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::event::run_event::RunEvent
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::event::run_event::RunEvent
 pub mod awaken_agent_contract::fact
@@ -786,6 +817,7 @@ impl core::marker::Freeze for awaken_agent_contract::fact::run::Fact
 impl core::marker::Send for awaken_agent_contract::fact::run::Fact
 impl core::marker::Sync for awaken_agent_contract::fact::run::Fact
 impl core::marker::Unpin for awaken_agent_contract::fact::run::Fact
+impl core::marker::UnsafeUnpin for awaken_agent_contract::fact::run::Fact
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::fact::run::Fact
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::fact::run::Fact
 pub mod awaken_agent_contract::model_spec
@@ -812,6 +844,7 @@ impl core::marker::Freeze for awaken_agent_contract::model_spec::Modality
 impl core::marker::Send for awaken_agent_contract::model_spec::Modality
 impl core::marker::Sync for awaken_agent_contract::model_spec::Modality
 impl core::marker::Unpin for awaken_agent_contract::model_spec::Modality
+impl core::marker::UnsafeUnpin for awaken_agent_contract::model_spec::Modality
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::model_spec::Modality
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::model_spec::Modality
 pub struct awaken_agent_contract::model_spec::Modalities
@@ -837,6 +870,7 @@ impl core::marker::Freeze for awaken_agent_contract::model_spec::Modalities
 impl core::marker::Send for awaken_agent_contract::model_spec::Modalities
 impl core::marker::Sync for awaken_agent_contract::model_spec::Modalities
 impl core::marker::Unpin for awaken_agent_contract::model_spec::Modalities
+impl core::marker::UnsafeUnpin for awaken_agent_contract::model_spec::Modalities
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::model_spec::Modalities
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::model_spec::Modalities
 pub struct awaken_agent_contract::model_spec::ModelSpec
@@ -864,6 +898,7 @@ impl core::marker::Freeze for awaken_agent_contract::model_spec::ModelSpec
 impl core::marker::Send for awaken_agent_contract::model_spec::ModelSpec
 impl core::marker::Sync for awaken_agent_contract::model_spec::ModelSpec
 impl core::marker::Unpin for awaken_agent_contract::model_spec::ModelSpec
+impl core::marker::UnsafeUnpin for awaken_agent_contract::model_spec::ModelSpec
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::model_spec::ModelSpec
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::model_spec::ModelSpec
 pub mod awaken_agent_contract::page
@@ -884,6 +919,7 @@ impl core::marker::Freeze for awaken_agent_contract::page::CursorParams
 impl core::marker::Send for awaken_agent_contract::page::CursorParams
 impl core::marker::Sync for awaken_agent_contract::page::CursorParams
 impl core::marker::Unpin for awaken_agent_contract::page::CursorParams
+impl core::marker::UnsafeUnpin for awaken_agent_contract::page::CursorParams
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::page::CursorParams
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::page::CursorParams
 pub struct awaken_agent_contract::page::HistoryPage<'a, T>
@@ -896,6 +932,7 @@ impl<'a, T> core::marker::Freeze for awaken_agent_contract::page::HistoryPage<'a
 impl<'a, T> core::marker::Send for awaken_agent_contract::page::HistoryPage<'a, T> where T: core::marker::Sync
 impl<'a, T> core::marker::Sync for awaken_agent_contract::page::HistoryPage<'a, T> where T: core::marker::Sync
 impl<'a, T> core::marker::Unpin for awaken_agent_contract::page::HistoryPage<'a, T>
+impl<'a, T> core::marker::UnsafeUnpin for awaken_agent_contract::page::HistoryPage<'a, T>
 impl<'a, T> core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::page::HistoryPage<'a, T> where T: core::panic::unwind_safe::RefUnwindSafe
 impl<'a, T> core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::page::HistoryPage<'a, T> where T: core::panic::unwind_safe::RefUnwindSafe
 pub struct awaken_agent_contract::page::UnknownCursor
@@ -908,6 +945,7 @@ impl core::marker::Freeze for awaken_agent_contract::page::UnknownCursor
 impl core::marker::Send for awaken_agent_contract::page::UnknownCursor
 impl core::marker::Sync for awaken_agent_contract::page::UnknownCursor
 impl core::marker::Unpin for awaken_agent_contract::page::UnknownCursor
+impl core::marker::UnsafeUnpin for awaken_agent_contract::page::UnknownCursor
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::page::UnknownCursor
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::page::UnknownCursor
 pub const awaken_agent_contract::page::DEFAULT_PAGE_LIMIT: usize
@@ -946,6 +984,7 @@ impl core::marker::Freeze for awaken_agent_contract::project::AgentEvent
 impl core::marker::Send for awaken_agent_contract::project::AgentEvent
 impl core::marker::Sync for awaken_agent_contract::project::AgentEvent
 impl core::marker::Unpin for awaken_agent_contract::project::AgentEvent
+impl core::marker::UnsafeUnpin for awaken_agent_contract::project::AgentEvent
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::project::AgentEvent
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::project::AgentEvent
 pub enum awaken_agent_contract::project::ToolDisposition
@@ -964,6 +1003,7 @@ impl core::marker::Freeze for awaken_agent_contract::project::ToolDisposition
 impl core::marker::Send for awaken_agent_contract::project::ToolDisposition
 impl core::marker::Sync for awaken_agent_contract::project::ToolDisposition
 impl core::marker::Unpin for awaken_agent_contract::project::ToolDisposition
+impl core::marker::UnsafeUnpin for awaken_agent_contract::project::ToolDisposition
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::project::ToolDisposition
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::project::ToolDisposition
 pub struct awaken_agent_contract::project::ToolUseRef<'a>
@@ -974,6 +1014,7 @@ impl<'a> core::marker::Freeze for awaken_agent_contract::project::ToolUseRef<'a>
 impl<'a> core::marker::Send for awaken_agent_contract::project::ToolUseRef<'a>
 impl<'a> core::marker::Sync for awaken_agent_contract::project::ToolUseRef<'a>
 impl<'a> core::marker::Unpin for awaken_agent_contract::project::ToolUseRef<'a>
+impl<'a> core::marker::UnsafeUnpin for awaken_agent_contract::project::ToolUseRef<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::project::ToolUseRef<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::project::ToolUseRef<'a>
 pub trait awaken_agent_contract::project::HistorySink
@@ -1010,6 +1051,7 @@ impl core::marker::Freeze for awaken_agent_contract::secret::RedactedString
 impl core::marker::Send for awaken_agent_contract::secret::RedactedString
 impl core::marker::Sync for awaken_agent_contract::secret::RedactedString
 impl core::marker::Unpin for awaken_agent_contract::secret::RedactedString
+impl core::marker::UnsafeUnpin for awaken_agent_contract::secret::RedactedString
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::secret::RedactedString
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::secret::RedactedString
 pub mod awaken_agent_contract::store
@@ -1029,6 +1071,7 @@ impl core::marker::Freeze for awaken_agent_contract::store::checkpoint::EventSco
 impl core::marker::Send for awaken_agent_contract::store::checkpoint::EventScope
 impl core::marker::Sync for awaken_agent_contract::store::checkpoint::EventScope
 impl core::marker::Unpin for awaken_agent_contract::store::checkpoint::EventScope
+impl core::marker::UnsafeUnpin for awaken_agent_contract::store::checkpoint::EventScope
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::store::checkpoint::EventScope
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::store::checkpoint::EventScope
 pub trait awaken_agent_contract::store::checkpoint::CheckpointReader: awaken_agent_contract::store::thread_reader::ThreadReader
@@ -1059,6 +1102,7 @@ impl core::marker::Freeze for awaken_agent_contract::store::stream_checkpoint::P
 impl core::marker::Send for awaken_agent_contract::store::stream_checkpoint::PartialToolCall
 impl core::marker::Sync for awaken_agent_contract::store::stream_checkpoint::PartialToolCall
 impl core::marker::Unpin for awaken_agent_contract::store::stream_checkpoint::PartialToolCall
+impl core::marker::UnsafeUnpin for awaken_agent_contract::store::stream_checkpoint::PartialToolCall
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::store::stream_checkpoint::PartialToolCall
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::store::stream_checkpoint::PartialToolCall
 pub struct awaken_agent_contract::store::stream_checkpoint::StreamCheckpoint
@@ -1083,6 +1127,7 @@ impl core::marker::Freeze for awaken_agent_contract::store::stream_checkpoint::S
 impl core::marker::Send for awaken_agent_contract::store::stream_checkpoint::StreamCheckpoint
 impl core::marker::Sync for awaken_agent_contract::store::stream_checkpoint::StreamCheckpoint
 impl core::marker::Unpin for awaken_agent_contract::store::stream_checkpoint::StreamCheckpoint
+impl core::marker::UnsafeUnpin for awaken_agent_contract::store::stream_checkpoint::StreamCheckpoint
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::store::stream_checkpoint::StreamCheckpoint
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::store::stream_checkpoint::StreamCheckpoint
 pub trait awaken_agent_contract::store::stream_checkpoint::StreamCheckpointStore: core::marker::Send + core::marker::Sync
@@ -1128,6 +1173,7 @@ impl core::marker::Freeze for awaken_agent_contract::stream::event::Kind
 impl core::marker::Send for awaken_agent_contract::stream::event::Kind
 impl core::marker::Sync for awaken_agent_contract::stream::event::Kind
 impl core::marker::Unpin for awaken_agent_contract::stream::event::Kind
+impl core::marker::UnsafeUnpin for awaken_agent_contract::stream::event::Kind
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::stream::event::Kind
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::stream::event::Kind
 pub struct awaken_agent_contract::stream::event::Event
@@ -1148,6 +1194,7 @@ impl core::marker::Freeze for awaken_agent_contract::stream::event::Event
 impl core::marker::Send for awaken_agent_contract::stream::event::Event
 impl core::marker::Sync for awaken_agent_contract::stream::event::Event
 impl core::marker::Unpin for awaken_agent_contract::stream::event::Event
+impl core::marker::UnsafeUnpin for awaken_agent_contract::stream::event::Event
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::stream::event::Event
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::stream::event::Event
 pub mod awaken_agent_contract::stream::sink
@@ -1162,6 +1209,7 @@ impl core::marker::Freeze for awaken_agent_contract::stream::sink::Error
 impl core::marker::Send for awaken_agent_contract::stream::sink::Error
 impl core::marker::Sync for awaken_agent_contract::stream::sink::Error
 impl core::marker::Unpin for awaken_agent_contract::stream::sink::Error
+impl core::marker::UnsafeUnpin for awaken_agent_contract::stream::sink::Error
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::stream::sink::Error
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::stream::sink::Error
 pub trait awaken_agent_contract::stream::sink::Sink: core::marker::Send + core::marker::Sync
@@ -1184,6 +1232,7 @@ impl core::marker::Freeze for awaken_agent_contract::stream::event::Event
 impl core::marker::Send for awaken_agent_contract::stream::event::Event
 impl core::marker::Sync for awaken_agent_contract::stream::event::Event
 impl core::marker::Unpin for awaken_agent_contract::stream::event::Event
+impl core::marker::UnsafeUnpin for awaken_agent_contract::stream::event::Event
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::stream::event::Event
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::stream::event::Event
 pub trait awaken_agent_contract::stream::Sink: core::marker::Send + core::marker::Sync
@@ -1203,6 +1252,7 @@ impl core::marker::Freeze for awaken_agent_contract::store::checkpoint::EventSco
 impl core::marker::Send for awaken_agent_contract::store::checkpoint::EventScope
 impl core::marker::Sync for awaken_agent_contract::store::checkpoint::EventScope
 impl core::marker::Unpin for awaken_agent_contract::store::checkpoint::EventScope
+impl core::marker::UnsafeUnpin for awaken_agent_contract::store::checkpoint::EventScope
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::store::checkpoint::EventScope
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::store::checkpoint::EventScope
 pub struct awaken_agent_contract::EventRecord
@@ -1225,6 +1275,7 @@ impl core::marker::Freeze for awaken_agent_contract::event::record::Record
 impl core::marker::Send for awaken_agent_contract::event::record::Record
 impl core::marker::Sync for awaken_agent_contract::event::record::Record
 impl core::marker::Unpin for awaken_agent_contract::event::record::Record
+impl core::marker::UnsafeUnpin for awaken_agent_contract::event::record::Record
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::event::record::Record
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::event::record::Record
 pub struct awaken_agent_contract::Message
@@ -1250,6 +1301,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::message::Message
 impl core::marker::Send for awaken_agent_contract::agent::message::Message
 impl core::marker::Sync for awaken_agent_contract::agent::message::Message
 impl core::marker::Unpin for awaken_agent_contract::agent::message::Message
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::message::Message
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::message::Message
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::message::Message
 pub struct awaken_agent_contract::ModelSpec
@@ -1277,6 +1329,7 @@ impl core::marker::Freeze for awaken_agent_contract::model_spec::ModelSpec
 impl core::marker::Send for awaken_agent_contract::model_spec::ModelSpec
 impl core::marker::Sync for awaken_agent_contract::model_spec::ModelSpec
 impl core::marker::Unpin for awaken_agent_contract::model_spec::ModelSpec
+impl core::marker::UnsafeUnpin for awaken_agent_contract::model_spec::ModelSpec
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::model_spec::ModelSpec
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::model_spec::ModelSpec
 pub struct awaken_agent_contract::RedactedString(_)
@@ -1299,6 +1352,7 @@ impl core::marker::Freeze for awaken_agent_contract::secret::RedactedString
 impl core::marker::Send for awaken_agent_contract::secret::RedactedString
 impl core::marker::Sync for awaken_agent_contract::secret::RedactedString
 impl core::marker::Unpin for awaken_agent_contract::secret::RedactedString
+impl core::marker::UnsafeUnpin for awaken_agent_contract::secret::RedactedString
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::secret::RedactedString
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::secret::RedactedString
 pub struct awaken_agent_contract::RunId(pub alloc::string::String)
@@ -1320,6 +1374,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::run::Id
 impl core::marker::Send for awaken_agent_contract::agent::run::Id
 impl core::marker::Sync for awaken_agent_contract::agent::run::Id
 impl core::marker::Unpin for awaken_agent_contract::agent::run::Id
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::run::Id
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::run::Id
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::run::Id
 pub struct awaken_agent_contract::RunRecord
@@ -1342,6 +1397,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::run::Record
 impl core::marker::Send for awaken_agent_contract::agent::run::Record
 impl core::marker::Sync for awaken_agent_contract::agent::run::Record
 impl core::marker::Unpin for awaken_agent_contract::agent::run::Record
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::run::Record
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::run::Record
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::run::Record
 pub struct awaken_agent_contract::StateKey(pub alloc::string::String)
@@ -1367,6 +1423,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::state::Key
 impl core::marker::Send for awaken_agent_contract::agent::state::Key
 impl core::marker::Sync for awaken_agent_contract::agent::state::Key
 impl core::marker::Unpin for awaken_agent_contract::agent::state::Key
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::state::Key
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::state::Key
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::state::Key
 pub struct awaken_agent_contract::StreamEvent
@@ -1387,6 +1444,7 @@ impl core::marker::Freeze for awaken_agent_contract::stream::event::Event
 impl core::marker::Send for awaken_agent_contract::stream::event::Event
 impl core::marker::Sync for awaken_agent_contract::stream::event::Event
 impl core::marker::Unpin for awaken_agent_contract::stream::event::Event
+impl core::marker::UnsafeUnpin for awaken_agent_contract::stream::event::Event
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::stream::event::Event
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::stream::event::Event
 pub struct awaken_agent_contract::ThreadCommit
@@ -1414,6 +1472,7 @@ impl core::marker::Freeze for awaken_agent_contract::commit::staged::ThreadCommi
 impl core::marker::Send for awaken_agent_contract::commit::staged::ThreadCommit
 impl core::marker::Sync for awaken_agent_contract::commit::staged::ThreadCommit
 impl core::marker::Unpin for awaken_agent_contract::commit::staged::ThreadCommit
+impl core::marker::UnsafeUnpin for awaken_agent_contract::commit::staged::ThreadCommit
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::commit::staged::ThreadCommit
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::commit::staged::ThreadCommit
 pub struct awaken_agent_contract::ThreadId(pub alloc::string::String)
@@ -1435,6 +1494,7 @@ impl core::marker::Freeze for awaken_agent_contract::agent::thread::Id
 impl core::marker::Send for awaken_agent_contract::agent::thread::Id
 impl core::marker::Sync for awaken_agent_contract::agent::thread::Id
 impl core::marker::Unpin for awaken_agent_contract::agent::thread::Id
+impl core::marker::UnsafeUnpin for awaken_agent_contract::agent::thread::Id
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::thread::Id
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::thread::Id
 pub trait awaken_agent_contract::CheckpointReader: awaken_agent_contract::store::thread_reader::ThreadReader

@@ -12,6 +12,7 @@ impl core::marker::Freeze for awaken_connection_plan::ConnectError
 impl core::marker::Send for awaken_connection_plan::ConnectError
 impl core::marker::Sync for awaken_connection_plan::ConnectError
 impl core::marker::Unpin for awaken_connection_plan::ConnectError
+impl core::marker::UnsafeUnpin for awaken_connection_plan::ConnectError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_connection_plan::ConnectError
 impl core::panic::unwind_safe::UnwindSafe for awaken_connection_plan::ConnectError
 pub enum awaken_connection_plan::CredentialError
@@ -26,6 +27,7 @@ impl core::marker::Freeze for awaken_connection_plan::CredentialError
 impl core::marker::Send for awaken_connection_plan::CredentialError
 impl core::marker::Sync for awaken_connection_plan::CredentialError
 impl core::marker::Unpin for awaken_connection_plan::CredentialError
+impl core::marker::UnsafeUnpin for awaken_connection_plan::CredentialError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_connection_plan::CredentialError
 impl core::panic::unwind_safe::UnwindSafe for awaken_connection_plan::CredentialError
 pub enum awaken_connection_plan::DialAddr
@@ -53,12 +55,12 @@ impl core::marker::Freeze for awaken_connection_plan::DialAddr
 impl core::marker::Send for awaken_connection_plan::DialAddr
 impl core::marker::Sync for awaken_connection_plan::DialAddr
 impl core::marker::Unpin for awaken_connection_plan::DialAddr
+impl core::marker::UnsafeUnpin for awaken_connection_plan::DialAddr
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_connection_plan::DialAddr
 impl core::panic::unwind_safe::UnwindSafe for awaken_connection_plan::DialAddr
 pub enum awaken_connection_plan::DialPolicy
 pub awaken_connection_plan::DialPolicy::Dial
 pub awaken_connection_plan::DialPolicy::Listen
-pub awaken_connection_plan::DialPolicy::ViaBroker
 impl core::clone::Clone for awaken_connection_plan::DialPolicy
 pub fn awaken_connection_plan::DialPolicy::clone(&self) -> awaken_connection_plan::DialPolicy
 impl core::cmp::Eq for awaken_connection_plan::DialPolicy
@@ -76,30 +78,9 @@ impl core::marker::Freeze for awaken_connection_plan::DialPolicy
 impl core::marker::Send for awaken_connection_plan::DialPolicy
 impl core::marker::Sync for awaken_connection_plan::DialPolicy
 impl core::marker::Unpin for awaken_connection_plan::DialPolicy
+impl core::marker::UnsafeUnpin for awaken_connection_plan::DialPolicy
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_connection_plan::DialPolicy
 impl core::panic::unwind_safe::UnwindSafe for awaken_connection_plan::DialPolicy
-pub enum awaken_connection_plan::Wiring
-pub awaken_connection_plan::Wiring::Direct
-pub awaken_connection_plan::Wiring::Relay
-pub awaken_connection_plan::Wiring::Relay::broker: alloc::string::String
-impl core::clone::Clone for awaken_connection_plan::Wiring
-pub fn awaken_connection_plan::Wiring::clone(&self) -> awaken_connection_plan::Wiring
-impl core::cmp::Eq for awaken_connection_plan::Wiring
-impl core::cmp::PartialEq for awaken_connection_plan::Wiring
-pub fn awaken_connection_plan::Wiring::eq(&self, &awaken_connection_plan::Wiring) -> bool
-impl core::fmt::Debug for awaken_connection_plan::Wiring
-pub fn awaken_connection_plan::Wiring::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_connection_plan::Wiring
-impl serde_core::ser::Serialize for awaken_connection_plan::Wiring
-pub fn awaken_connection_plan::Wiring::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_connection_plan::Wiring
-pub fn awaken_connection_plan::Wiring::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_connection_plan::Wiring
-impl core::marker::Send for awaken_connection_plan::Wiring
-impl core::marker::Sync for awaken_connection_plan::Wiring
-impl core::marker::Unpin for awaken_connection_plan::Wiring
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_connection_plan::Wiring
-impl core::panic::unwind_safe::UnwindSafe for awaken_connection_plan::Wiring
 pub struct awaken_connection_plan::AppliedAuth
 impl awaken_connection_plan::AppliedAuth
 pub fn awaken_connection_plan::AppliedAuth::bearer(impl core::convert::Into<alloc::string::String>) -> Self
@@ -120,13 +101,13 @@ impl core::marker::Freeze for awaken_connection_plan::AppliedAuth
 impl core::marker::Send for awaken_connection_plan::AppliedAuth
 impl core::marker::Sync for awaken_connection_plan::AppliedAuth
 impl core::marker::Unpin for awaken_connection_plan::AppliedAuth
+impl core::marker::UnsafeUnpin for awaken_connection_plan::AppliedAuth
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_connection_plan::AppliedAuth
 impl core::panic::unwind_safe::UnwindSafe for awaken_connection_plan::AppliedAuth
 pub struct awaken_connection_plan::ConnectionPlan
 pub awaken_connection_plan::ConnectionPlan::credential: core::option::Option<awaken_connection_plan::CredentialRef>
 pub awaken_connection_plan::ConnectionPlan::dial: awaken_connection_plan::DialPolicy
 pub awaken_connection_plan::ConnectionPlan::transport: awaken_connection_plan::DialAddr
-pub awaken_connection_plan::ConnectionPlan::wiring: awaken_connection_plan::Wiring
 impl awaken_connection_plan::ConnectionPlan
 pub fn awaken_connection_plan::ConnectionPlan::in_process() -> Self
 pub fn awaken_connection_plan::ConnectionPlan::tcp_dial(impl core::convert::Into<alloc::string::String>) -> Self
@@ -150,6 +131,7 @@ impl core::marker::Freeze for awaken_connection_plan::ConnectionPlan
 impl core::marker::Send for awaken_connection_plan::ConnectionPlan
 impl core::marker::Sync for awaken_connection_plan::ConnectionPlan
 impl core::marker::Unpin for awaken_connection_plan::ConnectionPlan
+impl core::marker::UnsafeUnpin for awaken_connection_plan::ConnectionPlan
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_connection_plan::ConnectionPlan
 impl core::panic::unwind_safe::UnwindSafe for awaken_connection_plan::ConnectionPlan
 pub struct awaken_connection_plan::CredentialRef(pub alloc::string::String)
@@ -169,6 +151,7 @@ impl core::marker::Freeze for awaken_connection_plan::CredentialRef
 impl core::marker::Send for awaken_connection_plan::CredentialRef
 impl core::marker::Sync for awaken_connection_plan::CredentialRef
 impl core::marker::Unpin for awaken_connection_plan::CredentialRef
+impl core::marker::UnsafeUnpin for awaken_connection_plan::CredentialRef
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_connection_plan::CredentialRef
 impl core::panic::unwind_safe::UnwindSafe for awaken_connection_plan::CredentialRef
 pub struct awaken_connection_plan::NoAuth
@@ -178,6 +161,7 @@ impl core::marker::Freeze for awaken_connection_plan::NoAuth
 impl core::marker::Send for awaken_connection_plan::NoAuth
 impl core::marker::Sync for awaken_connection_plan::NoAuth
 impl core::marker::Unpin for awaken_connection_plan::NoAuth
+impl core::marker::UnsafeUnpin for awaken_connection_plan::NoAuth
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_connection_plan::NoAuth
 impl core::panic::unwind_safe::UnwindSafe for awaken_connection_plan::NoAuth
 pub struct awaken_connection_plan::TcpHandListener
@@ -188,6 +172,7 @@ impl !core::marker::Freeze for awaken_connection_plan::TcpHandListener
 impl core::marker::Send for awaken_connection_plan::TcpHandListener
 impl core::marker::Sync for awaken_connection_plan::TcpHandListener
 impl core::marker::Unpin for awaken_connection_plan::TcpHandListener
+impl core::marker::UnsafeUnpin for awaken_connection_plan::TcpHandListener
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_connection_plan::TcpHandListener
 impl core::panic::unwind_safe::UnwindSafe for awaken_connection_plan::TcpHandListener
 pub struct awaken_connection_plan::TokioChannelFactory
@@ -197,6 +182,7 @@ impl core::marker::Freeze for awaken_connection_plan::TokioChannelFactory
 impl core::marker::Send for awaken_connection_plan::TokioChannelFactory
 impl core::marker::Sync for awaken_connection_plan::TokioChannelFactory
 impl core::marker::Unpin for awaken_connection_plan::TokioChannelFactory
+impl core::marker::UnsafeUnpin for awaken_connection_plan::TokioChannelFactory
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_connection_plan::TokioChannelFactory
 impl core::panic::unwind_safe::UnwindSafe for awaken_connection_plan::TokioChannelFactory
 pub struct awaken_connection_plan::UnixHandListener
@@ -206,6 +192,7 @@ impl !core::marker::Freeze for awaken_connection_plan::UnixHandListener
 impl core::marker::Send for awaken_connection_plan::UnixHandListener
 impl core::marker::Sync for awaken_connection_plan::UnixHandListener
 impl core::marker::Unpin for awaken_connection_plan::UnixHandListener
+impl core::marker::UnsafeUnpin for awaken_connection_plan::UnixHandListener
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_connection_plan::UnixHandListener
 impl core::panic::unwind_safe::UnwindSafe for awaken_connection_plan::UnixHandListener
 pub trait awaken_connection_plan::ChannelFactory: core::marker::Send + core::marker::Sync

@@ -15,6 +15,7 @@ impl core::marker::Freeze for awaken_sandbox_local::Mount
 impl core::marker::Send for awaken_sandbox_local::Mount
 impl core::marker::Sync for awaken_sandbox_local::Mount
 impl core::marker::Unpin for awaken_sandbox_local::Mount
+impl core::marker::UnsafeUnpin for awaken_sandbox_local::Mount
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::Mount
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::Mount
 pub enum awaken_sandbox_local::ProvisionKind
@@ -32,6 +33,7 @@ impl core::marker::Freeze for awaken_sandbox_local::ProvisionKind
 impl core::marker::Send for awaken_sandbox_local::ProvisionKind
 impl core::marker::Sync for awaken_sandbox_local::ProvisionKind
 impl core::marker::Unpin for awaken_sandbox_local::ProvisionKind
+impl core::marker::UnsafeUnpin for awaken_sandbox_local::ProvisionKind
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::ProvisionKind
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::ProvisionKind
 pub struct awaken_sandbox_local::BlobLru
@@ -43,6 +45,7 @@ impl core::marker::Freeze for awaken_sandbox_local::BlobLru
 impl core::marker::Send for awaken_sandbox_local::BlobLru
 impl core::marker::Sync for awaken_sandbox_local::BlobLru
 impl core::marker::Unpin for awaken_sandbox_local::BlobLru
+impl core::marker::UnsafeUnpin for awaken_sandbox_local::BlobLru
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::BlobLru
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::BlobLru
 pub struct awaken_sandbox_local::DiscoveredSkillFile
@@ -61,6 +64,7 @@ impl core::marker::Freeze for awaken_sandbox_local::DiscoveredSkillFile
 impl core::marker::Send for awaken_sandbox_local::DiscoveredSkillFile
 impl core::marker::Sync for awaken_sandbox_local::DiscoveredSkillFile
 impl core::marker::Unpin for awaken_sandbox_local::DiscoveredSkillFile
+impl core::marker::UnsafeUnpin for awaken_sandbox_local::DiscoveredSkillFile
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::DiscoveredSkillFile
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::DiscoveredSkillFile
 pub struct awaken_sandbox_local::Environment
@@ -84,6 +88,7 @@ impl core::marker::Freeze for awaken_sandbox_local::Environment
 impl core::marker::Send for awaken_sandbox_local::Environment
 impl core::marker::Sync for awaken_sandbox_local::Environment
 impl core::marker::Unpin for awaken_sandbox_local::Environment
+impl core::marker::UnsafeUnpin for awaken_sandbox_local::Environment
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::Environment
 impl !core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::Environment
 pub struct awaken_sandbox_local::EscapeError(pub alloc::string::String)
@@ -96,6 +101,7 @@ impl core::marker::Freeze for awaken_sandbox_local::EscapeError
 impl core::marker::Send for awaken_sandbox_local::EscapeError
 impl core::marker::Sync for awaken_sandbox_local::EscapeError
 impl core::marker::Unpin for awaken_sandbox_local::EscapeError
+impl core::marker::UnsafeUnpin for awaken_sandbox_local::EscapeError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::EscapeError
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::EscapeError
 pub struct awaken_sandbox_local::HandOutput
@@ -112,6 +118,7 @@ impl core::marker::Freeze for awaken_sandbox_local::HandOutput
 impl core::marker::Send for awaken_sandbox_local::HandOutput
 impl core::marker::Sync for awaken_sandbox_local::HandOutput
 impl core::marker::Unpin for awaken_sandbox_local::HandOutput
+impl core::marker::UnsafeUnpin for awaken_sandbox_local::HandOutput
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::HandOutput
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::HandOutput
 pub struct awaken_sandbox_local::IsolatedRoot
@@ -127,6 +134,7 @@ impl core::marker::Freeze for awaken_sandbox_local::IsolatedRoot
 impl core::marker::Send for awaken_sandbox_local::IsolatedRoot
 impl core::marker::Sync for awaken_sandbox_local::IsolatedRoot
 impl core::marker::Unpin for awaken_sandbox_local::IsolatedRoot
+impl core::marker::UnsafeUnpin for awaken_sandbox_local::IsolatedRoot
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::IsolatedRoot
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::IsolatedRoot
 pub struct awaken_sandbox_local::LocalProcess
@@ -139,6 +147,7 @@ impl !core::marker::Freeze for awaken_sandbox_local::LocalProcess
 impl core::marker::Send for awaken_sandbox_local::LocalProcess
 impl core::marker::Sync for awaken_sandbox_local::LocalProcess
 impl core::marker::Unpin for awaken_sandbox_local::LocalProcess
+impl core::marker::UnsafeUnpin for awaken_sandbox_local::LocalProcess
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::LocalProcess
 impl !core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::LocalProcess
 pub struct awaken_sandbox_local::LocalProvider
@@ -156,6 +165,7 @@ impl core::marker::Freeze for awaken_sandbox_local::LocalProvider
 impl core::marker::Send for awaken_sandbox_local::LocalProvider
 impl core::marker::Sync for awaken_sandbox_local::LocalProvider
 impl core::marker::Unpin for awaken_sandbox_local::LocalProvider
+impl core::marker::UnsafeUnpin for awaken_sandbox_local::LocalProvider
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::LocalProvider
 impl !core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::LocalProvider
 pub struct awaken_sandbox_local::LocalSandbox
@@ -177,6 +187,7 @@ impl !core::marker::Freeze for awaken_sandbox_local::LocalSandbox
 impl core::marker::Send for awaken_sandbox_local::LocalSandbox
 impl core::marker::Sync for awaken_sandbox_local::LocalSandbox
 impl core::marker::Unpin for awaken_sandbox_local::LocalSandbox
+impl core::marker::UnsafeUnpin for awaken_sandbox_local::LocalSandbox
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::LocalSandbox
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::LocalSandbox
 pub struct awaken_sandbox_local::LocalSandboxProvider
@@ -189,6 +200,7 @@ impl core::marker::Freeze for awaken_sandbox_local::LocalSandboxProvider
 impl core::marker::Send for awaken_sandbox_local::LocalSandboxProvider
 impl core::marker::Sync for awaken_sandbox_local::LocalSandboxProvider
 impl core::marker::Unpin for awaken_sandbox_local::LocalSandboxProvider
+impl core::marker::UnsafeUnpin for awaken_sandbox_local::LocalSandboxProvider
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::LocalSandboxProvider
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::LocalSandboxProvider
 pub struct awaken_sandbox_local::NamespaceProvider
@@ -208,6 +220,7 @@ impl core::marker::Freeze for awaken_sandbox_local::NamespaceProvider
 impl core::marker::Send for awaken_sandbox_local::NamespaceProvider
 impl core::marker::Sync for awaken_sandbox_local::NamespaceProvider
 impl core::marker::Unpin for awaken_sandbox_local::NamespaceProvider
+impl core::marker::UnsafeUnpin for awaken_sandbox_local::NamespaceProvider
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::NamespaceProvider
 impl !core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::NamespaceProvider
 pub struct awaken_sandbox_local::NamespaceSandbox
@@ -229,6 +242,7 @@ impl !core::marker::Freeze for awaken_sandbox_local::NamespaceSandbox
 impl core::marker::Send for awaken_sandbox_local::NamespaceSandbox
 impl core::marker::Sync for awaken_sandbox_local::NamespaceSandbox
 impl core::marker::Unpin for awaken_sandbox_local::NamespaceSandbox
+impl core::marker::UnsafeUnpin for awaken_sandbox_local::NamespaceSandbox
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::NamespaceSandbox
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::NamespaceSandbox
 pub struct awaken_sandbox_local::ProvisionEntry
@@ -247,6 +261,7 @@ impl core::marker::Freeze for awaken_sandbox_local::ProvisionEntry
 impl core::marker::Send for awaken_sandbox_local::ProvisionEntry
 impl core::marker::Sync for awaken_sandbox_local::ProvisionEntry
 impl core::marker::Unpin for awaken_sandbox_local::ProvisionEntry
+impl core::marker::UnsafeUnpin for awaken_sandbox_local::ProvisionEntry
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::ProvisionEntry
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::ProvisionEntry
 pub struct awaken_sandbox_local::ProvisionReceipt
@@ -265,6 +280,7 @@ impl core::marker::Freeze for awaken_sandbox_local::ProvisionReceipt
 impl core::marker::Send for awaken_sandbox_local::ProvisionReceipt
 impl core::marker::Sync for awaken_sandbox_local::ProvisionReceipt
 impl core::marker::Unpin for awaken_sandbox_local::ProvisionReceipt
+impl core::marker::UnsafeUnpin for awaken_sandbox_local::ProvisionReceipt
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::ProvisionReceipt
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::ProvisionReceipt
 pub struct awaken_sandbox_local::ResourceMount
@@ -283,6 +299,7 @@ impl core::marker::Freeze for awaken_sandbox_local::ResourceMount
 impl core::marker::Send for awaken_sandbox_local::ResourceMount
 impl core::marker::Sync for awaken_sandbox_local::ResourceMount
 impl core::marker::Unpin for awaken_sandbox_local::ResourceMount
+impl core::marker::UnsafeUnpin for awaken_sandbox_local::ResourceMount
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::ResourceMount
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::ResourceMount
 pub struct awaken_sandbox_local::ResourceRef
@@ -301,6 +318,7 @@ impl core::marker::Freeze for awaken_sandbox_local::ResourceRef
 impl core::marker::Send for awaken_sandbox_local::ResourceRef
 impl core::marker::Sync for awaken_sandbox_local::ResourceRef
 impl core::marker::Unpin for awaken_sandbox_local::ResourceRef
+impl core::marker::UnsafeUnpin for awaken_sandbox_local::ResourceRef
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::ResourceRef
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::ResourceRef
 pub struct awaken_sandbox_local::SandboxError(pub alloc::string::String)
@@ -313,6 +331,7 @@ impl core::marker::Freeze for awaken_sandbox_local::SandboxError
 impl core::marker::Send for awaken_sandbox_local::SandboxError
 impl core::marker::Sync for awaken_sandbox_local::SandboxError
 impl core::marker::Unpin for awaken_sandbox_local::SandboxError
+impl core::marker::UnsafeUnpin for awaken_sandbox_local::SandboxError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::SandboxError
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::SandboxError
 pub struct awaken_sandbox_local::SandboxSpec
@@ -334,6 +353,7 @@ impl core::marker::Freeze for awaken_sandbox_local::SandboxSpec
 impl core::marker::Send for awaken_sandbox_local::SandboxSpec
 impl core::marker::Sync for awaken_sandbox_local::SandboxSpec
 impl core::marker::Unpin for awaken_sandbox_local::SandboxSpec
+impl core::marker::UnsafeUnpin for awaken_sandbox_local::SandboxSpec
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::SandboxSpec
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::SandboxSpec
 pub struct awaken_sandbox_local::WorkspaceBlobCache
@@ -346,6 +366,7 @@ impl core::marker::Freeze for awaken_sandbox_local::WorkspaceBlobCache
 impl core::marker::Send for awaken_sandbox_local::WorkspaceBlobCache
 impl core::marker::Sync for awaken_sandbox_local::WorkspaceBlobCache
 impl core::marker::Unpin for awaken_sandbox_local::WorkspaceBlobCache
+impl core::marker::UnsafeUnpin for awaken_sandbox_local::WorkspaceBlobCache
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::WorkspaceBlobCache
 impl !core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::WorkspaceBlobCache
 pub trait awaken_sandbox_local::HandTool: core::marker::Send + core::marker::Sync

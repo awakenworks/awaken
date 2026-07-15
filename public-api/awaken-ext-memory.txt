@@ -18,6 +18,7 @@ impl core::marker::Freeze for awaken_ext_memory::localfs::Entry
 impl core::marker::Send for awaken_ext_memory::localfs::Entry
 impl core::marker::Sync for awaken_ext_memory::localfs::Entry
 impl core::marker::Unpin for awaken_ext_memory::localfs::Entry
+impl core::marker::UnsafeUnpin for awaken_ext_memory::localfs::Entry
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_memory::localfs::Entry
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_memory::localfs::Entry
 pub struct awaken_ext_memory::localfs::MemoryDir
@@ -25,13 +26,14 @@ impl awaken_ext_memory::localfs::MemoryDir
 pub fn awaken_ext_memory::localfs::MemoryDir::entries(&self) -> alloc::vec::Vec<awaken_ext_memory::localfs::Entry>
 pub fn awaken_ext_memory::localfs::MemoryDir::new(impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn awaken_ext_memory::localfs::MemoryDir::root(&self) -> &std::path::Path
-pub fn awaken_ext_memory::localfs::MemoryDir::write(&self, &str, &str) -> std::io::error::Result<std::path::PathBuf>
+pub fn awaken_ext_memory::localfs::MemoryDir::write(&self, &str, &str) -> core::io::error::Result<std::path::PathBuf>
 impl core::clone::Clone for awaken_ext_memory::localfs::MemoryDir
 pub fn awaken_ext_memory::localfs::MemoryDir::clone(&self) -> awaken_ext_memory::localfs::MemoryDir
 impl core::marker::Freeze for awaken_ext_memory::localfs::MemoryDir
 impl core::marker::Send for awaken_ext_memory::localfs::MemoryDir
 impl core::marker::Sync for awaken_ext_memory::localfs::MemoryDir
 impl core::marker::Unpin for awaken_ext_memory::localfs::MemoryDir
+impl core::marker::UnsafeUnpin for awaken_ext_memory::localfs::MemoryDir
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_memory::localfs::MemoryDir
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_memory::localfs::MemoryDir
 pub fn awaken_ext_memory::localfs::sanitize_stem(&str) -> alloc::string::String
@@ -48,6 +50,7 @@ impl core::marker::Freeze for awaken_ext_memory::plugin::MemoryPlugin
 impl core::marker::Send for awaken_ext_memory::plugin::MemoryPlugin
 impl core::marker::Sync for awaken_ext_memory::plugin::MemoryPlugin
 impl core::marker::Unpin for awaken_ext_memory::plugin::MemoryPlugin
+impl core::marker::UnsafeUnpin for awaken_ext_memory::plugin::MemoryPlugin
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_memory::plugin::MemoryPlugin
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_memory::plugin::MemoryPlugin
 pub const awaken_ext_memory::plugin::MEMORY_PLUGIN_ID: &str
@@ -76,6 +79,7 @@ impl core::marker::Freeze for awaken_ext_memory::recall::RecallBounds
 impl core::marker::Send for awaken_ext_memory::recall::RecallBounds
 impl core::marker::Sync for awaken_ext_memory::recall::RecallBounds
 impl core::marker::Unpin for awaken_ext_memory::recall::RecallBounds
+impl core::marker::UnsafeUnpin for awaken_ext_memory::recall::RecallBounds
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_memory::recall::RecallBounds
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_memory::recall::RecallBounds
 pub fn awaken_ext_memory::recall::recall_block(&awaken_ext_memory::localfs::MemoryDir, &awaken_ext_memory::recall::RecallBounds) -> core::option::Option<alloc::string::String>
@@ -102,6 +106,7 @@ impl core::marker::Freeze for awaken_ext_memory::tool::WriteMemoryTool
 impl core::marker::Send for awaken_ext_memory::tool::WriteMemoryTool
 impl core::marker::Sync for awaken_ext_memory::tool::WriteMemoryTool
 impl core::marker::Unpin for awaken_ext_memory::tool::WriteMemoryTool
+impl core::marker::UnsafeUnpin for awaken_ext_memory::tool::WriteMemoryTool
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_memory::tool::WriteMemoryTool
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_memory::tool::WriteMemoryTool
 pub fn awaken_ext_memory::tool::write_memory_descriptor() -> awaken_runtime_contract::resolved::ToolDescriptor
@@ -110,13 +115,14 @@ impl awaken_ext_memory::localfs::MemoryDir
 pub fn awaken_ext_memory::localfs::MemoryDir::entries(&self) -> alloc::vec::Vec<awaken_ext_memory::localfs::Entry>
 pub fn awaken_ext_memory::localfs::MemoryDir::new(impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn awaken_ext_memory::localfs::MemoryDir::root(&self) -> &std::path::Path
-pub fn awaken_ext_memory::localfs::MemoryDir::write(&self, &str, &str) -> std::io::error::Result<std::path::PathBuf>
+pub fn awaken_ext_memory::localfs::MemoryDir::write(&self, &str, &str) -> core::io::error::Result<std::path::PathBuf>
 impl core::clone::Clone for awaken_ext_memory::localfs::MemoryDir
 pub fn awaken_ext_memory::localfs::MemoryDir::clone(&self) -> awaken_ext_memory::localfs::MemoryDir
 impl core::marker::Freeze for awaken_ext_memory::localfs::MemoryDir
 impl core::marker::Send for awaken_ext_memory::localfs::MemoryDir
 impl core::marker::Sync for awaken_ext_memory::localfs::MemoryDir
 impl core::marker::Unpin for awaken_ext_memory::localfs::MemoryDir
+impl core::marker::UnsafeUnpin for awaken_ext_memory::localfs::MemoryDir
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_memory::localfs::MemoryDir
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_memory::localfs::MemoryDir
 pub struct awaken_ext_memory::MemoryPlugin
@@ -131,6 +137,7 @@ impl core::marker::Freeze for awaken_ext_memory::plugin::MemoryPlugin
 impl core::marker::Send for awaken_ext_memory::plugin::MemoryPlugin
 impl core::marker::Sync for awaken_ext_memory::plugin::MemoryPlugin
 impl core::marker::Unpin for awaken_ext_memory::plugin::MemoryPlugin
+impl core::marker::UnsafeUnpin for awaken_ext_memory::plugin::MemoryPlugin
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_memory::plugin::MemoryPlugin
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_memory::plugin::MemoryPlugin
 pub struct awaken_ext_memory::RecallBounds
@@ -156,6 +163,7 @@ impl core::marker::Freeze for awaken_ext_memory::recall::RecallBounds
 impl core::marker::Send for awaken_ext_memory::recall::RecallBounds
 impl core::marker::Sync for awaken_ext_memory::recall::RecallBounds
 impl core::marker::Unpin for awaken_ext_memory::recall::RecallBounds
+impl core::marker::UnsafeUnpin for awaken_ext_memory::recall::RecallBounds
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_memory::recall::RecallBounds
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_memory::recall::RecallBounds
 pub struct awaken_ext_memory::WriteMemoryTool
@@ -170,6 +178,7 @@ impl core::marker::Freeze for awaken_ext_memory::tool::WriteMemoryTool
 impl core::marker::Send for awaken_ext_memory::tool::WriteMemoryTool
 impl core::marker::Sync for awaken_ext_memory::tool::WriteMemoryTool
 impl core::marker::Unpin for awaken_ext_memory::tool::WriteMemoryTool
+impl core::marker::UnsafeUnpin for awaken_ext_memory::tool::WriteMemoryTool
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_memory::tool::WriteMemoryTool
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_memory::tool::WriteMemoryTool
 pub const awaken_ext_memory::DEFAULT_MEMORY_INSTRUCTIONS: &str

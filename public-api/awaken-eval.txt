@@ -14,13 +14,14 @@ impl core::marker::Freeze for awaken_eval::replay::Evaluator
 impl core::marker::Send for awaken_eval::replay::Evaluator
 impl core::marker::Sync for awaken_eval::replay::Evaluator
 impl core::marker::Unpin for awaken_eval::replay::Evaluator
+impl core::marker::UnsafeUnpin for awaken_eval::replay::Evaluator
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_eval::replay::Evaluator
 impl !core::panic::unwind_safe::UnwindSafe for awaken_eval::replay::Evaluator
 pub async fn awaken_eval::replay::run_case(&awaken_eval::Case) -> awaken_eval::CaseScore
 pub async fn awaken_eval::replay::run_dataset(&awaken_eval::Dataset) -> awaken_eval::Report
 pub mod awaken_eval::store
-pub fn awaken_eval::store::load_dataset(&std::path::Path) -> std::io::error::Result<awaken_eval::Dataset>
-pub fn awaken_eval::store::save_dataset(&std::path::Path, &awaken_eval::Dataset) -> std::io::error::Result<()>
+pub fn awaken_eval::store::load_dataset(&std::path::Path) -> core::io::error::Result<awaken_eval::Dataset>
+pub fn awaken_eval::store::save_dataset(&std::path::Path, &awaken_eval::Dataset) -> core::io::error::Result<()>
 pub enum awaken_eval::Expectation
 pub awaken_eval::Expectation::JudgeScore
 pub awaken_eval::Expectation::JudgeScore::min_score: u8
@@ -53,6 +54,7 @@ impl core::marker::Freeze for awaken_eval::Expectation
 impl core::marker::Send for awaken_eval::Expectation
 impl core::marker::Sync for awaken_eval::Expectation
 impl core::marker::Unpin for awaken_eval::Expectation
+impl core::marker::UnsafeUnpin for awaken_eval::Expectation
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_eval::Expectation
 impl core::panic::unwind_safe::UnwindSafe for awaken_eval::Expectation
 pub struct awaken_eval::Case
@@ -73,6 +75,7 @@ impl core::marker::Freeze for awaken_eval::Case
 impl core::marker::Send for awaken_eval::Case
 impl core::marker::Sync for awaken_eval::Case
 impl core::marker::Unpin for awaken_eval::Case
+impl core::marker::UnsafeUnpin for awaken_eval::Case
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_eval::Case
 impl core::panic::unwind_safe::UnwindSafe for awaken_eval::Case
 pub struct awaken_eval::CaseScore
@@ -92,6 +95,7 @@ impl core::marker::Freeze for awaken_eval::CaseScore
 impl core::marker::Send for awaken_eval::CaseScore
 impl core::marker::Sync for awaken_eval::CaseScore
 impl core::marker::Unpin for awaken_eval::CaseScore
+impl core::marker::UnsafeUnpin for awaken_eval::CaseScore
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_eval::CaseScore
 impl core::panic::unwind_safe::UnwindSafe for awaken_eval::CaseScore
 pub struct awaken_eval::Dataset
@@ -109,6 +113,7 @@ impl core::marker::Freeze for awaken_eval::Dataset
 impl core::marker::Send for awaken_eval::Dataset
 impl core::marker::Sync for awaken_eval::Dataset
 impl core::marker::Unpin for awaken_eval::Dataset
+impl core::marker::UnsafeUnpin for awaken_eval::Dataset
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_eval::Dataset
 impl core::panic::unwind_safe::UnwindSafe for awaken_eval::Dataset
 pub struct awaken_eval::ExpectationResult
@@ -131,6 +136,7 @@ impl core::marker::Freeze for awaken_eval::ExpectationResult
 impl core::marker::Send for awaken_eval::ExpectationResult
 impl core::marker::Sync for awaken_eval::ExpectationResult
 impl core::marker::Unpin for awaken_eval::ExpectationResult
+impl core::marker::UnsafeUnpin for awaken_eval::ExpectationResult
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_eval::ExpectationResult
 impl core::panic::unwind_safe::UnwindSafe for awaken_eval::ExpectationResult
 pub struct awaken_eval::Report
@@ -152,6 +158,7 @@ impl core::marker::Freeze for awaken_eval::Report
 impl core::marker::Send for awaken_eval::Report
 impl core::marker::Sync for awaken_eval::Report
 impl core::marker::Unpin for awaken_eval::Report
+impl core::marker::UnsafeUnpin for awaken_eval::Report
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_eval::Report
 impl core::panic::unwind_safe::UnwindSafe for awaken_eval::Report
 pub struct awaken_eval::ScriptedToolCall
@@ -169,6 +176,7 @@ impl core::marker::Freeze for awaken_eval::ScriptedToolCall
 impl core::marker::Send for awaken_eval::ScriptedToolCall
 impl core::marker::Sync for awaken_eval::ScriptedToolCall
 impl core::marker::Unpin for awaken_eval::ScriptedToolCall
+impl core::marker::UnsafeUnpin for awaken_eval::ScriptedToolCall
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_eval::ScriptedToolCall
 impl core::panic::unwind_safe::UnwindSafe for awaken_eval::ScriptedToolCall
 pub struct awaken_eval::ScriptedTurn
@@ -188,6 +196,7 @@ impl core::marker::Freeze for awaken_eval::ScriptedTurn
 impl core::marker::Send for awaken_eval::ScriptedTurn
 impl core::marker::Sync for awaken_eval::ScriptedTurn
 impl core::marker::Unpin for awaken_eval::ScriptedTurn
+impl core::marker::UnsafeUnpin for awaken_eval::ScriptedTurn
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_eval::ScriptedTurn
 impl core::panic::unwind_safe::UnwindSafe for awaken_eval::ScriptedTurn
 pub fn awaken_eval::score_case(&awaken_eval::Case, &str, bool, &[alloc::string::String]) -> awaken_eval::CaseScore
