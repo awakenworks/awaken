@@ -241,18 +241,29 @@ impl ProjectingChannelSource {
         Self { cli, resolver }
     }
 
-    /// Project this run onto a concrete [`AcpLaunch`] (no spawn): resolve the model +
-    /// per-run env, read the compaction window from the run's config, and hand all of
-    /// it to the CLI's [`AcpCli::project`] row.
+    /// Project this run onto a concrete [`AcpLaunch`] (no spawn).
     pub(crate) fn plan(
         &self,
         activation: &RunActivation,
     ) -> std::result::Result<AcpLaunch, OpenError> {
-        let model = self.resolver.model(activation)?;
-        let extra_env = self.resolver.extra_env(activation);
-        let window = compact_window(&activation.snapshot.resolved_spec);
-        Ok(self.cli.project(&model, window, &extra_env))
+        project_launch(&self.cli, self.resolver.as_ref(), activation)
     }
+}
+
+/// Project a run onto a concrete [`AcpLaunch`] (no spawn): resolve the model + per-run
+/// env through `resolver`, read the compaction window from the run's config, and hand
+/// all of it to the CLI's [`AcpCli::project`] row. The reusable projection core — a
+/// sandboxed / containerized ACP source uses it to launch the **per-agent** CLI (the
+/// run's `acp:<cli>` backend_ref) inside its isolation, not a fixed argv.
+pub fn project_launch(
+    cli: &AcpCli,
+    resolver: &dyn LaunchResolver,
+    activation: &RunActivation,
+) -> std::result::Result<AcpLaunch, OpenError> {
+    let model = resolver.model(activation)?;
+    let extra_env = resolver.extra_env(activation);
+    let window = compact_window(&activation.snapshot.resolved_spec);
+    Ok(cli.project(&model, window, &extra_env))
 }
 
 /// The launched CLI's own auto-compaction window, from the run's config. Read from
