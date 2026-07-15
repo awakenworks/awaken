@@ -100,25 +100,50 @@ pub fn deployment_role() -> Role {
     )
 }
 
+/// The hand's transport, selected from `AWAKEN_HAND_*`. One of three ADR-0044/0045
+/// topologies: a NATS relay (both sides behind NAT), a dial-out to a rendezvous
+/// (reverse), or a listen socket the brain dials (direct).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HandTransport {
+    /// `AWAKEN_HAND_NATS` — relay over a NATS subject (`AWAKEN_HAND_SUBJECT`, default
+    /// `awaken.hand.exec`).
+    Nats { url: String, subject: String },
+    /// `AWAKEN_HAND_DIAL` — the hand dials out to a rendezvous the brain also dials
+    /// (reverse topology, for a hand behind NAT).
+    Dial { addr: String },
+    /// `AWAKEN_HAND_LISTEN` — the hand listens; the brain dials it (direct topology).
+    Listen { addr: String },
+}
+
+/// Select the hand transport from an injected env `lookup` (empty values read as
+/// unset), so the precedence is pure and unit-testable without the process env. NATS
+/// wins over dial wins over listen when several are set; none set is a fail-closed
+/// error naming the three keys.
+pub fn hand_transport(
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<HandTransport, &'static str> {
+    let get = |k: &str| lookup(k).filter(|v| !v.is_empty());
+    if let Some(url) = get("AWAKEN_HAND_NATS") {
+        let subject = get("AWAKEN_HAND_SUBJECT").unwrap_or_else(|| "awaken.hand.exec".to_string());
+        return Ok(HandTransport::Nats { url, subject });
+    }
+    if let Some(addr) = get("AWAKEN_HAND_DIAL") {
+        return Ok(HandTransport::Dial { addr });
+    }
+    if let Some(addr) = get("AWAKEN_HAND_LISTEN") {
+        return Ok(HandTransport::Listen { addr });
+    }
+    Err("AWAKEN_ROLE=hand requires one of AWAKEN_HAND_NATS / AWAKEN_HAND_DIAL / AWAKEN_HAND_LISTEN")
+}
+
 /// Run the hand role: a remote ACP executor endpoint over the transport selected by
 /// `AWAKEN_HAND_*` (NATS relay / dial-out / listen).
 pub async fn run_hand_role() -> Result<(), Box<dyn std::error::Error>> {
-    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-    if let Some(nats_url) = env("AWAKEN_HAND_NATS") {
-        let subject =
-            std::env::var("AWAKEN_HAND_SUBJECT").unwrap_or_else(|_| "awaken.hand.exec".to_string());
-        return run_hand_server_nats(&nats_url, &subject).await;
+    match hand_transport(|k| std::env::var(k).ok())? {
+        HandTransport::Nats { url, subject } => run_hand_server_nats(&url, &subject).await,
+        HandTransport::Dial { addr } => run_hand_server(&addr, true).await,
+        HandTransport::Listen { addr } => run_hand_server(&addr, false).await,
     }
-    if let Some(dial_addr) = env("AWAKEN_HAND_DIAL") {
-        return run_hand_server(&dial_addr, true).await;
-    }
-    if let Some(hand_addr) = env("AWAKEN_HAND_LISTEN") {
-        return run_hand_server(&hand_addr, false).await;
-    }
-    Err(
-        "AWAKEN_ROLE=hand requires one of AWAKEN_HAND_NATS / AWAKEN_HAND_DIAL / AWAKEN_HAND_LISTEN"
-            .into(),
-    )
 }
 
 #[cfg(test)]
@@ -147,6 +172,115 @@ mod role_tests {
     fn an_unknown_explicit_role_falls_back_to_inference() {
         assert_eq!(role_from(Some("bogus"), false, true), Role::Worker);
         assert_eq!(role_from(Some("bogus"), false, false), Role::Serve);
+    }
+}
+
+/// S11 — the hand's transport selection across the three ADR-0044/0045 topologies.
+/// Decision table over the `AWAKEN_HAND_*` keys: which transport is chosen, the
+/// precedence when several are set, the NATS subject default, and the fail-closed
+/// error when none is set. This covers the (topology × transport) pairs the k3d
+/// `topology_e2e.sh` exercises end to end, but as a pure, fast, deterministic unit.
+#[cfg(test)]
+mod hand_transport_tests {
+    use super::{HandTransport, hand_transport};
+
+    fn lookup(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let map: std::collections::BTreeMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |k: &str| map.get(k).cloned()
+    }
+
+    #[test]
+    fn listen_selects_the_direct_topology() {
+        // direct: the hand listens, the brain dials it.
+        assert_eq!(
+            hand_transport(lookup(&[("AWAKEN_HAND_LISTEN", "0.0.0.0:9000")])).unwrap(),
+            HandTransport::Listen {
+                addr: "0.0.0.0:9000".into()
+            }
+        );
+    }
+
+    #[test]
+    fn dial_selects_the_reverse_topology() {
+        // reverse: the hand dials out to a rendezvous (it is behind NAT).
+        assert_eq!(
+            hand_transport(lookup(&[("AWAKEN_HAND_DIAL", "brain-rendezvous:9000")])).unwrap(),
+            HandTransport::Dial {
+                addr: "brain-rendezvous:9000".into()
+            }
+        );
+    }
+
+    #[test]
+    fn nats_selects_the_relay_topology_with_a_default_subject() {
+        // relay: both sides reach a NATS broker; the subject defaults when unset.
+        assert_eq!(
+            hand_transport(lookup(&[("AWAKEN_HAND_NATS", "nats://nats:4222")])).unwrap(),
+            HandTransport::Nats {
+                url: "nats://nats:4222".into(),
+                subject: "awaken.hand.exec".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn nats_subject_is_overridable() {
+        assert_eq!(
+            hand_transport(lookup(&[
+                ("AWAKEN_HAND_NATS", "nats://nats:4222"),
+                ("AWAKEN_HAND_SUBJECT", "team.hand"),
+            ]))
+            .unwrap(),
+            HandTransport::Nats {
+                url: "nats://nats:4222".into(),
+                subject: "team.hand".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn precedence_is_nats_then_dial_then_listen() {
+        // All three set: NATS wins.
+        let all = [
+            ("AWAKEN_HAND_NATS", "nats://n:4222"),
+            ("AWAKEN_HAND_DIAL", "r:9000"),
+            ("AWAKEN_HAND_LISTEN", "0.0.0.0:9000"),
+        ];
+        assert!(matches!(
+            hand_transport(lookup(&all)).unwrap(),
+            HandTransport::Nats { .. }
+        ));
+        // Dial wins over listen when NATS is absent.
+        assert!(matches!(
+            hand_transport(lookup(&all[1..])).unwrap(),
+            HandTransport::Dial { .. }
+        ));
+    }
+
+    #[test]
+    fn no_transport_is_a_fail_closed_error_naming_the_keys() {
+        let err = hand_transport(lookup(&[])).unwrap_err();
+        assert!(err.contains("AWAKEN_HAND_NATS"));
+        assert!(err.contains("AWAKEN_HAND_DIAL"));
+        assert!(err.contains("AWAKEN_HAND_LISTEN"));
+    }
+
+    #[test]
+    fn an_empty_value_reads_as_unset() {
+        // An empty AWAKEN_HAND_NATS must not select the NATS path over a real dial.
+        assert_eq!(
+            hand_transport(lookup(&[
+                ("AWAKEN_HAND_NATS", ""),
+                ("AWAKEN_HAND_DIAL", "r:9000"),
+            ]))
+            .unwrap(),
+            HandTransport::Dial {
+                addr: "r:9000".into()
+            }
+        );
     }
 }
 
