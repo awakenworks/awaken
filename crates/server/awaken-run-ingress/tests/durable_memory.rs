@@ -134,6 +134,60 @@ async fn a_worker_routes_inference_through_the_resolved_model_executor() {
 }
 
 #[tokio::test]
+async fn a_per_run_model_override_routes_the_worker_to_the_overridden_model() {
+    // R5, end to end on the worker path: a run carrying `model_ref_override` resolves
+    // through `effective_model_ref → resolve_model` to a DIFFERENT executor than its
+    // snapshot binding names — proving the per-turn switch reaches the provider seam,
+    // not just the binding. The resolver is keyed by ref: binding "m" → "BOUND",
+    // override "alt" → "ALT"; the committed reply must be "ALT".
+    use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
+
+    struct Fixed(&'static str);
+    #[async_trait::async_trait]
+    impl LlmExecutor for Fixed {
+        async fn infer(
+            &self,
+            _r: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            Ok(ChatResponse {
+                output: AssistantOutput::text(self.0),
+                usage: None,
+                stop_reason: None,
+            })
+        }
+    }
+
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let resolver: awaken_run_ingress::ModelResolverFn = Arc::new(|model_ref| match model_ref {
+        "alt" => Some(Arc::new(Fixed("ALT")) as Arc<dyn LlmExecutor>),
+        _ => Some(Arc::new(Fixed("BOUND")) as Arc<dyn LlmExecutor>),
+    });
+    let ingress = DurableRunIngress::with_owner_and_resolver(
+        text_runtime(),
+        store.clone(),
+        commit.clone(),
+        "owner",
+        None,
+        Some(resolver),
+    );
+
+    let over = activation("run-override").with_model_ref_override(Some("alt".into()));
+    let phase = ingress
+        .submit_background(over)
+        .await
+        .expect("durable submit");
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+
+    let messages = commit.committed().messages;
+    assert_eq!(
+        messages.last().unwrap().text_content(),
+        "ALT",
+        "the per-run override selected the model, overriding the snapshot binding"
+    );
+}
+
+#[tokio::test]
 async fn durable_run_drains_live_inbox_steer_at_the_boundary() {
     // ADR-0054 P2: a steer message offered into the durable ingress's per-session
     // inbox is drained by the worker-driven run at its safe loop boundary — steer

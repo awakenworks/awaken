@@ -112,6 +112,30 @@ async fn without_an_override_the_run_uses_the_runtime_default() {
 }
 
 #[tokio::test]
+async fn with_neither_an_override_nor_a_bound_default_the_run_fails_closed() {
+    // The provider seam is fail-closed: a run with no per-run `model_executor` AND a
+    // runtime that has no bound default has NO model to reach, so it errors instead of
+    // silently doing nothing. This is the E5 corner of the resolve matrix — the case a
+    // secretless worker hits when the resolver declines the ref and no host default
+    // exists.
+    let runtime = Runtime::new(); // no with_llm → no bound default
+    let config = RunnableConfig::builder("assistant")
+        .model(ModelBinding::new("demo", "stub", "stub"))
+        .build();
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ctx = RuntimeRunContext::new().with_commit(commit.clone()); // no with_model_executor
+
+    let err = runtime
+        .run(&config, "go", ctx)
+        .await
+        .expect_err("a run with no reachable model must fail closed");
+    assert!(
+        err.to_string().contains("no model provider configured"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
 async fn run_to_completion_drives_an_ungated_run_without_asking() {
     // No gate → no park → `decide` is never called; the run reaches a terminal
     // phase in one shot. (The gated park→resume path is covered by the coding-agent
