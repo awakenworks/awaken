@@ -51,6 +51,22 @@ pub enum MountSource {
     },
     /// A persistent memory store, mounted for read/write (typically via FUSE).
     MemoryStore { store_id: String },
+    /// A **Cache Volume** (ADR-0056): a caller-supplied, node-local, ReadWriteOnce
+    /// cache — a warm directory (checkout, build cache) whose bytes have **no truth
+    /// authority**. The provider mounts the opaque `host_path` **in place** and NEVER
+    /// harvests it back: losing it costs a cold rebuild, never data loss, so nothing
+    /// whose only copy matters may live here. Warmth and GC are the caller's (product
+    /// plane, ADR-0056 §2); awaken only mounts. `key` is the caller's reuse key, opaque
+    /// to awaken. Distinct from `MemoryStore` (harvested, authoritative) — this is the
+    /// only source that is reused in place and never carried back.
+    CacheVolume {
+        /// The caller-owned persistent path to mount in place. Opaque to awaken — it
+        /// neither keeps it warm nor reclaims it.
+        host_path: String,
+        /// The caller's reuse key, opaque to awaken (never interpreted here).
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        key: String,
+    },
     /// A file-materialized credential (ADR-0041 amendment). The provider writes the
     /// broker-resolved secret to `mount_path`, honoring the requirement's
     /// [`MountAccess`]/[`MountLifetime`]; a `ReadWrite` + `Durable` secret mount is
@@ -262,6 +278,30 @@ mod tests {
         assert!(wire.contains("\"kind\":\"secret\""));
         assert!(wire.contains("broker://anthropic/key"));
         assert_eq!(serde_json::from_str::<MountSource>(&wire).unwrap(), src);
+    }
+
+    #[test]
+    fn cache_volume_round_trips_and_omits_an_empty_key() {
+        // ADR-0056 §3: the Cache Volume is a first-class mount kind on the wire
+        // (`kind: cache_volume`), carrying the caller-owned host path; an empty reuse
+        // key is omitted (skip_serializing_if) so an unkeyed cache volume is compact.
+        let keyed = MountSource::CacheVolume {
+            host_path: "/var/cache/awaken/proj-42".into(),
+            key: "proj-42".into(),
+        };
+        let wire = serde_json::to_string(&keyed).unwrap();
+        assert!(wire.contains("\"kind\":\"cache_volume\""), "{wire}");
+        assert!(wire.contains("/var/cache/awaken/proj-42"));
+        assert!(wire.contains("proj-42"));
+        assert_eq!(serde_json::from_str::<MountSource>(&wire).unwrap(), keyed);
+
+        let unkeyed = MountSource::CacheVolume {
+            host_path: "/tmp/warm".into(),
+            key: String::new(),
+        };
+        let wire = serde_json::to_string(&unkeyed).unwrap();
+        assert!(!wire.contains("\"key\""), "an empty key is omitted: {wire}");
+        assert_eq!(serde_json::from_str::<MountSource>(&wire).unwrap(), unkeyed);
     }
 
     #[test]

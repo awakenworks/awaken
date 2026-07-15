@@ -55,6 +55,10 @@ pub(crate) async fn resolve_source(
                 .map(|s| s.as_bytes().to_vec());
         }
         pc::MountSource::MemoryStore { .. } => return None,
+        // A Cache Volume has no seedable content — it is mounted in place from its
+        // host path and its bytes have no authority (ADR-0056), so there is nothing to
+        // fingerprint or seed here.
+        pc::MountSource::CacheVolume { .. } => return None,
     };
     if let Some(bytes) = blobs.get(id) {
         return Some(bytes.clone());
