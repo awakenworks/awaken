@@ -114,6 +114,7 @@ impl SharedHost {
         // the durable-path half of the secretless worker). `None` when no factory is
         // installed → a gateway-granted run fails closed on this worker.
         let gateway = self.worker_gateway_builder();
+        let model_resolver = self.worker_model_resolver();
         // The recovered dispatch a crash left mid-flight is re-executed by this
         // worker; giving it the same checkpoint store lets that re-execution resume
         // the interrupted step from its flushed partial (Phase 3 cross-process).
@@ -124,6 +125,7 @@ impl SharedHost {
             crate::dispatch_backend::dispatch_owner(),
             Some(stream_checkpoint),
             gateway,
+            model_resolver,
         ));
         // No per-session recovery sweep here: this session's worker shares one queue
         // with every other, so a claim would grab foreign threads' runs. The
@@ -142,6 +144,19 @@ impl SharedHost {
             let build: awaken_run_ingress::GatewayExecutorFn =
                 Arc::new(move |endpoint| factory.build(endpoint));
             build
+        })
+    }
+
+    /// Wrap this host's `ExecutorProvider` (if installed) into the neutral
+    /// `model_ref → executor` closure a worker's `RunExecutionContext` carries, so a
+    /// database-less worker resolves the run's configured model per attempt (R1).
+    /// `None` when no provider is installed — the worker stays on the runtime's bound
+    /// default (a single-model deployment is unaffected).
+    pub(crate) fn worker_model_resolver(&self) -> Option<awaken_run_ingress::ModelResolverFn> {
+        self.model_route.provider().map(|provider| {
+            let resolve: awaken_run_ingress::ModelResolverFn =
+                Arc::new(move |model_ref: &str| provider.executor_for(model_ref));
+            resolve
         })
     }
 
@@ -220,19 +235,13 @@ impl SharedHost {
         );
         let apply_base_gate = !pre_authorized.is_empty() || authored_permission.is_some();
         let base_gate = server_gate_with(authored_permission, &pre_authorized);
-        // R1/R2: per-session executor resolved from the thread's bound model. A
-        // published agent's own model (its installed config's `model_ref`) is the
-        // default when the session bound no explicit model, so the config plane's
-        // ExecutorProvider resolves *that* model's executor (else the host default).
-        let default_model_ref = installed
-            .as_ref()
-            .map(|c| c.snapshot().resolved_spec.model_binding.model_ref.clone())
-            .filter(|m| !m.is_empty())
-            .unwrap_or_else(|| self.model_ref.clone());
-        let exec = self
-            .model_route
-            .resolve_executor(thread, &default_model_ref, &self.llm);
-        let mut runtime = build_runtime(exec, &env);
+        // R1/R2: the runtime is built with the host default executor; each run then
+        // resolves its *effective* model (its `model_ref_override`, else its snapshot
+        // binding) to an executor at the resolve seam and sets it on the run context.
+        // Resolving per run — not once at session build — means a per-turn model
+        // switch needs no session rebuild, and a database-less worker runs the
+        // configured model without a session-level registry.
+        let mut runtime = build_runtime(self.llm.clone(), &env);
         if apply_base_gate {
             runtime = runtime.with_gate(base_gate.clone());
         }

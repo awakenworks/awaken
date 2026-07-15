@@ -67,13 +67,15 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
     where
         C: CommitCoordinator + ThreadReader + RunStore + Send + Sync + 'static,
     {
-        Self::with_owner_and_gateway(runtime, store, commit, owner, stream_checkpoint, None)
+        Self::with_owner_and_gateway(runtime, store, commit, owner, stream_checkpoint, None, None)
     }
 
-    /// Like [`with_owner`](Self::with_owner) but also installs the cloud-managed
-    /// gateway executor builder (ADR-0004), so this ingress's worker honors a per-run
-    /// gateway grant credential-free (the secretless-worker path). `None` leaves the
-    /// worker unable to honor a gateway grant (it fails closed on one).
+    /// Like [`with_owner`](Self::with_owner) but also installs the model→executor
+    /// resolver (R1) and the cloud-managed gateway executor builder (ADR-0004), so
+    /// this ingress's worker runs the configured model without a config service and
+    /// honors a per-run gateway grant credential-free (the secretless-worker path).
+    /// A `None` resolver leaves the worker on the runtime's bound default; a `None`
+    /// gateway leaves it unable to honor a gateway grant (it fails closed on one).
     pub fn with_owner_and_gateway<C>(
         runtime: Arc<Runtime>,
         store: Arc<S>,
@@ -83,6 +85,7 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
             Arc<dyn awaken_agent_contract::store::stream_checkpoint::StreamCheckpointStore>,
         >,
         gateway: Option<crate::request::GatewayExecutorFn>,
+        model_resolver: Option<crate::request::ModelResolverFn>,
     ) -> Self
     where
         C: CommitCoordinator + ThreadReader + RunStore + Send + Sync + 'static,
@@ -95,6 +98,9 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         }
         if let Some(gateway) = gateway {
             worker = worker.with_gateway_executor(gateway);
+        }
+        if let Some(model_resolver) = model_resolver {
+            worker = worker.with_model_resolver(model_resolver);
         }
         Self {
             worker: Arc::new(worker),

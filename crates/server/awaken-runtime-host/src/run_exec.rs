@@ -53,6 +53,19 @@ impl SharedHost {
         // dials the gateway with the lease token (fail-closed on no factory / an
         // unservable dialect); a local grant yields `None`.
         let gateway_executor = self.gateway_model_executor(&activation.model_access)?;
+        // The run's effective model — its per-run override (R5), else the model its
+        // snapshot binding names. Resolved to an executor per attempt at this seam
+        // (the direct path here; the durable path re-resolves on the claiming worker),
+        // so the runtime only ever receives an executor, never a model identity to
+        // look up. A gateway grant, when present, wins over the local resolution.
+        let effective_model = activation.model_ref_override.clone().unwrap_or_else(|| {
+            activation
+                .snapshot
+                .resolved_spec
+                .model_binding
+                .model_ref
+                .clone()
+        });
         // The gateway grant is honored on BOTH paths: the direct path uses the
         // per-run executor built above; the durable path enqueues, and the pool
         // worker rebuilds the same executor from the session's gateway builder
@@ -77,10 +90,14 @@ impl SharedHost {
                 .context_for(&activation)
                 .await
                 .with_live_inbox(ctx.open_live_inbox());
-            // Route this run's inference through the gateway executor built from its
-            // grant (ADR-0004), overriding the session's bound model for this attempt.
-            if let Some(gateway_executor) = gateway_executor {
-                context = context.with_model_executor(gateway_executor);
+            // Route this attempt's inference through the resolved provider: a gateway
+            // grant (ADR-0004) wins, else the run's effective model resolved through
+            // the host's ExecutorProvider. `None` leaves the runtime's bound (host
+            // default) executor — a single-model deployment is unaffected.
+            if let Some(exec) =
+                gateway_executor.or_else(|| self.model_route.executor_for(&effective_model))
+            {
+                context = context.with_model_executor(exec);
             }
             if let Some(sink) = sink {
                 context = context.with_stream_sink(sink);

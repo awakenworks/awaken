@@ -29,6 +29,14 @@ use tokio_util::sync::CancellationToken;
 pub type GatewayExecutorFn =
     Arc<dyn Fn(&ResolvedModelEndpoint) -> Option<Arc<dyn LlmExecutor>> + Send + Sync>;
 
+/// Resolves a run's effective model ref to its executor (R1), so a database-less
+/// worker builds the run's configured model with no config service and no
+/// per-session binding — the host injects a closure wrapping its `ExecutorProvider`.
+/// `None` = no provider or an unresolved ref, so the run falls back to the runtime's
+/// bound (host default) executor. This is the *provider* seam: the worker names a
+/// model and gets back an executor, never learning how the model is reached.
+pub type ModelResolverFn = Arc<dyn Fn(&str) -> Option<Arc<dyn LlmExecutor>> + Send + Sync>;
+
 // The serializable durable-run instruction moved to the dispatch contract
 // (ADR-0039 2.1); re-exported so `crate::request::RunExecutionRequest` is stable.
 pub use awaken_run_ingress_contract::request::RunExecutionRequest;
@@ -53,6 +61,11 @@ pub struct RunExecutionContext {
     /// Absent means the durable path cannot honor a gateway grant — a run that
     /// carries one then fails closed (see [`resolve_gateway`](Self::resolve_gateway)).
     gateway_executor: Option<GatewayExecutorFn>,
+    /// Resolves a run's effective model ref to its executor (R1), so a database-less
+    /// worker builds the run's configured model per attempt. Absent means the run
+    /// falls back to the runtime's bound (host default) executor — the pre-provider
+    /// single-model behaviour.
+    model_resolver: Option<ModelResolverFn>,
 }
 
 impl RunExecutionContext {
@@ -65,7 +78,27 @@ impl RunExecutionContext {
             stream_checkpoint: None,
             live_inbox: None,
             gateway_executor: None,
+            model_resolver: None,
         }
+    }
+
+    /// Install the model→executor resolver (R1): a worker-driven run resolves its
+    /// effective model ref (override, else its snapshot binding) to an executor
+    /// through this, so a database-less worker runs the configured model without a
+    /// config service. The worker names a model and gets an executor — it never
+    /// learns *how* the model is reached.
+    #[must_use]
+    pub fn with_model_resolver(mut self, resolve: ModelResolverFn) -> Self {
+        self.model_resolver = Some(resolve);
+        self
+    }
+
+    /// Resolve `model_ref` to its executor via the injected provider, or `None` to
+    /// fall back to the runtime's bound default (no provider / unresolved ref).
+    pub(crate) fn resolve_model(&self, model_ref: &str) -> Option<Arc<dyn LlmExecutor>> {
+        self.model_resolver
+            .as_ref()
+            .and_then(|resolve| resolve(model_ref))
     }
 
     /// Install the cloud-managed-gateway executor builder (ADR-0004): a worker-driven

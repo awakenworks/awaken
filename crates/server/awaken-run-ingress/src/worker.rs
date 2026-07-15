@@ -112,6 +112,14 @@ impl<S: Dispatch> DispatchWorker<S> {
         self
     }
 
+    /// Install the model→executor resolver (R1), so a worker-driven run resolves its
+    /// effective model ref to the configured executor without a config service.
+    #[must_use]
+    pub fn with_model_resolver(mut self, resolve: crate::request::ModelResolverFn) -> Self {
+        self.exec = self.exec.with_model_resolver(resolve);
+        self
+    }
+
     /// Override the lease duration.
     #[must_use]
     pub fn with_lease_ms(mut self, lease_ms: u64) -> Self {
@@ -217,14 +225,32 @@ impl<S: Dispatch> DispatchWorker<S> {
         // owner (whose lease lapsed and was re-claimed under a higher epoch) is
         // rejected and abandons instead of clobbering the reclaimer's dispatch.
         let lease_epoch = claimed.lease.epoch;
-        // Honor a per-run cloud-managed gateway grant (ADR-0004): resolve it once,
-        // before the activation is consumed, and route every inference in this drive
-        // through the gateway executor. A gateway grant this worker cannot dial fails
-        // the drive closed here (never degrading to local credentials); a local grant
-        // yields `None` and the runtime's bound executor drives the run as before.
+        // Resolve this run's model to an executor once, before the activation is
+        // consumed, and route every inference in this drive through it. A gateway
+        // grant (ADR-0004) wins — fail closed if this worker cannot dial it, never
+        // degrading to local credentials — else the run's effective model (its
+        // per-run override, else its snapshot binding) is resolved through the
+        // injected provider. `None` leaves the runtime's bound (host default)
+        // executor, so a single-model deployment is unaffected.
+        let effective_model = claimed
+            .request
+            .activation
+            .model_ref_override
+            .clone()
+            .unwrap_or_else(|| {
+                claimed
+                    .request
+                    .activation
+                    .snapshot
+                    .resolved_spec
+                    .model_binding
+                    .model_ref
+                    .clone()
+            });
         let gateway = self
             .exec
-            .resolve_gateway(&claimed.request.activation.model_access)?;
+            .resolve_gateway(&claimed.request.activation.model_access)?
+            .or_else(|| self.exec.resolve_model(&effective_model));
         // Continue the admitting request's trace across the durable queue boundary:
         // this `wake.dispatch` span's remote parent is the persisted traceparent, so
         // the run driven below (`runtime.run` → …) nests under the trace that
