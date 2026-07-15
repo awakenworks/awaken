@@ -69,10 +69,18 @@ async fn postgres_commit_backs_execute_resume_and_survives_restart() {
             .await
             .expect("restart"),
     );
-    assert_eq!(restarted.commit_count(), 1, "the park survives restart");
+    // Per-step durability: the input commits at the first step boundary and the park
+    // commits the waiting checkpoint, so a parked run leaves TWO committed checkpoints
+    // (the same shape `durable_memory` asserts for a completing run). A fresh
+    // coordinator warm-loads both from the shared database.
+    assert_eq!(
+        restarted.commit_count(),
+        2,
+        "both checkpoints survive restart"
+    );
     assert!(
         ThreadReader::waiting_ticket(&*restarted, &RunId("run-1".to_string())).is_some(),
-        "the active ticket rehydrated"
+        "the active ticket rehydrated — the park survives restart"
     );
 
     // Resume against the rehydrated reader: the pending tool runs and the run ends.

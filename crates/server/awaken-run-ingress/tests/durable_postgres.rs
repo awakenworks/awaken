@@ -337,7 +337,10 @@ async fn lease_renewal_on_postgres() {
 #[tokio::test]
 async fn two_workers_claim_distinct_runs_on_postgres() {
     // The durable store is already a distributed queue: two concurrent claims
-    // (FOR UPDATE SKIP LOCKED) take different runs, never the same one.
+    // (FOR UPDATE SKIP LOCKED) take different runs, never the same one. The two runs
+    // are on DISTINCT threads — the single-writer-per-thread invariant (ADR-0022)
+    // makes at most one run per thread claimable at a time, so two claimable runs must
+    // live on different threads for this concurrency property to be meaningful.
     let Some(pool) = harness::schema_pool("t_pg_multi").await else {
         return;
     };
@@ -345,11 +348,11 @@ async fn two_workers_claim_distinct_runs_on_postgres() {
         .await
         .expect("dispatch");
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunExecutionRequest::new(activation_on("run-1", "thread-1")))
         .await
         .unwrap();
     store
-        .enqueue(RunExecutionRequest::new(activation("run-2")))
+        .enqueue(RunExecutionRequest::new(activation_on("run-2", "thread-2")))
         .await
         .unwrap();
 
