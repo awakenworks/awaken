@@ -30,6 +30,25 @@ async fn create_put_get_exists_and_scope_by_workspace(store: &dyn MemoryBlobStor
         Some(&b"other"[..])
     );
     assert_eq!(store.get("ws1", "memstore_x").await.unwrap(), None);
+
+    // A crafted `../` id addresses one safe blob: put and get sanitize identically, so
+    // it round-trips and can never escape the store root. A very long id is bounded to
+    // a stem, not a panic or an over-NAME_MAX filename.
+    store.put("wsC", "../../etc/passwd", b"safe").await.unwrap();
+    assert_eq!(
+        store
+            .get("wsC", "../../etc/passwd")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(&b"safe"[..])
+    );
+    let long = "x".repeat(500);
+    store.put("wsC", &long, b"bounded").await.unwrap();
+    assert_eq!(
+        store.get("wsC", &long).await.unwrap().as_deref(),
+        Some(&b"bounded"[..])
+    );
 }
 
 #[tokio::test]
