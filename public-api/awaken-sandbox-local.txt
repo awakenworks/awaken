@@ -4,8 +4,6 @@ pub awaken_sandbox_local::Mount::Resource(awaken_sandbox_local::ResourceMount)
 impl awaken_sandbox_local::Mount
 pub fn awaken_sandbox_local::Mount::from_value(&serde_json::value::Value) -> core::option::Option<awaken_sandbox_local::Mount>
 pub fn awaken_sandbox_local::Mount::to_value(&self) -> serde_json::value::Value
-pub enum awaken_sandbox_local::ProvisionKind
-pub awaken_sandbox_local::ProvisionKind::Resource
 pub struct awaken_sandbox_local::BlobLru
 impl awaken_sandbox_local::BlobLru
 pub fn awaken_sandbox_local::BlobLru::new(usize) -> Self
@@ -13,23 +11,6 @@ pub struct awaken_sandbox_local::DiscoveredSkillFile
 pub awaken_sandbox_local::DiscoveredSkillFile::content: alloc::string::String
 pub awaken_sandbox_local::DiscoveredSkillFile::dir: alloc::string::String
 pub awaken_sandbox_local::DiscoveredSkillFile::id: alloc::string::String
-pub struct awaken_sandbox_local::Environment
-impl awaken_sandbox_local::Environment
-pub fn awaken_sandbox_local::Environment::commit_and_push(&self, &str, core::option::Option<&str>, &str) -> core::result::Result<bool, awaken_sandbox_local::SandboxError>
-pub fn awaken_sandbox_local::Environment::hand_tools(&self) -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
-pub fn awaken_sandbox_local::Environment::id(&self) -> &str
-pub fn awaken_sandbox_local::Environment::list_files(&self, &str) -> alloc::vec::Vec<(alloc::string::String, alloc::vec::Vec<u8>)>
-pub fn awaken_sandbox_local::Environment::new(impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_sandbox_local::HandTool>>) -> Self
-pub fn awaken_sandbox_local::Environment::provision_repo(&self, &str, &str, core::option::Option<&str>, core::option::Option<&str>) -> core::result::Result<(), awaken_sandbox_local::SandboxError>
-pub fn awaken_sandbox_local::Environment::receipt(&self) -> &awaken_sandbox_local::ProvisionReceipt
-pub fn awaken_sandbox_local::Environment::resources(&self) -> &[awaken_sandbox_local::ResourceRef]
-pub fn awaken_sandbox_local::Environment::scan_skill_dir(&self, &str) -> alloc::vec::Vec<awaken_sandbox_local::DiscoveredSkillFile>
-pub fn awaken_sandbox_local::Environment::tools(&self) -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
-pub fn awaken_sandbox_local::Environment::with_receipt(self, awaken_sandbox_local::ProvisionReceipt) -> Self
-pub fn awaken_sandbox_local::Environment::with_resources(self, alloc::vec::Vec<awaken_sandbox_local::ResourceRef>) -> Self
-pub fn awaken_sandbox_local::Environment::with_root(self, impl core::convert::Into<std::path::PathBuf>) -> Self
-impl core::fmt::Debug for awaken_sandbox_local::Environment
-pub fn awaken_sandbox_local::Environment::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct awaken_sandbox_local::EscapeError(pub alloc::string::String)
 pub struct awaken_sandbox_local::HandOutput
 pub awaken_sandbox_local::HandOutput::content: alloc::string::String
@@ -61,6 +42,11 @@ pub fn awaken_sandbox_local::LocalProvider::capabilities(&self) -> awaken_provis
 pub fn awaken_sandbox_local::LocalProvider::create<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::spec::SandboxSpec) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_provisioning_contract::sandbox::Sandbox>, awaken_provisioning_contract::sandbox::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_sandbox_local::LocalSandbox
 impl awaken_sandbox_local::LocalSandbox
+pub fn awaken_sandbox_local::LocalSandbox::commit_and_push(&self, &str, core::option::Option<&str>, &str) -> core::result::Result<bool, awaken_provisioning_contract::sandbox::SandboxError>
+pub fn awaken_sandbox_local::LocalSandbox::list_files(&self, &str) -> alloc::vec::Vec<(alloc::string::String, alloc::vec::Vec<u8>)>
+pub fn awaken_sandbox_local::LocalSandbox::provision_repo(&self, &str, &str, core::option::Option<&str>, core::option::Option<&str>) -> core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>
+pub fn awaken_sandbox_local::LocalSandbox::rooted_tools(&self) -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
+pub fn awaken_sandbox_local::LocalSandbox::scan_skill_dir(&self, &str) -> alloc::vec::Vec<awaken_sandbox_local::DiscoveredSkillFile>
 pub async fn awaken_sandbox_local::LocalSandbox::spawn_agent(&self, awaken_provisioning_contract::spec::Command) -> core::result::Result<(alloc::boxed::Box<dyn awaken_provisioning_contract::sandbox::ProcessHandle>, alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>), awaken_provisioning_contract::sandbox::SandboxError>
 impl awaken_provisioning_contract::sandbox::Sandbox for awaken_sandbox_local::LocalSandbox
 pub fn awaken_sandbox_local::LocalSandbox::artifacts<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_provisioning_contract::vocab::Artifact>, awaken_provisioning_contract::sandbox::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
@@ -74,12 +60,6 @@ pub fn awaken_sandbox_local::LocalSandbox::realized(&self) -> &[awaken_provision
 pub fn awaken_sandbox_local::LocalSandbox::renew_lease<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_sandbox_local::LocalSandbox::spawn<'life0, 'async_trait>(&'life0 self, awaken_provisioning_contract::spec::Command) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_provisioning_contract::sandbox::ProcessHandle>, awaken_provisioning_contract::sandbox::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_sandbox_local::LocalSandbox::status<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_provisioning_contract::sandbox::SandboxStatus, awaken_provisioning_contract::sandbox::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub struct awaken_sandbox_local::LocalSandboxProvider
-impl awaken_sandbox_local::LocalSandboxProvider
-pub fn awaken_sandbox_local::LocalSandboxProvider::new(impl core::convert::Into<std::path::PathBuf>) -> Self
-impl awaken_sandbox_local::SandboxProvider for awaken_sandbox_local::LocalSandboxProvider
-pub fn awaken_sandbox_local::LocalSandboxProvider::create<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_sandbox_local::SandboxSpec) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_sandbox_local::Environment, awaken_sandbox_local::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_sandbox_local::LocalSandboxProvider::teardown<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_sandbox_local::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_sandbox_local::NamespaceProvider
 impl awaken_sandbox_local::NamespaceProvider
 pub async fn awaken_sandbox_local::NamespaceProvider::create_sandbox(&self, &awaken_provisioning_contract::spec::SandboxSpec) -> core::result::Result<awaken_sandbox_local::NamespaceSandbox, awaken_provisioning_contract::sandbox::SandboxError>
@@ -108,31 +88,12 @@ pub fn awaken_sandbox_local::NamespaceSandbox::realized(&self) -> &[awaken_provi
 pub fn awaken_sandbox_local::NamespaceSandbox::renew_lease<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_sandbox_local::NamespaceSandbox::spawn<'life0, 'async_trait>(&'life0 self, awaken_provisioning_contract::spec::Command) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_provisioning_contract::sandbox::ProcessHandle>, awaken_provisioning_contract::sandbox::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_sandbox_local::NamespaceSandbox::status<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_provisioning_contract::sandbox::SandboxStatus, awaken_provisioning_contract::sandbox::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub struct awaken_sandbox_local::ProvisionEntry
-pub awaken_sandbox_local::ProvisionEntry::content_hash: alloc::string::String
-pub awaken_sandbox_local::ProvisionEntry::id: alloc::string::String
-pub awaken_sandbox_local::ProvisionEntry::kind: awaken_sandbox_local::ProvisionKind
-pub struct awaken_sandbox_local::ProvisionReceipt
-pub awaken_sandbox_local::ProvisionReceipt::entries: alloc::vec::Vec<awaken_sandbox_local::ProvisionEntry>
 pub struct awaken_sandbox_local::ResourceMount
 pub awaken_sandbox_local::ResourceMount::content: alloc::string::String
 pub awaken_sandbox_local::ResourceMount::content_hash: alloc::string::String
 pub awaken_sandbox_local::ResourceMount::id: alloc::string::String
 pub awaken_sandbox_local::ResourceMount::logical_path: alloc::string::String
-pub struct awaken_sandbox_local::ResourceRef
-pub awaken_sandbox_local::ResourceRef::content_hash: alloc::string::String
-pub awaken_sandbox_local::ResourceRef::id: alloc::string::String
-pub awaken_sandbox_local::ResourceRef::logical_path: alloc::string::String
 pub struct awaken_sandbox_local::SandboxError(pub alloc::string::String)
-pub struct awaken_sandbox_local::SandboxSpec
-pub awaken_sandbox_local::SandboxSpec::constraints: core::option::Option<serde_json::value::Value>
-pub awaken_sandbox_local::SandboxSpec::deny_egress: bool
-pub awaken_sandbox_local::SandboxSpec::id: alloc::string::String
-pub awaken_sandbox_local::SandboxSpec::mounts: alloc::vec::Vec<serde_json::value::Value>
-impl awaken_sandbox_local::SandboxSpec
-pub fn awaken_sandbox_local::SandboxSpec::new(impl core::convert::Into<alloc::string::String>) -> Self
-pub fn awaken_sandbox_local::SandboxSpec::with_deny_egress(self, bool) -> Self
-pub fn awaken_sandbox_local::SandboxSpec::with_mount(self, awaken_sandbox_local::Mount) -> Self
 pub struct awaken_sandbox_local::WorkspaceBlobCache
 impl awaken_sandbox_local::WorkspaceBlobCache
 pub fn awaken_sandbox_local::WorkspaceBlobCache::new(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_provisioning_contract::sandbox::BlobSource>, usize) -> Self
@@ -142,12 +103,6 @@ pub fn awaken_sandbox_local::WorkspaceBlobCache::get<'life0, 'life1, 'async_trai
 pub trait awaken_sandbox_local::HandTool: core::marker::Send + core::marker::Sync
 pub fn awaken_sandbox_local::HandTool::id(&self) -> &str
 pub fn awaken_sandbox_local::HandTool::run<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_sandbox_local::HandOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub trait awaken_sandbox_local::SandboxProvider: core::marker::Send + core::marker::Sync
-pub fn awaken_sandbox_local::SandboxProvider::create<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_sandbox_local::SandboxSpec) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_sandbox_local::Environment, awaken_sandbox_local::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_sandbox_local::SandboxProvider::teardown<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_sandbox_local::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-impl awaken_sandbox_local::SandboxProvider for awaken_sandbox_local::LocalSandboxProvider
-pub fn awaken_sandbox_local::LocalSandboxProvider::create<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_sandbox_local::SandboxSpec) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_sandbox_local::Environment, awaken_sandbox_local::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_sandbox_local::LocalSandboxProvider::teardown<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_sandbox_local::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_sandbox_local::bubblewrap_argv(&awaken_sandbox_local::namespace::RenderInput<'_>) -> alloc::vec::Vec<alloc::string::String>
 pub fn awaken_sandbox_local::content_fingerprint(&[u8]) -> alloc::string::String
 pub fn awaken_sandbox_local::sandbox_exec_argv(&awaken_sandbox_local::namespace::RenderInput<'_>) -> alloc::vec::Vec<alloc::string::String>

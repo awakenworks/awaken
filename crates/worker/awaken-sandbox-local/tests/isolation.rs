@@ -1,15 +1,29 @@
-//! Integration test: two environments' rooted tools are isolated, and a path
-//! escape fails closed — exercised through the real built-in `read`/`write`.
-#![allow(deprecated)] // exercises the legacy LocalSandboxProvider adapter pending the pc::Sandbox rebase.
+//! Integration test: two Workdir sandboxes' rooted tools are isolated, and a path
+//! escape fails closed — exercised through the real built-in `read`/`write` over the
+//! pc `SandboxProvider` (`LocalProvider` → `LocalSandbox::rooted_tools`).
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
+use awaken_provisioning_contract as pc;
+use awaken_provisioning_contract::Sandbox as _;
 use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
-use awaken_sandbox_local::{LocalSandboxProvider, SandboxProvider, SandboxSpec};
+use awaken_sandbox_local::{LocalProvider, LocalSandbox};
 
-static SEQ: AtomicU64 = AtomicU64::new(0);
+/// A bare Workdir spec, egress denied when `deny` (carried on the opaque `extra`).
+fn spec(scope: &str, deny: bool) -> pc::SandboxSpec {
+    pc::SandboxSpec {
+        scope: scope.into(),
+        isolation: pc::IsolationClass::Workdir,
+        mounts: Vec::new(),
+        env: Vec::new(),
+        network: pc::NetworkPolicy::Unrestricted,
+        outputs_path: "/outputs".into(),
+        limits: pc::ResourceLimits::default(),
+        lease_ttl_secs: None,
+        extra: deny.then(|| serde_json::json!({ "deny_egress": true })),
+    }
+}
 
 async fn invoke(
     tools: &[Arc<dyn RawTool>],
@@ -29,18 +43,15 @@ async fn invoke(
 }
 
 #[tokio::test]
-async fn environments_are_isolated_and_escapes_fail_closed() {
-    let base = std::env::temp_dir().join(format!(
-        "awaken-sbx-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::SeqCst)
-    ));
-    let provider = LocalSandboxProvider::new(&base);
+async fn sandboxes_are_isolated_and_escapes_fail_closed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path();
+    let provider = LocalProvider::new(base);
 
-    let env_a = provider.create(&SandboxSpec::new("A")).await.unwrap();
-    let env_b = provider.create(&SandboxSpec::new("B")).await.unwrap();
-    let tools_a = env_a.hand_tools();
-    let tools_b = env_b.hand_tools();
+    let env_a: LocalSandbox = provider.create_sandbox(&spec("A", false)).await.unwrap();
+    let env_b: LocalSandbox = provider.create_sandbox(&spec("B", false)).await.unwrap();
+    let tools_a = env_a.rooted_tools();
+    let tools_b = env_b.rooted_tools();
 
     // A writes a secret via the rooted write tool; it lands inside A's root.
     invoke(
@@ -94,8 +105,8 @@ async fn environments_are_isolated_and_escapes_fail_closed() {
         .is_err()
     );
 
-    provider.teardown("A").await.unwrap();
-    provider.teardown("B").await.unwrap();
+    env_a.dispose().await.unwrap();
+    env_b.dispose().await.unwrap();
 }
 
 /// True only when bwrap + unprivileged userns work AND this host can actually reach
@@ -133,21 +144,14 @@ async fn deny_egress_blocks_bash_network_but_unrestricted_allows_it() {
         eprintln!("skipping: bwrap/userns or host DNS unavailable on this host");
         return;
     }
-    let base = std::env::temp_dir().join(format!(
-        "awaken-sbx-egress-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::SeqCst)
-    ));
-    let provider = LocalSandboxProvider::new(&base);
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = LocalProvider::new(tmp.path());
     let probe = "getent hosts example.com >/dev/null 2>&1 && echo NET-UP || echo NET-DOWN";
 
     // Egress denied → the bash tool has no route to the network.
-    let denied = provider
-        .create(&SandboxSpec::new("iso").with_deny_egress(true))
-        .await
-        .unwrap();
+    let denied = provider.create_sandbox(&spec("iso", true)).await.unwrap();
     let out = invoke(
-        &denied.hand_tools(),
+        &denied.rooted_tools(),
         "bash",
         serde_json::json!({ "command": probe }),
     )
@@ -160,12 +164,9 @@ async fn deny_egress_blocks_bash_network_but_unrestricted_allows_it() {
     );
 
     // Same command, egress allowed → resolution works (proves the flag is the cause).
-    let allowed = provider
-        .create(&SandboxSpec::new("open").with_deny_egress(false))
-        .await
-        .unwrap();
+    let allowed = provider.create_sandbox(&spec("open", false)).await.unwrap();
     let out = invoke(
-        &allowed.hand_tools(),
+        &allowed.rooted_tools(),
         "bash",
         serde_json::json!({ "command": probe }),
     )

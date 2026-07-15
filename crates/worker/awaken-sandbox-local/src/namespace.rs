@@ -737,7 +737,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(deprecated)] // legacy SandboxProvider trait in scope via glob; NamespaceProvider itself is pc-native.
     async fn spawn_agent_launches_an_opaque_process_confined_by_bwrap() {
         if !bwrap_usable().await {
             eprintln!("skipping: no usable bwrap / user namespaces");
