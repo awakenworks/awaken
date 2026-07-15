@@ -10,10 +10,9 @@
 //! refuses to place a `Namespace`/`Container` workload here — that is the Bwrap /
 //! container tier's job. This provider is for trusted, single-machine execution
 //! (CI, dev, the runtime's own in-process tools) plus the full artifact/reattach/
-//! lease lifecycle the contract requires.
-//!
-//! It is additive: the pre-contract [`crate::Environment`] / [`crate::SandboxProvider`]
-//! surface used elsewhere is untouched (a later slice may unify them).
+//! lease lifecycle the contract requires. The Workdir [`LocalSandbox`] also carries
+//! the host-tier helpers (rooted tools, repo clone/write-back, artifact + skill
+//! scanning) the runtime host composes into each session.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
