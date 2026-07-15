@@ -254,6 +254,31 @@ fn cancel_on_unknown_run_is_not_active() {
     );
 }
 
+#[test]
+fn pause_on_unknown_run_is_not_active() {
+    let runtime = Runtime::new();
+    assert_eq!(
+        runtime.deliver(LiveCommand::Pause {
+            run_id: RunId("ghost".to_string()),
+        }),
+        Err(ControlError::NotActive)
+    );
+}
+
+#[test]
+fn wake_on_unknown_run_is_not_active() {
+    // G5: a wake for a run with no live subscriber is a hard error, not a silent
+    // no-op — the untested half of the Wake rule (an active run is the accepted one).
+    let runtime = Runtime::new();
+    assert_eq!(
+        runtime.deliver(LiveCommand::Wake {
+            run_id: RunId("ghost".to_string()),
+            reason: "nudge".to_string(),
+        }),
+        Err(ControlError::NotActive)
+    );
+}
+
 #[tokio::test]
 async fn direct_ingress_runs_inline_and_rejects_durable() {
     let runtime = Arc::new(Runtime::new().with_llm(Arc::new(TextLlm)));

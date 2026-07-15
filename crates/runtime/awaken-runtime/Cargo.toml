@@ -17,6 +17,10 @@ tokio-util.workspace = true
 # `FutureExt::catch_unwind` isolates a panicking third-party tool at the executor
 # boundary (a tool impl bug must not crash the whole run).
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# Poison-free mutexes for the runtime's in-memory registries and circuit breaker:
+# a panic under one lock must not fail-open the breaker or silently drop a run's
+# cancellation registration, so there is no poison state to (in)consistently handle.
+parking_lot = "0.12"
 # Run/loop/tool spans (`#[instrument]`), exported through the global subscriber the
 # service binary installs; this crate emits spans, never wires an exporter.
 tracing = "0.1"

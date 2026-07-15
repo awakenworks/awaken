@@ -20,7 +20,10 @@ use awaken_runtime_contract::capability::{
 };
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
-use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
+use awaken_runtime_contract::llm::{
+    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
+};
+use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
 use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, HookReaction, IdBound, PhaseContext, PhaseHook, PhaseHookPoint,
     Plugin, PluginManifest,
@@ -30,6 +33,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
+use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 
 struct TextLlm;
 
@@ -117,6 +121,143 @@ impl Plugin for OutOfBoundPlugin {
     }
 }
 
+/// Requests a tool on its first turn, then ends with text — so a gate decision on
+/// that one call is observable.
+struct ToolThenTextLlm {
+    calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for ToolThenTextLlm {
+    async fn infer(
+        &self,
+        _request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        let output = if n == 0 {
+            AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "c1".to_string(),
+                tool_id: "echo".to_string(),
+                arguments: serde_json::json!({}),
+            }])
+        } else {
+            AssistantOutput::text("done".to_string())
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+/// The `echo` tool — counts executions so a blocked call is provably never run.
+struct CountingEcho {
+    ran: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl RawTool for CountingEcho {
+    fn id(&self) -> &str {
+        "echo"
+    }
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        self.ran.fetch_add(1, Ordering::SeqCst);
+        Ok(ToolOutput::ok(call.call_id, "echoed"))
+    }
+}
+
+/// A plugin-contributed tool gate that always blocks — a pre-execution decision
+/// that can only restrict, never grant (G21).
+struct NarrowGate;
+
+#[async_trait::async_trait]
+impl ToolGateHook for NarrowGate {
+    fn id(&self) -> &str {
+        "narrow"
+    }
+    async fn gate(&self, _ctx: &PermissionContext, _state: &Store) -> GateOutcome {
+        GateOutcome::Block {
+            reason: "plugin policy forbids echo".to_string(),
+        }
+    }
+}
+
+struct NarrowGatePlugin;
+
+impl Plugin for NarrowGatePlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: "narrower".to_string(),
+            requires: Vec::new(),
+            config_sections: Vec::new(),
+            bound: CapabilityBound {
+                tool_gates: IdBound::Exact(vec!["narrow".to_string()]),
+                ..Default::default()
+            },
+        }
+    }
+    fn resolve(&self) -> Contributions {
+        let mut c = Contributions::new("narrower");
+        c.tool_gates.push(Arc::new(NarrowGate));
+        c
+    }
+}
+
+/// An absolute host gate that always denies — the host verdict is final (G21).
+struct DenyHostGate;
+
+#[async_trait::async_trait]
+impl ToolGateHook for DenyHostGate {
+    async fn gate(&self, _ctx: &PermissionContext, _state: &Store) -> GateOutcome {
+        GateOutcome::Block {
+            reason: "host denied".to_string(),
+        }
+    }
+}
+
+/// A plugin gate that records whether it was consulted at all — used to prove the
+/// host verdict masks (short-circuits) the plugin chain.
+struct RecordingGate {
+    consulted: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl ToolGateHook for RecordingGate {
+    fn id(&self) -> &str {
+        "recgate"
+    }
+    async fn gate(&self, _ctx: &PermissionContext, _state: &Store) -> GateOutcome {
+        self.consulted.fetch_add(1, Ordering::SeqCst);
+        GateOutcome::Allow
+    }
+}
+
+struct RecordingGatePlugin {
+    consulted: Arc<AtomicUsize>,
+}
+
+impl Plugin for RecordingGatePlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: "recorder".to_string(),
+            requires: Vec::new(),
+            config_sections: Vec::new(),
+            bound: CapabilityBound {
+                tool_gates: IdBound::Exact(vec!["recgate".to_string()]),
+                ..Default::default()
+            },
+        }
+    }
+    fn resolve(&self) -> Contributions {
+        let mut c = Contributions::new("recorder");
+        c.tool_gates.push(Arc::new(RecordingGate {
+            consulted: self.consulted.clone(),
+        }));
+        c
+    }
+}
+
 fn install(runtime: &Runtime) {
     let fingerprint = CatalogFingerprint("catalog-a".to_string());
     runtime
@@ -168,6 +309,90 @@ fn activation(plugin_ids: Vec<String>) -> RunActivation {
         trace: Default::default(),
         model_access: Default::default(),
     }
+}
+
+#[tokio::test]
+async fn a_host_deny_masks_the_plugin_gate_chain() {
+    // G21: the host permission gate is absolute. When it denies, the plugin gate
+    // chain is NOT consulted — the host verdict short-circuits (masks) it, and the
+    // block reason is the host's.
+    let consulted = Arc::new(AtomicUsize::new(0));
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(ToolThenTextLlm {
+            calls: AtomicUsize::new(0),
+        }))
+        .with_tool(Arc::new(CountingEcho { ran: ran.clone() }))
+        .with_gate(Arc::new(DenyHostGate))
+        .with_plugin(Arc::new(RecordingGatePlugin {
+            consulted: consulted.clone(),
+        }));
+    install(&runtime);
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
+    let phase = runtime
+        .execute(activation(vec!["recorder".to_string()]), context)
+        .await
+        .expect("runs");
+
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        0,
+        "the host-denied tool never runs"
+    );
+    assert_eq!(
+        consulted.load(Ordering::SeqCst),
+        0,
+        "a host deny masks the plugin gate chain — it is never consulted"
+    );
+    assert!(
+        commit
+            .committed()
+            .messages
+            .iter()
+            .any(|m| m.role == Role::Tool && m.text_content().contains("host denied")),
+        "the block carries the host's reason"
+    );
+}
+
+#[tokio::test]
+async fn a_plugin_tool_gate_narrows_an_absent_host_allow() {
+    // G21 gate chain: with no host permission gate (the default is Allow), a
+    // plugin-contributed tool gate is still consulted (`env.tool_gates()`) and the
+    // first non-Allow wins — a plugin can restrict what the host permits, never
+    // widen it. The requested tool is blocked and never executes.
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(ToolThenTextLlm {
+            calls: AtomicUsize::new(0),
+        }))
+        .with_tool(Arc::new(CountingEcho { ran: ran.clone() }))
+        .with_plugin(Arc::new(NarrowGatePlugin));
+    install(&runtime);
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
+    let phase = runtime
+        .execute(activation(vec!["narrower".to_string()]), context)
+        .await
+        .expect("runs");
+
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        0,
+        "a plugin-blocked tool never executes"
+    );
+    assert!(
+        commit
+            .committed()
+            .messages
+            .iter()
+            .any(|m| m.role == Role::Tool && m.text_content().contains("blocked")),
+        "the model is fed a blocked tool result"
+    );
 }
 
 #[tokio::test]

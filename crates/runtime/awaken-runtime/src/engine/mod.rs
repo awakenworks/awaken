@@ -851,7 +851,7 @@ async fn drive(
         let Some(inference) = inference else {
             runtime
                 .circuit_breaker()
-                .record_abandoned_probe(&resolved.spec.model_binding.model_ref);
+                .record_abandoned_probe(&resolved.spec.model_binding.model_ref, runtime.metrics());
             end = Some(End::Ended(EndCause::Cancelled));
             break;
         };
