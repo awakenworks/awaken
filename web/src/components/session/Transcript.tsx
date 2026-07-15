@@ -119,6 +119,9 @@ export interface TranscriptProps {
   live?: boolean;
   /** Round-trip latency (send → next agent message), measured client-side. */
   onLatency?: (ms: number) => void;
+  /** Prepended (invisibly to the reader) to each sent message — used to inject
+   * task context, e.g. "refine agent X via admin_patch_agent". */
+  contextPrefix?: string;
 }
 
 export default function Transcript({
@@ -131,6 +134,7 @@ export default function Transcript({
   live = true,
   onLatency,
   fixedModel,
+  contextPrefix,
 }: TranscriptProps) {
   const app = useApp();
   const { log, results, pendingIds, running, freshCount, applyPending, send, sendError, loadError } =
@@ -172,10 +176,13 @@ export default function Transcript({
     if (!draft.trim()) return;
     const useModel = fixedModel || model;
     sentAt.current = Date.now();
+    // A short context tag is prepended to steer the model (e.g. "refine agent X"); it
+    // reads as context in the echoed user bubble.
+    const text = contextPrefix ? `${contextPrefix}\n${draft.trim()}` : draft.trim();
     send([
       {
         type: "user.message",
-        content: [{ type: "text", text: draft.trim() }],
+        content: [{ type: "text", text }],
         ...(useModel ? { model: useModel } : {}),
       },
     ]);
@@ -194,6 +201,17 @@ export default function Transcript({
       {loadError && <div className="err">{loadError.message}</div>}
       {log.map((ev) => {
         switch (ev.type) {
+          case "user.message":
+            return (
+              <Card
+                key={ev.id}
+                style={{ padding: "8px 12px", maxWidth: "88%", alignSelf: "flex-end", background: "var(--soft)" }}
+              >
+                <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.5 }}>
+                  {textOf("content" in ev ? (ev.content as ContentBlock[]) : undefined)}
+                </div>
+              </Card>
+            );
           case "agent.message":
             return (
               <Card key={ev.id} style={{ padding: "10px 14px", maxWidth: "92%" }}>
