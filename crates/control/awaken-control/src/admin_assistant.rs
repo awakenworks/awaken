@@ -64,6 +64,9 @@ impl CatalogCapabilityReader {
                 .map(|p| PluginInfo {
                     id: p.id.clone(),
                     schema_keys: p.schema_keys.clone(),
+                    // Carry the plugin's JSON Schema through so the assistant authors a
+                    // conformant section rather than guessing its shape.
+                    config_schema: p.config_schema.clone(),
                 })
                 .collect(),
         }

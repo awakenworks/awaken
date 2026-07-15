@@ -82,15 +82,32 @@ pub fn admin_assistant_config() -> AgentConfig {
 /// assistant's ordinary `AgentConfig` like any agent's instructions (D4) — no locked
 /// prompt, no policy overlay.
 pub const ADMIN_ASSISTANT_INSTRUCTIONS: &str = "\
-You are the platform's management assistant. You help an organization's operators \
-author and refine agent configurations for this platform. Use \
-`admin_get_platform_capabilities` to see the available models, providers, tools, and \
-plugins before proposing anything. Use `admin_draft_agent` to author a new agent \
-configuration from the operator's intent (it is saved as an unpublished draft), \
-`admin_patch_agent` to incrementally refine a saved draft, and `admin_validate_agent` \
-to check that a draft compiles. You never publish: publishing a configuration is the \
-operator's decision in the console, not something you do. Only propose configurations \
-that validate cleanly, and explain the trade-offs of what you propose.";
+You are the platform's management assistant. You turn an operator's plain-English intent \
+into a valid agent configuration for this platform.
+
+WORKFLOW (follow in order):
+1. ALWAYS call `admin_get_platform_capabilities` first. It returns the available tools \
+and the installable plugins, each WITH its `config_schema` (a JSON Schema for that \
+plugin's config section). Never invent a tool or plugin id that is not listed.
+2. Call `admin_draft_agent` once to author the whole config from intent — id, \
+instructions, tools, tool_overrides, and any plugin sections together. It saves an \
+unpublished draft and validates it.
+3. If a draft fails to validate, read the error and fix it with `admin_patch_agent`; \
+use `admin_validate_agent` to confirm. Iterate until it compiles cleanly.
+4. Briefly tell the operator what you drafted and the trade-offs. NEVER publish — \
+publishing is the operator's decision in the console.
+
+AUTHORING RULES:
+- Plugin sections (e.g. `state_machine`, `permission`, `compact`, `memory`) MUST conform \
+EXACTLY to that plugin's `config_schema` from step 1. Read the schema; match its field \
+names, nesting, and enums precisely — do not guess the shape.
+- `tool_overrides` shape each per entry: `target` is the tool's id; set `alias` to rename \
+it for the model and/or `description` to re-describe it. Use it when the operator asks to \
+rename or re-explain a tool.
+- Permissions: prefer least privilege. If the operator wants approval or bans, put it in \
+the `permission` section (a `default_behavior` of `ask`/`deny`, and/or ordered `rules`).
+- Select the minimum tools the task needs; omit tools entirely when none are needed.
+- Only pin a model if the operator names one; otherwise leave it auto-bound.";
 
 /// A cap on a single plugin-config section, so a draft/patch cannot be used to stuff
 /// an unbounded blob into a config (D4: size-bounded).
@@ -162,7 +179,7 @@ impl AuditSink for TracingAuditSink {
 /// The redacted capability snapshot returned by [`CapabilityReader`]. Every field is
 /// a list of ids/names — no secrets, endpoints, or headers — so it is redacted by
 /// construction (D4).
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PlatformCapabilities {
     /// Ids of agents already published in the org.
     pub agents: Vec<String>,
@@ -180,11 +197,16 @@ pub struct PlatformCapabilities {
     pub mcp_servers: Vec<String>,
 }
 
-/// One composable plugin and the config-section keys it reads.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One composable plugin and the config-section keys it reads, plus its full JSON
+/// Schema so the assistant authors a schema-conformant section instead of guessing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PluginInfo {
     pub id: String,
     pub schema_keys: Vec<String>,
+    /// The plugin's `plugin_config` JSON Schema (shape of its config section). Present
+    /// when the platform published one; the assistant conforms to it exactly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_schema: Option<serde_json::Value>,
 }
 
 // ---- The four descriptors --------------------------------------------------------

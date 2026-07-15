@@ -1291,7 +1291,7 @@ pub async fn build_config_router() -> Router {
     let reader = Arc::new(awaken_control::CatalogCapabilityReader::new(
         &catalog,
         &global,
-        &awaken_runtime_host::platform_plugin_capabilities(),
+        &awaken_runtime_host::authorable_config_sections(),
     ));
     let validator = Arc::new(awaken_control::ConfigServiceDraftValidator::new(
         plane.clone(),

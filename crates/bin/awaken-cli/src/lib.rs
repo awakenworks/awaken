@@ -628,7 +628,7 @@ async fn management_router_over(
             // The installable plugins (state_machine / memory / compact) so the assistant
             // knows it CAN author a state machine etc. — not an empty list (it would
             // otherwise refuse, thinking no plugins exist).
-            &awaken_runtime_host::platform_plugin_capabilities(),
+            &awaken_runtime_host::authorable_config_sections(),
         )),
         Arc::new(awaken_control::ConfigServiceDraftValidator::new(
             plane.clone(),

@@ -269,6 +269,22 @@ pub fn platform_plugin_capabilities() -> Vec<PluginCapability> {
     ]
 }
 
+/// Every `plugin_config` section an author may set, WITH its JSON Schema: the
+/// installable plugins PLUS the always-on `permission` policy. Permission is a
+/// `plugin_config` section (not an installable plugin), so it is absent from
+/// [`platform_plugin_capabilities`]; the assistant needs it advertised — with its
+/// schema — or it cannot author a permission gate (it does not know the key/shape).
+pub fn authorable_config_sections() -> Vec<PluginCapability> {
+    let mut sections = platform_plugin_capabilities();
+    sections.push(PluginCapability {
+        id: PERMISSION_CONFIG_KEY.to_string(),
+        schema_keys: vec![PERMISSION_CONFIG_KEY.to_string()],
+        config_schema: Some(awaken_ext_permission::permission_config_schema()),
+        bound: Default::default(),
+    });
+    sections
+}
+
 /// The server's base authorization gate (the declarative permission policy). A
 /// composition-root helper so a caller can wrap it (e.g. to observe file paths for
 /// conditional skills) and re-inject it.
