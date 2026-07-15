@@ -816,6 +816,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn policy_excludes_a_backend_that_cannot_enforce_the_specs_limits() {
+        // A spec asking for cgroup limits must not be placed on a tier that cannot
+        // enforce them — even under a strong isolation class, `non_isolation_ok` bars it.
+        let mut s = spec();
+        s.limits.memory_bytes = Some(512 * 1024 * 1024);
+        let candidates: Vec<Box<dyn SandboxProvider>> = vec![Box::new(ProbeProvider {
+            caps: SandboxCapabilities {
+                resource_limits: false, // strong isolation but cannot enforce limits
+                ..caps(IsolationClass::Container, true)
+            },
+            ready: true,
+        })];
+        let result = select_provider_with_policy(
+            &candidates,
+            &s,
+            &policy(
+                IsolationClass::Workdir,
+                IsolationClass::Workdir,
+                OnUnmet::DegradeWithConsent,
+            ),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(SelectionError::NoCapableBackend)),
+            "a limits-incapable backend is excluded even from the degrade set"
+        );
+    }
+
+    #[tokio::test]
     async fn policy_excludes_a_backend_that_cannot_meet_the_specs_network() {
         // A restricted-egress spec needs network isolation; a non-isolating backend is
         // excluded from the floor set even if its isolation class qualifies.
