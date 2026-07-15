@@ -58,10 +58,10 @@ async fn run_installs_and_executes_in_one_call() {
 
 #[tokio::test]
 async fn per_run_model_executor_override_wins_over_the_runtime_default() {
-    // ADR-0004: a run whose context carries a `model_executor` override (e.g. a
-    // gateway-dialing executor built from its access grant) routes its inference
-    // through that executor, NOT the runtime's bound default. This is the seam a
-    // secretless worker uses to honor a per-run cloud-managed grant.
+    // ADR-0004: a run whose context carries a `model_executor` (the executor the host
+    // resolved from the run's model ref) routes its inference through that executor,
+    // NOT the runtime's bound default. This is the provider seam a database-less
+    // worker uses to run each run's own configured model.
     let runtime = Runtime::new().with_llm(Arc::new(TextLlm("DEFAULT")));
     let config = RunnableConfig::builder("assistant")
         .model(ModelBinding::new("demo", "stub", "stub"))

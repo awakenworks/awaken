@@ -147,3 +147,60 @@ impl RunExecutionContext {
         context
     }
 }
+
+#[cfg(test)]
+mod resolve_seam_tests {
+    //! Cause-effect coverage for the per-run model resolve seam a database-less
+    //! worker carries. Cause: a model resolver is injected or not, and (when it is)
+    //! resolves the ref or declines. Effect: `resolve_model` returns the provider's
+    //! executor, else `None` — and `None` leaves the run on the runtime's bound
+    //! (host default) executor, so a single-model deployment is unaffected.
+    use std::sync::Arc;
+
+    use awaken_runtime::memory::MemoryCommitCoordinator;
+    use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
+
+    use super::RunExecutionContext;
+
+    struct Labeled(&'static str);
+    #[async_trait::async_trait]
+    impl LlmExecutor for Labeled {
+        async fn infer(
+            &self,
+            _r: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            Ok(ChatResponse {
+                output: AssistantOutput::text(self.0),
+                usage: None,
+                stop_reason: None,
+            })
+        }
+    }
+
+    fn ctx() -> RunExecutionContext {
+        RunExecutionContext::new(Arc::new(MemoryCommitCoordinator::new()))
+    }
+
+    #[test]
+    fn returns_the_injected_providers_executor() {
+        let labeled: Arc<dyn LlmExecutor> = Arc::new(Labeled("resolved"));
+        let l = labeled.clone();
+        let c = ctx().with_model_resolver(Arc::new(move |_ref| Some(l.clone())));
+        assert!(Arc::ptr_eq(
+            &c.resolve_model("any-model").unwrap(),
+            &labeled
+        ));
+    }
+
+    #[test]
+    fn is_none_without_a_resolver() {
+        // No provider injected → None → the run uses the runtime's bound default.
+        assert!(ctx().resolve_model("any-model").is_none());
+    }
+
+    #[test]
+    fn is_none_when_the_resolver_declines_the_ref() {
+        let c = ctx().with_model_resolver(Arc::new(|_ref| None));
+        assert!(c.resolve_model("unknown-model").is_none());
+    }
+}
