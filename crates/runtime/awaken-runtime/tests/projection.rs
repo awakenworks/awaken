@@ -105,6 +105,7 @@ async fn run() -> (MemoryCommitCoordinator, MemoryStreamSink) {
             content: vec![ContentBlock::text("hi")],
         }],
         model_access: Default::default(),
+        model_ref_override: None,
     };
     runtime.execute(activation, context).await.expect("runs");
     (

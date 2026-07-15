@@ -89,6 +89,7 @@ fn activation(fingerprint: &str) -> RunActivation {
             content: vec![ContentBlock::text("hello")],
         }],
         model_access: Default::default(),
+        model_ref_override: None,
     }
 }
 

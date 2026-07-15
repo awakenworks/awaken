@@ -15,6 +15,15 @@ pub struct RunActivation {
     /// default, so a self-hosted run with no gateway works unchanged.
     #[serde(default)]
     pub model_access: ModelAccessGrant,
+    /// Per-run model override (R5): the model ref to run THIS attempt on, when it
+    /// differs from the agent's published binding. Deliberately OFF the fingerprinted
+    /// snapshot — a per-turn model switch is a run-time choice, not a catalog change,
+    /// so it must not mint a new `catalog_fingerprint` (mirrors how display metadata
+    /// is excluded from the content address). Absent ⇒ the run uses its snapshot's
+    /// `model_binding.model_ref`. This names *which* model to run; the runtime never
+    /// sees *how* it is reached — that is the provider's job at the resolve seam.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_ref_override: Option<String>,
 }
 
 impl RunActivation {
@@ -39,7 +48,15 @@ impl RunActivation {
             snapshot,
             input,
             model_access: ModelAccessGrant::default(),
+            model_ref_override: None,
         }
+    }
+
+    /// Set the per-run model override (R5) — the model ref to run this attempt on.
+    #[must_use]
+    pub fn with_model_ref_override(mut self, model_ref: Option<String>) -> Self {
+        self.model_ref_override = model_ref;
+        self
     }
 
     /// Set the model-access grant (placement/adapter wiring).

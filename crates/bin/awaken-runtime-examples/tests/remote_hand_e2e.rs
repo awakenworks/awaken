@@ -158,6 +158,7 @@ fn activation() -> RunActivation {
             content: vec![ContentBlock::text("please echo")],
         }],
         model_access: Default::default(),
+        model_ref_override: None,
     }
 }
 

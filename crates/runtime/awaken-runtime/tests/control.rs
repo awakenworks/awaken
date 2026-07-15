@@ -112,6 +112,7 @@ fn activation() -> RunActivation {
             content: vec![ContentBlock::text("hi")],
         }],
         model_access: Default::default(),
+        model_ref_override: None,
     }
 }
 

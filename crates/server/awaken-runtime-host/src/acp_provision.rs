@@ -301,6 +301,7 @@ mod tests {
             },
             input: Vec::new(),
             model_access: Default::default(),
+            model_ref_override: None,
         };
         assert_eq!(r.model(&act).unwrap().model, "run-model");
         let env = r.extra_env(&act);

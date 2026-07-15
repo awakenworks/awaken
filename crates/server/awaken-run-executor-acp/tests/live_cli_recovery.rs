@@ -116,6 +116,7 @@ fn activation(cli: &str, prompt: &str) -> RunActivation {
         },
         input: vec![Message::text(MessageId("u1".into()), Role::User, prompt)],
         model_access: Default::default(),
+        model_ref_override: None,
     }
 }
 

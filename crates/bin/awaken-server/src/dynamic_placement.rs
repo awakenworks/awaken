@@ -289,6 +289,7 @@ mod tests {
             },
             input: vec![Message::text(MessageId("u".into()), Role::User, "go")],
             model_access: Default::default(),
+            model_ref_override: None,
         }
     }
 

@@ -307,6 +307,7 @@ fn activation(plugin_ids: Vec<String>) -> RunActivation {
             content: vec![ContentBlock::text("go")],
         }],
         model_access: Default::default(),
+        model_ref_override: None,
     }
 }
 

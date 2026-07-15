@@ -155,6 +155,7 @@ async fn drive(
             content: vec![ContentBlock::text("hi")],
         }],
         model_access: Default::default(),
+        model_ref_override: None,
     };
     let phase = runtime.execute(activation, context).await.expect("runs");
     (phase, Arc::try_unwrap(commit).unwrap_or_default())

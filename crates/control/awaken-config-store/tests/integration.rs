@@ -106,6 +106,7 @@ async fn config_compiles_stores_and_the_runtime_executes_the_snapshot() {
             content: vec![ContentBlock::text("hi")],
         }],
         model_access: Default::default(),
+        model_ref_override: None,
     };
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ctx = RuntimeRunContext::new().with_commit(commit.clone());

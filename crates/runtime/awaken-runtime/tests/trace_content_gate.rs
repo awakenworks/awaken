@@ -127,6 +127,7 @@ fn activation() -> RunActivation {
             content: vec![ContentBlock::text("hello secret-token")],
         }],
         model_access: Default::default(),
+        model_ref_override: None,
     }
 }
 

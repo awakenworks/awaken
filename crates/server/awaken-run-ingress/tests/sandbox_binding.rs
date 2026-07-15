@@ -44,6 +44,7 @@ fn activation(run: &str, thread: &str) -> RunActivation {
         },
         input: vec![],
         model_access: Default::default(),
+        model_ref_override: None,
     }
 }
 
