@@ -482,6 +482,19 @@ impl AgentChannelSource for ContainerChannelSource {
         let thread = activation.thread_id.0.as_str();
         // The container command is fixed, or projected from the run's selected CLI.
         let launch = self.launch.resolve(activation)?;
+        // Deliver this run's declared MCP servers. `session/new` servers (claude/gemini/
+        // opencode) ride in-band over the ACP wire the executor drives — no filesystem
+        // needed, so they work on the container tier today. Fail-closed on an inline
+        // secret. A config-file CLI (codex) needs the config file materialized into the
+        // container interior — deferred until the container tier resolves mount content.
+        let injection = match self.launch.cli() {
+            Some(cli) => awaken_run_executor_acp::mcp_injection(
+                cli,
+                &activation.snapshot.resolved_spec.plugin_config,
+                true,
+            )?,
+            None => awaken_run_executor_acp::McpInjection::default(),
+        };
         let session = self
             .provider
             .open_agent(&self.spec(thread, &launch))
@@ -494,9 +507,7 @@ impl AgentChannelSource for ContainerChannelSource {
             // The container image defines its own interior working directory; the
             // fixed image makes the cwd-keyed session slug stable across relaunches.
             workspace_cwd: None,
-            // A containerized AcpSession's session/new MCP projection is a follow-up
-            // (needs the CLI row + config-home write into the container interior).
-            mcp_session_servers: Vec::new(),
+            mcp_session_servers: injection.session_servers,
         })
     }
 }
@@ -942,6 +953,13 @@ mod tests {
     }
 
     fn acp_activation(backend_ref: &str) -> RunActivation {
+        acp_activation_pc(backend_ref, Default::default())
+    }
+
+    fn acp_activation_pc(
+        backend_ref: &str,
+        plugin_config: std::collections::BTreeMap<String, serde_json::Value>,
+    ) -> RunActivation {
         use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
         use awaken_runtime_contract::snapshot::{
             AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
@@ -961,7 +979,7 @@ mod tests {
                     model_binding: ModelBinding::new("prov", "m", backend_ref),
                     tool_descriptors: Vec::new(),
                     plugin_ids: Vec::new(),
-                    plugin_config: Default::default(),
+                    plugin_config,
                     context_policy: Default::default(),
                     tool_presentation: Default::default(),
                 },
@@ -969,6 +987,36 @@ mod tests {
             },
             Vec::new(),
         )
+    }
+
+    #[tokio::test]
+    async fn a_projecting_container_source_delivers_session_new_mcp_servers() {
+        // MCP `session/new` servers reach the container tier in-band over the ACP wire —
+        // no container-interior filesystem needed (claude/gemini/opencode).
+        let captured = Arc::new(CapturingProvider(std::sync::Mutex::new(None)));
+        let cli = awaken_run_executor_acp::acp_cli("claude").unwrap();
+        let source = ContainerChannelSource::projecting(captured, *cli, Arc::new(FakeResolver));
+        let act = acp_activation_pc(
+            "acp:claude",
+            std::collections::BTreeMap::from([(
+                "acp".to_string(),
+                serde_json::json!({ "mcp_servers": [{
+                    "name": "gh",
+                    "transport": { "kind": "http", "url": "https://mcp" },
+                    "credential": { "auth": "reference", "reference": "broker://t" }
+                }] }),
+            )]),
+        );
+        let session = source
+            .open(&act)
+            .await
+            .expect("open the containerized agent");
+        assert_eq!(
+            session.mcp_session_servers.len(),
+            1,
+            "session/new MCP servers reach the container tier"
+        );
+        assert_eq!(session.mcp_session_servers[0].name, "gh");
     }
 
     #[tokio::test]
