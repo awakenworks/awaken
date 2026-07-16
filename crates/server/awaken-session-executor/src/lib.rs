@@ -212,6 +212,7 @@ fn to_step_outcome(result: RunResult) -> StepOutcome {
         messages: result.new_messages,
         pending: to_pending(result.pending),
         compacted: result.compacted,
+        rescheduled: result.rescheduled,
         failure,
     }
 }

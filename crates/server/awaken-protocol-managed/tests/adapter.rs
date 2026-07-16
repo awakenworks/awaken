@@ -79,6 +79,7 @@ impl SessionRuntime for EchoFake {
             stop: StopReason::EndTurn,
             pending: None,
             compacted: false,
+            rescheduled: false,
             failure: None,
         })
     }
@@ -473,6 +474,7 @@ impl SessionRuntime for ParkingFake {
                 client_executed: false,
             }),
             compacted: false,
+            rescheduled: false,
             failure: None,
         })
     }
@@ -498,6 +500,7 @@ impl SessionRuntime for ParkingFake {
             stop: StopReason::EndTurn,
             pending: None,
             compacted: false,
+            rescheduled: false,
             failure: None,
         })
     }
@@ -771,6 +774,7 @@ impl SessionRuntime for CustomToolFake {
                 client_executed: true,
             }),
             compacted: false,
+            rescheduled: false,
             failure: None,
         })
     }
@@ -799,6 +803,7 @@ impl SessionRuntime for CustomToolFake {
             stop: StopReason::EndTurn,
             pending: None,
             compacted: false,
+            rescheduled: false,
             failure: None,
         })
     }

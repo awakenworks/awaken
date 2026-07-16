@@ -91,6 +91,7 @@ impl SessionRuntime for QueueFake {
             stop: StopReason::EndTurn,
             pending: None,
             compacted: false,
+            rescheduled: false,
             failure: None,
         })
     }
