@@ -3,6 +3,7 @@
 pub mod agent;
 pub mod audit;
 pub mod commit;
+pub mod event;
 pub mod fact;
 pub mod model_spec;
 pub mod page;
