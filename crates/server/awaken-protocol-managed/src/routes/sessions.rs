@@ -496,6 +496,7 @@ async fn update_resource(
 ) -> Result<Json<serde_json::Value>, WireErr> {
     state
         .update_resource(&id, &rid, body)
+        .await
         .map(Json)
         .map_err(error_response)
 }
