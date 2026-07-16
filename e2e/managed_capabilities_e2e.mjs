@@ -40,11 +40,30 @@ async function main() {
     await withServer('echo', 38101, async (client) => {
       const s = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
       const ts = toolset(s);
-      // Confirmation-gated built-ins are always_ask; unregistered ones are disabled.
+      // The toolset carries a resolved `default_config` (required by the SDK): the
+      // baseline every non-overridden tool inherits — enabled + auto-allow.
+      assert.deepEqual(ts.default_config, {
+        enabled: true,
+        permission_policy: { type: 'always_allow' },
+      });
+      // Each config entry is a fully resolved {name, enabled, permission_policy}
+      // triple (the SDK's BetaManagedAgentsAgentToolConfig requires all three).
       const cfg = Object.fromEntries(ts.configs.map((c) => [c.name, c]));
-      assert.deepEqual(cfg.bash.permission_policy, { type: 'always_ask' });
-      assert.deepEqual(cfg.write.permission_policy, { type: 'always_ask' });
-      assert.equal(cfg.web_fetch.enabled, false);
+      assert.deepEqual(cfg.bash, {
+        name: 'bash',
+        enabled: true,
+        permission_policy: { type: 'always_ask' },
+      });
+      assert.deepEqual(cfg.write, {
+        name: 'write',
+        enabled: true,
+        permission_policy: { type: 'always_ask' },
+      });
+      assert.deepEqual(cfg.web_fetch, {
+        name: 'web_fetch',
+        enabled: false,
+        permission_policy: { type: 'always_allow' },
+      });
       assert.equal(cfg.web_search.enabled, false);
       // read/glob/grep are auto-allowed → not present in configs (toolset default).
       assert.ok(!('read' in cfg) && !('glob' in cfg) && !('grep' in cfg));

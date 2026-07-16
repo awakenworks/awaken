@@ -41,22 +41,37 @@ const AGENT_TOOLSET_TOOLS: [&str; 8] = [
 pub fn agent_tools(caps: &AgentCapabilities) -> Vec<serde_json::Value> {
     let mut tools = Vec::new();
     if !caps.builtin_tools.is_empty() {
+        // Each entry is the tool's *resolved* config — the SDK's
+        // `BetaManagedAgentsAgentToolConfig` requires all of {name, enabled,
+        // permission_policy}. Only deviations from `default_config` are listed;
+        // an auto-allowed registered tool matches the default and is omitted.
         let mut configs = Vec::new();
         for name in AGENT_TOOLSET_TOOLS {
             match caps.builtin_tools.iter().find(|t| t.name == name) {
-                None => configs.push(serde_json::json!({ "name": name, "enabled": false })),
+                None => configs.push(serde_json::json!({
+                    "name": name,
+                    "enabled": false,
+                    "permission_policy": { "type": "always_allow" },
+                })),
                 Some(tool) if tool.ask => configs.push(serde_json::json!({
                     "name": name,
+                    "enabled": true,
                     "permission_policy": { "type": "always_ask" },
                 })),
-                Some(_) => {} // registered and auto-allowed → toolset default
+                Some(_) => {} // registered + auto-allowed → matches default_config
             }
         }
-        let mut toolset = serde_json::json!({ "type": AGENT_TOOLSET_TYPE });
-        if !configs.is_empty() {
-            toolset["configs"] = serde_json::Value::Array(configs);
-        }
-        tools.push(toolset);
+        // `configs` and `default_config` are both required on the toolset object.
+        // `default_config` is the resolved baseline every non-overridden tool
+        // inherits: enabled and auto-allowed.
+        tools.push(serde_json::json!({
+            "type": AGENT_TOOLSET_TYPE,
+            "configs": configs,
+            "default_config": {
+                "enabled": true,
+                "permission_policy": { "type": "always_allow" },
+            },
+        }));
     }
     for tool in &caps.custom_tools {
         tools.push(serde_json::json!({

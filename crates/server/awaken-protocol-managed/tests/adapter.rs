@@ -411,14 +411,15 @@ async fn session_capability_objects_match_wire_contract() {
             {
                 "type": "agent_toolset_20260401",
                 "configs": [
-                    { "name": "bash", "enabled": false },
-                    { "name": "write", "permission_policy": { "type": "always_ask" } },
-                    { "name": "edit", "enabled": false },
-                    { "name": "glob", "enabled": false },
-                    { "name": "grep", "enabled": false },
-                    { "name": "web_fetch", "enabled": false },
-                    { "name": "web_search", "enabled": false }
-                ]
+                    { "name": "bash", "enabled": false, "permission_policy": { "type": "always_allow" } },
+                    { "name": "write", "enabled": true, "permission_policy": { "type": "always_ask" } },
+                    { "name": "edit", "enabled": false, "permission_policy": { "type": "always_allow" } },
+                    { "name": "glob", "enabled": false, "permission_policy": { "type": "always_allow" } },
+                    { "name": "grep", "enabled": false, "permission_policy": { "type": "always_allow" } },
+                    { "name": "web_fetch", "enabled": false, "permission_policy": { "type": "always_allow" } },
+                    { "name": "web_search", "enabled": false, "permission_policy": { "type": "always_allow" } }
+                ],
+                "default_config": { "enabled": true, "permission_policy": { "type": "always_allow" } }
             },
             {
                 "type": "custom",
