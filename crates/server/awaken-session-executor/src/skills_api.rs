@@ -415,6 +415,87 @@ async fn delete_version(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_runtime_contract::llm::{ChatRequest, ChatResponse};
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    struct NoLlm;
+    #[async_trait::async_trait]
+    impl awaken_runtime_contract::llm::LlmExecutor for NoLlm {
+        async fn infer(
+            &self,
+            _request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            unreachable!("the skills API never calls the model")
+        }
+    }
+
+    async fn get(router: &Router, uri: &str) -> (StatusCode, String) {
+        let resp = router
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).to_string())
+    }
+
+    // A skill delivered to the durable store OUTSIDE the SDK `/v1/skills` create
+    // route (harvested authored skills, or any skill after a restart clears the
+    // in-memory registry) must still resolve by its advertised catalog id — the
+    // A-1 fallback the happy-path e2e (which always creates via `/v1/skills`) never
+    // exercises.
+    #[tokio::test]
+    async fn a_durable_only_skill_resolves_by_its_catalog_id() {
+        let dir = std::env::temp_dir().join(format!("awaken-skillsapi-{}", std::process::id()));
+        let host = std::sync::Arc::new(
+            SharedHost::new(std::sync::Arc::new(NoLlm), "test").with_skill_store(dir.join("store")),
+        );
+        // Deliver straight to the durable catalog — no registry entry.
+        host.skill_store_put(
+            "Greeter",
+            "---\nname: Greeter\ndescription: hi\n---\nsay hello",
+        )
+        .await;
+        let router = skills_router(host);
+        let cid = awaken_skill_store::catalog_id("Greeter");
+
+        // The advertised catalog id retrieves the skill via the durable fallback…
+        let (status, _) = get(&router, &format!("/v1/skills/{cid}")).await;
+        assert_eq!(status, StatusCode::OK, "catalog id retrieves the skill");
+        // …and `version: "latest"` downloads its content (what the worker fetches).
+        let (status, body) = get(
+            &router,
+            &format!("/v1/skills/{cid}/versions/latest/content"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body.contains("say hello"),
+            "latest content downloads: {body}"
+        );
+        // The list advertises the catalog id, not the raw name.
+        let (_, list) = get(&router, "/v1/skills").await;
+        assert!(list.contains(&cid), "list advertises the catalog id");
+        assert!(
+            !list.contains("\"greeter\""),
+            "the raw name is not advertised"
+        );
+        // An unknown id is a clean 404.
+        let (status, _) = get(&router, "/v1/skills/skill_deadbeefdeadbeef").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 /// `GET /v1/skills/:id/versions/:version/content` — the version's raw SKILL.md.
 async fn version_content(
     State(state): State<Arc<SkillsApi>>,
