@@ -48,8 +48,8 @@ export default function PermissionEditor({
         <label>{app.t("Rules", "规则")}</label>
         <span className="mut">
           {app.t(
-            "Deny always wins; otherwise the most specific match decides. e.g. Bash(*rm*) → Deny.",
-            "Deny 始终优先;否则最具体的匹配胜出。如 Bash(*rm*) → 拒绝。",
+            'Deny always wins; otherwise the most specific match decides. e.g. bash(command ~ "*rm -rf*") → Deny. Tool ids are lowercase (bash/read/write).',
+            'Deny 始终优先;否则最具体的匹配胜出。如 bash(command ~ "*rm -rf*") → 拒绝。工具名小写(bash/read/write)。',
           )}
         </span>
         {rules.map((r, i) => (
@@ -57,7 +57,7 @@ export default function PermissionEditor({
             <input
               className="input mono"
               style={{ flex: 1 }}
-              placeholder="Bash(*rm*)"
+              placeholder='bash(command ~ "*rm -rf*")'
               value={r.pattern}
               onChange={(e) => setRule(i, { pattern: e.target.value })}
             />
