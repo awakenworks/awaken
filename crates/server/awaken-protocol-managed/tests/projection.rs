@@ -223,6 +223,46 @@ async fn a_terminal_run_fault_projects_session_error_before_idle() {
     assert_eq!(idle["stop_reason"]["type"], "end_turn");
 }
 
+/// A classified fault `code` selects the richer SDK error variant + retry status
+/// instead of always collapsing to `unknown_error`/`exhausted`: a `rate_limited`
+/// code projects `model_rate_limited_error`, and a `context_overflow` code is
+/// `model_request_failed_error` with a `terminal` retry status.
+#[tokio::test]
+async fn a_classified_fault_projects_the_matching_sdk_error_variant() {
+    for (code, kind, retry) in [
+        ("rate_limited", "model_rate_limited_error", "exhausted"),
+        ("context_overflow", "model_request_failed_error", "terminal"),
+    ] {
+        let app = router(Arc::new(ManagedState::new(ScriptFake::new(move || {
+            StepOutcome {
+                messages: vec![assistant_text("a", "partial")],
+                stop: StopReason::EndTurn,
+                pending: None,
+                compacted: false,
+                failure: Some(StepFailure {
+                    code: code.into(),
+                    message: "boom".into(),
+                }),
+            }
+        }))));
+        let id = create(&app).await;
+        send_user(&app, &id, "go").await;
+        let list = list_events(&app, &id).await;
+        let err = list["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["type"] == "session.error")
+            .unwrap();
+        assert_eq!(err["error"]["type"], kind, "code {code} → error type");
+        assert_eq!(
+            err["error"]["retry_status"]["type"], retry,
+            "code {code} → retry"
+        );
+        assert_eq!(err["error"]["message"], "boom");
+    }
+}
+
 // --- CE: compaction marker ---------------------------------------------------
 
 /// A turn that folded its context projects `agent.thread_context_compacted` ahead
@@ -440,8 +480,8 @@ async fn a_retries_exhausted_turn_idles_with_that_stop_reason() {
 /// An inline `agent_run` delegation projects the delegate's full child-thread
 /// lifecycle after the turn's own idle — `session.thread_created` →
 /// `session.thread_status_running` → the input sent → the reply received →
-/// `session.thread_status_idle` — and the child thread is enumerated by
-/// `GET /threads` with the primary as its parent.
+/// `session.thread_status_idle` → `session.thread_status_terminated` (one-shot) —
+/// and the child thread is enumerated by `GET /threads` with the primary as parent.
 #[tokio::test]
 async fn a_delegation_projects_the_child_thread_lifecycle() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
@@ -490,6 +530,7 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
             "agent.thread_message_sent",
             "agent.thread_message_received",
             "session.thread_status_idle",
+            "session.thread_status_terminated",
         ]
     );
     let created = list["data"]
