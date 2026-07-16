@@ -205,6 +205,9 @@ impl SandboxBackend {
     }
 
     /// Realize `spec` and launch `command`, returning the duplex channel + process.
+    /// Each failure is tagged with the phase it happened in ([`OpenPhase`]) so the
+    /// caller can surface a create failure distinctly from a launch failure — the
+    /// two are separate diagnostics (a bad base vs a bad argv), not one blur.
     async fn open(
         &self,
         spec: &pc::SandboxSpec,
@@ -214,15 +217,38 @@ impl SandboxBackend {
             Box<dyn awaken_provisioning_contract::ProcessHandle>,
             Box<dyn awaken_run_executor_acp::AgentChannelType>,
         ),
-        pc::SandboxError,
+        (OpenPhase, pc::SandboxError),
     > {
         match self {
             SandboxBackend::Namespace(p) => {
-                p.create_sandbox(spec).await?.spawn_agent(command).await
+                let sandbox = p
+                    .create_sandbox(spec)
+                    .await
+                    .map_err(|e| (OpenPhase::Create, e))?;
+                sandbox
+                    .spawn_agent(command)
+                    .await
+                    .map_err(|e| (OpenPhase::Launch, e))
             }
-            SandboxBackend::Workdir(p) => p.create_sandbox(spec).await?.spawn_agent(command).await,
+            SandboxBackend::Workdir(p) => {
+                let sandbox = p
+                    .create_sandbox(spec)
+                    .await
+                    .map_err(|e| (OpenPhase::Create, e))?;
+                sandbox
+                    .spawn_agent(command)
+                    .await
+                    .map_err(|e| (OpenPhase::Launch, e))
+            }
         }
     }
+}
+
+/// Which phase of [`SandboxBackend::open`] failed, so the caller labels the
+/// `OpenError` distinctly: realizing the sandbox tree vs launching the agent.
+enum OpenPhase {
+    Create,
+    Launch,
 }
 
 /// Opens each run's [`AgentSession`] inside a fresh sandbox: build the spec from the
@@ -413,7 +439,10 @@ impl AgentChannelSource for SandboxChannelSource {
             .provider
             .open(&spec, Self::command(&launch))
             .await
-            .map_err(|e| OpenError(format!("sandboxed agent launch: {e}")))?;
+            .map_err(|(phase, e)| match phase {
+                OpenPhase::Create => OpenError(format!("sandbox create: {e}")),
+                OpenPhase::Launch => OpenError(format!("sandboxed agent launch: {e}")),
+            })?;
         Ok(AgentSession {
             channel,
             process: Arc::from(process),
