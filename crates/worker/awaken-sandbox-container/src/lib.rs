@@ -623,6 +623,88 @@ pub fn egress_plan(
     }
 }
 
+/// A host staging directory holding the bytes of inline mounts (codex `config.toml`,
+/// ADR-0038 resource content) materialized for a container's lifetime, then removed when
+/// the sandbox is dropped (after the container is gone). The container tier binds host
+/// paths, so self-contained content (`Inline` / `Other{content}`) is written here and the
+/// bind repointed at the host file — the counterpart of the bwrap tier's `resolve_source`
+/// + write. Content-addressed `File`/`Resource` (a store id, not bytes) still needs a
+/// blob-store resolve on this tier; the ACP resource path rides `Other{content}` so it
+/// works today.
+struct StagingGuard(std::path::PathBuf);
+
+impl Drop for StagingGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Flatten a sandbox-absolute mount path to a single staging filename.
+fn stage_name(mount_path: &str) -> String {
+    mount_path
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Materialize self-contained mount content (`Inline`, `Other{content}`) to a host
+/// staging dir and repoint each bind's `source_ref` at the host file; a `CacheVolume`
+/// binds its caller-owned `host_path` in place. Fail-closed on a write error. Returns the
+/// staging guard (kept alive by the sandbox for the container's lifetime), or `None` when
+/// nothing needed staging.
+fn materialize_content(
+    spec: &pc::SandboxSpec,
+    binds: &mut [BindPlan],
+) -> Result<Option<StagingGuard>, pc::SandboxError> {
+    use std::collections::HashMap;
+    let by_path: HashMap<&str, &pc::MountSource> = spec
+        .mounts
+        .iter()
+        .map(|m| (m.mount_path.as_str(), &m.source))
+        .collect();
+    let mut guard: Option<StagingGuard> = None;
+    for bind in binds.iter_mut() {
+        let bytes: Vec<u8> = match by_path.get(bind.mount_path.as_str()) {
+            Some(pc::MountSource::Inline { contents }) => contents.clone().into_bytes(),
+            Some(pc::MountSource::Other(v)) => match v.get("content").and_then(|c| c.as_str()) {
+                Some(s) => s.as_bytes().to_vec(),
+                None => continue,
+            },
+            // A Cache Volume is already a host path — bind it in place (never harvested).
+            Some(pc::MountSource::CacheVolume { host_path, .. }) => {
+                bind.source_ref = host_path.clone();
+                continue;
+            }
+            _ => continue,
+        };
+        let dir = match &guard {
+            Some(g) => g.0.clone(),
+            None => {
+                let d = std::env::temp_dir().join(format!(
+                    "awaken-acp-stage-{}-{}",
+                    stage_name(&spec.scope),
+                    std::process::id()
+                ));
+                std::fs::create_dir_all(&d)
+                    .map_err(|e| err(RuntimeError::Backend(format!("stage dir: {e}"))))?;
+                guard = Some(StagingGuard(d.clone()));
+                d
+            }
+        };
+        let host_file = dir.join(stage_name(&bind.mount_path));
+        std::fs::write(&host_file, &bytes)
+            .map_err(|e| err(RuntimeError::Backend(format!("stage mount content: {e}"))))?;
+        bind.source_ref = host_file.to_string_lossy().into_owned();
+    }
+    Ok(guard)
+}
+
 fn binds_of(spec: &pc::SandboxSpec) -> Vec<BindPlan> {
     spec.mounts
         .iter()
@@ -873,6 +955,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             )));
         }
         let mut plan = container_plan(spec, &self.default_image, &command);
+        // Materialize self-contained mount content (codex config, ADR-0038 resources) to a
+        // host staging dir and repoint the binds, so the container reads real bytes — kept
+        // alive by the returned sandbox for the container's lifetime.
+        let staging = materialize_content(spec, &mut plan.binds)?;
         // Realize egress: an Allowlist policy is routed through the brokered proxy
         // (its env is injected here); without a proxy an allowlist fails closed.
         let egress = egress_plan(&spec.network, self.egress_proxy.as_ref())
@@ -905,6 +991,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             container_id,
             outputs_path: spec.outputs_path.clone(),
             realized,
+            _staging: staging,
         })
     }
 }
@@ -996,6 +1083,7 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
             container_id,
             outputs_path,
             realized: Vec::new(),
+            _staging: None,
         }))
     }
 }
@@ -1010,6 +1098,10 @@ pub struct ContainerSandbox<R: ContainerRuntime> {
     container_id: String,
     outputs_path: String,
     realized: Vec<pc::RealizedMount>,
+    /// Host staging dir for materialized inline-mount content, held for the container's
+    /// lifetime and removed on drop (after the container is gone). `None` when the run
+    /// staged nothing.
+    _staging: Option<StagingGuard>,
 }
 
 /// A handle over the container's main process (the agent). On this tier the process
