@@ -310,6 +310,7 @@ pub fn awaken_runtime_host::SharedHost::delegate_ids(&self) -> alloc::vec::Vec<a
 pub fn awaken_runtime_host::SharedHost::file_store(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::FileStore>
 pub async fn awaken_runtime_host::SharedHost::harvest_thread_memory(&self, &str)
 pub async fn awaken_runtime_host::SharedHost::harvest_thread_repo(&self, &str)
+pub async fn awaken_runtime_host::SharedHost::harvest_thread_skills(&self, &str)
 pub fn awaken_runtime_host::SharedHost::has_skill_store(&self) -> bool
 pub async fn awaken_runtime_host::SharedHost::memory_get(&self, &str) -> core::option::Option<alloc::vec::Vec<u8>>
 pub async fn awaken_runtime_host::SharedHost::reload_skill_cache(&self)
