@@ -121,10 +121,39 @@ impl<'de> Deserialize<'de> for CompactConfig {
     }
 }
 
+/// The rules the field-level schema can't convey: which trigger fires when, and that
+/// `instructions` is a PROMPT (not a size), so an author — human form or LLM — otherwise
+/// mis-models it. Mirrors the state-machine / permission `description`+`examples` pattern.
+const COMPACT_AUTHORING_GUIDE: &str = "\
+When and how the conversation is compacted (summarized). Authoring rules:\n\
+- Trigger: if `max_tokens` is set, compaction fires once the estimated context reaches \
+`trigger_ratio` of it (e.g. `0.8` = at 80% of the window) — leave `max_tokens` null to \
+inherit the model's context window. If no window is known, it falls back to the \
+message-count `threshold`.\n\
+- `keep_last` most-recent messages always stay verbatim; the summary covers everything \
+older. Keep it small (a handful) so compaction actually reclaims context.\n\
+- `instructions` is the COMPACTION PROMPT — free-form English telling the summarizer WHAT \
+to preserve (open tasks, decisions, file paths, identifiers), NOT a size or token count. \
+Blank uses the built-in default. `trigger_ratio`/`threshold` shape WHEN it fires; \
+`instructions` shapes WHAT survives.";
+
+/// A canonical config: token-aware at 80%, keep a short tail, task-preserving prompt.
+fn compact_example() -> serde_json::Value {
+    serde_json::json!({
+        "keep_last": 8,
+        "trigger_ratio": 0.8,
+        "instructions": "Summarize the older turns into a compact briefing. Preserve open \
+tasks, decisions made, and any file paths, identifiers, and commands referenced. Drop \
+resolved chatter and duplicated tool output."
+    })
+}
+
 /// The JSON Schema for the `compact` config section.
 pub fn config_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
+        "description": COMPACT_AUTHORING_GUIDE,
+        "examples": [compact_example()],
         "properties": {
             "threshold": {
                 "type": "integer", "minimum": 1,
@@ -251,5 +280,19 @@ mod tests {
         assert_eq!(value["max_tokens"], 2000);
         let back: CompactConfig = serde_json::from_value(value).unwrap();
         assert_eq!(back, tuned);
+    }
+
+    #[test]
+    fn config_schema_carries_authoring_guidance() {
+        let schema = config_schema();
+        // The when-vs-what distinction (instructions is a prompt, not a size) must ride on
+        // the schema so an author reading it doesn't mis-model `instructions`.
+        let desc = schema["description"].as_str().unwrap();
+        assert!(desc.contains("COMPACTION PROMPT"), "guide frames instructions as a prompt");
+        // The worked example parses back into a valid config (instructions is a string prompt).
+        let example = &schema["examples"][0];
+        let cfg: CompactConfig = serde_json::from_value(example.clone()).unwrap();
+        assert!(cfg.instructions.is_some_and(|s| s.len() > 20));
+        assert_eq!(cfg.keep_last, 8);
     }
 }
