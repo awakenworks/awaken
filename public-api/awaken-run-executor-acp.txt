@@ -109,6 +109,9 @@ pub fn awaken_run_executor_acp::FsSessionBlobStore::new(std::path::PathBuf) -> S
 impl awaken_run_executor_acp::SessionBlobStore for awaken_run_executor_acp::FsSessionBlobStore
 pub fn awaken_run_executor_acp::FsSessionBlobStore::fetch<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_run_executor_acp::SessionHomeKey, &'life2 std::path::Path) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = std::io::error::Result<bool>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_run_executor_acp::FsSessionBlobStore::store<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_run_executor_acp::SessionHomeKey, &'life2 std::path::Path) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = std::io::error::Result<()>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub struct awaken_run_executor_acp::McpInjection
+pub awaken_run_executor_acp::McpInjection::config_file: core::option::Option<(alloc::string::String, alloc::string::String)>
+pub awaken_run_executor_acp::McpInjection::session_servers: alloc::vec::Vec<awaken_protocol_acp::SessionMcpServer>
 pub struct awaken_run_executor_acp::McpServerConfig
 pub awaken_run_executor_acp::McpServerConfig::credential: awaken_run_executor_acp::McpCredential
 pub awaken_run_executor_acp::McpServerConfig::name: alloc::string::String
@@ -180,4 +183,5 @@ pub fn awaken_run_executor_acp::NoSessionHome::restore<'life0, 'life1, 'life2, '
 pub fn awaken_run_executor_acp::acp_cli(&str) -> core::option::Option<&'static awaken_run_executor_acp::AcpCli>
 pub fn awaken_run_executor_acp::is_dynamic_install(&awaken_run_executor_acp::AcpCli) -> bool
 pub fn awaken_run_executor_acp::known_acp_clis() -> &'static [awaken_run_executor_acp::AcpCli]
+pub fn awaken_run_executor_acp::mcp_injection(&awaken_run_executor_acp::AcpCli, &alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>, bool) -> core::result::Result<awaken_run_executor_acp::McpInjection, awaken_run_executor_acp::OpenError>
 pub fn awaken_run_executor_acp::project_launch(&awaken_run_executor_acp::AcpCli, &dyn awaken_run_executor_acp::LaunchResolver, &awaken_runtime_contract::activation::RunActivation) -> core::result::Result<awaken_run_executor_acp::AcpLaunch, awaken_run_executor_acp::OpenError>

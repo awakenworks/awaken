@@ -61,6 +61,8 @@ pub awaken_provisioning_contract::MountSource::CacheVolume::key: alloc::string::
 pub awaken_provisioning_contract::MountSource::File
 pub awaken_provisioning_contract::MountSource::File::content_hash: core::option::Option<alloc::string::String>
 pub awaken_provisioning_contract::MountSource::File::file_id: alloc::string::String
+pub awaken_provisioning_contract::MountSource::Inline
+pub awaken_provisioning_contract::MountSource::Inline::contents: alloc::string::String
 pub awaken_provisioning_contract::MountSource::MemoryStore
 pub awaken_provisioning_contract::MountSource::MemoryStore::store_id: alloc::string::String
 pub awaken_provisioning_contract::MountSource::Other(serde_json::value::Value)
