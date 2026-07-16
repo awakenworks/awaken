@@ -55,14 +55,15 @@ async function main() {
     assert.equal(valid.body.valid, true, 'valid=true');
     pass('config validated (compiles)');
 
-    // Reject a bad config (unknown tool) — the validation path fails closed.
-    // The validate endpoint parses the managed-shaped body (agent_config_from_managed),
-    // so tool references live under `tools`; a name absent from the catalog fails
-    // closed with UnknownTool (config_plane D3).
+    // A bad config (unknown tool) fails validation. Validation is a QUERY (ADR-0053,
+    // field-routed structured issues for the UI): the request succeeds with 200 and
+    // reports `valid: false` + a structured issue, rather than a transport 400 — a
+    // name absent from the catalog fails closed with UnknownTool (config_plane D3).
     const bad = await json('POST', `/v1/config/agents/${AGENT}/validate`, { id: AGENT, system: GREETING, tools: ['no_such_tool'] });
-    assert.equal(bad.status, 400, 'bad config rejected');
+    assert.equal(bad.status, 200, 'validation is a query — 200 with the verdict');
     assert.equal(bad.body.valid, false, 'valid=false on unknown tool');
-    pass('invalid config rejected (unknown tool)');
+    assert.ok(Array.isArray(bad.body.issues) && bad.body.issues.length > 0, 'a structured issue is reported');
+    pass('invalid config reported invalid (unknown tool)');
 
     // Publish (compile → store publication → install).
     const published = await json('POST', `/v1/config/agents/${AGENT}/publish`, undefined);
