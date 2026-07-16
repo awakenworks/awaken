@@ -16,15 +16,15 @@ use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::WaitingTicket;
 use awaken_agent_contract::audit::record::Record as EventRecord;
-use awaken_agent_contract::commit::RunFact;
-use awaken_agent_contract::commit::coordinator::{Coordinator as CommitCoordinator, Error};
-use awaken_agent_contract::commit::staged::{CommitRecord, ThreadCommit};
-use awaken_agent_contract::store::checkpoint::{CheckpointReader, EventScope};
-use awaken_agent_contract::store::run_store::RunStore;
-use awaken_agent_contract::store::stream_checkpoint::{StreamCheckpoint, StreamCheckpointStore};
-use awaken_agent_contract::store::thread_reader::ThreadReader;
+use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_agent_contract::stream::sink::{Error as SinkError, Sink as StreamSink};
+use awaken_agent_contract::thread::commit::RunFact;
+use awaken_agent_contract::thread::commit::coordinator::{Coordinator as CommitCoordinator, Error};
+use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
+use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+use awaken_agent_contract::thread::read::run_store::RunStore;
+use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 
 /// Everything one commit made durable, materialized as read models. This is the
 /// after-commit truth that replay and projection consume.

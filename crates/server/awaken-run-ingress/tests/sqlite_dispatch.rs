@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
-use awaken_agent_contract::store::run_store::RunStore;
+use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_run_ingress::{
     DispatchQueue, DurableRunIngress, Inbox, PendingInput, RunExecutionRequest, SqliteDispatchStore,
 };

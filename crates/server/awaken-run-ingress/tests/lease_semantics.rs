@@ -27,7 +27,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
-use awaken_agent_contract::store::run_store::RunStore;
+use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_run_ingress::{
     DispatchOutcome, DispatchQueue, DispatchWorker, MemoryDispatchStore, RunExecutionRequest,
     SqliteDispatchStore,

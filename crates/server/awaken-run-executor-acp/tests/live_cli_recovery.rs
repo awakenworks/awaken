@@ -26,8 +26,8 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::commit::coordinator::{Coordinator, Error as CommitError};
-use awaken_agent_contract::commit::staged::{CommitRecord, ThreadCommit};
+use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error as CommitError};
+use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_run_executor_acp::{
     AcpLaunch, AcpRunExecutor, Codec, SessionHomeKey, SessionHomePlan, SessionHomeProvider,
     SessionPersistence, SubprocessChannelSource, acp_cli,

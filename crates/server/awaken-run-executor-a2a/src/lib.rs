@@ -186,7 +186,7 @@ async fn finish(
     phase: Phase,
 ) -> Result<Phase> {
     if let Some(coordinator) = &context.commit {
-        awaken_agent_contract::commit::commit_run(
+        awaken_agent_contract::thread::commit::commit_run(
             coordinator.as_ref(),
             &activation.thread_id,
             &activation.run_id,
@@ -206,8 +206,8 @@ mod tests {
     use super::*;
     use awaken_agent_contract::agent::run::Id as RunId;
     use awaken_agent_contract::agent::thread::Id as ThreadId;
-    use awaken_agent_contract::commit::coordinator::{Coordinator, Error as CommitError};
-    use awaken_agent_contract::commit::staged::{CommitRecord, ThreadCommit};
+    use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error as CommitError};
+    use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
     use awaken_protocol_a2a::Artifact;
     use awaken_protocol_a2a::types::{
         Message as A2aMessage, MessageRole, Part as A2aPart, TaskStatus,

@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::store::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_ext_builtin_tools::MessageSender;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::tool::ToolError;

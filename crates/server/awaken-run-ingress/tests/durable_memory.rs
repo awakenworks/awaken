@@ -650,7 +650,7 @@ async fn cancel_durable_commits_cancelled_for_a_parked_run() {
             .await
             .unwrap()
     );
-    let record = awaken_agent_contract::store::run_store::RunStore::get(
+    let record = awaken_agent_contract::thread::read::run_store::RunStore::get(
         commit.as_ref(),
         &RunId("run-1".to_string()),
     )
@@ -680,7 +680,7 @@ async fn cancel_durable_for_a_queued_run_that_never_ran() {
             .await
             .unwrap()
     );
-    let record = awaken_agent_contract::store::run_store::RunStore::get(
+    let record = awaken_agent_contract::thread::read::run_store::RunStore::get(
         commit.as_ref(),
         &RunId("run-1".to_string()),
     )
@@ -699,7 +699,7 @@ async fn cancel_durable_for_a_queued_run_that_never_ran() {
 
 #[tokio::test]
 async fn send_message_delivers_to_a_threads_parked_run() {
-    use awaken_agent_contract::store::thread_reader::ThreadReader;
+    use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
     use awaken_ext_builtin_tools::MessageSender;
     use awaken_run_ingress::OutboxMessageSender;
 
@@ -952,8 +952,8 @@ async fn a_superseded_owners_commit_is_fenced_while_the_current_owners_lands() {
     // fenced commit boundary rejects the stale owner's write before it reaches the
     // durable boundary, while the current owner's write lands. This is the commit twin
     // of the already-covered settle fence.
-    use awaken_agent_contract::commit::coordinator::Coordinator;
-    use awaken_agent_contract::commit::staged::ThreadCommit;
+    use awaken_agent_contract::thread::commit::coordinator::Coordinator;
+    use awaken_agent_contract::thread::commit::staged::ThreadCommit;
     use awaken_run_ingress::FencedCommitCoordinator;
 
     let store = Arc::new(MemoryDispatchStore::new());

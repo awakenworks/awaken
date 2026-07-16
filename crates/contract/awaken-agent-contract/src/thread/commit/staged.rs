@@ -16,7 +16,7 @@ impl fmt::Display for ValidationError {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ThreadCommit {
     pub thread_id: crate::agent::thread::Id,
-    pub run_fact: crate::commit::run_fact::RunFact,
+    pub run_fact: crate::thread::commit::run_fact::RunFact,
     pub messages: Vec<crate::agent::message::Message>,
     pub state: Vec<crate::agent::state::Command>,
     pub events: Vec<crate::audit::draft::Draft>,
@@ -74,7 +74,7 @@ impl ThreadCommit {
         events.extend(extra_events);
         Self {
             thread_id,
-            run_fact: crate::commit::run_fact::RunFact { run_id, phase },
+            run_fact: crate::thread::commit::run_fact::RunFact { run_id, phase },
             messages,
             state,
             events,

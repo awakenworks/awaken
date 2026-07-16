@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::store::run_store::RunStore;
+use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_run_ingress::{
     DispatchQueue, DispatchServiceConfig, DurableRunIngress, ManualClock, MemoryDispatchStore,
     PendingInput, RunExecutionRequest, SystemClock,

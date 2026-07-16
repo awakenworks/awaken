@@ -15,7 +15,7 @@ fn assert_boundary<T: Serialize + DeserializeOwned>() {}
 
 #[test]
 fn commit_boundary_values_are_plain_serializable_data() {
-    use awaken_agent_contract::commit::staged;
+    use awaken_agent_contract::thread::commit::staged;
 
     assert_boundary::<staged::ThreadCommit>();
     assert_boundary::<staged::CommitRecord>();

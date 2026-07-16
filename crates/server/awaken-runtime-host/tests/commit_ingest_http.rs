@@ -9,9 +9,9 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::commit::RunFact;
-use awaken_agent_contract::commit::coordinator::Coordinator;
-use awaken_agent_contract::commit::staged::ThreadCommit;
+use awaken_agent_contract::thread::commit::RunFact;
+use awaken_agent_contract::thread::commit::coordinator::Coordinator;
+use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
 };

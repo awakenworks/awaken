@@ -14,6 +14,6 @@ pub enum Error {
 pub trait Coordinator: Send + Sync {
     async fn commit(
         &self,
-        commit: crate::commit::staged::ThreadCommit,
-    ) -> Result<crate::commit::staged::CommitRecord, Error>;
+        commit: crate::thread::commit::staged::ThreadCommit,
+    ) -> Result<crate::thread::commit::staged::CommitRecord, Error>;
 }

@@ -14,11 +14,11 @@ use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::WaitingTicket;
 use awaken_agent_contract::audit::kind::Kind;
-use awaken_agent_contract::commit::coordinator::{Coordinator, Error};
-use awaken_agent_contract::commit::staged::{CommitRecord, ThreadCommit};
-use awaken_agent_contract::store::checkpoint::{CheckpointReader, EventScope};
-use awaken_agent_contract::store::run_store::RunStore;
-use awaken_agent_contract::store::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error};
+use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
+use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+use awaken_agent_contract::thread::read::run_store::RunStore;
+use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use std::sync::Arc;
 
 use awaken_runtime::memory::MemoryCommitCoordinator;

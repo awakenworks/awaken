@@ -13,8 +13,8 @@ use std::sync::atomic::Ordering;
 
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::store::run_store::RunStore;
-use awaken_agent_contract::store::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::run_store::RunStore;
+use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_run_ingress::{
     DispatchQueue, DispatchWorker, DurableRunIngress, Inbox, PendingInput, PostgresDispatchStore,
     RunExecutionRequest, SubmitOptions,

@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::run::Phase;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::store::run_store::RunStore;
+use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_run_ingress::{
     Clock, CompletionSink, DEFAULT_LEASE_MS, DispatchError, DispatchPool, DispatchQueue,
     DispatchServiceConfig, DispatchWorker, Error, Inbox, ManualClock, MemoryDispatchStore,

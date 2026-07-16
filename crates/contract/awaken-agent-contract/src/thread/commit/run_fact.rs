@@ -1,6 +1,6 @@
 //! The durable run-projection fact, committed as part of a [`ThreadCommit`].
 //!
-//! [`ThreadCommit`]: crate::commit::staged::ThreadCommit
+//! [`ThreadCommit`]: crate::thread::commit::staged::ThreadCommit
 
 use serde::{Deserialize, Serialize};
 
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// mirror [`crate::agent::run::Record`] adds `thread_id` to be self-describing).
 ///
 /// [`Phase`]: crate::agent::run::Phase
-/// [`ThreadCommit`]: crate::commit::staged::ThreadCommit
+/// [`ThreadCommit`]: crate::thread::commit::staged::ThreadCommit
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunFact {
     pub run_id: crate::agent::run::Id,

@@ -10,9 +10,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::{Id as RunId, Phase};
-use awaken_agent_contract::commit::coordinator::Coordinator as CommitCoordinator;
-use awaken_agent_contract::store::run_store::RunStore;
-use awaken_agent_contract::store::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
+use awaken_agent_contract::thread::read::run_store::RunStore;
+use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime::{RunIngress, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
@@ -61,7 +61,7 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         commit: Arc<C>,
         owner: impl Into<String>,
         stream_checkpoint: Option<
-            Arc<dyn awaken_agent_contract::store::stream_checkpoint::StreamCheckpointStore>,
+            Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>,
         >,
     ) -> Self
     where
@@ -81,7 +81,7 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         commit: Arc<C>,
         owner: impl Into<String>,
         stream_checkpoint: Option<
-            Arc<dyn awaken_agent_contract::store::stream_checkpoint::StreamCheckpointStore>,
+            Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>,
         >,
         model_resolver: Option<crate::request::ModelResolverFn>,
     ) -> Self

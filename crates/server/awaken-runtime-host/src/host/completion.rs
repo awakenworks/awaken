@@ -94,7 +94,7 @@ impl SharedHost {
     /// One committed-truth read: the run's phase if it has settled (`Ended` or
     /// `Waiting`), else `None`. The fallback path for `await_settled_event`.
     fn read_settled_phase(&self, ctx: &Arc<SessionCtx>, run_id: &RunId) -> Option<Phase> {
-        use awaken_agent_contract::store::run_store::RunStore;
+        use awaken_agent_contract::thread::read::run_store::RunStore;
         match RunStore::get(&*ctx.commit, run_id) {
             Some(record) if matches!(record.phase, Phase::Ended(_) | Phase::Waiting) => {
                 Some(record.phase)

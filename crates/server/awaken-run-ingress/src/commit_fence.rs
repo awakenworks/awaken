@@ -19,10 +19,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_agent_contract::commit::coordinator::{
+use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator as CommitCoordinator, Error as CommitError,
 };
-use awaken_agent_contract::commit::staged::{CommitRecord, ThreadCommit};
+use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 
 use crate::dispatch::DispatchQueue;
 

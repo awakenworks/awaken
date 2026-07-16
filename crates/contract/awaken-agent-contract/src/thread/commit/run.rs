@@ -12,8 +12,8 @@ use crate::agent::run::{Id as RunId, Phase};
 use crate::agent::state::Command as StateCommand;
 use crate::agent::thread::Id as ThreadId;
 use crate::agent::waiting::WaitingTicket;
-use crate::commit::coordinator::{Coordinator, Error};
-use crate::commit::staged::{CommitRecord, ThreadCommit};
+use crate::thread::commit::coordinator::{Coordinator, Error};
+use crate::thread::commit::staged::{CommitRecord, ThreadCommit};
 
 /// Commit a run's terminal facts — its produced messages, final phase, and any
 /// committed state — through the single commit boundary (G1/G13). The one place a

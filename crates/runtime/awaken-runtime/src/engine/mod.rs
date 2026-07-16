@@ -17,13 +17,13 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::{PendingTool, WaitingReason, WaitingTicket};
 use awaken_agent_contract::audit::draft::Draft as EventDraft;
 use awaken_agent_contract::audit::run_event::RunEvent;
-use awaken_agent_contract::commit::staged::ThreadCommit;
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
-use awaken_agent_contract::store::stream_checkpoint::{
+use awaken_agent_contract::stream::checkpoint::{
     PartialToolCall, StreamCheckpoint, StreamCheckpointStore,
 };
-use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_agent_contract::stream::event::Event as StreamEvent;
+use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::agent_resolver::{AgentRequest, AgentStep};
 use awaken_runtime_contract::boundary::{BoundaryOutcome, evaluate_boundary};

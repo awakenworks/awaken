@@ -10,11 +10,11 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::draft::Draft;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
-use awaken_agent_contract::commit::RunFact;
-use awaken_agent_contract::commit::coordinator::Coordinator;
-use awaken_agent_contract::commit::staged::ThreadCommit;
-use awaken_agent_contract::store::checkpoint::{CheckpointReader, EventScope};
-use awaken_agent_contract::store::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::commit::RunFact;
+use awaken_agent_contract::thread::commit::coordinator::Coordinator;
+use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_store_fs::FsCommitCoordinator;
 
 fn ck(thread: &str, run: &str, text: &str, phase: Phase) -> ThreadCommit {

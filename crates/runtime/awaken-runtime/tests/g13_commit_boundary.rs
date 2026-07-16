@@ -10,10 +10,10 @@
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::{WaitingReason, WaitingTicket};
-use awaken_agent_contract::commit::RunFact;
-use awaken_agent_contract::commit::coordinator::Coordinator;
-use awaken_agent_contract::commit::staged::ThreadCommit;
-use awaken_agent_contract::store::run_store::RunStore;
+use awaken_agent_contract::thread::commit::RunFact;
+use awaken_agent_contract::thread::commit::coordinator::Coordinator;
+use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 
 fn ended(run: &str) -> RunFact {

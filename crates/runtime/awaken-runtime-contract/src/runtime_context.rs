@@ -15,16 +15,16 @@
 
 use std::sync::Arc;
 
-use awaken_agent_contract::commit::coordinator::Coordinator as CommitCoordinator;
-use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
+use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
+use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use tokio_util::sync::CancellationToken;
 
 use crate::capture::CaptureDecision;
 use crate::data_subject::{CaptureSink, DataSubjectId};
 use crate::live_inbox::LiveInbox;
 use crate::pause::PauseSignal;
-use awaken_agent_contract::store::stream_checkpoint::StreamCheckpointStore;
+use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 
 /// The content-capture wiring for one attempt (ADR-0050): the resolved decision
 /// (level + redactor) plus, when content persistence is on, the subject it is

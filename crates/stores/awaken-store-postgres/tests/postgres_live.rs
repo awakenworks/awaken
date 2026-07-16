@@ -16,11 +16,11 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::{WaitingReason, WaitingTicket};
 use awaken_agent_contract::audit::draft::Draft;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
-use awaken_agent_contract::commit::RunFact;
-use awaken_agent_contract::commit::coordinator::{Coordinator, Error as CommitError};
-use awaken_agent_contract::commit::staged::ThreadCommit;
-use awaken_agent_contract::store::run_store::RunStore;
-use awaken_agent_contract::store::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::commit::RunFact;
+use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error as CommitError};
+use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_agent_contract::thread::read::run_store::RunStore;
+use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_store_postgres::PostgresCommitCoordinator;
 use sqlx::Executor;
 use sqlx::Row;
@@ -364,7 +364,7 @@ async fn commit_maps_a_storage_failure_to_a_rejection() {
         .expect_err("insert fails");
     assert!(matches!(
         err,
-        awaken_agent_contract::commit::coordinator::Error::Rejected(_)
+        awaken_agent_contract::thread::commit::coordinator::Error::Rejected(_)
     ));
 }
 
