@@ -1354,7 +1354,17 @@ pub async fn build_config_router() -> Router {
     // Workspace-path addressing (ADR-0048/0052 D2): `/v1/workspaces/{ws}/config/...`
     // is rewritten to the flat config route and stamped with `{ws}` as the scope, so
     // the reserved admin scope is reachable and the tenant/default scope is fenced.
-    let flat = mount(Arc::new(host))
+    // Build the managed state explicitly (as `mount` does) but wire the config-plane
+    // agent source — the SAME `ConfigServiceAgentSource(service)` that `/v1/agents`
+    // projects from — so a session inheriting a published agent's model reads that one
+    // config truth rather than the host default (reuse, no second source).
+    let host = Arc::new(host);
+    let managed_state = Arc::new(
+        ManagedState::new(ManagedHost::new(host.clone())).with_config_source(Arc::new(
+            awaken_runtime_host::ConfigServiceAgentSource(service.clone()),
+        )),
+    );
+    let flat = mount_with_managed(host, managed_state)
         .merge(config_router(plane))
         .merge(agents);
     awaken_server::workspace_path::with_workspace_path_addressing(flat)

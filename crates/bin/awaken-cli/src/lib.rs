@@ -739,6 +739,11 @@ async fn management_router_over(
         )
         .with_vaults(vault_state)
         .with_environments(env_state)
+        // Share the SAME config plane `/v1/agents` reads, so a session inheriting a
+        // published agent's model sees the authoritative config-plane truth (M2).
+        .with_config_source(Arc::new(awaken_runtime_host::ConfigServiceAgentSource(
+            config_service.clone(),
+        )))
         .with_session_repo(sessions)
         .with_lifecycle_sink(webhook_sink),
     );

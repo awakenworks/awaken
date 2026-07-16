@@ -54,8 +54,10 @@ impl ManagedState {
         let agent_id = req.agent.id().to_string();
         // Resolve the session's effective model. Precedence: the official
         // `agent_with_overrides.model` (a per-session replace) wins; then the legacy
-        // `metadata.awaken.model` selection; else `None` = the host default. Clearing
-        // the model is rejected — a session always needs one (400 `agent_model_required`).
+        // `metadata.awaken.model` selection; then the referenced agent's authoritative
+        // model from the config plane (the config plane owns model/system/tools); else
+        // `None` = the host default. Clearing the model is rejected — a session always
+        // needs one (400 `agent_model_required`).
         let selected_model: Option<ModelConfig> = match req.agent.model_override() {
             ModelOverride::Set(cfg) => Some(cfg),
             ModelOverride::Cleared => {
@@ -63,7 +65,13 @@ impl ManagedState {
                     "agent_model_required: a session override cannot clear `model`",
                 )));
             }
-            ModelOverride::Absent => req.awaken_model().map(ModelConfig::new),
+            ModelOverride::Absent => req.awaken_model().map(ModelConfig::new).or_else(|| {
+                self.config_source
+                    .as_ref()
+                    .and_then(|source| source.agent_view(&agent_id))
+                    .and_then(|view| view.model)
+                    .map(ModelConfig::new)
+            }),
         };
         // Echo the agent version the client pinned (or overrode over), defaulting to 1.
         let agent_version = req.agent.version().unwrap_or(1);

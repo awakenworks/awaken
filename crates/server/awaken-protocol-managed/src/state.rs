@@ -82,6 +82,13 @@ pub struct ManagedState {
     /// `environment_id` is resolved to its networking policy (egress on/off) at
     /// creation. `None` → every session gets host network (unrestricted).
     environments: Option<Arc<crate::routes::environments::EnvironmentState>>,
+    /// The config-plane agent projection source (ADR-0043): when wired, a session
+    /// referencing an agent published on the config plane inherits that agent's
+    /// authoritative `model` (the config plane owns model/system/tools), so it runs
+    /// the agent's model instead of the host default. Reuses the same
+    /// [`crate::routes::agents_registry::AgentConfigSource`] port `/v1/agents` reads —
+    /// no second source of agent truth. `None` → fall back to the host default model.
+    config_source: Option<Arc<dyn crate::routes::agents_registry::AgentConfigSource>>,
     sessions: Mutex<HashMap<String, SessionRecord>>,
     /// The aspect-layer session→owner index (ADR-0051): the [`ScopeId`] that
     /// created each session, keyed by the tenancy-agnostic session id. It is NOT
@@ -180,6 +187,7 @@ impl ManagedState {
             runtime: Box::new(runtime),
             vaults: None,
             environments: None,
+            config_source: None,
             sessions: Mutex::new(HashMap::new()),
             owners: Mutex::new(HashMap::new()),
             sessions_repo: Arc::new(InMemorySessionRepository::default()),
@@ -227,6 +235,19 @@ impl ManagedState {
     #[must_use]
     pub fn with_vaults(mut self, vaults: Arc<VaultState>) -> Self {
         self.vaults = Some(vaults);
+        self
+    }
+
+    /// Wire the config-plane agent projection source so a session inherits a
+    /// published agent's authoritative `model`. Share the same
+    /// [`crate::routes::agents_registry::AgentConfigSource`] that `/v1/agents` uses,
+    /// or the session and the agent view disagree on the model.
+    #[must_use]
+    pub fn with_config_source(
+        mut self,
+        source: Arc<dyn crate::routes::agents_registry::AgentConfigSource>,
+    ) -> Self {
+        self.config_source = Some(source);
         self
     }
 
