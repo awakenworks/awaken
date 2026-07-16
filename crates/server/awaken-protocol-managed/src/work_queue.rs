@@ -317,12 +317,22 @@ impl WorkQueue for InMemoryWorkQueue {
                 )
             })
             .count();
+        // `workers_polling` is 0/1 here by construction: an environment leases at most
+        // one active item (the open-tier single-worker cap), so at most one worker is
+        // ever processing. (A real "workers polled in the last 30s" liveness count for
+        // an idle queue needs a wall clock — the managed projection is deliberately
+        // clockless (M1) — and a per-worker identity the env-key-authenticated poll
+        // does not carry; both are out of scope until the clock port lands.)
         let workers_polling = i64::from(in_env.iter().any(|w| w.state == WorkState::Active));
+        // `oldest_queued_at` is the oldest item still QUEUED or being PROCESSED (the
+        // SDK's semantics), so it stays set once a worker claims the last queued item —
+        // not just while `depth > 0`. Only a fully drained queue (all stopped) is null.
+        let has_unfinished = queued > 0 || pending > 0;
         WorkQueueStats {
             object_type: "work_queue_stats",
             depth: queued,
             pending,
-            oldest_queued_at: (queued > 0).then(|| OBJECT_AT.to_string()),
+            oldest_queued_at: has_unfinished.then(|| OBJECT_AT.to_string()),
             workers_polling,
         }
     }
@@ -414,6 +424,30 @@ mod tests {
         assert_eq!(st.workers_polling, 1);
         // (touch `s` so the binding is used)
         assert!(q.get("env_a", &s).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn oldest_queued_at_persists_while_processing_and_clears_when_drained() {
+        let q = q();
+        let id = q.enqueue_session("env_a", "s1").await;
+        // Queued: oldest_queued_at is set.
+        assert!(q.stats("env_a").await.oldest_queued_at.is_some());
+        // Claim the ONLY queued item → depth 0 but it is still being processed, so
+        // oldest_queued_at stays set (queued OR processing), not null.
+        q.claim("env_a").await.expect("claim");
+        let st = q.stats("env_a").await;
+        assert_eq!(st.depth, 0, "nothing queued");
+        assert_eq!(st.pending, 1, "one processing");
+        assert!(
+            st.oldest_queued_at.is_some(),
+            "oldest_queued_at persists while an item is still processing"
+        );
+        // Stop it → the queue is fully drained → null.
+        q.stop("env_a", &id).await.expect("stop");
+        assert!(
+            q.stats("env_a").await.oldest_queued_at.is_none(),
+            "oldest_queued_at is null only when the queue is fully drained"
+        );
     }
 
     #[tokio::test]

@@ -24,7 +24,7 @@ use crate::routes::vaults::{McpRefreshBinding, VaultState};
 use crate::session_repo::{InMemorySessionRepository, ManagedSessionRepository, PersistedSession};
 use crate::types::{
     ConfirmResult, Event, EventReceipt, InboundEvent, ListEventsResponse, ModelConfig,
-    OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent,
+    ModelOverride, OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent,
     SessionCreateParams, SessionError, SessionStats, StopReason, StreamFrame, Usage,
 };
 
@@ -82,6 +82,13 @@ pub struct ManagedState {
     /// `environment_id` is resolved to its networking policy (egress on/off) at
     /// creation. `None` → every session gets host network (unrestricted).
     environments: Option<Arc<crate::routes::environments::EnvironmentState>>,
+    /// The config-plane agent projection source (ADR-0043): when wired, a session
+    /// referencing an agent published on the config plane inherits that agent's
+    /// authoritative `model` (the config plane owns model/system/tools), so it runs
+    /// the agent's model instead of the host default. Reuses the same
+    /// [`crate::routes::agents_registry::AgentConfigSource`] port `/v1/agents` reads —
+    /// no second source of agent truth. `None` → fall back to the host default model.
+    config_source: Option<Arc<dyn crate::routes::agents_registry::AgentConfigSource>>,
     sessions: Mutex<HashMap<String, SessionRecord>>,
     /// The aspect-layer session→owner index (ADR-0051): the [`ScopeId`] that
     /// created each session, keyed by the tenancy-agnostic session id. It is NOT
@@ -180,6 +187,7 @@ impl ManagedState {
             runtime: Box::new(runtime),
             vaults: None,
             environments: None,
+            config_source: None,
             sessions: Mutex::new(HashMap::new()),
             owners: Mutex::new(HashMap::new()),
             sessions_repo: Arc::new(InMemorySessionRepository::default()),
@@ -227,6 +235,19 @@ impl ManagedState {
     #[must_use]
     pub fn with_vaults(mut self, vaults: Arc<VaultState>) -> Self {
         self.vaults = Some(vaults);
+        self
+    }
+
+    /// Wire the config-plane agent projection source so a session inherits a
+    /// published agent's authoritative `model`. Share the same
+    /// [`crate::routes::agents_registry::AgentConfigSource`] that `/v1/agents` uses,
+    /// or the session and the agent view disagree on the model.
+    #[must_use]
+    pub fn with_config_source(
+        mut self,
+        source: Arc<dyn crate::routes::agents_registry::AgentConfigSource>,
+    ) -> Self {
+        self.config_source = Some(source);
         self
     }
 
@@ -398,5 +419,59 @@ mod tests {
         );
         assert_eq!(session.title.as_deref(), Some("My session"));
         assert_eq!(session.agent.mcp_servers.len(), 1);
+    }
+
+    /// The only required create field is the agent; every other field defaults.
+    fn bare_create_params() -> SessionCreateParams {
+        serde_json::from_value(serde_json::json!({ "agent": "assistant" }))
+            .expect("minimal create params deserialize")
+    }
+
+    #[tokio::test]
+    async fn delete_broadcasts_session_deleted_then_removes_the_record() {
+        let state = ManagedState::new(RehydrateFake);
+        let id = state
+            .create_session(bare_create_params(), None)
+            .await
+            .expect("create")
+            .id;
+
+        // Subscribe as an SSE client would, *before* the delete. A fresh session
+        // has no committed events, so the stream tails live rather than ending on
+        // a terminal backfill — the window in which `session.deleted` is observed.
+        let (snapshot, mut rx) = state.stream_subscribe(&id).expect("subscribe");
+        assert!(
+            snapshot.is_empty(),
+            "a fresh session has no committed events"
+        );
+
+        state.delete_session(&id).expect("delete");
+
+        // The terminal frame reached the open stream before the record was dropped.
+        match rx
+            .try_recv()
+            .expect("a frame was broadcast to the open stream")
+        {
+            StreamFrame::Committed(e) => assert_eq!(
+                e.type_str(),
+                "session.deleted",
+                "the broadcast terminal frame is session.deleted"
+            ),
+            other => panic!("expected a committed session.deleted frame, got {other:?}"),
+        }
+
+        // And the record is gone: retrieve and events.list are now 404, by design
+        // (delete removes the session; it does not tombstone it as archive does).
+        assert!(
+            matches!(state.get_session(&id), Err(StateError::NotFound)),
+            "the deleted session is no longer retrievable"
+        );
+        assert!(
+            matches!(
+                state.list_events(&id, None, None),
+                Err(StateError::NotFound)
+            ),
+            "events.list on a deleted session is a 404, not a replay"
+        );
     }
 }

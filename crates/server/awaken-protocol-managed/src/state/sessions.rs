@@ -52,6 +52,29 @@ impl ManagedState {
             }
         };
         let agent_id = req.agent.id().to_string();
+        // Resolve the session's effective model. Precedence: the official
+        // `agent_with_overrides.model` (a per-session replace) wins; then the legacy
+        // `metadata.awaken.model` selection; then the referenced agent's authoritative
+        // model from the config plane (the config plane owns model/system/tools); else
+        // `None` = the host default. Clearing the model is rejected — a session always
+        // needs one (400 `agent_model_required`).
+        let selected_model: Option<ModelConfig> = match req.agent.model_override() {
+            ModelOverride::Set(cfg) => Some(cfg),
+            ModelOverride::Cleared => {
+                return Err(StateError::Run(RunError::bad_request(
+                    "agent_model_required: a session override cannot clear `model`",
+                )));
+            }
+            ModelOverride::Absent => req.awaken_model().map(ModelConfig::new).or_else(|| {
+                self.config_source
+                    .as_ref()
+                    .and_then(|source| source.agent_view(&agent_id))
+                    .and_then(|view| view.model)
+                    .map(ModelConfig::new)
+            }),
+        };
+        // Echo the agent version the client pinned (or overrode over), defaulting to 1.
+        let agent_version = req.agent.version().unwrap_or(1);
         let bindings = req
             .mcp_servers
             .iter()
@@ -106,7 +129,7 @@ impl ManagedState {
                     agent_id: agent_id.clone(),
                     mcp_servers: bindings,
                     resources,
-                    model: req.awaken_model().map(str::to_string),
+                    model: selected_model.as_ref().map(|m| m.id.clone()),
                     runtime: req.awaken_runtime().map(str::to_string),
                     deny_egress,
                 },
@@ -133,14 +156,13 @@ impl ManagedState {
             agent: SessionAgent {
                 id: agent_id.clone(),
                 kind: "agent",
-                version: 1,
-                // R6: echo the session's actual model — the requested override, else
-                // the host default — so the client sees which model the session runs.
-                model: ModelConfig::new(
-                    req.awaken_model()
-                        .map(str::to_string)
-                        .unwrap_or_else(|| self.runtime.model()),
-                ),
+                version: agent_version,
+                // R6: echo the session's actual model — the `agent_with_overrides`
+                // override, else the legacy `metadata.awaken.model`, else the host
+                // default — so the client sees which model the session runs.
+                model: selected_model
+                    .clone()
+                    .unwrap_or_else(|| ModelConfig::new(self.runtime.model())),
                 name: agent_id.clone(),
                 description: None,
                 system: None,
@@ -429,14 +451,26 @@ impl ManagedState {
         Ok(record.session.clone())
     }
 
-    /// `DELETE /v1/sessions/{id}` — drop the in-memory record.
+    /// `DELETE /v1/sessions/{id}` — commit a terminal `session.deleted` event,
+    /// push it to any open SSE stream, then drop the in-memory record. The
+    /// broadcast happens *before* removal because after the record is gone there
+    /// is nothing to backfill from: a live frame is the only way a streaming
+    /// client observes the deletion, and a subsequent `events.list`/`retrieve`
+    /// is a 404 (delete removes the session; it does not tombstone it as archive
+    /// does).
     pub fn delete_session(&self, id: &str) -> Result<(), StateError> {
-        self.sessions
-            .lock()
-            .unwrap()
-            .remove(id)
-            .map(|_| ())
-            .ok_or(StateError::NotFound)
+        let deleted_id = self.next_event_id();
+        let mut sessions = self.sessions.lock().unwrap();
+        let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
+        let from = record.events.len();
+        record.events.push(Event {
+            id: deleted_id,
+            kind: OutboundKind::SessionDeleted {},
+            processed_at: Some(PROCESSED_AT.to_string()),
+        });
+        self.broadcast_committed_from(id, record, from);
+        sessions.remove(id);
+        Ok(())
     }
 
     /// `POST /v1/sessions/{id}/archive` — terminate the session: stamp
