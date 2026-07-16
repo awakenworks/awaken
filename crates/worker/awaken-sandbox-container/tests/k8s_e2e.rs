@@ -121,6 +121,51 @@ fn file_spec(scope: &str) -> pc::SandboxSpec {
     }
 }
 
+/// A busybox fixture that greps for an ASCII marker embedded in a BINARY file (the file
+/// begins with non-UTF-8 bytes) — proving a `binaryData` ConfigMap reached the Pod intact.
+fn grep_binary_argv() -> Vec<String> {
+    let script = "read _p; \
+        if grep -q binary-marker-ok /acp-config/config.toml; then M=binary-ok; else M=binary-missing; fi; \
+        printf '{\"type\":\"message\",\"text\":\"%s\"}\\n' \"$M\"; \
+        printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
+    vec![
+        "nc".into(),
+        "-lk".into(),
+        "-p".into(),
+        "8080".into(),
+        "-e".into(),
+        "sh".into(),
+        "-c".into(),
+        script.into(),
+    ]
+}
+
+/// The e2e spec with a `File` whose bytes are NON-UTF-8 — the k8s tier must realize it as a
+/// ConfigMap `binaryData` entry (the text `data` path would reject the invalid UTF-8).
+fn binary_file_spec(scope: &str) -> pc::SandboxSpec {
+    pc::SandboxSpec {
+        scope: scope.into(),
+        isolation: pc::IsolationClass::Container,
+        mounts: vec![pc::MountRequirement {
+            mount_id: "cfg".into(),
+            source: pc::MountSource::File {
+                file_id: "blob-bin".into(),
+                content_hash: None,
+            },
+            mount_path: "/acp-config/config.toml".into(),
+            access: pc::MountAccess::ReadOnly,
+            lifetime: pc::MountLifetime::PerRun,
+            required: true,
+        }],
+        env: Vec::new(),
+        network: pc::NetworkPolicy::Unrestricted,
+        outputs_path: "/mnt/session/outputs".into(),
+        limits: pc::ResourceLimits::default(),
+        lease_ttl_secs: None,
+        extra: Some(serde_json::json!({ "command": grep_binary_argv(), "image": "awaken-bb:1" })),
+    }
+}
+
 fn kubectl(args: &[&str]) -> std::process::Output {
     std::process::Command::new("kubectl")
         .args(args)
@@ -449,5 +494,104 @@ async fn a_file_resolved_from_the_blob_source_reaches_the_pod() {
     assert!(
         got.contains(marker),
         "a File resolved via BlobSource must reach the Pod at its mount_path: {got:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_binary_file_reaches_the_pod_via_configmap_binary_data() {
+    if std::env::var("AWAKEN_K8S_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping: set AWAKEN_K8S_E2E=1 with a reachable cluster to run");
+        return;
+    }
+    if !kubectl(&["get", "nodes"]).status.success() {
+        eprintln!("skipping: no reachable Kubernetes cluster");
+        return;
+    }
+
+    let local_port: u16 = 18084;
+    let addr = format!("127.0.0.1:{local_port}").parse().unwrap();
+    let scope = format!("k8s-bin-{}", std::process::id());
+    let pod = format!("awaken-{scope}");
+    let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
+
+    let runtime = K8sRuntime::connect("default", addr)
+        .await
+        .expect("connect to the cluster");
+    // Non-UTF-8 bytes: a 0xff/0xfe prefix (so String::from_utf8 fails → binaryData) followed
+    // by an ASCII marker the Pod greps for.
+    let mut bytes = vec![0xffu8, 0xfe];
+    bytes.extend_from_slice(b"binary-marker-ok");
+    let provider =
+        ContainerProvider::new(Arc::new(runtime), "awaken-bb:1").with_blob("blob-bin", bytes);
+
+    let sandbox = provider
+        .create_container(&binary_file_spec(&scope))
+        .await
+        .expect("create the agent Pod with a binaryData ConfigMap mount");
+
+    let ready = {
+        let mut ok = false;
+        for _ in 0..120 {
+            let phase = kubectl(&["get", "pod", &pod, "-o", "jsonpath={.status.phase}"]);
+            if String::from_utf8_lossy(&phase.stdout) == "Running" {
+                ok = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        ok
+    };
+
+    let mut forward = std::process::Command::new("kubectl")
+        .args([
+            "port-forward",
+            &format!("pod/{pod}"),
+            &format!("{local_port}:8080"),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn port-forward");
+
+    let mut got = String::new();
+    if ready {
+        let mut channel = None;
+        for _ in 0..100 {
+            match awaken_agent_channel::AgentTransport::open_channel(&sandbox).await {
+                Ok(c) => {
+                    channel = Some(c);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
+            }
+        }
+        if let Some(mut channel) = channel {
+            let _ = channel.write_all(b"hello\n").await;
+            let _ = channel.flush().await;
+            let mut buf = vec![0u8; 512];
+            for _ in 0..50 {
+                match tokio::time::timeout(Duration::from_secs(2), channel.read(&mut buf)).await {
+                    Ok(Ok(0)) => break,
+                    Ok(Ok(n)) => {
+                        got.push_str(&String::from_utf8_lossy(&buf[..n]));
+                        if got.contains("turn_end") {
+                            break;
+                        }
+                    }
+                    _ => break,
+                }
+            }
+        }
+    }
+
+    let _ = forward.kill();
+    let _ = pc::Sandbox::dispose(&sandbox).await;
+    let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
+
+    assert!(ready, "the agent Pod must reach Running");
+    // The binary file (non-UTF-8 prefix + ASCII marker) reached the Pod intact via binaryData.
+    assert!(
+        got.contains("binary-ok"),
+        "a binary File must reach the Pod via a binaryData ConfigMap: {got:?}"
     );
 }

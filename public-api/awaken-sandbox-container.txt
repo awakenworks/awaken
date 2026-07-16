@@ -28,6 +28,7 @@ pub awaken_sandbox_container::AgentContainerSession::handle: awaken_provisioning
 pub awaken_sandbox_container::AgentContainerSession::process: alloc::boxed::Box<dyn awaken_provisioning_contract::sandbox::ProcessHandle>
 pub struct awaken_sandbox_container::BindPlan
 pub awaken_sandbox_container::BindPlan::content: core::option::Option<alloc::string::String>
+pub awaken_sandbox_container::BindPlan::content_bytes: core::option::Option<alloc::vec::Vec<u8>>
 pub awaken_sandbox_container::BindPlan::mount_path: alloc::string::String
 pub awaken_sandbox_container::BindPlan::read_only: bool
 pub awaken_sandbox_container::BindPlan::source_ref: alloc::string::String

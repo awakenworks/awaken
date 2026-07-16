@@ -179,6 +179,7 @@ fn mount_ref_covers_every_source_kind() {
         mount_path: String::new(),
         read_only: false,
         content: None,
+        content_bytes: None,
     };
     assert_eq!(
         s(pc::MountSource::MemoryStore {

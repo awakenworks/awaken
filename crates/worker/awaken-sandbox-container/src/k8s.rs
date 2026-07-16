@@ -36,11 +36,15 @@ fn backend(e: impl std::fmt::Display) -> RuntimeError {
 /// projects it back to the mount's exact `mount_path` via a `subPath`.
 const CONFIGMAP_KEY: &str = "content";
 
-/// The Pod's inline-content binds — those carrying self-contained bytes (`Inline` /
-/// `Other{content}`) rather than a host ref. Each becomes a ConfigMap volume. The order
-/// is stable, so the i-th here names the i-th ConfigMap in both `create` and `build_pod`.
+/// The Pod's inline single-file binds — those carrying self-contained bytes (`Inline` /
+/// `Other{content}`, or a resolved File/Resource) rather than a host ref, whether UTF-8
+/// (`content` → ConfigMap `data`) or binary (`content_bytes` → `binaryData`). Each becomes a
+/// ConfigMap volume; the stable order names the i-th ConfigMap in both `create` and `build_pod`.
 fn content_binds(plan: &ContainerPlan) -> Vec<&BindPlan> {
-    plan.binds.iter().filter(|b| b.content.is_some()).collect()
+    plan.binds
+        .iter()
+        .filter(|b| b.content.is_some() || b.content_bytes.is_some())
+        .collect()
 }
 
 /// Deterministic ConfigMap name for the i-th inline-content mount of Pod `awaken-{id}`.
@@ -59,12 +63,35 @@ fn cfg_owner_label(id: &str) -> String {
 /// so it is reaped natively when set; labeled for best-effort `remove` in the ownerless
 /// case. ConfigMaps cap at ~1MiB — inline config (codex `config.toml`, resource bytes)
 /// is well under, and larger byte payloads belong on the blob-store path, not here.
-fn build_configmap(id: &str, i: usize, content: &str, owner: &Option<OwnerReference>) -> ConfigMap {
+fn build_configmap(
+    id: &str,
+    i: usize,
+    content: Option<&str>,
+    content_bytes: Option<&[u8]>,
+    owner: &Option<OwnerReference>,
+) -> ConfigMap {
     let mut labels = BTreeMap::new();
     labels.insert("app".to_string(), "awaken-sandbox".to_string());
     labels.insert("awaken-cfg-owner".to_string(), cfg_owner_label(id));
-    let mut data = BTreeMap::new();
-    data.insert(CONFIGMAP_KEY.to_string(), content.to_string());
+    // UTF-8 content rides `data`; binary content rides `binaryData` (base64 on the wire) —
+    // the volume subPath projects the same `content` key as a file either way.
+    let (data, binary_data) = match (content, content_bytes) {
+        (Some(text), _) => (
+            Some(BTreeMap::from([(
+                CONFIGMAP_KEY.to_string(),
+                text.to_string(),
+            )])),
+            None,
+        ),
+        (None, Some(bytes)) => (
+            None,
+            Some(BTreeMap::from([(
+                CONFIGMAP_KEY.to_string(),
+                k8s_openapi::ByteString(bytes.to_vec()),
+            )])),
+        ),
+        (None, None) => (Some(BTreeMap::new()), None),
+    };
     ConfigMap {
         metadata: ObjectMeta {
             name: Some(configmap_name(id, i)),
@@ -72,7 +99,8 @@ fn build_configmap(id: &str, i: usize, content: &str, owner: &Option<OwnerRefere
             owner_references: owner.clone().map(|o| vec![o]),
             ..Default::default()
         },
-        data: Some(data),
+        data,
+        binary_data,
         immutable: Some(true),
         ..Default::default()
     }
@@ -457,7 +485,8 @@ impl ContainerRuntime for K8sRuntime {
             let cm = build_configmap(
                 id,
                 i,
-                bind.content.as_deref().unwrap_or_default(),
+                bind.content.as_deref(),
+                bind.content_bytes.as_deref(),
                 &self.owner,
             );
             cms.create(&PostParams::default(), &cm)
@@ -724,6 +753,7 @@ mod tests {
                 mount_path: "/acp-config/config.toml".into(),
                 read_only: true,
                 content: Some("[mcp_servers.gh]\nx\n".into()),
+                content_bytes: None,
             },
             // A ref-backed bind (no content) must NOT become a ConfigMap volume.
             crate::BindPlan {
@@ -731,6 +761,7 @@ mod tests {
                 mount_path: "/data/in".into(),
                 read_only: true,
                 content: None,
+                content_bytes: None,
             },
         ];
         let spec = build_pod("run-9", &plan, &None, "m", None, false)
@@ -764,7 +795,7 @@ mod tests {
 
     #[test]
     fn build_configmap_holds_the_bytes_under_the_key_and_is_immutable() {
-        let cm = build_configmap("run-9", 0, "hello-inline", &None);
+        let cm = build_configmap("run-9", 0, Some("hello-inline"), None, &None);
         assert_eq!(cm.metadata.name.as_deref(), Some("awaken-run-9-cfg-0"));
         assert_eq!(
             cm.data.as_ref().unwrap().get("content").unwrap(),
@@ -781,6 +812,19 @@ mod tests {
                 .map(String::as_str),
             Some("awaken-run-9")
         );
+    }
+
+    #[test]
+    fn build_configmap_uses_binary_data_for_non_utf8_bytes() {
+        // A binary File (non-UTF-8) rides `binaryData`, not text `data` — else the k8s API
+        // rejects the invalid UTF-8. The same `content` key is projected by the volume subPath.
+        let cm = build_configmap("run-9", 1, None, Some(&[0xff, 0xfe, 0x00, 0x01]), &None);
+        assert!(cm.data.is_none(), "binary content must not ride text data");
+        assert_eq!(
+            cm.binary_data.as_ref().unwrap().get("content").unwrap().0,
+            vec![0xff, 0xfe, 0x00, 0x01]
+        );
+        assert_eq!(cm.immutable, Some(true));
     }
 
     #[test]
