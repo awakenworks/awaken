@@ -76,6 +76,15 @@ impl LaunchSource {
             }
         }
     }
+
+    /// The config-plane-selected [`AcpCli`] this source serves, if projecting. `None`
+    /// for a fixed argv (which carries no catalog row, so no MCP projection).
+    fn cli(&self) -> Option<&AcpCli> {
+        match self {
+            LaunchSource::Fixed(_) => None,
+            LaunchSource::Projected { cli, .. } => Some(cli),
+        }
+    }
 }
 
 /// Shared per-thread deny-egress registrations: the host writes a thread's policy
@@ -239,6 +248,23 @@ impl AgentChannelSource for SandboxChannelSource {
             .spawn_agent(Self::command(&launch))
             .await
             .map_err(|e| OpenError(format!("sandboxed agent launch: {e}")))?;
+        // Deliver this run's declared MCP servers into the sandbox. `session/new` servers
+        // (claude/gemini/opencode) ride in-band over the ACP wire the executor already
+        // drives — no filesystem needed. Fail-closed on an inline-secret credential
+        // (only broker references are sandbox-safe). A `ConfigFileToml` CLI (codex) needs
+        // the config file mounted into the interior config home via `MountSource::Inline`
+        // — the remaining follow-up; its `config_file` projection is not yet realized here.
+        let mcp_session_servers = match self.launch.cli() {
+            Some(cli) => {
+                awaken_run_executor_acp::mcp_injection(
+                    cli,
+                    &activation.snapshot.resolved_spec.plugin_config,
+                    true,
+                )?
+                .session_servers
+            }
+            None => Vec::new(),
+        };
         Ok(AgentSession {
             channel,
             process: Arc::from(process),
@@ -248,11 +274,7 @@ impl AgentChannelSource for SandboxChannelSource {
             // session under the same slug every relaunch/machine — the stable interior
             // identity cross-directory/cross-machine recovery needs.
             workspace_cwd: Some(SANDBOX_WORKSPACE.to_string()),
-            // The launch (argv/env/model) is projected per run from the agent's selected
-            // CLI; delivering a run's `session/new` MCP servers *into* the sandbox
-            // interior (config-home write for a `ConfigFileToml` CLI) is the remaining
-            // follow-up. Empty here means "none projected yet", not "none declared".
-            mcp_session_servers: Vec::new(),
+            mcp_session_servers,
         })
     }
 }
