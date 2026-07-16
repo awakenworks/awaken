@@ -277,6 +277,8 @@ pub fn permission_config_schema() -> Value {
     serde_json::json!({
         "type": "object",
         "title": "Permission policy",
+        "description": PERMISSION_AUTHORING_GUIDE,
+        "examples": [PERMISSION_EXAMPLE_DENY_DESTRUCTIVE()],
         "properties": {
             "default_behavior": {
                 "type": "string",
@@ -298,7 +300,9 @@ pub fn permission_config_schema() -> Value {
                     "properties": {
                         "pattern": {
                             "type": "string",
-                            "description": "A glob tool-call pattern, e.g. Bash(*rm*) or mcp__github__*."
+                            "description": "A tool-call pattern: `bash` matches that tool, \
+`bash(command ~ \"*rm *\")` also matches on an argument, `mcp__github__*` globs a name. \
+Tool ids are CASE-SENSITIVE and lowercase (`bash`/`read`/`write`, NOT `Bash`)."
                         },
                         "behavior": { "type": "string", "enum": ["allow", "ask", "deny"] }
                     },
@@ -306,6 +310,35 @@ pub fn permission_config_schema() -> Value {
                 }
             }
         }
+    })
+}
+
+/// The rule-pattern DSL and precedence rules the raw schema can't express (patterns
+/// live inside strings), so an author — human form or LLM — otherwise guesses them.
+/// Same tool-pattern grammar as the state machine's `on`; same case-sensitivity trap.
+const PERMISSION_AUTHORING_GUIDE: &str = "\
+An ordered permission policy over tool calls. Authoring rules:\n\
+- `rules[].pattern` is a TOOL PATTERN: `<tool_id>` matches that tool, \
+`<tool_id>(<arg> ~ \"<glob>\")` also matches on an argument, and `mcp__<server>__*` globs \
+a name. The `<tool_id>` and `<arg>` are the EXACT ids the tools use — they are \
+case-sensitive: the built-in tools are `bash` (arg `command`), `read`/`write` (arg \
+`path`), NOT `Bash`/`Read`/`file_path`. A pattern with the wrong case parses but never \
+matches, silently disabling the rule.\n\
+- `behavior` is `allow` | `ask` | `deny`. `deny` is ABSOLUTE (any matching deny wins); \
+otherwise the MOST SPECIFIC matching rule wins, and `default_behavior` applies if none match.\n\
+- `mode`: `default` honors the rules; `plan` denies unmatched side-effecting calls; \
+`bypassPermissions` allows everything (use only to let another gate be authoritative).";
+
+/// A canonical policy: allow reads, ask by default, hard-deny destructive shell calls.
+#[allow(non_snake_case)]
+fn PERMISSION_EXAMPLE_DENY_DESTRUCTIVE() -> Value {
+    serde_json::json!({
+        "default_behavior": "ask",
+        "mode": "default",
+        "rules": [
+            { "pattern": "read", "behavior": "allow" },
+            { "pattern": "bash(command ~ \"*rm -rf*\")", "behavior": "deny" }
+        ]
     })
 }
 
@@ -501,6 +534,38 @@ mod tests {
         assert_eq!(
             default.decide("Bash", &unmatched()),
             ToolPermissionBehavior::RequireConfirmation
+        );
+    }
+
+    #[test]
+    fn config_schema_carries_authoring_guidance() {
+        let schema = permission_config_schema();
+        // The DSL grammar + case-sensitivity trap must ride on the schema so the assistant
+        // (and the console form) that author from it don't guess.
+        let desc = schema["description"].as_str().unwrap();
+        assert!(desc.contains("case-sensitive"), "guide names the case trap");
+        assert!(schema["examples"].is_array());
+    }
+
+    #[test]
+    fn shipped_example_actually_enforces_against_the_real_bash_tool() {
+        // The example's deny rule must match the REAL tool id `bash` (lowercase). This
+        // guards the exact bug we're fixing: a `Bash(...)` example parses but never matches
+        // the runtime tool, silently disabling the rule.
+        let rs = parse_ruleset(&PERMISSION_EXAMPLE_DENY_DESTRUCTIVE()).unwrap();
+        assert_eq!(
+            rs.decide("bash", &json!({ "command": "sudo rm -rf /" })),
+            ToolPermissionBehavior::Deny,
+            "the example denies a destructive lowercase `bash` call"
+        );
+        assert_eq!(
+            rs.decide("read", &json!({ "path": "/etc/hosts" })),
+            ToolPermissionBehavior::Allow
+        );
+        assert_eq!(
+            rs.decide("bash", &json!({ "command": "ls" })),
+            ToolPermissionBehavior::Ask,
+            "a benign bash call falls through to the ask default"
         );
     }
 }

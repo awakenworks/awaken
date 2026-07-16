@@ -8,6 +8,7 @@ matters for a structured-authoring skill — CONSISTENCY across repetitions.
 
 Usage:
   python3 assistant-eval.py [K]             # measurement only (default)
+  python3 assistant-eval.py [K] [CASE,...]  # run selected case ids
   python3 assistant-eval.py [K] --gate      # fail when a quality floor is missed
   python3 assistant-eval.py --self-test     # deterministic gate-logic check
 
@@ -26,6 +27,7 @@ import urllib.request
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("repetitions", nargs="?", type=int, default=3)
+    parser.add_argument("cases", nargs="?", help="comma-separated case ids to run")
     parser.add_argument("--base-url", default="http://127.0.0.1:38080")
     parser.add_argument("--gate", action="store_true")
     parser.add_argument("--min-criteria", type=float, default=0.90)
@@ -110,7 +112,12 @@ CASES = [
      [("persisted", lambda c: c is not None),
       ("tool:bash", lambda c: has_tool(c, "bash")),
       ("permission:section", lambda c: plugin_cfg(c, "permission") is not None),
-      ("permission:gated", lambda c: _perm_gated(plugin_cfg(c, "permission")))]),
+      ("permission:gated", lambda c: _perm_gated(plugin_cfg(c, "permission"))),
+      # The discriminating criteria the enriched schema teaches: patterns must use the REAL
+      # lowercase tool ids (a `Bash(...)` pattern parses but never matches → latent fail-open),
+      # and the rm-deny must actually target `bash`.
+      ("permission:lowercase_ids", lambda c: _perm_ids_lowercase(plugin_cfg(c, "permission"))),
+      ("permission:denies_bash_rm", lambda c: _perm_denies_bash_rm(plugin_cfg(c, "permission")))]),
 
     ("eval-c3",
      "Draft an agent id 'eval-c3' with the read and write tools, and add a state_machine plugin that "
@@ -125,7 +132,11 @@ CASES = [
      "compaction prompt that keeps key findings and open questions.",
      [("persisted", lambda c: c is not None),
       ("plugin:compact", lambda c: "compact" in (c.get("plugins") or [])),
-      ("compact:has_instructions", lambda c: bool(_compact_instructions(plugin_cfg(c, "compact"))))]),
+      ("compact:has_instructions", lambda c: bool(_compact_instructions(plugin_cfg(c, "compact")))),
+      # The enriched schema teaches that `instructions` is a PROMPT (prose, not a size) and
+      # that the trigger is `trigger_ratio` of the window — check the weak model got both.
+      ("compact:instructions_is_prose", lambda c: _compact_prose(plugin_cfg(c, "compact"))),
+      ("compact:trigger_ratio_set", lambda c: _compact_ratio(plugin_cfg(c, "compact")))]),
 
     ("eval-c5",
      "Draft an agent id 'eval-c5': a terse assistant that writes haiku. No tools needed.",
@@ -152,6 +163,41 @@ def _sm_has_reminder(sm):
 def _compact_instructions(cc):
     if not isinstance(cc, dict): return None
     return cc.get("instructions") or cc.get("prompt")
+
+# Real lowercase tool ids (the built-ins). A rule pattern's head must be one of these — a
+# capitalized `Bash`/`Read` parses but never matches the runtime tool (silent fail-open).
+_REAL_TOOL_IDS = {"bash", "read", "write", "edit", "glob", "grep"}
+
+def _rule_patterns(p):
+    return [r.get("pattern", "") for r in (p.get("rules") or [])] if isinstance(p, dict) else []
+
+def _pattern_head(pat):
+    # `bash(command ~ "*rm*")` → `bash`; `*` and `mcp__x__*` pass through.
+    return pat.split("(")[0].strip()
+
+def _perm_ids_lowercase(p):
+    heads = [_pattern_head(x) for x in _rule_patterns(p)]
+    heads = [h for h in heads if h and h != "*" and not h.startswith("mcp__")]
+    # Non-empty, and every named-tool head is a real lowercase id (rejects `Bash`, `Read`).
+    return bool(heads) and all(h in _REAL_TOOL_IDS for h in heads)
+
+def _perm_denies_bash_rm(p):
+    if not isinstance(p, dict): return False
+    for r in (p.get("rules") or []):
+        pat = r.get("pattern", "")
+        if r.get("behavior") == "deny" and _pattern_head(pat) == "bash" and "rm" in pat:
+            return True
+    return False
+
+def _compact_prose(cc):
+    s = _compact_instructions(cc)
+    # A prompt is prose: a phrase with spaces, not a bare number/size the field isn't for.
+    return isinstance(s, str) and len(s) > 20 and " " in s.strip() and not s.strip().isdigit()
+
+def _compact_ratio(cc):
+    if not isinstance(cc, dict): return False
+    r = cc.get("trigger_ratio")
+    return isinstance(r, (int, float)) and 0 < r <= 1
 
 
 def gate_failures(grand, args):
@@ -195,9 +241,12 @@ def self_test():
 def main():
     if ARGS.self_test:
         return self_test()
+    # Optional case-id filter (e.g. `eval-c2,eval-c4`).
+    only = set(ARGS.cases.split(",")) if ARGS.cases else None
+    cases = [c for c in CASES if not only or c[0] in only]
     print(f"# Admin Assistant authoring skill — eval (K={K} reps/case)\n")
     grand = {"crit_pass": 0, "crit_total": 0, "case_full": 0, "case_runs": 0, "persist": 0}
-    for cid, prompt, rubric in CASES:
+    for cid, prompt, rubric in cases:
         # per-criterion pass counts across reps → consistency
         counts = {name: 0 for name, _ in rubric}
         full = 0
