@@ -213,6 +213,45 @@ pub(crate) fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse
 #[derive(Debug, Clone)]
 pub struct WorkspaceScope(pub String);
 
+/// The Managed Agents beta this wire surface requires to start a session (mirrors
+/// `awaken_managed_bridge::MANAGED_BETA`).
+const REQUIRED_BETA: &str = "managed-agents-2026-04-01";
+
+/// Axum middleware enforcing the `anthropic-beta: managed-agents-2026-04-01` opt-in
+/// on session creation (`POST /v1/sessions`), exactly as the real Managed API does —
+/// a beta endpoint rejects a create that never opted in. Applied by the server
+/// assembly, NOT baked into [`router`], so the router-level unit tests (which build
+/// header-less requests) are unaffected. Every route other than session-create
+/// passes through untouched; the header may be a comma-separated list.
+pub async fn enforce_managed_beta(
+    req: Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let is_create = req.method() == axum::http::Method::POST && req.uri().path() == "/v1/sessions";
+    if is_create {
+        let opted_in = req
+            .headers()
+            .get_all("anthropic-beta")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|v| v.split(','))
+            .any(|b| b.trim() == REQUIRED_BETA);
+        if !opted_in {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse::new(
+                    "invalid_request_error",
+                    format!(
+                        "the {REQUIRED_BETA} beta is required: send the `anthropic-beta: {REQUIRED_BETA}` header"
+                    ),
+                )),
+            )
+                .into_response();
+        }
+    }
+    next.run(req).await
+}
+
 async fn create_session(
     State(state): State<Arc<ManagedState>>,
     workspace: Option<axum::Extension<WorkspaceScope>>,
