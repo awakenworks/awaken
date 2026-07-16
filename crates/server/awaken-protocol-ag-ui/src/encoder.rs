@@ -1,12 +1,12 @@
 //! Project a committed step into AG-UI events. The step fold is shared
-//! (`awaken_agent_contract::project`); this module owns the AG-UI *transcoder* —
-//! the `AgentEvent -> AgUiEvent` mapping. The encoder is per-stream: it holds the
+//! (`awaken_agent_contract::event`); this module owns the AG-UI *transcoder* —
+//! the `Fact -> AgUiEvent` mapping. The encoder is per-stream: it holds the
 //! thread/run ids and mints tool-result message ids, so it is stateful `&mut self`.
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Message, Role};
-use awaken_agent_contract::project::{
-    AgentEvent, HistorySink, ToolUseRef, Transcoder, project_history, project_messages,
+use awaken_agent_contract::event::{
+    Fact, HistorySink, ToolUseRef, Transcoder, fold_history, fold_messages,
 };
 use awaken_protocol_transport::{StepOutcome, blocks_text};
 use serde_json::{Value, json};
@@ -35,13 +35,13 @@ impl AgUiEncoder {
 impl Transcoder for AgUiEncoder {
     type Output = AgUiEvent;
 
-    fn transcode(&mut self, event: &AgentEvent) -> Vec<AgUiEvent> {
+    fn transcode(&mut self, event: &Fact) -> Vec<AgUiEvent> {
         match event {
-            AgentEvent::RunStarted => vec![AgUiEvent::RunStarted {
+            Fact::RunStarted => vec![AgUiEvent::RunStarted {
                 thread_id: self.thread_id.clone(),
                 run_id: self.run_id.clone(),
             }],
-            AgentEvent::AssistantMessage { id, content } => {
+            Fact::AssistantMessage { id, content } => {
                 let text = blocks_text(content);
                 if text.is_empty() {
                     Vec::new()
@@ -61,7 +61,7 @@ impl Transcoder for AgUiEncoder {
                     ]
                 }
             }
-            AgentEvent::ToolCall {
+            Fact::ToolCall {
                 id, name, input, ..
             } => vec![
                 AgUiEvent::ToolCallStart {
@@ -76,7 +76,7 @@ impl Transcoder for AgUiEncoder {
                     tool_call_id: id.clone(),
                 },
             ],
-            AgentEvent::ToolResult { id, content, .. } => {
+            Fact::ToolResult { id, content, .. } => {
                 let message_id = format!("{}-tr-{}", self.run_id, self.tool_result_seq);
                 self.tool_result_seq += 1;
                 vec![AgUiEvent::ToolCallResult {
@@ -85,7 +85,7 @@ impl Transcoder for AgUiEncoder {
                     content: blocks_text(content),
                 }]
             }
-            AgentEvent::Waiting { .. } | AgentEvent::RunFinished { .. } => {
+            Fact::Waiting { .. } | Fact::RunFinished { .. } => {
                 vec![AgUiEvent::RunFinished {
                     thread_id: self.thread_id.clone(),
                     run_id: self.run_id.clone(),
@@ -93,12 +93,12 @@ impl Transcoder for AgUiEncoder {
             }
             // AG-UI runs end with either RUN_FINISHED or RUN_ERROR; a fault
             // maps to the latter, code-prefixed so clients can categorize.
-            AgentEvent::RunFailed { code, message } => vec![AgUiEvent::RunError {
+            Fact::RunFailed { code, message } => vec![AgUiEvent::RunError {
                 message: format!("{code}: {message}"),
             }],
             // An internal continuation-guard round is not an AG-UI wire frame; the
             // committed fold never emits it into this stream.
-            AgentEvent::Continuation { .. } => Vec::new(),
+            Fact::Continuation { .. } => Vec::new(),
         }
     }
 }
@@ -109,8 +109,8 @@ pub fn encode_step(outcome: &StepOutcome, thread_id: &str, run_id: &str) -> Vec<
     let pending = outcome
         .pending()
         .map(|p| (p.tool_use_id.as_str(), p.client_executed));
-    let mut events = vec![AgentEvent::RunStarted];
-    events.extend(project_messages(&outcome.new_messages, pending));
+    let mut events = vec![Fact::RunStarted];
+    events.extend(fold_messages(&outcome.new_messages, pending));
     // The terminal event owns the failed / parked / finished distinction — a fault
     // becomes `RunFailed`, which transcodes to `RUN_ERROR` instead of `RUN_FINISHED`.
     events.push(outcome.terminal_event());
@@ -128,18 +128,18 @@ pub fn encode_close(outcome: &StepOutcome, thread_id: &str, run_id: &str) -> Vec
     let pending = outcome
         .pending()
         .map(|p| (p.tool_use_id.as_str(), p.client_executed));
-    let events = project_messages(&outcome.new_messages, pending);
+    let events = fold_messages(&outcome.new_messages, pending);
     let mut out = Vec::new();
     let mut tool_result_seq = 0u64;
     for event in &events {
         match event {
             // Text was streamed live as TEXT_MESSAGE_* deltas.
-            AgentEvent::AssistantMessage { .. } => {}
+            Fact::AssistantMessage { .. } => {}
             // START + ARGS were streamed live; close the streamed tool call.
-            AgentEvent::ToolCall { id, .. } => out.push(AgUiEvent::ToolCallEnd {
+            Fact::ToolCall { id, .. } => out.push(AgUiEvent::ToolCallEnd {
                 tool_call_id: id.clone(),
             }),
-            AgentEvent::ToolResult { id, content, .. } => {
+            Fact::ToolResult { id, content, .. } => {
                 out.push(AgUiEvent::ToolCallResult {
                     message_id: format!("{run_id}-tr-{tool_result_seq}"),
                     tool_call_id: id.clone(),
@@ -167,7 +167,7 @@ pub fn encode_close(outcome: &StepOutcome, thread_id: &str, run_id: &str) -> Vec
 /// the streaming encoder drops them.
 pub fn encode_history(messages: &[Message]) -> Vec<Value> {
     let mut sink = AgUiHistorySink::default();
-    project_history(messages, &mut sink);
+    fold_history(messages, &mut sink);
     sink.encoded
 }
 
@@ -381,7 +381,7 @@ mod tests {
     #[test]
     fn run_failed_transcodes_to_a_run_error() {
         let mut enc = AgUiEncoder::new("t1", "r1");
-        let events = enc.transcode(&AgentEvent::RunFailed {
+        let events = enc.transcode(&Fact::RunFailed {
             code: "overloaded".into(),
             message: "try later".into(),
         });
@@ -397,7 +397,7 @@ mod tests {
         // Documents the current shape: a parked built-in tool surfaces as a plain
         // RUN_FINISHED (no dedicated RUN_INTERRUPTED event exists in this adapter).
         let mut enc = AgUiEncoder::new("t1", "r1");
-        let events = enc.transcode(&AgentEvent::Waiting {
+        let events = enc.transcode(&Fact::Waiting {
             pending_tool_use_id: Some("c1".into()),
         });
         assert!(
@@ -410,12 +410,12 @@ mod tests {
     #[test]
     fn successive_tool_results_get_distinct_message_ids() {
         let mut enc = AgUiEncoder::new("t1", "r1");
-        let first = enc.transcode(&AgentEvent::ToolResult {
+        let first = enc.transcode(&Fact::ToolResult {
             id: "c1".into(),
             content: vec![ContentBlock::text("one")],
             is_error: false,
         });
-        let second = enc.transcode(&AgentEvent::ToolResult {
+        let second = enc.transcode(&Fact::ToolResult {
             id: "c2".into(),
             content: vec![ContentBlock::text("two")],
             is_error: false,
@@ -434,7 +434,7 @@ mod tests {
     #[test]
     fn an_empty_assistant_message_transcodes_to_nothing() {
         let mut enc = AgUiEncoder::new("t1", "r1");
-        let events = enc.transcode(&AgentEvent::AssistantMessage {
+        let events = enc.transcode(&Fact::AssistantMessage {
             id: "a1".into(),
             content: vec![],
         });
@@ -444,7 +444,7 @@ mod tests {
     #[test]
     fn an_assistant_message_transcodes_to_a_bracketed_text_message() {
         let mut enc = AgUiEncoder::new("t1", "r1");
-        let events = enc.transcode(&AgentEvent::AssistantMessage {
+        let events = enc.transcode(&Fact::AssistantMessage {
             id: "a1".into(),
             content: vec![ContentBlock::text("hello")],
         });
@@ -465,9 +465,9 @@ mod tests {
 
     #[test]
     fn a_tool_call_transcodes_to_start_args_end() {
-        use awaken_agent_contract::project::ToolDisposition;
+        use awaken_agent_contract::event::ToolDisposition;
         let mut enc = AgUiEncoder::new("t1", "r1");
-        let events = enc.transcode(&AgentEvent::ToolCall {
+        let events = enc.transcode(&Fact::ToolCall {
             id: "c1".into(),
             name: "read".into(),
             input: json!({ "path": "x" }),
@@ -586,7 +586,7 @@ mod tests {
     }
 
     // Post the projection change: an assistant message whose only block is an
-    // empty-string Text is dropped by `project_messages`, so the AG-UI stream
+    // empty-string Text is dropped by `fold_messages`, so the AG-UI stream
     // brackets the run with RUN_STARTED/RUN_FINISHED and emits no spurious
     // TEXT_MESSAGE_* frames.
     #[test]

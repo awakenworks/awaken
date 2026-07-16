@@ -3,7 +3,7 @@
 //! This is the single shape every public protocol adapter projects from. A
 //! committed step (the messages committed during a turn or resume, plus the
 //! terminal phase) is folded into a sequence of neutral [`AgentEvent`]s by
-//! [`project_messages`] / [`project_step`]; each protocol then implements one
+//! [`fold_messages`] / [`fold_step`]; each protocol then implements one
 //! [`Transcoder`] that maps those events to its own wire vocabulary. The fold is
 //! shared; only the transcoder differs per protocol (static Strategy).
 
@@ -38,10 +38,7 @@ pub trait Transcoder {
 /// Fold a committed step's messages into per-message neutral events (no
 /// `RunStarted`, no terminal). `pending` is `(tool_use_id, client_executed)` of
 /// the tool the run parked on, when it parked — it classifies that tool's call.
-pub fn project_messages(
-    new_messages: &[Message],
-    pending: Option<(&str, bool)>,
-) -> Vec<AgentEvent> {
+pub fn fold_messages(new_messages: &[Message], pending: Option<(&str, bool)>) -> Vec<AgentEvent> {
     let mut out = Vec::new();
     for message in new_messages {
         match message.role {
@@ -106,7 +103,7 @@ pub fn project_messages(
 }
 
 /// A tool call the assistant made, borrowed from the committed message during a
-/// [`project_history`] walk. Adapters shape it into their own tool-part vocabulary.
+/// [`fold_history`] walk. Adapters shape it into their own tool-part vocabulary.
 pub struct ToolUseRef<'a> {
     pub id: &'a str,
     pub name: &'a str,
@@ -115,7 +112,7 @@ pub struct ToolUseRef<'a> {
 
 /// The static-history counterpart to [`Transcoder`]: a sink that receives the
 /// committed messages of a thread, oldest-first, already walked and correlated.
-/// The fold ([`project_history`]) owns the shared logic — skip-empty, tool-call
+/// The fold ([`fold_history`]) owns the shared logic — skip-empty, tool-call
 /// extraction, and per-message tool-result indexing; each adapter implements this
 /// to shape a message into its own wire form. This is why two adapters that
 /// project tool results differently (AI SDK folds a result into the assistant's
@@ -152,7 +149,7 @@ fn text_is_empty(content: &[ContentBlock]) -> bool {
 /// Walk a thread's committed messages (oldest-first) into `sink`, owning the
 /// shared read-model logic so each adapter only shapes each message. An empty
 /// user/system/assistant message is dropped, as the streaming projection drops it.
-pub fn project_history(messages: &[Message], sink: &mut impl HistorySink) {
+pub fn fold_history(messages: &[Message], sink: &mut impl HistorySink) {
     for message in messages {
         match message.role {
             Role::User | Role::System => {
@@ -198,13 +195,13 @@ pub fn project_history(messages: &[Message], sink: &mut impl HistorySink) {
 
 /// Fold a full committed step (with boundaries): `RunStarted`, the message
 /// events, then a terminal event derived from `phase`.
-pub fn project_step(
+pub fn fold_step(
     new_messages: &[Message],
     phase: &Phase,
     pending: Option<(&str, bool)>,
 ) -> Vec<AgentEvent> {
     let mut out = vec![AgentEvent::RunStarted];
-    out.extend(project_messages(new_messages, pending));
+    out.extend(fold_messages(new_messages, pending));
     out.push(terminal(phase, pending));
     out
 }
@@ -281,7 +278,7 @@ mod tests {
                 input: serde_json::json!({}),
             }],
         };
-        let events = project_messages(&[msg], Some(("c1", true)));
+        let events = fold_messages(&[msg], Some(("c1", true)));
         assert_eq!(
             events,
             vec![AgentEvent::ToolCall {
@@ -296,7 +293,7 @@ mod tests {
     #[test]
     fn step_wraps_with_start_and_terminal() {
         let msg = Message::text(Id("a1".into()), Role::Assistant, "hi");
-        let events = project_step(&[msg], &Phase::Ended(EndCause::NaturalEnd), None);
+        let events = fold_step(&[msg], &Phase::Ended(EndCause::NaturalEnd), None);
         assert_eq!(events.first(), Some(&AgentEvent::RunStarted));
         assert_eq!(
             events.last(),
@@ -395,7 +392,7 @@ mod tests {
         );
     }
 
-    // --- project_messages(): role x pending x content rows ---
+    // --- fold_messages(): role x pending x content rows ---
 
     fn assistant(id: &str, blocks: Vec<ContentBlock>) -> Message {
         Message::new(Id(id.into()), Role::Assistant, blocks)
@@ -404,7 +401,7 @@ mod tests {
     #[test]
     fn assistant_text_only_emits_one_assistant_message() {
         let msg = assistant("a1", vec![ContentBlock::text("hello")]);
-        let events = project_messages(&[msg], None);
+        let events = fold_messages(&[msg], None);
         assert_eq!(
             events,
             vec![AgentEvent::AssistantMessage {
@@ -418,25 +415,25 @@ mod tests {
     fn assistant_with_no_content_at_all_emits_nothing() {
         // No text blocks and no tool-use blocks => no events.
         let msg = assistant("a1", vec![]);
-        assert!(project_messages(&[msg], None).is_empty());
+        assert!(fold_messages(&[msg], None).is_empty());
     }
 
     // INVARIANT: the two projections agree on the skip-empty test. An assistant
     // message whose only block is an empty-string Text is a useless empty wire
-    // event, so BOTH the streaming fold (project_messages) and the static-history
-    // fold (project_history) drop it. They share the one `text_is_empty` predicate,
+    // event, so BOTH the streaming fold (fold_messages) and the static-history
+    // fold (fold_history) drop it. They share the one `text_is_empty` predicate,
     // so this parity holds by construction — flipping it flips this named test.
     #[test]
     fn assistant_all_empty_text_is_dropped_by_both_projections() {
         let msg = assistant("a1", vec![ContentBlock::text("")]);
-        let events = project_messages(&[msg], None);
+        let events = fold_messages(&[msg], None);
         assert!(
             events.is_empty(),
             "streaming projection drops an all-empty-text assistant message: {events:?}"
         );
 
         let mut sink = RecordingSink::default();
-        project_history(&[assistant("a1", vec![ContentBlock::text("")])], &mut sink);
+        fold_history(&[assistant("a1", vec![ContentBlock::text("")])], &mut sink);
         assert!(
             sink.calls.is_empty(),
             "history fold drops the same all-empty-text assistant message"
@@ -452,7 +449,7 @@ mod tests {
                 ContentBlock::tool_use("c1", "run", serde_json::json!({})),
             ],
         );
-        let events = project_messages(&[msg], None);
+        let events = fold_messages(&[msg], None);
         assert_eq!(events.len(), 2);
         assert!(matches!(events[0], AgentEvent::AssistantMessage { .. }));
         assert_eq!(
@@ -473,13 +470,13 @@ mod tests {
             vec![ContentBlock::tool_use("c1", "run", serde_json::json!({}))],
         );
         // client=false => PendingBuiltin.
-        let builtin = project_messages(std::slice::from_ref(&msg), Some(("c1", false)));
+        let builtin = fold_messages(std::slice::from_ref(&msg), Some(("c1", false)));
         assert!(matches!(
             &builtin[0],
             AgentEvent::ToolCall { disposition, .. } if *disposition == ToolDisposition::PendingBuiltin
         ));
         // A pending id that does not match this call => Executed.
-        let executed = project_messages(&[msg], Some(("other", true)));
+        let executed = fold_messages(&[msg], Some(("other", true)));
         assert!(matches!(
             &executed[0],
             AgentEvent::ToolCall { disposition, .. } if *disposition == ToolDisposition::Executed
@@ -496,7 +493,7 @@ mod tests {
                 vec![ContentBlock::text("ok")],
             )],
         );
-        let events = project_messages(&[msg], None);
+        let events = fold_messages(&[msg], None);
         assert_eq!(
             events,
             vec![AgentEvent::ToolResult {
@@ -511,10 +508,10 @@ mod tests {
     fn user_and_system_messages_project_nothing() {
         let u = Message::text(Id("u1".into()), Role::User, "hi");
         let s = Message::text(Id("s1".into()), Role::System, "sys");
-        assert!(project_messages(&[u, s], None).is_empty());
+        assert!(fold_messages(&[u, s], None).is_empty());
     }
 
-    // --- project_history(): the shared static-history fold ---
+    // --- fold_history(): the shared static-history fold ---
 
     #[derive(Default)]
     struct RecordingSink {
@@ -575,7 +572,7 @@ mod tests {
             ),
         ];
         let mut sink = RecordingSink::default();
-        project_history(&messages, &mut sink);
+        fold_history(&messages, &mut sink);
         assert_eq!(
             sink.calls,
             vec![

@@ -1,7 +1,7 @@
 //! Project committed neutral messages into public Managed Agents events.
 //!
-//! The message fold is shared (`awaken_agent_contract::project`); this module
-//! only owns the Managed *transcoder* — the `AgentEvent -> OutboundKind` mapping
+//! The message fold is shared (`awaken_agent_contract::event`); this module
+//! only owns the Managed *transcoder* — the `Fact -> OutboundKind` mapping
 //! — and the terminal `session.status_idle` shape. An assistant turn becomes an
 //! `agent.message` plus an `agent.tool_use` (or `agent.custom_tool_use`) per call;
 //! a tool message becomes an `agent.tool_result`; a step ends with
@@ -9,8 +9,8 @@
 //! a pending built-in tool as `agent.tool_use{ask}`; anything else ran
 //! (`agent.tool_use{allow}`).
 
-use awaken_agent_contract::project::{
-    AgentEvent, ToolDisposition, Transcoder, project_messages as fold, terminal_waiting,
+use awaken_agent_contract::event::{
+    Fact, ToolDisposition, Transcoder, fold_messages as fold, terminal_waiting,
 };
 
 use crate::state::{AgentCapabilities, OutcomeIteration};
@@ -142,17 +142,17 @@ pub struct ManagedEncoder {
 impl Transcoder for ManagedEncoder {
     type Output = ProjectedEvent;
 
-    fn transcode(&mut self, event: &AgentEvent) -> Vec<ProjectedEvent> {
+    fn transcode(&mut self, event: &Fact) -> Vec<ProjectedEvent> {
         match event {
-            AgentEvent::RunStarted => Vec::new(),
-            AgentEvent::AssistantMessage { content, .. } => {
+            Fact::RunStarted => Vec::new(),
+            Fact::AssistantMessage { content, .. } => {
                 vec![ProjectedEvent::minted(OutboundKind::AgentMessage {
                     content: content.clone(),
                 })]
             }
             // An MCP tool call (`mcp__server__tool`) is host-executed like a
             // built-in; project it as the distinct MCP events.
-            AgentEvent::ToolCall {
+            Fact::ToolCall {
                 id,
                 name,
                 input,
@@ -173,7 +173,7 @@ impl Transcoder for ManagedEncoder {
                     },
                 )]
             }
-            AgentEvent::ToolCall {
+            Fact::ToolCall {
                 id,
                 name,
                 input,
@@ -197,28 +197,28 @@ impl Transcoder for ManagedEncoder {
                 };
                 vec![ProjectedEvent::with_id(id.clone(), kind)]
             }
-            AgentEvent::ToolResult { id, content, .. } if self.mcp_ids.contains(id) => {
+            Fact::ToolResult { id, content, .. } if self.mcp_ids.contains(id) => {
                 vec![ProjectedEvent::minted(OutboundKind::AgentMcpToolResult {
                     mcp_tool_use_id: id.clone(),
                     content: content.clone(),
                     is_error: None,
                 })]
             }
-            AgentEvent::ToolResult { id, content, .. } => {
+            Fact::ToolResult { id, content, .. } => {
                 vec![ProjectedEvent::minted(OutboundKind::AgentToolResult {
                     tool_use_id: id.clone(),
                     content: content.clone(),
                     is_error: None,
                 })]
             }
-            AgentEvent::Waiting {
+            Fact::Waiting {
                 pending_tool_use_id,
             } => vec![ProjectedEvent::minted(OutboundKind::SessionStatusIdle {
                 stop_reason: StopReason::RequiresAction {
                     event_ids: pending_tool_use_id.clone().into_iter().collect(),
                 },
             })],
-            AgentEvent::RunFinished { exhausted } => {
+            Fact::RunFinished { exhausted } => {
                 let stop_reason = if *exhausted {
                     StopReason::RetriesExhausted
                 } else {
@@ -231,14 +231,14 @@ impl Transcoder for ManagedEncoder {
             // The managed wire vocabulary has no error stop reason; a failed
             // run still idles the session with EndTurn — the fault stays
             // authoritative in the run's committed phase.
-            AgentEvent::RunFailed { .. } => {
+            Fact::RunFailed { .. } => {
                 vec![ProjectedEvent::minted(OutboundKind::SessionStatusIdle {
                     stop_reason: StopReason::EndTurn,
                 })]
             }
             // A continuation-guard round is an internal audit fact, not an
             // agent-visible managed wire event; the fold never emits it here.
-            AgentEvent::Continuation { .. } => Vec::new(),
+            Fact::Continuation { .. } => Vec::new(),
         }
     }
 }
@@ -268,10 +268,10 @@ pub fn project_step(
 
 /// The neutral terminal event for a Managed `stop_reason`. `RequiresAction`'s
 /// event ids are refilled from the pending tool.
-fn terminal_event(stop: StopReason, pending: Option<(&str, bool)>) -> AgentEvent {
+fn terminal_event(stop: StopReason, pending: Option<(&str, bool)>) -> Fact {
     match stop {
         StopReason::RequiresAction { .. } => terminal_waiting(pending.map(|p| p.0)),
-        StopReason::RetriesExhausted => AgentEvent::RunFinished { exhausted: true },
-        StopReason::EndTurn => AgentEvent::RunFinished { exhausted: false },
+        StopReason::RetriesExhausted => Fact::RunFinished { exhausted: true },
+        StopReason::EndTurn => Fact::RunFinished { exhausted: false },
     }
 }

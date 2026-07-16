@@ -1,13 +1,12 @@
 //! Project a committed step (and thread history) into AI SDK UI Message Stream
-//! parts. The step fold is shared (`awaken_agent_contract::project`); this module
-//! owns the AI SDK *transcoder* — the `AgentEvent -> UIStreamEvent` mapping — and
+//! parts. The step fold is shared (`awaken_agent_contract::event`); this module
+//! owns the AI SDK *transcoder* — the `Fact -> UIStreamEvent` mapping — and
 //! the history read-model fold.
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Message, Role};
-use awaken_agent_contract::project::{
-    AgentEvent, HistorySink, ToolDisposition, ToolUseRef, Transcoder, project_history,
-    project_messages,
+use awaken_agent_contract::event::{
+    Fact, HistorySink, ToolDisposition, ToolUseRef, Transcoder, fold_history, fold_messages,
 };
 use awaken_protocol_transport::{StepOutcome, blocks_text};
 use serde_json::Value;
@@ -23,10 +22,10 @@ pub struct AiSdkEncoder;
 impl Transcoder for AiSdkEncoder {
     type Output = UIStreamEvent;
 
-    fn transcode(&mut self, event: &AgentEvent) -> Vec<UIStreamEvent> {
+    fn transcode(&mut self, event: &Fact) -> Vec<UIStreamEvent> {
         match event {
-            AgentEvent::RunStarted => vec![UIStreamEvent::Start, UIStreamEvent::StartStep],
-            AgentEvent::AssistantMessage { id, content } => {
+            Fact::RunStarted => vec![UIStreamEvent::Start, UIStreamEvent::StartStep],
+            Fact::AssistantMessage { id, content } => {
                 let text = blocks_text(content);
                 if text.is_empty() {
                     Vec::new()
@@ -41,7 +40,7 @@ impl Transcoder for AiSdkEncoder {
                     ]
                 }
             }
-            AgentEvent::ToolCall {
+            Fact::ToolCall {
                 id,
                 name,
                 input,
@@ -52,7 +51,7 @@ impl Transcoder for AiSdkEncoder {
                 input: input.clone(),
                 provider_executed: matches!(disposition, ToolDisposition::Executed),
             }],
-            AgentEvent::ToolResult {
+            Fact::ToolResult {
                 id,
                 content,
                 is_error,
@@ -69,23 +68,23 @@ impl Transcoder for AiSdkEncoder {
                     }]
                 }
             }
-            AgentEvent::Waiting { .. } => {
+            Fact::Waiting { .. } => {
                 vec![
                     UIStreamEvent::FinishStep,
                     UIStreamEvent::finish("tool-calls"),
                 ]
             }
-            AgentEvent::RunFinished { .. } => {
+            Fact::RunFinished { .. } => {
                 vec![UIStreamEvent::FinishStep, UIStreamEvent::finish("stop")]
             }
-            AgentEvent::RunFailed { code, message } => vec![
+            Fact::RunFailed { code, message } => vec![
                 UIStreamEvent::error(format!("{code}: {message}")),
                 UIStreamEvent::FinishStep,
                 UIStreamEvent::finish("error"),
             ],
             // An internal continuation-guard round is not an AI-SDK wire part; the
             // committed fold never emits it into this stream.
-            AgentEvent::Continuation { .. } => Vec::new(),
+            Fact::Continuation { .. } => Vec::new(),
         }
     }
 }
@@ -96,8 +95,8 @@ pub fn encode_step(outcome: &StepOutcome) -> Vec<UIStreamEvent> {
     let pending = outcome
         .pending()
         .map(|p| (p.tool_use_id.as_str(), p.client_executed));
-    let mut events = vec![AgentEvent::RunStarted];
-    events.extend(project_messages(&outcome.new_messages, pending));
+    let mut events = vec![Fact::RunStarted];
+    events.extend(fold_messages(&outcome.new_messages, pending));
     // The terminal event owns the failed / parked / finished distinction — a fault
     // becomes `RunFailed`, which transcodes to `error` + `finish("error")`.
     events.push(outcome.terminal_event());
@@ -115,13 +114,13 @@ pub fn encode_close(outcome: &StepOutcome) -> Vec<UIStreamEvent> {
     let pending = outcome
         .pending()
         .map(|p| (p.tool_use_id.as_str(), p.client_executed));
-    let mut events = project_messages(&outcome.new_messages, pending);
+    let mut events = fold_messages(&outcome.new_messages, pending);
     // Same terminal event as `encode_step` (a fault closes with `error` +
     // `finish("error")`); the live prefix already carried `start`/`start-step`.
     events.push(outcome.terminal_event());
     // The live channel already carried `start`/`start-step` and every text delta;
     // emitting them again would double the stream. Keep only tool + finish frames.
-    events.retain(|e| !matches!(e, AgentEvent::AssistantMessage { .. }));
+    events.retain(|e| !matches!(e, Fact::AssistantMessage { .. }));
     AiSdkEncoder.transcode_all(&events)
 }
 
@@ -135,10 +134,10 @@ fn parse_output(content: &[ContentBlock]) -> Value {
 /// endpoint. Assistant tool calls merge with their later tool result into a single
 /// `output-available` part (`providerExecuted: true`). This is a read-model fold,
 /// distinct from the streaming projection above; the shared walk lives in
-/// [`project_history`], this sink only shapes each message the AI SDK way.
+/// [`fold_history`], this sink only shapes each message the AI SDK way.
 pub fn encode_history(messages: &[Message]) -> Vec<Value> {
     let mut sink = AiSdkHistorySink::default();
-    project_history(messages, &mut sink);
+    fold_history(messages, &mut sink);
     sink.encoded
 }
 
@@ -376,7 +375,7 @@ mod tests {
 
     #[test]
     fn tool_result_error_maps_to_tool_output_error() {
-        let events = AiSdkEncoder.transcode(&AgentEvent::ToolResult {
+        let events = AiSdkEncoder.transcode(&Fact::ToolResult {
             id: "c1".into(),
             content: vec![ContentBlock::text("it broke")],
             is_error: true,
@@ -390,7 +389,7 @@ mod tests {
 
     #[test]
     fn tool_result_success_maps_to_tool_output_available() {
-        let events = AiSdkEncoder.transcode(&AgentEvent::ToolResult {
+        let events = AiSdkEncoder.transcode(&Fact::ToolResult {
             id: "c1".into(),
             content: vec![ContentBlock::text("ok")],
             is_error: false,
@@ -403,7 +402,7 @@ mod tests {
 
     #[test]
     fn run_failed_maps_to_error_then_finish_error() {
-        let events = AiSdkEncoder.transcode(&AgentEvent::RunFailed {
+        let events = AiSdkEncoder.transcode(&Fact::RunFailed {
             code: "overloaded".into(),
             message: "try later".into(),
         });
@@ -419,7 +418,7 @@ mod tests {
 
     #[test]
     fn run_started_transcodes_to_start_and_start_step() {
-        let events = AiSdkEncoder.transcode(&AgentEvent::RunStarted);
+        let events = AiSdkEncoder.transcode(&Fact::RunStarted);
         assert!(matches!(
             events.as_slice(),
             [UIStreamEvent::Start, UIStreamEvent::StartStep]
@@ -428,7 +427,7 @@ mod tests {
 
     #[test]
     fn waiting_transcodes_to_finish_step_then_tool_calls_finish() {
-        let events = AiSdkEncoder.transcode(&AgentEvent::Waiting {
+        let events = AiSdkEncoder.transcode(&Fact::Waiting {
             pending_tool_use_id: Some("c1".into()),
         });
         assert!(matches!(events[0], UIStreamEvent::FinishStep));
@@ -440,8 +439,8 @@ mod tests {
 
     #[test]
     fn a_tool_call_transcodes_to_tool_input_available() {
-        use awaken_agent_contract::project::ToolDisposition;
-        let events = AiSdkEncoder.transcode(&AgentEvent::ToolCall {
+        use awaken_agent_contract::event::ToolDisposition;
+        let events = AiSdkEncoder.transcode(&Fact::ToolCall {
             id: "c1".into(),
             name: "read".into(),
             input: json!({ "path": "x" }),
@@ -459,7 +458,7 @@ mod tests {
     // the client to run it — the complement of the pending-client/built-in rows.
     #[test]
     fn an_executed_tool_call_is_provider_executed() {
-        let events = AiSdkEncoder.transcode(&AgentEvent::ToolCall {
+        let events = AiSdkEncoder.transcode(&Fact::ToolCall {
             id: "c1".into(),
             name: "read".into(),
             input: json!({ "path": "x" }),
@@ -476,7 +475,7 @@ mod tests {
     // JSON string (the other arm from the JSON-parsing `history_merges` row).
     #[test]
     fn a_non_json_tool_result_falls_back_to_a_string_output() {
-        let events = AiSdkEncoder.transcode(&AgentEvent::ToolResult {
+        let events = AiSdkEncoder.transcode(&Fact::ToolResult {
             id: "c1".into(),
             content: vec![ContentBlock::text("just text")],
             is_error: false,
@@ -488,7 +487,7 @@ mod tests {
     }
 
     // Post the projection change: an assistant message whose only block is an
-    // empty-string Text is dropped by `project_messages`, so the AI SDK stream
+    // empty-string Text is dropped by `fold_messages`, so the AI SDK stream
     // carries no spurious `text-*` frames — only the step's start and finish.
     #[test]
     fn an_empty_text_only_assistant_turn_emits_no_text_part() {

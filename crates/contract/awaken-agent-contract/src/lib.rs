@@ -7,7 +7,6 @@ pub mod event;
 pub mod fact;
 pub mod model_spec;
 pub mod page;
-pub mod project;
 pub mod secret;
 pub mod store;
 pub mod stream;
