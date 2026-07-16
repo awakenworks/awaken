@@ -327,30 +327,68 @@ pub(crate) fn provision_repo_at(
     args.push(dest.to_string_lossy().into_owned());
     run_git(None, &args)?;
     if token.is_some() {
+        // Scrub the token from the jail's origin: the agent inside never sees the credential
+        // (the host re-injects it only on the harvest push transport).
         run_git(Some(&dest), &["remote", "set-url", "origin", url])?;
     }
-    run_git(Some(&dest), &["config", "user.email", "agent@awaken.local"])?;
-    run_git(Some(&dest), &["config", "user.name", "Awaken Agent"])?;
+    // The committer identity is the AGENT's to set (its own name/email on its own commits),
+    // not provision's — a harvest can neither author a meaningful message nor a real user.
     Ok(())
 }
 
-/// Stage, commit, and push the repo at `<root>/<logical>` **host-side** (ADR-0038
-/// write-back). The token is on the push transport only, never persisted. `Ok(true)`
-/// when a commit was pushed, `Ok(false)` for a clean tree. Shared with the Workdir tier.
-pub(crate) fn commit_and_push_at(
+/// Push the repo at `<root>/<logical>` to its origin **host-side** (ADR-0038 write-back).
+///
+/// Commit is the AGENT's job — it authors its own commits (message + identity) in the jail;
+/// the host only pushes, because it alone holds the token (injected on the push transport,
+/// never persisted). A harvest never fabricates a commit: it would have no meaningful message
+/// and no real committer. So this pushes whatever the agent committed and pushes NOTHING when
+/// the agent authored nothing (uncommitted working-tree changes are the agent's to commit).
+///
+/// `Ok(true)` when the agent's branch was ahead of its upstream and was pushed; `Ok(false)`
+/// when it was already up to date. Shared with the Workdir tier.
+///
+/// The branch is not guessed: `HEAD` pushes the agent's *current* branch to the same-named
+/// branch on origin, and `@{u}..HEAD` counts commits ahead of *that* branch's upstream. So
+/// the agent owns the branch too — whichever branch it checked out or created is what ships.
+/// A branch the agent newly created has no upstream; that reads as "ahead", so the push
+/// creates it on the remote. A detached HEAD (a commit checkout) has no branch to push — the
+/// push fails loudly rather than inventing a target.
+pub(crate) fn push_repo_at(
     root: &IsolatedRoot,
     logical: &str,
     token: Option<&str>,
-    message: &str,
 ) -> Result<bool, SandboxError> {
     let dest = jailed_at(root, logical)?;
-    run_git(Some(&dest), &["add", "-A"])?;
-    if !git_ok(Some(&dest), &["commit", "-m", message]) {
+    // Push only when the agent's branch has commits ahead of its upstream — so an agent that
+    // committed cleanly (empty working tree, real commits) IS pushed, and a re-harvest of an
+    // already up-to-date branch is a cheap no-op. No upstream (a new branch) → treat as ahead.
+    let ahead = git_stdout(Some(&dest), &["rev-list", "--count", "@{u}..HEAD"])
+        .map(|c| c.trim() != "0")
+        .unwrap_or(true);
+    if !ahead {
         return Ok(false);
     }
     let url = git_stdout(Some(&dest), &["remote", "get-url", "origin"])?;
-    let url = url.trim();
-    run_git(Some(&dest), &["push", &authed_url(url, token), "HEAD"])?;
+    run_git(
+        Some(&dest),
+        &["push", &authed_url(url.trim(), token), "HEAD"],
+    )?;
+    // Advance the remote-tracking ref ourselves: the push targets origin's URL (not the named
+    // remote — so the token can ride the transport), which does NOT move `refs/remotes/origin/*`.
+    // Syncing it makes a re-harvest of an already-pushed branch a true no-op (`@{u}..HEAD` == 0).
+    let branch =
+        git_stdout(Some(&dest), &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    let branch = branch.trim();
+    if !branch.is_empty() && branch != "HEAD" {
+        let _ = run_git(
+            Some(&dest),
+            &[
+                "update-ref",
+                &format!("refs/remotes/origin/{branch}"),
+                "HEAD",
+            ],
+        );
+    }
     Ok(true)
 }
 
@@ -544,12 +582,6 @@ fn git_run(cwd: Option<&Path>, args: &[&str]) -> Result<std::process::Output, Sa
 fn run_git(cwd: Option<&Path>, args: &[impl AsRef<str>]) -> Result<(), SandboxError> {
     let borrowed: Vec<&str> = args.iter().map(AsRef::as_ref).collect();
     git_run(cwd, &borrowed).map(|_| ())
-}
-
-/// Run a git command for its success/failure only (used for `commit`, which exits
-/// non-zero on a clean tree — an expected, non-error outcome).
-fn git_ok(cwd: Option<&Path>, args: &[&str]) -> bool {
-    git_run(cwd, args).is_ok()
 }
 
 /// Run a git command and return its trimmed stdout.

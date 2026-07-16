@@ -30,8 +30,8 @@ use std::sync::Arc;
 use awaken_runtime_contract::tool::RawTool;
 
 use crate::{
-    DiscoveredSkillFile, IsolatedRoot, commit_and_push_at, content_fingerprint, list_files_at,
-    provision_repo_at, rooted_raw_tools, scan_skill_dir_at,
+    DiscoveredSkillFile, IsolatedRoot, content_fingerprint, list_files_at, provision_repo_at,
+    push_repo_at, rooted_raw_tools, scan_skill_dir_at,
 };
 
 fn err(e: impl ToString) -> pc::SandboxError {
@@ -477,15 +477,12 @@ impl LocalSandbox {
         provision_repo_at(&self.root, logical, url, git_ref, token).map_err(err)
     }
 
-    /// Stage/commit/push the repo at `<root>/<logical>` host-side (ADR-0038 write-back).
-    /// `Ok(true)` when a commit was pushed, `Ok(false)` for a clean tree.
-    pub fn commit_and_push(
-        &self,
-        logical: &str,
-        token: Option<&str>,
-        message: &str,
-    ) -> Result<bool, pc::SandboxError> {
-        commit_and_push_at(&self.root, logical, token, message).map_err(err)
+    /// Push the repo at `<root>/<logical>` to origin host-side (ADR-0038 write-back). The
+    /// agent authors its own commits in the jail; the host only pushes them (it alone holds
+    /// the token). `Ok(true)` when the agent's commits were pushed, `Ok(false)` when origin
+    /// was already up to date (the agent authored nothing).
+    pub fn push_repo(&self, logical: &str, token: Option<&str>) -> Result<bool, pc::SandboxError> {
+        push_repo_at(&self.root, logical, token).map_err(err)
     }
 
     /// List regular files under `<root>/<subdir>` as `(logical_path, bytes)` — a
@@ -985,7 +982,7 @@ mod workdir_helper_tests {
     }
 
     #[tokio::test]
-    async fn provision_repo_clones_then_commit_and_push_writes_back() {
+    async fn provision_clones_then_the_host_pushes_the_agents_own_commit() {
         let tmp = tempfile::tempdir().unwrap();
         let base = tmp.path();
         // Seed a bare "remote" with one commit.
@@ -1019,31 +1016,52 @@ mod workdir_helper_tests {
         sandbox
             .provision_repo("workspace/repo", bare.to_str().unwrap(), None, None)
             .unwrap();
+        let repo_dir = root.join("workspace/repo");
         assert_eq!(
-            std::fs::read_to_string(root.join("workspace/repo/README.md")).unwrap(),
+            std::fs::read_to_string(repo_dir.join("README.md")).unwrap(),
             "hello"
         );
-
-        // A clean tree pushes nothing; an edit commits + pushes and reports true.
-        assert!(
-            !sandbox
-                .commit_and_push("workspace/repo", None, "noop")
-                .unwrap()
-        );
-        std::fs::write(root.join("workspace/repo/NEW.txt"), "agent").unwrap();
-        assert!(
-            sandbox
-                .commit_and_push("workspace/repo", None, "add file")
-                .unwrap()
-        );
-
-        // The bare remote now carries the pushed commit.
-        let log = std::process::Command::new("git")
-            .current_dir(&bare)
-            .args(["log", "--oneline"])
+        // Provision sets NO committer identity — that is the agent's to own.
+        let cfg = std::process::Command::new("git")
+            .current_dir(&repo_dir)
+            .args(["config", "--local", "user.name"])
             .output()
             .unwrap();
-        assert!(String::from_utf8_lossy(&log.stdout).contains("add file"));
+        assert!(
+            cfg.stdout.is_empty(),
+            "provision must not set a committer identity"
+        );
+
+        // Nothing authored yet → the host push is a no-op (agent committed nothing).
+        assert!(!sandbox.push_repo("workspace/repo", None).unwrap());
+
+        // The AGENT configures its own identity and authors a commit in the jail — a clean
+        // working tree afterwards (it committed everything), which the OLD harvest would have
+        // wrongly skipped. The host then only pushes.
+        git(&repo_dir, &["config", "user.email", "hermes@agent.local"]);
+        git(&repo_dir, &["config", "user.name", "Hermes"]);
+        std::fs::write(repo_dir.join("NEW.txt"), "agent").unwrap();
+        git(&repo_dir, &["add", "-A"]);
+        git(&repo_dir, &["commit", "-q", "-m", "agent: add NEW.txt"]);
+
+        // Host push reports true (the branch was ahead) and re-pushing is an idempotent no-op.
+        assert!(sandbox.push_repo("workspace/repo", None).unwrap());
+        assert!(!sandbox.push_repo("workspace/repo", None).unwrap());
+
+        // The bare remote carries the AGENT's commit — its own message and author, not a
+        // canned harvest commit by a fake user.
+        let log = std::process::Command::new("git")
+            .current_dir(&bare)
+            .args(["log", "-1", "--pretty=%an|%ae|%s"])
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&log.stdout);
+        assert!(log.contains("agent: add NEW.txt"), "agent's message: {log}");
+        assert!(log.contains("Hermes"), "agent's author name: {log}");
+        assert!(
+            log.contains("hermes@agent.local"),
+            "agent's author email: {log}"
+        );
     }
 
     #[tokio::test]

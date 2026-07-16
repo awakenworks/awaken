@@ -42,9 +42,9 @@ pub fn awaken_sandbox_local::LocalProvider::capabilities(&self) -> awaken_provis
 pub fn awaken_sandbox_local::LocalProvider::create<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::spec::SandboxSpec) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_provisioning_contract::sandbox::Sandbox>, awaken_provisioning_contract::sandbox::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_sandbox_local::LocalSandbox
 impl awaken_sandbox_local::LocalSandbox
-pub fn awaken_sandbox_local::LocalSandbox::commit_and_push(&self, &str, core::option::Option<&str>, &str) -> core::result::Result<bool, awaken_provisioning_contract::sandbox::SandboxError>
 pub fn awaken_sandbox_local::LocalSandbox::list_files(&self, &str) -> alloc::vec::Vec<(alloc::string::String, alloc::vec::Vec<u8>)>
 pub fn awaken_sandbox_local::LocalSandbox::provision_repo(&self, &str, &str, core::option::Option<&str>, core::option::Option<&str>) -> core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>
+pub fn awaken_sandbox_local::LocalSandbox::push_repo(&self, &str, core::option::Option<&str>) -> core::result::Result<bool, awaken_provisioning_contract::sandbox::SandboxError>
 pub fn awaken_sandbox_local::LocalSandbox::rooted_tools(&self) -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
 pub fn awaken_sandbox_local::LocalSandbox::scan_skill_dir(&self, &str) -> alloc::vec::Vec<awaken_sandbox_local::DiscoveredSkillFile>
 pub async fn awaken_sandbox_local::LocalSandbox::spawn_agent(&self, awaken_provisioning_contract::spec::Command) -> core::result::Result<(alloc::boxed::Box<dyn awaken_provisioning_contract::sandbox::ProcessHandle>, alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>), awaken_provisioning_contract::sandbox::SandboxError>
