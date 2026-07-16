@@ -1,7 +1,7 @@
 //! Adapter integration tests with fake runtimes: the happy path, and the HITL
 //! park -> `requires_action` -> `user.tool_confirmation` -> resume round-trip.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
@@ -930,6 +930,148 @@ async fn accept_only_events_are_acknowledged() {
     assert!(
         list["data"].as_array().unwrap().is_empty(),
         "accept-only events project nothing"
+    );
+}
+
+/// A generic `user.tool_result` (keyed by `tool_use_id`) resumes a parked run just
+/// like `user.custom_tool_result` — both inbound arms land in `resume_custom`
+/// (events.rs). The receipt-only test above proves acknowledgement; this proves the
+/// generic arm actually drives the resume to completion. `CustomToolFake` is reused
+/// unchanged because it parks a client tool and completes in `resume_custom`.
+#[tokio::test]
+async fn generic_tool_result_resumes_a_parked_run() {
+    let app = router(Arc::new(ManagedState::new(CustomToolFake)));
+    let id = create(&app).await;
+
+    // A message parks the client tool (asserted by the custom-tool test); here we
+    // only need the park so the generic result has a run to resume.
+    json_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "answer" }] }] }),
+    )
+    .await;
+
+    // Deliver the result via the GENERIC arm: `user.tool_result` + `tool_use_id`
+    // (not `user.custom_tool_result` + `custom_tool_use_id`).
+    json_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [{ "type": "user.tool_result", "tool_use_id": "cc1", "content": [{ "type": "text", "text": "42" }] }] }),
+    )
+    .await;
+
+    let list = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    let msgs: Vec<&str> = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "agent.message")
+        .map(|e| e["content"][0]["text"].as_str().unwrap())
+        .collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("got: 42")),
+        "the generic tool_result resumed the run: {msgs:?}"
+    );
+    let last = list["data"].as_array().unwrap().last().unwrap();
+    assert_eq!(last["stop_reason"]["type"], "end_turn");
+}
+
+/// A runtime that records the `system.message` text and `interrupt` thread it is
+/// handed, so a test can assert the inbound verb actually reached the runtime seam
+/// (not merely that a receipt came back — see `accept_only_events_are_acknowledged`).
+struct RecordingFake {
+    systems: Arc<Mutex<Vec<String>>>,
+    interrupts: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl SessionRuntime for RecordingFake {
+    async fn run(
+        &self,
+        _a: &str,
+        _t: &str,
+        _c: Vec<ContentBlock>,
+    ) -> Result<StepOutcome, RunError> {
+        Err(RunError::internal("unused"))
+    }
+    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<StepOutcome, RunError> {
+        Err(RunError::internal("unused"))
+    }
+    async fn resume_custom(
+        &self,
+        _t: &str,
+        _tid: &str,
+        _c: &str,
+        _e: bool,
+    ) -> Result<StepOutcome, RunError> {
+        Err(RunError::internal("unused"))
+    }
+    async fn add_system(&self, _thread: &str, text: &str) -> Result<(), RunError> {
+        self.systems.lock().unwrap().push(text.to_string());
+        Ok(())
+    }
+    async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
+        self.interrupts.lock().unwrap().push(thread.to_string());
+        Ok(())
+    }
+    async fn define_outcome(
+        &self,
+        _t: &str,
+        _d: &str,
+        _r: &str,
+        _m: u32,
+    ) -> Result<OutcomeReport, RunError> {
+        Err(RunError::internal("unused"))
+    }
+    fn model(&self) -> String {
+        "test-model".into()
+    }
+}
+
+/// `system.message` reaches `runtime.add_system` and `user.interrupt` reaches
+/// `runtime.interrupt` — upgrading the receipt-only coverage to a behavioral
+/// assertion that the inbound verbs cross the runtime seam. (Neither projects a
+/// stream event in the single-machine model, so the recording fake is the only
+/// observation point.)
+#[tokio::test]
+async fn system_message_and_interrupt_reach_the_runtime() {
+    let systems = Arc::new(Mutex::new(Vec::new()));
+    let interrupts = Arc::new(Mutex::new(Vec::new()));
+    let app = router(Arc::new(ManagedState::new(RecordingFake {
+        systems: systems.clone(),
+        interrupts: interrupts.clone(),
+    })));
+    let id = create(&app).await;
+
+    json_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [
+            { "type": "system.message", "content": [{ "type": "text", "text": "be terse" }] },
+            { "type": "user.interrupt" }
+        ] }),
+    )
+    .await;
+
+    assert_eq!(
+        *systems.lock().unwrap(),
+        vec!["be terse".to_string()],
+        "system.message text reached runtime.add_system"
+    );
+    assert_eq!(
+        *interrupts.lock().unwrap(),
+        vec![id.clone()],
+        "user.interrupt reached runtime.interrupt with the session thread"
     );
 }
 
