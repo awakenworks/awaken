@@ -11,6 +11,7 @@
     "test:management": "node management_vaults_e2e.mjs && node management_admin_e2e.mjs && node managed_mcp_e2e.mjs && node management_mcp_e2e.mjs && node managed_mcp_refresh_e2e.mjs && node management_persistence_e2e.mjs && node managed_session_config_restart_e2e.mjs && node management_authz_e2e.mjs && node management_authz_routes_e2e.mjs && node secret_nonleak_e2e.mjs && node management_erasure_e2e.mjs && node management_consent_e2e.mjs && node management_capture_decision_e2e.mjs && node management_capture_erasure_loop_e2e.mjs && node management_enrollment_e2e.mjs && node management_self_hosted_worker_e2e.mjs && node management_custom_worker_e2e.mjs",
     "test:mcp": "node managed_mcp_e2e.mjs && node management_mcp_e2e.mjs && node managed_mcp_refresh_e2e.mjs",
     "test:real": "node managed_real_e2e.mjs && node ai_sdk_real_e2e.mjs && node managed_resolved_real_e2e.mjs && node management_validate_e2e.mjs && node managed_resources_e2e.mjs",
+    "test:conformance": "node conformance/gate_event_catalog_e2e.mjs && node conformance/gate_beta_sentinel_e2e.mjs",
     "test:gemini": "node managed_real_gemini_e2e.mjs",
     "test:trace": "node trace_capture_e2e.mjs && node durable_trace_propagation_e2e.mjs && node durable_dispatch_trace_e2e.ts && node trace_backends_e2e.mjs",
     "test:k6": "bash k6/run.sh smoke",
