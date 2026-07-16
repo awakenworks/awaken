@@ -87,6 +87,12 @@ pub struct RuntimeRunContext {
     /// decision (level + redactor) gating what prompt/completion/tool content the
     /// engine records, plus the subject + sink it is attributed to and written to.
     pub capture: CaptureContext,
+    /// A transient-retry counter the inference seam increments each time it
+    /// transparently retries a retryable failure during this attempt. The host
+    /// reads it after the run to surface `session.status_rescheduled` (auto-recovery
+    /// observability). Absent means retries are not counted — optional wiring, like
+    /// the stream sink; the retry behavior itself is unchanged either way.
+    pub reschedules: Option<Arc<std::sync::atomic::AtomicU32>>,
 }
 
 impl RuntimeRunContext {
@@ -126,6 +132,22 @@ impl RuntimeRunContext {
     pub fn with_cancellation(mut self, token: CancellationToken) -> Self {
         self.cancellation = Some(token);
         self
+    }
+
+    /// Provide the transient-retry counter the inference seam increments on each
+    /// transparent retry, so the host can report `session.status_rescheduled`.
+    #[must_use]
+    pub fn with_reschedules(mut self, counter: Arc<std::sync::atomic::AtomicU32>) -> Self {
+        self.reschedules = Some(counter);
+        self
+    }
+
+    /// Record a transparent retry, if a counter is wired. Called by the inference
+    /// seam; a no-op when no counter is present.
+    pub fn note_reschedule(&self) {
+        if let Some(c) = &self.reschedules {
+            c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     /// Provide the pause signal so an operator can park this attempt at its next

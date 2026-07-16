@@ -100,6 +100,7 @@ pub(super) async fn infer_with_retry(
     capture: &awaken_runtime_contract::CaptureDecision,
     content_sink: content::SinkTarget<'_>,
     metrics: &dyn awaken_runtime_contract::metrics::MetricsRecorder,
+    reschedules: Option<&std::sync::Arc<std::sync::atomic::AtomicU32>>,
 ) -> std::result::Result<ChatResponse, awaken_runtime_contract::llm::Error> {
     let span = tracing::Span::current();
     // The routing model id, captured before `request` moves into the retry loop —
@@ -120,8 +121,17 @@ pub(super) async fn infer_with_retry(
         &content::render_chat_messages(&request.messages),
     )
     .await;
-    let result =
-        infer_with_retry_inner(llm, request, policy, breaker, sink, checkpoint, resume).await;
+    let result = infer_with_retry_inner(
+        llm,
+        request,
+        policy,
+        breaker,
+        sink,
+        checkpoint,
+        resume,
+        reschedules,
+    )
+    .await;
     // Any return means recovery concluded in-process, so the checkpoint (if any)
     // is spent. It survives only a crash *before* this line — mid-recovery —
     // which is exactly the cross-process window Phase 3 guards.
@@ -185,6 +195,7 @@ async fn infer_with_retry_inner(
     sink: &dyn DeltaSink,
     checkpoint: Option<&CheckpointCtx<'_>>,
     resume: Option<StreamCheckpoint>,
+    reschedules: Option<&std::sync::Arc<std::sync::atomic::AtomicU32>>,
 ) -> std::result::Result<ChatResponse, awaken_runtime_contract::llm::Error> {
     let model = request.model_binding.model_ref.clone();
     let sink = ContinuationSink::new(sink);
@@ -266,6 +277,11 @@ async fn infer_with_retry_inner(
                     // R1/R3/R4 collapse: continue from the combined text (empty ⇒
                     // clean restart); any still-open tool call is dropped.
                     prefix = combined_text;
+                    // Count this transparent retry so the host can surface
+                    // `session.status_rescheduled` (auto-recovery observability).
+                    if let Some(c) = reschedules {
+                        c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
                     tokio::time::sleep(policy.delay_before_retry(&err, attempt)).await;
                     attempt += 1;
                 } else {
