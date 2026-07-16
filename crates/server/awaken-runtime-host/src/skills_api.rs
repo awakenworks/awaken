@@ -76,7 +76,6 @@ impl SkillRecord {
 struct SkillsApi {
     host: Arc<SharedHost>,
     registry: Mutex<BTreeMap<String, SkillRecord>>,
-    skill_seq: AtomicU64,
     version_seq: AtomicU64,
 }
 
@@ -85,7 +84,6 @@ pub fn skills_router(host: Arc<SharedHost>) -> Router {
     let state = Arc::new(SkillsApi {
         host,
         registry: Mutex::new(BTreeMap::new()),
-        skill_seq: AtomicU64::new(0),
         version_seq: AtomicU64::new(0),
     });
     Router::new()
@@ -194,8 +192,9 @@ async fn create_skill(
         let version = build_version(&state, &content);
         // Deliver under the skill's name so the runtime offers it on threads.
         let _ = state.host.skill_store_put(&version.name, &content).await;
-        let n = state.skill_seq.fetch_add(1, Ordering::SeqCst);
-        let id = format!("skill_{n:016}");
+        // Register (and return) the tagged catalog id — the same id advertisement
+        // derives from the name — so the official worker downloads what it was told.
+        let id = awaken_skill_store::catalog_id(&version.name);
         let record = SkillRecord {
             display_title,
             versions: vec![version],
@@ -258,8 +257,11 @@ async fn list_skills(State(state): State<Arc<SkillsApi>>) -> impl IntoResponse {
             registry.keys().cloned().collect(),
         )
     };
-    for id in state.host.skill_store_list().await {
-        if !present.contains(&id) {
+    for stem in state.host.skill_store_list().await {
+        let id = awaken_skill_store::catalog_id(&stem);
+        // Skip if already surfaced by the registry under either its catalog id (SDK
+        // path) or its raw stem (legacy `{id, content}` path).
+        if !present.contains(&id) && !present.contains(&stem) {
             data.push(json!({
                 "id": id,
                 "type": "skill",
@@ -281,8 +283,7 @@ async fn retrieve_skill(
     State(state): State<Arc<SkillsApi>>,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let registry = state.registry.lock().unwrap();
-    match registry.get(&id) {
+    match resolve_record(&state, &id).await {
         Some(r) => (StatusCode::OK, Json(r.project(&id))).into_response(),
         None => err(StatusCode::NOT_FOUND, format!("skill `{id}` not found")),
     }
@@ -352,19 +353,41 @@ async fn list_versions(
 }
 
 fn find_version<'a>(record: &'a SkillRecord, version: &str) -> Option<&'a SkillVersion> {
+    if version == "latest" {
+        // The advertisement pins `version: "latest"`, so the worker downloads by it.
+        return record.versions.last();
+    }
     record
         .versions
         .iter()
         .find(|v| v.version == version || v.id == version)
 }
 
+/// Resolve a skill record by id: the in-memory registry first, then the durable
+/// catalog (so an advertised catalog id resolves even for a skill delivered outside
+/// the SDK create route, or after a restart cleared the registry). Synthesizes a
+/// single-version record from the durable content.
+async fn resolve_record(state: &SkillsApi, id: &str) -> Option<SkillRecord> {
+    if let Some(r) = state.registry.lock().unwrap().get(id).cloned() {
+        return Some(r);
+    }
+    let (_stem, content) = state.host.skill_by_catalog_id(id)?;
+    Some(SkillRecord {
+        display_title: None,
+        versions: vec![build_version(state, &content)],
+    })
+}
+
 async fn retrieve_version(
     State(state): State<Arc<SkillsApi>>,
     Path((id, version)): Path<(String, String)>,
 ) -> axum::response::Response {
-    let registry = state.registry.lock().unwrap();
-    match registry.get(&id).and_then(|r| find_version(r, &version)) {
-        Some(v) => (StatusCode::OK, Json(v.project(&id))).into_response(),
+    match resolve_record(&state, &id)
+        .await
+        .as_ref()
+        .and_then(|r| find_version(r, &version).map(|v| v.project(&id)))
+    {
+        Some(projected) => (StatusCode::OK, Json(projected)).into_response(),
         None => err(StatusCode::NOT_FOUND, "skill version not found"),
     }
 }
@@ -397,9 +420,12 @@ async fn version_content(
     State(state): State<Arc<SkillsApi>>,
     Path((id, version)): Path<(String, String)>,
 ) -> axum::response::Response {
-    let registry = state.registry.lock().unwrap();
-    match registry.get(&id).and_then(|r| find_version(r, &version)) {
-        Some(v) => (StatusCode::OK, v.content.clone()).into_response(),
+    match resolve_record(&state, &id)
+        .await
+        .as_ref()
+        .and_then(|r| find_version(r, &version).map(|v| v.content.clone()))
+    {
+        Some(content) => (StatusCode::OK, content).into_response(),
         None => err(StatusCode::NOT_FOUND, "skill version not found"),
     }
 }
