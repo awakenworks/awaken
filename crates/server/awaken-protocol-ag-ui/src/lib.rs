@@ -11,7 +11,6 @@
 //! the neutral projection seam, so the same host backs it on the same thread.
 
 pub mod encoder;
-pub mod live;
 pub mod request;
 pub mod router;
 pub mod types;
