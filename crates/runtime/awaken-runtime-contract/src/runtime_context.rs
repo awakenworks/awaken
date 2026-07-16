@@ -142,14 +142,6 @@ impl RuntimeRunContext {
         self
     }
 
-    /// Record a transparent retry, if a counter is wired. Called by the inference
-    /// seam; a no-op when no counter is present.
-    pub fn note_reschedule(&self) {
-        if let Some(c) = &self.reschedules {
-            c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-    }
-
     /// Provide the pause signal so an operator can park this attempt at its next
     /// safe boundary (ADR-0054).
     #[must_use]

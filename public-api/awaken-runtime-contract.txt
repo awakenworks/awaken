@@ -653,6 +653,7 @@ pub awaken_runtime_contract::runtime_context::RuntimeRunContext::live_inbox: cor
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::model_executor: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::pause: core::option::Option<awaken_runtime_contract::pause::PauseSignal>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader>>
+pub awaken_runtime_contract::runtime_context::RuntimeRunContext::reschedules: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicU32>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::stream_checkpoint: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::stream_sink: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::tool_executor: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>
@@ -669,6 +670,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_live_in
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_pause(self, awaken_runtime_contract::pause::PauseSignal) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader>) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reschedules(self, alloc::sync::Arc<core::sync::atomic::AtomicU32>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_checkpoint(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_sink(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>) -> Self
@@ -1024,6 +1026,7 @@ pub awaken_runtime_contract::RuntimeRunContext::live_inbox: core::option::Option
 pub awaken_runtime_contract::RuntimeRunContext::model_executor: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
 pub awaken_runtime_contract::RuntimeRunContext::pause: core::option::Option<awaken_runtime_contract::pause::PauseSignal>
 pub awaken_runtime_contract::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader>>
+pub awaken_runtime_contract::RuntimeRunContext::reschedules: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicU32>>
 pub awaken_runtime_contract::RuntimeRunContext::stream_checkpoint: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>>
 pub awaken_runtime_contract::RuntimeRunContext::stream_sink: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>
 pub awaken_runtime_contract::RuntimeRunContext::tool_executor: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>
@@ -1040,6 +1043,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_live_in
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_pause(self, awaken_runtime_contract::pause::PauseSignal) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader>) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reschedules(self, alloc::sync::Arc<core::sync::atomic::AtomicU32>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_checkpoint(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_sink(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>) -> Self
