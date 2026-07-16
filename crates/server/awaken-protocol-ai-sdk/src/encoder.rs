@@ -22,7 +22,7 @@ pub struct AiSdkEncoder;
 impl Transcoder for AiSdkEncoder {
     type Output = UIStreamEvent;
 
-    fn transcode(&mut self, event: &Fact) -> Vec<UIStreamEvent> {
+    fn fact(&mut self, event: &Fact) -> Vec<UIStreamEvent> {
         match event {
             Fact::RunStarted => vec![UIStreamEvent::Start, UIStreamEvent::StartStep],
             Fact::AssistantMessage { id, content } => {
@@ -100,7 +100,7 @@ pub fn encode_step(outcome: &StepOutcome) -> Vec<UIStreamEvent> {
     // The terminal event owns the failed / parked / finished distinction — a fault
     // becomes `RunFailed`, which transcodes to `error` + `finish("error")`.
     events.push(outcome.terminal_event());
-    AiSdkEncoder.transcode_all(&events)
+    AiSdkEncoder.transcode_facts(&events)
 }
 
 /// Project the *authoritative tail* of a committed step, for a turn whose
@@ -121,7 +121,7 @@ pub fn encode_close(outcome: &StepOutcome) -> Vec<UIStreamEvent> {
     // The live channel already carried `start`/`start-step` and every text delta;
     // emitting them again would double the stream. Keep only tool + finish frames.
     events.retain(|e| !matches!(e, Fact::AssistantMessage { .. }));
-    AiSdkEncoder.transcode_all(&events)
+    AiSdkEncoder.transcode_facts(&events)
 }
 
 /// Parse a tool result's text as JSON, falling back to a string.
@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn tool_result_error_maps_to_tool_output_error() {
-        let events = AiSdkEncoder.transcode(&Fact::ToolResult {
+        let events = AiSdkEncoder.fact(&Fact::ToolResult {
             id: "c1".into(),
             content: vec![ContentBlock::text("it broke")],
             is_error: true,
@@ -389,7 +389,7 @@ mod tests {
 
     #[test]
     fn tool_result_success_maps_to_tool_output_available() {
-        let events = AiSdkEncoder.transcode(&Fact::ToolResult {
+        let events = AiSdkEncoder.fact(&Fact::ToolResult {
             id: "c1".into(),
             content: vec![ContentBlock::text("ok")],
             is_error: false,
@@ -402,7 +402,7 @@ mod tests {
 
     #[test]
     fn run_failed_maps_to_error_then_finish_error() {
-        let events = AiSdkEncoder.transcode(&Fact::RunFailed {
+        let events = AiSdkEncoder.fact(&Fact::RunFailed {
             code: "overloaded".into(),
             message: "try later".into(),
         });
@@ -418,7 +418,7 @@ mod tests {
 
     #[test]
     fn run_started_transcodes_to_start_and_start_step() {
-        let events = AiSdkEncoder.transcode(&Fact::RunStarted);
+        let events = AiSdkEncoder.fact(&Fact::RunStarted);
         assert!(matches!(
             events.as_slice(),
             [UIStreamEvent::Start, UIStreamEvent::StartStep]
@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn waiting_transcodes_to_finish_step_then_tool_calls_finish() {
-        let events = AiSdkEncoder.transcode(&Fact::Waiting {
+        let events = AiSdkEncoder.fact(&Fact::Waiting {
             pending_tool_use_id: Some("c1".into()),
         });
         assert!(matches!(events[0], UIStreamEvent::FinishStep));
@@ -440,7 +440,7 @@ mod tests {
     #[test]
     fn a_tool_call_transcodes_to_tool_input_available() {
         use awaken_agent_contract::event::ToolDisposition;
-        let events = AiSdkEncoder.transcode(&Fact::ToolCall {
+        let events = AiSdkEncoder.fact(&Fact::ToolCall {
             id: "c1".into(),
             name: "read".into(),
             input: json!({ "path": "x" }),
@@ -458,7 +458,7 @@ mod tests {
     // the client to run it — the complement of the pending-client/built-in rows.
     #[test]
     fn an_executed_tool_call_is_provider_executed() {
-        let events = AiSdkEncoder.transcode(&Fact::ToolCall {
+        let events = AiSdkEncoder.fact(&Fact::ToolCall {
             id: "c1".into(),
             name: "read".into(),
             input: json!({ "path": "x" }),
@@ -475,7 +475,7 @@ mod tests {
     // JSON string (the other arm from the JSON-parsing `history_merges` row).
     #[test]
     fn a_non_json_tool_result_falls_back_to_a_string_output() {
-        let events = AiSdkEncoder.transcode(&Fact::ToolResult {
+        let events = AiSdkEncoder.fact(&Fact::ToolResult {
             id: "c1".into(),
             content: vec![ContentBlock::text("just text")],
             is_error: false,

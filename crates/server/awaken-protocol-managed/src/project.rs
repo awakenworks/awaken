@@ -214,7 +214,7 @@ pub struct ManagedEncoder {
 impl Transcoder for ManagedEncoder {
     type Output = ProjectedEvent;
 
-    fn transcode(&mut self, event: &Fact) -> Vec<ProjectedEvent> {
+    fn fact(&mut self, event: &Fact) -> Vec<ProjectedEvent> {
         match event {
             Fact::RunStarted => Vec::new(),
             Fact::AssistantMessage { content, .. } => {
@@ -322,7 +322,7 @@ pub fn project_messages(
     messages: &[awaken_agent_contract::agent::message::Message],
     pending: Option<(&str, bool)>,
 ) -> Vec<ProjectedEvent> {
-    ManagedEncoder::default().transcode_all(&fold(messages, pending))
+    ManagedEncoder::default().transcode_facts(&fold(messages, pending))
 }
 
 /// Project the messages committed during one step, then a terminal
@@ -335,7 +335,7 @@ pub fn project_step(
 ) -> Vec<ProjectedEvent> {
     let mut events = fold(messages, pending);
     events.push(terminal_event(stop, pending));
-    ManagedEncoder::default().transcode_all(&events)
+    ManagedEncoder::default().transcode_facts(&events)
 }
 
 /// The neutral terminal event for a Managed `stop_reason`. `RequiresAction`'s
