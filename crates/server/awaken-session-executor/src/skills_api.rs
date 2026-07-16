@@ -419,6 +419,21 @@ async fn delete_version(
     }
 }
 
+/// `GET /v1/skills/:id/versions/:version/content` — the version's raw SKILL.md.
+async fn version_content(
+    State(state): State<Arc<SkillsApi>>,
+    Path((id, version)): Path<(String, String)>,
+) -> axum::response::Response {
+    match resolve_record(&state, &id)
+        .await
+        .as_ref()
+        .and_then(|r| find_version(r, &version).map(|v| v.content.clone()))
+    {
+        Some(content) => (StatusCode::OK, content).into_response(),
+        None => err(StatusCode::NOT_FOUND, "skill version not found"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -498,20 +513,5 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
 
         let _ = std::fs::remove_dir_all(&dir);
-    }
-}
-
-/// `GET /v1/skills/:id/versions/:version/content` — the version's raw SKILL.md.
-async fn version_content(
-    State(state): State<Arc<SkillsApi>>,
-    Path((id, version)): Path<(String, String)>,
-) -> axum::response::Response {
-    match resolve_record(&state, &id)
-        .await
-        .as_ref()
-        .and_then(|r| find_version(r, &version).map(|v| v.content.clone()))
-    {
-        Some(content) => (StatusCode::OK, content).into_response(),
-        None => err(StatusCode::NOT_FOUND, "skill version not found"),
     }
 }
