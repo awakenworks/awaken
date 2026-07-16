@@ -35,7 +35,7 @@ impl AgUiEncoder {
 impl Transcoder for AgUiEncoder {
     type Output = AgUiEvent;
 
-    fn transcode(&mut self, event: &Fact) -> Vec<AgUiEvent> {
+    fn fact(&mut self, event: &Fact) -> Vec<AgUiEvent> {
         match event {
             Fact::RunStarted => vec![AgUiEvent::RunStarted {
                 thread_id: self.thread_id.clone(),
@@ -114,7 +114,7 @@ pub fn encode_step(outcome: &StepOutcome, thread_id: &str, run_id: &str) -> Vec<
     // The terminal event owns the failed / parked / finished distinction — a fault
     // becomes `RunFailed`, which transcodes to `RUN_ERROR` instead of `RUN_FINISHED`.
     events.push(outcome.terminal_event());
-    AgUiEncoder::new(thread_id, run_id).transcode_all(&events)
+    AgUiEncoder::new(thread_id, run_id).transcode_facts(&events)
 }
 
 /// Project the *authoritative tail* of a committed step, for a turn whose
@@ -152,7 +152,7 @@ pub fn encode_close(outcome: &StepOutcome, thread_id: &str, run_id: &str) -> Vec
     }
     // The terminal event (`RUN_FINISHED`, or `RUN_ERROR` on a fault) transcoded the
     // same way `encode_step` closes; the live prefix already carried `RUN_STARTED`.
-    out.extend(AgUiEncoder::new(thread_id, run_id).transcode(&outcome.terminal_event()));
+    out.extend(AgUiEncoder::new(thread_id, run_id).fact(&outcome.terminal_event()));
     out
 }
 
@@ -381,7 +381,7 @@ mod tests {
     #[test]
     fn run_failed_transcodes_to_a_run_error() {
         let mut enc = AgUiEncoder::new("t1", "r1");
-        let events = enc.transcode(&Fact::RunFailed {
+        let events = enc.fact(&Fact::RunFailed {
             code: "overloaded".into(),
             message: "try later".into(),
         });
@@ -397,7 +397,7 @@ mod tests {
         // Documents the current shape: a parked built-in tool surfaces as a plain
         // RUN_FINISHED (no dedicated RUN_INTERRUPTED event exists in this adapter).
         let mut enc = AgUiEncoder::new("t1", "r1");
-        let events = enc.transcode(&Fact::Waiting {
+        let events = enc.fact(&Fact::Waiting {
             pending_tool_use_id: Some("c1".into()),
         });
         assert!(
@@ -410,12 +410,12 @@ mod tests {
     #[test]
     fn successive_tool_results_get_distinct_message_ids() {
         let mut enc = AgUiEncoder::new("t1", "r1");
-        let first = enc.transcode(&Fact::ToolResult {
+        let first = enc.fact(&Fact::ToolResult {
             id: "c1".into(),
             content: vec![ContentBlock::text("one")],
             is_error: false,
         });
-        let second = enc.transcode(&Fact::ToolResult {
+        let second = enc.fact(&Fact::ToolResult {
             id: "c2".into(),
             content: vec![ContentBlock::text("two")],
             is_error: false,
@@ -434,7 +434,7 @@ mod tests {
     #[test]
     fn an_empty_assistant_message_transcodes_to_nothing() {
         let mut enc = AgUiEncoder::new("t1", "r1");
-        let events = enc.transcode(&Fact::AssistantMessage {
+        let events = enc.fact(&Fact::AssistantMessage {
             id: "a1".into(),
             content: vec![],
         });
@@ -444,7 +444,7 @@ mod tests {
     #[test]
     fn an_assistant_message_transcodes_to_a_bracketed_text_message() {
         let mut enc = AgUiEncoder::new("t1", "r1");
-        let events = enc.transcode(&Fact::AssistantMessage {
+        let events = enc.fact(&Fact::AssistantMessage {
             id: "a1".into(),
             content: vec![ContentBlock::text("hello")],
         });
@@ -467,7 +467,7 @@ mod tests {
     fn a_tool_call_transcodes_to_start_args_end() {
         use awaken_agent_contract::event::ToolDisposition;
         let mut enc = AgUiEncoder::new("t1", "r1");
-        let events = enc.transcode(&Fact::ToolCall {
+        let events = enc.fact(&Fact::ToolCall {
             id: "c1".into(),
             name: "read".into(),
             input: json!({ "path": "x" }),

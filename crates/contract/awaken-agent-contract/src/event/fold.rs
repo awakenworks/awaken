@@ -12,33 +12,49 @@ use serde_json::Value;
 use crate::agent::content::ContentBlock;
 use crate::agent::message::{Message, Role};
 use crate::agent::run::{EndCause, Phase};
-// The neutral committed-event vocabulary now lives in `event`; the fold produces
-// it. `AgentEvent` here is the committed tier (ADR-0058, Axis 2).
-pub use crate::event::{Fact as AgentEvent, ToolDisposition};
+use crate::event::{AgentEvent, Delta, Fact, ToolDisposition};
 
-/// Transcode neutral projection events into a protocol's wire events. One impl per
-/// protocol — the only per-protocol part of the projection pipeline. `&mut self`
-/// so a transcoder may carry per-stream state (e.g. a terminal guard, id minting).
+/// Transcode neutral events into a protocol's wire events — one impl per protocol,
+/// the only per-protocol part of the projection pipeline. Two tiers (ADR-0058,
+/// Axis 9): [`fact`] is **exhaustive** (the compiler forces every protocol to take
+/// a stance on each committed whole-unit), [`delta`] is **opt-in** (default no-op;
+/// a protocol overrides only the live increments it renders). One instance sees
+/// both the live deltas and the later committed facts, so wire ids stay consistent
+/// without cross-transcoder reconciliation. `&mut self` carries per-stream state
+/// (open-text guard, id minting).
+///
+/// [`fact`]: Transcoder::fact
+/// [`delta`]: Transcoder::delta
 pub trait Transcoder {
     /// The protocol's wire event type.
     type Output;
 
-    /// Transcode one neutral event into zero or more wire events.
-    fn transcode(&mut self, event: &AgentEvent) -> Vec<Self::Output>;
+    /// Transcode one committed whole-unit / lifecycle fact (exhaustive tier).
+    fn fact(&mut self, fact: &Fact) -> Vec<Self::Output>;
 
-    /// Transcode a whole sequence in order.
-    fn transcode_all(&mut self, events: &[AgentEvent]) -> Vec<Self::Output> {
-        events
-            .iter()
-            .flat_map(|event| self.transcode(event))
-            .collect()
+    /// Transcode one live streaming increment (opt-in tier; default no-op).
+    fn delta(&mut self, _delta: &Delta) -> Vec<Self::Output> {
+        Vec::new()
+    }
+
+    /// Dispatch one neutral event to its tier.
+    fn transcode(&mut self, event: &AgentEvent) -> Vec<Self::Output> {
+        match event {
+            AgentEvent::Fact(fact) => self.fact(fact),
+            AgentEvent::Delta(delta) => self.delta(delta),
+        }
+    }
+
+    /// Transcode a sequence of committed facts in order.
+    fn transcode_facts(&mut self, facts: &[Fact]) -> Vec<Self::Output> {
+        facts.iter().flat_map(|fact| self.fact(fact)).collect()
     }
 }
 
 /// Fold a committed step's messages into per-message neutral events (no
 /// `RunStarted`, no terminal). `pending` is `(tool_use_id, client_executed)` of
 /// the tool the run parked on, when it parked — it classifies that tool's call.
-pub fn fold_messages(new_messages: &[Message], pending: Option<(&str, bool)>) -> Vec<AgentEvent> {
+pub fn fold_messages(new_messages: &[Message], pending: Option<(&str, bool)>) -> Vec<Fact> {
     let mut out = Vec::new();
     for message in new_messages {
         match message.role {
@@ -55,7 +71,7 @@ pub fn fold_messages(new_messages: &[Message], pending: Option<(&str, bool)>) ->
                 // the one predicate so the "matching the streaming projection"
                 // invariant holds by construction, not by two divergent inline tests.
                 if !text_is_empty(&message.content) {
-                    out.push(AgentEvent::AssistantMessage {
+                    out.push(Fact::AssistantMessage {
                         id: message.id.0.clone(),
                         content: text,
                     });
@@ -72,7 +88,7 @@ pub fn fold_messages(new_messages: &[Message], pending: Option<(&str, bool)>) ->
                             }
                             _ => ToolDisposition::Executed,
                         };
-                        out.push(AgentEvent::ToolCall {
+                        out.push(Fact::ToolCall {
                             id: id.clone(),
                             name: name.clone(),
                             input: input.clone(),
@@ -88,7 +104,7 @@ pub fn fold_messages(new_messages: &[Message], pending: Option<(&str, bool)>) ->
                         content,
                     } = block
                     {
-                        out.push(AgentEvent::ToolResult {
+                        out.push(Fact::ToolResult {
                             id: tool_use_id.clone(),
                             content: content.clone(),
                             is_error: false,
@@ -199,8 +215,8 @@ pub fn fold_step(
     new_messages: &[Message],
     phase: &Phase,
     pending: Option<(&str, bool)>,
-) -> Vec<AgentEvent> {
-    let mut out = vec![AgentEvent::RunStarted];
+) -> Vec<Fact> {
+    let mut out = vec![Fact::RunStarted];
     out.extend(fold_messages(new_messages, pending));
     out.push(terminal(phase, pending));
     out
@@ -208,8 +224,8 @@ pub fn fold_step(
 
 /// The `Waiting` terminal event naming the pending tool. For callers that carry a
 /// protocol stop reason rather than a [`Phase`].
-pub fn terminal_waiting(pending_tool_use_id: Option<&str>) -> AgentEvent {
-    AgentEvent::Waiting {
+pub fn terminal_waiting(pending_tool_use_id: Option<&str>) -> Fact {
+    Fact::Waiting {
         pending_tool_use_id: pending_tool_use_id.map(str::to_string),
     }
 }
@@ -217,26 +233,26 @@ pub fn terminal_waiting(pending_tool_use_id: Option<&str>) -> AgentEvent {
 /// The terminal projection event for a phase. A fault projects as `RunFailed`
 /// carrying its classification code, so hosts can tell a failed run from a
 /// finished one without reading the committed phase.
-pub fn terminal(phase: &Phase, pending: Option<(&str, bool)>) -> AgentEvent {
+pub fn terminal(phase: &Phase, pending: Option<(&str, bool)>) -> Fact {
     match phase {
         // Not a terminus: a run committed mid-flight projects as its
         // in-progress signal. Hosts normally project only parked/ended phases.
-        Phase::Running => AgentEvent::RunStarted,
-        Phase::Waiting => AgentEvent::Waiting {
+        Phase::Running => Fact::RunStarted,
+        Phase::Waiting => Fact::Waiting {
             pending_tool_use_id: pending.map(|p| p.0.to_string()),
         },
-        Phase::Ended(EndCause::MaxSteps) => AgentEvent::RunFinished { exhausted: true },
-        Phase::Ended(EndCause::Error(failure)) => AgentEvent::RunFailed {
+        Phase::Ended(EndCause::MaxSteps) => Fact::RunFinished { exhausted: true },
+        Phase::Ended(EndCause::Error(failure)) => Fact::RunFailed {
             code: failure.code().to_string(),
             message: failure.message(),
         },
         // G26: indeterminate remote execution is explicit; it is never silently
         // converted to success.
-        Phase::Ended(EndCause::Indeterminate) => AgentEvent::RunFailed {
+        Phase::Ended(EndCause::Indeterminate) => Fact::RunFailed {
             code: "indeterminate".to_string(),
             message: "execution outcome could not be determined".to_string(),
         },
-        Phase::Ended(_) => AgentEvent::RunFinished { exhausted: false },
+        Phase::Ended(_) => Fact::RunFinished { exhausted: false },
     }
 }
 
@@ -254,7 +270,7 @@ mod tests {
         }));
         assert_eq!(
             terminal(&inference, None),
-            AgentEvent::RunFailed {
+            Fact::RunFailed {
                 code: "unauthorized".to_string(),
                 message: "bad api key".to_string(),
             }
@@ -263,7 +279,7 @@ mod tests {
         let capability = Phase::Ended(EndCause::Error(Failure::CapabilityBound));
         assert!(matches!(
             terminal(&capability, None),
-            AgentEvent::RunFailed { code, .. } if code == "capability_bound"
+            Fact::RunFailed { code, .. } if code == "capability_bound"
         ));
     }
 
@@ -281,7 +297,7 @@ mod tests {
         let events = fold_messages(&[msg], Some(("c1", true)));
         assert_eq!(
             events,
-            vec![AgentEvent::ToolCall {
+            vec![Fact::ToolCall {
                 id: "c1".into(),
                 name: "submit".into(),
                 input: serde_json::json!({}),
@@ -294,11 +310,8 @@ mod tests {
     fn step_wraps_with_start_and_terminal() {
         let msg = Message::text(Id("a1".into()), Role::Assistant, "hi");
         let events = fold_step(&[msg], &Phase::Ended(EndCause::NaturalEnd), None);
-        assert_eq!(events.first(), Some(&AgentEvent::RunStarted));
-        assert_eq!(
-            events.last(),
-            Some(&AgentEvent::RunFinished { exhausted: false })
-        );
+        assert_eq!(events.first(), Some(&Fact::RunStarted));
+        assert_eq!(events.last(), Some(&Fact::RunFinished { exhausted: false }));
     }
 
     // G26: indeterminate remote execution is explicit; it is never silently
@@ -308,7 +321,7 @@ mod tests {
         let phase = Phase::Ended(EndCause::Indeterminate);
         let event = terminal(&phase, None);
         assert!(
-            matches!(&event, AgentEvent::RunFailed { code, .. } if code == "indeterminate"),
+            matches!(&event, Fact::RunFailed { code, .. } if code == "indeterminate"),
             "Indeterminate must project to RunFailed, got {event:?}"
         );
     }
@@ -325,14 +338,14 @@ mod tests {
 
     #[test]
     fn running_phase_projects_as_run_started_not_a_terminus() {
-        assert_eq!(terminal(&Phase::Running, None), AgentEvent::RunStarted);
+        assert_eq!(terminal(&Phase::Running, None), Fact::RunStarted);
     }
 
     #[test]
     fn max_steps_projects_as_exhausted_run_finished() {
         assert_eq!(
             terminal(&Phase::Ended(EndCause::MaxSteps), None),
-            AgentEvent::RunFinished { exhausted: true }
+            Fact::RunFinished { exhausted: true }
         );
     }
 
@@ -345,7 +358,7 @@ mod tests {
         ] {
             assert_eq!(
                 terminal(&Phase::Ended(cause.clone()), None),
-                AgentEvent::RunFinished { exhausted: false },
+                Fact::RunFinished { exhausted: false },
                 "{cause:?} must project as a non-exhausted finish"
             );
         }
@@ -355,13 +368,13 @@ mod tests {
     fn waiting_phase_carries_the_pending_tool_id_or_none() {
         assert_eq!(
             terminal(&Phase::Waiting, Some(("call-9", false))),
-            AgentEvent::Waiting {
+            Fact::Waiting {
                 pending_tool_use_id: Some("call-9".into())
             }
         );
         assert_eq!(
             terminal(&Phase::Waiting, None),
-            AgentEvent::Waiting {
+            Fact::Waiting {
                 pending_tool_use_id: None
             }
         );
@@ -372,7 +385,7 @@ mod tests {
         let phase = Phase::Ended(EndCause::Error(Failure::StateConflict));
         assert!(matches!(
             terminal(&phase, None),
-            AgentEvent::RunFailed { code, .. } if code == "state_conflict"
+            Fact::RunFailed { code, .. } if code == "state_conflict"
         ));
     }
 
@@ -380,13 +393,13 @@ mod tests {
     fn terminal_waiting_helper_maps_the_id() {
         assert_eq!(
             terminal_waiting(Some("c1")),
-            AgentEvent::Waiting {
+            Fact::Waiting {
                 pending_tool_use_id: Some("c1".into())
             }
         );
         assert_eq!(
             terminal_waiting(None),
-            AgentEvent::Waiting {
+            Fact::Waiting {
                 pending_tool_use_id: None
             }
         );
@@ -404,7 +417,7 @@ mod tests {
         let events = fold_messages(&[msg], None);
         assert_eq!(
             events,
-            vec![AgentEvent::AssistantMessage {
+            vec![Fact::AssistantMessage {
                 id: "a1".into(),
                 content: vec![ContentBlock::text("hello")],
             }]
@@ -451,10 +464,10 @@ mod tests {
         );
         let events = fold_messages(&[msg], None);
         assert_eq!(events.len(), 2);
-        assert!(matches!(events[0], AgentEvent::AssistantMessage { .. }));
+        assert!(matches!(events[0], Fact::AssistantMessage { .. }));
         assert_eq!(
             events[1],
-            AgentEvent::ToolCall {
+            Fact::ToolCall {
                 id: "c1".into(),
                 name: "run".into(),
                 input: serde_json::json!({}),
@@ -473,13 +486,13 @@ mod tests {
         let builtin = fold_messages(std::slice::from_ref(&msg), Some(("c1", false)));
         assert!(matches!(
             &builtin[0],
-            AgentEvent::ToolCall { disposition, .. } if *disposition == ToolDisposition::PendingBuiltin
+            Fact::ToolCall { disposition, .. } if *disposition == ToolDisposition::PendingBuiltin
         ));
         // A pending id that does not match this call => Executed.
         let executed = fold_messages(&[msg], Some(("other", true)));
         assert!(matches!(
             &executed[0],
-            AgentEvent::ToolCall { disposition, .. } if *disposition == ToolDisposition::Executed
+            Fact::ToolCall { disposition, .. } if *disposition == ToolDisposition::Executed
         ));
     }
 
@@ -496,7 +509,7 @@ mod tests {
         let events = fold_messages(&[msg], None);
         assert_eq!(
             events,
-            vec![AgentEvent::ToolResult {
+            vec![Fact::ToolResult {
                 id: "c1".into(),
                 content: vec![ContentBlock::text("ok")],
                 is_error: false,
@@ -584,30 +597,46 @@ mod tests {
         );
     }
 
-    // --- Transcoder::transcode_all default method ---
+    // --- Transcoder::transcode_facts default method + tier dispatch ---
 
     struct Marker;
     impl Transcoder for Marker {
         type Output = &'static str;
-        fn transcode(&mut self, event: &AgentEvent) -> Vec<&'static str> {
-            match event {
-                AgentEvent::RunStarted => vec!["start"],
-                AgentEvent::RunFinished { .. } => vec!["fin"],
+        fn fact(&mut self, fact: &Fact) -> Vec<&'static str> {
+            match fact {
+                Fact::RunStarted => vec!["start"],
+                Fact::RunFinished { .. } => vec!["fin"],
                 _ => vec![],
             }
+        }
+        fn delta(&mut self, _delta: &Delta) -> Vec<&'static str> {
+            vec!["delta"]
         }
     }
 
     #[test]
-    fn transcode_all_flat_maps_in_order() {
-        let events = vec![
-            AgentEvent::RunStarted,
-            AgentEvent::AssistantMessage {
+    fn transcode_facts_flat_maps_in_order() {
+        let facts = vec![
+            Fact::RunStarted,
+            Fact::AssistantMessage {
                 id: "a".into(),
                 content: vec![],
             },
-            AgentEvent::RunFinished { exhausted: false },
+            Fact::RunFinished { exhausted: false },
         ];
-        assert_eq!(Marker.transcode_all(&events), vec!["start", "fin"]);
+        assert_eq!(Marker.transcode_facts(&facts), vec!["start", "fin"]);
+    }
+
+    #[test]
+    fn transcode_dispatches_by_tier() {
+        // A Fact routes to fact(); a Delta routes to the opt-in delta().
+        assert_eq!(
+            Marker.transcode(&AgentEvent::Fact(Fact::RunStarted)),
+            vec!["start"]
+        );
+        assert_eq!(
+            Marker.transcode(&AgentEvent::Delta(Delta::TextDelta { delta: "x".into() })),
+            vec!["delta"]
+        );
     }
 }
