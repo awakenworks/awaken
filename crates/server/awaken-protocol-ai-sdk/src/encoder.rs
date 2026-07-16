@@ -422,6 +422,23 @@ mod tests {
         assert!(out.is_empty());
     }
 
+    /// A continuation-guard round (steering) is an audit lifecycle fact
+    /// (`classify().live == false`) — it carries no AI-SDK wire part. Steering stays
+    /// observable via the audit projection (`RunEvent::Continuation`), not this
+    /// stream. This pins the omission so a future edit can't silently start
+    /// leaking an internal guard round onto the wire.
+    #[test]
+    fn continuation_steering_is_not_projected() {
+        let mut enc = AiSdkEncoder::new();
+        for steered in [false, true] {
+            let out = enc.fact(&Fact::Continuation {
+                steered,
+                detail: json!({ "reason": "auto_continue" }),
+            });
+            assert!(out.is_empty(), "steered={steered} projected {out:?}");
+        }
+    }
+
     #[test]
     fn terminal_failure_surfaces_an_error_frame() {
         let outcome = StepOutcome {
@@ -449,6 +466,31 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, UIStreamEvent::Error { .. })),
             "close error: {close:?}"
+        );
+    }
+
+    /// Budget exhaustion (`Terminal::Exhausted` → `RunFinished{exhausted:true}`) is
+    /// a clean terminus on the AI-SDK wire: the protocol has no "exhausted" finish
+    /// reason, so it closes with `finish("stop")` like a natural end — never an
+    /// error frame. Pins that exhaustion doesn't leak as a fault.
+    #[test]
+    fn an_exhausted_run_finishes_cleanly_not_as_error() {
+        let outcome = StepOutcome {
+            terminal: Terminal::Exhausted,
+            ..Default::default()
+        };
+        let step = encode_step(&outcome);
+        assert!(
+            step.iter().any(
+                |e| matches!(e, UIStreamEvent::Finish { finish_reason: Some(r), .. } if r == "stop")
+            ),
+            "finish(stop): {step:?}",
+        );
+        assert!(
+            !step
+                .iter()
+                .any(|e| matches!(e, UIStreamEvent::Error { .. })),
+            "an exhausted run is not an error: {step:?}",
         );
     }
 
