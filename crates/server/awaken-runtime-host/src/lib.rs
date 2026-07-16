@@ -1081,6 +1081,12 @@ impl ProtocolRuntime for ProtocolHost {
         Ok(to_port_step_outcome(result))
     }
 
+    async fn interrupt(&self, thread: &str) -> Result<(), DriverError> {
+        // The same protocol-neutral cancel the managed `user.interrupt` uses: cancel
+        // the in-flight run's token so an abandoned turn (dropped stream) stops.
+        self.host.interrupt(thread).await.map_err(to_driver_error)
+    }
+
     async fn pending(&self, thread: &str) -> Option<PortPending> {
         to_port_pending(self.host.pending_tool(thread).await)
     }

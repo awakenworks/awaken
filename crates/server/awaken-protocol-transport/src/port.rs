@@ -155,6 +155,19 @@ pub trait ProtocolRuntime: Send + Sync {
         resume: Resume,
     ) -> Result<StepOutcome, DriverError>;
 
+    /// Interrupt the run in flight on `thread`, if any: cancel it so an in-progress
+    /// turn ends promptly instead of running to completion. A no-op when nothing is
+    /// running. The default is a no-op — a transport with no cancel path (e.g. a
+    /// pure request/response adapter) keeps its prior behavior — but every adapter
+    /// that can observe a client going away (a dropped SSE stream, a closed socket)
+    /// should call this so an abandoned turn stops burning tokens. This is the
+    /// protocol-neutral cancel verb; the managed `user.interrupt` and an ai-sdk /
+    /// ag-ui client disconnect all converge here.
+    async fn interrupt(&self, thread: &str) -> Result<(), DriverError> {
+        let _ = thread;
+        Ok(())
+    }
+
     /// The tool a run on `thread` is parked on, if any.
     async fn pending(&self, thread: &str) -> Option<Pending>;
 
@@ -250,6 +263,15 @@ mod tests {
         // fabricating a count.
         let rt = CountingRuntime::default();
         assert_eq!(rt.usage("t1").await, (0, 0));
+    }
+
+    #[tokio::test]
+    async fn default_interrupt_is_a_noop_ok() {
+        // A transport with no cancel path (CountingRuntime does not override it) gets
+        // the default no-op — calling the neutral cancel verb never errors, so an
+        // adapter can always wire a client disconnect to it safely.
+        let rt = CountingRuntime::default();
+        assert!(rt.interrupt("t1").await.is_ok());
     }
 
     fn outcome(terminal: Terminal) -> StepOutcome {
