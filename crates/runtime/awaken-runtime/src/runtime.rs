@@ -87,6 +87,14 @@ pub struct Runtime {
     /// Structure-only metrics sink for the model/tool chokepoints (#2). Absent
     /// means the no-op recorder; a host injects an OpenTelemetry-backed one.
     metrics: Option<Arc<dyn awaken_runtime_contract::metrics::MetricsRecorder>>,
+    /// Whether this runtime has no authoritative catalog of its own and so should
+    /// trust the content-addressed snapshot a run is dispatched with. Set on the
+    /// per-session runtime of a node that could not warm-install the agent's
+    /// published catalog (a database-less worker: `installed(agent)` is `None`).
+    /// Default `false` — a node with its own catalog enforces the fail-closed
+    /// descent-from-active gate (G4) unchanged, so a genuine catalog skew still
+    /// strands the run rather than silently running stale config.
+    trust_dispatched_snapshots: std::sync::atomic::AtomicBool,
 }
 
 /// The process-wide no-op recorder handed out when none is injected, so the
@@ -325,6 +333,41 @@ impl Runtime {
             .map(|install| install.fingerprint.clone())
     }
 
+    /// Mark this runtime as having no authoritative catalog of its own, so it
+    /// trusts the content-addressed snapshot a run is dispatched with (see
+    /// [`trust_dispatched_snapshots`](Self::trust_dispatched_snapshots)). Set by
+    /// the host on a database-less worker's per-session runtime.
+    #[must_use]
+    pub fn trusting_dispatched_snapshots(self, yes: bool) -> Self {
+        self.trust_dispatched_snapshots
+            .store(yes, std::sync::atomic::Ordering::Relaxed);
+        self
+    }
+
+    /// When this runtime trusts dispatched snapshots and its active catalog does
+    /// not already match the one a run carries inline, install a catalog derived
+    /// from that snapshot so resolution's fail-closed fingerprint gate passes.
+    ///
+    /// A no-op when the fingerprints already agree (the common in-process and
+    /// brain paths) or when trust is off (a node with its own catalog, which must
+    /// keep enforcing descent-from-active — G4). Called once per run, immediately
+    /// before [`resolve`](RunResolver::resolve).
+    pub(crate) fn reconcile_dispatched_snapshot(&self, snapshot: &ExecutableAgentSnapshot) {
+        if !self
+            .trust_dispatched_snapshots
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
+        if self.active_fingerprint().as_ref() == Some(&snapshot.fingerprint) {
+            return;
+        }
+        // Best-effort: a rejected install (e.g. an internally inconsistent
+        // snapshot) leaves the active catalog untouched, so resolution still fails
+        // closed rather than running against a half-installed catalog.
+        let _ = self.install_catalog(RuntimeCatalogInstall::from_snapshot(snapshot));
+    }
+
     /// Resume a parked run from a validated `ResumeCommand`. The reader supplies
     /// the committed transcript and the active waiting ticket; the resume fails
     /// closed unless every identity in the ticket matches (G5/G28).
@@ -491,5 +534,91 @@ impl LiveRunControl for Runtime {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod trust_dispatched_snapshot_tests {
+    use super::*;
+    use awaken_runtime_contract::resolved::{
+        CatalogFingerprint, ModelBinding, ResolvedSpec, ToolDescriptor,
+    };
+    use awaken_runtime_contract::resolver::{Error, RunResolver};
+    use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshotId};
+
+    fn snapshot(fp: &str) -> ExecutableAgentSnapshot {
+        let fingerprint = CatalogFingerprint(fp.to_string());
+        ExecutableAgentSnapshot {
+            id: ExecutableAgentSnapshotId("assistant".to_string()),
+            root_agent_id: AgentId("assistant".to_string()),
+            resolved_spec: ResolvedSpec {
+                catalog_fingerprint: fingerprint.clone(),
+                instructions: String::new(),
+                max_steps: 4,
+                model_binding: ModelBinding::new("demo", "stub", "stub"),
+                model_candidates: Vec::new(),
+                tool_descriptors: vec![ToolDescriptor {
+                    id: "search".to_string(),
+                    description: String::new(),
+                    parameters: serde_json::json!({}),
+                    content_hash: "h".to_string(),
+                }],
+                plugin_ids: Vec::new(),
+                plugin_config: Default::default(),
+                context_policy: Default::default(),
+                tool_presentation: Default::default(),
+            },
+            fingerprint,
+        }
+    }
+
+    #[test]
+    fn a_trusting_runtime_adopts_a_dispatched_snapshot_with_no_prior_catalog() {
+        // A database-less worker's runtime: no catalog installed, trust on.
+        let runtime = Runtime::new().trusting_dispatched_snapshots(true);
+        let snap = snapshot("fp-published");
+        // Fails closed before reconcile — nothing to match against.
+        assert!(matches!(
+            runtime.resolve(&snap),
+            Err(Error::NoActiveCatalog)
+        ));
+
+        runtime.reconcile_dispatched_snapshot(&snap);
+        let resolved = runtime
+            .resolve(&snap)
+            .expect("resolves after adopting the snapshot");
+        assert_eq!(resolved.spec.catalog_fingerprint, snap.fingerprint);
+        assert_eq!(runtime.active_fingerprint(), Some(snap.fingerprint));
+    }
+
+    #[test]
+    fn a_non_trusting_runtime_still_fails_closed_on_a_mismatch() {
+        // The brain / any node with its own catalog: G4 must be preserved.
+        let runtime = Runtime::new(); // trust defaults to off
+        let snap = snapshot("fp-published");
+        runtime.reconcile_dispatched_snapshot(&snap); // no-op
+        assert!(matches!(
+            runtime.resolve(&snap),
+            Err(Error::NoActiveCatalog)
+        ));
+    }
+
+    #[test]
+    fn a_trusting_runtime_replaces_a_mismatched_catalog_with_the_dispatched_one() {
+        // Even a stale/other catalog already installed is overridden by the
+        // authoritative dispatched snapshot when the runtime trusts it.
+        let runtime = Runtime::new().trusting_dispatched_snapshots(true);
+        runtime
+            .install_catalog(RuntimeCatalogInstall::from_snapshot(&snapshot("fp-stale")))
+            .expect("install a stale catalog");
+        let snap = snapshot("fp-published");
+        assert!(matches!(
+            runtime.resolve(&snap),
+            Err(Error::FingerprintMismatch)
+        ));
+
+        runtime.reconcile_dispatched_snapshot(&snap);
+        assert!(runtime.resolve(&snap).is_ok());
+        assert_eq!(runtime.active_fingerprint(), Some(snap.fingerprint));
     }
 }
