@@ -202,6 +202,61 @@ async fn an_unknown_inbound_event_type_is_rejected() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
+/// The session honors the official `agent` model axis (Part A/B). A plain reference
+/// echoes the host default model at version 1; an `agent_with_overrides.model`
+/// replaces the model for the session and echoes the pinned `version`.
+#[tokio::test]
+async fn session_agent_model_override_is_honored_and_echoed() {
+    let app = router(Arc::new(ManagedState::new(EchoFake)));
+    // Plain reference → the host default model (`EchoFake::model`), version 1.
+    let base = json_call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        serde_json::json!({ "agent": "coder" }),
+    )
+    .await;
+    assert_eq!(base["agent"]["model"]["id"], "test-model");
+    assert_eq!(base["agent"]["version"], 1);
+    // `agent_with_overrides.model` (object form) replaces the model, pinned version echoed.
+    let over = json_call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        serde_json::json!({
+            "agent": {
+                "id": "coder",
+                "type": "agent_with_overrides",
+                "version": 4,
+                "model": { "id": "claude-sonnet-5" }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(over["agent"]["model"]["id"], "claude-sonnet-5");
+    assert_eq!(over["agent"]["version"], 4);
+}
+
+/// `agent_with_overrides` with `model: null` clears the model — rejected, since a
+/// session always needs one (400, mirroring the API's `agent_model_required`).
+#[tokio::test]
+async fn clearing_the_model_on_a_session_override_is_rejected() {
+    let app = router(Arc::new(ManagedState::new(EchoFake)));
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/sessions")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&serde_json::json!({
+                "agent": { "id": "coder", "type": "agent_with_overrides", "model": null }
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+    let status = app.clone().oneshot(req).await.unwrap().status();
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
 #[tokio::test]
 async fn happy_path_projects_message_and_idle() {
     let app = router(Arc::new(ManagedState::new(EchoFake)));

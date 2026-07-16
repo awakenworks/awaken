@@ -46,27 +46,108 @@ impl ErrorResponse {
     }
 }
 
-/// `agent` in a create-session request — the SDK's `string | { id, type:'agent',
-/// version? }` (`BetaManagedAgentsAgentParams`). Deserialize-only; the `type:'agent'`
-/// tag is tolerated (and ignored) on input, like `McpServer`'s `type:'url'`.
-/// This carries no awaken-only fields — per-session model override and runtime
-/// selection travel in the session `metadata` bag (see [`SessionCreateParams`]).
+/// The resolved `model` axis of an `agent_with_overrides` session reference — the
+/// SDK's override semantics for a single field made explicit: **omit** = inherit the
+/// agent's model; **`null`** = clear, rejected for `model` since a session always
+/// needs one (400 `agent_model_required`); **a value** = replace for this session.
+/// This is the domain-facing tri-state [`AgentRef::model_override`] returns; the wire
+/// form is the double-`Option` on [`AgentRefObject::model`].
+#[derive(Debug, Clone)]
+pub enum ModelOverride {
+    /// `model` key absent — inherit the referenced agent version's model.
+    Absent,
+    /// `model: null` — an explicit clear, which the API forbids for the model axis.
+    Cleared,
+    /// `model` set to a bare id or `{id, speed?}` — replace for this session only.
+    Set(ModelConfig),
+}
+
+/// The `type` discriminator on an [`AgentRefObject`]. Optional and tolerant: an object
+/// without a `type` (or with an unrecognized one) is the plain `agent` reference,
+/// preserving the pre-overrides behavior where the tag was ignored.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRefKind {
+    Agent,
+    AgentWithOverrides,
+    #[serde(other)]
+    Other,
+}
+
+/// The object form of `agent`: `{id, type?, version?, model?, ...}`. A strongly-typed
+/// struct rather than a hand-rolled deserializer — the one field needing more than a
+/// plain `Option` is `model`, whose absent/`null`/value tri-state (the not-clearable
+/// rule) rides the standard double-`Option` idiom. The other override fields
+/// (`system`/`tools`/`mcp_servers`/`skills`) are accepted for wire-compatibility but
+/// not yet applied, so they are not modeled here.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AgentRefObject {
+    pub id: String,
+    #[serde(rename = "type", default)]
+    pub kind: Option<AgentRefKind>,
+    #[serde(default)]
+    pub version: Option<u32>,
+    /// Outer `None` = `model` omitted; `Some(None)` = `model: null`; `Some(Some(_))` =
+    /// a value. Only meaningful when `kind` is `agent_with_overrides`.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub model: Option<Option<super::agent::ModelInput>>,
+}
+
+/// The standard serde double-`Option` reader: distinguishes an absent field (handled
+/// by `#[serde(default)]` → outer `None`) from a present `null` (`Some(None)`) from a
+/// present value (`Some(Some(_))`). Load-bearing for the model not-clearable rule.
+fn deserialize_double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Deserialize::deserialize(deserializer).map(Some)
+}
+
+/// `agent` in a create-session request — the SDK's
+/// `string | {id, type:'agent', version?} | {id, type:'agent_with_overrides',
+/// version?, model?, system?, tools?, ...}` (`BetaManagedAgentsAgentParams`).
+/// Untagged: a JSON string is [`AgentRef::Id`]; a JSON object is [`AgentRef::Object`],
+/// whose `type` then selects plain-reference vs. overrides. Per-session runtime
+/// selection still travels in the session `metadata` bag (see [`SessionCreateParams`]);
+/// the model now rides the official override object.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum AgentRef {
     Id(String),
-    Obj {
-        id: String,
-        #[serde(default)]
-        version: Option<u32>,
-    },
+    Object(AgentRefObject),
 }
 
 impl AgentRef {
     pub fn id(&self) -> &str {
         match self {
             AgentRef::Id(id) => id,
-            AgentRef::Obj { id, .. } => id,
+            AgentRef::Object(obj) => &obj.id,
+        }
+    }
+
+    /// The agent version the client pinned, if any (`None` = latest).
+    pub fn version(&self) -> Option<u32> {
+        match self {
+            AgentRef::Id(_) => None,
+            AgentRef::Object(obj) => obj.version,
+        }
+    }
+
+    /// The single-session model override. Only an `agent_with_overrides` object carries
+    /// one; every other form reports [`ModelOverride::Absent`].
+    pub fn model_override(&self) -> ModelOverride {
+        match self {
+            AgentRef::Object(AgentRefObject {
+                kind: Some(AgentRefKind::AgentWithOverrides),
+                model,
+                ..
+            }) => match model {
+                None => ModelOverride::Absent,
+                Some(None) => ModelOverride::Cleared,
+                Some(Some(input)) => ModelOverride::Set(input.clone().into_config()),
+            },
+            _ => ModelOverride::Absent,
         }
     }
 }
@@ -174,6 +255,19 @@ pub struct Usage {
     pub output_tokens: u64,
     pub cache_read_input_tokens: u64,
     pub cache_creation_input_tokens: u64,
+}
+
+/// `BetaManagedAgentsSpanModelUsage` — token usage for a *single* model request
+/// (as opposed to the session's accumulated [`Usage`]). Carried by
+/// `span.model_request_end`; reuses [`Usage`]'s four token fields (flattened) and
+/// adds the optional inference-speed mode.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SpanModelUsage {
+    #[serde(flatten)]
+    pub usage: Usage,
+    /// Inference speed mode (`standard`/`fast`); omitted when the model reports none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed: Option<String>,
 }
 
 /// `BetaManagedAgentsSession` response (minimal but SDK-parseable).
@@ -359,6 +453,13 @@ impl SessionError {
 pub enum OutboundKind {
     #[serde(rename = "agent.message")]
     AgentMessage { content: Vec<ContentBlock> },
+    /// The agent's extended-thinking block (`agent.thinking`) — `{id, type,
+    /// processed_at}`, no payload, mirroring the SDK's
+    /// `BetaManagedAgentsAgentThinkingEvent`. Wire type defined for catalog
+    /// completeness; not yet emitted — awaken's stream carries no thinking channel
+    /// (see the conformance matrix's `agent.thinking` gap).
+    #[serde(rename = "agent.thinking")]
+    AgentThinking {},
     #[serde(rename = "agent.tool_use")]
     AgentToolUse {
         name: String,
@@ -404,12 +505,26 @@ pub enum OutboundKind {
     SessionStatusRunning {},
     #[serde(rename = "session.status_idle")]
     SessionStatusIdle { stop_reason: StopReason },
+    /// The session is recovering from a transient error and is rescheduled for
+    /// execution (`session.status_rescheduled`) — `{id, type, processed_at}`, no
+    /// payload. Wire type defined for catalog completeness; not yet emitted — the
+    /// runtime collapses transient retries below the projection seam (see the
+    /// conformance matrix's `session.status_rescheduled` gap).
+    #[serde(rename = "session.status_rescheduled")]
+    SessionStatusRescheduled {},
     /// The session reached its irreversible terminal state (emitted when the
     /// session is archived — this server models archive as termination, stamping
     /// `archived_at` and `status: "terminated"`). A client streaming or listing
     /// the session sees this as the last event; no further turns are accepted.
     #[serde(rename = "session.status_terminated")]
     SessionStatusTerminated {},
+    /// The session was deleted (`session.deleted`) — a terminal stream frame
+    /// pushed to any open SSE connection just before the record is dropped.
+    /// Unlike archive (which tombstones a still-listable `terminated` record),
+    /// delete removes the session, so this frame is live-broadcast only: a
+    /// subsequent `events.list`/`retrieve` is a 404, not a replay.
+    #[serde(rename = "session.deleted")]
+    SessionDeleted {},
     /// A subagent (multiagent delegate) thread was spawned within the session —
     /// the SDK's `session.thread_created`. `agent_name` is the callable delegate
     /// the child thread runs.
@@ -431,6 +546,16 @@ pub enum OutboundKind {
         session_thread_id: String,
         agent_name: String,
         stop_reason: StopReason,
+    },
+    /// A subagent child thread hit a transient error and is retrying
+    /// (`session.thread_status_rescheduled`) — same identity shape as the other
+    /// thread-status events. Wire type defined for catalog completeness; not yet
+    /// emitted — the thread rescheduled fact isn't surfaced (see the conformance
+    /// matrix's `thread_status_rescheduled` gap).
+    #[serde(rename = "session.thread_status_rescheduled")]
+    SessionThreadStatusRescheduled {
+        session_thread_id: String,
+        agent_name: String,
     },
     /// The session's `metadata`/`title` changed (`session.updated`), carrying the
     /// title (when the update set it) and the full metadata bag (when non-empty).
@@ -468,6 +593,24 @@ pub enum OutboundKind {
     /// processed_at}`, no payload (aligned to `@anthropic-ai/sdk`, not guessed).
     #[serde(rename = "agent.thread_context_compacted")]
     ThreadContextCompacted {},
+    /// A model request was initiated (`span.model_request_start`) — `{id, type,
+    /// processed_at}`, no payload; its `id` is referenced by the paired
+    /// `span.model_request_end`. Wire type defined for catalog completeness; not
+    /// yet emitted — the model call sits below the runtime seam (see the
+    /// conformance matrix's `span.model_request_*` gap).
+    #[serde(rename = "span.model_request_start")]
+    SpanModelRequestStart {},
+    /// A model request completed (`span.model_request_end`), carrying the paired
+    /// start id, a nullable error flag, and this single request's token usage.
+    /// Wire type defined for catalog completeness; not yet emitted (same gap as
+    /// `span.model_request_start`).
+    #[serde(rename = "span.model_request_end")]
+    SpanModelRequestEnd {
+        model_request_start_id: String,
+        // Nullable per the SDK (`boolean | null`): the key is always present.
+        is_error: Option<bool>,
+        model_usage: SpanModelUsage,
+    },
     #[serde(rename = "span.outcome_evaluation_start")]
     SpanOutcomeEvaluationStart { outcome_id: String, iteration: u32 },
     /// A progress ping while a revision cycle is being graded
@@ -488,6 +631,7 @@ impl OutboundKind {
     pub fn type_str(&self) -> &'static str {
         match self {
             OutboundKind::AgentMessage { .. } => "agent.message",
+            OutboundKind::AgentThinking {} => "agent.thinking",
             OutboundKind::AgentToolUse { .. } => "agent.tool_use",
             OutboundKind::AgentToolResult { .. } => "agent.tool_result",
             OutboundKind::AgentCustomToolUse { .. } => "agent.custom_tool_use",
@@ -496,10 +640,15 @@ impl OutboundKind {
             OutboundKind::SessionError { .. } => "session.error",
             OutboundKind::SessionStatusRunning {} => "session.status_running",
             OutboundKind::SessionStatusIdle { .. } => "session.status_idle",
+            OutboundKind::SessionStatusRescheduled {} => "session.status_rescheduled",
             OutboundKind::SessionStatusTerminated {} => "session.status_terminated",
+            OutboundKind::SessionDeleted {} => "session.deleted",
             OutboundKind::SessionThreadCreated { .. } => "session.thread_created",
             OutboundKind::SessionThreadStatusRunning { .. } => "session.thread_status_running",
             OutboundKind::SessionThreadStatusIdle { .. } => "session.thread_status_idle",
+            OutboundKind::SessionThreadStatusRescheduled { .. } => {
+                "session.thread_status_rescheduled"
+            }
             OutboundKind::SessionUpdated { .. } => "session.updated",
             OutboundKind::SessionThreadStatusTerminated { .. } => {
                 "session.thread_status_terminated"
@@ -507,6 +656,8 @@ impl OutboundKind {
             OutboundKind::AgentThreadMessageSent { .. } => "agent.thread_message_sent",
             OutboundKind::AgentThreadMessageReceived { .. } => "agent.thread_message_received",
             OutboundKind::ThreadContextCompacted { .. } => "agent.thread_context_compacted",
+            OutboundKind::SpanModelRequestStart {} => "span.model_request_start",
+            OutboundKind::SpanModelRequestEnd { .. } => "span.model_request_end",
             OutboundKind::SpanOutcomeEvaluationStart { .. } => "span.outcome_evaluation_start",
             OutboundKind::SpanOutcomeEvaluationOngoing { .. } => "span.outcome_evaluation_ongoing",
             OutboundKind::SpanOutcomeEvaluationEnd { .. } => "span.outcome_evaluation_end",
@@ -642,6 +793,58 @@ mod tests {
         let obj: AgentRef =
             serde_json::from_str(r#"{"id":"assistant","type":"agent","version":3}"#).unwrap();
         assert_eq!(obj.id(), "assistant");
+        assert_eq!(obj.version(), Some(3));
+        // A plain reference never overrides the model.
+        assert!(matches!(bare.model_override(), ModelOverride::Absent));
+        assert!(matches!(obj.model_override(), ModelOverride::Absent));
+        // An unrecognized `type` degrades to a plain reference (tolerant), and does
+        // not surface a model override even if one rode along.
+        let odd: AgentRef =
+            serde_json::from_str(r#"{"id":"a","type":"future_kind","model":"x"}"#).unwrap();
+        assert_eq!(odd.id(), "a");
+        assert!(matches!(odd.model_override(), ModelOverride::Absent));
+    }
+
+    #[test]
+    fn agent_with_overrides_replaces_the_model_for_the_session() {
+        // Bare-string model override.
+        let s: AgentRef = serde_json::from_str(
+            r#"{"id":"assistant","type":"agent_with_overrides","model":"claude-sonnet-5"}"#,
+        )
+        .unwrap();
+        match s.model_override() {
+            ModelOverride::Set(cfg) => {
+                assert_eq!(cfg.id, "claude-sonnet-5");
+                assert!(cfg.speed.is_none());
+            }
+            other => panic!("expected Set, got {other:?}"),
+        }
+        // `{id, speed}` object model override, with a pinned version.
+        let o: AgentRef = serde_json::from_str(
+            r#"{"id":"assistant","type":"agent_with_overrides","version":2,"model":{"id":"claude-opus-4-8","speed":"fast"}}"#,
+        )
+        .unwrap();
+        assert_eq!(o.version(), Some(2));
+        match o.model_override() {
+            ModelOverride::Set(cfg) => {
+                assert_eq!(cfg.id, "claude-opus-4-8");
+                assert_eq!(cfg.speed.as_deref(), Some("fast"));
+            }
+            other => panic!("expected Set, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn overrides_distinguish_absent_from_null_model() {
+        // `model` omitted → inherit (Absent), not a clear.
+        let absent: AgentRef =
+            serde_json::from_str(r#"{"id":"a","type":"agent_with_overrides"}"#).unwrap();
+        assert!(matches!(absent.model_override(), ModelOverride::Absent));
+        // `model: null` → an explicit clear (rejected downstream with 400).
+        let cleared: AgentRef =
+            serde_json::from_str(r#"{"id":"a","type":"agent_with_overrides","model":null}"#)
+                .unwrap();
+        assert!(matches!(cleared.model_override(), ModelOverride::Cleared));
     }
 
     #[test]
@@ -663,5 +866,85 @@ mod tests {
             without,
             InboundEvent::UserMessage { model: None, .. }
         ));
+    }
+
+    /// The newly catalogued outbound wire types serialize to exactly the shape the
+    /// installed SDK declares (`events.d.ts`) — the `type` tag plus the right field
+    /// set. Guards the type-catalog completion against silently diverging from the
+    /// SDK even before emission is wired.
+    #[test]
+    fn newly_catalogued_outbound_events_serialize_to_the_sdk_wire_shape() {
+        use std::collections::BTreeSet;
+        let ev = |kind| Event {
+            id: "evt_0".to_string(),
+            kind,
+            processed_at: Some("2026-01-01T00:00:00Z".to_string()),
+        };
+        let keys =
+            |v: &Value| -> BTreeSet<String> { v.as_object().unwrap().keys().cloned().collect() };
+        let bare: BTreeSet<String> = ["id", "type", "processed_at"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        // No-payload events: exactly {id, type, processed_at} + the right tag.
+        for (kind, ty) in [
+            (OutboundKind::AgentThinking {}, "agent.thinking"),
+            (
+                OutboundKind::SessionStatusRescheduled {},
+                "session.status_rescheduled",
+            ),
+            (
+                OutboundKind::SpanModelRequestStart {},
+                "span.model_request_start",
+            ),
+        ] {
+            let v = serde_json::to_value(ev(kind)).unwrap();
+            assert_eq!(v["type"], ty);
+            assert_eq!(
+                keys(&v),
+                bare,
+                "{ty} is a bare {{id,type,processed_at}} event"
+            );
+        }
+
+        // thread_status_rescheduled carries the thread's identity.
+        let v = serde_json::to_value(ev(OutboundKind::SessionThreadStatusRescheduled {
+            session_thread_id: "sthr_1".to_string(),
+            agent_name: "researcher".to_string(),
+        }))
+        .unwrap();
+        assert_eq!(v["type"], "session.thread_status_rescheduled");
+        assert_eq!(v["session_thread_id"], "sthr_1");
+        assert_eq!(v["agent_name"], "researcher");
+
+        // model_request_end carries the paired start id, a nullable error flag, and
+        // this single request's token usage (four SDK fields; speed omitted here).
+        let v = serde_json::to_value(ev(OutboundKind::SpanModelRequestEnd {
+            model_request_start_id: "evt_start".to_string(),
+            is_error: None,
+            model_usage: SpanModelUsage {
+                usage: Usage {
+                    input_tokens: 10,
+                    output_tokens: 20,
+                    cache_read_input_tokens: 0,
+                    cache_creation_input_tokens: 0,
+                },
+                speed: None,
+            },
+        }))
+        .unwrap();
+        assert_eq!(v["type"], "span.model_request_end");
+        assert_eq!(v["model_request_start_id"], "evt_start");
+        assert!(
+            v["is_error"].is_null(),
+            "is_error is present and null (SDK: boolean | null)"
+        );
+        assert_eq!(v["model_usage"]["input_tokens"], 10);
+        assert_eq!(v["model_usage"]["output_tokens"], 20);
+        assert!(
+            v["model_usage"].get("speed").is_none(),
+            "speed is omitted when None"
+        );
     }
 }
