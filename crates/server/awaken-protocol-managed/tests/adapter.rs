@@ -8,7 +8,7 @@ use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_protocol_managed::types::StopReason;
 use awaken_protocol_managed::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, ManagedState, OutcomeIteration,
-    OutcomeReport, Pending, RunError, RunErrorKind, SessionRuntime, TurnOutcome, router,
+    OutcomeReport, Pending, RunError, RunErrorKind, SessionRuntime, StepOutcome, router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -68,9 +68,9 @@ impl SessionRuntime for EchoFake {
         _agent: &str,
         _thread: &str,
         content: Vec<ContentBlock>,
-    ) -> Result<TurnOutcome, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         let user_text = Message::new(Id("u".into()), Role::User, content).text_content();
-        Ok(TurnOutcome {
+        Ok(StepOutcome {
             messages: vec![Message::text(
                 Id("a".into()),
                 Role::Assistant,
@@ -87,7 +87,7 @@ impl SessionRuntime for EchoFake {
         _thread: &str,
         _tool_use_id: &str,
         _decision: Decision,
-    ) -> Result<TurnOutcome, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no parked run"))
     }
     async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
@@ -108,7 +108,7 @@ impl SessionRuntime for EchoFake {
         _tool_use_id: &str,
         _content: &str,
         _is_error: bool,
-    ) -> Result<TurnOutcome, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no custom"))
     }
     fn model(&self) -> String {
@@ -126,13 +126,13 @@ impl SessionRuntime for FailingFake {
         _a: &str,
         _t: &str,
         _c: Vec<ContentBlock>,
-    ) -> Result<TurnOutcome, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         Err(match self.0 {
             RunErrorKind::BadRequest => RunError::bad_request("nope"),
             RunErrorKind::Internal => RunError::internal("boom"),
         })
     }
-    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<TurnOutcome, RunError> {
+    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no resume"))
     }
     async fn resume_custom(
@@ -141,7 +141,7 @@ impl SessionRuntime for FailingFake {
         _tid: &str,
         _c: &str,
         _e: bool,
-    ) -> Result<TurnOutcome, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no custom"))
     }
     async fn add_system(&self, _t: &str, _x: &str) -> Result<(), RunError> {
@@ -295,10 +295,10 @@ impl SessionRuntime for CapableFake {
         _a: &str,
         _t: &str,
         _content: Vec<ContentBlock>,
-    ) -> Result<TurnOutcome, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
-    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<TurnOutcome, RunError> {
+    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
     async fn resume_custom(
@@ -307,7 +307,7 @@ impl SessionRuntime for CapableFake {
         _tid: &str,
         _c: &str,
         _e: bool,
-    ) -> Result<TurnOutcome, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
     async fn add_system(&self, _t: &str, _x: &str) -> Result<(), RunError> {
@@ -450,9 +450,9 @@ impl SessionRuntime for ParkingFake {
         _agent: &str,
         _thread: &str,
         _content: Vec<ContentBlock>,
-    ) -> Result<TurnOutcome, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         // The assistant asked to run a tool; the run parked before executing it.
-        Ok(TurnOutcome {
+        Ok(StepOutcome {
             messages: vec![Message {
                 id: Id("a1".into()),
                 role: Role::Assistant,
@@ -480,9 +480,9 @@ impl SessionRuntime for ParkingFake {
         _thread: &str,
         _tool_use_id: &str,
         decision: Decision,
-    ) -> Result<TurnOutcome, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         assert!(decision.allow);
-        Ok(TurnOutcome {
+        Ok(StepOutcome {
             messages: vec![
                 Message {
                     id: Id("t1".into()),
@@ -518,7 +518,7 @@ impl SessionRuntime for ParkingFake {
         _tool_use_id: &str,
         _content: &str,
         _is_error: bool,
-    ) -> Result<TurnOutcome, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no custom"))
     }
     fn model(&self) -> String {
@@ -536,10 +536,10 @@ impl SessionRuntime for OutcomeFake {
         _a: &str,
         _t: &str,
         _c: Vec<ContentBlock>,
-    ) -> Result<TurnOutcome, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no turn"))
     }
-    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<TurnOutcome, RunError> {
+    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no resume"))
     }
     async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
@@ -581,7 +581,7 @@ impl SessionRuntime for OutcomeFake {
         _tool_use_id: &str,
         _content: &str,
         _is_error: bool,
-    ) -> Result<TurnOutcome, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no custom"))
     }
     fn model(&self) -> String {
@@ -749,8 +749,8 @@ impl SessionRuntime for CustomToolFake {
         _a: &str,
         _t: &str,
         _c: Vec<ContentBlock>,
-    ) -> Result<TurnOutcome, RunError> {
-        Ok(TurnOutcome {
+    ) -> Result<StepOutcome, RunError> {
+        Ok(StepOutcome {
             messages: vec![Message {
                 id: Id("a1".into()),
                 role: Role::Assistant,
@@ -773,7 +773,7 @@ impl SessionRuntime for CustomToolFake {
             failure: None,
         })
     }
-    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<TurnOutcome, RunError> {
+    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("expected custom result"))
     }
     async fn resume_custom(
@@ -782,8 +782,8 @@ impl SessionRuntime for CustomToolFake {
         _tid: &str,
         content: &str,
         _e: bool,
-    ) -> Result<TurnOutcome, RunError> {
-        Ok(TurnOutcome {
+    ) -> Result<StepOutcome, RunError> {
+        Ok(StepOutcome {
             messages: vec![
                 Message {
                     id: Id("tr".into()),

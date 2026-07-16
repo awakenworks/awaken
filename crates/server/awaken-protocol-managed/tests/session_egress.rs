@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_protocol_managed::{
     Decision, EnvironmentState, ManagedState, OutcomeReport, RunError, SessionInit, SessionRuntime,
-    TurnOutcome, environments_router, router,
+    StepOutcome, environments_router, router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -34,10 +34,10 @@ impl SessionRuntime for CapturingFake {
         _a: &str,
         _t: &str,
         _c: Vec<ContentBlock>,
-    ) -> Result<TurnOutcome, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
-    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<TurnOutcome, RunError> {
+    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
     async fn resume_custom(
@@ -46,7 +46,7 @@ impl SessionRuntime for CapturingFake {
         _tid: &str,
         _c: &str,
         _e: bool,
-    ) -> Result<TurnOutcome, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
     async fn add_system(&self, _t: &str, _x: &str) -> Result<(), RunError> {

@@ -728,19 +728,25 @@ async fn a_tool_call_streams_to_the_live_sink() {
     let outcome = runtime.execute(activation(), context).await.expect("runs");
     assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
 
-    // The tool call surfaced on the live stream as the turn produced it, with
-    // its tool id and arguments.
+    // The tool call surfaced on the live stream as the run produced it, as
+    // `ToolCallDelta` fragments whose args concatenate to the full input JSON.
     let streamed: Vec<_> = sink
         .events()
         .into_iter()
         .filter_map(|e| match e.kind {
-            StreamKind::ToolCall {
-                tool_id, arguments, ..
-            } => Some((tool_id, arguments)),
+            StreamKind::ToolCallDelta {
+                tool_id,
+                args_delta,
+                ..
+            } => Some((tool_id, args_delta)),
             _ => None,
         })
         .collect();
-    assert_eq!(streamed.len(), 1);
-    assert_eq!(streamed[0].0, "echo");
-    assert_eq!(streamed[0].1, serde_json::json!({"text": "ping"}));
+    assert!(!streamed.is_empty());
+    assert!(streamed.iter().all(|(id, _)| id == "echo"));
+    let joined: String = streamed.iter().map(|(_, d)| d.as_str()).collect();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&joined).unwrap(),
+        serde_json::json!({"text": "ping"})
+    );
 }

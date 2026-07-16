@@ -432,11 +432,12 @@ pub trait DeltaSink: Send + Sync {
     /// never indexes into a chunk by byte.
     async fn on_text(&self, chunk: &str);
 
-    /// A tool call surfaced as the turn produced it. Best-effort live progress;
-    /// the committed call is the one in the returned response, not this. The
-    /// default does nothing, so a sink that only cares about text need not
-    /// implement it.
-    async fn on_tool_call(&self, _call_id: &str, _tool_id: &str, _arguments: &serde_json::Value) {}
+    /// A live increment of a tool call's input — `args_delta` is the NEW fragment
+    /// as the model streams it. The provider adapter de-accumulates its own
+    /// cumulative snapshots, so this is already a suffix and a sink forwards it with
+    /// no diffing. Best-effort live progress; the committed call (parsed input) is in
+    /// the returned response, not this. The default does nothing.
+    async fn on_tool_call_delta(&self, _call_id: &str, _tool_id: &str, _args_delta: &str) {}
 }
 
 /// Provider-adapter port: turn one neutral request into one neutral response.
@@ -460,8 +461,12 @@ pub trait LlmExecutor: Send + Sync {
         if !text.is_empty() {
             sink.on_text(&text).await;
         }
+        // Non-streaming default: emit each tool call's whole input as one delta, the
+        // same shape a streaming provider produces incrementally — so downstream sees
+        // one uniform `ToolCallDelta` regardless of provider streaming support.
         for call in response.output.tool_calls() {
-            sink.on_tool_call(&call.call_id, &call.tool_id, &call.arguments)
+            let args_delta = serde_json::to_string(&call.arguments).unwrap_or_default();
+            sink.on_tool_call_delta(&call.call_id, &call.tool_id, &args_delta)
                 .await;
         }
         Ok(response)

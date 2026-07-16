@@ -11,17 +11,17 @@ impl ManagedState {
     /// order — the buffered `agent.message` events reuse them so a client reconciles
     /// preview → committed by id (empty for resume/non-streamed paths). Every newly
     /// appended event is republished on the live broadcast.
-    fn append_turn(
+    fn append_step(
         &self,
         session_id: &str,
-        outcome: TurnOutcome,
+        outcome: StepOutcome,
         preview_ids: Vec<String>,
     ) -> Result<(), StateError> {
         let pending = outcome
             .pending
             .as_ref()
             .map(|p| (p.tool_use_id.as_str(), p.client_executed));
-        let projected = project_turn(&outcome.messages, outcome.stop, pending);
+        let projected = project_step(&outcome.messages, outcome.stop, pending);
         // Delegation runs inline as an `agent_run` tool call; each one spawns a
         // subagent child thread (ADR-0047 D4). Collect each delegate's name, the
         // input it was sent, and the reply it returned (matched by tool-use id),
@@ -348,7 +348,7 @@ impl ManagedState {
                         .runtime
                         .run_streaming(&agent_id, session_id, content.clone(), sink.clone())
                         .await?;
-                    self.append_turn(session_id, outcome, sink.take_allocated_ids())?;
+                    self.append_step(session_id, outcome, sink.take_allocated_ids())?;
                 }
                 InboundEvent::UserToolConfirmation {
                     tool_use_id,
@@ -363,7 +363,7 @@ impl ManagedState {
                         .runtime
                         .resume(session_id, tool_use_id, decision)
                         .await?;
-                    self.append_turn(session_id, outcome, Vec::new())?;
+                    self.append_step(session_id, outcome, Vec::new())?;
                 }
                 InboundEvent::UserCustomToolResult {
                     custom_tool_use_id,
@@ -375,7 +375,7 @@ impl ManagedState {
                         .runtime
                         .resume_custom(session_id, custom_tool_use_id, &text, *is_error)
                         .await?;
-                    self.append_turn(session_id, outcome, Vec::new())?;
+                    self.append_step(session_id, outcome, Vec::new())?;
                 }
                 // The generic `user.tool_result`: a client-provided result for a
                 // parked tool, keyed by `tool_use_id`. Same delivery as a custom
@@ -390,7 +390,7 @@ impl ManagedState {
                         .runtime
                         .resume_custom(session_id, tool_use_id, &text, *is_error)
                         .await?;
-                    self.append_turn(session_id, outcome, Vec::new())?;
+                    self.append_step(session_id, outcome, Vec::new())?;
                 }
                 InboundEvent::UserDefineOutcome {
                     description,

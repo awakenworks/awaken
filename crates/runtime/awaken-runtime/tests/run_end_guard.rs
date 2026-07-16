@@ -261,7 +261,7 @@ async fn guard_steers_then_completes_and_surfaces_each_round() {
         .committed()
         .events
         .into_iter()
-        .filter(|e| e.kind == awaken_agent_contract::event::kind::Kind::Continuation)
+        .filter(|e| e.kind == awaken_agent_contract::audit::kind::Kind::Continuation)
         .map(|e| e.payload)
         .collect();
     assert_eq!(
