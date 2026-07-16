@@ -38,7 +38,7 @@ pub(crate) fn subrun_sandbox_spec(thread: &str) -> pc::SandboxSpec {
 /// (self-contained — the host already resolved them at staging, `content_hash` is
 /// empty), realized read-write under `.mnt/<logical>` (the Workdir tier cannot
 /// OS-enforce read-only, matching the legacy realization).
-fn mount_to_requirement(mount: &Mount) -> pc::MountRequirement {
+pub(crate) fn mount_to_requirement(mount: &Mount) -> pc::MountRequirement {
     match mount {
         Mount::Resource(r) => pc::MountRequirement {
             mount_id: r.id.clone(),
@@ -117,6 +117,13 @@ impl SharedHost {
             lease_ttl_secs: None,
             extra,
         }
+    }
+
+    /// A shared clone of the thread-resources registry (like [`Self::thread_egress`]),
+    /// so a sandboxed ACP channel source reads the SAME staged mounts the native
+    /// `sandbox_spec` does and carries them into the bwrap/container sandbox.
+    pub(crate) fn thread_resources_handle(&self) -> crate::sandbox_source::ThreadResources {
+        crate::sandbox_source::ThreadResources::new(self.thread_resources.clone())
     }
 
     /// Stage a thread's resources (mounts + prompt fragments); consumed by

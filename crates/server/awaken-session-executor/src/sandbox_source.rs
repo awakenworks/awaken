@@ -124,6 +124,40 @@ impl ThreadEgress {
 /// across relaunches and machines regardless of the host workspace path.
 const SANDBOX_WORKSPACE: &str = "/workspace";
 
+/// A shared clone of the host's per-thread staged-resource registry (ADR-0038), so a
+/// sandboxed source carries the SAME file/resource mounts the native `sandbox_spec`
+/// does into the bwrap sandbox it launches the CLI in. Opaque like [`ThreadEgress`] —
+/// the internal `StagedResources` never crosses the public boundary.
+#[derive(Clone, Default)]
+pub struct ThreadResources(Arc<Mutex<HashMap<String, crate::provisioning::StagedResources>>>);
+
+impl ThreadResources {
+    /// Wrap the host's registry handle (the same `Arc` `sandbox_spec` reads).
+    pub(crate) fn new(
+        inner: Arc<Mutex<HashMap<String, crate::provisioning::StagedResources>>>,
+    ) -> Self {
+        Self(inner)
+    }
+
+    /// The staged file/resource mounts for `thread`, mapped to the neutral
+    /// [`pc::MountRequirement`] the bwrap provider realizes (reusing the native path's
+    /// `mount_to_requirement`). Empty when none are staged.
+    fn mounts_for(&self, thread: &str) -> Vec<pc::MountRequirement> {
+        self.0
+            .lock()
+            .ok()
+            .and_then(|g| {
+                g.get(thread).map(|s| {
+                    s.mounts
+                        .iter()
+                        .map(crate::provisioning::mount_to_requirement)
+                        .collect()
+                })
+            })
+            .unwrap_or_default()
+    }
+}
+
 /// Opens each run's [`AgentSession`] inside a fresh namespace-tier sandbox: build
 /// the spec from the activation's thread (scope + egress policy), realize it, and
 /// `spawn_agent` the launch's argv under bwrap with piped stdio.
@@ -132,6 +166,9 @@ pub struct SandboxChannelSource {
     launch: LaunchSource,
     egress: ThreadEgress,
     codec: awaken_run_executor_acp::Codec,
+    /// The host's staged-resource registry (files/resources → sandbox mounts). `None`
+    /// carries no resources (the trusted/test path); the production host wires it.
+    resources: Option<ThreadResources>,
 }
 
 impl SandboxChannelSource {
@@ -145,6 +182,7 @@ impl SandboxChannelSource {
             launch: LaunchSource::Fixed(launch),
             egress: ThreadEgress::default(),
             codec: awaken_run_executor_acp::Codec::Newline,
+            resources: None,
         }
     }
 
@@ -161,6 +199,7 @@ impl SandboxChannelSource {
             launch: LaunchSource::Projected { cli, resolver },
             egress: ThreadEgress::default(),
             codec: awaken_run_executor_acp::Codec::Acp,
+            resources: None,
         }
     }
 
@@ -189,8 +228,26 @@ impl SandboxChannelSource {
         self
     }
 
+    /// Carry the host's staged resource mounts (ADR-0038 files/resources) into the
+    /// bwrap sandbox — the SAME registry the native `sandbox_spec` reads, so a resource
+    /// bound to a session reaches the isolated ACP CLI, not only the in-process Workdir.
+    #[must_use]
+    pub fn with_thread_resources(mut self, resources: ThreadResources) -> Self {
+        self.resources = Some(resources);
+        self
+    }
+
+    /// The staged file/resource mounts for `thread`. Empty when no registry is wired.
+    fn resource_mounts(&self, thread: &str) -> Vec<pc::MountRequirement> {
+        self.resources
+            .as_ref()
+            .map(|r| r.mounts_for(thread))
+            .unwrap_or_default()
+    }
+
     /// The provisioning request for one run: sandbox scoped to the thread (so a
-    /// multi-turn session reuses one workspace), network from its registration.
+    /// multi-turn session reuses one workspace), network from its registration, and the
+    /// session's staged file/resource mounts (ADR-0038) bound into the bwrap interior.
     fn spec(&self, thread: &str) -> pc::SandboxSpec {
         let network = if self.egress.denies(thread) {
             pc::NetworkPolicy::None
@@ -200,7 +257,7 @@ impl SandboxChannelSource {
         pc::SandboxSpec {
             scope: thread.to_string(),
             isolation: pc::IsolationClass::Namespace,
-            mounts: Vec::new(),
+            mounts: self.resource_mounts(thread),
             env: Vec::new(),
             network,
             outputs_path: "/mnt/session/outputs".to_string(),
@@ -422,6 +479,7 @@ pub async fn build_acp_channel_source(
     image: Option<&str>,
     source: LaunchSource,
     egress: ThreadEgress,
+    resources: ThreadResources,
     namespace_base: std::path::PathBuf,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
     use crate::deployment_config::SandboxTier;
@@ -430,7 +488,9 @@ pub async fn build_acp_channel_source(
         // the same environment-agnostic executor over an unsandboxed source (ADR-0057).
         SandboxTier::Local => Ok(local_source(source)),
         SandboxTier::Namespace => Ok(Arc::new(
-            SandboxChannelSource::from_source(namespace_base, source).with_thread_egress(egress),
+            SandboxChannelSource::from_source(namespace_base, source)
+                .with_thread_egress(egress)
+                .with_thread_resources(resources),
         )),
         SandboxTier::Docker => build_docker_source(image, source, egress),
         SandboxTier::Podman => build_podman_source(image, source, egress),
@@ -569,6 +629,38 @@ mod tests {
 
     fn base() -> std::path::PathBuf {
         std::env::temp_dir().join(format!("awaken-sbxsrc-ut-{}", std::process::id()))
+    }
+
+    #[test]
+    fn spec_carries_the_thread_staged_resource_mounts_into_the_sandbox() {
+        // ADR-0038 resources bound to a session must reach the isolated ACP sandbox,
+        // not only the in-process Workdir — the same registry the native sandbox_spec
+        // reads, mapped to bwrap-realizable mounts.
+        use awaken_sandbox_local::{Mount, ResourceMount};
+        let registry = ThreadResources::default();
+        registry.0.lock().unwrap().insert(
+            "t1".to_string(),
+            crate::provisioning::StagedResources {
+                mounts: vec![Mount::Resource(ResourceMount {
+                    id: "id-data".into(),
+                    content_hash: String::new(),
+                    logical_path: "data.csv".into(),
+                    content: "a,b\n".into(),
+                })],
+                ..Default::default()
+            },
+        );
+        let src = SandboxChannelSource::new(base(), AcpLaunch::custom(vec!["a".into()], vec![]))
+            .with_thread_resources(registry);
+        let spec = src.spec("t1");
+        assert_eq!(
+            spec.mounts.len(),
+            1,
+            "the staged resource reaches the sandbox spec"
+        );
+        assert_eq!(spec.mounts[0].mount_path, ".mnt/data.csv");
+        // A thread with nothing staged mounts nothing.
+        assert!(src.spec("other").mounts.is_empty());
     }
 
     #[test]
@@ -843,6 +935,7 @@ mod tests {
             None,
             LaunchSource::Fixed(AcpLaunch::custom(vec!["claude".into()], vec![])),
             ThreadEgress::new(),
+            ThreadResources::default(),
             base(),
         )
         .await;
@@ -859,6 +952,7 @@ mod tests {
             None,
             LaunchSource::Fixed(AcpLaunch::custom(vec!["claude".into()], vec![])),
             ThreadEgress::new(),
+            ThreadResources::default(),
             base(),
         )
         .await;
@@ -876,6 +970,7 @@ mod tests {
                 Some("ghcr.io/x/agent:1"),
                 LaunchSource::Fixed(AcpLaunch::custom(vec!["claude".into()], vec![])),
                 ThreadEgress::new(),
+                ThreadResources::default(),
                 base(),
             )
             .await;
