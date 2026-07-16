@@ -18,6 +18,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
+// Re-exported so a host composing an [`AgentSession`] can name the channel type without
+// a direct dependency on the foundational channel crate (crate-boundary compliant).
+pub use awaken_agent_channel::AgentChannel as AgentChannelType;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::run::{EndCause, Failure, Phase};
