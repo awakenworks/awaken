@@ -15,20 +15,45 @@ use std::sync::{Arc, Mutex};
 use awaken_config_resolver::ResourceStore;
 use awaken_config_store::ModelSelection;
 
-/// Fill `plugin_config["compact"]["max_tokens"]` from the resolved model's context
-/// window when the agent enabled compaction but didn't pin a window (E:
-/// `CompactConfig::effective_max_tokens`). Never *creates* a `compact` section — an
-/// agent that didn't opt into compaction stays untouched.
-fn apply_default_compact_window(
+/// Stamp the agent's effective compaction trigger into BOTH realizations' `plugin_config`
+/// slots so native and ACP agree on one window (decided once, at publish, from the resolved
+/// model). The trigger is [`CompactionStrategy::effective_window`] over the model
+/// (`context_window` − `max_output_tokens` headroom, clamped; the agent may override).
+///
+/// - **Native** (`plugin_config["compact"]`): the compact ext folds at `trigger_ratio ×
+///   max_tokens`, so set `max_tokens` to the effective trigger and `trigger_ratio = 1.0` — the
+///   fold point IS the trigger (headroom + ratio are already baked into it).
+/// - **ACP** (`plugin_config["acp"]["compact_window"]`): the external CLI's own auto-compact.
+///
+/// Never *creates* a section (an agent that opted into neither realization stays untouched)
+/// and never overrides an operator-pinned value.
+fn apply_compaction(
     plugin_config: &mut std::collections::BTreeMap<String, serde_json::Value>,
-    model_window: u32,
+    strategy: &awaken_config_store::CompactionStrategy,
+    context_window: Option<u32>,
+    max_output_tokens: Option<u32>,
 ) {
+    let Some(eff) = strategy.effective_window(context_window, max_output_tokens) else {
+        return;
+    };
     if let Some(obj) = plugin_config
         .get_mut("compact")
         .and_then(|v| v.as_object_mut())
-        && obj.get("max_tokens").is_none_or(|v| v.is_null())
     {
-        obj.insert("max_tokens".to_string(), serde_json::json!(model_window));
+        if obj.get("max_tokens").is_none_or(|v| v.is_null()) {
+            obj.insert("max_tokens".to_string(), serde_json::json!(eff));
+            obj.insert("trigger_ratio".to_string(), serde_json::json!(1.0));
+        }
+        if let Some(keep) = strategy.keep_recent
+            && obj.get("keep_last").is_none_or(|v| v.is_null())
+        {
+            obj.insert("keep_last".to_string(), serde_json::json!(keep));
+        }
+    }
+    if let Some(obj) = plugin_config.get_mut("acp").and_then(|v| v.as_object_mut())
+        && obj.get("compact_window").is_none_or(|v| v.is_null())
+    {
+        obj.insert("compact_window".to_string(), serde_json::json!(eff));
     }
 }
 use awaken_config_store::{
@@ -238,15 +263,21 @@ impl ConfigService {
             config.model_binding = ModelSelection::Pinned(resolved.primary);
             config.model_candidates = resolved.candidates;
         }
-        // Compaction window inherits the model attribute (E): if the agent didn't pin a
-        // `compact.max_tokens`, default it to the resolved model's published context
-        // window from the catalog. Baked into the content-addressed config at publish,
-        // so it is reproducible and re-baked by the reconciler on a catalog change.
+        // Compaction is the AGENT's policy over the model's capability: derive the effective
+        // trigger from the resolved model (`context_window` − output headroom, the agent may
+        // override) and stamp it into both realizations (native compact ext + ACP CLI). Baked
+        // into the content-addressed config at publish, re-baked by the reconciler on a catalog
+        // change. An unresolved model / no window simply leaves the authored config untouched.
         if let Some(resolver) = self.model_resolver.as_ref()
             && let Some(model_id) = config.model_binding.resolved().map(|b| b.model_ref.clone())
-            && let Some(window) = resolver.context_window(&model_id)
         {
-            apply_default_compact_window(&mut config.plugin_config, window);
+            let strategy = config.compaction.clone().unwrap_or_default();
+            apply_compaction(
+                &mut config.plugin_config,
+                &strategy,
+                resolver.context_window(&model_id),
+                resolver.max_output_tokens(&model_id),
+            );
         }
         Ok(config)
     }
@@ -613,6 +644,10 @@ fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig, St
         skills: array("skills"),
         multiagent: body.get("multiagent").filter(|v| !v.is_null()).cloned(),
         tool_overrides,
+        compaction: body
+            .get("compaction")
+            .filter(|v| !v.is_null())
+            .and_then(|v| serde_json::from_value(v.clone()).ok()),
     })
 }
 
@@ -901,7 +936,7 @@ mod resource_prompt_tests {
     }
 
     #[test]
-    fn resolve_for_compile_defaults_the_compact_window_from_the_model_attribute() {
+    fn resolve_for_compile_derives_the_effective_compaction_window_for_both_realizations() {
         struct WindowResolver;
         impl ModelResolver for WindowResolver {
             fn resolve_auto(&self) -> Result<ResolvedModel, String> {
@@ -913,38 +948,70 @@ mod resource_prompt_tests {
             fn context_window(&self, model_id: &str) -> Option<u32> {
                 (model_id == "m-x").then_some(200_000)
             }
+            fn max_output_tokens(&self, model_id: &str) -> Option<u32> {
+                (model_id == "m-x").then_some(40_000)
+            }
         }
         let service = ConfigService::new().with_model_resolver(Arc::new(WindowResolver));
         let pin = || ModelSelection::Pinned(ModelBinding::new("p", "m-x", "b"));
+        // Usable budget = context_window − max_output_tokens = 200k − 40k = 160k;
+        // default trigger = 3/4 × 160k = 120k.
 
-        // Compaction enabled, window unset → inherits the model's context window.
+        // NATIVE (compact section, no agent override): the effective window at ratio 1.0 —
+        // the fold point IS the trigger (headroom + ratio already baked in).
         let mut cfg = agent_config("a1");
         cfg.model_binding = pin();
         cfg.plugin_config
             .insert("compact".into(), serde_json::json!({ "keep_last": 4 }));
         let out = service.resolve_for_compile(cfg).unwrap();
-        assert_eq!(out.plugin_config["compact"]["max_tokens"], 200_000);
+        assert_eq!(out.plugin_config["compact"]["max_tokens"], 120_000);
+        assert_eq!(out.plugin_config["compact"]["trigger_ratio"], 1.0);
 
-        // An explicit override is never clobbered.
+        // ACP (acp section): the same effective window flows to the CLI's compact_window.
+        let mut cfg_acp = agent_config("a-acp");
+        cfg_acp.model_binding = pin();
+        cfg_acp
+            .plugin_config
+            .insert("acp".into(), serde_json::json!({}));
+        let out_acp = service.resolve_for_compile(cfg_acp).unwrap();
+        assert_eq!(out_acp.plugin_config["acp"]["compact_window"], 120_000);
+
+        // Agent OVERRIDE (under budget) is honored verbatim, in BOTH realizations.
         let mut cfg2 = agent_config("a2");
         cfg2.model_binding = pin();
+        cfg2.compaction = Some(awaken_config_store::CompactionStrategy {
+            window: Some(90_000),
+            keep_recent: None,
+        });
         cfg2.plugin_config
+            .insert("compact".into(), serde_json::json!({}));
+        cfg2.plugin_config
+            .insert("acp".into(), serde_json::json!({}));
+        let out2 = service.resolve_for_compile(cfg2).unwrap();
+        assert_eq!(out2.plugin_config["compact"]["max_tokens"], 90_000);
+        assert_eq!(out2.plugin_config["acp"]["compact_window"], 90_000);
+
+        // An operator-pinned compact.max_tokens is never clobbered.
+        let mut cfg3 = agent_config("a3");
+        cfg3.model_binding = pin();
+        cfg3.plugin_config
             .insert("compact".into(), serde_json::json!({ "max_tokens": 50 }));
         assert_eq!(
-            service.resolve_for_compile(cfg2).unwrap().plugin_config["compact"]["max_tokens"],
+            service.resolve_for_compile(cfg3).unwrap().plugin_config["compact"]["max_tokens"],
             50
         );
 
-        // No compact section → untouched (compaction was not enabled).
-        let mut cfg3 = agent_config("a3");
-        cfg3.model_binding = pin();
-        let out3 = service.resolve_for_compile(cfg3).unwrap();
-        assert!(!out3.plugin_config.contains_key("compact"));
+        // No compact/acp section → untouched (neither realization was opted into).
+        let mut cfg4 = agent_config("a4");
+        cfg4.model_binding = pin();
+        let out4 = service.resolve_for_compile(cfg4).unwrap();
+        assert!(!out4.plugin_config.contains_key("compact"));
+        assert!(!out4.plugin_config.contains_key("acp"));
     }
 
     // CEG F11d: a `compact` value that is present but NOT a JSON object (here a
-    // bare string) is a no-op — `apply_default_compact_window` only reaches into an
-    // object, so a malformed section is left byte-identical and no window injected.
+    // bare string) is a no-op — `apply_compaction` only reaches into an object, so a
+    // malformed section is left byte-identical and no window injected.
     #[test]
     fn resolve_for_compile_leaves_a_non_object_compact_untouched() {
         struct WindowResolver;

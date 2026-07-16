@@ -40,6 +40,13 @@ pub trait ModelResolver: Send + Sync {
     fn context_window(&self, _model_id: &str) -> Option<u32> {
         None
     }
+
+    /// The published output-token ceiling of a resolved model, when the catalog carries it —
+    /// the headroom `resolve_for_compile` reserves when deriving the compaction window. `None`
+    /// (no attribute) simply omits the headroom (window derives from `context_window` alone).
+    fn max_output_tokens(&self, _model_id: &str) -> Option<u32> {
+        None
+    }
 }
 
 /// The freshness seam (ADR-0052 D5): the model-catalog write path calls this after a

@@ -161,6 +161,52 @@ pub struct AgentConfig {
     /// byte-identical; a non-empty set enters the content address like any other field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_overrides: Vec<ToolOverride>,
+    /// The agent's compaction strategy (WHEN to compact) over the model's context window.
+    /// Appended last with `skip_serializing_if`-none so an agent that sets none serializes to
+    /// nothing and keeps its prior fingerprint byte-identical. At publish, the effective
+    /// trigger is derived from the resolved model (`context_window` − `max_output_tokens`
+    /// headroom) and stamped into both realizations' `plugin_config` slots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<CompactionStrategy>,
+}
+
+/// An agent's compaction **strategy** — WHEN to compact its context. This is authored agent
+/// config: the model provides the context-length *capability* (`context_window`); the agent
+/// decides the *trigger* within it, optionally overriding the derived default. The runtime
+/// never sees this type — at publish the effective window is computed and stamped into
+/// `plugin_config` (native compact ext + ACP `compact_window`), which is what realizers read.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionStrategy {
+    /// The agent's chosen trigger window in tokens; `None` derives it from the model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<u32>,
+    /// Recent turns kept verbatim past the injected summary; `None` uses the realizer default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_recent: Option<u32>,
+}
+
+impl CompactionStrategy {
+    /// The effective compaction trigger from a model's window attributes — the value both
+    /// realizations use (native `compact.max_tokens` at ratio 1.0, ACP `compact_window`):
+    /// - the agent's `window` is honored but **clamped** to the usable input budget
+    ///   (`context_window` − the reserved output ceiling `max_output_tokens`), so input +
+    ///   output never exceeds the model's limit;
+    /// - unset, it defaults to 3/4 of that usable budget;
+    /// - `None` when the model publishes no `context_window` and the agent set none (no basis).
+    #[must_use]
+    pub fn effective_window(
+        &self,
+        context_window: Option<u32>,
+        max_output_tokens: Option<u32>,
+    ) -> Option<u32> {
+        let budget = context_window.map(|cw| cw.saturating_sub(max_output_tokens.unwrap_or(0)));
+        match (self.window, budget) {
+            (Some(w), Some(b)) => Some(w.min(b)),
+            (Some(w), None) => Some(w),
+            (None, Some(b)) => Some(b / 4 * 3),
+            (None, None) => None,
+        }
+    }
 }
 
 /// A per-tool presentation override (ADR-0053): rename and/or re-describe a selected
@@ -178,4 +224,57 @@ pub struct ToolOverride {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub defer: bool,
+}
+
+#[cfg(test)]
+mod compaction_tests {
+    use super::CompactionStrategy;
+
+    #[test]
+    fn effective_window_defaults_to_three_quarters_of_the_usable_budget() {
+        // Usable budget = context_window − max_output_tokens = 100k − 20k = 80k; default 3/4.
+        let s = CompactionStrategy::default();
+        assert_eq!(
+            s.effective_window(Some(100_000), Some(20_000)),
+            Some(60_000)
+        );
+    }
+
+    #[test]
+    fn effective_window_honors_the_override_but_clamps_to_the_budget() {
+        let under = CompactionStrategy {
+            window: Some(50_000),
+            keep_recent: None,
+        };
+        assert_eq!(
+            under.effective_window(Some(100_000), Some(20_000)),
+            Some(50_000)
+        );
+        // Over the usable budget → clamped (input + output can't exceed the model's limit).
+        let over = CompactionStrategy {
+            window: Some(500_000),
+            keep_recent: None,
+        };
+        assert_eq!(
+            over.effective_window(Some(100_000), Some(20_000)),
+            Some(80_000)
+        );
+    }
+
+    #[test]
+    fn effective_window_trusts_the_agent_when_the_model_publishes_no_window() {
+        assert_eq!(
+            CompactionStrategy {
+                window: Some(40_000),
+                keep_recent: None
+            }
+            .effective_window(None, None),
+            Some(40_000)
+        );
+        // No model budget AND no agent choice → no basis to compact.
+        assert_eq!(
+            CompactionStrategy::default().effective_window(None, None),
+            None
+        );
+    }
 }

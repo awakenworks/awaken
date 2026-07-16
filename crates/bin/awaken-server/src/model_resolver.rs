@@ -74,6 +74,10 @@ impl ModelResolver for CatalogModelResolver {
         self.snapshot().ok()?.context_window(model_id)
     }
 
+    fn max_output_tokens(&self, model_id: &str) -> Option<u32> {
+        self.snapshot().ok()?.max_output_tokens(model_id)
+    }
+
     fn resolve_auto(&self) -> Result<ResolvedModel, String> {
         let catalog = self.snapshot()?;
         let mut offerings = catalog.offerings.iter();
