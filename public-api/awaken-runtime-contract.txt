@@ -98,6 +98,8 @@ pub awaken_runtime_contract::catalog::RuntimeCatalogInstall::capabilities: awake
 pub awaken_runtime_contract::catalog::RuntimeCatalogInstall::fingerprint: awaken_runtime_contract::resolved::CatalogFingerprint
 pub awaken_runtime_contract::catalog::RuntimeCatalogInstall::publication_id: alloc::string::String
 pub awaken_runtime_contract::catalog::RuntimeCatalogInstall::source_revisions: alloc::vec::Vec<alloc::string::String>
+impl awaken_runtime_contract::catalog::RuntimeCatalogInstall
+pub fn awaken_runtime_contract::catalog::RuntimeCatalogInstall::from_snapshot(&awaken_runtime_contract::snapshot::ExecutableAgentSnapshot) -> Self
 pub trait awaken_runtime_contract::catalog::RuntimeCatalogInstaller
 pub fn awaken_runtime_contract::catalog::RuntimeCatalogInstaller::install_catalog(&self, awaken_runtime_contract::catalog::RuntimeCatalogInstall) -> core::result::Result<awaken_runtime_contract::catalog::InstalledCatalog, awaken_runtime_contract::catalog::Error>
 pub mod awaken_runtime_contract::control
@@ -1012,6 +1014,8 @@ pub awaken_runtime_contract::RuntimeCatalogInstall::capabilities: awaken_runtime
 pub awaken_runtime_contract::RuntimeCatalogInstall::fingerprint: awaken_runtime_contract::resolved::CatalogFingerprint
 pub awaken_runtime_contract::RuntimeCatalogInstall::publication_id: alloc::string::String
 pub awaken_runtime_contract::RuntimeCatalogInstall::source_revisions: alloc::vec::Vec<alloc::string::String>
+impl awaken_runtime_contract::catalog::RuntimeCatalogInstall
+pub fn awaken_runtime_contract::catalog::RuntimeCatalogInstall::from_snapshot(&awaken_runtime_contract::snapshot::ExecutableAgentSnapshot) -> Self
 pub struct awaken_runtime_contract::RuntimeRunContext
 pub awaken_runtime_contract::RuntimeRunContext::cancellation: core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
 pub awaken_runtime_contract::RuntimeRunContext::capture: awaken_runtime_contract::runtime_context::CaptureContext
