@@ -12,53 +12,9 @@ use serde_json::Value;
 use crate::agent::content::ContentBlock;
 use crate::agent::message::{Message, Role};
 use crate::agent::run::{EndCause, Phase};
-
-/// How a tool call was dispatched, as seen at projection time. This is the only
-/// place the "who runs the tool" distinction is carried; each transcoder maps it
-/// to its own tool-part shape.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ToolDisposition {
-    /// The tool ran server-side; a [`AgentEvent::ToolResult`] follows.
-    Executed,
-    /// A client-executed tool the run parked on; the client runs it and returns
-    /// the result.
-    PendingClient,
-    /// A built-in tool the run parked on, awaiting a permission decision.
-    PendingBuiltin,
-}
-
-/// One neutral projection event. Carries no protocol vocabulary.
-#[derive(Debug, Clone, PartialEq)]
-pub enum AgentEvent {
-    /// The step began (a run/turn boundary).
-    RunStarted,
-    /// An assistant message's text content (text blocks only).
-    AssistantMessage {
-        id: String,
-        content: Vec<ContentBlock>,
-    },
-    /// The assistant called a tool.
-    ToolCall {
-        id: String,
-        name: String,
-        input: Value,
-        disposition: ToolDisposition,
-    },
-    /// A tool produced a result.
-    ToolResult {
-        id: String,
-        content: Vec<ContentBlock>,
-        is_error: bool,
-    },
-    /// The step parked awaiting a decision on the named pending tool.
-    Waiting { pending_tool_use_id: Option<String> },
-    /// The step reached a natural or budget-exhausted terminus.
-    RunFinished { exhausted: bool },
-    /// The run ended on an execution fault. `code` is the fault's stable
-    /// snake_case classification (e.g. `unauthorized`, `context_overflow`),
-    /// so a host can categorize the failure without parsing `message`.
-    RunFailed { code: String, message: String },
-}
+// The neutral committed-event vocabulary now lives in `event`; the fold produces
+// it. `AgentEvent` here is the committed tier (ADR-0058, Axis 2).
+pub use crate::event::{Committed as AgentEvent, ToolDisposition};
 
 /// Transcode neutral projection events into a protocol's wire events. One impl per
 /// protocol — the only per-protocol part of the projection pipeline. `&mut self`

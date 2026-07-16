@@ -24,9 +24,9 @@ use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{Id as RunId, Phase, Record as RunRecord};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::WaitingTicket;
+use awaken_agent_contract::audit::record::Record as EventRecord;
 use awaken_agent_contract::commit::coordinator::{Coordinator as CommitCoordinator, Error};
 use awaken_agent_contract::commit::staged::{CommitRecord, ThreadCommit};
-use awaken_agent_contract::event::record::Record as EventRecord;
 use awaken_agent_contract::store::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::store::run_store::RunStore;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
@@ -148,7 +148,7 @@ impl SqliteCommitCoordinator {
     /// materialize events), so the outcome-round history survives a restart.
     pub fn continuation_payloads(&self, thread: &ThreadId) -> Vec<serde_json::Value> {
         let kind =
-            match serde_json::to_string(&awaken_agent_contract::event::kind::Kind::Continuation) {
+            match serde_json::to_string(&awaken_agent_contract::audit::kind::Kind::Continuation) {
                 Ok(kind) => kind,
                 Err(_) => return Vec::new(),
             };

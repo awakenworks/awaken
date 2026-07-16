@@ -10,7 +10,7 @@ use awaken_credential_vault::InMemorySecretStore;
 use awaken_credential_vault::repo::InMemoryCredentialRepo;
 use awaken_protocol_managed::{
     Decision, ManagedState, OutcomeReport, RunError, RunErrorKind, SessionInit,
-    SessionLifecycleSink, SessionRuntime, TurnOutcome, VaultState, router, vault_router,
+    SessionLifecycleSink, SessionRuntime, StepOutcome, VaultState, router, vault_router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -41,10 +41,10 @@ impl SessionRuntime for PreparingFake {
         _a: &str,
         _t: &str,
         _c: Vec<ContentBlock>,
-    ) -> Result<TurnOutcome, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
-    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<TurnOutcome, RunError> {
+    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
     async fn resume_custom(
@@ -53,7 +53,7 @@ impl SessionRuntime for PreparingFake {
         _tid: &str,
         _c: &str,
         _e: bool,
-    ) -> Result<TurnOutcome, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
     async fn add_system(&self, _t: &str, _x: &str) -> Result<(), RunError> {
@@ -409,7 +409,7 @@ async fn minting_skips_session_ids_that_own_committed_truth() {
             _agent: &str,
             _thread: &str,
             _content: Vec<ContentBlock>,
-        ) -> Result<TurnOutcome, RunError> {
+        ) -> Result<StepOutcome, RunError> {
             unreachable!("no turn in this test")
         }
         async fn resume(
@@ -417,7 +417,7 @@ async fn minting_skips_session_ids_that_own_committed_truth() {
             _thread: &str,
             _tool_use_id: &str,
             _decision: Decision,
-        ) -> Result<TurnOutcome, RunError> {
+        ) -> Result<StepOutcome, RunError> {
             unreachable!()
         }
         async fn resume_custom(
@@ -426,7 +426,7 @@ async fn minting_skips_session_ids_that_own_committed_truth() {
             _tool_use_id: &str,
             _content: &str,
             _is_error: bool,
-        ) -> Result<TurnOutcome, RunError> {
+        ) -> Result<StepOutcome, RunError> {
             unreachable!()
         }
         async fn owns_thread(&self, thread: &str) -> bool {

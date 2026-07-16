@@ -8,7 +8,7 @@
 //! Each contiguous text run opens one previewed `agent.message`: the sink mints
 //! that message's committed id up front (from the shared event-id counter) so
 //! `event_start.event.id` equals the id the buffered `agent.message` will carry,
-//! and records the minted ids in order so `append_turn` reuses them for the
+//! and records the minted ids in order so `append_step` reuses them for the
 //! committed messages — letting the SDK reconcile preview → buffered by id.
 //! Previews are best-effort: a failed broadcast never touches committed truth.
 
@@ -36,7 +36,7 @@ struct Inner {
     /// call / terminal kind closes the run.
     open_id: Option<String>,
     /// The ids minted for each previewed message, in order — consumed by
-    /// `append_turn` so the committed `agent.message` events reuse them.
+    /// `append_step` so the committed `agent.message` events reuse them.
     allocated: Vec<String>,
 }
 
@@ -50,7 +50,7 @@ impl PreviewSink {
     }
 
     /// The ids minted for previewed `agent.message` events, in emission order,
-    /// draining the record. `append_turn` assigns these to the buffered messages
+    /// draining the record. `append_step` assigns these to the buffered messages
     /// so a preview and its committed event share an id.
     pub fn take_allocated_ids(&self) -> Vec<String> {
         std::mem::take(&mut self.inner.lock().unwrap().allocated)
@@ -102,7 +102,7 @@ impl Sink for PreviewSink {
             // A tool call, or any control/terminal kind, closes the current text
             // run; the next text opens a fresh previewed message. Tool use is
             // never previewed (matches the official wire).
-            Kind::ToolCall { .. }
+            Kind::ToolCallDelta { .. }
             | Kind::Waiting { .. }
             | Kind::Continuation { .. }
             | Kind::RunStarted
@@ -119,7 +119,6 @@ impl Sink for PreviewSink {
 mod tests {
     use super::*;
     use awaken_agent_contract::agent::run::Id as RunId;
-    use serde_json::json;
 
     fn ev(kind: Kind) -> StreamEvent {
         StreamEvent {
@@ -192,10 +191,10 @@ mod tests {
             Kind::OutputText {
                 text: "before".into(),
             },
-            Kind::ToolCall {
+            Kind::ToolCallDelta {
                 call_id: "c1".into(),
                 tool_id: "read".into(),
-                arguments: json!("{}"),
+                args_delta: "{}".into(),
             },
             Kind::OutputText {
                 text: "after".into(),
@@ -216,10 +215,10 @@ mod tests {
 
     #[tokio::test]
     async fn tool_use_is_never_previewed() {
-        let (frames, ids) = drive(&[Kind::ToolCall {
+        let (frames, ids) = drive(&[Kind::ToolCallDelta {
             call_id: "c1".into(),
             tool_id: "read".into(),
-            arguments: json!("{\"path\":\"x\"}"),
+            args_delta: "{\"path\":\"x\"}".into(),
         }])
         .await;
         assert!(preview(&frames).is_empty(), "no preview for a tool call");

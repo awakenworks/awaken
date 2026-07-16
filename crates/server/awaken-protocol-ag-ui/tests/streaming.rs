@@ -46,20 +46,20 @@ impl ProtocolRuntime for StreamingMock {
             Kind::OutputText {
                 text: "reading ".into(),
             },
-            Kind::ToolCall {
+            Kind::ToolCallDelta {
                 call_id: "c1".into(),
                 tool_id: "read".into(),
-                arguments: json!(""),
+                args_delta: "".into(),
             },
-            Kind::ToolCall {
+            Kind::ToolCallDelta {
                 call_id: "c1".into(),
                 tool_id: "read".into(),
-                arguments: json!("{\"path\":"),
+                args_delta: "{\"path\":".into(),
             },
-            Kind::ToolCall {
+            Kind::ToolCallDelta {
                 call_id: "c1".into(),
                 tool_id: "read".into(),
-                arguments: json!("{\"path\":\"x\"}"),
+                args_delta: "\"x\"}".into(),
             },
             Kind::RunFinished,
         ] {

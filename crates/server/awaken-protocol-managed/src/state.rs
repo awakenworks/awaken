@@ -19,7 +19,7 @@ use awaken_credential_vault::CredentialSourceId;
 
 use crate::ext::AwakenModelSelection;
 use crate::preview::PreviewSink;
-use crate::project::{self, project_messages, project_turn};
+use crate::project::{self, project_messages, project_step};
 use crate::routes::vaults::{McpRefreshBinding, VaultState};
 use crate::session_repo::{InMemorySessionRepository, ManagedSessionRepository, PersistedSession};
 use crate::types::{
@@ -57,7 +57,7 @@ pub(crate) use resource::{parse_session_resource, resource_dto};
 pub use types::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, McpServerBinding, OutcomeIteration, OutcomeReport, Pending, RunError,
-    RunErrorKind, SessionInit, SessionRuntime, SessionUsage, TurnFailure, TurnOutcome,
+    RunErrorKind, SessionInit, SessionRuntime, SessionUsage, StepFailure, StepOutcome,
 };
 
 struct SessionRecord {
@@ -112,7 +112,7 @@ pub struct ManagedState {
     /// Shared with each turn's [`PreviewSink`] so a preview's minted `agent.message`
     /// id is drawn from the same `evt_N` sequence the committed event carries.
     event_seq: Arc<AtomicU64>,
-    /// Per-session live SSE broadcast: `append_turn`/`append_outcome` publish
+    /// Per-session live SSE broadcast: `append_step`/`append_outcome` publish
     /// committed [`Event`]s here (Phase 1) and each turn's `PreviewSink` publishes
     /// `event_start`/`event_delta` previews (Phase 2). A `stream_events` connection
     /// subscribes; senders are created lazily on first publish/subscribe and never
@@ -311,7 +311,7 @@ mod tests {
             _agent: &str,
             _thread: &str,
             _content: Vec<ContentBlock>,
-        ) -> Result<TurnOutcome, RunError> {
+        ) -> Result<StepOutcome, RunError> {
             unreachable!()
         }
         async fn resume(
@@ -319,7 +319,7 @@ mod tests {
             _thread: &str,
             _tool_use_id: &str,
             _decision: Decision,
-        ) -> Result<TurnOutcome, RunError> {
+        ) -> Result<StepOutcome, RunError> {
             unreachable!()
         }
         async fn resume_custom(
@@ -328,7 +328,7 @@ mod tests {
             _tool_use_id: &str,
             _content: &str,
             _is_error: bool,
-        ) -> Result<TurnOutcome, RunError> {
+        ) -> Result<StepOutcome, RunError> {
             unreachable!()
         }
         async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {

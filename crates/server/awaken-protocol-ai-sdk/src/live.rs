@@ -7,23 +7,15 @@
 //! never becomes the source of truth (G10/G13). The channel adapter itself is the
 //! shared [`awaken_protocol_transport::ChannelStreamSink`].
 //!
-//! The tool-argument fragments arrive as *cumulative* snapshots (genai hands a
-//! `Value::String` of the JSON accumulated so far), so the transcoder tracks a
-//! per-call byte offset and emits only the newly-appended suffix as each
-//! `inputTextDelta`.
+//! Tool-argument fragments arrive already de-accumulated: each `ToolCallDelta`
+//! carries only the newly-appended suffix (the provider adapter owns the
+//! de-accumulation), which the transcoder forwards verbatim as an `inputTextDelta`.
 
-use std::collections::HashMap;
+use std::collections::HashSet;
 
 use awaken_agent_contract::stream::event::Kind;
 
 use crate::types::UIStreamEvent;
-
-/// Per-call progress: how many bytes of the cumulative argument string we have
-/// already emitted as deltas.
-#[derive(Default)]
-struct ToolProgress {
-    sent_len: usize,
-}
 
 /// Stateful transcoder from the live `stream::Kind` channel to the in-flight
 /// prefix of an AI SDK UI Message Stream. One instance per streamed turn.
@@ -33,7 +25,9 @@ pub struct LiveTranscoder {
     /// The id of the open text block, if a text run is currently streaming.
     open_text: Option<String>,
     text_seq: usize,
-    tools: HashMap<String, ToolProgress>,
+    /// Call ids that already emitted `tool-input-start`. Arg deltas arrive already
+    /// de-accumulated (the provider adapter owns that), so no offset is kept.
+    tools: HashSet<String>,
 }
 
 impl LiveTranscoder {
@@ -70,32 +64,26 @@ impl LiveTranscoder {
                 });
                 out
             }
-            Kind::ToolCall {
+            Kind::ToolCallDelta {
                 call_id,
                 tool_id,
-                arguments,
+                args_delta,
             } => {
                 let mut out = self.close_text();
-                if !self.tools.contains_key(call_id) {
-                    self.tools.insert(call_id.clone(), ToolProgress::default());
+                if self.tools.insert(call_id.clone()) {
                     out.push(UIStreamEvent::ToolInputStart {
                         tool_call_id: call_id.clone(),
                         tool_name: tool_id.clone(),
                     });
                 }
-                // Arguments arrive as a cumulative `Value::String`; emit only the
-                // newly-appended suffix. A non-string or non-continuation snapshot
-                // is skipped (best-effort — the committed `tool-input-available`
-                // carries the authoritative parsed input).
-                if let Some(s) = arguments.as_str() {
-                    let progress = self.tools.get_mut(call_id).expect("just inserted");
-                    if s.len() > progress.sent_len && s.is_char_boundary(progress.sent_len) {
-                        out.push(UIStreamEvent::ToolInputDelta {
-                            tool_call_id: call_id.clone(),
-                            input_text_delta: s[progress.sent_len..].to_string(),
-                        });
-                        progress.sent_len = s.len();
-                    }
+                // `args_delta` is already the newly-appended suffix (the provider
+                // adapter de-accumulated genai's cumulative snapshots), so forward it
+                // verbatim; the committed `tool-input-available` carries the parsed input.
+                if !args_delta.is_empty() {
+                    out.push(UIStreamEvent::ToolInputDelta {
+                        tool_call_id: call_id.clone(),
+                        input_text_delta: args_delta.clone(),
+                    });
                 }
                 out
             }
@@ -127,7 +115,6 @@ impl LiveTranscoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn run(seq: &[Kind]) -> Vec<UIStreamEvent> {
         let mut tc = LiveTranscoder::new();
@@ -135,7 +122,7 @@ mod tests {
     }
 
     #[test]
-    fn streams_text_then_tool_input_as_suffix_deltas() {
+    fn streams_text_then_tool_input_forwarding_suffix_deltas() {
         let events = run(&[
             Kind::RunStarted,
             Kind::OutputText {
@@ -144,20 +131,20 @@ mod tests {
             Kind::OutputText {
                 text: "read".into(),
             },
-            Kind::ToolCall {
+            Kind::ToolCallDelta {
                 call_id: "c1".into(),
                 tool_id: "read".into(),
-                arguments: json!(""),
+                args_delta: "".into(),
             },
-            Kind::ToolCall {
+            Kind::ToolCallDelta {
                 call_id: "c1".into(),
                 tool_id: "read".into(),
-                arguments: json!("{\"path\":"),
+                args_delta: "{\"path\":".into(),
             },
-            Kind::ToolCall {
+            Kind::ToolCallDelta {
                 call_id: "c1".into(),
                 tool_id: "read".into(),
-                arguments: json!("{\"path\":\"x\"}"),
+                args_delta: "\"x\"}".into(),
             },
             Kind::RunFinished,
         ]);
@@ -197,10 +184,10 @@ mod tests {
     fn never_emits_authoritative_finish_or_input_available() {
         let events = run(&[
             Kind::RunStarted,
-            Kind::ToolCall {
+            Kind::ToolCallDelta {
                 call_id: "c1".into(),
                 tool_id: "read".into(),
-                arguments: json!("{}"),
+                args_delta: "{}".into(),
             },
             Kind::Waiting {
                 reason: "tool".into(),
@@ -230,25 +217,25 @@ mod tests {
     fn concurrent_tool_calls_stream_independently_by_call_id() {
         let events = run(&[
             Kind::RunStarted,
-            Kind::ToolCall {
+            Kind::ToolCallDelta {
                 call_id: "c1".into(),
                 tool_id: "read".into(),
-                arguments: json!(""),
+                args_delta: "".into(),
             },
-            Kind::ToolCall {
+            Kind::ToolCallDelta {
                 call_id: "c2".into(),
                 tool_id: "write".into(),
-                arguments: json!(""),
+                args_delta: "".into(),
             },
-            Kind::ToolCall {
+            Kind::ToolCallDelta {
                 call_id: "c1".into(),
                 tool_id: "read".into(),
-                arguments: json!("{\"a\":1}"),
+                args_delta: "{\"a\":1}".into(),
             },
-            Kind::ToolCall {
+            Kind::ToolCallDelta {
                 call_id: "c2".into(),
                 tool_id: "write".into(),
-                arguments: json!("{\"b\":2}"),
+                args_delta: "{\"b\":2}".into(),
             },
         ]);
         assert!(events.contains(&UIStreamEvent::ToolInputStart {
@@ -274,10 +261,10 @@ mod tests {
         let events = run(&[
             Kind::RunStarted,
             Kind::OutputText { text: "hi".into() },
-            Kind::ToolCall {
+            Kind::ToolCallDelta {
                 call_id: "c1".into(),
                 tool_id: "read".into(),
-                arguments: json!(""),
+                args_delta: "".into(),
             },
             Kind::OutputText {
                 text: "more".into(),
@@ -290,37 +277,5 @@ mod tests {
             id: "txt-1".into(),
             delta: "more".into(),
         }));
-    }
-
-    #[test]
-    fn a_snapshot_boundary_mid_codepoint_is_skipped_without_panicking() {
-        // Cumulative arg snapshots where the tracked byte offset falls inside a
-        // multibyte char must be skipped (the `is_char_boundary` guard), never
-        // sliced — otherwise `s[offset..]` would panic.
-        let events = run(&[
-            Kind::RunStarted,
-            Kind::ToolCall {
-                call_id: "c1".into(),
-                tool_id: "t".into(),
-                arguments: json!("a"),
-            },
-            Kind::ToolCall {
-                call_id: "c1".into(),
-                tool_id: "t".into(),
-                arguments: json!("é"),
-            },
-        ]);
-        let deltas: Vec<&str> = events
-            .iter()
-            .filter_map(|e| match e {
-                UIStreamEvent::ToolInputDelta {
-                    input_text_delta, ..
-                } => Some(input_text_delta.as_str()),
-                _ => None,
-            })
-            .collect();
-        // Only the first (boundary-safe) snapshot streamed; the mid-codepoint one
-        // emitted nothing and did not panic.
-        assert_eq!(deltas, vec!["a"]);
     }
 }

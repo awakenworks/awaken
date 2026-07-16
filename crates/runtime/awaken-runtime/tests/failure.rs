@@ -266,7 +266,7 @@ async fn permanent_inference_error_commits_a_terminal_failed_reason() {
         .find(|e| {
             matches!(
                 e.kind,
-                awaken_agent_contract::event::kind::Kind::RunPhaseChanged
+                awaken_agent_contract::audit::kind::Kind::RunPhaseChanged
             )
         })
         .expect("a phase event");

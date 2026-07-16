@@ -4,6 +4,6 @@ use serde::{Deserialize, Serialize};
 pub struct Record {
     pub sequence: u64,
     pub run_id: crate::agent::run::Id,
-    pub kind: crate::event::kind::Kind,
+    pub kind: crate::audit::kind::Kind,
     pub payload: serde_json::Value,
 }

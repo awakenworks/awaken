@@ -11,7 +11,7 @@ use awaken_runtime_contract::resilience::Classify;
 /// Rebuild a request that carries the confirmed partial as an assistant prefix
 /// followed by a continuation prompt, so the model continues rather than
 /// regenerates. Request-only: these two messages are never committed to the
-/// transcript — a transient interruption is not a real turn boundary.
+/// transcript — a transient interruption is not a real step boundary.
 fn continuation_request(request: &ChatRequest, prefix: &str) -> ChatRequest {
     let mut messages = request.messages.clone();
     messages.push(ChatMessage {
@@ -29,7 +29,7 @@ fn continuation_request(request: &ChatRequest, prefix: &str) -> ChatRequest {
 }
 
 /// Prepend the confirmed partial `prefix` onto a continued response so the
-/// committed turn is the whole text. An empty prefix returns the response
+/// committed step is the whole text. An empty prefix returns the response
 /// unchanged — the common, non-interrupted path pays nothing.
 fn stitch_prefix(response: ChatResponse, prefix: &str) -> ChatResponse {
     if prefix.is_empty() {

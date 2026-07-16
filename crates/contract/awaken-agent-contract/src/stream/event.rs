@@ -12,12 +12,15 @@ pub enum Kind {
     OutputText {
         text: String,
     },
-    /// A tool call surfaced live as the assistant turn produced it, before the
-    /// turn is committed. Best-effort progress (G10/G13).
-    ToolCall {
+    /// A live increment of a tool call's input, as the model streams it, before the
+    /// run commits. `args_delta` is the NEW fragment only — the provider adapter
+    /// de-accumulates its own cumulative snapshots, so a consumer forwards it
+    /// directly with no diffing. Best-effort progress (G10/G13); the committed call
+    /// (parsed input) comes from the fold, not this.
+    ToolCallDelta {
         call_id: String,
         tool_id: String,
-        arguments: serde_json::Value,
+        args_delta: String,
     },
     Waiting {
         reason: String,

@@ -15,9 +15,9 @@ use awaken_agent_contract::agent::run::{Id as RunId, Phase, Record as RunRecord}
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::WaitingTicket;
+use awaken_agent_contract::audit::record::Record as EventRecord;
 use awaken_agent_contract::commit::coordinator::{Coordinator as CommitCoordinator, Error};
 use awaken_agent_contract::commit::staged::{CommitRecord, ThreadCommit};
-use awaken_agent_contract::event::record::Record as EventRecord;
 use awaken_agent_contract::fact::run::Fact as RunFact;
 use awaken_agent_contract::store::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::store::run_store::RunStore;

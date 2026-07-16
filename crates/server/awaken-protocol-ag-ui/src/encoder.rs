@@ -96,6 +96,9 @@ impl Transcoder for AgUiEncoder {
             AgentEvent::RunFailed { code, message } => vec![AgUiEvent::RunError {
                 message: format!("{code}: {message}"),
             }],
+            // An internal continuation-guard round is not an AG-UI wire frame; the
+            // committed fold never emits it into this stream.
+            AgentEvent::Continuation { .. } => Vec::new(),
         }
     }
 }

@@ -13,8 +13,8 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_protocol_managed::types::StopReason;
 use awaken_protocol_managed::{
-    Decision, ManagedState, OutcomeReport, RunError, SessionRuntime, SessionUsage, TurnFailure,
-    TurnOutcome, router,
+    Decision, ManagedState, OutcomeReport, RunError, SessionRuntime, SessionUsage, StepFailure,
+    StepOutcome, router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -102,16 +102,16 @@ async fn list_events(app: &Router, id: &str) -> serde_json::Value {
     .await
 }
 
-/// A runtime whose single turn is a scripted [`TurnOutcome`] (rebuilt per call so
+/// A runtime whose single turn is a scripted [`StepOutcome`] (rebuilt per call so
 /// the non-`Clone` fields are fresh) with a configurable cumulative usage tally.
 /// Every other operational method is unused by these projection tests.
 struct ScriptFake {
-    make: Box<dyn Fn() -> TurnOutcome + Send + Sync>,
+    make: Box<dyn Fn() -> StepOutcome + Send + Sync>,
     usage: SessionUsage,
 }
 
 impl ScriptFake {
-    fn new(make: impl Fn() -> TurnOutcome + Send + Sync + 'static) -> Self {
+    fn new(make: impl Fn() -> StepOutcome + Send + Sync + 'static) -> Self {
         Self {
             make: Box::new(make),
             usage: SessionUsage::default(),
@@ -130,10 +130,10 @@ impl SessionRuntime for ScriptFake {
         _a: &str,
         _t: &str,
         _c: Vec<ContentBlock>,
-    ) -> Result<TurnOutcome, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         Ok((self.make)())
     }
-    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<TurnOutcome, RunError> {
+    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no resume"))
     }
     async fn resume_custom(
@@ -142,7 +142,7 @@ impl SessionRuntime for ScriptFake {
         _tid: &str,
         _c: &str,
         _e: bool,
-    ) -> Result<TurnOutcome, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no custom"))
     }
     async fn add_system(&self, _t: &str, _x: &str) -> Result<(), RunError> {
@@ -180,12 +180,12 @@ fn assistant_text(id: &str, text: &str) -> Message {
 #[tokio::test]
 async fn a_terminal_run_fault_projects_session_error_before_idle() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
-        TurnOutcome {
+        StepOutcome {
             messages: vec![assistant_text("a", "partial work")],
             stop: StopReason::EndTurn,
             pending: None,
             compacted: false,
-            failure: Some(TurnFailure {
+            failure: Some(StepFailure {
                 code: "provider_unavailable".into(),
                 message: "upstream model timed out".into(),
             }),
@@ -230,7 +230,7 @@ async fn a_terminal_run_fault_projects_session_error_before_idle() {
 #[tokio::test]
 async fn a_compacted_turn_projects_the_compaction_marker() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
-        TurnOutcome {
+        StepOutcome {
             messages: vec![assistant_text("a", "after compaction")],
             stop: StopReason::EndTurn,
             pending: None,
@@ -274,7 +274,7 @@ async fn session_usage_reflects_the_runtime_tally() {
         cache_creation_tokens: 12,
     };
     let app = router(Arc::new(ManagedState::new(
-        ScriptFake::new(|| TurnOutcome {
+        ScriptFake::new(|| StepOutcome {
             messages: vec![assistant_text("a", "hi")],
             stop: StopReason::EndTurn,
             pending: None,
@@ -318,7 +318,7 @@ async fn session_usage_reflects_the_runtime_tally() {
 #[tokio::test]
 async fn an_all_empty_text_assistant_message_is_dropped() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
-        TurnOutcome {
+        StepOutcome {
             messages: vec![assistant_text("a", "")],
             stop: StopReason::EndTurn,
             pending: None,
@@ -348,7 +348,7 @@ async fn an_all_empty_text_assistant_message_is_dropped() {
 #[tokio::test]
 async fn an_mcp_tool_call_projects_mcp_events() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
-        TurnOutcome {
+        StepOutcome {
             messages: vec![
                 Message::new(
                     Id("a".into()),
@@ -415,7 +415,7 @@ async fn an_mcp_tool_call_projects_mcp_events() {
 #[tokio::test]
 async fn a_retries_exhausted_turn_idles_with_that_stop_reason() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
-        TurnOutcome {
+        StepOutcome {
             messages: vec![assistant_text("a", "gave up")],
             stop: StopReason::RetriesExhausted,
             pending: None,
@@ -445,7 +445,7 @@ async fn a_retries_exhausted_turn_idles_with_that_stop_reason() {
 #[tokio::test]
 async fn a_delegation_projects_the_child_thread_lifecycle() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
-        TurnOutcome {
+        StepOutcome {
             messages: vec![
                 Message::new(
                     Id("a".into()),
@@ -542,7 +542,7 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
 #[tokio::test]
 async fn updating_a_session_commits_a_session_updated_event() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
-        TurnOutcome {
+        StepOutcome {
             messages: vec![assistant_text("a", "hi")],
             stop: StopReason::EndTurn,
             pending: None,
@@ -578,7 +578,7 @@ async fn updating_a_session_commits_a_session_updated_event() {
 #[tokio::test]
 async fn archiving_commits_a_terminal_event_and_fences_writes() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
-        TurnOutcome {
+        StepOutcome {
             messages: vec![assistant_text("a", "hi")],
             stop: StopReason::EndTurn,
             pending: None,
