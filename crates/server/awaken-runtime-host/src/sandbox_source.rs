@@ -536,6 +536,50 @@ pub async fn build_acp_channel_source(
     }
 }
 
+/// Resolve the effective sandbox tier at composition, probing bwrap ONCE (memoized) for
+/// the `Namespace` tier so a host without the OS-native sandbox gets a clear startup
+/// decision instead of an opaque per-run spawn error. Absent bwrap: fail closed
+/// (`Err`) by default — the caller turns it into a startup abort with guidance — or,
+/// when the operator opts in with `AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK=1`, degrade to
+/// the UNSANDBOXED `Local` tier with a loud notice so a dev/single-tenant worker runs.
+/// Every other tier passes through unchanged.
+pub async fn resolve_sandbox_tier(
+    tier: crate::deployment_config::SandboxTier,
+    namespace_base: &std::path::Path,
+) -> Result<crate::deployment_config::SandboxTier, String> {
+    use crate::deployment_config::SandboxTier;
+    use awaken_provisioning_contract::SandboxProvider;
+    if tier != SandboxTier::Namespace {
+        return Ok(tier);
+    }
+    match NamespaceProvider::new(namespace_base.to_path_buf())
+        .probe_ready()
+        .await
+    {
+        Ok(()) => Ok(SandboxTier::Namespace),
+        Err(e) if allow_local_fallback() => {
+            eprintln!(
+                "awaken: OS-native sandbox unavailable ({e}); \
+                 AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK=1 → degrading to UNSANDBOXED local \
+                 ACP execution (no OS isolation for this worker)"
+            );
+            Ok(SandboxTier::Local)
+        }
+        Err(e) => Err(format!(
+            "OS-native sandbox unavailable: {e}. Install bwrap (Linux) / use macOS \
+             Seatbelt, or set AWAKEN_SANDBOX_TIER=local, or \
+             AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK=1 to run unsandboxed"
+        )),
+    }
+}
+
+/// Whether an operator opted in (`AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK=1`) to degrade a
+/// bwrap-less namespace-tier worker to UNSANDBOXED local execution rather than fail
+/// closed — a deliberate isolation downgrade for dev / single-tenant hosts.
+fn allow_local_fallback() -> bool {
+    std::env::var("AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK").as_deref() == Ok("1")
+}
+
 /// The unsandboxed local source for [`SandboxTier::Local`]: the run's projected CLI
 /// (`ProjectingChannelSource`) or a fixed argv (`SubprocessChannelSource`, real-ACP
 /// codec). The executor is identical either way — only the source differs.
@@ -1018,6 +1062,43 @@ mod tests {
         )
         .await;
         assert!(src.is_ok(), "local tier must always build");
+    }
+
+    #[tokio::test]
+    async fn resolve_sandbox_tier_passes_non_namespace_tiers_through_unprobed() {
+        use crate::deployment_config::SandboxTier;
+        // Only the namespace tier is bwrap-probed; the rest resolve to themselves.
+        assert_eq!(
+            resolve_sandbox_tier(SandboxTier::Local, &base())
+                .await
+                .unwrap(),
+            SandboxTier::Local
+        );
+        assert_eq!(
+            resolve_sandbox_tier(SandboxTier::Docker, &base())
+                .await
+                .unwrap(),
+            SandboxTier::Docker
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_sandbox_tier_never_errors_for_namespace_with_the_local_fallback_optin() {
+        use crate::deployment_config::SandboxTier;
+        // The goal guarantee: with the opt-in, a namespace-tier worker resolves without
+        // error on ANY host — Namespace where bwrap works, or Local (degraded) where it
+        // is absent — so a bwrap-less worker still runs.
+        unsafe {
+            std::env::set_var("AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK", "1");
+        }
+        let resolved = resolve_sandbox_tier(SandboxTier::Namespace, &base()).await;
+        unsafe {
+            std::env::remove_var("AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK");
+        }
+        assert!(matches!(
+            resolved,
+            Ok(SandboxTier::Namespace | SandboxTier::Local)
+        ));
     }
 
     #[tokio::test]
