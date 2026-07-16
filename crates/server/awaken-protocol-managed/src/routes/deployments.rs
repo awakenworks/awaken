@@ -43,6 +43,11 @@ struct DeploymentRecord {
     status: &'static str,
     paused_reason: Option<PausedReason>,
     archived_at: Option<String>,
+    /// RFC 3339 of the schedule's last fire (echoed into the schedule object).
+    last_run_at: Option<String>,
+    /// The next scheduled fire instant (epoch ms); lazily seeded on the first tick
+    /// so a just-created deployment doesn't fire retroactively.
+    next_fire_ms: Option<u64>,
 }
 
 impl DeploymentRecord {
@@ -61,10 +66,31 @@ impl DeploymentRecord {
             name: self.name.clone(),
             paused_reason: self.paused_reason.clone(),
             resources: self.resources.clone(),
-            schedule: self.schedule.clone(),
+            schedule: self.projected_schedule(),
             status: self.status,
             vault_ids: self.vault_ids.clone(),
         }
+    }
+
+    /// The schedule object echoed back, with `last_run_at` reflecting the most
+    /// recent fire (the stored expression/timezone pass through unchanged).
+    fn projected_schedule(&self) -> Option<Value> {
+        let mut sched = self.schedule.clone()?;
+        if let (Some(obj), Some(last)) = (sched.as_object_mut(), &self.last_run_at) {
+            obj.insert("last_run_at".into(), Value::String(last.clone()));
+        }
+        Some(sched)
+    }
+
+    /// The parsed cron for an active, non-archived deployment; `None` when it has no
+    /// schedule, is paused/archived, or the expression doesn't parse (already
+    /// rejected at write time, so this is belt-and-suspenders).
+    fn active_cron(&self) -> Option<crate::cron::Cron> {
+        if self.status != "active" || self.archived_at.is_some() {
+            return None;
+        }
+        let expr = self.schedule.as_ref()?.get("expression")?.as_str()?;
+        crate::cron::Cron::parse(expr).ok()
     }
 }
 
@@ -72,6 +98,7 @@ impl DeploymentRecord {
 struct RunRecord {
     deployment_id: String,
     agent: AgentReference,
+    trigger: TriggerContext,
 }
 
 impl RunRecord {
@@ -84,7 +111,7 @@ impl RunRecord {
             deployment_id: self.deployment_id.clone(),
             error: None,
             session_id: None,
-            trigger_context: TriggerContext::Manual,
+            trigger_context: self.trigger.clone(),
         }
     }
 }
@@ -102,6 +129,54 @@ impl DeploymentState {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Advance every active schedule to `now_ms`, minting a `deployment_run` (with a
+    /// `Schedule` trigger context) for each occurrence that has come due since the
+    /// last tick. The cursor is seeded to the first occurrence *after* the first tick
+    /// so a freshly created deployment never fires retroactively; a slow tick that
+    /// spans several occurrences fires each of them (catch-up). Returns the ids
+    /// fired. This is the timed-trigger driver a background loop calls on an interval.
+    pub fn tick(&self, now_ms: u64) -> Vec<String> {
+        let mut fired = Vec::new();
+        let mut deployments = self.deployments.lock().unwrap();
+        let mut runs = self.runs.lock().unwrap();
+        for (dep_id, record) in deployments.iter_mut() {
+            let Some(cron) = record.active_cron() else {
+                continue;
+            };
+            // Seed the cursor to the first occurrence after now on the first tick.
+            let mut cursor = match record.next_fire_ms {
+                Some(c) => c,
+                None => match cron.next_after(now_ms) {
+                    Some(c) => c,
+                    None => continue,
+                },
+            };
+            while cursor <= now_ms {
+                let n = self.run_seq.fetch_add(1, Ordering::SeqCst);
+                let run_id = format!("deprun_{n:016}");
+                let scheduled_at = crate::cron::to_rfc3339(cursor);
+                runs.insert(
+                    run_id.clone(),
+                    RunRecord {
+                        deployment_id: dep_id.clone(),
+                        agent: record.agent.clone(),
+                        trigger: TriggerContext::Schedule {
+                            scheduled_at: scheduled_at.clone(),
+                        },
+                    },
+                );
+                record.last_run_at = Some(scheduled_at);
+                fired.push(run_id);
+                cursor = match cron.next_after(cursor) {
+                    Some(c) => c,
+                    None => break,
+                };
+            }
+            record.next_fire_ms = Some(cursor);
+        }
+        fired
     }
 }
 
@@ -137,10 +212,42 @@ fn not_found(what: &str) -> WireError {
     )
 }
 
+/// Validate a schedule payload: when present, its `expression` must be a
+/// well-formed 5-field cron (the SDK's `BetaManagedAgentsSchedule`). A malformed
+/// schedule is rejected at write time rather than silently stored.
+fn validate_schedule(schedule: &Option<Value>) -> Result<(), WireError> {
+    let Some(sched) = schedule.as_ref().filter(|v| !v.is_null()) else {
+        return Ok(());
+    };
+    let expr = sched
+        .get("expression")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse::new(
+                    "invalid_request_error",
+                    "schedule requires a string `expression`",
+                )),
+            )
+        })?;
+    crate::cron::Cron::parse(expr).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                "invalid_request_error",
+                format!("invalid cron schedule: {e}"),
+            )),
+        )
+    })?;
+    Ok(())
+}
+
 async fn create_deployment(
     State(state): State<Arc<DeploymentState>>,
     ManagedJson(params): ManagedJson<DeploymentCreateParams>,
 ) -> Result<Json<Deployment>, WireError> {
+    validate_schedule(&params.schedule)?;
     let record = DeploymentRecord {
         agent: AgentReference::from_input(&params.agent),
         environment_id: params.environment_id,
@@ -154,6 +261,8 @@ async fn create_deployment(
         status: "active",
         paused_reason: None,
         archived_at: None,
+        last_run_at: None,
+        next_fire_ms: None,
     };
     let n = state.dep_seq.fetch_add(1, Ordering::SeqCst);
     let id = format!("deploy_{n:016}");
@@ -185,6 +294,9 @@ async fn update_deployment(
     Path(id): Path<String>,
     ManagedJson(params): ManagedJson<DeploymentUpdateParams>,
 ) -> Result<Json<Deployment>, WireError> {
+    if let Some(schedule) = &params.schedule {
+        validate_schedule(&Some(schedule.clone()))?;
+    }
     let mut store = state.deployments.lock().unwrap();
     let record = store.get_mut(&id).ok_or_else(|| not_found("deployment"))?;
     if let Some(agent) = &params.agent {
@@ -210,6 +322,7 @@ async fn update_deployment(
     }
     if let Some(schedule) = params.schedule {
         record.schedule = Some(schedule).filter(|v| !v.is_null());
+        record.next_fire_ms = None; // re-seed the cursor against the new schedule
     }
     if let Some(vault_ids) = params.vault_ids {
         record.vault_ids = vault_ids;
@@ -265,6 +378,7 @@ async fn run_deployment(
     let record = RunRecord {
         deployment_id: id,
         agent,
+        trigger: TriggerContext::Manual,
     };
     let projected = record.project(&run_id);
     state.runs.lock().unwrap().insert(run_id, record);
@@ -295,4 +409,100 @@ async fn list_runs(
         .map(|(id, r)| r.project(id))
         .collect();
     Json(paginate(data, &page, |r| r.id.as_str()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 2026-01-05 09:00:00 UTC (a Monday).
+    const MON_0900: u64 = 1_767_603_600_000;
+
+    fn cron_schedule(expr: &str) -> Value {
+        serde_json::json!({ "type": "cron", "expression": expr, "timezone": "UTC" })
+    }
+
+    fn deployment(schedule: Option<Value>) -> DeploymentRecord {
+        DeploymentRecord {
+            agent: AgentReference::new("coder", 1),
+            environment_id: "env_a".into(),
+            name: "nightly".into(),
+            description: None,
+            metadata: BTreeMap::new(),
+            initial_events: Vec::new(),
+            resources: Vec::new(),
+            schedule,
+            vault_ids: Vec::new(),
+            status: "active",
+            paused_reason: None,
+            archived_at: None,
+            last_run_at: None,
+            next_fire_ms: None,
+        }
+    }
+
+    #[test]
+    fn validate_schedule_rejects_a_malformed_cron() {
+        assert!(validate_schedule(&None).is_ok(), "no schedule is fine");
+        assert!(validate_schedule(&Some(cron_schedule("0 9 * * 1-5"))).is_ok());
+        assert!(validate_schedule(&Some(cron_schedule("not a cron"))).is_err());
+        assert!(
+            validate_schedule(&Some(serde_json::json!({ "timezone": "UTC" }))).is_err(),
+            "a schedule without an expression is rejected"
+        );
+    }
+
+    #[test]
+    fn tick_fires_due_occurrences_with_a_schedule_trigger() {
+        let state = DeploymentState::new();
+        state.deployments.lock().unwrap().insert(
+            "deploy_x".into(),
+            deployment(Some(cron_schedule("*/15 * * * *"))),
+        );
+
+        // First tick seeds the cursor to the next occurrence AFTER now — no
+        // retroactive fire.
+        assert!(state.tick(MON_0900).is_empty(), "no retroactive fire");
+        // A later tick spanning two 15-minute occurrences fires both (catch-up).
+        let fired = state.tick(MON_0900 + 31 * 60_000);
+        assert_eq!(fired.len(), 2, "09:15 and 09:30 both come due");
+
+        let runs = state.runs.lock().unwrap();
+        let run = runs.get(&fired[0]).expect("run recorded");
+        match &run.trigger {
+            TriggerContext::Schedule { scheduled_at } => {
+                assert_eq!(scheduled_at, "2026-01-05T09:15:00Z");
+            }
+            TriggerContext::Manual => panic!("a scheduled fire must carry a Schedule trigger"),
+        }
+        assert_eq!(run.deployment_id, "deploy_x");
+        // A paused deployment stops firing.
+        drop(runs);
+        state
+            .deployments
+            .lock()
+            .unwrap()
+            .get_mut("deploy_x")
+            .unwrap()
+            .status = "paused";
+        assert!(
+            state.tick(MON_0900 + 120 * 60_000).is_empty(),
+            "a paused deployment does not fire"
+        );
+    }
+
+    #[test]
+    fn last_run_at_is_echoed_into_the_projected_schedule() {
+        let state = DeploymentState::new();
+        state.deployments.lock().unwrap().insert(
+            "deploy_y".into(),
+            deployment(Some(cron_schedule("*/15 * * * *"))),
+        );
+        state.tick(MON_0900);
+        state.tick(MON_0900 + 16 * 60_000);
+        let store = state.deployments.lock().unwrap();
+        let projected = store.get("deploy_y").unwrap().project("deploy_y");
+        let sched = projected.schedule.expect("schedule present");
+        assert_eq!(sched["last_run_at"], "2026-01-05T09:15:00Z");
+    }
 }
