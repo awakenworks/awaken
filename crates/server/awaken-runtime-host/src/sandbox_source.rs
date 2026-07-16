@@ -129,6 +129,11 @@ const SANDBOX_WORKSPACE: &str = "/workspace";
 /// CLI's config-home env (e.g. `CODEX_HOME`) points at it.
 const SANDBOX_CONFIG_HOME: &str = "/acp-config";
 
+/// The workdir-relative config-home for the unsandboxed Workdir tier: the CLI runs on
+/// the host in its workdir, so its config mount + config-home env are relative to that
+/// workdir (an absolute interior path like `/acp-config` would not exist there).
+const WORKDIR_CONFIG_HOME: &str = ".acp-config";
+
 /// A shared clone of the host's per-thread staged-resource registry (ADR-0038), so a
 /// sandboxed source carries the SAME file/resource mounts the native `sandbox_spec`
 /// does into the bwrap sandbox it launches the CLI in. Opaque like [`ThreadEgress`] —
@@ -163,11 +168,70 @@ impl ThreadResources {
     }
 }
 
-/// Opens each run's [`AgentSession`] inside a fresh namespace-tier sandbox: build
-/// the spec from the activation's thread (scope + egress policy), realize it, and
-/// `spawn_agent` the launch's argv under bwrap with piped stdio.
+/// The host-plane provider a [`SandboxChannelSource`] realizes into: OS-isolated bwrap
+/// (`Namespace`) or the unsandboxed but resource-materializing `Workdir`
+/// ([`LocalProvider`]) — the no-bwrap path. BOTH realize File/Resource/`Inline` mounts,
+/// so injection is identical; only OS isolation differs. `spawn_agent` returns the same
+/// `(process, channel)` on either, so the source is otherwise backend-agnostic.
+enum SandboxBackend {
+    Namespace(NamespaceProvider),
+    Workdir(awaken_sandbox_local::LocalProvider),
+}
+
+impl SandboxBackend {
+    /// The isolation class the spec must declare for this backend.
+    fn isolation(&self) -> pc::IsolationClass {
+        match self {
+            SandboxBackend::Namespace(_) => pc::IsolationClass::Namespace,
+            SandboxBackend::Workdir(_) => pc::IsolationClass::Workdir,
+        }
+    }
+
+    /// Whether this backend can OS-enforce a read-only mount (bwrap yes, Workdir no —
+    /// a read-only mount is rejected at prepare on the Workdir tier).
+    fn enforces_read_only(&self) -> bool {
+        matches!(self, SandboxBackend::Namespace(_))
+    }
+
+    /// The config-home a `ConfigFileToml` CLI reads: a fixed **interior absolute** path
+    /// for the bwrap namespace (bound there), or a **workdir-relative** path for the
+    /// unsandboxed Workdir tier (the CLI runs on the host in its workdir, so an absolute
+    /// interior path would not exist — the mount + `CODEX_HOME` are relative instead).
+    fn config_home(&self) -> &'static str {
+        match self {
+            SandboxBackend::Namespace(_) => SANDBOX_CONFIG_HOME,
+            SandboxBackend::Workdir(_) => WORKDIR_CONFIG_HOME,
+        }
+    }
+
+    /// Realize `spec` and launch `command`, returning the duplex channel + process.
+    async fn open(
+        &self,
+        spec: &pc::SandboxSpec,
+        command: pc::Command,
+    ) -> Result<
+        (
+            Box<dyn awaken_provisioning_contract::ProcessHandle>,
+            Box<dyn awaken_run_executor_acp::AgentChannelType>,
+        ),
+        pc::SandboxError,
+    > {
+        match self {
+            SandboxBackend::Namespace(p) => {
+                p.create_sandbox(spec).await?.spawn_agent(command).await
+            }
+            SandboxBackend::Workdir(p) => p.create_sandbox(spec).await?.spawn_agent(command).await,
+        }
+    }
+}
+
+/// Opens each run's [`AgentSession`] inside a fresh sandbox: build the spec from the
+/// activation's thread (scope + egress + staged mounts), realize it, and `spawn_agent`
+/// the launch's argv with piped stdio. The `Namespace` backend confines under bwrap;
+/// the `Workdir` backend runs unsandboxed but still materializes all injected mounts
+/// (the no-bwrap path).
 pub struct SandboxChannelSource {
-    provider: NamespaceProvider,
+    provider: SandboxBackend,
     launch: LaunchSource,
     egress: ThreadEgress,
     codec: awaken_run_executor_acp::Codec,
@@ -183,7 +247,7 @@ impl SandboxChannelSource {
     /// in-tree fixture agent); a real CLI sets [`Self::with_codec`] to `Codec::Acp`.
     pub fn new(base: impl Into<std::path::PathBuf>, launch: AcpLaunch) -> Self {
         Self {
-            provider: NamespaceProvider::new(base),
+            provider: SandboxBackend::Namespace(NamespaceProvider::new(base)),
             launch: LaunchSource::Fixed(launch),
             egress: ThreadEgress::default(),
             codec: awaken_run_executor_acp::Codec::Newline,
@@ -200,7 +264,7 @@ impl SandboxChannelSource {
         resolver: Arc<dyn LaunchResolver>,
     ) -> Self {
         Self {
-            provider: NamespaceProvider::new(base),
+            provider: SandboxBackend::Namespace(NamespaceProvider::new(base)),
             launch: LaunchSource::Projected { cli, resolver },
             egress: ThreadEgress::default(),
             codec: awaken_run_executor_acp::Codec::Acp,
@@ -215,6 +279,22 @@ impl SandboxChannelSource {
         match source {
             LaunchSource::Fixed(launch) => Self::new(base, launch),
             LaunchSource::Projected { cli, resolver } => Self::projecting(base, cli, resolver),
+        }
+    }
+
+    /// The **unsandboxed Workdir** variant (no bwrap): the run's CLI runs as a plain
+    /// child, but its staged file/resource mounts + codex config are still materialized
+    /// into a per-thread workdir by [`LocalProvider`]. The no-bwrap fallback path — full
+    /// injection, no OS isolation. `Projected` → real-ACP codec, `Fixed` → newline.
+    pub fn workdir(base: impl Into<std::path::PathBuf>, source: LaunchSource) -> Self {
+        Self {
+            provider: SandboxBackend::Workdir(awaken_sandbox_local::LocalProvider::new(base)),
+            launch: source,
+            egress: ThreadEgress::default(),
+            // The Local tier serves a real CLI (AWAKEN_ACP_CLI/ARGV), so it speaks official
+            // ACP — matching the source it replaces (`local_source`), never the fixture wire.
+            codec: awaken_run_executor_acp::Codec::Acp,
+            resources: None,
         }
     }
 
@@ -261,7 +341,7 @@ impl SandboxChannelSource {
         };
         pc::SandboxSpec {
             scope: thread.to_string(),
-            isolation: pc::IsolationClass::Namespace,
+            isolation: self.provider.isolation(),
             mounts: self.resource_mounts(thread),
             env: Vec::new(),
             network,
@@ -318,20 +398,20 @@ impl AgentChannelSource for SandboxChannelSource {
         // interior config home, with the CLI's config-home env pointed there.
         let mut spec = self.spec(thread);
         if let Some(cli) = self.launch.cli()
-            && let Some((mount, (env_key, env_val))) =
-                acp_config_mount(cli, injection.config_file.clone())
+            && let Some((mount, (env_key, env_val))) = acp_config_mount(
+                cli,
+                injection.config_file.clone(),
+                self.provider.config_home(),
+                self.provider.enforces_read_only(),
+            )
         {
             spec.mounts.push(mount);
             launch.env.retain(|(k, _)| *k != env_key);
             launch.env.push((env_key, env_val));
         }
-        let sandbox = self
+        let (process, channel) = self
             .provider
-            .create_sandbox(&spec)
-            .await
-            .map_err(|e| OpenError(format!("sandbox create: {e}")))?;
-        let (process, channel) = sandbox
-            .spawn_agent(Self::command(&launch))
+            .open(&spec, Self::command(&launch))
             .await
             .map_err(|e| OpenError(format!("sandboxed agent launch: {e}")))?;
         Ok(AgentSession {
@@ -340,37 +420,45 @@ impl AgentChannelSource for SandboxChannelSource {
             codec: self.codec,
             // The namespace sandbox binds the (host-varying) workspace to the fixed
             // interior path `/workspace` and chdirs there, so a cwd-keyed CLI keys its
-            // session under the same slug every relaunch/machine — the stable interior
-            // identity cross-directory/cross-machine recovery needs.
-            workspace_cwd: Some(SANDBOX_WORKSPACE.to_string()),
+            // session under the same slug every relaunch/machine. The unsandboxed Workdir
+            // backend runs in the provider's own workdir (no fixed interior path).
+            workspace_cwd: match self.provider {
+                SandboxBackend::Namespace(_) => Some(SANDBOX_WORKSPACE.to_string()),
+                SandboxBackend::Workdir(_) => None,
+            },
             mcp_session_servers: injection.session_servers,
         })
     }
 }
 
 /// The interior config mount + config-home env override for a config-file CLI's
-/// projected MCP config (codex `config.toml`): an inline, read-only, per-run,
-/// never-harvested mount at the fixed interior config home, plus `(config_home_env,
-/// path)` to point the CLI there. `None` for a session-server CLI (no config file).
-/// Pure, so it is testable without a live sandbox.
+/// projected MCP config (codex `config.toml`): an inline, per-run, never-harvested
+/// mount at the fixed interior config home, plus `(config_home_env, path)` to point the
+/// CLI there. `None` for a session-server CLI. `read_only` when the backend can enforce
+/// it (bwrap); the Workdir tier cannot, so it takes a read-write copy — the never-harvest
+/// property holds regardless (`Inline` is neither `Secret` nor `MemoryStore`). Pure, so
+/// it is testable without a live sandbox.
 fn acp_config_mount(
     cli: &AcpCli,
     config_file: Option<(String, String)>,
+    config_home: &str,
+    read_only: bool,
 ) -> Option<(pc::MountRequirement, (String, String))> {
     let (rel_path, contents) = config_file?;
     Some((
         pc::MountRequirement {
             mount_id: "acp-config".to_string(),
             source: pc::MountSource::Inline { contents },
-            mount_path: format!("{SANDBOX_CONFIG_HOME}/{rel_path}"),
-            access: pc::MountAccess::ReadOnly,
+            mount_path: format!("{config_home}/{rel_path}"),
+            access: if read_only {
+                pc::MountAccess::ReadOnly
+            } else {
+                pc::MountAccess::ReadWrite
+            },
             lifetime: pc::MountLifetime::PerRun,
             required: true,
         },
-        (
-            cli.config_home_env.to_string(),
-            SANDBOX_CONFIG_HOME.to_string(),
-        ),
+        (cli.config_home_env.to_string(), config_home.to_string()),
     ))
 }
 
@@ -533,9 +621,14 @@ pub async fn build_acp_channel_source(
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
     use crate::deployment_config::SandboxTier;
     match tier {
-        // No OS isolation: the ACP CLI runs as a plain child of the runtime, driven by
-        // the same environment-agnostic executor over an unsandboxed source (ADR-0057).
-        SandboxTier::Local => Ok(local_source(source)),
+        // No OS isolation, but full injection: the Workdir backend runs the CLI as a
+        // plain child yet still materializes the session's staged resource mounts + the
+        // codex config into a per-thread workdir (ADR-0057). The no-bwrap path.
+        SandboxTier::Local => Ok(Arc::new(
+            SandboxChannelSource::workdir(namespace_base, source)
+                .with_thread_egress(egress)
+                .with_thread_resources(resources),
+        )),
         SandboxTier::Namespace => Ok(Arc::new(
             SandboxChannelSource::from_source(namespace_base, source)
                 .with_thread_egress(egress)
@@ -589,21 +682,6 @@ pub async fn resolve_sandbox_tier(
 /// closed — a deliberate isolation downgrade for dev / single-tenant hosts.
 fn allow_local_fallback() -> bool {
     std::env::var("AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK").as_deref() == Ok("1")
-}
-
-/// The unsandboxed local source for [`SandboxTier::Local`]: the run's projected CLI
-/// (`ProjectingChannelSource`) or a fixed argv (`SubprocessChannelSource`, real-ACP
-/// codec). The executor is identical either way — only the source differs.
-fn local_source(source: LaunchSource) -> Arc<dyn AgentChannelSource> {
-    match source {
-        LaunchSource::Fixed(launch) => Arc::new(
-            awaken_run_executor_acp::SubprocessChannelSource::new(launch)
-                .with_codec(awaken_run_executor_acp::Codec::Acp),
-        ),
-        LaunchSource::Projected { cli, resolver } => Arc::new(
-            awaken_run_executor_acp::ProjectingChannelSource::new(cli, resolver),
-        ),
-    }
 }
 
 /// The image a container tier requires, or a fail-closed error naming the config var.
@@ -762,9 +840,12 @@ mod tests {
         // (ephemeral, read-only, never-harvested) at the interior config home, and the
         // CLI's config-home env (CODEX_HOME) points there so it reads the MCP config.
         let cli = awaken_run_executor_acp::acp_cli("codex").unwrap();
+        // bwrap: interior absolute config home, read-only (enforceable).
         let (mount, (env_key, env_val)) = acp_config_mount(
             cli,
             Some(("config.toml".into(), "[mcp_servers.gh]\n".into())),
+            SANDBOX_CONFIG_HOME,
+            true,
         )
         .expect("codex gets a config mount");
         assert_eq!(mount.mount_path, "/acp-config/config.toml");
@@ -773,10 +854,57 @@ mod tests {
         assert_eq!(mount.lifetime, pc::MountLifetime::PerRun);
         assert_eq!(env_key, "CODEX_HOME");
         assert_eq!(env_val, "/acp-config");
+        // Workdir: workdir-relative config home, read-write (RO not enforceable).
+        let (rw, (_, rw_home)) = acp_config_mount(
+            cli,
+            Some(("config.toml".into(), "x".into())),
+            WORKDIR_CONFIG_HOME,
+            false,
+        )
+        .unwrap();
+        assert_eq!(rw.mount_path, ".acp-config/config.toml");
+        assert_eq!(rw.access, pc::MountAccess::ReadWrite);
+        assert_eq!(rw_home, ".acp-config");
 
         // A session-server CLI (claude, no config file) → no config mount.
         let claude = awaken_run_executor_acp::acp_cli("claude").unwrap();
-        assert!(acp_config_mount(claude, None).is_none());
+        assert!(acp_config_mount(claude, None, SANDBOX_CONFIG_HOME, true).is_none());
+    }
+
+    #[tokio::test]
+    async fn the_workdir_backend_opens_without_bwrap_and_materializes_resources() {
+        // The no-bwrap path (A): the Workdir backend (LocalProvider) needs no OS-native
+        // sandbox, yet still materializes the session's staged resource mounts — so a
+        // bwrap-less worker delivers resources, not only MCP.
+        use awaken_sandbox_local::{Mount, ResourceMount};
+        let registry = ThreadResources::default();
+        registry.0.lock().unwrap().insert(
+            "t".to_string(),
+            crate::provisioning::StagedResources {
+                mounts: vec![Mount::Resource(ResourceMount {
+                    id: "id-x".into(),
+                    content_hash: String::new(),
+                    logical_path: "data.csv".into(),
+                    content: "a,b\n".into(),
+                })],
+                ..Default::default()
+            },
+        );
+        let source = SandboxChannelSource::workdir(
+            base(),
+            LaunchSource::Fixed(AcpLaunch::custom(vec!["true".into()], vec![])),
+        )
+        .with_thread_resources(registry);
+        // The Workdir spec declares the unsandboxed isolation class and carries the mount.
+        let spec = source.spec("t");
+        assert_eq!(spec.isolation, pc::IsolationClass::Workdir);
+        assert_eq!(spec.mounts.len(), 1);
+        // open() realizes the mount via LocalProvider and spawns — no bwrap required.
+        let act = acp_activation("genai");
+        assert!(
+            source.open(&act).await.is_ok(),
+            "the Workdir backend opens without an OS-native sandbox"
+        );
     }
 
     #[test]
