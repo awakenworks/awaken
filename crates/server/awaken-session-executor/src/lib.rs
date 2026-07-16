@@ -91,7 +91,7 @@ pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::redact::PiiRedactor;
 pub use crate::sandbox_source::{
     ContainerChannelSource, LaunchSource, SandboxChannelSource, ThreadEgress, ThreadResources,
-    build_acp_channel_source,
+    build_acp_channel_source, resolve_sandbox_tier,
 };
 // The config data plane (ADR-0036/slice A): the service + its router + the
 // advertised-tools helper the composition root builds a config host from.
