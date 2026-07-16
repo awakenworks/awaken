@@ -480,8 +480,8 @@ async fn a_retries_exhausted_turn_idles_with_that_stop_reason() {
 /// An inline `agent_run` delegation projects the delegate's full child-thread
 /// lifecycle after the turn's own idle — `session.thread_created` →
 /// `session.thread_status_running` → the input sent → the reply received →
-/// `session.thread_status_idle` → `session.thread_status_terminated` (one-shot) —
-/// and the child thread is enumerated by `GET /threads` with the primary as parent.
+/// `session.thread_status_idle` — and the child thread is enumerated by
+/// `GET /threads` with the primary as its parent.
 #[tokio::test]
 async fn a_delegation_projects_the_child_thread_lifecycle() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
@@ -530,7 +530,6 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
             "agent.thread_message_sent",
             "agent.thread_message_received",
             "session.thread_status_idle",
-            "session.thread_status_terminated",
         ]
     );
     let created = list["data"]
