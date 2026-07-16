@@ -11,9 +11,9 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::draft::Draft;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
+use awaken_agent_contract::commit::RunFact;
 use awaken_agent_contract::commit::coordinator::Coordinator;
 use awaken_agent_contract::commit::staged::ThreadCommit;
-use awaken_agent_contract::fact::run::Fact as RunFact;
 use awaken_agent_contract::store::checkpoint::{CheckpointReader, EventScope};
 
 fn checkpoint(thread: &ThreadId, run: &RunId, text: &str, phase: Phase) -> ThreadCommit {

@@ -31,9 +31,9 @@ use std::sync::atomic::Ordering;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::commit::RunFact;
 use awaken_agent_contract::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::commit::staged::ThreadCommit;
-use awaken_agent_contract::fact::run::Fact as RunFact;
 use awaken_agent_contract::store::run_store::RunStore;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_run_ingress::{

@@ -12,10 +12,10 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::{WaitingReason, WaitingTicket};
 use awaken_agent_contract::audit::draft::Draft;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
+use awaken_agent_contract::commit::RunFact;
 use awaken_agent_contract::commit::coordinator::{Coordinator, Error};
 use awaken_agent_contract::commit::staged::ThreadCommit;
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
-use awaken_agent_contract::fact::run::Fact as RunFact;
 use awaken_agent_contract::store::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::store::run_store::RunStore;
 use awaken_agent_contract::store::stream_checkpoint::{
