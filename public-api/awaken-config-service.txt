@@ -55,6 +55,7 @@ impl awaken_config_service::AssistantBindingReconciler for awaken_config_service
 pub fn awaken_config_service::ConfigServiceReconciler::reconcile<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_config_service::ModelResolver: core::marker::Send + core::marker::Sync
 pub fn awaken_config_service::ModelResolver::context_window(&self, &str) -> core::option::Option<u32>
+pub fn awaken_config_service::ModelResolver::max_output_tokens(&self, &str) -> core::option::Option<u32>
 pub fn awaken_config_service::ModelResolver::resolve_auto(&self) -> core::result::Result<awaken_config_service::ResolvedModel, alloc::string::String>
 pub trait awaken_config_service::ToolCatalogSource: core::marker::Send + core::marker::Sync
 pub fn awaken_config_service::ToolCatalogSource::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>

@@ -171,6 +171,15 @@ impl ProviderCatalog {
             .get(model_id)
             .and_then(|a| a.context_window)
     }
+
+    /// A model's published output-token ceiling from its [`ModelAttributes`] — the headroom
+    /// the compaction window reserves so input + output stays within `context_window`.
+    #[must_use]
+    pub fn max_output_tokens(&self, model_id: &str) -> Option<u32> {
+        self.model_attributes
+            .get(model_id)
+            .and_then(|a| a.max_output_tokens)
+    }
 }
 
 /// A write/publish-time invariant violation (fail-closed, G22 / ADR-0043).

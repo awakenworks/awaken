@@ -172,11 +172,10 @@ pub fn build_compaction_router() -> Router {
     // is the real-model path (a small window trips compaction on large input).
     // Without it, the deterministic message-count trigger (fold after 2 messages).
     let env_u = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<u32>().ok());
-    // The token window is a MODEL attribute: an explicit agent override
-    // (`AWAKEN_COMPACT_MAX_TOKENS`) wins, else the model's published context window
-    // (`AWAKEN_MODEL_CONTEXT_WINDOW` — this harness's projection of the catalog's
-    // `ModelSpec.context_window`). This is `CompactConfig::effective_max_tokens`: an
-    // agent that pins nothing inherits token-aware compaction from its model.
+    // Harness-local window wiring: an explicit override (`AWAKEN_COMPACT_MAX_TOKENS`) wins,
+    // else the model's published context window (`AWAKEN_MODEL_CONTEXT_WINDOW` — this harness's
+    // projection of the catalog's `ModelSpec.context_window`). Production derives the effective
+    // trigger at publish (config-service `apply_compaction`); this driver sets it directly.
     let window =
         env_u("AWAKEN_COMPACT_MAX_TOKENS").or_else(|| env_u("AWAKEN_MODEL_CONTEXT_WINDOW"));
     let host = match window {
