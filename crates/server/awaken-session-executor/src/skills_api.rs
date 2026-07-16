@@ -258,12 +258,16 @@ async fn list_skills(State(state): State<Arc<SkillsApi>>) -> impl IntoResponse {
         )
     };
     for stem in state.host.skill_store_list().await {
-        let id = awaken_skill_store::catalog_id(&stem);
+        let cid = awaken_skill_store::catalog_id(&stem);
         // Skip if already surfaced by the registry under either its catalog id (SDK
-        // path) or its raw stem (legacy `{id, content}` path).
-        if !present.contains(&id) && !present.contains(&stem) {
+        // path) or its raw stem (legacy `{id, content}` path). Otherwise list under
+        // the durable STEM — the stable id a legacy-delivered skill keeps across a
+        // restart. Advertisement (`skill_ids`) is what offers the tagged catalog id
+        // to the worker; the read paths resolve either form, so listing the stem
+        // here keeps the durability contract without breaking the worker download.
+        if !present.contains(&cid) && !present.contains(&stem) {
             data.push(json!({
-                "id": id,
+                "id": stem,
                 "type": "skill",
                 "created_at": OBJECT_AT,
                 "updated_at": OBJECT_AT,
@@ -481,12 +485,13 @@ mod tests {
             body.contains("say hello"),
             "latest content downloads: {body}"
         );
-        // The list advertises the catalog id, not the raw name.
+        // The list surfaces the durable skill under its stable stem (the durability
+        // contract). The tagged catalog id is what advertisement offers the worker,
+        // and both forms resolve on retrieve/download (asserted above).
         let (_, list) = get(&router, "/v1/skills").await;
-        assert!(list.contains(&cid), "list advertises the catalog id");
         assert!(
-            !list.contains("\"greeter\""),
-            "the raw name is not advertised"
+            list.contains("Greeter"),
+            "list surfaces the durable stem: {list}"
         );
         // An unknown id is a clean 404.
         let (status, _) = get(&router, "/v1/skills/skill_deadbeefdeadbeef").await;
