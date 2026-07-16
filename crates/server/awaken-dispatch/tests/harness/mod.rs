@@ -635,6 +635,13 @@ impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
     ) -> Result<awaken_dispatch::SettleOutcome, awaken_dispatch::DispatchError> {
         self.inner.settle(run_id, epoch, outcome, consumed).await
     }
+    async fn current_epoch(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<u64>, awaken_dispatch::DispatchError> {
+        // Wraps a real store: keep the fence live by delegating.
+        self.inner.current_epoch(run_id).await
+    }
     async fn reap(
         &self,
         max_attempts: u64,

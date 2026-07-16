@@ -265,14 +265,13 @@ pub trait DispatchQueue: Send + Sync {
     /// lease under a higher epoch, so the caller's in-flight writes must be fenced.
     ///
     /// This is the read the *commit* fence uses, the twin of the epoch [`settle`]
-    /// already fences on. Default: `Ok(None)` — a backend that cannot cheaply read the
-    /// fence (e.g. a remote transport) declines to gate on it, so
-    /// [`holds_current_epoch`](Self::holds_current_epoch) fails OPEN and behaviour is
-    /// exactly as before this method existed.
-    async fn current_epoch(&self, run_id: &RunId) -> Result<Option<u64>, DispatchError> {
-        let _ = run_id;
-        Ok(None)
-    }
+    /// already fences on. It is a REQUIRED method with no default: opting a backend
+    /// out of the commit fence must be a conscious choice (return `Ok(None)`, which
+    /// makes [`holds_current_epoch`](Self::holds_current_epoch) fail OPEN), never an
+    /// inherited default a new backend silently gets. A backend that cannot cheaply
+    /// read the fence (e.g. a remote transport that does not proxy it) returns
+    /// `Ok(None)` explicitly; every durable store returns the row's `lease_epoch`.
+    async fn current_epoch(&self, run_id: &RunId) -> Result<Option<u64>, DispatchError>;
 
     /// Whether a caller holding `epoch` may still commit for `run_id`: `true` while it
     /// holds the current fence, `false` only when a strictly higher epoch has
@@ -671,6 +670,10 @@ mod tests {
             _consumed: &[String],
         ) -> Result<SettleOutcome, DispatchError> {
             unimplemented!()
+        }
+        async fn current_epoch(&self, _run_id: &RunId) -> Result<Option<u64>, DispatchError> {
+            // A submit-only capture double: no fence, fail-open by explicit choice.
+            Ok(None)
         }
         async fn reap(&self, _max_attempts: u64, _now_ms: u64) -> Result<usize, DispatchError> {
             unimplemented!()
