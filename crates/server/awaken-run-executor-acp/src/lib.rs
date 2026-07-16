@@ -590,7 +590,7 @@ async fn commit(
     state: Vec<StateCommand>,
 ) -> Result<()> {
     if let Some(coordinator) = &context.commit {
-        awaken_agent_contract::commit::commit_run(
+        awaken_agent_contract::thread::commit::commit_run(
             coordinator.as_ref(),
             thread_id,
             &run_id,

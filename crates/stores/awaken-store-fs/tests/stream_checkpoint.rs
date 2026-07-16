@@ -2,7 +2,7 @@
 //! instance over the same directory reads a checkpoint a prior instance wrote —
 //! this is what makes an interrupted inference step resumable in a new process.
 
-use awaken_agent_contract::store::stream_checkpoint::{
+use awaken_agent_contract::stream::checkpoint::{
     PartialToolCall, StreamCheckpoint, StreamCheckpointStore,
 };
 use awaken_store_fs::FsStreamCheckpointStore;

@@ -16,7 +16,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::store::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime::RunInput;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::CancellationToken;

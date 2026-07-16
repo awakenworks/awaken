@@ -87,7 +87,7 @@ fn execution_context_keeps_its_commit_handle() {
     // The commit handle is the same source the worker reads and writes through.
     assert!(Arc::ptr_eq(
         context.commit(),
-        &(commit as Arc<dyn awaken_agent_contract::commit::coordinator::Coordinator>)
+        &(commit as Arc<dyn awaken_agent_contract::thread::commit::coordinator::Coordinator>)
     ));
 }
 
@@ -121,9 +121,7 @@ async fn worker_builders_attach_a_stream_sink_and_lease() {
 
 #[tokio::test]
 async fn worker_resumes_a_durable_run_from_a_pre_seeded_checkpoint() {
-    use awaken_agent_contract::store::stream_checkpoint::{
-        StreamCheckpoint, StreamCheckpointStore,
-    };
+    use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
     use awaken_runtime::memory::MemoryStreamCheckpointStore;
 
     let runtime = text_runtime(); // answers "done"

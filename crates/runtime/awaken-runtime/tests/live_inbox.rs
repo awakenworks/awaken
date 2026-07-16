@@ -9,7 +9,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::store::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
