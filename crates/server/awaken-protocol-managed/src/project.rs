@@ -253,7 +253,7 @@ pub fn project_messages(
 /// Project the messages committed during one step, then a terminal
 /// `session.status_idle` derived from `stop`. When `stop` is `RequiresAction` the
 /// pending tool's id populates `requires_action.event_ids`.
-pub fn project_turn(
+pub fn project_step(
     messages: &[awaken_agent_contract::agent::message::Message],
     stop: StopReason,
     pending: Option<(&str, bool)>,

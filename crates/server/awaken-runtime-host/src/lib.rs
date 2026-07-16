@@ -4,7 +4,7 @@
 //! substrate) and the two port adapters mounted over it: [`ManagedHost`] (the
 //! Managed Agents `SessionRuntime`) and [`ProtocolHost`] (the neutral
 //! `ProtocolRuntime` behind the AI SDK / AG-UI / A2A wire adapters). Both hold
-//! the same `Arc<SharedHost>`, so a turn started through one protocol can be
+//! the same `Arc<SharedHost>`, so a run started through one protocol can be
 //! resumed or observed through another on the *same thread*.
 //!
 //! The composition root (`awaken-server`) assembles these into routers;
@@ -69,11 +69,11 @@ use awaken_protocol_managed::types::StopReason;
 use awaken_protocol_managed::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, OutcomeIteration, OutcomeReport, Pending, RunError, SessionRuntime,
-    TurnFailure, TurnOutcome,
+    StepFailure, StepOutcome,
 };
 use awaken_protocol_transport::{
-    DriverError, Pending as PortPending, ProtocolRuntime, Resume as PortResume, StepFailure,
-    StepOutcome, Terminal,
+    DriverError, Pending as PortPending, ProtocolRuntime, Resume as PortResume,
+    StepFailure as PortStepFailure, StepOutcome as PortStepOutcome, Terminal,
 };
 use awaken_runtime_contract::live_inbox::{EditError, LiveInboxMessageId, MessageOrigin, Offer};
 
@@ -197,17 +197,17 @@ fn to_pending(pending: Option<PendingTool>) -> Option<Pending> {
     })
 }
 
-fn to_turn_outcome(result: RunResult) -> TurnOutcome {
+fn to_step_outcome(result: RunResult) -> StepOutcome {
     // Carry a terminal fault through so the adapter projects `session.error`; the
     // neutral `Failure` owns the classification (code + message), not a string.
     let failure = match &result.phase {
-        Phase::Ended(EndCause::Error(fault)) => Some(TurnFailure {
+        Phase::Ended(EndCause::Error(fault)) => Some(StepFailure {
             code: fault.code().to_string(),
             message: fault.message(),
         }),
         _ => None,
     };
-    TurnOutcome {
+    StepOutcome {
         stop: phase_to_stop(&result.phase),
         messages: result.new_messages,
         pending: to_pending(result.pending),
@@ -469,13 +469,13 @@ impl SessionRuntime for ManagedHost {
         agent: &str,
         thread: &str,
         content: Vec<ContentBlock>,
-    ) -> Result<TurnOutcome, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         let result = self
             .host
             .run(Some(agent), thread, vec![user_message(content)])
             .await
             .map_err(to_run_error)?;
-        Ok(to_turn_outcome(result))
+        Ok(to_step_outcome(result))
     }
 
     async fn run_streaming(
@@ -484,7 +484,7 @@ impl SessionRuntime for ManagedHost {
         thread: &str,
         content: Vec<ContentBlock>,
         sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-    ) -> Result<TurnOutcome, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         // Same committed turn as `run`; `sink` mirrors in-flight `stream::Kind` so
         // the Managed adapter can project live `agent.message` previews.
         let result = self
@@ -492,7 +492,7 @@ impl SessionRuntime for ManagedHost {
             .run_streaming(Some(agent), thread, vec![user_message(content)], sink)
             .await
             .map_err(to_run_error)?;
-        Ok(to_turn_outcome(result))
+        Ok(to_step_outcome(result))
     }
 
     async fn resume(
@@ -500,7 +500,7 @@ impl SessionRuntime for ManagedHost {
         thread: &str,
         tool_use_id: &str,
         decision: Decision,
-    ) -> Result<TurnOutcome, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         let result = self
             .host
             .resume(
@@ -513,7 +513,7 @@ impl SessionRuntime for ManagedHost {
             )
             .await
             .map_err(to_run_error)?;
-        Ok(to_turn_outcome(result))
+        Ok(to_step_outcome(result))
     }
 
     async fn resume_custom(
@@ -522,7 +522,7 @@ impl SessionRuntime for ManagedHost {
         tool_use_id: &str,
         content: &str,
         is_error: bool,
-    ) -> Result<TurnOutcome, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         let result = self
             .host
             .resume(
@@ -535,7 +535,7 @@ impl SessionRuntime for ManagedHost {
             )
             .await
             .map_err(to_run_error)?;
-        Ok(to_turn_outcome(result))
+        Ok(to_step_outcome(result))
     }
 
     async fn live_inbox_snapshot(&self, thread: &str) -> LiveInboxSnapshot {
@@ -994,9 +994,9 @@ fn to_port_pending(pending: Option<PendingTool>) -> Option<PortPending> {
     })
 }
 
-fn to_step_outcome(result: RunResult) -> StepOutcome {
+fn to_port_step_outcome(result: RunResult) -> PortStepOutcome {
     // The run's terminal `Phase` maps to exactly one `Terminal`. A `Phase::Ended(Error)`
-    // becomes `Terminal::Failed` — the neutral twin of `to_turn_outcome`'s `TurnFailure`
+    // becomes `Terminal::Failed` — the neutral twin of `to_step_outcome`'s `PortStepFailure`
     // — so the wire adapter can surface a failed run (it is a successful `RunResult`,
     // not a `HostError`, so it never reaches the adapter as a `DriverError`).
     let terminal = match &result.phase {
@@ -1004,13 +1004,13 @@ fn to_step_outcome(result: RunResult) -> StepOutcome {
             pending: to_port_pending(result.pending),
         },
         Phase::Ended(EndCause::MaxSteps) => Terminal::Exhausted,
-        Phase::Ended(EndCause::Error(fault)) => Terminal::Failed(StepFailure {
+        Phase::Ended(EndCause::Error(fault)) => Terminal::Failed(PortStepFailure {
             code: fault.code().to_string(),
             message: fault.message(),
         }),
         _ => Terminal::Finished,
     };
-    StepOutcome {
+    PortStepOutcome {
         new_messages: result.new_messages,
         terminal,
     }
@@ -1037,13 +1037,13 @@ impl ProtocolRuntime for ProtocolHost {
         thread: &str,
         _agent: Option<String>,
         messages: Vec<Message>,
-    ) -> Result<StepOutcome, DriverError> {
+    ) -> Result<PortStepOutcome, DriverError> {
         let result = self
             .host
             .run(None, thread, messages)
             .await
             .map_err(to_driver_error)?;
-        Ok(to_step_outcome(result))
+        Ok(to_port_step_outcome(result))
     }
 
     async fn run_streaming(
@@ -1052,13 +1052,13 @@ impl ProtocolRuntime for ProtocolHost {
         _agent: Option<String>,
         messages: Vec<Message>,
         sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-    ) -> Result<StepOutcome, DriverError> {
+    ) -> Result<PortStepOutcome, DriverError> {
         let result = self
             .host
             .run_streaming(None, thread, messages, sink)
             .await
             .map_err(to_driver_error)?;
-        Ok(to_step_outcome(result))
+        Ok(to_port_step_outcome(result))
     }
 
     async fn resume(
@@ -1066,7 +1066,7 @@ impl ProtocolRuntime for ProtocolHost {
         thread: &str,
         tool_use_id: &str,
         resume: PortResume,
-    ) -> Result<StepOutcome, DriverError> {
+    ) -> Result<PortStepOutcome, DriverError> {
         let resume = match resume {
             PortResume::Confirm { allow, note } => HostResume::Confirm { allow, note },
             PortResume::ClientResult { content, is_error } => {
@@ -1078,7 +1078,7 @@ impl ProtocolRuntime for ProtocolHost {
             .resume(thread, tool_use_id, resume)
             .await
             .map_err(to_driver_error)?;
-        Ok(to_step_outcome(result))
+        Ok(to_port_step_outcome(result))
     }
 
     async fn pending(&self, thread: &str) -> Option<PortPending> {

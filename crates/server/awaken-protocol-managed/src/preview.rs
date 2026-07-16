@@ -8,7 +8,7 @@
 //! Each contiguous text run opens one previewed `agent.message`: the sink mints
 //! that message's committed id up front (from the shared event-id counter) so
 //! `event_start.event.id` equals the id the buffered `agent.message` will carry,
-//! and records the minted ids in order so `append_turn` reuses them for the
+//! and records the minted ids in order so `append_step` reuses them for the
 //! committed messages — letting the SDK reconcile preview → buffered by id.
 //! Previews are best-effort: a failed broadcast never touches committed truth.
 
@@ -36,7 +36,7 @@ struct Inner {
     /// call / terminal kind closes the run.
     open_id: Option<String>,
     /// The ids minted for each previewed message, in order — consumed by
-    /// `append_turn` so the committed `agent.message` events reuse them.
+    /// `append_step` so the committed `agent.message` events reuse them.
     allocated: Vec<String>,
 }
 
@@ -50,7 +50,7 @@ impl PreviewSink {
     }
 
     /// The ids minted for previewed `agent.message` events, in emission order,
-    /// draining the record. `append_turn` assigns these to the buffered messages
+    /// draining the record. `append_step` assigns these to the buffered messages
     /// so a preview and its committed event share an id.
     pub fn take_allocated_ids(&self) -> Vec<String> {
         std::mem::take(&mut self.inner.lock().unwrap().allocated)

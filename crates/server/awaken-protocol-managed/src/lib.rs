@@ -65,6 +65,6 @@ pub use state::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, ManagedState, McpServerBinding, OutcomeIteration, OutcomeReport, Pending,
     RunError, RunErrorKind, SessionInit, SessionLifecycleSink, SessionResource, SessionRuntime,
-    SessionUsage, StateError, TurnFailure, TurnOutcome,
+    SessionUsage, StateError, StepFailure, StepOutcome,
 };
 pub use work_queue::{InMemoryWorkQueue, WorkItem, WorkQueue, WorkState};

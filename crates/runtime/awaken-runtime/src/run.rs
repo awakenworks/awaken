@@ -28,7 +28,7 @@ impl Runtime {
     /// This is the single-shot entry: it installs the config and executes once. If
     /// the run parks on a tool approval it returns `Phase::Waiting` — use
     /// [`Runtime::run_to_completion`] to answer approvals and drive to a terminal
-    /// phase, or for multi-turn (a stable thread).
+    /// phase, or for multi-run (a stable thread).
     pub async fn run(
         &self,
         config: &RunnableConfig,
@@ -46,7 +46,7 @@ impl Runtime {
     /// never build activations, generate ids, or assemble resume commands. `decide`
     /// is the in-process twin of the durable queue's out-of-band decision delivery:
     /// it sees the [`WaitingTicket`] (what is asked) and returns a [`ResumeResult`]
-    /// (the answer). Pass a stable `thread` across turns for a multi-turn
+    /// (the answer). Pass a stable `thread` across runs for a multi-run
     /// conversation. The context must carry a history reader to resume.
     pub async fn run_to_completion<F>(
         &self,

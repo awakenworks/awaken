@@ -15,7 +15,7 @@ pub struct Pending {
 
 /// The result of running one step (a new turn, or a resume). `pending` is set when
 /// `stop` is `RequiresAction`.
-pub struct TurnOutcome {
+pub struct StepOutcome {
     pub messages: Vec<Message>,
     pub stop: StopReason,
     pub pending: Option<Pending>,
@@ -25,13 +25,13 @@ pub struct TurnOutcome {
     /// Set when the run ended in a terminal fault (the neutral `EndCause::Error`) —
     /// projected as a `session.error` event before the turn goes idle, so a client
     /// observes the failure. `None` on a normal completion.
-    pub failure: Option<TurnFailure>,
+    pub failure: Option<StepFailure>,
 }
 
 /// A terminal run fault carried from the neutral `EndCause::Error` so the adapter
 /// can project `session.error`. Neutral (a stable `code` + human `message`), not
 /// managed-wire vocabulary.
-pub struct TurnFailure {
+pub struct StepFailure {
     pub code: String,
     pub message: String,
 }
@@ -183,11 +183,11 @@ pub trait SessionRuntime: Send + Sync {
         agent: &str,
         thread: &str,
         content: Vec<ContentBlock>,
-    ) -> Result<TurnOutcome, RunError>;
+    ) -> Result<StepOutcome, RunError>;
 
     /// Run one user turn, installing `sink` as the run's best-effort live-progress
     /// channel so the adapter can project in-flight `stream::Kind` into
-    /// `event_start`/`event_delta` previews. The committed [`TurnOutcome`] is
+    /// `event_start`/`event_delta` previews. The committed [`StepOutcome`] is
     /// identical to [`run`](Self::run) — the sink only mirrors in-flight events. The
     /// default ignores the sink and delegates to `run`, so a host without a
     /// streaming path (or a test double) is unaffected.
@@ -197,7 +197,7 @@ pub trait SessionRuntime: Send + Sync {
         thread: &str,
         content: Vec<ContentBlock>,
         _sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-    ) -> Result<TurnOutcome, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         self.run(agent, thread, content).await
     }
 
@@ -209,7 +209,7 @@ pub trait SessionRuntime: Send + Sync {
         thread: &str,
         tool_use_id: &str,
         decision: Decision,
-    ) -> Result<TurnOutcome, RunError>;
+    ) -> Result<StepOutcome, RunError>;
 
     /// Deliver a client-executed tool's result to the parked run and continue.
     /// `tool_use_id` is the client's asserted target; implementations must fail
@@ -220,7 +220,7 @@ pub trait SessionRuntime: Send + Sync {
         tool_use_id: &str,
         content: &str,
         is_error: bool,
-    ) -> Result<TurnOutcome, RunError>;
+    ) -> Result<StepOutcome, RunError>;
 
     /// Provision `thread` for a new session BEFORE its record exists (ADR-0043
     /// Phase 3): the host materializes the init's MCP credential bindings and

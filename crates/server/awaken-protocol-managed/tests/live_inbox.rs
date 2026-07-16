@@ -11,7 +11,7 @@ use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_protocol_managed::types::StopReason;
 use awaken_protocol_managed::{
     LiveInboxEntry, LiveInboxError, LiveInboxSnapshot, ManagedState, OutcomeReport, RunError,
-    SessionRuntime, TurnOutcome, router,
+    SessionRuntime, StepOutcome, router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -85,8 +85,8 @@ impl SessionRuntime for QueueFake {
         _agent: &str,
         _thread: &str,
         _content: Vec<ContentBlock>,
-    ) -> Result<TurnOutcome, RunError> {
-        Ok(TurnOutcome {
+    ) -> Result<StepOutcome, RunError> {
+        Ok(StepOutcome {
             messages: vec![Message::text(Id("a".into()), Role::Assistant, "ok")],
             stop: StopReason::EndTurn,
             pending: None,
@@ -100,7 +100,7 @@ impl SessionRuntime for QueueFake {
         _thread: &str,
         _tool_use_id: &str,
         _decision: awaken_protocol_managed::Decision,
-    ) -> Result<TurnOutcome, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         unimplemented!("not exercised")
     }
 
@@ -110,7 +110,7 @@ impl SessionRuntime for QueueFake {
         _tool_use_id: &str,
         _content: &str,
         _is_error: bool,
-    ) -> Result<TurnOutcome, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         unimplemented!("not exercised")
     }
 
@@ -238,7 +238,7 @@ fn app(fake: Arc<QueueFake>) -> Router {
             a: &str,
             t: &str,
             c: Vec<ContentBlock>,
-        ) -> Result<TurnOutcome, RunError> {
+        ) -> Result<StepOutcome, RunError> {
             self.0.run(a, t, c).await
         }
         async fn resume(
@@ -246,7 +246,7 @@ fn app(fake: Arc<QueueFake>) -> Router {
             t: &str,
             i: &str,
             d: awaken_protocol_managed::Decision,
-        ) -> Result<TurnOutcome, RunError> {
+        ) -> Result<StepOutcome, RunError> {
             self.0.resume(t, i, d).await
         }
         async fn resume_custom(
@@ -255,7 +255,7 @@ fn app(fake: Arc<QueueFake>) -> Router {
             i: &str,
             c: &str,
             e: bool,
-        ) -> Result<TurnOutcome, RunError> {
+        ) -> Result<StepOutcome, RunError> {
             self.0.resume_custom(t, i, c, e).await
         }
         async fn add_system(&self, t: &str, x: &str) -> Result<(), RunError> {

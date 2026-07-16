@@ -26,7 +26,7 @@ pub struct Pending {
 }
 
 /// A run that ended in a terminal fault, classified (code + message) — the neutral
-/// twin of the Managed `TurnFailure`. Carried so every wire adapter can surface a
+/// twin of the Managed `StepFailure`. Carried so every wire adapter can surface a
 /// failed run instead of projecting a silent, empty finish.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StepFailure {
