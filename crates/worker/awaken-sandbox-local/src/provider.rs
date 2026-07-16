@@ -52,6 +52,8 @@ pub(crate) async fn resolve_source(
         pc::MountSource::Resource { resource_id, .. } => resource_id.as_str(),
         // The broker is faked locally by the seed map / store keyed on the reference.
         pc::MountSource::Secret { reference, .. } => reference.as_str(),
+        // Inline ephemeral content ships in the spec — no store hit, no id.
+        pc::MountSource::Inline { contents } => return Some(contents.clone().into_bytes()),
         pc::MountSource::Other(v) => {
             return v
                 .get("content")
