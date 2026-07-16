@@ -192,7 +192,7 @@ pub struct SharedHost {
     /// Per-thread MCP servers staged by a session's `prepare_session` (ADR-0043
     /// Phase 3), consumed when the thread's context is first built. Keyed by
     /// thread id; a thread with no entry connects to no MCP server.
-    thread_mcp: std::sync::Mutex<HashMap<String, Vec<PreparedMcpServer>>>,
+    pub(crate) thread_mcp: std::sync::Mutex<HashMap<String, Vec<PreparedMcpServer>>>,
     /// Per-thread staged resource mounts + prompt fragments (ADR-0038), set by a
     /// session's `prepare_session` and consumed by `sandbox_spec` (mounts) and the
     /// run's system prompt (fragments). A thread with no entry mounts nothing. A shared

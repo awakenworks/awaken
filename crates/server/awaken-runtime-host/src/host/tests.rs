@@ -759,6 +759,77 @@ async fn prepare_session_mounts_bound_file_and_stages_bound_repo() {
     assert_eq!(repos[0].url, "https://github.com/awaken/example.git");
 }
 
+/// Managed-Agents model: a `github_repository` session resource clones host-side AND injects
+/// a scoped `github:<logical>` MCP server whose token is held host-side — so the agent drives
+/// branch/commit/push/PR through MCP tools while the credential never enters the sandbox.
+#[tokio::test]
+async fn a_github_repository_resource_injects_a_scoped_github_mcp_server() {
+    use awaken_protocol_managed::{SessionInit, SessionResource, SessionRuntime};
+    use awaken_run_executor_acp::McpCredential;
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let managed = crate::ManagedHost::new(host.clone()).with_mcp(
+        Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
+        Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+        Arc::new(awaken_config_resolver::InMemoryMcpStore::new()),
+    );
+
+    managed
+        .prepare_session(
+            "t-gh",
+            SessionInit {
+                agent_id: "a".into(),
+                mcp_servers: Vec::new(),
+                resources: vec![SessionResource {
+                    kind: "github_repository".into(),
+                    id: "https://github.com/awaken/example.git".into(),
+                    mount_path: "/workspace/repo".into(),
+                    instructions: None,
+                    auth_token: Some("ghp_secret_token".into()),
+                    git_ref: None,
+                }],
+                model: None,
+                runtime: None,
+                deny_egress: false,
+            },
+        )
+        .await
+        .unwrap();
+
+    // The repo is staged for a host-side clone...
+    assert_eq!(
+        host.thread_repos("t-gh").len(),
+        1,
+        "repo staged for cloning"
+    );
+
+    // ...AND a scoped GitHub MCP server is injected, holding the token host-side.
+    let mcp = host.thread_mcp("t-gh");
+    let gh = mcp
+        .iter()
+        .find(|s| s.name == "github:workspace/repo")
+        .expect("a github MCP server bridged from the repo resource");
+    assert_eq!(gh.url, "https://api.githubcopilot.com/mcp/");
+    assert_eq!(
+        gh.bearer.as_ref().map(|b| b.expose_secret().to_string()),
+        Some("ghp_secret_token".to_string()),
+        "the token is held host-side on the prepared MCP server"
+    );
+
+    // A SANDBOXED (untrusted) ACP run gets only an α reference — the raw token never enters
+    // the sandbox (the whole point of the Managed-Agents server-side-token model).
+    match crate::mcp::project_staged_mcp(gh, false).credential {
+        McpCredential::Reference { reference } => {
+            assert_eq!(reference, "session-mcp:github:workspace/repo");
+        }
+        other => panic!("sandboxed projection must be a secretless reference, got {other:?}"),
+    }
+    // A trusted (non-sandboxed) run may carry the bearer inline (β) — the split is by isolation.
+    match crate::mcp::project_staged_mcp(gh, true).credential {
+        McpCredential::TrustedInline { secret } => assert_eq!(secret, "ghp_secret_token"),
+        other => panic!("trusted projection carries the inline bearer, got {other:?}"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Resource-plane seam coverage (ADR-0038): the gaps a per-layer test misses.
 //   G1 consistency  — what the config plane TELLS the agent == what the host MOUNTS

@@ -175,6 +175,18 @@ impl SharedHost {
             .unwrap_or_default()
     }
 
+    /// The MCP servers staged for `thread` (test-only observability, mirrors
+    /// [`Self::thread_repos`]): the set `register_thread_mcp` recorded, including any
+    /// `github:<logical>` server bridged from a github_repository resource.
+    pub(crate) fn thread_mcp(&self, thread: &str) -> Vec<crate::host::PreparedMcpServer> {
+        self.thread_mcp
+            .lock()
+            .unwrap()
+            .get(thread)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// The `(memory_store_id, logical_path)` memory mounts staged for `thread`
     /// (test-only observability, mirrors [`Self::thread_repos`]): a memory mount is
     /// harvested host-side via `harvest_thread_memory`, not carried in `sandbox_spec`.

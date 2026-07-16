@@ -774,6 +774,24 @@ impl SessionRuntime for ManagedHost {
                 all.repos.extend(one.repos);
             }
         }
+        // Bridge github_repository resources to a GitHub MCP server (Anthropic Managed Agents
+        // model): each cloned repo whose token is held host-side also gets a `github:<logical>`
+        // MCP server bearing that token, so the agent branches, commits, pushes, and opens PRs
+        // through MCP tools while the credential stays server-side and never enters the sandbox
+        // (a sandboxed run sees only an α reference — see `project_staged_mcp`). Captured now
+        // because `all` is moved into the resource registry next.
+        const GITHUB_MCP_URL: &str = "https://api.githubcopilot.com/mcp/";
+        let repo_mcp: Vec<crate::host::PreparedMcpServer> = all
+            .repos
+            .iter()
+            .filter(|r| r.token.is_some())
+            .map(|r| crate::host::PreparedMcpServer {
+                name: format!("github:{}", r.logical),
+                url: GITHUB_MCP_URL.to_string(),
+                bearer: r.token.clone(),
+                refresh: None,
+            })
+            .collect();
         if !all.mounts.is_empty()
             || !all.prompts.is_empty()
             || !all.repos.is_empty()
@@ -867,6 +885,14 @@ impl SessionRuntime for ManagedHost {
                     refresh: None,
                 });
             }
+        }
+        // Fold in the GitHub MCP servers bridged from github_repository resources, skipping a
+        // name already staged (an explicit MCP binding of the same name wins).
+        for server in repo_mcp {
+            if prepared.iter().any(|p| p.name == server.name) {
+                continue;
+            }
+            prepared.push(server);
         }
         self.host.register_thread_mcp(thread, prepared);
         Ok(())
