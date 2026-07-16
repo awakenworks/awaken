@@ -452,6 +452,41 @@ mod tests {
         );
     }
 
+    // REGRESSION (the live-merge, ADR-0058 Axis 9): a streamed step's committed
+    // tail must NOT re-emit assistant text — the live `delta()` already streamed it
+    // as `text-*`. `encode_close` drops the `AssistantMessage`, so the tail carries
+    // only tool/finish frames. If that drop regressed, the client would see the
+    // assistant text twice.
+    #[test]
+    fn streamed_text_is_not_re_emitted_by_the_committed_tail() {
+        let outcome = StepOutcome {
+            new_messages: vec![Message::text(
+                Id("a1".into()),
+                Role::Assistant,
+                "hello there",
+            )],
+            terminal: Terminal::Finished,
+        };
+        let tail = encode_close(&outcome);
+        assert!(
+            tail.iter().all(|e| !matches!(
+                e,
+                UIStreamEvent::TextStart { .. }
+                    | UIStreamEvent::TextDelta { .. }
+                    | UIStreamEvent::TextEnd { .. }
+            )),
+            "the committed tail must not re-emit streamed text: {tail:?}"
+        );
+        // A non-streamed full projection DOES carry the text (nothing streamed it).
+        let full = encode_step(&outcome);
+        assert!(
+            full.iter().any(
+                |e| matches!(e, UIStreamEvent::TextDelta { delta, .. } if delta == "hello there")
+            ),
+            "the full projection carries the assistant text: {full:?}"
+        );
+    }
+
     fn assistant_tool(id: &str, call: &str, name: &str, args: Value) -> Message {
         Message {
             id: Id(id.to_string()),
