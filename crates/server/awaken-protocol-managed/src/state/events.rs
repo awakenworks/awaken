@@ -122,8 +122,10 @@ impl ManagedState {
         }
         // Register a child thread per delegate call and project its full inline
         // lifecycle: `created` → `status_running` → the input sent to the delegate →
-        // the reply received → `status_idle`. The thread API enumerates subagent
-        // threads and the stream carries their messages and status.
+        // the reply received → `status_idle` → `status_terminated` (a delegate call
+        // is one-shot, so the child thread concludes rather than staying idle). The
+        // thread API enumerates subagent threads and the stream carries their
+        // messages and status.
         for d in delegates {
             let thread_id = format!("{}:thread:{}", session_id, record.child_threads.len());
             record.child_threads.push(Self::child_thread(
@@ -155,6 +157,10 @@ impl ManagedState {
                     session_thread_id: thread_id.clone(),
                     agent_name: name.clone(),
                     stop_reason: StopReason::EndTurn,
+                },
+                OutboundKind::SessionThreadStatusTerminated {
+                    session_thread_id: thread_id.clone(),
+                    agent_name: name.clone(),
                 },
             ] {
                 record.events.push(Event {
