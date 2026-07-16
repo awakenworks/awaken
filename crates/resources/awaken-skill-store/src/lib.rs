@@ -60,6 +60,24 @@ pub fn sanitize_stem(name: &str) -> String {
     }
 }
 
+/// The stable, tagged catalog id for a skill named `name` (e.g. `skill_1a2b…`). The
+/// official SDK requires `agent.skills[].skill_id` to be a tagged catalog id, not the
+/// skill's name — so both the advertisement (derived from the durable catalog's stems)
+/// and the `/v1/skills` registry compute this same id independently from the name, and
+/// they line up without a shared map. Deterministic (FNV-1a over the safe stem) so it
+/// survives a restart and matches across nodes; taking the stem makes it agree whether
+/// fed the raw frontmatter name or the durable key.
+#[must_use]
+pub fn catalog_id(name: &str) -> String {
+    let stem = sanitize_stem(name);
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in stem.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("skill_{h:016x}")
+}
+
 // The `SkillStore` port + its error live in the port-only contract crate; this crate
 // implements them and re-exports so `awaken_skill_store::SkillStore` keeps resolving.
 pub use awaken_resource_contract::{SkillStore, SkillStoreError};
@@ -246,6 +264,20 @@ mod tests {
         assert_ne!(sanitize_stem("a"), sanitize_stem("b"));
         // Length is bounded so a crafted long id cannot blow up a filename.
         assert!(sanitize_stem(&"x".repeat(300)).len() <= 120);
+    }
+
+    #[test]
+    fn catalog_id_is_stable_and_tagged() {
+        // Tagged catalog form, deterministic across calls (survives a restart).
+        let a = catalog_id("Greeter");
+        assert!(a.starts_with("skill_"), "tagged form: {a}");
+        assert_eq!(a, catalog_id("Greeter"));
+        // Agrees whether fed the raw frontmatter name or the durable stem it sanitizes
+        // to — so advertisement (from stems) and the registry (from names) line up.
+        assert_eq!(catalog_id("Greeter"), catalog_id(&sanitize_stem("Greeter")));
+        assert_eq!(catalog_id("my skill!"), catalog_id("my-skill"));
+        // Distinct skills get distinct ids.
+        assert_ne!(catalog_id("greeter"), catalog_id("farewell"));
     }
 
     #[tokio::test]
