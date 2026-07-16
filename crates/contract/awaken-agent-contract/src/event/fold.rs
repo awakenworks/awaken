@@ -261,6 +261,49 @@ mod tests {
     use super::*;
     use crate::agent::message::Id;
     use crate::agent::run::Failure;
+    use crate::event::classify::{Tier, classify};
+
+    // PRODUCER AUTHORITY (ADR-0058 Axis 6): the fold produces *only* committed
+    // whole-units / lifecycle facts — never a live `Delta`. This ties the producer
+    // (fold) to the router (classify): every event any fold emits must classify as
+    // the `Fact` tier. If a future edit made the fold emit a `Delta`, this fails.
+    #[test]
+    fn the_fold_emits_only_fact_tier_events() {
+        let messages = vec![
+            Message::text(Id("u1".into()), Role::User, "hi"),
+            Message::new(
+                Id("a1".into()),
+                Role::Assistant,
+                vec![
+                    ContentBlock::text("sure"),
+                    ContentBlock::tool_use("c1", "run", serde_json::json!({})),
+                ],
+            ),
+            Message::new(
+                Id("t1".into()),
+                Role::Tool,
+                vec![ContentBlock::tool_result(
+                    "c1",
+                    vec![ContentBlock::text("ok")],
+                )],
+            ),
+        ];
+        for phase in [
+            Phase::Running,
+            Phase::Waiting,
+            Phase::Ended(EndCause::NaturalEnd),
+            Phase::Ended(EndCause::MaxSteps),
+            Phase::Ended(EndCause::Error(Failure::CapabilityBound)),
+        ] {
+            for fact in fold_step(&messages, &phase, Some(("c1", false))) {
+                assert_eq!(
+                    classify(&AgentEvent::Fact(fact.clone())).tier,
+                    Tier::Fact,
+                    "fold emitted a non-Fact-tier event: {fact:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn error_terminal_projects_run_failed_with_the_fault_code() {
