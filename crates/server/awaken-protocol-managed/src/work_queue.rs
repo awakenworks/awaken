@@ -31,10 +31,19 @@ use async_trait::async_trait;
 use crate::types::environment::{Work, WorkData, WorkHeartbeat, WorkQueueStats};
 
 /// The frozen object timestamp the managed wire uses (single-machine builds have
-/// no real clock in the projection; timestamps carry presence, not wall time).
+/// no real clock in the *projection*; wire timestamps carry presence, not wall
+/// time). Real wall time enters only as the `now_ms` argument the routes pass to
+/// the lease/poll bookkeeping — never onto the wire — so the wire shape is
+/// unchanged while leases can expire and pollers can be counted.
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
-/// The lease TTL a heartbeat reports.
+/// The lease TTL a heartbeat reports (seconds).
 const HEARTBEAT_TTL_SECONDS: u64 = 60;
+/// The lease window in ms: an `active` item whose lease last extended more than
+/// this ago is no longer held by a live worker and is reclaimable on the next poll.
+pub const LEASE_TTL_MS: u64 = HEARTBEAT_TTL_SECONDS * 1000;
+/// The liveness window for `workers_polling`: a worker counts as polling if it
+/// polled within this many ms of now (the SDK's ~30s window).
+pub const POLLER_WINDOW_MS: u64 = 30_000;
 
 /// A work item's lifecycle state. `as_str` is the Anthropic wire vocabulary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,13 +124,15 @@ pub trait WorkQueue: Send + Sync {
     async fn list(&self, env_id: &str) -> Vec<WorkItem>;
     /// The work item under `wid` when it belongs to `env_id`.
     async fn get(&self, env_id: &str, wid: &str) -> Option<WorkItem>;
-    /// Lease the oldest queued item on `env_id` (queued→active) when none is
-    /// already active; `None` when the queue is empty or one is active.
-    async fn claim(&self, env_id: &str) -> Option<WorkItem>;
+    /// Poll as `worker_id` at wall time `now_ms`: first reclaim any `active` item
+    /// whose lease has lapsed (its worker went away), then lease the oldest queued
+    /// item (queued→active) when none is actively leased. `None` when the queue is
+    /// empty or one is still live-leased. The poll is recorded for `workers_polling`.
+    async fn claim(&self, env_id: &str, worker_id: &str, now_ms: u64) -> Option<WorkItem>;
     /// Acknowledge receipt (queued→starting), stamping `acknowledged_at`.
     async fn ack(&self, env_id: &str, wid: &str) -> Option<WorkItem>;
-    /// Record a heartbeat and return the lease's TTL receipt.
-    async fn heartbeat(&self, env_id: &str, wid: &str) -> Option<WorkHeartbeat>;
+    /// Record a heartbeat at `now_ms` (extending the lease) and return the TTL receipt.
+    async fn heartbeat(&self, env_id: &str, wid: &str, now_ms: u64) -> Option<WorkHeartbeat>;
     /// Request a stop (→stopped).
     async fn stop(&self, env_id: &str, wid: &str) -> Option<WorkItem>;
     /// Merge a metadata patch (each present key upserts).
@@ -131,10 +142,76 @@ pub trait WorkQueue: Send + Sync {
         wid: &str,
         patch: BTreeMap<String, String>,
     ) -> Option<WorkItem>;
-    /// Queue stats for `env_id`.
-    async fn stats(&self, env_id: &str) -> WorkQueueStats;
+    /// Queue stats for `env_id` as of `now_ms` (for the `workers_polling` window).
+    async fn stats(&self, env_id: &str, now_ms: u64) -> WorkQueueStats;
     /// Drop all work for `env_id` (on environment delete).
     async fn remove_env(&self, env_id: &str);
+}
+
+/// Ephemeral lease + poll bookkeeping shared by every backend. Leases and poll
+/// liveness are inherently short-lived (a lease is held by a heartbeating worker;
+/// a poll counts for ~30s) and meaningless after a restart, so they live in
+/// process — no durable column — keeping the wire and the schema unchanged. This
+/// is the single source of the reclaim + `workers_polling` logic, so the three
+/// backends can't drift.
+#[derive(Default)]
+pub struct LeaseBook {
+    /// work_id → lease expiry (ms). Absent ⇒ no live lease (reclaimable).
+    leases: Mutex<BTreeMap<String, u64>>,
+    /// env_id → (worker_id → last poll ms).
+    polls: Mutex<BTreeMap<String, BTreeMap<String, u64>>>,
+}
+
+impl LeaseBook {
+    /// Record that `worker_id` polled `env_id` at `now_ms`.
+    pub fn record_poll(&self, env_id: &str, worker_id: &str, now_ms: u64) {
+        self.polls
+            .lock()
+            .unwrap()
+            .entry(env_id.to_string())
+            .or_default()
+            .insert(worker_id.to_string(), now_ms);
+    }
+    /// True while `wid` holds a lease that has not expired as of `now_ms`.
+    pub fn is_leased(&self, wid: &str, now_ms: u64) -> bool {
+        self.leases
+            .lock()
+            .unwrap()
+            .get(wid)
+            .is_some_and(|exp| *exp > now_ms)
+    }
+    /// Start/extend `wid`'s lease to `now_ms + LEASE_TTL_MS`.
+    pub fn lease(&self, wid: &str, now_ms: u64) {
+        self.leases
+            .lock()
+            .unwrap()
+            .insert(wid.to_string(), now_ms + LEASE_TTL_MS);
+    }
+    /// Drop `wid`'s lease (on stop / reclaim).
+    pub fn release(&self, wid: &str) {
+        self.leases.lock().unwrap().remove(wid);
+    }
+    /// Distinct workers that polled `env_id` within `POLLER_WINDOW_MS` of `now_ms`.
+    pub fn workers_polling(&self, env_id: &str, now_ms: u64) -> i64 {
+        self.polls
+            .lock()
+            .unwrap()
+            .get(env_id)
+            .map(|m| {
+                m.values()
+                    .filter(|&&t| t + POLLER_WINDOW_MS > now_ms)
+                    .count() as i64
+            })
+            .unwrap_or(0)
+    }
+    /// Forget an environment's leases + polls (on `remove_env`).
+    pub fn forget_env(&self, env_id: &str, work_ids: &[String]) {
+        let mut leases = self.leases.lock().unwrap();
+        for wid in work_ids {
+            leases.remove(wid);
+        }
+        self.polls.lock().unwrap().remove(env_id);
+    }
 }
 
 /// The default single-process work queue: a `BTreeMap` keyed by monotonic work id
@@ -142,6 +219,7 @@ pub trait WorkQueue: Send + Sync {
 pub struct InMemoryWorkQueue {
     works: Mutex<BTreeMap<String, WorkItem>>,
     seq: AtomicU64,
+    book: LeaseBook,
 }
 
 impl Default for InMemoryWorkQueue {
@@ -156,6 +234,7 @@ impl InMemoryWorkQueue {
         Self {
             works: Mutex::new(BTreeMap::new()),
             seq: AtomicU64::new(0),
+            book: LeaseBook::default(),
         }
     }
 
@@ -231,9 +310,23 @@ impl WorkQueue for InMemoryWorkQueue {
         self.with_owned(env_id, wid, |w| w.clone())
     }
 
-    async fn claim(&self, env_id: &str) -> Option<WorkItem> {
+    async fn claim(&self, env_id: &str, worker_id: &str, now_ms: u64) -> Option<WorkItem> {
+        self.book.record_poll(env_id, worker_id, now_ms);
         let mut works = self.works.lock().unwrap();
-        // Single active lease per environment (the open-tier single-worker cap).
+        // Reclaim: an `active` item whose lease has lapsed (a worker that stopped
+        // heartbeating, e.g. crashed) is no longer held — return it to `queued` so
+        // this poll can re-lease it instead of the env blocking forever.
+        for (wid, w) in works.iter_mut() {
+            if w.environment_id == env_id
+                && w.state == WorkState::Active
+                && !self.book.is_leased(wid, now_ms)
+            {
+                w.state = WorkState::Queued;
+                self.book.release(wid);
+            }
+        }
+        // Single active lease per environment (the open-tier single-worker cap):
+        // after reclaim, only a live-leased item counts.
         if works
             .values()
             .any(|w| w.environment_id == env_id && w.state == WorkState::Active)
@@ -249,6 +342,7 @@ impl WorkQueue for InMemoryWorkQueue {
         let w = works.get_mut(&wid).expect("just found");
         w.state = WorkState::Active;
         w.started_at = Some(OBJECT_AT.to_string());
+        self.book.lease(&wid, now_ms);
         Some(w.clone())
     }
 
@@ -262,8 +356,8 @@ impl WorkQueue for InMemoryWorkQueue {
         })
     }
 
-    async fn heartbeat(&self, env_id: &str, wid: &str) -> Option<WorkHeartbeat> {
-        self.with_owned(env_id, wid, |w| {
+    async fn heartbeat(&self, env_id: &str, wid: &str, now_ms: u64) -> Option<WorkHeartbeat> {
+        let hb = self.with_owned(env_id, wid, |w| {
             w.latest_heartbeat_at = Some(OBJECT_AT.to_string());
             WorkHeartbeat {
                 object_type: "work_heartbeat",
@@ -272,16 +366,20 @@ impl WorkQueue for InMemoryWorkQueue {
                 state: w.state.as_str(),
                 ttl_seconds: HEARTBEAT_TTL_SECONDS,
             }
-        })
+        })?;
+        self.book.lease(wid, now_ms); // extend the lease
+        Some(hb)
     }
 
     async fn stop(&self, env_id: &str, wid: &str) -> Option<WorkItem> {
-        self.with_owned(env_id, wid, |w| {
+        let out = self.with_owned(env_id, wid, |w| {
             w.stop_requested_at = Some(OBJECT_AT.to_string());
             w.stopped_at = Some(OBJECT_AT.to_string());
             w.state = WorkState::Stopped;
             w.clone()
-        })
+        })?;
+        self.book.release(wid);
+        Some(out)
     }
 
     async fn update_metadata(
@@ -296,7 +394,7 @@ impl WorkQueue for InMemoryWorkQueue {
         })
     }
 
-    async fn stats(&self, env_id: &str) -> WorkQueueStats {
+    async fn stats(&self, env_id: &str, now_ms: u64) -> WorkQueueStats {
         let works = self.works.lock().unwrap();
         let in_env: Vec<&WorkItem> = works
             .values()
@@ -317,13 +415,10 @@ impl WorkQueue for InMemoryWorkQueue {
                 )
             })
             .count();
-        // `workers_polling` is 0/1 here by construction: an environment leases at most
-        // one active item (the open-tier single-worker cap), so at most one worker is
-        // ever processing. (A real "workers polled in the last 30s" liveness count for
-        // an idle queue needs a wall clock — the managed projection is deliberately
-        // clockless (M1) — and a per-worker identity the env-key-authenticated poll
-        // does not carry; both are out of scope until the clock port lands.)
-        let workers_polling = i64::from(in_env.iter().any(|w| w.state == WorkState::Active));
+        // `workers_polling` = distinct workers that polled within the liveness window
+        // (the SDK's ~30s semantics), tracked from the `worker_id` each poll carries —
+        // not the 0/1 active-item proxy the clockless build was limited to.
+        let workers_polling = self.book.workers_polling(env_id, now_ms);
         // `oldest_queued_at` is the oldest item still QUEUED or being PROCESSED (the
         // SDK's semantics), so it stays set once a worker claims the last queued item —
         // not just while `depth > 0`. Only a fully drained queue (all stopped) is null.
@@ -338,10 +433,14 @@ impl WorkQueue for InMemoryWorkQueue {
     }
 
     async fn remove_env(&self, env_id: &str) {
-        self.works
-            .lock()
-            .unwrap()
-            .retain(|_, w| w.environment_id != env_id);
+        let mut works = self.works.lock().unwrap();
+        let ids: Vec<String> = works
+            .values()
+            .filter(|w| w.environment_id == env_id)
+            .map(|w| w.id.clone())
+            .collect();
+        works.retain(|_, w| w.environment_id != env_id);
+        self.book.forget_env(env_id, &ids);
     }
 }
 
@@ -367,14 +466,51 @@ mod tests {
         let q = q();
         let w1 = q.enqueue_session("env_a", "s1").await;
         let _w2 = q.enqueue_session("env_a", "s2").await;
-        let leased = q.claim("env_a").await.expect("leases the oldest");
+        let leased = q.claim("env_a", "w", 0).await.expect("leases the oldest");
         assert_eq!(leased.id, w1);
         assert_eq!(leased.state, WorkState::Active);
-        // A second poll is capped while one is active.
-        assert!(q.claim("env_a").await.is_none(), "single active lease");
+        // A second poll is capped while one is live-leased.
+        assert!(
+            q.claim("env_a", "w", 0).await.is_none(),
+            "single active lease"
+        );
         // Stopping the active one frees the lease for the next.
         q.stop("env_a", &w1).await.expect("stop");
-        assert!(q.claim("env_a").await.is_some(), "next lease after stop");
+        assert!(
+            q.claim("env_a", "w", 0).await.is_some(),
+            "next lease after stop"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_expired_lease_is_reclaimed_on_the_next_poll() {
+        let q = q();
+        let w1 = q.enqueue_session("env_a", "s1").await;
+        // Worker A leases it; while its lease is live, a re-poll is capped.
+        assert_eq!(q.claim("env_a", "a", 0).await.expect("lease").id, w1);
+        assert!(
+            q.claim("env_a", "b", 1_000).await.is_none(),
+            "a live lease caps the env"
+        );
+        // Worker A goes away (no heartbeat). Past the lease TTL, the next poll
+        // reclaims the lapsed lease and re-leases the item instead of blocking.
+        let reclaimed = q
+            .claim("env_a", "b", LEASE_TTL_MS + 1)
+            .await
+            .expect("expired lease reclaimed");
+        assert_eq!(reclaimed.id, w1);
+        assert_eq!(reclaimed.state, WorkState::Active);
+        // A heartbeat before expiry keeps the lease alive (no reclaim).
+        assert!(
+            q.heartbeat("env_a", &w1, LEASE_TTL_MS + 2)
+                .await
+                .expect("hb")
+                .lease_extended
+        );
+        assert!(
+            q.claim("env_a", "c", LEASE_TTL_MS + 3).await.is_none(),
+            "the heartbeat kept the lease live"
+        );
     }
 
     #[tokio::test]
@@ -390,7 +526,7 @@ mod tests {
     async fn heartbeat_extends_and_reports_ttl() {
         let q = q();
         let id = q.enqueue_session("env_a", "s1").await;
-        let hb = q.heartbeat("env_a", &id).await.expect("heartbeat");
+        let hb = q.heartbeat("env_a", &id, 0).await.expect("heartbeat");
         assert!(hb.lease_extended);
         assert_eq!(hb.ttl_seconds, HEARTBEAT_TTL_SECONDS);
     }
@@ -401,24 +537,24 @@ mod tests {
         let id = q.enqueue_session("env_a", "s1").await;
         assert!(q.get("env_b", &id).await.is_none(), "wrong env → none");
         assert!(q.ack("env_b", &id).await.is_none());
-        assert!(q.heartbeat("env_b", &id).await.is_none());
+        assert!(q.heartbeat("env_b", &id, 0).await.is_none());
         assert!(q.stop("env_b", &id).await.is_none());
     }
 
     #[tokio::test]
-    async fn stats_split_queued_depth_from_pending_and_flag_pollers() {
+    async fn stats_split_queued_depth_from_pending_and_count_pollers() {
         let q = q();
         q.enqueue_healthcheck("env_a").await;
         let s = q.enqueue_session("env_a", "s1").await;
-        // Two queued, none active.
-        let st = q.stats("env_a").await;
+        // Two queued, no poll yet.
+        let st = q.stats("env_a", 0).await;
         assert_eq!(st.depth, 2);
         assert_eq!(st.pending, 0);
         assert_eq!(st.workers_polling, 0);
         assert!(st.oldest_queued_at.is_some());
-        // Claim one → depth drops, pending rises, a poller is flagged.
-        q.claim("env_a").await;
-        let st = q.stats("env_a").await;
+        // Claim one → depth drops, pending rises, the poller is counted.
+        q.claim("env_a", "w1", 0).await;
+        let st = q.stats("env_a", 0).await;
         assert_eq!(st.depth, 1);
         assert_eq!(st.pending, 1);
         assert_eq!(st.workers_polling, 1);
@@ -427,15 +563,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn workers_polling_counts_distinct_workers_within_the_window() {
+        let q = q();
+        q.enqueue_session("env_a", "s1").await;
+        // Two distinct workers poll; the same worker polling twice is not double-counted.
+        q.claim("env_a", "w1", 0).await;
+        q.claim("env_a", "w2", 100).await;
+        q.claim("env_a", "w1", 200).await;
+        assert_eq!(q.stats("env_a", 300).await.workers_polling, 2);
+        // Past the liveness window (w1 last polled at 200), only w2 (100) is stale too.
+        assert_eq!(
+            q.stats("env_a", 200 + POLLER_WINDOW_MS + 1)
+                .await
+                .workers_polling,
+            0,
+            "pollers age out of the window"
+        );
+    }
+
+    #[tokio::test]
     async fn oldest_queued_at_persists_while_processing_and_clears_when_drained() {
         let q = q();
         let id = q.enqueue_session("env_a", "s1").await;
         // Queued: oldest_queued_at is set.
-        assert!(q.stats("env_a").await.oldest_queued_at.is_some());
+        assert!(q.stats("env_a", 0).await.oldest_queued_at.is_some());
         // Claim the ONLY queued item → depth 0 but it is still being processed, so
         // oldest_queued_at stays set (queued OR processing), not null.
-        q.claim("env_a").await.expect("claim");
-        let st = q.stats("env_a").await;
+        q.claim("env_a", "w", 0).await.expect("claim");
+        let st = q.stats("env_a", 0).await;
         assert_eq!(st.depth, 0, "nothing queued");
         assert_eq!(st.pending, 1, "one processing");
         assert!(
@@ -445,7 +600,7 @@ mod tests {
         // Stop it → the queue is fully drained → null.
         q.stop("env_a", &id).await.expect("stop");
         assert!(
-            q.stats("env_a").await.oldest_queued_at.is_none(),
+            q.stats("env_a", 0).await.oldest_queued_at.is_none(),
             "oldest_queued_at is null only when the queue is fully drained"
         );
     }

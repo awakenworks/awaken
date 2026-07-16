@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_protocol_managed::types::environment::{WorkData, WorkHeartbeat, WorkQueueStats};
-use awaken_protocol_managed::work_queue::{WorkItem, WorkQueue, WorkState};
+use awaken_protocol_managed::work_queue::{LeaseBook, WorkItem, WorkQueue, WorkState};
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sqlx::Row;
@@ -137,9 +137,12 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkItem> {
     ))
 }
 
-/// SQLite persistence for the environment work queue.
+/// SQLite persistence for the environment work queue. The durable rows hold the
+/// work items; lease expiry + poll liveness are ephemeral (meaningless after a
+/// restart) so they live in the in-process [`LeaseBook`] shared with every backend.
 pub struct SqliteWorkQueue {
     conn: Arc<Mutex<Connection>>,
+    book: LeaseBook,
 }
 
 impl SqliteWorkQueue {
@@ -161,7 +164,35 @@ impl SqliteWorkQueue {
             .map_err(|e| e.to_string())?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            book: LeaseBook::default(),
         })
+    }
+
+    /// Reclaim `env_id`'s `active` rows whose lease has lapsed (worker gone) back to
+    /// `queued`, inside `tx`, so the next claim can re-lease them. Returns nothing;
+    /// the caller re-counts active afterward.
+    fn reclaim_lapsed(&self, tx: &Transaction<'_>, env_id: &str, now_ms: u64) {
+        let mut stmt = tx
+            .prepare(
+                "SELECT work_id FROM work_queue_item WHERE environment_id = ?1 AND state = 'active'",
+            )
+            .expect("prepare active");
+        let active_ids: Vec<String> = stmt
+            .query_map(params![env_id], |r| r.get::<_, String>(0))
+            .expect("query active")
+            .map(|r| r.expect("row"))
+            .collect();
+        drop(stmt);
+        for wid in active_ids {
+            if !self.book.is_leased(&wid, now_ms) {
+                tx.execute(
+                    "UPDATE work_queue_item SET state = 'queued' WHERE work_id = ?1",
+                    params![wid],
+                )
+                .expect("reclaim");
+                self.book.release(&wid);
+            }
+        }
     }
 
     /// Insert a queued row and return its work id. `session` sets `data_id` to the
@@ -237,11 +268,14 @@ impl WorkQueue for SqliteWorkQueue {
         Self::owned(&tx, env_id, wid)
     }
 
-    async fn claim(&self, env_id: &str) -> Option<WorkItem> {
+    async fn claim(&self, env_id: &str, worker_id: &str, now_ms: u64) -> Option<WorkItem> {
+        self.book.record_poll(env_id, worker_id, now_ms);
         let mut guard = self.conn.lock().expect("work queue mutex poisoned");
         let tx = guard
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .expect("begin immediate");
+        // Reclaim any lapsed lease first, so a crashed worker doesn't block the env.
+        self.reclaim_lapsed(&tx, env_id, now_ms);
         // Single active lease per environment (the open-tier single-worker cap).
         let active: i64 = tx
             .query_row(
@@ -271,6 +305,7 @@ impl WorkQueue for SqliteWorkQueue {
         .expect("lease");
         let item = Self::owned(&tx, env_id, &wid);
         tx.commit().expect("commit claim");
+        self.book.lease(&wid, now_ms);
         item
     }
 
@@ -291,7 +326,7 @@ impl WorkQueue for SqliteWorkQueue {
         item
     }
 
-    async fn heartbeat(&self, env_id: &str, wid: &str) -> Option<WorkHeartbeat> {
+    async fn heartbeat(&self, env_id: &str, wid: &str, now_ms: u64) -> Option<WorkHeartbeat> {
         let mut guard = self.conn.lock().expect("work queue mutex poisoned");
         let tx = guard
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -303,6 +338,7 @@ impl WorkQueue for SqliteWorkQueue {
         )
         .expect("heartbeat");
         tx.commit().expect("commit heartbeat");
+        self.book.lease(wid, now_ms); // extend the lease
         Some(WorkHeartbeat {
             object_type: "work_heartbeat",
             last_heartbeat: OBJECT_AT,
@@ -326,6 +362,7 @@ impl WorkQueue for SqliteWorkQueue {
         .expect("stop");
         let item = Self::owned(&tx, env_id, wid);
         tx.commit().expect("commit stop");
+        self.book.release(wid);
         item
     }
 
@@ -352,7 +389,7 @@ impl WorkQueue for SqliteWorkQueue {
         item
     }
 
-    async fn stats(&self, env_id: &str) -> WorkQueueStats {
+    async fn stats(&self, env_id: &str, now_ms: u64) -> WorkQueueStats {
         let conn = self.conn.lock().expect("work queue mutex poisoned");
         let count = |state_clause: &str| -> usize {
             conn.query_row(
@@ -366,23 +403,29 @@ impl WorkQueue for SqliteWorkQueue {
         };
         let depth = count("state = 'queued'");
         let pending = count("state IN ('starting', 'active', 'stopping')");
-        let workers_polling = i64::from(count("state = 'active'") > 0);
+        // Parity with the in-memory queue: oldest stays set while an item is still
+        // processing (queued OR pending), and pollers are counted from the liveness
+        // book, not proxied from the active count.
+        let has_unfinished = depth > 0 || pending > 0;
         WorkQueueStats {
             object_type: "work_queue_stats",
             depth,
             pending,
-            oldest_queued_at: (depth > 0).then(|| OBJECT_AT.to_string()),
-            workers_polling,
+            oldest_queued_at: has_unfinished.then(|| OBJECT_AT.to_string()),
+            workers_polling: self.book.workers_polling(env_id, now_ms),
         }
     }
 
     async fn remove_env(&self, env_id: &str) {
+        let ids: Vec<String> = self.list(env_id).await.into_iter().map(|w| w.id).collect();
         let conn = self.conn.lock().expect("work queue mutex poisoned");
         conn.execute(
             "DELETE FROM work_queue_item WHERE environment_id = ?1",
             params![env_id],
         )
         .expect("purge env work");
+        drop(conn);
+        self.book.forget_env(env_id, &ids);
     }
 }
 
@@ -409,6 +452,7 @@ fn pg_row_to_item(row: &PgRow) -> WorkItem {
 /// multi-worker fan-out (`FOR UPDATE SKIP LOCKED`, no cap) is the later step.
 pub struct PostgresWorkQueue {
     pool: PgPool,
+    book: LeaseBook,
 }
 
 impl PostgresWorkQueue {
@@ -426,7 +470,10 @@ impl PostgresWorkQueue {
             .run_bundle(&bundle)
             .await
             .map_err(|e| e.to_string())?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            book: LeaseBook::default(),
+        })
     }
 
     async fn insert(&self, env_id: &str, data_type: &str, session_id: Option<&str>) -> String {
@@ -495,8 +542,28 @@ impl WorkQueue for PostgresWorkQueue {
         self.fetch_owned(env_id, wid).await
     }
 
-    async fn claim(&self, env_id: &str) -> Option<WorkItem> {
+    async fn claim(&self, env_id: &str, worker_id: &str, now_ms: u64) -> Option<WorkItem> {
+        self.book.record_poll(env_id, worker_id, now_ms);
         let mut tx = self.pool.begin().await.expect("begin");
+        // Reclaim lapsed leases first (a crashed worker must not block the env): any
+        // `active` row whose in-process lease has expired returns to `queued`.
+        let active_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT work_id FROM work_queue_item WHERE environment_id = $1 AND state = 'active'",
+        )
+        .bind(env_id)
+        .fetch_all(&mut *tx)
+        .await
+        .expect("active ids");
+        for wid in &active_ids {
+            if !self.book.is_leased(wid, now_ms) {
+                sqlx::query("UPDATE work_queue_item SET state = 'queued' WHERE work_id = $1")
+                    .bind(wid)
+                    .execute(&mut *tx)
+                    .await
+                    .expect("reclaim");
+                self.book.release(wid);
+            }
+        }
         // Single active lease per environment (the open-tier single-worker cap).
         let active: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = $1 AND state = 'active'",
@@ -528,6 +595,7 @@ impl WorkQueue for PostgresWorkQueue {
         .await
         .expect("lease");
         tx.commit().await.expect("commit claim");
+        self.book.lease(&wid, now_ms);
         self.fetch_owned(env_id, &wid).await
     }
 
@@ -548,7 +616,7 @@ impl WorkQueue for PostgresWorkQueue {
         self.fetch_owned(env_id, wid).await
     }
 
-    async fn heartbeat(&self, env_id: &str, wid: &str) -> Option<WorkHeartbeat> {
+    async fn heartbeat(&self, env_id: &str, wid: &str, now_ms: u64) -> Option<WorkHeartbeat> {
         let current = self.fetch_owned(env_id, wid).await?;
         sqlx::query(
             "UPDATE work_queue_item SET latest_heartbeat_at = $1 \
@@ -560,6 +628,7 @@ impl WorkQueue for PostgresWorkQueue {
         .execute(&self.pool)
         .await
         .expect("heartbeat");
+        self.book.lease(wid, now_ms); // extend the lease
         Some(WorkHeartbeat {
             object_type: "work_heartbeat",
             last_heartbeat: OBJECT_AT,
@@ -581,6 +650,7 @@ impl WorkQueue for PostgresWorkQueue {
         .execute(&self.pool)
         .await
         .expect("stop");
+        self.book.release(wid);
         self.fetch_owned(env_id, wid).await
     }
 
@@ -605,7 +675,7 @@ impl WorkQueue for PostgresWorkQueue {
         self.fetch_owned(env_id, wid).await
     }
 
-    async fn stats(&self, env_id: &str) -> WorkQueueStats {
+    async fn stats(&self, env_id: &str, now_ms: u64) -> WorkQueueStats {
         let count = |clause: &'static str| {
             let pool = self.pool.clone();
             let env = env_id.to_string();
@@ -621,28 +691,33 @@ impl WorkQueue for PostgresWorkQueue {
         };
         let depth = count("state = 'queued'").await;
         let pending = count("state IN ('starting', 'active', 'stopping')").await;
-        let workers_polling = i64::from(count("state = 'active'").await > 0);
+        // Parity with the in-memory queue: oldest persists while processing, and
+        // pollers come from the liveness book (not the active-count proxy).
+        let has_unfinished = depth > 0 || pending > 0;
         WorkQueueStats {
             object_type: "work_queue_stats",
             depth,
             pending,
-            oldest_queued_at: (depth > 0).then(|| OBJECT_AT.to_string()),
-            workers_polling,
+            oldest_queued_at: has_unfinished.then(|| OBJECT_AT.to_string()),
+            workers_polling: self.book.workers_polling(env_id, now_ms),
         }
     }
 
     async fn remove_env(&self, env_id: &str) {
+        let ids: Vec<String> = self.list(env_id).await.into_iter().map(|w| w.id).collect();
         sqlx::query("DELETE FROM work_queue_item WHERE environment_id = $1")
             .bind(env_id)
             .execute(&self.pool)
             .await
             .expect("purge env work");
+        self.book.forget_env(env_id, &ids);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_protocol_managed::work_queue::LEASE_TTL_MS;
 
     fn q() -> SqliteWorkQueue {
         SqliteWorkQueue::open_in_memory().unwrap()
@@ -662,12 +737,36 @@ mod tests {
         let q = q();
         let w1 = q.enqueue_session("env_a", "s1").await;
         let _w2 = q.enqueue_session("env_a", "s2").await;
-        let leased = q.claim("env_a").await.expect("leases oldest");
+        let leased = q.claim("env_a", "w", 0).await.expect("leases oldest");
         assert_eq!(leased.id, w1);
         assert_eq!(leased.state, WorkState::Active);
-        assert!(q.claim("env_a").await.is_none(), "single active lease");
+        assert!(
+            q.claim("env_a", "w", 0).await.is_none(),
+            "single active lease"
+        );
         q.stop("env_a", &w1).await.expect("stop");
-        assert!(q.claim("env_a").await.is_some(), "next lease after stop");
+        assert!(
+            q.claim("env_a", "w", 0).await.is_some(),
+            "next lease after stop"
+        );
+    }
+
+    #[tokio::test]
+    async fn durable_reclaims_an_expired_lease_on_the_next_poll() {
+        let q = q();
+        let w1 = q.enqueue_session("env_a", "s1").await;
+        assert_eq!(q.claim("env_a", "a", 0).await.expect("lease").id, w1);
+        // Live lease caps; a lapsed lease is reclaimed and re-leased.
+        assert!(
+            q.claim("env_a", "b", 1_000).await.is_none(),
+            "live lease caps"
+        );
+        let reclaimed = q
+            .claim("env_a", "b", LEASE_TTL_MS + 1)
+            .await
+            .expect("expired lease reclaimed");
+        assert_eq!(reclaimed.id, w1);
+        assert_eq!(reclaimed.state, WorkState::Active);
     }
 
     #[tokio::test]
@@ -678,11 +777,16 @@ mod tests {
             q.ack("env_a", &id).await.expect("ack").state,
             WorkState::Starting
         );
-        assert!(q.heartbeat("env_a", &id).await.expect("hb").lease_extended);
+        assert!(
+            q.heartbeat("env_a", &id, 0)
+                .await
+                .expect("hb")
+                .lease_extended
+        );
         // Wrong env → none across the board.
         assert!(q.get("env_b", &id).await.is_none());
         assert!(q.ack("env_b", &id).await.is_none());
-        assert!(q.heartbeat("env_b", &id).await.is_none());
+        assert!(q.heartbeat("env_b", &id, 0).await.is_none());
         assert!(q.stop("env_b", &id).await.is_none());
     }
 
@@ -691,10 +795,10 @@ mod tests {
         let q = q();
         q.enqueue_healthcheck("env_a").await;
         let s = q.enqueue_session("env_a", "s1").await;
-        let st = q.stats("env_a").await;
+        let st = q.stats("env_a", 0).await;
         assert_eq!((st.depth, st.pending, st.workers_polling), (2, 0, 0));
-        q.claim("env_a").await;
-        let st = q.stats("env_a").await;
+        q.claim("env_a", "w1", 0).await;
+        let st = q.stats("env_a", 0).await;
         assert_eq!((st.depth, st.pending, st.workers_polling), (1, 1, 1));
         let patch = BTreeMap::from([("k".to_string(), "v".to_string())]);
         let up = q.update_metadata("env_a", &s, patch).await.expect("patch");
@@ -772,18 +876,26 @@ mod tests {
         let ids: Vec<String> = q.list("env_a").await.into_iter().map(|w| w.id).collect();
         assert_eq!(ids, vec![hc.clone(), w1.clone(), w2]);
         // claim leases the oldest + single-active cap
-        assert_eq!(q.claim("env_a").await.expect("lease").id, hc);
-        assert!(q.claim("env_a").await.is_none(), "single active lease");
+        assert_eq!(q.claim("env_a", "w", 0).await.expect("lease").id, hc);
+        assert!(
+            q.claim("env_a", "w", 0).await.is_none(),
+            "single active lease"
+        );
         // ack + heartbeat + membership
         assert_eq!(
             q.ack("env_a", &w1).await.expect("ack").state,
             WorkState::Starting
         );
-        assert!(q.heartbeat("env_a", &w1).await.expect("hb").lease_extended);
+        assert!(
+            q.heartbeat("env_a", &w1, 0)
+                .await
+                .expect("hb")
+                .lease_extended
+        );
         assert!(q.get("env_b", &w1).await.is_none(), "wrong env → none");
-        assert!(q.heartbeat("env_b", &w1).await.is_none());
+        assert!(q.heartbeat("env_b", &w1, 0).await.is_none());
         // stats reflect the active healthcheck + starting w1
-        let st = q.stats("env_a").await;
+        let st = q.stats("env_a", 0).await;
         assert!(st.pending >= 1 && st.workers_polling == 1);
         // metadata + stop + remove_env
         let patch = BTreeMap::from([("k".to_string(), "v".to_string())]);
