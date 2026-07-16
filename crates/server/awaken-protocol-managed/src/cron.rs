@@ -2,7 +2,7 @@
 //! schedules (`BetaManagedAgentsSchedule.expression`): `minute hour day-of-month
 //! month day-of-week`. It validates an expression at create/update (a malformed
 //! schedule is rejected, not silently stored), matches a wall-clock instant, and
-//! computes the next occurrences for the `upcoming_runs_at` projection.
+//! computes the next occurrence that drives the timed-trigger firing.
 //!
 //! Scope: standard fields with `*`, ranges (`a-b`), lists (`a,b`), and steps
 //! (`*/n`, `a-b/n`); day-of-week `0`/`7` both mean Sunday; the classic dom∧dow
@@ -88,22 +88,6 @@ impl Cron {
             minute += 1;
         }
         None
-    }
-
-    /// Up to `n` upcoming occurrences strictly after `after_ms`.
-    pub fn upcoming(&self, after_ms: u64, n: usize) -> Vec<u64> {
-        let mut out = Vec::with_capacity(n);
-        let mut cursor = after_ms;
-        for _ in 0..n {
-            match self.next_after(cursor) {
-                Some(ts) => {
-                    out.push(ts);
-                    cursor = ts;
-                }
-                None => break,
-            }
-        }
-        out
     }
 }
 
@@ -236,24 +220,36 @@ mod tests {
     }
 
     #[test]
+    fn both_day_fields_restricted_fire_on_either_match() {
+        // The POSIX quirk: `1st of month OR Monday` fires on both, not their AND.
+        let c = Cron::parse("0 9 1 * 1").unwrap();
+        assert!(c.matches(MON_0900), "a Monday (not the 1st) fires");
+        let first_0900 = MON_0900 - 4 * 86_400_000; // 2026-01-01 09:00 (a Thursday)
+        assert!(c.matches(first_0900), "the 1st (not a Monday) fires");
+        let plain = MON_0900 + 86_400_000; // 2026-01-06, neither the 1st nor Monday
+        assert!(!c.matches(plain), "a day that is neither does not fire");
+    }
+
+    #[test]
+    fn an_unsatisfiable_schedule_yields_no_occurrence() {
+        // Feb 30 never exists, so the bounded search returns None rather than
+        // looping forever.
+        let c = Cron::parse("0 0 30 2 *").unwrap();
+        assert!(c.next_after(MON_0900).is_none());
+    }
+
+    #[test]
     fn rfc3339_round_trips_the_anchor() {
         assert_eq!(to_rfc3339(MON_0900), "2026-01-05T09:00:00Z");
         assert_eq!(to_rfc3339(0), "1970-01-01T00:00:00Z");
     }
 
     #[test]
-    fn next_after_and_upcoming_advance() {
+    fn next_after_advances_to_the_following_occurrence() {
         let c = Cron::parse("*/15 * * * *").unwrap();
-        let next = c.next_after(MON_0900).unwrap();
-        assert_eq!(next, MON_0900 + 15 * 60_000);
-        let up = c.upcoming(MON_0900, 3);
-        assert_eq!(
-            up,
-            vec![
-                MON_0900 + 15 * 60_000,
-                MON_0900 + 30 * 60_000,
-                MON_0900 + 45 * 60_000
-            ]
-        );
+        assert_eq!(c.next_after(MON_0900).unwrap(), MON_0900 + 15 * 60_000);
+        // Chaining from the returned instant walks the schedule forward.
+        let second = c.next_after(MON_0900 + 15 * 60_000).unwrap();
+        assert_eq!(second, MON_0900 + 30 * 60_000);
     }
 }
