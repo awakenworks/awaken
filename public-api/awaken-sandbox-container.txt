@@ -53,6 +53,8 @@ pub struct awaken_sandbox_container::ContainerProvider<R: awaken_sandbox_contain
 impl<R: awaken_sandbox_container::ContainerRuntime + 'static> awaken_sandbox_container::ContainerProvider<R>
 pub async fn awaken_sandbox_container::ContainerProvider<R>::create_container(&self, &awaken_provisioning_contract::spec::SandboxSpec) -> core::result::Result<awaken_sandbox_container::ContainerSandbox<R>, awaken_provisioning_contract::sandbox::SandboxError>
 pub fn awaken_sandbox_container::ContainerProvider<R>::new(alloc::sync::Arc<R>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_sandbox_container::ContainerProvider<R>::with_blob(self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::vec::Vec<u8>>) -> Self
+pub fn awaken_sandbox_container::ContainerProvider<R>::with_blob_source(self, alloc::sync::Arc<dyn awaken_provisioning_contract::sandbox::BlobSource>) -> Self
 pub fn awaken_sandbox_container::ContainerProvider<R>::with_egress_proxy(self, awaken_sandbox_container::EgressProxy) -> Self
 impl<R: awaken_sandbox_container::ContainerRuntime + 'static> awaken_provisioning_contract::sandbox::SandboxProvider for awaken_sandbox_container::ContainerProvider<R>
 pub fn awaken_sandbox_container::ContainerProvider<R>::adopt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::sandbox::SandboxHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_provisioning_contract::sandbox::Sandbox>, awaken_provisioning_contract::sandbox::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait

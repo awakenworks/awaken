@@ -394,10 +394,15 @@ impl ContainerRuntime for FakeRuntime {
 
 fn provider(runtime: Arc<FakeRuntime>) -> ContainerProvider<FakeRuntime> {
     // The default `spec()` requests Allowlist egress, so the provider is configured
-    // with a brokered proxy (as a real allowlist deployment would be).
-    ContainerProvider::new(runtime, "ghcr.io/awaken/agent:latest").with_egress_proxy(EgressProxy {
-        url: "http://gw.internal:8888".into(),
-    })
+    // with a brokered proxy (as a real allowlist deployment would be), and it seeds the
+    // bytes for `spec()`'s required File/Resource mounts (a required mount with no
+    // resolvable bytes fails closed at create).
+    ContainerProvider::new(runtime, "ghcr.io/awaken/agent:latest")
+        .with_egress_proxy(EgressProxy {
+            url: "http://gw.internal:8888".into(),
+        })
+        .with_blob("file-1", b"in-bytes".to_vec())
+        .with_blob("res-9", b"work-bytes".to_vec())
 }
 
 #[tokio::test]
@@ -597,7 +602,9 @@ async fn allowlist_without_a_proxy_fails_create_closed() {
     // A provider with no configured chokepoint cannot enforce an allowlist, so it
     // rejects the spec rather than silently opening egress.
     let rt = Arc::new(FakeRuntime::default());
-    let p = ContainerProvider::new(rt.clone(), "ghcr.io/awaken/agent:latest");
+    let p = ContainerProvider::new(rt.clone(), "ghcr.io/awaken/agent:latest")
+        .with_blob("file-1", b"in-bytes".to_vec())
+        .with_blob("res-9", b"work-bytes".to_vec());
     assert!(p.create(&spec("run-noproxy")).await.is_err());
     // Fail-closed BEFORE the runtime is touched: nothing was created.
     assert!(rt.st.lock().unwrap().created_env.is_empty());
@@ -608,8 +615,10 @@ async fn unrestricted_egress_injects_no_proxy_env() {
     let rt = Arc::new(FakeRuntime::default());
     let mut open = spec("run-open");
     open.network = pc::NetworkPolicy::Unrestricted;
-    // No proxy needed for unrestricted egress.
-    let p = ContainerProvider::new(rt.clone(), "ghcr.io/awaken/agent:latest");
+    // No proxy needed for unrestricted egress; seed the spec's required mounts.
+    let p = ContainerProvider::new(rt.clone(), "ghcr.io/awaken/agent:latest")
+        .with_blob("file-1", b"in-bytes".to_vec())
+        .with_blob("res-9", b"work-bytes".to_vec());
     p.create(&open).await.unwrap();
 
     let st = rt.st.lock().unwrap();
@@ -652,4 +661,149 @@ async fn open_agent_creates_the_container_and_returns_its_channel_and_process() 
         rt.st.lock().unwrap().created_command.get("cid-run-oa"),
         Some(&vec!["claude".to_string(), "--acp".to_string()])
     );
+}
+
+// ── BlobSource resolution (File/Resource/Secret by id) ───────────────────────────
+
+/// A minimal single-entry [`pc::BlobSource`] so the store path is exercised without a
+/// durable store (the provider links none — A-G17).
+struct OneBlob(&'static str, Vec<u8>);
+
+#[async_trait::async_trait]
+impl pc::BlobSource for OneBlob {
+    async fn get(&self, id: &str) -> Option<Vec<u8>> {
+        (id == self.0).then(|| self.1.clone())
+    }
+}
+
+fn file_mount_spec(scope: &str, source: pc::MountSource, required: bool) -> pc::SandboxSpec {
+    pc::SandboxSpec {
+        scope: scope.into(),
+        isolation: pc::IsolationClass::Container,
+        mounts: vec![pc::MountRequirement {
+            mount_id: "f".into(),
+            source,
+            mount_path: "/data/f.txt".into(),
+            access: pc::MountAccess::ReadOnly,
+            lifetime: pc::MountLifetime::PerRun,
+            required,
+        }],
+        env: Vec::new(),
+        network: pc::NetworkPolicy::Unrestricted,
+        outputs_path: "/out".into(),
+        limits: Default::default(),
+        lease_ttl_secs: None,
+        extra: None,
+    }
+}
+
+#[tokio::test]
+async fn resolve_and_stage_realizes_a_file_from_the_seed() {
+    let spec = file_mount_spec(
+        "res-file",
+        pc::MountSource::File {
+            file_id: "blob-1".into(),
+            content_hash: None,
+        },
+        true,
+    );
+    let mut plan = container_plan(&spec, "img", &["x".to_string()]);
+    let mut seed = HashMap::new();
+    seed.insert("blob-1".to_string(), b"resolved-file-bytes".to_vec());
+
+    let guard = resolve_and_stage(&spec, &mut plan.binds, &seed, &None)
+        .await
+        .expect("resolve");
+    assert!(guard.is_some(), "bytes were staged");
+    let bind = &plan.binds[0];
+    // `content` is filled so the k8s ConfigMap path projects the resolved File...
+    assert_eq!(bind.content.as_deref(), Some("resolved-file-bytes"));
+    // ...and a host staging file (bound by docker/podman) holds the same bytes.
+    assert_ne!(
+        bind.source_ref, "blob-1",
+        "source_ref was repointed off the id"
+    );
+    assert_eq!(
+        std::fs::read(&bind.source_ref).unwrap(),
+        b"resolved-file-bytes"
+    );
+}
+
+#[tokio::test]
+async fn resolve_and_stage_resolves_a_resource_from_the_injected_store() {
+    let spec = file_mount_spec(
+        "res-store",
+        pc::MountSource::Resource {
+            resource_id: "res-9".into(),
+            content_hash: None,
+        },
+        true,
+    );
+    let mut plan = container_plan(&spec, "img", &["x".to_string()]);
+    let store: Option<std::sync::Arc<dyn pc::BlobSource>> = Some(std::sync::Arc::new(OneBlob(
+        "res-9",
+        b"from-the-store".to_vec(),
+    )));
+
+    resolve_and_stage(&spec, &mut plan.binds, &HashMap::new(), &store)
+        .await
+        .expect("resolve from store");
+    assert_eq!(plan.binds[0].content.as_deref(), Some("from-the-store"));
+}
+
+#[tokio::test]
+async fn resolve_and_stage_fails_closed_on_a_required_unresolved_mount() {
+    let spec = file_mount_spec(
+        "res-missing",
+        pc::MountSource::File {
+            file_id: "absent".into(),
+            content_hash: None,
+        },
+        true,
+    );
+    let mut plan = container_plan(&spec, "img", &["x".to_string()]);
+    let e = resolve_and_stage(&spec, &mut plan.binds, &HashMap::new(), &None)
+        .await
+        .expect_err("a required mount with no bytes must fail closed");
+    assert!(e.to_string().contains("did not resolve"), "{e}");
+}
+
+#[tokio::test]
+async fn resolve_and_stage_rejects_a_content_hash_mismatch() {
+    let spec = file_mount_spec(
+        "res-tamper",
+        pc::MountSource::File {
+            file_id: "blob-1".into(),
+            content_hash: Some("not-the-real-hash".into()),
+        },
+        true,
+    );
+    let mut plan = container_plan(&spec, "img", &["x".to_string()]);
+    let mut seed = HashMap::new();
+    seed.insert("blob-1".to_string(), b"whatever".to_vec());
+    let e = resolve_and_stage(&spec, &mut plan.binds, &seed, &None)
+        .await
+        .expect_err("a hash mismatch must fail closed");
+    assert!(e.to_string().contains("hash mismatch"), "{e}");
+}
+
+#[tokio::test]
+async fn resolve_and_stage_verifies_a_matching_content_hash() {
+    let bytes = b"pinned-bytes".to_vec();
+    let hash = content_fingerprint(&bytes);
+    let spec = file_mount_spec(
+        "res-pin",
+        pc::MountSource::File {
+            file_id: "blob-1".into(),
+            content_hash: Some(hash),
+        },
+        true,
+    );
+    let mut plan = container_plan(&spec, "img", &["x".to_string()]);
+    let mut seed = HashMap::new();
+    seed.insert("blob-1".to_string(), bytes);
+    resolve_and_stage(&spec, &mut plan.binds, &seed, &None)
+        .await
+        .expect("a matching pin resolves");
+    assert_eq!(plan.binds[0].content.as_deref(), Some("pinned-bytes"));
 }

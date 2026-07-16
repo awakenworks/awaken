@@ -981,6 +981,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "async-trait",
         "serde_json",
         "thiserror",
+        # BLAKE3 content id: resolve File/Resource bytes through the injected BlobSource
+        # port and verify the declared hash itself (A-G17, parity with sandbox-local).
+        "blake3",
         # feature `connection`: awaken-connection establishes the remote AgentChannel
         # (TCP dial + reverse dial); tokio provides the net stack. Both optional.
         "awaken-connection",

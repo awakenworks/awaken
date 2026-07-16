@@ -637,6 +637,7 @@ pub fn egress_plan(
 /// + write. Content-addressed `File`/`Resource` (a store id, not bytes) still needs a
 /// blob-store resolve on this tier; the ACP resource path rides `Other{content}` so it
 /// works today.
+#[derive(Debug)]
 struct StagingGuard(std::path::PathBuf);
 
 impl Drop for StagingGuard {
@@ -659,36 +660,124 @@ fn stage_name(mount_path: &str) -> String {
         .collect()
 }
 
-/// Materialize self-contained mount content (`Inline`, `Other{content}`) to a host
-/// staging dir and repoint each bind's `source_ref` at the host file; a `CacheVolume`
-/// binds its caller-owned `host_path` in place. Fail-closed on a write error. Returns the
-/// staging guard (kept alive by the sandbox for the container's lifetime), or `None` when
-/// nothing needed staging.
-fn materialize_content(
+/// A stable BLAKE3 content id over mount bytes — the id a `File`/`Resource` pin declares
+/// and this provider verifies, identical to what the content-addressed store assigns
+/// (parity with `awaken-sandbox-local::content_fingerprint`, ADR-0038 D6).
+fn content_fingerprint(bytes: &[u8]) -> String {
+    blake3::hash(bytes).to_hex().to_string()
+}
+
+/// The declared content hash of a mount source, if any (verified fail-closed).
+fn declared_hash(source: &pc::MountSource) -> Option<&str> {
+    match source {
+        pc::MountSource::File { content_hash, .. }
+        | pc::MountSource::Resource { content_hash, .. }
+        | pc::MountSource::Secret { content_hash, .. } => content_hash.as_deref(),
+        _ => None,
+    }
+}
+
+/// Verify resolved bytes against a declared hash; fail closed on mismatch.
+fn verify_hash(source: &pc::MountSource, bytes: &[u8]) -> Result<(), pc::SandboxError> {
+    if let Some(expected) = declared_hash(source) {
+        let got = content_fingerprint(bytes);
+        if got != expected {
+            return Err(err(RuntimeError::Backend(format!(
+                "mount content hash mismatch: declared {expected}, realized {got}"
+            ))));
+        }
+    }
+    Ok(())
+}
+
+/// Resolve a by-reference mount's bytes: the in-memory seed first, then the injected
+/// content-addressed store (A-G17 — the provider links no durable store). `None` for a
+/// source that carries no store id (Inline/Other/CacheVolume/MemoryStore) or an id absent
+/// from both; the caller fails a *required* miss closed.
+async fn resolve_blob(
+    source: &pc::MountSource,
+    seed: &std::collections::HashMap<String, Vec<u8>>,
+    store: &Option<Arc<dyn pc::BlobSource>>,
+) -> Option<Vec<u8>> {
+    let id = match source {
+        pc::MountSource::File { file_id, .. } => file_id.as_str(),
+        pc::MountSource::Resource { resource_id, .. } => resource_id.as_str(),
+        pc::MountSource::Secret { reference, .. } => reference.as_str(),
+        _ => return None,
+    };
+    if let Some(bytes) = seed.get(id) {
+        return Some(bytes.clone());
+    }
+    if let Some(store) = store
+        && let Some(bytes) = store.get(id).await
+    {
+        return Some(bytes);
+    }
+    None
+}
+
+/// Resolve + materialize every mount's bytes for the container. Self-contained content
+/// (`Inline` / `Other{content}`, captured on the bind at plan time) ships as-is;
+/// `File` / `Resource` / `Secret` resolve their bytes by id through [`resolve_blob`] and
+/// are hash-verified; a `CacheVolume` binds its caller-owned host path in place. Resolved
+/// bytes are written to a host staging file (bound read-only by docker/podman) and, when
+/// UTF-8, recorded as the bind's `content` so the k8s tier projects them as a ConfigMap
+/// (binary File bytes bind on docker/podman only — ConfigMap `binaryData` is a follow-up).
+/// A required mount that resolves to nothing fails closed. Returns the staging guard (kept
+/// alive by the sandbox for the container's lifetime), or `None` when nothing was staged.
+async fn resolve_and_stage(
     spec: &pc::SandboxSpec,
     binds: &mut [BindPlan],
+    seed: &std::collections::HashMap<String, Vec<u8>>,
+    store: &Option<Arc<dyn pc::BlobSource>>,
 ) -> Result<Option<StagingGuard>, pc::SandboxError> {
     use std::collections::HashMap;
-    let by_path: HashMap<&str, &pc::MountSource> = spec
+    let by_path: HashMap<&str, &pc::MountRequirement> = spec
         .mounts
         .iter()
-        .map(|m| (m.mount_path.as_str(), &m.source))
+        .map(|m| (m.mount_path.as_str(), m))
         .collect();
     let mut guard: Option<StagingGuard> = None;
     for bind in binds.iter_mut() {
-        let bytes: Vec<u8> = match by_path.get(bind.mount_path.as_str()) {
-            Some(pc::MountSource::Inline { contents }) => contents.clone().into_bytes(),
-            Some(pc::MountSource::Other(v)) => match v.get("content").and_then(|c| c.as_str()) {
-                Some(s) => s.as_bytes().to_vec(),
-                None => continue,
-            },
-            // A Cache Volume is already a host path — bind it in place (never harvested).
-            Some(pc::MountSource::CacheVolume { host_path, .. }) => {
-                bind.source_ref = host_path.clone();
+        // 1. Obtain the bytes this bind realizes, or skip a bind that needs no staging.
+        let had_content = bind.content.is_some();
+        let bytes: Vec<u8> = if let Some(contents) = &bind.content {
+            // Inline / Other{content} — self-contained, captured by `binds_of`.
+            contents.clone().into_bytes()
+        } else {
+            let Some(mount) = by_path.get(bind.mount_path.as_str()).copied() else {
                 continue;
+            };
+            match &mount.source {
+                // A Cache Volume is already a host path — bind it in place (never harvested).
+                pc::MountSource::CacheVolume { host_path, .. } => {
+                    bind.source_ref = host_path.clone();
+                    continue;
+                }
+                pc::MountSource::File { .. }
+                | pc::MountSource::Resource { .. }
+                | pc::MountSource::Secret { .. } => {
+                    match resolve_blob(&mount.source, seed, store).await {
+                        Some(bytes) => {
+                            verify_hash(&mount.source, &bytes)?;
+                            bytes
+                        }
+                        None if mount.required => {
+                            return Err(err(RuntimeError::Backend(format!(
+                                "required mount `{}` did not resolve: no seed or store bytes \
+                                 for its content id",
+                                bind.mount_path
+                            ))));
+                        }
+                        // An optional miss stays unrealized (forward-compat, like the seed path).
+                        None => continue,
+                    }
+                }
+                // MemoryStore is realized as a sidecar, not a byte bind; nothing to stage.
+                _ => continue,
             }
-            _ => continue,
         };
+        // 2. Stage the bytes to a host file the docker/podman tier binds read-only.
         let dir = match &guard {
             Some(g) => g.0.clone(),
             None => {
@@ -707,6 +796,11 @@ fn materialize_content(
         std::fs::write(&host_file, &bytes)
             .map_err(|e| err(RuntimeError::Backend(format!("stage mount content: {e}"))))?;
         bind.source_ref = host_file.to_string_lossy().into_owned();
+        // 3. For the k8s tier: record UTF-8 bytes as `content` so `build_pod` projects a
+        // ConfigMap. Inline/Other already carry content; a resolved File/Resource fills it.
+        if !had_content && let Ok(text) = String::from_utf8(bytes) {
+            bind.content = Some(text);
+        }
     }
     Ok(guard)
 }
@@ -934,6 +1028,13 @@ pub struct ContainerProvider<R: ContainerRuntime> {
     /// The brokered egress chokepoint an `Allowlist` policy routes through. Without
     /// one, an allowlist spec fails closed at `create` (never silently opened).
     egress_proxy: Option<EgressProxy>,
+    /// In-memory blob seed for `File`/`Resource`/`Secret` mounts (keyed by content id),
+    /// consulted before the store — the test/seed path, mirroring `LocalProvider`.
+    blobs: std::collections::HashMap<String, Vec<u8>>,
+    /// The injected content-addressed store consulted after the seed. The worker tier
+    /// links no durable store (A-G17); the composition root injects an adapter over the
+    /// resources-tier content store, so a `File`/`Resource` id resolves to real bytes.
+    file_store: Option<Arc<dyn pc::BlobSource>>,
 }
 
 impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
@@ -942,6 +1043,8 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             runtime,
             default_image: default_image.into(),
             egress_proxy: None,
+            blobs: std::collections::HashMap::new(),
+            file_store: None,
         }
     }
 
@@ -950,6 +1053,23 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     #[must_use]
     pub fn with_egress_proxy(mut self, proxy: EgressProxy) -> Self {
         self.egress_proxy = Some(proxy);
+        self
+    }
+
+    /// Register bytes a `File`/`Resource`/`Secret` mount can resolve to by content id
+    /// (test/seed helper, mirroring `LocalProvider::with_blob`).
+    #[must_use]
+    pub fn with_blob(mut self, id: impl Into<String>, bytes: impl Into<Vec<u8>>) -> Self {
+        self.blobs.insert(id.into(), bytes.into());
+        self
+    }
+
+    /// Inject the content-addressed store consulted after the seed map, so `File` /
+    /// `Resource` / `Secret` mounts resolve their bytes by id at `create` (A-G17: the
+    /// provider names no durable store; it holds only this `BlobSource` port).
+    #[must_use]
+    pub fn with_blob_source(mut self, store: Arc<dyn pc::BlobSource>) -> Self {
+        self.file_store = Some(store);
         self
     }
 
@@ -974,10 +1094,13 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             )));
         }
         let mut plan = container_plan(spec, &self.default_image, &command);
-        // Materialize self-contained mount content (codex config, ADR-0038 resources) to a
-        // host staging dir and repoint the binds, so the container reads real bytes — kept
-        // alive by the returned sandbox for the container's lifetime.
-        let staging = materialize_content(spec, &mut plan.binds)?;
+        // Resolve + materialize each mount's bytes: self-contained content (codex config,
+        // ADR-0038 resources) ships in the plan; File/Resource/Secret resolve by id through
+        // the seed then the injected BlobSource, hash-verified. Bytes are staged to a host
+        // dir (bound by docker/podman) and recorded as `content` (projected by the k8s
+        // ConfigMap path) — kept alive by the sandbox for the container's lifetime.
+        let staging =
+            resolve_and_stage(spec, &mut plan.binds, &self.blobs, &self.file_store).await?;
         // Realize egress: an Allowlist policy is routed through the brokered proxy
         // (its env is injected here); without a proxy an allowlist fails closed.
         let egress = egress_plan(&spec.network, self.egress_proxy.as_ref())
