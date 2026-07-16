@@ -9,7 +9,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Message;
-use awaken_agent_contract::event::AgentEvent;
+use awaken_agent_contract::event::{AgentEvent, Fact, Transcoder};
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use axum::Router;
 use axum::body::Body;
@@ -28,8 +28,7 @@ use awaken_protocol_transport::{
     paginate_history,
 };
 
-use crate::encoder::{encode_close, encode_history, encode_step};
-use crate::live::LiveTranscoder;
+use crate::encoder::{AiSdkEncoder, encode_close, encode_history, encode_step};
 use crate::request::{DecisionKind, process_request, result_text};
 use crate::types::{AiSdkChatRequest, UIStreamEvent, attach_usage};
 
@@ -155,25 +154,38 @@ fn stream_turn(
     tokio::spawn(async move {
         let (live_tx, mut live_rx) = mpsc::unbounded_channel::<AgentEvent>();
         let sink: Arc<dyn StreamSink> = Arc::new(ChannelStreamSink::new(live_tx));
-        let mut transcoder = LiveTranscoder::new();
+        // One transcoder instance for both tiers (ADR-0058 Axis 9): live `delta()`
+        // for increments + `fact(RunStarted)` to open the stream. The authoritative
+        // terminus comes from the committed tail, so terminal/whole-unit facts on
+        // the live channel are not wired here (G10/G13).
+        let mut transcoder = AiSdkEncoder::new();
         // Drive the turn on its own task so live events drain concurrently. The
         // sink lives inside that future; when the turn ends it drops, closing
         // `live_rx` and ending the drain loop.
         let turn =
             tokio::spawn(async move { rt.run_streaming(&thread, agent, messages, sink).await });
         while let Some(event) = live_rx.recv().await {
-            for wire in transcoder.transcode(&event) {
+            let wires = match &event {
+                AgentEvent::Delta(delta) => transcoder.delta(delta),
+                AgentEvent::Fact(fact @ Fact::RunStarted) => transcoder.fact(fact),
+                AgentEvent::Fact(_) => Vec::new(),
+            };
+            for wire in wires {
                 if out_tx.send(sse_line(&wire)).is_err() {
                     return; // the client hung up
                 }
             }
         }
-        let mut close = match turn.await {
-            Ok(Ok(outcome)) if transcoder.has_streamed() => encode_close(&outcome),
+        // Close any open live text block, then append the committed tail (streamed)
+        // or the full committed projection (nothing streamed).
+        let streamed = transcoder.has_streamed();
+        let mut close = transcoder.finalize();
+        close.extend(match turn.await {
+            Ok(Ok(outcome)) if streamed => encode_close(&outcome),
             Ok(Ok(outcome)) => encode_step(&outcome),
             Ok(Err(err)) => error_events(err),
             Err(_) => error_events(DriverError::Internal("turn task cancelled".into())),
-        };
+        });
         // The AI SDK `finish` part carries the run's token accounting.
         attach_usage(&mut close, rt_usage.usage(&thread_usage).await);
         for event in close {
