@@ -151,6 +151,44 @@ async fn deny_egress_confines_a_real_container() {
 }
 
 #[tokio::test]
+async fn inline_content_is_materialized_and_readable_in_a_real_container() {
+    let Some((provider, rt)) = setup().await else {
+        return;
+    };
+    // An `Inline` mount carries self-contained bytes (no host file, no store id) — the
+    // provider stages them to a host file and binds it. This is the codex `config.toml` /
+    // ADR-0038 resource path on the container tier. The container must read the content.
+    let spec = pc::SandboxSpec {
+        scope: "pw-inline".into(),
+        isolation: pc::IsolationClass::Container,
+        mounts: vec![pc::MountRequirement {
+            mount_id: "cfg".into(),
+            source: pc::MountSource::Inline {
+                contents: "[mcp_servers.gh]\nhello-inline-content\n".into(),
+            },
+            mount_path: "/data/config.toml".into(),
+            access: pc::MountAccess::ReadOnly,
+            lifetime: pc::MountLifetime::PerRun,
+            required: true,
+        }],
+        env: Vec::new(),
+        network: pc::NetworkPolicy::Unrestricted,
+        outputs_path: "/mnt/session/outputs".into(),
+        limits: Default::default(),
+        lease_ttl_secs: None,
+        extra: Some(serde_json::json!({
+            "command": ["sh", "-c", "grep -q hello-inline-content /data/config.toml"]
+        })),
+    };
+    let exit = run_to_exit(&provider, &rt, "pw-inline", &spec).await;
+    assert_eq!(
+        exit,
+        Some(0),
+        "inline content must be materialized to a host file and readable in the container"
+    );
+}
+
+#[tokio::test]
 async fn file_bind_is_readable_and_read_only_is_enforced_in_a_real_container() {
     let Some((provider, rt)) = setup().await else {
         return;
