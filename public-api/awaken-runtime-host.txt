@@ -79,6 +79,7 @@ pub fn awaken_runtime_host::ContainerChannelSource::new(alloc::sync::Arc<dyn awa
 pub fn awaken_runtime_host::ContainerChannelSource::projecting(alloc::sync::Arc<dyn awaken_sandbox_container::AgentContainerProvider>, awaken_run_executor_acp::acp_cli::AcpCli, alloc::sync::Arc<dyn awaken_run_executor_acp::subprocess::LaunchResolver>) -> Self
 pub fn awaken_runtime_host::ContainerChannelSource::with_codec(self, awaken_protocol_acp::Codec) -> Self
 pub fn awaken_runtime_host::ContainerChannelSource::with_thread_egress(self, awaken_runtime_host::ThreadEgress) -> Self
+pub fn awaken_runtime_host::ContainerChannelSource::with_thread_resources(self, awaken_runtime_host::ThreadResources) -> Self
 impl awaken_run_executor_acp::AgentChannelSource for awaken_runtime_host::ContainerChannelSource
 pub fn awaken_runtime_host::ContainerChannelSource::open<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::activation::RunActivation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_executor_acp::AgentSession, awaken_run_executor_acp::OpenError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_runtime_host::DeploymentConfig
