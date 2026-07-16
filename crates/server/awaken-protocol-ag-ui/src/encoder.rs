@@ -363,6 +363,34 @@ mod tests {
         );
     }
 
+    /// AG-UI renders no reasoning fragments: `Delta::ReasoningDelta` is dropped
+    /// (the completed thinking block, once modeled, folds into an assistant
+    /// message — Axis 10b). Mirrors ai-sdk's `delta_reasoning_is_not_projected`.
+    #[test]
+    fn delta_reasoning_is_not_projected() {
+        let mut enc = AgUiEncoder::new("t1", "r1");
+        let out = enc.delta(&Delta::ReasoningDelta {
+            delta: "hmm".into(),
+        });
+        assert!(out.is_empty(), "reasoning projected {out:?}");
+    }
+
+    /// A continuation-guard round (steering) is an audit lifecycle fact
+    /// (`classify().live == false`) — it carries no AG-UI event. Steering stays
+    /// observable via the audit projection (`RunEvent::Continuation`), not this
+    /// stream. Pins the omission against a future silent leak.
+    #[test]
+    fn continuation_steering_is_not_projected() {
+        let mut enc = AgUiEncoder::new("t1", "r1");
+        for steered in [false, true] {
+            let out = enc.fact(&Fact::Continuation {
+                steered,
+                detail: json!({ "reason": "auto_continue" }),
+            });
+            assert!(out.is_empty(), "steered={steered} projected {out:?}");
+        }
+    }
+
     #[test]
     fn plain_turn_brackets_with_run_events() {
         let outcome = StepOutcome {

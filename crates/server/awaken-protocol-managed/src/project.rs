@@ -400,4 +400,26 @@ mod tests {
             .is_err()
         );
     }
+
+    /// A continuation-guard round (steering) is an audit lifecycle fact
+    /// (`classify().live == false`) with no agent-visible managed wire event — the
+    /// managed `OutboundKind` union is conformance-locked to the official SDK set,
+    /// which has no steering event. Steering stays observable via the audit
+    /// projection (`RunEvent::Continuation`). This pins the omission so a future
+    /// edit can't leak a guard round onto the managed stream (and silently break
+    /// the SDK-parity golden gate).
+    #[test]
+    fn continuation_steering_is_not_projected() {
+        for steered in [false, true] {
+            let out = ManagedEncoder::default().fact(&Fact::Continuation {
+                steered,
+                detail: serde_json::json!({ "reason": "auto_continue" }),
+            });
+            assert!(
+                out.is_empty(),
+                "steered={steered} projected {} events",
+                out.len()
+            );
+        }
+    }
 }
