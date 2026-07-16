@@ -251,6 +251,61 @@ mod tests {
         );
     }
 
+    /// Live end-to-end against the REAL GitHub MCP (`api.githubcopilot.com/mcp/`), gated on
+    /// `AWAKEN_GITHUB_MCP_TOKEN` (a fine-grained PAT / installation token) — self-skips
+    /// otherwise. Proves the full Managed-Agents path: the sandbox would send the α placeholder
+    /// as its bearer; the relay injects the real token, so GitHub MCP authenticates the call.
+    #[tokio::test]
+    async fn relay_reaches_the_real_github_mcp_when_a_token_is_present() {
+        let Ok(token) = std::env::var("AWAKEN_GITHUB_MCP_TOKEN") else {
+            eprintln!(
+                "skipping: set AWAKEN_GITHUB_MCP_TOKEN to run the live GitHub MCP relay test"
+            );
+            return;
+        };
+        let relay = McpRelay::start().await.unwrap();
+        relay.set_routes(
+            "t1",
+            &[PreparedMcpServer {
+                name: "github".into(),
+                url: "https://api.githubcopilot.com/mcp/".into(),
+                bearer: Some(awaken_agent_contract::RedactedString::from(token)),
+                refresh: None,
+            }],
+        );
+        // An MCP `initialize` handshake through the relay, carrying only the α placeholder.
+        let body = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "awaken-relay-test", "version": "0" }
+            }
+        });
+        let resp = reqwest::Client::new()
+            .post(relay.route_url("t1", "github"))
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .bearer_auth("session-mcp:github")
+            .json(&body)
+            .send()
+            .await
+            .expect("relay forwards to the real GitHub MCP");
+        // A bad/absent token 401s at GitHub — so not-401 proves the relay injected the real
+        // credential out of the sandbox's address space and GitHub accepted it.
+        assert_ne!(
+            resp.status(),
+            reqwest::StatusCode::UNAUTHORIZED,
+            "the relay-injected token must authenticate to the real GitHub MCP (got {})",
+            resp.status()
+        );
+        assert!(
+            resp.status().is_success() || resp.status().is_redirection(),
+            "GitHub MCP responded through the relay: {}",
+            resp.status()
+        );
+    }
+
     #[tokio::test]
     async fn relay_fails_closed_on_an_unknown_route() {
         let relay = McpRelay::start().await.unwrap();
