@@ -659,6 +659,11 @@ fn mount_ref(source: &pc::MountSource) -> String {
         pc::MountSource::Secret { reference, .. } => reference.clone(),
         // A Cache Volume is identified by its caller-owned reuse key (ADR-0056).
         pc::MountSource::CacheVolume { key, .. } => key.clone(),
+        // Inline content has no host ref: the container tier binds a `source_ref` as a
+        // literal path, so realizing inline bytes here needs host-file materialization
+        // first (same follow-up as content-store resolution for File/Resource). Empty
+        // ref = not realized on this tier yet (bwrap realizes it, see awaken-sandbox-local).
+        pc::MountSource::Inline { .. } => String::new(),
         pc::MountSource::Other(_) => String::new(),
     }
 }
