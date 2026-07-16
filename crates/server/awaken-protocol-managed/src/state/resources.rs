@@ -67,13 +67,45 @@ impl ManagedState {
             .ok_or(StateError::NotFound)
     }
 
-    /// `POST /v1/sessions/{id}/resources/{resource_id}` — merge a JSON patch.
-    pub fn update_resource(
+    /// `POST /v1/sessions/{id}/resources/{resource_id}` — merge a JSON patch. An
+    /// `authorization_token` patch on a github_repository ROTATES the live credential
+    /// (re-keys the host-held clone token + the injected GitHub MCP bearer via the runtime),
+    /// and is NEVER stored in / echoed from the record (host-side only, Managed Agents shape).
+    pub async fn update_resource(
         &self,
         id: &str,
         resource_id: &str,
         patch: serde_json::Value,
     ) -> Result<serde_json::Value, StateError> {
+        // Reconstruct the target resource with the new token under a short lock (dropped
+        // before the await), so the runtime can re-key the live credential.
+        let rotate: Option<SessionResource> = {
+            let sessions = self.sessions.lock().unwrap();
+            let record = sessions.get(id).ok_or(StateError::NotFound)?;
+            let resource = record
+                .session
+                .resources
+                .iter()
+                .find(|r| r["id"] == resource_id)
+                .ok_or(StateError::NotFound)?;
+            patch
+                .get("authorization_token")
+                .and_then(|t| t.as_str())
+                .and_then(|token| {
+                    parse_session_resource(resource).map(|mut r| {
+                        r.auth_token = Some(token.to_string());
+                        r
+                    })
+                })
+        };
+        if let Some(res) = rotate {
+            self.runtime
+                .rotate_resource_token(id, res)
+                .await
+                .map_err(StateError::Run)?;
+        }
+        // Merge the patch into the stored DTO — but NEVER the token (host-side only, never
+        // echoed): it was rotated into the runtime above, not recorded.
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
         let resource = record
@@ -84,6 +116,9 @@ impl ManagedState {
             .ok_or(StateError::NotFound)?;
         if let (Some(target), Some(patch)) = (resource.as_object_mut(), patch.as_object()) {
             for (k, v) in patch {
+                if k == "authorization_token" {
+                    continue;
+                }
                 target.insert(k.clone(), v.clone());
             }
         }

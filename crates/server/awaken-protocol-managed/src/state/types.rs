@@ -263,6 +263,19 @@ pub trait SessionRuntime: Send + Sync {
         Ok(())
     }
 
+    /// Rotate a LIVE session resource's authorization token (Managed Agents
+    /// `resources.update`): re-key the host-held credential so future operations use the
+    /// new token — for a `github_repository`, both the clone token and the injected GitHub
+    /// MCP server's bearer — then evict the cached sandbox so the next turn rebuilds with it.
+    /// `resource.auth_token` carries the NEW token. The default is a no-op.
+    async fn rotate_resource_token(
+        &self,
+        _thread: &str,
+        _resource: SessionResource,
+    ) -> Result<(), RunError> {
+        Ok(())
+    }
+
     /// True when durable truth already exists for `thread`. Session-id minting
     /// consults this to skip ids a previous process persisted; implementations
     /// MUST answer without materializing any per-thread state (no context

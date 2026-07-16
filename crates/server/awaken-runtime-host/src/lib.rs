@@ -715,6 +715,28 @@ impl SessionRuntime for ManagedHost {
         Ok(())
     }
 
+    async fn rotate_resource_token(
+        &self,
+        thread: &str,
+        resource: awaken_protocol_managed::SessionResource,
+    ) -> Result<(), RunError> {
+        // Only github_repository carries a rotatable authorization token; other kinds have
+        // no host-held credential to re-key.
+        if resource.kind != "github_repository" {
+            return Ok(());
+        }
+        let logical = resource.mount_path.trim_start_matches('/').to_string();
+        let new_token = resource
+            .auth_token
+            .map(awaken_agent_contract::RedactedString::from);
+        // Re-key the staged clone token AND the injected GitHub MCP bearer, then evict so the
+        // next turn rebuilds using the rotated credential for clone + MCP push/PR.
+        self.host
+            .rotate_thread_repo_token(thread, &logical, new_token);
+        self.host.sessions.lock().await.remove(thread);
+        Ok(())
+    }
+
     async fn prepare_session(
         &self,
         thread: &str,

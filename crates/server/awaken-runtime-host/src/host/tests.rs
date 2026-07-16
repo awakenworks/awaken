@@ -830,6 +830,74 @@ async fn a_github_repository_resource_injects_a_scoped_github_mcp_server() {
     }
 }
 
+/// Managed-Agents `resources.update`: rotating a github_repository's authorization token
+/// re-keys BOTH the staged clone token and the injected GitHub MCP bearer, host-side.
+#[tokio::test]
+async fn rotating_a_github_repository_token_re_keys_the_clone_and_mcp_bearer() {
+    use awaken_protocol_managed::{SessionInit, SessionResource, SessionRuntime};
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let managed = crate::ManagedHost::new(host.clone()).with_mcp(
+        Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
+        Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+        Arc::new(awaken_config_resolver::InMemoryMcpStore::new()),
+    );
+    let gh_res = |token: &str| SessionResource {
+        kind: "github_repository".into(),
+        id: "https://github.com/awaken/example.git".into(),
+        mount_path: "/workspace/repo".into(),
+        instructions: None,
+        auth_token: Some(token.into()),
+        git_ref: None,
+    };
+    managed
+        .prepare_session(
+            "t-rot",
+            SessionInit {
+                agent_id: "a".into(),
+                mcp_servers: Vec::new(),
+                resources: vec![gh_res("ghp_old")],
+                model: None,
+                runtime: None,
+                deny_egress: false,
+            },
+        )
+        .await
+        .unwrap();
+
+    let mcp_bearer = |h: &SharedHost| {
+        h.thread_mcp("t-rot")
+            .into_iter()
+            .find(|s| s.name == "github:workspace/repo")
+            .and_then(|s| s.bearer.map(|b| b.expose_secret().to_string()))
+    };
+    let clone_token = |h: &SharedHost| {
+        h.thread_repos("t-rot")[0]
+            .token
+            .as_ref()
+            .map(|t| t.expose_secret().to_string())
+    };
+    assert_eq!(mcp_bearer(&host).as_deref(), Some("ghp_old"));
+    assert_eq!(clone_token(&host).as_deref(), Some("ghp_old"));
+
+    // Rotate the token (POST /v1/sessions/{id}/resources/{rid} with a new authorization_token).
+    managed
+        .rotate_resource_token("t-rot", gh_res("ghp_new"))
+        .await
+        .unwrap();
+
+    // Both the injected MCP bearer and the staged clone token are re-keyed to the new token.
+    assert_eq!(
+        mcp_bearer(&host).as_deref(),
+        Some("ghp_new"),
+        "MCP bearer rotated"
+    );
+    assert_eq!(
+        clone_token(&host).as_deref(),
+        Some("ghp_new"),
+        "clone token rotated"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Resource-plane seam coverage (ADR-0038): the gaps a per-layer test misses.
 //   G1 consistency  — what the config plane TELLS the agent == what the host MOUNTS

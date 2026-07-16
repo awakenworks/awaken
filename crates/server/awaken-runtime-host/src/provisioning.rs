@@ -175,9 +175,34 @@ impl SharedHost {
             .unwrap_or_default()
     }
 
+    /// Rotate a staged github_repository's authorization token (Managed Agents
+    /// `resources.update`): re-key BOTH the staged clone token and the injected
+    /// `github:<logical>` MCP server's bearer, so future clones and MCP push/PR use the new
+    /// token. A no-op for a thread/logical with no staged repo. The caller evicts the cached
+    /// sandbox so the next turn rebuilds with the rotated credential.
+    pub(crate) fn rotate_thread_repo_token(
+        &self,
+        thread: &str,
+        logical: &str,
+        new_token: Option<awaken_agent_contract::RedactedString>,
+    ) {
+        if let Some(staged) = self.thread_resources.lock().unwrap().get_mut(thread) {
+            for repo in staged.repos.iter_mut().filter(|r| r.logical == logical) {
+                repo.token = new_token.clone();
+            }
+        }
+        let name = format!("github:{logical}");
+        if let Some(servers) = self.thread_mcp.lock().unwrap().get_mut(thread) {
+            for server in servers.iter_mut().filter(|s| s.name == name) {
+                server.bearer = new_token.clone();
+            }
+        }
+    }
+
     /// The MCP servers staged for `thread` (test-only observability, mirrors
     /// [`Self::thread_repos`]): the set `register_thread_mcp` recorded, including any
     /// `github:<logical>` server bridged from a github_repository resource.
+    #[cfg(test)]
     pub(crate) fn thread_mcp(&self, thread: &str) -> Vec<crate::host::PreparedMcpServer> {
         self.thread_mcp
             .lock()
