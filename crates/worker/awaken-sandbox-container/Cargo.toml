@@ -10,6 +10,10 @@ awaken-agent-channel.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# BLAKE3 content id: the tier resolves mount bytes through the injected BlobSource
+# port (A-G17, no durable store linked) and verifies the declared content hash itself —
+# the same id the content-addressed store assigns (parity with awaken-sandbox-local).
+blake3 = "1"
 # Slice-5 remote transport: awaken-connection (core-only, same foundation rev as
 # awaken-scoped-migration) establishes the container-tier AgentChannel. Optional so
 # the default build stays dependency-light and daemon-free.

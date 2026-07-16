@@ -93,18 +93,19 @@ async fn probe_exit(
     run_to_exit(provider, rt, scope, &egress_probe_spec(scope, network)).await
 }
 
-/// A process-as-container running `command` with a host file bound read-only at
-/// `/data/in.txt`. The container tier binds a `File` mount's `source_ref` directly as a
-/// host path (`mount_ref`), so this drives a real byte bind on the Docker tier.
+/// A process-as-container running `command` with a caller-owned host file bound read-only
+/// at `/data/in.txt`. A `CacheVolume` is the source for binding a host path *in place*
+/// (ADR-0056) — `File` now means a content-store id resolved via `BlobSource`, so a raw
+/// host-path bind uses `CacheVolume`. This drives a real byte bind on the Docker tier.
 fn file_bind_spec(scope: &str, host_file: &str, command: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
         mounts: vec![pc::MountRequirement {
             mount_id: "in".into(),
-            source: pc::MountSource::File {
-                file_id: host_file.into(),
-                content_hash: None,
+            source: pc::MountSource::CacheVolume {
+                host_path: host_file.into(),
+                key: "in-cache".into(),
             },
             mount_path: "/data/in.txt".into(),
             access: pc::MountAccess::ReadOnly,
@@ -185,6 +186,48 @@ async fn inline_content_is_materialized_and_readable_in_a_real_container() {
         exit,
         Some(0),
         "inline content must be materialized to a host file and readable in the container"
+    );
+}
+
+#[tokio::test]
+async fn a_file_mount_resolved_from_the_blob_source_is_readable_in_a_real_container() {
+    let Some((_, rt)) = setup().await else {
+        return;
+    };
+    // A `File` mount carries a content id, not bytes. The provider resolves it through the
+    // injected `BlobSource` (seeded here), verifies the hash, stages the bytes, and binds
+    // them — the container reads the resolved file. This is the container analogue of the
+    // bwrap tier's `resolve_source`, proving the store→bind wiring end-to-end.
+    let provider = ContainerProvider::new(rt.clone(), "busybox:latest")
+        .with_blob("blob-42", b"resolved-from-the-store".to_vec());
+    let spec = pc::SandboxSpec {
+        scope: "pw-file-blob".into(),
+        isolation: pc::IsolationClass::Container,
+        mounts: vec![pc::MountRequirement {
+            mount_id: "in".into(),
+            source: pc::MountSource::File {
+                file_id: "blob-42".into(),
+                content_hash: None,
+            },
+            mount_path: "/data/in.txt".into(),
+            access: pc::MountAccess::ReadOnly,
+            lifetime: pc::MountLifetime::PerRun,
+            required: true,
+        }],
+        env: Vec::new(),
+        network: pc::NetworkPolicy::Unrestricted,
+        outputs_path: "/mnt/session/outputs".into(),
+        limits: Default::default(),
+        lease_ttl_secs: None,
+        extra: Some(serde_json::json!({
+            "command": ["sh", "-c", "grep -q resolved-from-the-store /data/in.txt"]
+        })),
+    };
+    let exit = run_to_exit(&provider, &rt, "pw-file-blob", &spec).await;
+    assert_eq!(
+        exit,
+        Some(0),
+        "a File mount resolved from the BlobSource must be readable in the container"
     );
 }
 
