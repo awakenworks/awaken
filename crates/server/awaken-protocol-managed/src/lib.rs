@@ -56,7 +56,7 @@ pub use routes::user_profiles::{UserProfileState, user_profiles_router};
 pub use routes::vaults::{
     McpProbe, McpProbeStatus, McpRefreshBinding, TokenEndpointAuthBinding, VaultState, vault_router,
 };
-pub use routes::{WorkspaceScope, router};
+pub use routes::{WorkspaceScope, enforce_managed_beta, router};
 pub use session_repo::{
     InMemoryScopedSessionStore, InMemorySessionRepository, ManagedSessionRepository,
     PersistedSession, ScopedSessionRepo, ScopedSessionStore,

@@ -82,7 +82,7 @@ async function main() {
     // --- errors: a malformed body is rejected in the same envelope shape ---
     const bad = await fetch(`${baseUrl}/v1/sessions`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'anthropic-beta': BETAS[0] },
       body: '{ not valid json',
     });
     assert.equal(bad.status, 400);
@@ -90,6 +90,18 @@ async function main() {
     assert.equal(badBody.type, 'error');
     assert.equal(badBody.error.type, 'invalid_request_error');
     assert.ok(badBody.error.message, 'decode-failure message is populated');
+
+    // --- the managed-agents beta must be opted into to create a session ---
+    const noBeta = await fetch(`${baseUrl}/v1/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agent: 'assistant', environment_id: 'env_local' }),
+    });
+    assert.equal(noBeta.status, 400, 'create without the beta header is a 400');
+    const noBetaBody = await noBeta.json();
+    assert.equal(noBetaBody.error.type, 'invalid_request_error');
+    assert.match(noBetaBody.error.message, /managed-agents-2026-04-01/, 'the error names the required beta');
+    pass('session create requires the anthropic-beta: managed-agents-2026-04-01 header');
     pass('malformed body -> 400 + invalid_request_error envelope');
 
     console.log('E2E PASS: Managed Agents lifecycle/messages/stream/errors via TS SDK (real provider wire).');
