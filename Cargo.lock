@@ -1171,6 +1171,7 @@ dependencies = [
  "awaken-agent-channel",
  "awaken-connection",
  "awaken-provisioning-contract",
+ "blake3",
  "bollard",
  "futures-util",
  "k8s-openapi",
