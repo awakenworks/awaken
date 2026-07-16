@@ -80,6 +80,16 @@ impl ManagedState {
             kind: OutboundKind::SessionStatusRunning {},
             processed_at: Some(PROCESSED_AT.to_string()),
         });
+        // A transparent transient-retry recovery surfaces as `session.status_rescheduled`
+        // between the running marker and the turn's output, so a client observes that
+        // the runtime auto-recovered rather than seeing an unexplained pause.
+        if outcome.rescheduled {
+            record.events.push(Event {
+                id: self.next_event_id(),
+                kind: OutboundKind::SessionStatusRescheduled {},
+                processed_at: Some(PROCESSED_AT.to_string()),
+            });
+        }
         // Compaction ran at BeforeInference, so its marker precedes the turn's
         // message events. `true` ⇒ this terminal step folded (emit-once upstream).
         if outcome.compacted {
