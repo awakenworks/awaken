@@ -10,8 +10,9 @@
 //! **out of the sandbox's address space** (the sandbox only reaches loopback over shared-net).
 //!
 //! A deny-egress (`--unshare-net`) thread cannot reach loopback — but such a thread cannot
-//! reach the real MCP server either, so MCP is moot there. Buffered request/response forward
-//! (the JSON-RPC MCP call path); SSE streaming is a follow-up.
+//! reach the real MCP server either, so MCP is moot there. The request body is buffered; the
+//! response is streamed straight through, so an MCP Streamable-HTTP `text/event-stream` reply
+//! is forwarded live rather than stalled.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -123,14 +124,16 @@ async fn forward(
                 .get(reqwest::header::CONTENT_TYPE)
                 .and_then(|v| v.to_str().ok())
                 .map(String::from);
-            let body = resp.bytes().await.unwrap_or_default().to_vec();
+            // Stream the response body straight through — MCP Streamable HTTP replies as an
+            // SSE stream (`text/event-stream`), so buffering would stall long-poll notifications.
             let mut out = Response::builder().status(status);
             if let Some(ct) = content_type {
                 out = out.header(header::CONTENT_TYPE, ct);
             }
-            out.body(Body::from(body)).unwrap_or_else(|_| {
-                (StatusCode::BAD_GATEWAY, "relay response build").into_response()
-            })
+            out.body(Body::from_stream(resp.bytes_stream()))
+                .unwrap_or_else(|_| {
+                    (StatusCode::BAD_GATEWAY, "relay response build").into_response()
+                })
         }
         Err(e) => (StatusCode::BAD_GATEWAY, format!("relay upstream: {e}")).into_response(),
     }
@@ -194,6 +197,57 @@ mod tests {
         assert!(
             !body.contains("session-mcp"),
             "placeholder must not reach upstream: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_streams_an_sse_response_through_with_its_content_type() {
+        // Upstream replies as `text/event-stream` — the MCP Streamable HTTP shape. The relay
+        // must pass the stream (and content-type) through, not buffer/rewrite it.
+        async fn sse(_req: Request) -> Response {
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/event-stream")
+                .body(Body::from(
+                    "event: message\ndata: {\"jsonrpc\":\"2.0\"}\n\n",
+                ))
+                .unwrap()
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new().route("/", axum::routing::any(sse));
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let relay = McpRelay::start().await.unwrap();
+        relay.set_routes(
+            "t1",
+            &[PreparedMcpServer {
+                name: "gh".into(),
+                url: format!("http://{addr}/"),
+                bearer: Some(awaken_agent_contract::RedactedString::from(
+                    "tok".to_string(),
+                )),
+                refresh: None,
+            }],
+        );
+        let resp = reqwest::Client::new()
+            .post(relay.route_url("t1", "gh"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/event-stream"),
+            "the SSE content-type is preserved through the relay"
+        );
+        let body = resp.text().await.unwrap();
+        assert!(
+            body.contains("data: {\"jsonrpc\""),
+            "SSE body streamed through: {body}"
         );
     }
 
