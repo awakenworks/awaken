@@ -14,7 +14,7 @@ use awaken_agent_contract::audit::draft::Draft;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
 use awaken_agent_contract::commit::coordinator::{Coordinator, Error};
 use awaken_agent_contract::commit::staged::ThreadCommit;
-use awaken_agent_contract::event::{AgentEvent, Committed, Live};
+use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_agent_contract::fact::run::Fact as RunFact;
 use awaken_agent_contract::store::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::store::run_store::RunStore;
@@ -552,11 +552,11 @@ async fn stream_sink_records_events_in_send_order() {
     let sink = MemoryStreamSink::new();
     assert!(sink.events().is_empty(), "fresh sink is empty");
     for kind in [
-        AgentEvent::Committed(Committed::RunStarted),
-        AgentEvent::Live(Live::TextDelta {
+        AgentEvent::Fact(Fact::RunStarted),
+        AgentEvent::Delta(Delta::TextDelta {
             delta: "hi".to_string(),
         }),
-        AgentEvent::Committed(Committed::RunFinished { exhausted: false }),
+        AgentEvent::Fact(Fact::RunFinished { exhausted: false }),
     ] {
         sink.send(StreamEvent {
             run_id: RunId("r".to_string()),
@@ -567,10 +567,10 @@ async fn stream_sink_records_events_in_send_order() {
     }
     let events = sink.events();
     assert_eq!(events.len(), 3);
-    assert_eq!(events[0].kind, AgentEvent::Committed(Committed::RunStarted));
+    assert_eq!(events[0].kind, AgentEvent::Fact(Fact::RunStarted));
     assert_eq!(
         events[2].kind,
-        AgentEvent::Committed(Committed::RunFinished { exhausted: false })
+        AgentEvent::Fact(Fact::RunFinished { exhausted: false })
     );
 }
 

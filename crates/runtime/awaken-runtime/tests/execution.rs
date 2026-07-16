@@ -7,7 +7,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::event::{AgentEvent, Committed, Live};
+use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink, replay_latest_phase};
 use awaken_runtime_contract::activation::RunActivation;
@@ -130,17 +130,14 @@ async fn one_model_step_commits_facts_and_streams_progress() {
 
     // Live stream order is RunStarted -> OutputText -> RunFinished.
     let kinds = sink.events();
-    assert!(matches!(
-        kinds[0].kind,
-        AgentEvent::Committed(Committed::RunStarted)
-    ));
+    assert!(matches!(kinds[0].kind, AgentEvent::Fact(Fact::RunStarted)));
     assert!(matches!(
         kinds[1].kind,
-        AgentEvent::Live(Live::TextDelta { .. })
+        AgentEvent::Delta(Delta::TextDelta { .. })
     ));
     assert!(matches!(
         kinds[2].kind,
-        AgentEvent::Committed(Committed::RunFinished { .. })
+        AgentEvent::Fact(Fact::RunFinished { .. })
     ));
 }
 

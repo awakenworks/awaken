@@ -13,7 +13,7 @@
 
 use std::collections::HashSet;
 
-use awaken_agent_contract::event::{AgentEvent, Committed, Live};
+use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 
 use crate::types::UIStreamEvent;
 
@@ -38,7 +38,7 @@ impl LiveTranscoder {
     /// Transcode one live event into zero or more UI Message Stream parts.
     pub fn transcode(&mut self, event: &AgentEvent) -> Vec<UIStreamEvent> {
         match event {
-            AgentEvent::Committed(Committed::RunStarted) => {
+            AgentEvent::Fact(Fact::RunStarted) => {
                 if self.started {
                     Vec::new()
                 } else {
@@ -46,7 +46,7 @@ impl LiveTranscoder {
                     vec![UIStreamEvent::Start, UIStreamEvent::StartStep]
                 }
             }
-            AgentEvent::Live(Live::TextDelta { delta }) => {
+            AgentEvent::Delta(Delta::TextDelta { delta }) => {
                 let mut out = Vec::new();
                 let id = match &self.open_text {
                     Some(id) => id.clone(),
@@ -64,7 +64,7 @@ impl LiveTranscoder {
                 });
                 out
             }
-            AgentEvent::Live(Live::ToolCallDelta {
+            AgentEvent::Delta(Delta::ToolCallDelta {
                 id,
                 name,
                 args_delta,
@@ -91,7 +91,7 @@ impl LiveTranscoder {
             // tier); a lifecycle terminal or any committed whole-unit closes any
             // open text run but never emits the authoritative `finish` — the
             // committed `StepOutcome` owns that.
-            AgentEvent::Live(Live::ReasoningDelta { .. }) | AgentEvent::Committed(_) => {
+            AgentEvent::Delta(Delta::ReasoningDelta { .. }) | AgentEvent::Fact(_) => {
                 self.close_text()
             }
         }
@@ -118,21 +118,21 @@ mod tests {
     use super::*;
 
     fn run_started() -> AgentEvent {
-        AgentEvent::Committed(Committed::RunStarted)
+        AgentEvent::Fact(Fact::RunStarted)
     }
     fn run_finished() -> AgentEvent {
-        AgentEvent::Committed(Committed::RunFinished { exhausted: false })
+        AgentEvent::Fact(Fact::RunFinished { exhausted: false })
     }
     fn waiting() -> AgentEvent {
-        AgentEvent::Committed(Committed::Waiting {
+        AgentEvent::Fact(Fact::Waiting {
             pending_tool_use_id: None,
         })
     }
     fn text(t: &str) -> AgentEvent {
-        AgentEvent::Live(Live::TextDelta { delta: t.into() })
+        AgentEvent::Delta(Delta::TextDelta { delta: t.into() })
     }
     fn tool(id: &str, name: &str, args: &str) -> AgentEvent {
-        AgentEvent::Live(Live::ToolCallDelta {
+        AgentEvent::Delta(Delta::ToolCallDelta {
             id: id.into(),
             name: name.into(),
             args_delta: args.into(),

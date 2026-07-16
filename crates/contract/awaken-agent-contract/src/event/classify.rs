@@ -9,7 +9,7 @@
 //! Channels are decided by the *transport contract* each satisfies, never by
 //! content (Axis 5):
 //!
-//! - **live** — best-effort, lossy, pre-commit broadcast. Carries [`Live`]
+//! - **live** — best-effort, lossy, pre-commit broadcast. Carries [`Delta`]
 //!   increments plus the opening `RunStarted` (Axis 6).
 //! - **audit** — the durable, not-truth event log (`audit::RunEvent` → `Draft`).
 //!   Carries run-lifecycle facts. Content whole-units are canonical *message*
@@ -18,15 +18,15 @@
 //! Canonical truth is the message commit itself (unchanged); it is not a channel
 //! `classify` routes to — a query re-folds messages on demand.
 
-use crate::event::agent::{AgentEvent, Committed, Live};
+use crate::event::agent::{AgentEvent, Delta, Fact};
 
 /// Which producer-authority tier an event belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
-    /// Authoritative whole-unit / lifecycle, from the fold.
-    Committed,
-    /// Best-effort increment, from the live stream.
-    Live,
+    /// A discrete complete event, from the fold.
+    Fact,
+    /// A streaming fragment, from the live stream.
+    Delta,
 }
 
 /// Where a single event is routed. Decided once, here, for the whole system.
@@ -42,41 +42,41 @@ pub struct Routing {
 
 /// The one routing decision. Total over `AgentEvent`; the compiler enforces
 /// exhaustiveness and the conformance test enforces the invariants that couple the
-/// fields (e.g. every `Live` is live-only, never audited).
+/// fields (e.g. every `Delta` is live-only, never audited).
 pub fn classify(event: &AgentEvent) -> Routing {
     match event {
         // Best-effort increments: live only, never truth, never audit.
-        AgentEvent::Live(p) => match p {
-            Live::TextDelta { .. } | Live::ReasoningDelta { .. } | Live::ToolCallDelta { .. } => {
-                Routing {
-                    tier: Tier::Live,
-                    live: true,
-                    audit: false,
-                }
-            }
+        AgentEvent::Delta(p) => match p {
+            Delta::TextDelta { .. }
+            | Delta::ReasoningDelta { .. }
+            | Delta::ToolCallDelta { .. } => Routing {
+                tier: Tier::Delta,
+                live: true,
+                audit: false,
+            },
         },
-        AgentEvent::Committed(c) => match c {
+        AgentEvent::Fact(c) => match c {
             // The run boundary opens the live stream *and* is an audited phase fact.
-            Committed::RunStarted => Routing {
-                tier: Tier::Committed,
+            Fact::RunStarted => Routing {
+                tier: Tier::Fact,
                 live: true,
                 audit: true,
             },
             // Content whole-units: canonical message truth, not audit; the live
             // prefix already carried them as increments, so not re-broadcast.
-            Committed::AssistantMessage { .. }
-            | Committed::ToolCall { .. }
-            | Committed::ToolResult { .. } => Routing {
-                tier: Tier::Committed,
-                live: false,
-                audit: false,
-            },
+            Fact::AssistantMessage { .. } | Fact::ToolCall { .. } | Fact::ToolResult { .. } => {
+                Routing {
+                    tier: Tier::Fact,
+                    live: false,
+                    audit: false,
+                }
+            }
             // Lifecycle facts: audited (phase/park/continuation), not live.
-            Committed::Waiting { .. }
-            | Committed::Continuation { .. }
-            | Committed::RunFinished { .. }
-            | Committed::RunFailed { .. } => Routing {
-                tier: Tier::Committed,
+            Fact::Waiting { .. }
+            | Fact::Continuation { .. }
+            | Fact::RunFinished { .. }
+            | Fact::RunFailed { .. } => Routing {
+                tier: Tier::Fact,
                 live: false,
                 audit: true,
             },
@@ -95,38 +95,38 @@ mod tests {
     /// `classify` forces a row here too (the match won't compile without it).
     fn every_variant() -> Vec<AgentEvent> {
         vec![
-            AgentEvent::Live(Live::TextDelta { delta: "x".into() }),
-            AgentEvent::Live(Live::ReasoningDelta { delta: "x".into() }),
-            AgentEvent::Live(Live::ToolCallDelta {
+            AgentEvent::Delta(Delta::TextDelta { delta: "x".into() }),
+            AgentEvent::Delta(Delta::ReasoningDelta { delta: "x".into() }),
+            AgentEvent::Delta(Delta::ToolCallDelta {
                 id: "c1".into(),
                 name: "t".into(),
                 args_delta: "{}".into(),
             }),
-            AgentEvent::Committed(Committed::RunStarted),
-            AgentEvent::Committed(Committed::AssistantMessage {
+            AgentEvent::Fact(Fact::RunStarted),
+            AgentEvent::Fact(Fact::AssistantMessage {
                 id: "a1".into(),
                 content: vec![],
             }),
-            AgentEvent::Committed(Committed::ToolCall {
+            AgentEvent::Fact(Fact::ToolCall {
                 id: "c1".into(),
                 name: "t".into(),
                 input: json!({}),
                 disposition: ToolDisposition::Executed,
             }),
-            AgentEvent::Committed(Committed::ToolResult {
+            AgentEvent::Fact(Fact::ToolResult {
                 id: "c1".into(),
                 content: vec![],
                 is_error: false,
             }),
-            AgentEvent::Committed(Committed::Waiting {
+            AgentEvent::Fact(Fact::Waiting {
                 pending_tool_use_id: None,
             }),
-            AgentEvent::Committed(Committed::Continuation {
+            AgentEvent::Fact(Fact::Continuation {
                 steered: false,
                 detail: json!({}),
             }),
-            AgentEvent::Committed(Committed::RunFinished { exhausted: false }),
-            AgentEvent::Committed(Committed::RunFailed {
+            AgentEvent::Fact(Fact::RunFinished { exhausted: false }),
+            AgentEvent::Fact(Fact::RunFailed {
                 code: "x".into(),
                 message: "y".into(),
             }),
@@ -138,19 +138,19 @@ mod tests {
         for e in every_variant() {
             let r = classify(&e);
             match e {
-                AgentEvent::Live(_) => assert_eq!(r.tier, Tier::Live),
-                AgentEvent::Committed(_) => assert_eq!(r.tier, Tier::Committed),
+                AgentEvent::Delta(_) => assert_eq!(r.tier, Tier::Delta),
+                AgentEvent::Fact(_) => assert_eq!(r.tier, Tier::Fact),
             }
         }
     }
 
     // INVARIANT (Axis 6): the live stream is best-effort and carries no
-    // authoritative terminus. So every `Live` is live and never audited, and no
-    // `Committed` lifecycle terminus is ever broadcast live.
+    // authoritative terminus. So every `Delta` is live and never audited, and no
+    // `Fact` lifecycle terminus is ever broadcast live.
     #[test]
     fn live_tier_is_broadcast_and_never_audited() {
         for e in every_variant() {
-            if let AgentEvent::Live(_) = e {
+            if let AgentEvent::Delta(_) = e {
                 let r = classify(&e);
                 assert!(r.live, "live increments broadcast live: {e:?}");
                 assert!(!r.audit, "live increments are never audited: {e:?}");
@@ -160,14 +160,14 @@ mod tests {
 
     // INVARIANT: only the run boundary is both committed and live; every other
     // committed variant stays off the best-effort live channel (its increments,
-    // if any, already streamed as `Live`).
+    // if any, already streamed as `Delta`).
     #[test]
     fn only_run_started_is_both_committed_and_live() {
         for e in every_variant() {
             let r = classify(&e);
-            if r.tier == Tier::Committed && r.live {
+            if r.tier == Tier::Fact && r.live {
                 assert!(
-                    matches!(e, AgentEvent::Committed(Committed::RunStarted)),
+                    matches!(e, AgentEvent::Fact(Fact::RunStarted)),
                     "unexpected committed+live variant: {e:?}"
                 );
             }
@@ -178,17 +178,17 @@ mod tests {
     #[test]
     fn committed_content_is_not_audited() {
         for e in [
-            AgentEvent::Committed(Committed::AssistantMessage {
+            AgentEvent::Fact(Fact::AssistantMessage {
                 id: "a".into(),
                 content: vec![],
             }),
-            AgentEvent::Committed(Committed::ToolCall {
+            AgentEvent::Fact(Fact::ToolCall {
                 id: "c".into(),
                 name: "n".into(),
                 input: json!({}),
                 disposition: ToolDisposition::Executed,
             }),
-            AgentEvent::Committed(Committed::ToolResult {
+            AgentEvent::Fact(Fact::ToolResult {
                 id: "c".into(),
                 content: vec![],
                 is_error: false,

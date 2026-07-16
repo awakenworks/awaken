@@ -65,7 +65,7 @@ pub(super) async fn run_tool_calls(
                         emit(
                             context,
                             run_id,
-                            AgentEvent::Committed(Committed::Waiting {
+                            AgentEvent::Fact(Fact::Waiting {
                                 pending_tool_use_id: ticket.call_id.clone(),
                             }),
                         )
@@ -93,7 +93,7 @@ pub(super) async fn run_tool_calls(
                     emit(
                         context,
                         run_id,
-                        AgentEvent::Committed(Committed::Waiting {
+                        AgentEvent::Fact(Fact::Waiting {
                             pending_tool_use_id: ticket.call_id.clone(),
                         }),
                     )
@@ -125,7 +125,7 @@ pub(super) async fn run_tool_calls(
                     emit(
                         context,
                         run_id,
-                        AgentEvent::Committed(Committed::Waiting {
+                        AgentEvent::Fact(Fact::Waiting {
                             pending_tool_use_id: ticket.call_id.clone(),
                         }),
                     )

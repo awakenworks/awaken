@@ -14,7 +14,7 @@ use crate::agent::message::{Message, Role};
 use crate::agent::run::{EndCause, Phase};
 // The neutral committed-event vocabulary now lives in `event`; the fold produces
 // it. `AgentEvent` here is the committed tier (ADR-0058, Axis 2).
-pub use crate::event::{Committed as AgentEvent, ToolDisposition};
+pub use crate::event::{Fact as AgentEvent, ToolDisposition};
 
 /// Transcode neutral projection events into a protocol's wire events. One impl per
 /// protocol — the only per-protocol part of the projection pipeline. `&mut self`

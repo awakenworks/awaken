@@ -10,7 +10,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::event::{AgentEvent, Committed};
+use awaken_agent_contract::event::{AgentEvent, Fact};
 use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink};
 use awaken_runtime::{CircuitBreakerConfig, LlmRetryPolicy, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
@@ -406,14 +406,14 @@ async fn failed_run_emits_run_failed_on_the_live_stream_before_run_finished() {
         .position(|k| {
             matches!(
                 k,
-                AgentEvent::Committed(Committed::RunFailed { code, message })
+                AgentEvent::Fact(Fact::RunFailed { code, message })
                     if code == "unauthorized" && message.contains("bad api key")
             )
         })
         .unwrap_or_else(|| panic!("a RunFailed event with the fault code: {kinds:?}"));
     let finished_at = kinds
         .iter()
-        .position(|k| matches!(k, AgentEvent::Committed(Committed::RunFinished { .. })))
+        .position(|k| matches!(k, AgentEvent::Fact(Fact::RunFinished { .. })))
         .expect("a terminal RunFinished");
     assert!(
         failed_at < finished_at,

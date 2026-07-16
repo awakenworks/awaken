@@ -18,7 +18,7 @@ use awaken_agent_contract::agent::waiting::{PendingTool, WaitingReason, WaitingT
 use awaken_agent_contract::audit::draft::Draft as EventDraft;
 use awaken_agent_contract::audit::run_event::RunEvent;
 use awaken_agent_contract::commit::staged::ThreadCommit;
-use awaken_agent_contract::event::{AgentEvent, Committed, Live};
+use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_agent_contract::store::stream_checkpoint::{
     PartialToolCall, StreamCheckpoint, StreamCheckpointStore,
 };
@@ -115,12 +115,7 @@ pub(crate) async fn run_agent_loop(
         }
     };
 
-    emit(
-        &context,
-        &run_id,
-        AgentEvent::Committed(Committed::RunStarted),
-    )
-    .await;
+    emit(&context, &run_id, AgentEvent::Fact(Fact::RunStarted)).await;
 
     // A fresh run continues the thread's conversation: seed the transcript with
     // the committed history (when a reader is wired), then this run's input —
@@ -260,12 +255,7 @@ pub(crate) async fn resume_run(
         }
     };
 
-    emit(
-        &context,
-        &run_id,
-        AgentEvent::Committed(Committed::RunStarted),
-    )
-    .await;
+    emit(&context, &run_id, AgentEvent::Fact(Fact::RunStarted)).await;
 
     // A parked delegation resumes through the resolver, not the tool registry: the
     // resolver runs one more step with the user's input and the run continues or
@@ -995,7 +985,7 @@ async fn drive(
                     emit(
                         context,
                         run_id,
-                        AgentEvent::Committed(Committed::Waiting {
+                        AgentEvent::Fact(Fact::Waiting {
                             pending_tool_use_id: None,
                         }),
                     )
@@ -1025,7 +1015,7 @@ async fn drive(
                     emit(
                         context,
                         run_id,
-                        AgentEvent::Committed(Committed::Continuation {
+                        AgentEvent::Fact(Fact::Continuation {
                             steered: true,
                             detail,
                         }),
@@ -1041,7 +1031,7 @@ async fn drive(
                     emit(
                         context,
                         run_id,
-                        AgentEvent::Committed(Committed::Continuation {
+                        AgentEvent::Fact(Fact::Continuation {
                             steered: false,
                             detail,
                         }),
@@ -1148,7 +1138,7 @@ impl DeltaSink for StreamDeltaSink<'_> {
         emit(
             self.context,
             self.run_id,
-            AgentEvent::Live(Live::TextDelta {
+            AgentEvent::Delta(Delta::TextDelta {
                 delta: chunk.to_string(),
             }),
         )
@@ -1159,7 +1149,7 @@ impl DeltaSink for StreamDeltaSink<'_> {
         emit(
             self.context,
             self.run_id,
-            AgentEvent::Live(Live::ToolCallDelta {
+            AgentEvent::Delta(Delta::ToolCallDelta {
                 id: call_id.to_string(),
                 name: tool_id.to_string(),
                 args_delta: args_delta.to_string(),
@@ -1953,7 +1943,7 @@ async fn finish(
         emit(
             context,
             &run_id,
-            AgentEvent::Committed(Committed::RunFailed {
+            AgentEvent::Fact(Fact::RunFailed {
                 code: failure.code().to_string(),
                 message: failure.message(),
             }),
@@ -1963,7 +1953,7 @@ async fn finish(
     emit(
         context,
         &run_id,
-        AgentEvent::Committed(Committed::RunFinished { exhausted: false }),
+        AgentEvent::Fact(Fact::RunFinished { exhausted: false }),
     )
     .await;
     Ok(phase)

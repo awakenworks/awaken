@@ -15,7 +15,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use awaken_agent_contract::event::{AgentEvent, Live};
+use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_agent_contract::stream::sink::{Error as SinkError, Sink};
 use tokio::sync::broadcast;
@@ -74,7 +74,7 @@ impl PreviewSink {
 impl Sink for PreviewSink {
     async fn send(&self, event: StreamEvent) -> Result<(), SinkError> {
         match &event.kind {
-            AgentEvent::Live(Live::TextDelta { delta: text }) => {
+            AgentEvent::Delta(Delta::TextDelta { delta: text }) => {
                 let id = {
                     let mut inner = self.inner.lock().unwrap();
                     if let Some(id) = inner.open_id.clone() {
@@ -104,9 +104,9 @@ impl Sink for PreviewSink {
             // A tool call, reasoning, or any committed lifecycle event closes the
             // current text run; the next text opens a fresh previewed message. Tool
             // use and reasoning are never previewed (matches the official wire).
-            AgentEvent::Live(Live::ToolCallDelta { .. })
-            | AgentEvent::Live(Live::ReasoningDelta { .. })
-            | AgentEvent::Committed(_) => {
+            AgentEvent::Delta(Delta::ToolCallDelta { .. })
+            | AgentEvent::Delta(Delta::ReasoningDelta { .. })
+            | AgentEvent::Fact(_) => {
                 self.inner.lock().unwrap().open_id = None;
             }
         }
@@ -118,19 +118,19 @@ impl Sink for PreviewSink {
 mod tests {
     use super::*;
     use awaken_agent_contract::agent::run::Id as RunId;
-    use awaken_agent_contract::event::Committed;
+    use awaken_agent_contract::event::Fact;
 
     fn run_started() -> AgentEvent {
-        AgentEvent::Committed(Committed::RunStarted)
+        AgentEvent::Fact(Fact::RunStarted)
     }
     fn run_finished() -> AgentEvent {
-        AgentEvent::Committed(Committed::RunFinished { exhausted: false })
+        AgentEvent::Fact(Fact::RunFinished { exhausted: false })
     }
     fn text(t: &str) -> AgentEvent {
-        AgentEvent::Live(Live::TextDelta { delta: t.into() })
+        AgentEvent::Delta(Delta::TextDelta { delta: t.into() })
     }
     fn tool(id: &str, name: &str, args: &str) -> AgentEvent {
-        AgentEvent::Live(Live::ToolCallDelta {
+        AgentEvent::Delta(Delta::ToolCallDelta {
             id: id.into(),
             name: name.into(),
             args_delta: args.into(),

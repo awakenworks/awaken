@@ -9,7 +9,7 @@ use std::time::Duration;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_agent_contract::event::{AgentEvent, Committed, Live};
+use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_agent_contract::stream::event::Event;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_protocol_transport::{
@@ -43,26 +43,26 @@ impl ProtocolRuntime for StreamingMock {
     ) -> Result<StepOutcome, DriverError> {
         let run = RunId("r1".into());
         for kind in [
-            AgentEvent::Committed(Committed::RunStarted),
-            AgentEvent::Live(Live::TextDelta {
+            AgentEvent::Fact(Fact::RunStarted),
+            AgentEvent::Delta(Delta::TextDelta {
                 delta: "reading ".into(),
             }),
-            AgentEvent::Live(Live::ToolCallDelta {
+            AgentEvent::Delta(Delta::ToolCallDelta {
                 id: "c1".into(),
                 name: "read".into(),
                 args_delta: "".into(),
             }),
-            AgentEvent::Live(Live::ToolCallDelta {
+            AgentEvent::Delta(Delta::ToolCallDelta {
                 id: "c1".into(),
                 name: "read".into(),
                 args_delta: "{\"path\":".into(),
             }),
-            AgentEvent::Live(Live::ToolCallDelta {
+            AgentEvent::Delta(Delta::ToolCallDelta {
                 id: "c1".into(),
                 name: "read".into(),
                 args_delta: "\"x\"}".into(),
             }),
-            AgentEvent::Committed(Committed::RunFinished { exhausted: false }),
+            AgentEvent::Fact(Fact::RunFinished { exhausted: false }),
         ] {
             sink.send(Event {
                 run_id: run.clone(),
@@ -200,7 +200,7 @@ impl ProtocolRuntime for HangupProbe {
             let sent = sink
                 .send(Event {
                     run_id: run.clone(),
-                    kind: AgentEvent::Live(Live::TextDelta { delta: "x".into() }),
+                    kind: AgentEvent::Delta(Delta::TextDelta { delta: "x".into() }),
                 })
                 .await;
             if sent.is_err() {

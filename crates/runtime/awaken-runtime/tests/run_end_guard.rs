@@ -11,7 +11,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::event::{AgentEvent, Committed};
+use awaken_agent_contract::event::{AgentEvent, Fact};
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_agent_contract::stream::event::Event;
 use awaken_agent_contract::stream::sink::{Error as SinkError, Sink};
@@ -150,7 +150,7 @@ struct ContinuationCollector {
 #[async_trait::async_trait]
 impl Sink for ContinuationCollector {
     async fn send(&self, event: Event) -> Result<(), SinkError> {
-        if let AgentEvent::Committed(Committed::Continuation { steered, detail }) = event.kind {
+        if let AgentEvent::Fact(Fact::Continuation { steered, detail }) = event.kind {
             self.events.lock().unwrap().push((steered, detail));
         }
         Ok(())

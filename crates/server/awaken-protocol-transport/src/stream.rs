@@ -39,7 +39,7 @@ mod tests {
     use awaken_agent_contract::agent::run::Id as RunId;
     use tokio::sync::mpsc;
 
-    use awaken_agent_contract::event::{Committed, Live};
+    use awaken_agent_contract::event::{Delta, Fact};
 
     #[tokio::test]
     async fn forwards_event_kind() {
@@ -47,13 +47,13 @@ mod tests {
         let sink = ChannelStreamSink::new(tx);
         sink.send(Event {
             run_id: RunId("r1".into()),
-            kind: AgentEvent::Live(Live::TextDelta { delta: "hi".into() }),
+            kind: AgentEvent::Delta(Delta::TextDelta { delta: "hi".into() }),
         })
         .await
         .unwrap();
         assert_eq!(
             rx.recv().await,
-            Some(AgentEvent::Live(Live::TextDelta { delta: "hi".into() }))
+            Some(AgentEvent::Delta(Delta::TextDelta { delta: "hi".into() }))
         );
     }
 
@@ -65,7 +65,7 @@ mod tests {
         let err = sink
             .send(Event {
                 run_id: RunId("r1".into()),
-                kind: AgentEvent::Committed(Committed::RunFinished { exhausted: false }),
+                kind: AgentEvent::Fact(Fact::RunFinished { exhausted: false }),
             })
             .await;
         assert!(matches!(err, Err(SinkError::Closed)));

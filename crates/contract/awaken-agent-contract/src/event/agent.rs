@@ -7,19 +7,19 @@
 //! **read/emit projection**, never stored truth — the message log stays canonical
 //! (Axis 1).
 //!
-//! Two nested tiers encode producer authority (Axis 6). The tier names are the two
-//! ends of the durability axis — `Live` is best-effort and ephemeral, `Committed`
-//! is authoritative and durable:
+//! Two nested tiers name what a consumer must do with each event — its *shape*,
+//! not our storage:
 //!
-//! - [`Committed`] — authoritative whole-units and run lifecycle, produced only by
-//!   the **fold** over committed messages/phase. The compiler forces every protocol
-//!   to take a stance on each variant (exhaustive tier).
-//! - [`Live`] — best-effort, high-frequency increments, produced only by the live
-//!   **stream** and never durable truth. A protocol opts in to just the increments
-//!   it renders; adding one never fans out to every encoder (opt-in tier).
+//! - [`Fact`] — a discrete, complete event: something that definitively happened
+//!   (a whole message, a finished tool call, a run-lifecycle transition). Produced
+//!   only by the **fold** over committed messages/phase. The compiler forces every
+//!   protocol to take a stance on each variant (exhaustive tier).
+//! - [`Delta`] — a streaming fragment of content still being produced. Best-effort,
+//!   high-frequency, from the live **stream**, never durable truth. A protocol opts
+//!   in to just the fragments it renders (opt-in tier).
 //!
 //! No variant has two producers, so a consumer never has to ask whether a given
-//! `RunFinished` is best-effort or authoritative — it can only be `Committed`.
+//! `RunFinished` is best-effort or authoritative — it can only be a `Fact`.
 
 use serde_json::Value;
 
@@ -30,7 +30,7 @@ use crate::agent::content::ContentBlock;
 /// tool-part shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolDisposition {
-    /// The tool ran server-side; a [`Committed::ToolResult`] follows.
+    /// The tool ran server-side; a [`Fact::ToolResult`] follows.
     Executed,
     /// A client-executed tool the run parked on; the client runs it and returns
     /// the result.
@@ -43,16 +43,17 @@ pub enum ToolDisposition {
 /// vocabulary.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentEvent {
-    /// An authoritative whole-unit or lifecycle fact, folded from committed truth.
-    Committed(Committed),
-    /// A best-effort live increment, streamed pre-commit.
-    Live(Live),
+    /// A discrete complete event — something that definitively happened, folded
+    /// from committed truth.
+    Fact(Fact),
+    /// A streaming fragment of content still being produced, best-effort.
+    Delta(Delta),
 }
 
-/// The authoritative tier: whole-units and run lifecycle. Only the fold produces
+/// The discrete-event tier: whole units and run lifecycle. Only the fold produces
 /// these. Every protocol transcoder handles every variant (exhaustive).
 #[derive(Debug, Clone, PartialEq)]
-pub enum Committed {
+pub enum Fact {
     /// The run began (a run boundary).
     RunStarted,
     /// An assistant message's content (text — and, once folded, thinking blocks).
@@ -85,13 +86,14 @@ pub enum Committed {
     RunFailed { code: String, message: String },
 }
 
-/// The best-effort tier: fine-grained live increments. Only the live stream
-/// produces these. A protocol renders only the increments it cares about (opt-in).
+/// The streaming-fragment tier: fine-grained content increments. Only the live
+/// stream produces these. A protocol renders only the fragments it cares about
+/// (opt-in).
 #[derive(Debug, Clone, PartialEq)]
-pub enum Live {
+pub enum Delta {
     /// A fragment of assistant text.
     TextDelta { delta: String },
-    /// A fragment of model reasoning (best-effort; the committed form is a folded
+    /// A fragment of model reasoning (best-effort; the completed form is a folded
     /// thinking block — Axis 10b).
     ReasoningDelta { delta: String },
     /// A tool-argument fragment — always a de-accumulated **suffix** (the provider
@@ -104,13 +106,13 @@ pub enum Live {
 }
 
 impl AgentEvent {
-    /// Convenience: wrap a committed whole-unit.
-    pub fn committed(c: Committed) -> Self {
-        AgentEvent::Committed(c)
+    /// Convenience: wrap a discrete complete event.
+    pub fn fact(f: Fact) -> Self {
+        AgentEvent::Fact(f)
     }
 
-    /// Convenience: wrap a live increment.
-    pub fn live(e: Live) -> Self {
-        AgentEvent::Live(e)
+    /// Convenience: wrap a streaming fragment.
+    pub fn delta(d: Delta) -> Self {
+        AgentEvent::Delta(d)
     }
 }
