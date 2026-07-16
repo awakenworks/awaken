@@ -429,14 +429,26 @@ impl ManagedState {
         Ok(record.session.clone())
     }
 
-    /// `DELETE /v1/sessions/{id}` — drop the in-memory record.
+    /// `DELETE /v1/sessions/{id}` — commit a terminal `session.deleted` event,
+    /// push it to any open SSE stream, then drop the in-memory record. The
+    /// broadcast happens *before* removal because after the record is gone there
+    /// is nothing to backfill from: a live frame is the only way a streaming
+    /// client observes the deletion, and a subsequent `events.list`/`retrieve`
+    /// is a 404 (delete removes the session; it does not tombstone it as archive
+    /// does).
     pub fn delete_session(&self, id: &str) -> Result<(), StateError> {
-        self.sessions
-            .lock()
-            .unwrap()
-            .remove(id)
-            .map(|_| ())
-            .ok_or(StateError::NotFound)
+        let deleted_id = self.next_event_id();
+        let mut sessions = self.sessions.lock().unwrap();
+        let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
+        let from = record.events.len();
+        record.events.push(Event {
+            id: deleted_id,
+            kind: OutboundKind::SessionDeleted {},
+            processed_at: Some(PROCESSED_AT.to_string()),
+        });
+        self.broadcast_committed_from(id, record, from);
+        sessions.remove(id);
+        Ok(())
     }
 
     /// `POST /v1/sessions/{id}/archive` — terminate the session: stamp

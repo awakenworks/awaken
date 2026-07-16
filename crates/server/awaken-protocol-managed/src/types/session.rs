@@ -410,6 +410,13 @@ pub enum OutboundKind {
     /// the session sees this as the last event; no further turns are accepted.
     #[serde(rename = "session.status_terminated")]
     SessionStatusTerminated {},
+    /// The session was deleted (`session.deleted`) — a terminal stream frame
+    /// pushed to any open SSE connection just before the record is dropped.
+    /// Unlike archive (which tombstones a still-listable `terminated` record),
+    /// delete removes the session, so this frame is live-broadcast only: a
+    /// subsequent `events.list`/`retrieve` is a 404, not a replay.
+    #[serde(rename = "session.deleted")]
+    SessionDeleted {},
     /// A subagent (multiagent delegate) thread was spawned within the session —
     /// the SDK's `session.thread_created`. `agent_name` is the callable delegate
     /// the child thread runs.
@@ -497,6 +504,7 @@ impl OutboundKind {
             OutboundKind::SessionStatusRunning {} => "session.status_running",
             OutboundKind::SessionStatusIdle { .. } => "session.status_idle",
             OutboundKind::SessionStatusTerminated {} => "session.status_terminated",
+            OutboundKind::SessionDeleted {} => "session.deleted",
             OutboundKind::SessionThreadCreated { .. } => "session.thread_created",
             OutboundKind::SessionThreadStatusRunning { .. } => "session.thread_status_running",
             OutboundKind::SessionThreadStatusIdle { .. } => "session.thread_status_idle",

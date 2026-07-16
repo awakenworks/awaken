@@ -376,7 +376,10 @@ fn is_terminal(frame: &StreamFrame) -> bool {
     matches!(
         frame,
         StreamFrame::Committed(e)
-            if matches!(e.type_str(), "session.status_idle" | "session.status_terminated")
+            if matches!(
+                e.type_str(),
+                "session.status_idle" | "session.status_terminated" | "session.deleted"
+            )
     )
 }
 
