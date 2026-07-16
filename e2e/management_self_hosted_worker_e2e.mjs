@@ -69,8 +69,19 @@ async function main() {
         assert.equal(work.state, 'active', 'a claimed item is active');
 
         if (work.data.type === 'healthcheck') {
-          // Drain the seeded healthcheck so the next poll reaches the session work.
-          await client.beta.environments.work.stop(work.id, { environment_id: env.id, betas: BETAS });
+          // Drain the seeded healthcheck so the next poll reaches the session work,
+          // exercising the `force` stop variant (SDK WorkStopParams.force) end-to-end:
+          // the managed API accepts `force: true` and stops the item. (The graceful-
+          // vs-force distinction — immediate vs drain — is a worker-executor concern;
+          // the server contract asserted here is that the force parameter round-trips
+          // and the item leaves the active lease.)
+          const stopped = await client.beta.environments.work.stop(work.id, {
+            environment_id: env.id,
+            force: true,
+            betas: BETAS,
+          });
+          assert.equal(stopped.id, work.id, 'force-stop is accepted and returns the stopped item');
+          assert.notEqual(stopped.state, 'active', 'force-stop moves the item off the active lease');
           continue;
         }
 
