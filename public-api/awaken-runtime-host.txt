@@ -394,5 +394,6 @@ pub fn awaken_runtime_host::install_capture_sink(alloc::sync::Arc<dyn awaken_run
 pub fn awaken_runtime_host::memory_stores_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> axum::routing::Router
 pub fn awaken_runtime_host::models_router(alloc::sync::Arc<alloc::vec::Vec<awaken_runtime_host::ModelEntry>>) -> axum::routing::Router
 pub fn awaken_runtime_host::platform_plugin_capabilities() -> alloc::vec::Vec<awaken_runtime_contract::capability::PluginCapability>
+pub async fn awaken_runtime_host::resolve_sandbox_tier(awaken_runtime_host::SandboxTier, &std::path::Path) -> core::result::Result<awaken_runtime_host::SandboxTier, alloc::string::String>
 pub fn awaken_runtime_host::skills_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> axum::routing::Router
 pub fn awaken_runtime_host::worker_dispatch_store(impl core::convert::Into<alloc::string::String>) -> alloc::sync::Arc<awaken_run_ingress::any::AnyDispatchStore>
