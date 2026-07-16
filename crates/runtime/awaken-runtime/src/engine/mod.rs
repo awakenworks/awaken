@@ -85,6 +85,13 @@ pub(crate) async fn run_agent_loop(
     activation: RunActivation,
     context: RuntimeRunContext,
 ) -> Result<Phase> {
+    // A database-less worker cannot warm-install the agent's published catalog, so
+    // its per-session runtime has no catalog matching the run it just claimed. When
+    // such a runtime trusts dispatched snapshots, adopt the one carried inline here
+    // — it is content-addressed and self-describing — so the fail-closed gate below
+    // passes. A no-op on a node with its own matching catalog (the gate still
+    // enforces descent-from-active there).
+    runtime.reconcile_dispatched_snapshot(&activation.snapshot);
     let resolved = runtime
         .resolve(&activation.snapshot)
         .map_err(map_resolver_error)?;

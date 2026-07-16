@@ -44,6 +44,7 @@ pub async fn awaken_runtime::Runtime::perform_scheduled_action(&self, &awaken_ag
 pub fn awaken_runtime::Runtime::register_snapshot(&self, awaken_runtime_contract::snapshot::ExecutableAgentSnapshot) -> awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
 pub async fn awaken_runtime::Runtime::resume(&self, awaken_runtime_contract::resume::ResumeCommand, &dyn awaken_agent_contract::store::thread_reader::ThreadReader, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_agent_contract::agent::run::Phase, awaken_runtime_contract::execution::Error>
 pub async fn awaken_runtime::Runtime::stop_run(&self, awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::thread::Id, alloc::string::String, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_agent_contract::agent::run::Phase, awaken_runtime_contract::execution::Error>
+pub fn awaken_runtime::Runtime::trusting_dispatched_snapshots(self, bool) -> Self
 pub fn awaken_runtime::Runtime::validate_plugins(&self, &awaken_runtime_contract::resolved::ResolvedSpec) -> core::result::Result<(), awaken_runtime_contract::plugin::env::MergeError>
 pub fn awaken_runtime::Runtime::with_circuit_breaker(self, awaken_runtime::CircuitBreakerConfig) -> Self
 pub fn awaken_runtime::Runtime::with_gate(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>) -> Self

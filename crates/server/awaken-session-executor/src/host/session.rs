@@ -242,7 +242,15 @@ impl SharedHost {
         // Resolving per run — not once at session build — means a per-turn model
         // switch needs no session rebuild, and a database-less worker runs the
         // configured model without a session-level registry.
-        let mut runtime = build_runtime(self.llm.clone(), &env);
+        // No published catalog for this agent on this node (a database-less worker,
+        // or an unpublished/built-in agent): the session installs a locally-rebuilt
+        // catalog below whose fingerprint cannot match a run published elsewhere.
+        // Let the runtime trust the content-addressed snapshot each claimed run
+        // carries, so a durable run resolves instead of stranding on the mismatch.
+        // A node WITH the agent's published catalog (`installed` is `Some`) keeps
+        // enforcing the fail-closed descent-from-active gate (G4).
+        let mut runtime = build_runtime(self.llm.clone(), &env)
+            .trusting_dispatched_snapshots(installed.is_none());
         if apply_base_gate {
             runtime = runtime.with_gate(base_gate.clone());
         }
