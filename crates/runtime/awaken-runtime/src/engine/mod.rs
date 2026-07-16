@@ -117,14 +117,29 @@ pub(crate) async fn run_agent_loop(
     emit(&context, &run_id, StreamKind::RunStarted).await;
 
     // A fresh run continues the thread's conversation: seed the transcript with
-    // the committed history (when a reader is wired), then this turn's input. The
-    // input is also committed, so the next turn sees this user turn too.
+    // the committed history (when a reader is wired), then this turn's input —
+    // but only the input NOT already in that history. A reclaimed run re-executes
+    // from its activation, yet its input was committed as the first step delta by
+    // the prior attempt, so it is already present: appending it again would both
+    // show the model the turn twice AND re-commit it (the durable accumulator's
+    // watermark resets per attempt, so it cannot tell). Keyed on the stable
+    // message id, a fresh run's uncommitted input passes through unchanged while a
+    // reclaimed or redelivered input is dropped — input delivery is idempotent.
     let mut transcript = context
         .reader
         .as_ref()
         .map(|reader| reader.committed_messages(&thread_id))
         .unwrap_or_default();
-    transcript.extend(activation.input.iter().cloned());
+    let committed_ids: std::collections::HashSet<_> = transcript
+        .iter()
+        .map(|message| message.id.clone())
+        .collect();
+    let fresh_input: Vec<Message> = activation
+        .input
+        .into_iter()
+        .filter(|message| !committed_ids.contains(&message.id))
+        .collect();
+    transcript.extend(fresh_input.iter().cloned());
     let store = store_from_commands(
         context
             .reader
@@ -140,7 +155,7 @@ pub(crate) async fn run_agent_loop(
         &thread_id,
         &context,
         transcript,
-        activation.input,
+        fresh_input,
         0,
         store,
         Vec::new(),

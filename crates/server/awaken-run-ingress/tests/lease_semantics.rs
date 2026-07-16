@@ -266,15 +266,17 @@ async fn mid_flight_reclaim_keeps_the_committed_log_exactly_once() {
     // as an already-done settle (a benign lost race), so A's tick still resolves
     // cleanly and the dispatch is not stranded.
     //
-    // Two residuals are INHERENT to lease-based recovery and are NOT fixed here
-    // (documented so the invariant is honest):
-    //   1. the external tool SIDE EFFECT ran twice (`ran == 2`) — an at-least-once
-    //      effect; the tool runs during `execute`, before any commit, so it cannot
-    //      be un-run. Only lease renewal (test 4) fences the common case.
-    //   2. the user input "go" appears twice in the transcript and A's partial
-    //      leaves an orphan `Running` fact — a reclaimed fresh run re-executes from
-    //      its activation rather than resuming from the committed transcript. This
-    //      is transcript *noise*, not a duplicated assistant turn or a double end.
+    // The one INHERENT residual of lease-based recovery, NOT fixable here: the
+    // external tool SIDE EFFECT ran twice (`ran == 2`) — an at-least-once effect;
+    // the tool runs during `execute`, before any commit, so it cannot be un-run.
+    // Only lease renewal (test 4) fences the common case.
+    //
+    // What IS fixed: the reclaimed run's input is no longer replayed. A committed
+    // "go" as its first step delta, so B's re-execute seeds it from committed
+    // history and drops the activation copy (idempotent by stable message id) — the
+    // input is committed exactly once, not twice. (A's fenced partial still leaves
+    // an orphan `Running` fact — transcript noise, not a duplicated turn or double
+    // end.)
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let (runtime, ran) = blocking_tool_runtime(release.clone());
     let store = Arc::new(MemoryDispatchStore::new());
@@ -378,6 +380,20 @@ async fn mid_flight_reclaim_keeps_the_committed_log_exactly_once() {
     assert_eq!(
         all_done, 1,
         "exactly one final assistant message — no duplicate terminal turn"
+    );
+
+    // The reclaimed run's input is committed exactly once: A committed "go" in its
+    // first step delta, and B's re-execute seeds it from committed history and
+    // drops the activation copy (deduped by stable message id), rather than
+    // replaying it. Locks in the idempotent-input fix.
+    let go_inputs = committed
+        .messages
+        .iter()
+        .filter(|message| message_text(message).as_deref() == Some("go"))
+        .count();
+    assert_eq!(
+        go_inputs, 1,
+        "the reclaimed run's input is committed exactly once, not replayed on re-execute"
     );
 }
 
