@@ -381,10 +381,13 @@ impl SharedHost {
     /// Push a thread's github_repository commits back to their remotes (ADR-0038
     /// write-back, symmetric to `harvest_thread_memory`): host-side `push` with the held
     /// token. The AGENT authors the commits (its own message + identity) in the jail; the
-    /// host only pushes them (it alone holds the token) — it never fabricates a commit. A
-    /// no-op for a thread with no repos, no live env, or nothing the agent committed.
-    /// Best-effort — a push failure is logged by the caller's context, not fatal to an
-    /// already-finished turn.
+    /// host only pushes them (it alone holds the token) — it never fabricates a commit.
+    ///
+    /// A repo whose remote ops the agent owns through an injected GitHub MCP server (the
+    /// Managed Agents model — branch/commit/push/PR via MCP tools) is SKIPPED here: pushing
+    /// host-side too would double-write or conflict with the agent's own pushes. Host-push
+    /// remains only the fallback for a repo with no GitHub MCP (e.g. a non-MCP CLI). A no-op
+    /// for a thread with no repos, no live env, or nothing the agent committed. Best-effort.
     pub async fn harvest_thread_repo(&self, thread: &str) {
         let (env, repos) = {
             let sessions = self.sessions.lock().await;
@@ -401,7 +404,20 @@ impl SharedHost {
         let Some(env) = env else {
             return;
         };
+        // Repos the agent pushes itself via an injected `github:<logical>` MCP server.
+        let mcp_owned: std::collections::HashSet<String> = self
+            .thread_mcp
+            .lock()
+            .unwrap()
+            .get(thread)
+            .into_iter()
+            .flatten()
+            .filter_map(|s| s.name.strip_prefix("github:").map(String::from))
+            .collect();
         for repo in repos {
+            if mcp_owned.contains(&repo.logical) {
+                continue;
+            }
             let _ = env.push_repo(
                 &repo.logical,
                 repo.token.as_ref().map(|t| t.expose_secret()),
