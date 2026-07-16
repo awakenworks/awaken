@@ -46,27 +46,108 @@ impl ErrorResponse {
     }
 }
 
-/// `agent` in a create-session request — the SDK's `string | { id, type:'agent',
-/// version? }` (`BetaManagedAgentsAgentParams`). Deserialize-only; the `type:'agent'`
-/// tag is tolerated (and ignored) on input, like `McpServer`'s `type:'url'`.
-/// This carries no awaken-only fields — per-session model override and runtime
-/// selection travel in the session `metadata` bag (see [`SessionCreateParams`]).
+/// The resolved `model` axis of an `agent_with_overrides` session reference — the
+/// SDK's override semantics for a single field made explicit: **omit** = inherit the
+/// agent's model; **`null`** = clear, rejected for `model` since a session always
+/// needs one (400 `agent_model_required`); **a value** = replace for this session.
+/// This is the domain-facing tri-state [`AgentRef::model_override`] returns; the wire
+/// form is the double-`Option` on [`AgentRefObject::model`].
+#[derive(Debug, Clone)]
+pub enum ModelOverride {
+    /// `model` key absent — inherit the referenced agent version's model.
+    Absent,
+    /// `model: null` — an explicit clear, which the API forbids for the model axis.
+    Cleared,
+    /// `model` set to a bare id or `{id, speed?}` — replace for this session only.
+    Set(ModelConfig),
+}
+
+/// The `type` discriminator on an [`AgentRefObject`]. Optional and tolerant: an object
+/// without a `type` (or with an unrecognized one) is the plain `agent` reference,
+/// preserving the pre-overrides behavior where the tag was ignored.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRefKind {
+    Agent,
+    AgentWithOverrides,
+    #[serde(other)]
+    Other,
+}
+
+/// The object form of `agent`: `{id, type?, version?, model?, ...}`. A strongly-typed
+/// struct rather than a hand-rolled deserializer — the one field needing more than a
+/// plain `Option` is `model`, whose absent/`null`/value tri-state (the not-clearable
+/// rule) rides the standard double-`Option` idiom. The other override fields
+/// (`system`/`tools`/`mcp_servers`/`skills`) are accepted for wire-compatibility but
+/// not yet applied, so they are not modeled here.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AgentRefObject {
+    pub id: String,
+    #[serde(rename = "type", default)]
+    pub kind: Option<AgentRefKind>,
+    #[serde(default)]
+    pub version: Option<u32>,
+    /// Outer `None` = `model` omitted; `Some(None)` = `model: null`; `Some(Some(_))` =
+    /// a value. Only meaningful when `kind` is `agent_with_overrides`.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub model: Option<Option<super::agent::ModelInput>>,
+}
+
+/// The standard serde double-`Option` reader: distinguishes an absent field (handled
+/// by `#[serde(default)]` → outer `None`) from a present `null` (`Some(None)`) from a
+/// present value (`Some(Some(_))`). Load-bearing for the model not-clearable rule.
+fn deserialize_double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Deserialize::deserialize(deserializer).map(Some)
+}
+
+/// `agent` in a create-session request — the SDK's
+/// `string | {id, type:'agent', version?} | {id, type:'agent_with_overrides',
+/// version?, model?, system?, tools?, ...}` (`BetaManagedAgentsAgentParams`).
+/// Untagged: a JSON string is [`AgentRef::Id`]; a JSON object is [`AgentRef::Object`],
+/// whose `type` then selects plain-reference vs. overrides. Per-session runtime
+/// selection still travels in the session `metadata` bag (see [`SessionCreateParams`]);
+/// the model now rides the official override object.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum AgentRef {
     Id(String),
-    Obj {
-        id: String,
-        #[serde(default)]
-        version: Option<u32>,
-    },
+    Object(AgentRefObject),
 }
 
 impl AgentRef {
     pub fn id(&self) -> &str {
         match self {
             AgentRef::Id(id) => id,
-            AgentRef::Obj { id, .. } => id,
+            AgentRef::Object(obj) => &obj.id,
+        }
+    }
+
+    /// The agent version the client pinned, if any (`None` = latest).
+    pub fn version(&self) -> Option<u32> {
+        match self {
+            AgentRef::Id(_) => None,
+            AgentRef::Object(obj) => obj.version,
+        }
+    }
+
+    /// The single-session model override. Only an `agent_with_overrides` object carries
+    /// one; every other form reports [`ModelOverride::Absent`].
+    pub fn model_override(&self) -> ModelOverride {
+        match self {
+            AgentRef::Object(AgentRefObject {
+                kind: Some(AgentRefKind::AgentWithOverrides),
+                model,
+                ..
+            }) => match model {
+                None => ModelOverride::Absent,
+                Some(None) => ModelOverride::Cleared,
+                Some(Some(input)) => ModelOverride::Set(input.clone().into_config()),
+            },
+            _ => ModelOverride::Absent,
         }
     }
 }
@@ -712,6 +793,58 @@ mod tests {
         let obj: AgentRef =
             serde_json::from_str(r#"{"id":"assistant","type":"agent","version":3}"#).unwrap();
         assert_eq!(obj.id(), "assistant");
+        assert_eq!(obj.version(), Some(3));
+        // A plain reference never overrides the model.
+        assert!(matches!(bare.model_override(), ModelOverride::Absent));
+        assert!(matches!(obj.model_override(), ModelOverride::Absent));
+        // An unrecognized `type` degrades to a plain reference (tolerant), and does
+        // not surface a model override even if one rode along.
+        let odd: AgentRef =
+            serde_json::from_str(r#"{"id":"a","type":"future_kind","model":"x"}"#).unwrap();
+        assert_eq!(odd.id(), "a");
+        assert!(matches!(odd.model_override(), ModelOverride::Absent));
+    }
+
+    #[test]
+    fn agent_with_overrides_replaces_the_model_for_the_session() {
+        // Bare-string model override.
+        let s: AgentRef = serde_json::from_str(
+            r#"{"id":"assistant","type":"agent_with_overrides","model":"claude-sonnet-5"}"#,
+        )
+        .unwrap();
+        match s.model_override() {
+            ModelOverride::Set(cfg) => {
+                assert_eq!(cfg.id, "claude-sonnet-5");
+                assert!(cfg.speed.is_none());
+            }
+            other => panic!("expected Set, got {other:?}"),
+        }
+        // `{id, speed}` object model override, with a pinned version.
+        let o: AgentRef = serde_json::from_str(
+            r#"{"id":"assistant","type":"agent_with_overrides","version":2,"model":{"id":"claude-opus-4-8","speed":"fast"}}"#,
+        )
+        .unwrap();
+        assert_eq!(o.version(), Some(2));
+        match o.model_override() {
+            ModelOverride::Set(cfg) => {
+                assert_eq!(cfg.id, "claude-opus-4-8");
+                assert_eq!(cfg.speed.as_deref(), Some("fast"));
+            }
+            other => panic!("expected Set, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn overrides_distinguish_absent_from_null_model() {
+        // `model` omitted → inherit (Absent), not a clear.
+        let absent: AgentRef =
+            serde_json::from_str(r#"{"id":"a","type":"agent_with_overrides"}"#).unwrap();
+        assert!(matches!(absent.model_override(), ModelOverride::Absent));
+        // `model: null` → an explicit clear (rejected downstream with 400).
+        let cleared: AgentRef =
+            serde_json::from_str(r#"{"id":"a","type":"agent_with_overrides","model":null}"#)
+                .unwrap();
+        assert!(matches!(cleared.model_override(), ModelOverride::Cleared));
     }
 
     #[test]

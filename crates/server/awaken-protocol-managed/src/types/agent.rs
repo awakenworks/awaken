@@ -102,15 +102,12 @@ impl AgentReference {
         }
     }
 
-    /// Normalize a client's input reference ([`super::session::AgentRef`], a bare id
-    /// or `{id, version?}`) into the wire reference — `version` defaults to 1.
+    /// Normalize a client's input reference ([`super::session::AgentRef`], a bare id,
+    /// `{id, version?}`, or an `agent_with_overrides` object) into the wire
+    /// reference — `version` defaults to 1. The reference identifies the base agent
+    /// and version; any per-session overrides are applied separately.
     pub fn from_input(input: &super::session::AgentRef) -> Self {
-        match input {
-            super::session::AgentRef::Id(id) => Self::new(id, 1),
-            super::session::AgentRef::Obj { id, version } => {
-                Self::new(id, version.unwrap_or(1) as u64)
-            }
-        }
+        Self::new(input.id(), input.version().unwrap_or(1) as u64)
     }
 }
 

@@ -24,7 +24,7 @@ use crate::routes::vaults::{McpRefreshBinding, VaultState};
 use crate::session_repo::{InMemorySessionRepository, ManagedSessionRepository, PersistedSession};
 use crate::types::{
     ConfirmResult, Event, EventReceipt, InboundEvent, ListEventsResponse, ModelConfig,
-    OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent,
+    ModelOverride, OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent,
     SessionCreateParams, SessionError, SessionStats, StopReason, StreamFrame, Usage,
 };
 
