@@ -9,7 +9,8 @@ use std::time::Duration;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_agent_contract::stream::event::{Event, Kind};
+use awaken_agent_contract::event::{AgentEvent, Committed, Live};
+use awaken_agent_contract::stream::event::Event;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_protocol_transport::{
     DriverError, Pending, ProtocolRuntime, Resume, StepOutcome, Terminal,
@@ -42,26 +43,26 @@ impl ProtocolRuntime for StreamingMock {
     ) -> Result<StepOutcome, DriverError> {
         let run = RunId("r1".into());
         for kind in [
-            Kind::RunStarted,
-            Kind::OutputText {
-                text: "reading ".into(),
-            },
-            Kind::ToolCallDelta {
-                call_id: "c1".into(),
-                tool_id: "read".into(),
+            AgentEvent::Committed(Committed::RunStarted),
+            AgentEvent::Live(Live::TextDelta {
+                delta: "reading ".into(),
+            }),
+            AgentEvent::Live(Live::ToolCallDelta {
+                id: "c1".into(),
+                name: "read".into(),
                 args_delta: "".into(),
-            },
-            Kind::ToolCallDelta {
-                call_id: "c1".into(),
-                tool_id: "read".into(),
+            }),
+            AgentEvent::Live(Live::ToolCallDelta {
+                id: "c1".into(),
+                name: "read".into(),
                 args_delta: "{\"path\":".into(),
-            },
-            Kind::ToolCallDelta {
-                call_id: "c1".into(),
-                tool_id: "read".into(),
+            }),
+            AgentEvent::Live(Live::ToolCallDelta {
+                id: "c1".into(),
+                name: "read".into(),
                 args_delta: "\"x\"}".into(),
-            },
-            Kind::RunFinished,
+            }),
+            AgentEvent::Committed(Committed::RunFinished { exhausted: false }),
         ] {
             sink.send(Event {
                 run_id: run.clone(),
@@ -199,7 +200,7 @@ impl ProtocolRuntime for HangupProbe {
             let sent = sink
                 .send(Event {
                     run_id: run.clone(),
-                    kind: Kind::OutputText { text: "x".into() },
+                    kind: AgentEvent::Live(Live::TextDelta { delta: "x".into() }),
                 })
                 .await;
             if sent.is_err() {

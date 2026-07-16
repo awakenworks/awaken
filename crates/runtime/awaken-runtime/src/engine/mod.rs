@@ -18,11 +18,12 @@ use awaken_agent_contract::agent::waiting::{PendingTool, WaitingReason, WaitingT
 use awaken_agent_contract::audit::draft::Draft as EventDraft;
 use awaken_agent_contract::audit::run_event::RunEvent;
 use awaken_agent_contract::commit::staged::ThreadCommit;
+use awaken_agent_contract::event::{AgentEvent, Committed, Live};
 use awaken_agent_contract::store::stream_checkpoint::{
     PartialToolCall, StreamCheckpoint, StreamCheckpointStore,
 };
 use awaken_agent_contract::store::thread_reader::ThreadReader;
-use awaken_agent_contract::stream::event::{Event as StreamEvent, Kind as StreamKind};
+use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::agent_resolver::{AgentRequest, AgentStep};
 use awaken_runtime_contract::boundary::{BoundaryOutcome, evaluate_boundary};
@@ -114,7 +115,12 @@ pub(crate) async fn run_agent_loop(
         }
     };
 
-    emit(&context, &run_id, StreamKind::RunStarted).await;
+    emit(
+        &context,
+        &run_id,
+        AgentEvent::Committed(Committed::RunStarted),
+    )
+    .await;
 
     // A fresh run continues the thread's conversation: seed the transcript with
     // the committed history (when a reader is wired), then this run's input —
@@ -254,7 +260,12 @@ pub(crate) async fn resume_run(
         }
     };
 
-    emit(&context, &run_id, StreamKind::RunStarted).await;
+    emit(
+        &context,
+        &run_id,
+        AgentEvent::Committed(Committed::RunStarted),
+    )
+    .await;
 
     // A parked delegation resumes through the resolver, not the tool registry: the
     // resolver runs one more step with the user's input and the run continues or
@@ -486,7 +497,7 @@ impl StepLedger {
 
     /// Append one message to both the model-facing transcript and the durable
     /// new-message accumulation — the two always grow in lock-step.
-    fn push_turn(&mut self, message: Message) {
+    fn push_message(&mut self, message: Message) {
         self.transcript.push(message.clone());
         self.new_messages.push(message);
     }
@@ -592,7 +603,7 @@ impl LiveEnv {
 /// partial is terminal here — mid-stream recovery is the StreamCheckpoint/resume
 /// path, not a switch to a different model (which would double-generate).
 #[allow(clippy::too_many_arguments)]
-async fn infer_step_turn(
+async fn infer_step(
     llm: &std::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
     runtime: &Runtime,
     resolved: &ResolvedRun,
@@ -649,9 +660,9 @@ async fn infer_step_turn(
                         truncation_retries,
                         response.output.blocks,
                     );
-                    ledger.push_turn(partial);
+                    ledger.push_message(partial);
                     let prompt = continuation_message(run_id, step_base + step, truncation_retries);
-                    ledger.push_turn(prompt);
+                    ledger.push_message(prompt);
                     truncation_retries += 1;
                     continue;
                 }
@@ -841,7 +852,7 @@ async fn drive(
             None
         };
         let checkpoint_ref = checkpoint_ctx.as_ref();
-        let infer_turn = infer_step_turn(
+        let inference = infer_step(
             &llm,
             runtime,
             resolved,
@@ -866,10 +877,10 @@ async fn drive(
                 tokio::select! {
                     biased;
                     _ = token.cancelled() => None,
-                    result = infer_turn => Some(result),
+                    result = inference => Some(result),
                 }
             }
-            None => Some(infer_turn.await),
+            None => Some(inference.await),
         };
         let Some(inference) = inference else {
             runtime
@@ -953,7 +964,7 @@ async fn drive(
             })
             .collect();
         let assistant = assistant_message(run_id, step_base + step, response.output.blocks);
-        ledger.push_turn(assistant);
+        ledger.push_message(assistant);
 
         // A text-only step (no tool requests) is a natural end — unless queued
         // live input or a run-end guard keeps the loop going. Queued input is
@@ -967,7 +978,7 @@ async fn drive(
             match evaluate_boundary(context, run_id, &ledger.transcript) {
                 BoundaryOutcome::Continue { fold } => {
                     for message in fold {
-                        ledger.push_turn(message);
+                        ledger.push_message(message);
                     }
                     continue;
                 }
@@ -976,7 +987,7 @@ async fn drive(
                     // lost), then park on a no-tool ticket — an operator pause,
                     // resumed by an explicit resume, not a tool result.
                     for message in fold {
-                        ledger.push_turn(message);
+                        ledger.push_message(message);
                     }
                     end = Some(End::Parked(Box::new(pause_ticket(
                         resolved, run_id, reason,
@@ -984,9 +995,9 @@ async fn drive(
                     emit(
                         context,
                         run_id,
-                        StreamKind::Waiting {
-                            reason: WaitingReason::ManualPause.as_stream_str().to_string(),
-                        },
+                        AgentEvent::Committed(Committed::Waiting {
+                            pending_tool_use_id: None,
+                        }),
                     )
                     .await;
                     break;
@@ -1014,14 +1025,14 @@ async fn drive(
                     emit(
                         context,
                         run_id,
-                        StreamKind::Continuation {
+                        AgentEvent::Committed(Committed::Continuation {
                             steered: true,
                             detail,
-                        },
+                        }),
                     )
                     .await;
                     let message = feedback_message(run_id, forced_continuations, feedback);
-                    ledger.push_turn(message);
+                    ledger.push_message(message);
                     forced_continuations += 1;
                     continue;
                 }
@@ -1030,10 +1041,10 @@ async fn drive(
                     emit(
                         context,
                         run_id,
-                        StreamKind::Continuation {
+                        AgentEvent::Committed(Committed::Continuation {
                             steered: false,
                             detail,
-                        },
+                        }),
                     )
                     .await;
                     end = Some(End::Ended(EndCause::NaturalEnd));
@@ -1137,9 +1148,9 @@ impl DeltaSink for StreamDeltaSink<'_> {
         emit(
             self.context,
             self.run_id,
-            StreamKind::OutputText {
-                text: chunk.to_string(),
-            },
+            AgentEvent::Live(Live::TextDelta {
+                delta: chunk.to_string(),
+            }),
         )
         .await;
     }
@@ -1148,11 +1159,11 @@ impl DeltaSink for StreamDeltaSink<'_> {
         emit(
             self.context,
             self.run_id,
-            StreamKind::ToolCallDelta {
-                call_id: call_id.to_string(),
-                tool_id: tool_id.to_string(),
+            AgentEvent::Live(Live::ToolCallDelta {
+                id: call_id.to_string(),
+                name: tool_id.to_string(),
                 args_delta: args_delta.to_string(),
-            },
+            }),
         )
         .await;
     }
@@ -1878,7 +1889,7 @@ impl ToolExecutor for LocalToolExecutor<'_> {
 
 /// Best-effort live emission. A sink failure is swallowed: committed truth is
 /// authoritative, not the live stream (G10/G13).
-async fn emit(context: &RuntimeRunContext, run_id: &RunId, kind: StreamKind) {
+async fn emit(context: &RuntimeRunContext, run_id: &RunId, kind: AgentEvent) {
     if let Some(sink) = &context.stream_sink {
         let _ = sink
             .send(StreamEvent {
@@ -1942,14 +1953,19 @@ async fn finish(
         emit(
             context,
             &run_id,
-            StreamKind::RunFailed {
+            AgentEvent::Committed(Committed::RunFailed {
                 code: failure.code().to_string(),
                 message: failure.message(),
-            },
+            }),
         )
         .await;
     }
-    emit(context, &run_id, StreamKind::RunFinished).await;
+    emit(
+        context,
+        &run_id,
+        AgentEvent::Committed(Committed::RunFinished { exhausted: false }),
+    )
+    .await;
     Ok(phase)
 }
 

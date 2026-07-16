@@ -65,9 +65,9 @@ pub(super) async fn run_tool_calls(
                         emit(
                             context,
                             run_id,
-                            StreamKind::Waiting {
-                                reason: ticket.reason.as_stream_str().to_string(),
-                            },
+                            AgentEvent::Committed(Committed::Waiting {
+                                pending_tool_use_id: ticket.call_id.clone(),
+                            }),
                         )
                         .await;
                         return Some(End::Parked(Box::new(ticket)));
@@ -93,9 +93,9 @@ pub(super) async fn run_tool_calls(
                     emit(
                         context,
                         run_id,
-                        StreamKind::Waiting {
-                            reason: ticket.reason.as_stream_str().to_string(),
-                        },
+                        AgentEvent::Committed(Committed::Waiting {
+                            pending_tool_use_id: ticket.call_id.clone(),
+                        }),
                     )
                     .await;
                     return Some(End::Parked(Box::new(ticket)));
@@ -125,9 +125,9 @@ pub(super) async fn run_tool_calls(
                     emit(
                         context,
                         run_id,
-                        StreamKind::Waiting {
-                            reason: ticket.reason.as_stream_str().to_string(),
-                        },
+                        AgentEvent::Committed(Committed::Waiting {
+                            pending_tool_use_id: ticket.call_id.clone(),
+                        }),
                     )
                     .await;
                     return Some(End::Parked(Box::new(ticket)));

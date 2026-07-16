@@ -8,7 +8,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::stream::event::Kind as StreamKind;
+use awaken_agent_contract::event::{AgentEvent, Live};
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink};
 use awaken_runtime_contract::activation::RunActivation;
@@ -734,11 +734,9 @@ async fn a_tool_call_streams_to_the_live_sink() {
         .events()
         .into_iter()
         .filter_map(|e| match e.kind {
-            StreamKind::ToolCallDelta {
-                tool_id,
-                args_delta,
-                ..
-            } => Some((tool_id, args_delta)),
+            AgentEvent::Live(Live::ToolCallDelta {
+                name, args_delta, ..
+            }) => Some((name, args_delta)),
             _ => None,
         })
         .collect();

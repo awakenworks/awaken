@@ -17,7 +17,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::stream::event::Kind as StreamKind;
+use awaken_agent_contract::event::{AgentEvent, Committed};
 use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink, replay_latest_phase};
 use awaken_runtime::{DirectRunIngress, RunIngress, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
@@ -132,7 +132,7 @@ async fn live_stream_is_not_replay_truth() {
     let live = sink.events();
     assert!(
         live.iter()
-            .any(|e| matches!(e.kind, StreamKind::RunFinished))
+            .any(|e| matches!(e.kind, AgentEvent::Committed(Committed::RunFinished { .. })))
     );
 
     // Replay is reconstructed from committed facts alone.

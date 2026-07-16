@@ -1,26 +1,27 @@
 //! A reusable [`StreamSink`] adapter that forwards the engine's best-effort live
 //! progress onto an mpsc channel a streaming adapter drains.
 //!
-//! This is protocol-neutral: it carries the neutral `stream::Kind` events, so
+//! This is protocol-neutral: it carries the neutral `AgentEvent` vocabulary, so
 //! every wire adapter (AI SDK, AG-UI) drains the same channel and transcodes with
 //! its own vocabulary. It is a second adapter of the `StreamSink` port alongside
 //! the in-memory one — the engine is untouched, it just emits to whatever sink the
 //! edge injects.
 
 use async_trait::async_trait;
-use awaken_agent_contract::stream::event::{Event, Kind};
+use awaken_agent_contract::event::AgentEvent;
+use awaken_agent_contract::stream::event::Event;
 use awaken_agent_contract::stream::sink::{Error as SinkError, Sink as StreamSink};
 use tokio::sync::mpsc::UnboundedSender;
 
-/// Forwards each live event's `kind` onto an mpsc channel. Best-effort by
-/// contract: once the receiver is dropped, `send` reports `Closed` and the engine
-/// swallows it (the committed turn stays authoritative, G10/G13).
+/// Forwards each live event's neutral `AgentEvent` onto an mpsc channel. Best-effort
+/// by contract: once the receiver is dropped, `send` reports `Closed` and the engine
+/// swallows it (the committed step stays authoritative, G10/G13).
 pub struct ChannelStreamSink {
-    tx: UnboundedSender<Kind>,
+    tx: UnboundedSender<AgentEvent>,
 }
 
 impl ChannelStreamSink {
-    pub fn new(tx: UnboundedSender<Kind>) -> Self {
+    pub fn new(tx: UnboundedSender<AgentEvent>) -> Self {
         Self { tx }
     }
 }
@@ -38,19 +39,21 @@ mod tests {
     use awaken_agent_contract::agent::run::Id as RunId;
     use tokio::sync::mpsc;
 
+    use awaken_agent_contract::event::{Committed, Live};
+
     #[tokio::test]
     async fn forwards_event_kind() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let sink = ChannelStreamSink::new(tx);
         sink.send(Event {
             run_id: RunId("r1".into()),
-            kind: Kind::OutputText { text: "hi".into() },
+            kind: AgentEvent::Live(Live::TextDelta { delta: "hi".into() }),
         })
         .await
         .unwrap();
         assert_eq!(
             rx.recv().await,
-            Some(Kind::OutputText { text: "hi".into() })
+            Some(AgentEvent::Live(Live::TextDelta { delta: "hi".into() }))
         );
     }
 
@@ -62,7 +65,7 @@ mod tests {
         let err = sink
             .send(Event {
                 run_id: RunId("r1".into()),
-                kind: Kind::RunFinished,
+                kind: AgentEvent::Committed(Committed::RunFinished { exhausted: false }),
             })
             .await;
         assert!(matches!(err, Err(SinkError::Closed)));

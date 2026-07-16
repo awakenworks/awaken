@@ -1,7 +1,7 @@
-//! The live-preview sink: the runtime's best-effort progress channel
-//! (`stream::event::Kind`) projected into stream-only Managed `event_start` /
-//! `event_delta` preview frames, published to a session's live broadcast as a
-//! turn runs.
+//! The live-preview sink: the runtime's best-effort progress channel (the neutral
+//! `AgentEvent` live vocabulary) projected into stream-only Managed `event_start` /
+//! `event_delta` preview frames, published to a session's live broadcast as a run
+//! streams.
 //!
 //! It previews **agent.message text only** — awaken's live stream carries no
 //! thinking or tool-input channel, and the official wire never previews tool use.
@@ -15,14 +15,16 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use awaken_agent_contract::stream::event::{Event as StreamEvent, Kind};
+use awaken_agent_contract::event::{AgentEvent, Live};
+use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_agent_contract::stream::sink::{Error as SinkError, Sink};
 use tokio::sync::broadcast;
 
 use crate::types::{PreviewContent, PreviewDelta, PreviewFrame, PreviewTarget, StreamFrame};
 
-/// Per-run sink: projects live `Kind` into `agent.message` previews on the
-/// session's broadcast, and remembers the ids it minted for the committed log.
+/// Per-run sink: projects the live `AgentEvent` channel into `agent.message`
+/// previews on the session's broadcast, and remembers the ids it minted for the
+/// committed log.
 pub struct PreviewSink {
     live: broadcast::Sender<StreamFrame>,
     event_seq: Arc<AtomicU64>,
@@ -72,7 +74,7 @@ impl PreviewSink {
 impl Sink for PreviewSink {
     async fn send(&self, event: StreamEvent) -> Result<(), SinkError> {
         match &event.kind {
-            Kind::OutputText { text } => {
+            AgentEvent::Live(Live::TextDelta { delta: text }) => {
                 let id = {
                     let mut inner = self.inner.lock().unwrap();
                     if let Some(id) = inner.open_id.clone() {
@@ -99,15 +101,12 @@ impl Sink for PreviewSink {
                     },
                 });
             }
-            // A tool call, or any control/terminal kind, closes the current text
-            // run; the next text opens a fresh previewed message. Tool use is
-            // never previewed (matches the official wire).
-            Kind::ToolCallDelta { .. }
-            | Kind::Waiting { .. }
-            | Kind::Continuation { .. }
-            | Kind::RunStarted
-            | Kind::RunFinished
-            | Kind::RunFailed { .. } => {
+            // A tool call, reasoning, or any committed lifecycle event closes the
+            // current text run; the next text opens a fresh previewed message. Tool
+            // use and reasoning are never previewed (matches the official wire).
+            AgentEvent::Live(Live::ToolCallDelta { .. })
+            | AgentEvent::Live(Live::ReasoningDelta { .. })
+            | AgentEvent::Committed(_) => {
                 self.inner.lock().unwrap().open_id = None;
             }
         }
@@ -119,15 +118,33 @@ impl Sink for PreviewSink {
 mod tests {
     use super::*;
     use awaken_agent_contract::agent::run::Id as RunId;
+    use awaken_agent_contract::event::Committed;
 
-    fn ev(kind: Kind) -> StreamEvent {
+    fn run_started() -> AgentEvent {
+        AgentEvent::Committed(Committed::RunStarted)
+    }
+    fn run_finished() -> AgentEvent {
+        AgentEvent::Committed(Committed::RunFinished { exhausted: false })
+    }
+    fn text(t: &str) -> AgentEvent {
+        AgentEvent::Live(Live::TextDelta { delta: t.into() })
+    }
+    fn tool(id: &str, name: &str, args: &str) -> AgentEvent {
+        AgentEvent::Live(Live::ToolCallDelta {
+            id: id.into(),
+            name: name.into(),
+            args_delta: args.into(),
+        })
+    }
+
+    fn ev(kind: AgentEvent) -> StreamEvent {
         StreamEvent {
             run_id: RunId("r1".into()),
             kind,
         }
     }
 
-    async fn drive(seq: &[Kind]) -> (Vec<StreamFrame>, Vec<String>) {
+    async fn drive(seq: &[AgentEvent]) -> (Vec<StreamFrame>, Vec<String>) {
         let (tx, mut rx) = broadcast::channel(256);
         let sink = PreviewSink::new(tx.clone(), Arc::new(AtomicU64::new(0)));
         for k in seq {
@@ -153,13 +170,7 @@ mod tests {
 
     #[tokio::test]
     async fn text_run_opens_one_message_and_streams_suffix_deltas() {
-        let (frames, ids) = drive(&[
-            Kind::RunStarted,
-            Kind::OutputText { text: "Hel".into() },
-            Kind::OutputText { text: "lo".into() },
-            Kind::RunFinished,
-        ])
-        .await;
+        let (frames, ids) = drive(&[run_started(), text("Hel"), text("lo"), run_finished()]).await;
         let p = preview(&frames);
         // One event_start (id evt_0) then two content_delta frames on it.
         assert_eq!(ids, vec!["evt_0".to_string()]);
@@ -187,20 +198,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_tool_call_closes_the_run_and_the_next_text_opens_a_fresh_message() {
-        let (frames, ids) = drive(&[
-            Kind::OutputText {
-                text: "before".into(),
-            },
-            Kind::ToolCallDelta {
-                call_id: "c1".into(),
-                tool_id: "read".into(),
-                args_delta: "{}".into(),
-            },
-            Kind::OutputText {
-                text: "after".into(),
-            },
-        ])
-        .await;
+        let (frames, ids) = drive(&[text("before"), tool("c1", "read", "{}"), text("after")]).await;
         // Two distinct messages: evt_0 (before the tool) and evt_1 (after).
         assert_eq!(ids, vec!["evt_0".to_string(), "evt_1".to_string()]);
         let starts: Vec<&str> = preview(&frames)
@@ -215,12 +213,7 @@ mod tests {
 
     #[tokio::test]
     async fn tool_use_is_never_previewed() {
-        let (frames, ids) = drive(&[Kind::ToolCallDelta {
-            call_id: "c1".into(),
-            tool_id: "read".into(),
-            args_delta: "{\"path\":\"x\"}".into(),
-        }])
-        .await;
+        let (frames, ids) = drive(&[tool("c1", "read", "{\"path\":\"x\"}")]).await;
         assert!(preview(&frames).is_empty(), "no preview for a tool call");
         assert!(ids.is_empty());
     }

@@ -1,7 +1,7 @@
 //! The AI SDK live-channel transcoder: turn the engine's best-effort progress
-//! (`stream::Kind`) into the in-flight *prefix* of a UI Message Stream —
-//! `start`/`start-step`, streamed `text-*`, and
-//! `tool-input-start`/`tool-input-delta` — as a turn runs. It deliberately does
+//! (the neutral `AgentEvent` live channel) into the in-flight *prefix* of a UI
+//! Message Stream — `start`/`start-step`, streamed `text-*`, and
+//! `tool-input-start`/`tool-input-delta` — as a run streams. It deliberately does
 //! **not** emit the authoritative tail (`tool-input-available`, tool output,
 //! `finish`); that comes from the committed [`StepOutcome`], so the live channel
 //! never becomes the source of truth (G10/G13). The channel adapter itself is the
@@ -13,12 +13,12 @@
 
 use std::collections::HashSet;
 
-use awaken_agent_contract::stream::event::Kind;
+use awaken_agent_contract::event::{AgentEvent, Committed, Live};
 
 use crate::types::UIStreamEvent;
 
-/// Stateful transcoder from the live `stream::Kind` channel to the in-flight
-/// prefix of an AI SDK UI Message Stream. One instance per streamed turn.
+/// Stateful transcoder from the live `AgentEvent` channel to the in-flight prefix
+/// of an AI SDK UI Message Stream. One instance per streamed run.
 #[derive(Default)]
 pub struct LiveTranscoder {
     started: bool,
@@ -35,10 +35,10 @@ impl LiveTranscoder {
         Self::default()
     }
 
-    /// Transcode one live kind into zero or more UI Message Stream parts.
-    pub fn transcode(&mut self, kind: &Kind) -> Vec<UIStreamEvent> {
-        match kind {
-            Kind::RunStarted => {
+    /// Transcode one live event into zero or more UI Message Stream parts.
+    pub fn transcode(&mut self, event: &AgentEvent) -> Vec<UIStreamEvent> {
+        match event {
+            AgentEvent::Committed(Committed::RunStarted) => {
                 if self.started {
                     Vec::new()
                 } else {
@@ -46,7 +46,7 @@ impl LiveTranscoder {
                     vec![UIStreamEvent::Start, UIStreamEvent::StartStep]
                 }
             }
-            Kind::OutputText { text } => {
+            AgentEvent::Live(Live::TextDelta { delta }) => {
                 let mut out = Vec::new();
                 let id = match &self.open_text {
                     Some(id) => id.clone(),
@@ -60,20 +60,20 @@ impl LiveTranscoder {
                 };
                 out.push(UIStreamEvent::TextDelta {
                     id,
-                    delta: text.clone(),
+                    delta: delta.clone(),
                 });
                 out
             }
-            Kind::ToolCallDelta {
-                call_id,
-                tool_id,
+            AgentEvent::Live(Live::ToolCallDelta {
+                id,
+                name,
                 args_delta,
-            } => {
+            }) => {
                 let mut out = self.close_text();
-                if self.tools.insert(call_id.clone()) {
+                if self.tools.insert(id.clone()) {
                     out.push(UIStreamEvent::ToolInputStart {
-                        tool_call_id: call_id.clone(),
-                        tool_name: tool_id.clone(),
+                        tool_call_id: id.clone(),
+                        tool_name: name.clone(),
                     });
                 }
                 // `args_delta` is already the newly-appended suffix (the provider
@@ -81,18 +81,19 @@ impl LiveTranscoder {
                 // verbatim; the committed `tool-input-available` carries the parsed input.
                 if !args_delta.is_empty() {
                     out.push(UIStreamEvent::ToolInputDelta {
-                        tool_call_id: call_id.clone(),
+                        tool_call_id: id.clone(),
                         input_text_delta: args_delta.clone(),
                     });
                 }
                 out
             }
-            // Terminal / control kinds close any open text run but never emit the
-            // authoritative `finish` — the committed `StepOutcome` owns that.
-            Kind::Waiting { .. }
-            | Kind::Continuation { .. }
-            | Kind::RunFinished
-            | Kind::RunFailed { .. } => self.close_text(),
+            // Reasoning increments are not projected to the AI SDK here (opt-in
+            // tier); a lifecycle terminal or any committed whole-unit closes any
+            // open text run but never emits the authoritative `finish` — the
+            // committed `StepOutcome` owns that.
+            AgentEvent::Live(Live::ReasoningDelta { .. }) | AgentEvent::Committed(_) => {
+                self.close_text()
+            }
         }
     }
 
@@ -116,7 +117,29 @@ impl LiveTranscoder {
 mod tests {
     use super::*;
 
-    fn run(seq: &[Kind]) -> Vec<UIStreamEvent> {
+    fn run_started() -> AgentEvent {
+        AgentEvent::Committed(Committed::RunStarted)
+    }
+    fn run_finished() -> AgentEvent {
+        AgentEvent::Committed(Committed::RunFinished { exhausted: false })
+    }
+    fn waiting() -> AgentEvent {
+        AgentEvent::Committed(Committed::Waiting {
+            pending_tool_use_id: None,
+        })
+    }
+    fn text(t: &str) -> AgentEvent {
+        AgentEvent::Live(Live::TextDelta { delta: t.into() })
+    }
+    fn tool(id: &str, name: &str, args: &str) -> AgentEvent {
+        AgentEvent::Live(Live::ToolCallDelta {
+            id: id.into(),
+            name: name.into(),
+            args_delta: args.into(),
+        })
+    }
+
+    fn run(seq: &[AgentEvent]) -> Vec<UIStreamEvent> {
         let mut tc = LiveTranscoder::new();
         seq.iter().flat_map(|k| tc.transcode(k)).collect()
     }
@@ -124,29 +147,13 @@ mod tests {
     #[test]
     fn streams_text_then_tool_input_forwarding_suffix_deltas() {
         let events = run(&[
-            Kind::RunStarted,
-            Kind::OutputText {
-                text: "Let me ".into(),
-            },
-            Kind::OutputText {
-                text: "read".into(),
-            },
-            Kind::ToolCallDelta {
-                call_id: "c1".into(),
-                tool_id: "read".into(),
-                args_delta: "".into(),
-            },
-            Kind::ToolCallDelta {
-                call_id: "c1".into(),
-                tool_id: "read".into(),
-                args_delta: "{\"path\":".into(),
-            },
-            Kind::ToolCallDelta {
-                call_id: "c1".into(),
-                tool_id: "read".into(),
-                args_delta: "\"x\"}".into(),
-            },
-            Kind::RunFinished,
+            run_started(),
+            text("Let me "),
+            text("read"),
+            tool("c1", "read", ""),
+            tool("c1", "read", "{\"path\":"),
+            tool("c1", "read", "\"x\"}"),
+            run_finished(),
         ]);
 
         assert_eq!(
@@ -183,16 +190,10 @@ mod tests {
     #[test]
     fn never_emits_authoritative_finish_or_input_available() {
         let events = run(&[
-            Kind::RunStarted,
-            Kind::ToolCallDelta {
-                call_id: "c1".into(),
-                tool_id: "read".into(),
-                args_delta: "{}".into(),
-            },
-            Kind::Waiting {
-                reason: "tool".into(),
-            },
-            Kind::RunFinished,
+            run_started(),
+            tool("c1", "read", "{}"),
+            waiting(),
+            run_finished(),
         ]);
         assert!(events.iter().all(|e| !matches!(
             e,
@@ -208,7 +209,7 @@ mod tests {
 
     #[test]
     fn a_repeated_run_started_is_idempotent() {
-        let events = run(&[Kind::RunStarted, Kind::RunStarted]);
+        let events = run(&[run_started(), run_started()]);
         // Only the first RunStarted opens the stream.
         assert_eq!(events, vec![UIStreamEvent::Start, UIStreamEvent::StartStep]);
     }
@@ -216,27 +217,11 @@ mod tests {
     #[test]
     fn concurrent_tool_calls_stream_independently_by_call_id() {
         let events = run(&[
-            Kind::RunStarted,
-            Kind::ToolCallDelta {
-                call_id: "c1".into(),
-                tool_id: "read".into(),
-                args_delta: "".into(),
-            },
-            Kind::ToolCallDelta {
-                call_id: "c2".into(),
-                tool_id: "write".into(),
-                args_delta: "".into(),
-            },
-            Kind::ToolCallDelta {
-                call_id: "c1".into(),
-                tool_id: "read".into(),
-                args_delta: "{\"a\":1}".into(),
-            },
-            Kind::ToolCallDelta {
-                call_id: "c2".into(),
-                tool_id: "write".into(),
-                args_delta: "{\"b\":2}".into(),
-            },
+            run_started(),
+            tool("c1", "read", ""),
+            tool("c2", "write", ""),
+            tool("c1", "read", "{\"a\":1}"),
+            tool("c2", "write", "{\"b\":2}"),
         ]);
         assert!(events.contains(&UIStreamEvent::ToolInputStart {
             tool_call_id: "c1".into(),
@@ -259,16 +244,10 @@ mod tests {
     #[test]
     fn text_reopens_with_a_fresh_id_after_a_tool_call() {
         let events = run(&[
-            Kind::RunStarted,
-            Kind::OutputText { text: "hi".into() },
-            Kind::ToolCallDelta {
-                call_id: "c1".into(),
-                tool_id: "read".into(),
-                args_delta: "".into(),
-            },
-            Kind::OutputText {
-                text: "more".into(),
-            },
+            run_started(),
+            text("hi"),
+            tool("c1", "read", ""),
+            text("more"),
         ]);
         // The first run closes on the tool call; the second opens txt-1.
         assert!(events.contains(&UIStreamEvent::TextEnd { id: "txt-0".into() }));

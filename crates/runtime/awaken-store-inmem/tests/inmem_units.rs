@@ -14,6 +14,7 @@ use awaken_agent_contract::audit::draft::Draft;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
 use awaken_agent_contract::commit::coordinator::{Coordinator, Error};
 use awaken_agent_contract::commit::staged::ThreadCommit;
+use awaken_agent_contract::event::{AgentEvent, Committed, Live};
 use awaken_agent_contract::fact::run::Fact as RunFact;
 use awaken_agent_contract::store::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::store::run_store::RunStore;
@@ -21,7 +22,7 @@ use awaken_agent_contract::store::stream_checkpoint::{
     PartialToolCall, StreamCheckpoint, StreamCheckpointStore,
 };
 use awaken_agent_contract::store::thread_reader::ThreadReader;
-use awaken_agent_contract::stream::event::{Event as StreamEvent, Kind as StreamKind};
+use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_store_inmem::{
     MemoryCommitCoordinator, MemoryStreamCheckpointStore, MemoryStreamSink, replay_latest_phase,
@@ -551,11 +552,11 @@ async fn stream_sink_records_events_in_send_order() {
     let sink = MemoryStreamSink::new();
     assert!(sink.events().is_empty(), "fresh sink is empty");
     for kind in [
-        StreamKind::RunStarted,
-        StreamKind::OutputText {
-            text: "hi".to_string(),
-        },
-        StreamKind::RunFinished,
+        AgentEvent::Committed(Committed::RunStarted),
+        AgentEvent::Live(Live::TextDelta {
+            delta: "hi".to_string(),
+        }),
+        AgentEvent::Committed(Committed::RunFinished { exhausted: false }),
     ] {
         sink.send(StreamEvent {
             run_id: RunId("r".to_string()),
@@ -566,8 +567,11 @@ async fn stream_sink_records_events_in_send_order() {
     }
     let events = sink.events();
     assert_eq!(events.len(), 3);
-    assert_eq!(events[0].kind, StreamKind::RunStarted);
-    assert_eq!(events[2].kind, StreamKind::RunFinished);
+    assert_eq!(events[0].kind, AgentEvent::Committed(Committed::RunStarted));
+    assert_eq!(
+        events[2].kind,
+        AgentEvent::Committed(Committed::RunFinished { exhausted: false })
+    );
 }
 
 // ---- MemoryStreamCheckpointStore: overwrite + delete idempotency ----------

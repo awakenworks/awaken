@@ -1,7 +1,8 @@
 //! The AG-UI live-channel transcoder: turn the engine's best-effort progress
-//! (`stream::Kind`) into the in-flight *prefix* of an AG-UI event stream —
-//! `RUN_STARTED`, streamed `TEXT_MESSAGE_*`, and `TOOL_CALL_START`/`TOOL_CALL_ARGS`
-//! — as a turn runs. It deliberately does **not** emit the closing frames
+//! (the neutral `AgentEvent` live channel) into the in-flight *prefix* of an AG-UI
+//! event stream — `RUN_STARTED`, streamed `TEXT_MESSAGE_*`, and
+//! `TOOL_CALL_START`/`TOOL_CALL_ARGS` — as a run streams. It deliberately does
+//! **not** emit the closing frames
 //! (`TOOL_CALL_END`, `TOOL_CALL_RESULT`, `RUN_FINISHED`); those come from the
 //! committed step (see [`crate::encoder::encode_close`]) so the live channel never
 //! becomes the source of truth (G10/G13). The channel adapter is the shared
@@ -13,13 +14,13 @@
 
 use std::collections::HashSet;
 
-use awaken_agent_contract::stream::event::Kind;
+use awaken_agent_contract::event::{AgentEvent, Committed, Live};
 
 use crate::types::AgUiEvent;
 
-/// Stateful transcoder from the live `stream::Kind` channel to the in-flight
-/// prefix of an AG-UI event stream. One instance per streamed turn; it holds the
-/// stream's thread/run ids (AG-UI frames carry them) and per-tool arg offsets.
+/// Stateful transcoder from the live `AgentEvent` channel to the in-flight prefix
+/// of an AG-UI event stream. One instance per streamed run; it holds the stream's
+/// thread/run ids (AG-UI frames carry them) and the set of started tool calls.
 pub struct AgUiLiveTranscoder {
     thread_id: String,
     run_id: String,
@@ -44,9 +45,9 @@ impl AgUiLiveTranscoder {
         }
     }
 
-    pub fn transcode(&mut self, kind: &Kind) -> Vec<AgUiEvent> {
-        match kind {
-            Kind::RunStarted => {
+    pub fn transcode(&mut self, event: &AgentEvent) -> Vec<AgUiEvent> {
+        match event {
+            AgentEvent::Committed(Committed::RunStarted) => {
                 if self.started {
                     Vec::new()
                 } else {
@@ -57,7 +58,7 @@ impl AgUiLiveTranscoder {
                     }]
                 }
             }
-            Kind::OutputText { text } => {
+            AgentEvent::Live(Live::TextDelta { delta }) => {
                 let mut out = Vec::new();
                 let id = match &self.open_text {
                     Some(id) => id.clone(),
@@ -74,34 +75,37 @@ impl AgUiLiveTranscoder {
                 };
                 out.push(AgUiEvent::TextMessageContent {
                     message_id: id,
-                    delta: text.clone(),
+                    delta: delta.clone(),
                 });
                 out
             }
-            Kind::ToolCallDelta {
-                call_id,
-                tool_id,
+            AgentEvent::Live(Live::ToolCallDelta {
+                id,
+                name,
                 args_delta,
-            } => {
+            }) => {
                 let mut out = self.close_text();
-                if self.tools.insert(call_id.clone()) {
+                if self.tools.insert(id.clone()) {
                     out.push(AgUiEvent::ToolCallStart {
-                        tool_call_id: call_id.clone(),
-                        tool_call_name: tool_id.clone(),
+                        tool_call_id: id.clone(),
+                        tool_call_name: name.clone(),
                     });
                 }
                 if !args_delta.is_empty() {
                     out.push(AgUiEvent::ToolCallArgs {
-                        tool_call_id: call_id.clone(),
+                        tool_call_id: id.clone(),
                         delta: args_delta.clone(),
                     });
                 }
                 out
             }
-            Kind::Waiting { .. }
-            | Kind::Continuation { .. }
-            | Kind::RunFinished
-            | Kind::RunFailed { .. } => self.close_text(),
+            // Reasoning increments are not projected to AG-UI here (opt-in tier);
+            // a lifecycle terminal or any committed whole-unit just closes open text
+            // — the authoritative tail comes from the committed encoder, not this
+            // live prefix (G10/G13).
+            AgentEvent::Live(Live::ReasoningDelta { .. }) | AgentEvent::Committed(_) => {
+                self.close_text()
+            }
         }
     }
 
@@ -121,7 +125,24 @@ impl AgUiLiveTranscoder {
 mod tests {
     use super::*;
 
-    fn run(seq: &[Kind]) -> Vec<AgUiEvent> {
+    fn run_started() -> AgentEvent {
+        AgentEvent::Committed(Committed::RunStarted)
+    }
+    fn run_finished() -> AgentEvent {
+        AgentEvent::Committed(Committed::RunFinished { exhausted: false })
+    }
+    fn text(t: &str) -> AgentEvent {
+        AgentEvent::Live(Live::TextDelta { delta: t.into() })
+    }
+    fn tool(id: &str, name: &str, args: &str) -> AgentEvent {
+        AgentEvent::Live(Live::ToolCallDelta {
+            id: id.into(),
+            name: name.into(),
+            args_delta: args.into(),
+        })
+    }
+
+    fn run(seq: &[AgentEvent]) -> Vec<AgUiEvent> {
         let mut tc = AgUiLiveTranscoder::new("t1", "r1");
         seq.iter().flat_map(|k| tc.transcode(k)).collect()
     }
@@ -129,26 +150,12 @@ mod tests {
     #[test]
     fn streams_tool_args_forwarding_suffix_deltas() {
         let events = run(&[
-            Kind::RunStarted,
-            Kind::OutputText {
-                text: "reading".into(),
-            },
-            Kind::ToolCallDelta {
-                call_id: "c1".into(),
-                tool_id: "read".into(),
-                args_delta: "".into(),
-            },
-            Kind::ToolCallDelta {
-                call_id: "c1".into(),
-                tool_id: "read".into(),
-                args_delta: "{\"path\":".into(),
-            },
-            Kind::ToolCallDelta {
-                call_id: "c1".into(),
-                tool_id: "read".into(),
-                args_delta: "\"x\"}".into(),
-            },
-            Kind::RunFinished,
+            run_started(),
+            text("reading"),
+            tool("c1", "read", ""),
+            tool("c1", "read", "{\"path\":"),
+            tool("c1", "read", "\"x\"}"),
+            run_finished(),
         ]);
 
         // Run start, a bracketed text message, then the tool call streamed as
@@ -191,7 +198,7 @@ mod tests {
 
     #[test]
     fn a_repeated_run_started_is_idempotent() {
-        let events = run(&[Kind::RunStarted, Kind::RunStarted]);
+        let events = run(&[run_started(), run_started()]);
         assert_eq!(
             events,
             vec![AgUiEvent::RunStarted {
@@ -204,27 +211,11 @@ mod tests {
     #[test]
     fn concurrent_tool_calls_stream_independently_by_call_id() {
         let events = run(&[
-            Kind::RunStarted,
-            Kind::ToolCallDelta {
-                call_id: "c1".into(),
-                tool_id: "read".into(),
-                args_delta: "".into(),
-            },
-            Kind::ToolCallDelta {
-                call_id: "c2".into(),
-                tool_id: "write".into(),
-                args_delta: "".into(),
-            },
-            Kind::ToolCallDelta {
-                call_id: "c1".into(),
-                tool_id: "read".into(),
-                args_delta: "{\"a\":1}".into(),
-            },
-            Kind::ToolCallDelta {
-                call_id: "c2".into(),
-                tool_id: "write".into(),
-                args_delta: "{\"b\":2}".into(),
-            },
+            run_started(),
+            tool("c1", "read", ""),
+            tool("c2", "write", ""),
+            tool("c1", "read", "{\"a\":1}"),
+            tool("c2", "write", "{\"b\":2}"),
         ]);
         assert!(events.contains(&AgUiEvent::ToolCallStart {
             tool_call_id: "c1".into(),
@@ -247,16 +238,10 @@ mod tests {
     #[test]
     fn text_reopens_with_a_fresh_id_after_a_tool_call() {
         let events = run(&[
-            Kind::RunStarted,
-            Kind::OutputText { text: "hi".into() },
-            Kind::ToolCallDelta {
-                call_id: "c1".into(),
-                tool_id: "read".into(),
-                args_delta: "".into(),
-            },
-            Kind::OutputText {
-                text: "more".into(),
-            },
+            run_started(),
+            text("hi"),
+            tool("c1", "read", ""),
+            text("more"),
         ]);
         assert!(events.contains(&AgUiEvent::TextMessageEnd {
             message_id: "r1-msg-0".into()

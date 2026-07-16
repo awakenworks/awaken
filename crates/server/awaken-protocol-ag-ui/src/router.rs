@@ -7,7 +7,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Message;
-use awaken_agent_contract::stream::event::Kind;
+use awaken_agent_contract::event::AgentEvent;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use axum::Router;
 use axum::body::Body;
@@ -151,15 +151,15 @@ fn stream_turn(
 ) -> Response {
     let (out_tx, out_rx) = mpsc::unbounded_channel::<String>();
     tokio::spawn(async move {
-        let (live_tx, mut live_rx) = mpsc::unbounded_channel::<Kind>();
+        let (live_tx, mut live_rx) = mpsc::unbounded_channel::<AgentEvent>();
         let sink: Arc<dyn StreamSink> = Arc::new(ChannelStreamSink::new(live_tx));
         let mut transcoder = AgUiLiveTranscoder::new(thread.clone(), run_id.clone());
         let close_thread = thread.clone();
         let turn =
             tokio::spawn(async move { rt.run_streaming(&thread, agent, messages, sink).await });
-        while let Some(kind) = live_rx.recv().await {
-            for event in transcoder.transcode(&kind) {
-                if out_tx.send(sse_line(&event)).is_err() {
+        while let Some(event) = live_rx.recv().await {
+            for wire in transcoder.transcode(&event) {
+                if out_tx.send(sse_line(&wire)).is_err() {
                     return;
                 }
             }
