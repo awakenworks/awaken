@@ -117,11 +117,11 @@ pub(crate) async fn run_agent_loop(
     emit(&context, &run_id, StreamKind::RunStarted).await;
 
     // A fresh run continues the thread's conversation: seed the transcript with
-    // the committed history (when a reader is wired), then this turn's input —
+    // the committed history (when a reader is wired), then this run's input —
     // but only the input NOT already in that history. A reclaimed run re-executes
     // from its activation, yet its input was committed as the first step delta by
     // the prior attempt, so it is already present: appending it again would both
-    // show the model the turn twice AND re-commit it (the durable accumulator's
+    // show the model the input twice AND re-commit it (the durable accumulator's
     // watermark resets per attempt, so it cannot tell). Keyed on the stable
     // message id, a fresh run's uncommitted input passes through unchanged while a
     // reclaimed or redelivered input is dropped — input delivery is idempotent.
@@ -453,7 +453,7 @@ fn open_deferred_tool(
 /// advances the watermark atomically with the delta it made durable, and the
 /// returned checkpoint is only the tail beyond it. The model-facing `transcript`
 /// (seeded with committed history) and the durable `new_messages` (only this
-/// attempt's turns) grow together but stay distinct.
+/// attempt's messages) grow together but stay distinct.
 struct StepLedger {
     transcript: Vec<Message>,
     new_messages: Vec<Message>,
@@ -580,12 +580,12 @@ impl LiveEnv {
 }
 
 /// Run one step's inference to a final response, applying two in-place recoveries
-/// before yielding. A `MaxTokens`-truncated text-only turn is continued in place:
+/// before yielding. A `MaxTokens`-truncated text-only step is continued in place:
 /// the partial is committed as its own assistant message, a continuation prompt
 /// follows it, and inference reruns on the grown transcript — up to a per-step
-/// budget, after which the truncated turn stands. A truncated turn still carrying
+/// budget, after which the truncated step stands. A truncated step still carrying
 /// tool calls skips recovery: those calls must be answered by tool results, not
-/// another assistant turn. On a clean pre-commit failure (no partial committed
+/// another assistant step. On a clean pre-commit failure (no partial committed
 /// this step) with a candidate remaining, it fails over to the next pool model;
 /// the breaker inside `infer_with_retry` keys on `request.model_binding`, so a
 /// failed-over model tracks its own circuit and usage. A failure after a committed
@@ -675,7 +675,7 @@ async fn infer_step_turn(
 /// and resume; the caller seeds the transcript, the already-produced messages,
 /// and any state the resume itself staged (`seed_state`).
 // The agent-invocation span in OTel GenAI terms: this is the reasoning loop that
-// drives one agent turn to completion, so it carries `gen_ai.operation.name =
+// drives one agent run to completion, so it carries `gen_ai.operation.name =
 // "invoke_agent"` and parents the `chat` / `execute_tool` spans. `SpanKind::Internal`;
 // `gen_ai.provider.name` is the neutral `awaken` (G22). Awaken run/thread ids ride
 // alongside as `awaken.*` extensions.
@@ -763,7 +763,7 @@ async fn drive(
         .count();
 
     // The agent's configured ceiling guards against a non-terminating tool cycle;
-    // a natural-end text turn ends the loop earlier. A plugin whose tool set is
+    // a natural-end text step ends the loop earlier. A plugin whose tool set is
     // dynamic (e.g. an MCP server firing `tools/list_changed`) advances its
     // `live_version`; `live_env` re-resolves the environment at the step boundary
     // when it changes, and is zero-overhead for static runs.
@@ -901,7 +901,7 @@ async fn drive(
         };
 
         // Record this step's token usage as committed thread truth, attributed to the
-        // bound model and accumulated across steps and turns, so an adapter can surface
+        // bound model and accumulated across steps and runs, so an adapter can surface
         // a session's usage (total or per-model) by reading thread state — the runtime
         // records the fact without naming any wire, and it survives a restart. A step
         // whose provider reported no usage records nothing.
@@ -932,7 +932,7 @@ async fn drive(
             break;
         }
 
-        // Commit the assistant turn verbatim — text and tool-use blocks may
+        // Commit the assistant step verbatim — text and tool-use blocks may
         // interleave. The text already streamed to the live sink; the committed
         // message is the assembled whole.
         // Reverse the model-facing tool id back to its canonical id (ADR-0053) at the
@@ -955,11 +955,11 @@ async fn drive(
         let assistant = assistant_message(run_id, step_base + step, response.output.blocks);
         ledger.push_turn(assistant);
 
-        // A text-only turn (no tool requests) is a natural end — unless queued
+        // A text-only step (no tool requests) is a natural end — unless queued
         // live input or a run-end guard keeps the loop going. Queued input is
         // drained first: a message the caller already addressed to this run
         // preempts any guard's end-of-run verdict, exactly as if it had arrived
-        // one turn earlier.
+        // one step earlier.
         if calls.is_empty() {
             // The safe loop boundary (ADR-0054): drain queued live input, honour an
             // operator pause, else fall through to the run-end guard. Shared with
@@ -1123,7 +1123,7 @@ async fn commit_step_delta(
     Ok(())
 }
 
-/// Forwards a turn's streamed text chunks to the live stream as `OutputText`
+/// Forwards a step's streamed text chunks to the live stream as `OutputText`
 /// events. Live progress only — the committed message comes from the returned
 /// response, never these chunks (G10/G13).
 struct StreamDeltaSink<'a> {
@@ -1263,7 +1263,7 @@ fn parse_completed(tools: &[PartialToolCall]) -> Vec<ToolCall> {
         .collect()
 }
 
-/// Synthesize the turn the model had produced when a drop interrupted it after
+/// Synthesize the step the model had produced when a drop interrupted it after
 /// its tool calls were complete (R2): the salvaged text followed by the completed
 /// tool-use blocks, stopped for tool use. The engine's tool loop runs these
 /// without another model round-trip.
@@ -1370,7 +1370,7 @@ enum RunEndOutcome {
 
 /// Consult the run-end continuation guards at a natural-end boundary. Guards are
 /// consulted in dependency order; a `Steer` short-circuits (a guard wants another
-/// turn). Their `detail` is opaque to the runtime (G2 neutrality) — forwarded,
+/// step). Their `detail` is opaque to the runtime (G2 neutrality) — forwarded,
 /// never interpreted.
 async fn consult_run_end(
     env: &ResolvedExecutionEnv,

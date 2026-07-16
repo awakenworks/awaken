@@ -140,8 +140,8 @@ fn keep_last_zero_keeps_only_the_system_prefix() {
 fn keep_last_preserves_a_system_message_regardless_of_position() {
     // The positional invariant: KeepLast keeps EVERY system message wherever it
     // sits (agent instructions, an injected compaction summary), dropping only the
-    // oldest conversational turns. A system message placed early in the stream must
-    // survive a drop that removes older user turns around it.
+    // oldest conversational messages. A system message placed early in the stream must
+    // survive a drop that removes older user messages around it.
     let transcript = vec![
         numbered(0),
         Message::text(MessageId("s-mid".to_string()), Role::System, "pinned"),
@@ -155,7 +155,7 @@ fn keep_last_preserves_a_system_message_regardless_of_position() {
         &[],
         &Default::default(),
     );
-    // Oldest conversational turns "0" and "1" drop; only the last one survives.
+    // Oldest conversational messages "0" and "1" drop; only the last one survives.
     assert_eq!(user_texts(&request), vec!["2".to_string()]);
     // Both system messages survive: the instruction prefix and the mid-list one.
     let system_texts: Vec<String> = request
@@ -213,7 +213,7 @@ use awaken_runtime_contract::llm::{Error as LlmError, LlmExecutor, Result as Llm
 use std::sync::Arc;
 
 /// Records every text chunk the live stream received, so a test can assert a
-/// continued turn never re-emits its already-streamed prefix.
+/// continued step never re-emits its already-streamed prefix.
 struct RecordingSink {
     chunks: std::sync::Mutex<Vec<String>>,
 }
@@ -428,7 +428,7 @@ async fn interrupted_text_stream_is_continued_from_the_partial() {
     .await
     .expect("continues past the drop");
 
-    // The committed turn is the whole text: prefix + continuation, stitched once.
+    // The committed step is the whole text: prefix + continuation, stitched once.
     assert_eq!(response.output.text_content(), "The answer is 42");
 
     let requests = flaky.requests.lock().unwrap();
@@ -483,7 +483,7 @@ async fn completed_tool_calls_before_a_drop_are_executed_without_re_inferring() 
     .await
     .expect("salvages the completed tool call");
 
-    // The salvaged turn stops for tool use, carrying the text and the parsed call.
+    // The salvaged step stops for tool use, carrying the text and the parsed call.
     assert_eq!(response.stop_reason, Some(StopReason::ToolUse));
     assert_eq!(response.output.text_content(), "Let me search ");
     let calls = response.output.tool_calls();

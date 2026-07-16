@@ -73,8 +73,8 @@ pub struct Runtime {
     active_pauses: Mutex<HashMap<RunId, PauseSignal>>,
     /// How retryable inference failures are retried (attempts and backoff).
     retry_policy: crate::retry::LlmRetryPolicy,
-    /// How many continuation rounds a `MaxTokens`-truncated text turn may use
-    /// per step before the partial output stands as the turn.
+    /// How many continuation rounds a `MaxTokens`-truncated text step may use
+    /// per step before the partial output stands as the step.
     max_continuation_retries: usize,
     /// The nth consecutive failed inference step ends the run. 1 (the default)
     /// means a single failure is terminal; a higher value absorbs failures at
@@ -125,7 +125,7 @@ impl Runtime {
         self
     }
 
-    /// Set the per-step budget for continuing a `MaxTokens`-truncated turn.
+    /// Set the per-step budget for continuing a `MaxTokens`-truncated step.
     #[must_use]
     pub fn with_max_continuation_retries(mut self, retries: usize) -> Self {
         self.max_continuation_retries = retries;

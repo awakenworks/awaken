@@ -2,7 +2,7 @@
 //!
 //! Extracted from `engine` (which crossed the 2000-line file limit): these are
 //! leaf functions over contract types only — they build the model `ChatRequest`,
-//! apply the context policy, and mint the transcript messages a turn commits. No
+//! apply the context policy, and mint the transcript messages a step commits. No
 //! `Runtime` or engine state; `drive`/`run_agent_loop`/resume are the consumers.
 
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -100,12 +100,12 @@ pub(crate) fn to_chat_message(message: &Message) -> ChatMessage {
     }
 }
 
-/// What a truncated turn is told so it resumes rather than restarts (mirrors
+/// What a truncated step is told so it resumes rather than restarts (mirrors
 /// the goal runtime's continuation prompt verbatim).
 const CONTINUATION_PROMPT: &str = "Your response was cut off because it exceeded the output \
      token limit. Please break your work into smaller pieces. Continue from where you left off.";
 
-/// The committed partial text of a `MaxTokens`-truncated turn. Its id carries
+/// The committed partial text of a `MaxTokens`-truncated step. Its id carries
 /// the continuation round so it never collides with the step's final
 /// assistant message.
 pub(crate) fn truncated_assistant_message(
@@ -121,7 +121,7 @@ pub(crate) fn truncated_assistant_message(
     }
 }
 
-/// The user message that asks a truncated turn to continue where it left off.
+/// The user message that asks a truncated step to continue where it left off.
 pub(crate) fn continuation_message(run_id: &RunId, step: usize, nth: usize) -> Message {
     Message {
         id: MessageId::continuation(run_id, step, nth),
@@ -130,7 +130,7 @@ pub(crate) fn continuation_message(run_id: &RunId, step: usize, nth: usize) -> M
     }
 }
 
-/// The committed assistant turn: its content blocks verbatim (text and tool-use
+/// The committed assistant step: its content blocks verbatim (text and tool-use
 /// interleaved), so the transcript explains both what was said and what was
 /// called.
 pub(crate) fn assistant_message(run_id: &RunId, step: usize, blocks: Vec<ContentBlock>) -> Message {
