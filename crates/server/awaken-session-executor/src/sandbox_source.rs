@@ -124,6 +124,11 @@ impl ThreadEgress {
 /// across relaunches and machines regardless of the host workspace path.
 const SANDBOX_WORKSPACE: &str = "/workspace";
 
+/// The fixed interior config-home a `ConfigFileToml` CLI (codex) reads its MCP config
+/// from: the projected `config.toml` is mounted here (`MountSource::Inline`) and the
+/// CLI's config-home env (e.g. `CODEX_HOME`) points at it.
+const SANDBOX_CONFIG_HOME: &str = "/acp-config";
+
 /// A shared clone of the host's per-thread staged-resource registry (ADR-0038), so a
 /// sandboxed source carries the SAME file/resource mounts the native `sandbox_spec`
 /// does into the bwrap sandbox it launches the CLI in. Opaque like [`ThreadEgress`] —
@@ -295,33 +300,40 @@ impl AgentChannelSource for SandboxChannelSource {
     async fn open(&self, activation: &RunActivation) -> Result<AgentSession, OpenError> {
         let thread = activation.thread_id.0.as_str();
         // The launch is fixed, or projected from this run's config-plane-selected CLI.
-        let launch = self.launch.resolve(activation)?;
+        let mut launch = self.launch.resolve(activation)?;
+        // Project the run's declared MCP servers once. `session/new` servers ride in-band
+        // over the ACP wire the executor drives (claude/gemini/opencode); a config-file
+        // CLI (codex) gets its config.toml. Fail-closed on an inline-secret credential
+        // (only broker references are sandbox-safe).
+        let injection = match self.launch.cli() {
+            Some(cli) => awaken_run_executor_acp::mcp_injection(
+                cli,
+                &activation.snapshot.resolved_spec.plugin_config,
+                true,
+            )?,
+            None => awaken_run_executor_acp::McpInjection::default(),
+        };
+        // The session's staged resource mounts, plus — for a config-file CLI — the
+        // projected config as an inline, read-only, never-harvested mount at the fixed
+        // interior config home, with the CLI's config-home env pointed there.
+        let mut spec = self.spec(thread);
+        if let Some(cli) = self.launch.cli()
+            && let Some((mount, (env_key, env_val))) =
+                acp_config_mount(cli, injection.config_file.clone())
+        {
+            spec.mounts.push(mount);
+            launch.env.retain(|(k, _)| *k != env_key);
+            launch.env.push((env_key, env_val));
+        }
         let sandbox = self
             .provider
-            .create_sandbox(&self.spec(thread))
+            .create_sandbox(&spec)
             .await
             .map_err(|e| OpenError(format!("sandbox create: {e}")))?;
         let (process, channel) = sandbox
             .spawn_agent(Self::command(&launch))
             .await
             .map_err(|e| OpenError(format!("sandboxed agent launch: {e}")))?;
-        // Deliver this run's declared MCP servers into the sandbox. `session/new` servers
-        // (claude/gemini/opencode) ride in-band over the ACP wire the executor already
-        // drives — no filesystem needed. Fail-closed on an inline-secret credential
-        // (only broker references are sandbox-safe). A `ConfigFileToml` CLI (codex) needs
-        // the config file mounted into the interior config home via `MountSource::Inline`
-        // — the remaining follow-up; its `config_file` projection is not yet realized here.
-        let mcp_session_servers = match self.launch.cli() {
-            Some(cli) => {
-                awaken_run_executor_acp::mcp_injection(
-                    cli,
-                    &activation.snapshot.resolved_spec.plugin_config,
-                    true,
-                )?
-                .session_servers
-            }
-            None => Vec::new(),
-        };
         Ok(AgentSession {
             channel,
             process: Arc::from(process),
@@ -331,9 +343,35 @@ impl AgentChannelSource for SandboxChannelSource {
             // session under the same slug every relaunch/machine — the stable interior
             // identity cross-directory/cross-machine recovery needs.
             workspace_cwd: Some(SANDBOX_WORKSPACE.to_string()),
-            mcp_session_servers,
+            mcp_session_servers: injection.session_servers,
         })
     }
+}
+
+/// The interior config mount + config-home env override for a config-file CLI's
+/// projected MCP config (codex `config.toml`): an inline, read-only, per-run,
+/// never-harvested mount at the fixed interior config home, plus `(config_home_env,
+/// path)` to point the CLI there. `None` for a session-server CLI (no config file).
+/// Pure, so it is testable without a live sandbox.
+fn acp_config_mount(
+    cli: &AcpCli,
+    config_file: Option<(String, String)>,
+) -> Option<(pc::MountRequirement, (String, String))> {
+    let (rel_path, contents) = config_file?;
+    Some((
+        pc::MountRequirement {
+            mount_id: "acp-config".to_string(),
+            source: pc::MountSource::Inline { contents },
+            mount_path: format!("{SANDBOX_CONFIG_HOME}/{rel_path}"),
+            access: pc::MountAccess::ReadOnly,
+            lifetime: pc::MountLifetime::PerRun,
+            required: true,
+        },
+        (
+            cli.config_home_env.to_string(),
+            SANDBOX_CONFIG_HOME.to_string(),
+        ),
+    ))
 }
 
 /// Runs each turn's agent inside a **user-supplied container image** (ADR-0056 custom
@@ -661,6 +699,29 @@ mod tests {
         assert_eq!(spec.mounts[0].mount_path, ".mnt/data.csv");
         // A thread with nothing staged mounts nothing.
         assert!(src.spec("other").mounts.is_empty());
+    }
+
+    #[test]
+    fn codex_config_file_becomes_an_inline_readonly_mount_and_points_the_config_home() {
+        // A config-file CLI (codex): the projected config.toml is mounted inline
+        // (ephemeral, read-only, never-harvested) at the interior config home, and the
+        // CLI's config-home env (CODEX_HOME) points there so it reads the MCP config.
+        let cli = awaken_run_executor_acp::acp_cli("codex").unwrap();
+        let (mount, (env_key, env_val)) = acp_config_mount(
+            cli,
+            Some(("config.toml".into(), "[mcp_servers.gh]\n".into())),
+        )
+        .expect("codex gets a config mount");
+        assert_eq!(mount.mount_path, "/acp-config/config.toml");
+        assert!(matches!(mount.source, pc::MountSource::Inline { .. }));
+        assert_eq!(mount.access, pc::MountAccess::ReadOnly);
+        assert_eq!(mount.lifetime, pc::MountLifetime::PerRun);
+        assert_eq!(env_key, "CODEX_HOME");
+        assert_eq!(env_val, "/acp-config");
+
+        // A session-server CLI (claude, no config file) → no config mount.
+        let claude = awaken_run_executor_acp::acp_cli("claude").unwrap();
+        assert!(acp_config_mount(claude, None).is_none());
     }
 
     #[test]

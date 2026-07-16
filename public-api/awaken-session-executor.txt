@@ -240,6 +240,7 @@ pub fn awaken_session_executor::SandboxChannelSource::new(impl core::convert::In
 pub fn awaken_session_executor::SandboxChannelSource::projecting(impl core::convert::Into<std::path::PathBuf>, awaken_run_executor_acp::acp_cli::AcpCli, alloc::sync::Arc<dyn awaken_run_executor_acp::subprocess::LaunchResolver>) -> Self
 pub fn awaken_session_executor::SandboxChannelSource::with_codec(self, awaken_protocol_acp::Codec) -> Self
 pub fn awaken_session_executor::SandboxChannelSource::with_thread_egress(self, awaken_session_executor::ThreadEgress) -> Self
+pub fn awaken_session_executor::SandboxChannelSource::with_thread_resources(self, awaken_session_executor::ThreadResources) -> Self
 impl awaken_run_executor_acp::AgentChannelSource for awaken_session_executor::SandboxChannelSource
 pub fn awaken_session_executor::SandboxChannelSource::open<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::activation::RunActivation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_executor_acp::AgentSession, awaken_run_executor_acp::OpenError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_session_executor::SharedHost
@@ -366,6 +367,7 @@ impl awaken_session_executor::ThreadEventHub
 pub fn awaken_session_executor::ThreadEventHub::new() -> Self
 pub fn awaken_session_executor::ThreadEventHub::publish(&self, &str, awaken_session_executor::ThreadEvent)
 pub fn awaken_session_executor::ThreadEventHub::subscribe(&self, &str) -> tokio::sync::broadcast::Receiver<awaken_session_executor::ThreadEvent>
+pub struct awaken_session_executor::ThreadResources(_)
 pub struct awaken_session_executor::VaultRefresher
 impl awaken_session_executor::VaultRefresher
 pub fn awaken_session_executor::VaultRefresher::new(awaken_session_executor::PreparedMcpRefresh) -> Self
@@ -376,7 +378,7 @@ pub fn awaken_session_executor::ExecutorProvider::executor_for(&self, &str) -> c
 pub fn awaken_session_executor::advertised_tools(&std::collections::hash::set::HashSet<alloc::string::String>, &std::collections::hash::set::HashSet<alloc::string::String>, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub fn awaken_session_executor::authorable_config_sections() -> alloc::vec::Vec<awaken_runtime_contract::capability::PluginCapability>
 pub fn awaken_session_executor::block_text(&[awaken_agent_contract::agent::content::ContentBlock]) -> alloc::string::String
-pub async fn awaken_session_executor::build_acp_channel_source(awaken_session_executor::SandboxTier, core::option::Option<&str>, awaken_session_executor::LaunchSource, awaken_session_executor::ThreadEgress, std::path::PathBuf) -> core::result::Result<alloc::sync::Arc<dyn awaken_run_executor_acp::AgentChannelSource>, alloc::string::String>
+pub async fn awaken_session_executor::build_acp_channel_source(awaken_session_executor::SandboxTier, core::option::Option<&str>, awaken_session_executor::LaunchSource, awaken_session_executor::ThreadEgress, awaken_session_executor::ThreadResources, std::path::PathBuf) -> core::result::Result<alloc::sync::Arc<dyn awaken_run_executor_acp::AgentChannelSource>, alloc::string::String>
 pub fn awaken_session_executor::commit_ingest_router(alloc::sync::Arc<awaken_session_executor::SharedHost>) -> axum::routing::Router
 pub fn awaken_session_executor::consent_router(alloc::sync::Arc<dyn awaken_data_subject::DataSubjectRepo>) -> axum::routing::Router
 pub fn awaken_session_executor::default_models() -> alloc::vec::Vec<awaken_session_executor::ModelEntry>
