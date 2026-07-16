@@ -38,6 +38,7 @@ pub mod types;
 
 /// The self-hosted environment registry as a port ([`env_registry::EnvRegistry`]),
 /// with an in-memory default; durable (sqlite/postgres) backends fold in behind it.
+pub mod cron;
 pub mod env_registry;
 mod preview;
 mod session_repo;
