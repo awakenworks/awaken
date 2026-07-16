@@ -87,7 +87,7 @@ pub fn classify(event: &AgentEvent) -> Routing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::ToolDisposition;
+    use crate::event::agent::ToolDisposition;
     use serde_json::json;
 
     /// Every representative variant, so the conformance assertions cover the whole

@@ -236,6 +236,9 @@ impl Transcoder for ManagedEncoder {
                     stop_reason: StopReason::EndTurn,
                 })]
             }
+            // A continuation-guard round is an internal audit fact, not an
+            // agent-visible managed wire event; the fold never emits it here.
+            AgentEvent::Continuation { .. } => Vec::new(),
         }
     }
 }

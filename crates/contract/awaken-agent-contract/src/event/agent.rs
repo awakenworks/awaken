@@ -22,7 +22,20 @@
 use serde_json::Value;
 
 use crate::agent::content::ContentBlock;
-use crate::project::ToolDisposition;
+
+/// How a tool call was dispatched, as seen at fold time. The only place the "who
+/// runs the tool" distinction is carried; each transcoder maps it to its own
+/// tool-part shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolDisposition {
+    /// The tool ran server-side; a [`Committed::ToolResult`] follows.
+    Executed,
+    /// A client-executed tool the run parked on; the client runs it and returns
+    /// the result.
+    PendingClient,
+    /// A built-in tool the run parked on, awaiting a permission decision.
+    PendingBuiltin,
+}
 
 /// One neutral event, tagged by its producer-authority tier. Carries no protocol
 /// vocabulary.

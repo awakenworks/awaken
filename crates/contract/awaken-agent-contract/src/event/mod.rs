@@ -8,5 +8,5 @@
 pub mod agent;
 pub mod classify;
 
-pub use agent::{AgentEvent, Committed, Progress};
+pub use agent::{AgentEvent, Committed, Progress, ToolDisposition};
 pub use classify::{Routing, Tier, classify};

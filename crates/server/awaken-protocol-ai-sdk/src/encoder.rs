@@ -83,6 +83,9 @@ impl Transcoder for AiSdkEncoder {
                 UIStreamEvent::FinishStep,
                 UIStreamEvent::finish("error"),
             ],
+            // An internal continuation-guard round is not an AI-SDK wire part; the
+            // committed fold never emits it into this stream.
+            AgentEvent::Continuation { .. } => Vec::new(),
         }
     }
 }
