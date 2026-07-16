@@ -1144,14 +1144,14 @@ impl DeltaSink for StreamDeltaSink<'_> {
         .await;
     }
 
-    async fn on_tool_call(&self, call_id: &str, tool_id: &str, arguments: &serde_json::Value) {
+    async fn on_tool_call_delta(&self, call_id: &str, tool_id: &str, args_delta: &str) {
         emit(
             self.context,
             self.run_id,
-            StreamKind::ToolCall {
+            StreamKind::ToolCallDelta {
                 call_id: call_id.to_string(),
                 tool_id: tool_id.to_string(),
-                arguments: arguments.clone(),
+                args_delta: args_delta.to_string(),
             },
         )
         .await;
@@ -1176,8 +1176,9 @@ struct Snapshot {
 /// partial, so a mid-stream interruption can be *continued from it* rather than
 /// regenerated from scratch (R1–R3 recovery). Text and tool progress are
 /// forwarded to `inner` unchanged, so the live stream is untouched. Tool
-/// arguments arrive as raw, accumulated JSON text (see `on_tool_call`); whether
-/// they parse later decides completed-vs-in-flight.
+/// arguments arrive as de-accumulated suffix fragments (see `on_tool_call_delta`)
+/// which are appended into raw JSON text; whether it parses later decides
+/// completed-vs-in-flight.
 struct ContinuationSink<'a> {
     inner: &'a dyn DeltaSink,
     text: std::sync::Mutex<String>,
@@ -1219,31 +1220,27 @@ impl DeltaSink for ContinuationSink<'_> {
         self.inner.on_text(chunk).await;
     }
 
-    async fn on_tool_call(&self, call_id: &str, tool_id: &str, arguments: &serde_json::Value) {
-        // Mid-stream, a provider hands tool arguments as raw accumulated JSON
-        // text (a `Value::String`), which may be incomplete if the drop lands
-        // mid-arguments. Keep the raw text, last-wins per call id (the provider
-        // resends the running accumulation), so a later parse decides whether the
-        // call had finished.
-        let raw = match arguments {
-            serde_json::Value::String(text) => text.clone(),
-            other => other.to_string(),
-        };
+    async fn on_tool_call_delta(&self, call_id: &str, tool_id: &str, args_delta: &str) {
+        // The provider adapter now hands a suffix `args_delta`, so accumulate them
+        // per call id to rebuild the running raw JSON — a later parse decides whether
+        // the call had finished when a mid-stream drop lands mid-arguments.
         {
             let mut tools = self.tools.lock().expect("continuation tools");
             match tools.iter_mut().find(|t| t.call_id == call_id) {
                 Some(existing) => {
                     existing.tool_id = tool_id.to_string();
-                    existing.raw_arguments = raw;
+                    existing.raw_arguments.push_str(args_delta);
                 }
                 None => tools.push(PartialToolCall {
                     call_id: call_id.to_string(),
                     tool_id: tool_id.to_string(),
-                    raw_arguments: raw,
+                    raw_arguments: args_delta.to_string(),
                 }),
             }
         }
-        self.inner.on_tool_call(call_id, tool_id, arguments).await;
+        self.inner
+            .on_tool_call_delta(call_id, tool_id, args_delta)
+            .await;
     }
 }
 

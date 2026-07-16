@@ -7,11 +7,11 @@
 //! becomes the source of truth (G10/G13). The channel adapter is the shared
 //! [`awaken_protocol_transport::ChannelStreamSink`].
 //!
-//! Tool arguments arrive as *cumulative* snapshots (genai hands a `Value::String`
-//! of the JSON accumulated so far), so the transcoder tracks a per-call byte
-//! offset and emits only the newly-appended suffix as each `TOOL_CALL_ARGS` delta.
+//! Tool arguments arrive already de-accumulated: each `ToolCallDelta` carries only
+//! the newly-appended suffix (the provider adapter owns the de-accumulation), which
+//! the transcoder forwards verbatim as a `TOOL_CALL_ARGS` delta.
 
-use std::collections::HashMap;
+use std::collections::HashSet;
 
 use awaken_agent_contract::stream::event::Kind;
 
@@ -26,7 +26,10 @@ pub struct AgUiLiveTranscoder {
     started: bool,
     open_text: Option<String>,
     text_seq: usize,
-    tools: HashMap<String, usize>,
+    /// Call ids that already emitted `TOOL_CALL_START`. Arg deltas arrive
+    /// already de-accumulated (the provider adapter owns that), so no byte offset
+    /// is kept — the delta is forwarded verbatim.
+    tools: HashSet<String>,
 }
 
 impl AgUiLiveTranscoder {
@@ -37,7 +40,7 @@ impl AgUiLiveTranscoder {
             started: false,
             open_text: None,
             text_seq: 0,
-            tools: HashMap::new(),
+            tools: HashSet::new(),
         }
     }
 
@@ -75,28 +78,23 @@ impl AgUiLiveTranscoder {
                 });
                 out
             }
-            Kind::ToolCall {
+            Kind::ToolCallDelta {
                 call_id,
                 tool_id,
-                arguments,
+                args_delta,
             } => {
                 let mut out = self.close_text();
-                if !self.tools.contains_key(call_id) {
-                    self.tools.insert(call_id.clone(), 0);
+                if self.tools.insert(call_id.clone()) {
                     out.push(AgUiEvent::ToolCallStart {
                         tool_call_id: call_id.clone(),
                         tool_call_name: tool_id.clone(),
                     });
                 }
-                if let Some(s) = arguments.as_str() {
-                    let sent = self.tools.get_mut(call_id).expect("just inserted");
-                    if s.len() > *sent && s.is_char_boundary(*sent) {
-                        out.push(AgUiEvent::ToolCallArgs {
-                            tool_call_id: call_id.clone(),
-                            delta: s[*sent..].to_string(),
-                        });
-                        *sent = s.len();
-                    }
+                if !args_delta.is_empty() {
+                    out.push(AgUiEvent::ToolCallArgs {
+                        tool_call_id: call_id.clone(),
+                        delta: args_delta.clone(),
+                    });
                 }
                 out
             }
@@ -122,7 +120,6 @@ impl AgUiLiveTranscoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn run(seq: &[Kind]) -> Vec<AgUiEvent> {
         let mut tc = AgUiLiveTranscoder::new("t1", "r1");
@@ -130,26 +127,26 @@ mod tests {
     }
 
     #[test]
-    fn streams_tool_args_as_suffix_deltas() {
+    fn streams_tool_args_forwarding_suffix_deltas() {
         let events = run(&[
             Kind::RunStarted,
             Kind::OutputText {
                 text: "reading".into(),
             },
-            Kind::ToolCall {
+            Kind::ToolCallDelta {
                 call_id: "c1".into(),
                 tool_id: "read".into(),
-                arguments: json!(""),
+                args_delta: "".into(),
             },
-            Kind::ToolCall {
+            Kind::ToolCallDelta {
                 call_id: "c1".into(),
                 tool_id: "read".into(),
-                arguments: json!("{\"path\":"),
+                args_delta: "{\"path\":".into(),
             },
-            Kind::ToolCall {
+            Kind::ToolCallDelta {
                 call_id: "c1".into(),
                 tool_id: "read".into(),
-                arguments: json!("{\"path\":\"x\"}"),
+                args_delta: "\"x\"}".into(),
             },
             Kind::RunFinished,
         ]);
@@ -208,25 +205,25 @@ mod tests {
     fn concurrent_tool_calls_stream_independently_by_call_id() {
         let events = run(&[
             Kind::RunStarted,
-            Kind::ToolCall {
+            Kind::ToolCallDelta {
                 call_id: "c1".into(),
                 tool_id: "read".into(),
-                arguments: json!(""),
+                args_delta: "".into(),
             },
-            Kind::ToolCall {
+            Kind::ToolCallDelta {
                 call_id: "c2".into(),
                 tool_id: "write".into(),
-                arguments: json!(""),
+                args_delta: "".into(),
             },
-            Kind::ToolCall {
+            Kind::ToolCallDelta {
                 call_id: "c1".into(),
                 tool_id: "read".into(),
-                arguments: json!("{\"a\":1}"),
+                args_delta: "{\"a\":1}".into(),
             },
-            Kind::ToolCall {
+            Kind::ToolCallDelta {
                 call_id: "c2".into(),
                 tool_id: "write".into(),
-                arguments: json!("{\"b\":2}"),
+                args_delta: "{\"b\":2}".into(),
             },
         ]);
         assert!(events.contains(&AgUiEvent::ToolCallStart {
@@ -252,10 +249,10 @@ mod tests {
         let events = run(&[
             Kind::RunStarted,
             Kind::OutputText { text: "hi".into() },
-            Kind::ToolCall {
+            Kind::ToolCallDelta {
                 call_id: "c1".into(),
                 tool_id: "read".into(),
-                arguments: json!(""),
+                args_delta: "".into(),
             },
             Kind::OutputText {
                 text: "more".into(),
@@ -268,32 +265,5 @@ mod tests {
             message_id: "r1-msg-1".into(),
             role: "assistant".into(),
         }));
-    }
-
-    #[test]
-    fn a_snapshot_boundary_mid_codepoint_is_skipped_without_panicking() {
-        // The tracked byte offset falling inside a multibyte char must be skipped
-        // (the `is_char_boundary` guard), never sliced — else `s[offset..]` panics.
-        let events = run(&[
-            Kind::RunStarted,
-            Kind::ToolCall {
-                call_id: "c1".into(),
-                tool_id: "t".into(),
-                arguments: json!("a"),
-            },
-            Kind::ToolCall {
-                call_id: "c1".into(),
-                tool_id: "t".into(),
-                arguments: json!("é"),
-            },
-        ]);
-        let deltas: Vec<&str> = events
-            .iter()
-            .filter_map(|e| match e {
-                AgUiEvent::ToolCallArgs { delta, .. } => Some(delta.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(deltas, vec!["a"]);
     }
 }

@@ -102,7 +102,7 @@ impl Sink for PreviewSink {
             // A tool call, or any control/terminal kind, closes the current text
             // run; the next text opens a fresh previewed message. Tool use is
             // never previewed (matches the official wire).
-            Kind::ToolCall { .. }
+            Kind::ToolCallDelta { .. }
             | Kind::Waiting { .. }
             | Kind::Continuation { .. }
             | Kind::RunStarted
@@ -119,7 +119,6 @@ impl Sink for PreviewSink {
 mod tests {
     use super::*;
     use awaken_agent_contract::agent::run::Id as RunId;
-    use serde_json::json;
 
     fn ev(kind: Kind) -> StreamEvent {
         StreamEvent {
@@ -192,10 +191,10 @@ mod tests {
             Kind::OutputText {
                 text: "before".into(),
             },
-            Kind::ToolCall {
+            Kind::ToolCallDelta {
                 call_id: "c1".into(),
                 tool_id: "read".into(),
-                arguments: json!("{}"),
+                args_delta: "{}".into(),
             },
             Kind::OutputText {
                 text: "after".into(),
@@ -216,10 +215,10 @@ mod tests {
 
     #[tokio::test]
     async fn tool_use_is_never_previewed() {
-        let (frames, ids) = drive(&[Kind::ToolCall {
+        let (frames, ids) = drive(&[Kind::ToolCallDelta {
             call_id: "c1".into(),
             tool_id: "read".into(),
-            arguments: json!("{\"path\":\"x\"}"),
+            args_delta: "{\"path\":\"x\"}".into(),
         }])
         .await;
         assert!(preview(&frames).is_empty(), "no preview for a tool call");

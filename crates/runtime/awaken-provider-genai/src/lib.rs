@@ -220,6 +220,11 @@ impl LlmExecutor for GenaiExecutor {
         // Fallback assembly, used only if the provider delivers no captured turn.
         let mut text = String::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
+        // Per-call bytes already emitted: genai hands CUMULATIVE argument snapshots,
+        // so this adapter is the single owner that de-accumulates them into suffix
+        // deltas (`ToolCallDelta`); no downstream ever diffs again.
+        let mut tool_sent: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
 
         loop {
             // Bound the wait for each event: a stream that goes silent without
@@ -245,8 +250,18 @@ impl LlmExecutor for GenaiExecutor {
                 // event, where genai has parsed the arguments into an object.
                 ChatStreamEvent::ToolCallChunk(tool) => {
                     let call = from_genai_tool_call(&tool.tool_call);
-                    sink.on_tool_call(&call.call_id, &call.tool_id, &call.arguments)
-                        .await;
+                    // genai's `arguments` is the cumulative JSON string so far; emit
+                    // only the newly-appended suffix. A non-string or non-continuation
+                    // snapshot is skipped (best-effort — the End event carries the
+                    // authoritative parsed input).
+                    if let Some(cum) = call.arguments.as_str() {
+                        let sent = tool_sent.entry(call.call_id.clone()).or_insert(0);
+                        if cum.len() > *sent && cum.is_char_boundary(*sent) {
+                            sink.on_tool_call_delta(&call.call_id, &call.tool_id, &cum[*sent..])
+                                .await;
+                            *sent = cum.len();
+                        }
+                    }
                     match tool_calls.iter_mut().find(|c| c.call_id == call.call_id) {
                         Some(existing) => *existing = call,
                         None => tool_calls.push(call),

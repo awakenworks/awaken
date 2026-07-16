@@ -253,13 +253,8 @@ impl LlmExecutor for FlakyStreamLlm {
                 sink.on_text(self.first_partial).await;
             }
             if let Some((call_id, tool_id, raw)) = self.first_tool {
-                // Mid-stream, a provider hands raw accumulated JSON text.
-                sink.on_tool_call(
-                    call_id,
-                    tool_id,
-                    &serde_json::Value::String(raw.to_string()),
-                )
-                .await;
+                // Mid-stream, a provider hands a de-accumulated arg-fragment.
+                sink.on_tool_call_delta(call_id, tool_id, raw).await;
             }
             return Err(LlmError::Timeout("connection reset".to_string()));
         }

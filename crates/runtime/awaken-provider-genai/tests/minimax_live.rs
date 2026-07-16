@@ -71,7 +71,8 @@ fn user(blocks: Vec<ContentBlock>) -> ChatRequest {
 #[derive(Default)]
 struct Recorder {
     chunks: Mutex<Vec<String>>,
-    tool_calls: Mutex<Vec<(String, String, serde_json::Value)>>,
+    /// (call_id, tool_id, args_delta) — each delta is a de-accumulated suffix.
+    tool_calls: Mutex<Vec<(String, String, String)>>,
 }
 
 #[async_trait::async_trait]
@@ -80,11 +81,11 @@ impl DeltaSink for Recorder {
         self.chunks.lock().unwrap().push(chunk.to_string());
     }
 
-    async fn on_tool_call(&self, call_id: &str, tool_id: &str, arguments: &serde_json::Value) {
+    async fn on_tool_call_delta(&self, call_id: &str, tool_id: &str, args_delta: &str) {
         self.tool_calls.lock().unwrap().push((
             call_id.to_string(),
             tool_id.to_string(),
-            arguments.clone(),
+            args_delta.to_string(),
         ));
     }
 }
@@ -202,24 +203,23 @@ async fn minimax_streaming_tool_call_accumulates_arguments() {
         call.arguments
     );
 
-    // The live plane is best-effort: genai delivers incremental, string-encoded
-    // argument fragments. The final fragment parses to the committed object.
+    // The live plane is best-effort: genai delivers incremental, de-accumulated
+    // argument suffixes. Concatenating them parses to the committed object.
     let live = recorder.tool_calls.lock().unwrap().clone();
     println!("[minimax tool stream] {} live tool-call deltas", live.len());
     assert!(
         !live.is_empty(),
         "at least one live tool-call delta arrived"
     );
-    let last = live
+    let joined: String = live
         .iter()
-        .rev()
-        .find(|(_, tool_id, _)| tool_id == "get_weather")
-        .expect("a live get_weather delta");
-    let live_args = last.2.as_str().expect("a live fragment is a JSON string");
+        .filter(|(_, tool_id, _)| tool_id == "get_weather")
+        .map(|(_, _, delta)| delta.as_str())
+        .collect();
     let live_parsed: serde_json::Value =
-        serde_json::from_str(live_args).expect("the final live fragment is valid JSON");
+        serde_json::from_str(&joined).expect("the concatenated live fragments are valid JSON");
     assert_eq!(
         live_parsed, call.arguments,
-        "the final live fragment parses to the committed object"
+        "the concatenated live fragments parse to the committed object"
     );
 }
