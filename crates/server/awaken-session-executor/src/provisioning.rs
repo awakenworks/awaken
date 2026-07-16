@@ -501,12 +501,26 @@ impl SharedHost {
         let mut ids: Vec<String> = self.skills.iter().map(|s| s.id.clone()).collect();
         // The durable catalog is read from the sync cache (refreshed on write and at
         // session setup); a network-DB store cannot be awaited from this sync path.
-        for (id, _) in self.skill_cache_snapshot() {
+        // A durable skill is advertised by its tagged catalog id (not its name) so the
+        // official worker can download it — `/v1/skills` resolves the same id.
+        for (stem, _) in self.skill_cache_snapshot() {
+            let id = awaken_skill_store::catalog_id(&stem);
             if !ids.contains(&id) {
                 ids.push(id);
             }
         }
         ids
+    }
+
+    /// Resolve an advertised durable-catalog skill id back to its `(stem, content)`.
+    /// Accepts the tagged catalog id (what advertisement + the worker use) and, as a
+    /// courtesy, the raw durable stem. Lets the `/v1/skills` read paths serve any
+    /// advertised id even for skills that never went through the SDK create route
+    /// (harvested / legacy-delivered), where the in-memory registry has no entry.
+    pub fn skill_by_catalog_id(&self, id: &str) -> Option<(String, String)> {
+        self.skill_cache_snapshot()
+            .into_iter()
+            .find(|(stem, _)| awaken_skill_store::catalog_id(stem) == id || stem == id)
     }
 
     /// The delegate agent ids (advertised as the agent's `multiagent` roster).
@@ -885,6 +899,39 @@ mod provisioning_registry_tests {
         );
 
         pc::Sandbox::dispose(&env).await.unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_durable_skill_is_advertised_by_a_resolvable_catalog_id() {
+        // The official worker reads `agent.skills[].skill_id` then downloads it — so the
+        // advertised id must be a tagged catalog id the `/v1/skills` read paths resolve,
+        // never the skill's name (which used to 404). This pins that round-trip.
+        let dir = std::env::temp_dir().join(format!("awaken-skillid-{}", std::process::id()));
+        let host = SharedHost::new(Arc::new(NoLlm), "test").with_skill_store(dir.join("store"));
+        host.skill_store_put(
+            "Greeter",
+            "---\nname: Greeter\ndescription: hi\n---\nsay hi",
+        )
+        .await;
+
+        let cid = awaken_skill_store::catalog_id("Greeter");
+        let advertised = host.skill_ids();
+        assert!(
+            advertised.contains(&cid),
+            "advertisement {advertised:?} must offer the catalog id {cid}"
+        );
+        assert!(
+            !advertised.iter().any(|s| s == "Greeter"),
+            "the raw skill name must not be advertised as a skill_id"
+        );
+
+        let (_stem, content) = host
+            .skill_by_catalog_id(&cid)
+            .expect("the advertised catalog id must resolve to the skill");
+        assert!(content.contains("say hi"));
+        assert!(host.skill_by_catalog_id("skill_deadbeefdeadbeef").is_none());
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
