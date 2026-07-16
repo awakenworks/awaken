@@ -53,13 +53,18 @@ async fn managed_session_folds_builtins_into_the_agent_toolset() {
         session["agent"]["tools"],
         serde_json::json!([{
             "type": "agent_toolset_20260401",
+            // Every config carries all of {name, enabled, permission_policy} as the
+            // `BetaManagedAgentsAgentToolConfig` SDK type requires; only deviations
+            // from `default_config` (enabled + auto-allowed) are listed — gated
+            // tools flip the policy, unregistered tools flip `enabled`.
             "configs": [
-                { "name": "bash", "permission_policy": { "type": "always_ask" } },
-                { "name": "write", "permission_policy": { "type": "always_ask" } },
-                { "name": "edit", "permission_policy": { "type": "always_ask" } },
-                { "name": "web_fetch", "enabled": false },
-                { "name": "web_search", "enabled": false }
-            ]
+                { "name": "bash", "enabled": true, "permission_policy": { "type": "always_ask" } },
+                { "name": "write", "enabled": true, "permission_policy": { "type": "always_ask" } },
+                { "name": "edit", "enabled": true, "permission_policy": { "type": "always_ask" } },
+                { "name": "web_fetch", "enabled": false, "permission_policy": { "type": "always_allow" } },
+                { "name": "web_search", "enabled": false, "permission_policy": { "type": "always_allow" } }
+            ],
+            "default_config": { "enabled": true, "permission_policy": { "type": "always_allow" } }
         }])
     );
     assert_eq!(
