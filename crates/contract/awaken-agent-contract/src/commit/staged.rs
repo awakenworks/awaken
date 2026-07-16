@@ -19,7 +19,7 @@ pub struct ThreadCommit {
     pub run_fact: crate::fact::run::Fact,
     pub messages: Vec<crate::agent::message::Message>,
     pub state: Vec<crate::agent::state::Command>,
-    pub events: Vec<crate::event::draft::Draft>,
+    pub events: Vec<crate::audit::draft::Draft>,
     /// A same-run pause committed atomically with this checkpoint. `Some` parks
     /// the run; `None` clears any prior ticket (resume/terminal).
     #[serde(default)]
@@ -43,9 +43,9 @@ impl ThreadCommit {
         messages: Vec<crate::agent::message::Message>,
         state: Vec<crate::agent::state::Command>,
         waiting: Option<crate::agent::waiting::WaitingTicket>,
-        extra_events: Vec<crate::event::draft::Draft>,
+        extra_events: Vec<crate::audit::draft::Draft>,
     ) -> Self {
-        use crate::event::run_event::RunEvent;
+        use crate::audit::run_event::RunEvent;
         let mut events = Vec::with_capacity(extra_events.len() + 3);
         if phase_changed {
             events.push(
@@ -123,8 +123,8 @@ mod assemble_tests {
     use crate::agent::run::{Id as RunId, Phase};
     use crate::agent::state::{Command, MergePolicy, Scope};
     use crate::agent::thread::Id as ThreadId;
-    use crate::event::draft::Draft;
-    use crate::event::kind::Kind;
+    use crate::audit::draft::Draft;
+    use crate::audit::kind::Kind;
 
     fn kinds(commit: &ThreadCommit) -> Vec<Kind> {
         commit.events.iter().map(|e| e.kind.clone()).collect()

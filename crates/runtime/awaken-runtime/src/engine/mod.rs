@@ -15,9 +15,9 @@ use awaken_agent_contract::agent::state::{
 };
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::{PendingTool, WaitingReason, WaitingTicket};
+use awaken_agent_contract::audit::draft::Draft as EventDraft;
+use awaken_agent_contract::audit::run_event::RunEvent;
 use awaken_agent_contract::commit::staged::ThreadCommit;
-use awaken_agent_contract::event::draft::Draft as EventDraft;
-use awaken_agent_contract::event::run_event::RunEvent;
 use awaken_agent_contract::store::stream_checkpoint::{
     PartialToolCall, StreamCheckpoint, StreamCheckpointStore,
 };

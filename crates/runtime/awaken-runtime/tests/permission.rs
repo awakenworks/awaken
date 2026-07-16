@@ -11,7 +11,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::event::kind::Kind as EventKind;
+use awaken_agent_contract::audit::kind::Kind as EventKind;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{PermissionGate, Runtime};
 use awaken_runtime_contract::activation::RunActivation;

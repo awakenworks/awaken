@@ -21,9 +21,9 @@ use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{Id as RunId, Phase, Record as RunRecord};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::WaitingTicket;
+use awaken_agent_contract::audit::record::Record as EventRecord;
 use awaken_agent_contract::commit::coordinator::{Coordinator as CommitCoordinator, Error};
 use awaken_agent_contract::commit::staged::{CommitRecord, ThreadCommit};
-use awaken_agent_contract::event::record::Record as EventRecord;
 use awaken_agent_contract::store::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::store::run_store::RunStore;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
@@ -514,7 +514,7 @@ async fn hydrate(pool: &PgPool) -> Result<Projection, sqlx::Error> {
         let sequence: i64 = row.try_get("sequence")?;
         let run_id: String = row.try_get("run_id")?;
         let Json(kind) =
-            row.try_get::<Json<awaken_agent_contract::event::kind::Kind>, _>("kind")?;
+            row.try_get::<Json<awaken_agent_contract::audit::kind::Kind>, _>("kind")?;
         let Json(payload) = row.try_get::<Json<serde_json::Value>, _>("payload")?;
         projection.events.push(EventRecord {
             sequence: sequence as u64,

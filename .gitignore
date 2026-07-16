@@ -19,3 +19,4 @@ deploy/k3d/awaken-server-local
 # Local Claude Code worktrees/scratch (never tracked)
 .claude/
 e2e/node_modules/
+e2e/node_modules

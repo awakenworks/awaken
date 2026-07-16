@@ -7,8 +7,8 @@
 //! column plus a flexible payload, while producers speak the rich domain type.
 
 use crate::agent::run::Phase;
-use crate::event::draft::Draft;
-use crate::event::kind::Kind;
+use crate::audit::draft::Draft;
+use crate::audit::kind::Kind;
 
 /// A committed run fact, carrying its own typed data. Lowers to a [`Draft`] for
 /// the durable event log.
