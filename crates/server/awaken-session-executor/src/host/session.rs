@@ -352,8 +352,35 @@ impl SharedHost {
         // opt into β (`with_trusted_acp_mcp`) and hand the bearer inline. A native run is
         // untouched (its MCP servers are already the in-process tools connected above).
         let is_acp = self.acp.as_ref().is_some_and(|a| a.is_acp(thread));
-        let config =
-            crate::mcp::overlay_acp_mcp(config, &staged_mcp, is_acp, self.mcp_trusted_inline);
+        // For a sandboxed (α) ACP run with authenticated MCP servers, resolve the α reference
+        // through the host's loopback relay: point each server at the relay and register its
+        // real bearer there, so the sandbox reaches the MCP server via loopback and the token
+        // is injected host-side (never in the sandbox). Started lazily, once per host.
+        let relay = if is_acp && !self.mcp_trusted_inline && !staged_mcp.is_empty() {
+            match self
+                .mcp_relay
+                .get_or_try_init(crate::mcp_relay::McpRelay::start)
+                .await
+            {
+                Ok(r) => {
+                    r.set_routes(thread, &staged_mcp);
+                    Some(r)
+                }
+                // A relay that cannot bind falls back to the (unresolved) α reference rather
+                // than failing the session — the raw bearer still never enters the sandbox.
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+        let config = crate::mcp::overlay_acp_mcp(
+            config,
+            &staged_mcp,
+            is_acp,
+            self.mcp_trusted_inline,
+            relay,
+            thread,
+        );
         // Install this session's catalog on its runtime NOW, so any node can resolve a
         // run it drives — not only the node that submitted it. The in-process path
         // installs via `prepare` on submit, but a durable run is driven by whichever
