@@ -408,25 +408,26 @@ pub enum StopReason {
 }
 
 /// What a client should do next in response to a `session.error` — a tagged
-/// object (the SDK's `BetaManagedAgentsRetryStatus` union), never a bare string.
-/// Only `Exhausted` is emitted today (the runtime surfaces a failed turn without
-/// classifying it as retryable-`Retrying` or session-ending-`Terminal`); those
-/// variants join when the runtime distinguishes them.
+/// object (the SDK's `BetaManagedAgentsRetryStatus` union), never a bare string:
+/// `Retrying` (transient, the runtime will retry), `Exhausted` (retry budget spent,
+/// but the session stays usable), or `Terminal` (retrying cannot help this fault).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RetryStatus {
+    Retrying,
     Exhausted,
+    Terminal,
 }
 
-/// The `error` object of a `session.error` event. We only emit the fallback
-/// `unknown_error` variant (`BetaManagedAgentsUnknownError`): a human-readable
-/// `message` plus the `retry_status` the client keys recovery on. The richer
-/// typed variants (model-overloaded, MCP-auth, billing, …) need failure
-/// classification the neutral runtime does not yet surface, so the SDK's
-/// documented fallback is the honest projection.
+/// The `error` object of a `session.error` event — one of the SDK's error variants
+/// (`unknown_error` plus the classified `model_rate_limited_error` /
+/// `model_request_failed_error`), each a human-readable `message` plus the
+/// `retry_status` the client keys recovery on. The neutral runtime's stable fault
+/// `code` selects the variant; an unrecognized code honestly falls back to
+/// `unknown_error`.
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionError {
-    /// Always `"unknown_error"` — the SDK's catch-all error type.
+    /// The SDK error type, e.g. `"unknown_error"` or `"model_rate_limited_error"`.
     #[serde(rename = "type")]
     pub kind: &'static str,
     pub message: String,
@@ -434,15 +435,24 @@ pub struct SessionError {
 }
 
 impl SessionError {
-    /// An unknown error whose retry budget is exhausted: the runtime tried and gave
-    /// up, surfacing the failure to the client, but the session stays usable (the
-    /// next turn may still succeed). This is what an internal `RunError` projects
-    /// to — we don't force-terminate the session on one failed turn.
-    pub fn exhausted(message: impl Into<String>) -> Self {
+    /// Classify a neutral runtime fault `(code, message)` into an SDK error object.
+    /// The `code` is the stable snake_case class from `Failure::Inference`
+    /// (`rate_limited` / `context_overflow` / `unauthorized` / …); it picks the error
+    /// `type` and the `retry_status`. An unknown code (or a plain internal fault) is
+    /// the catch-all `unknown_error` / `exhausted` — the session stays usable, so we
+    /// don't force-terminate on one failed turn.
+    pub fn classify(code: &str, message: impl Into<String>) -> Self {
+        let (kind, retry_status) = match code {
+            "rate_limited" => ("model_rate_limited_error", RetryStatus::Exhausted),
+            "context_overflow" | "unauthorized" => {
+                ("model_request_failed_error", RetryStatus::Terminal)
+            }
+            _ => ("unknown_error", RetryStatus::Exhausted),
+        };
         Self {
-            kind: "unknown_error",
+            kind,
             message: message.into(),
-            retry_status: RetryStatus::Exhausted,
+            retry_status,
         }
     }
 }
