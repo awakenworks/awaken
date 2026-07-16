@@ -187,6 +187,7 @@ pub(super) async fn infer_with_retry(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn infer_with_retry_inner(
     llm: &std::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
     request: ChatRequest,
