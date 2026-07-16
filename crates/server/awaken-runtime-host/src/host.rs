@@ -193,6 +193,11 @@ pub struct SharedHost {
     /// Phase 3), consumed when the thread's context is first built. Keyed by
     /// thread id; a thread with no entry connects to no MCP server.
     pub(crate) thread_mcp: std::sync::Mutex<HashMap<String, Vec<PreparedMcpServer>>>,
+    /// The host's loopback MCP relay (α-reference resolver), started lazily on the first
+    /// sandboxed ACP session that stages an authenticated MCP server. It holds the real
+    /// bearers host-side and injects them when forwarding the sandbox's MCP calls, so the
+    /// raw token never enters the sandbox. See [`crate::mcp_relay`].
+    pub(crate) mcp_relay: tokio::sync::OnceCell<crate::mcp_relay::McpRelay>,
     /// Per-thread staged resource mounts + prompt fragments (ADR-0038), set by a
     /// session's `prepare_session` and consumed by `sandbox_spec` (mounts) and the
     /// run's system prompt (fragments). A thread with no entry mounts nothing. A shared

@@ -817,14 +817,14 @@ async fn a_github_repository_resource_injects_a_scoped_github_mcp_server() {
 
     // A SANDBOXED (untrusted) ACP run gets only an α reference — the raw token never enters
     // the sandbox (the whole point of the Managed-Agents server-side-token model).
-    match crate::mcp::project_staged_mcp(gh, false).credential {
+    match crate::mcp::project_staged_mcp(gh, false, None, "t-gh").credential {
         McpCredential::Reference { reference } => {
             assert_eq!(reference, "session-mcp:github:workspace/repo");
         }
         other => panic!("sandboxed projection must be a secretless reference, got {other:?}"),
     }
     // A trusted (non-sandboxed) run may carry the bearer inline (β) — the split is by isolation.
-    match crate::mcp::project_staged_mcp(gh, true).credential {
+    match crate::mcp::project_staged_mcp(gh, true, None, "t-gh").credential {
         McpCredential::TrustedInline { secret } => assert_eq!(secret, "ghp_secret_token"),
         other => panic!("trusted projection carries the inline bearer, got {other:?}"),
     }

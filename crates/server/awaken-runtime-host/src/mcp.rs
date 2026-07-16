@@ -58,23 +58,36 @@ pub struct PreparedMcpServer {
 pub fn project_staged_mcp(
     prepared: &PreparedMcpServer,
     trusted: bool,
+    relay: Option<&crate::mcp_relay::McpRelay>,
+    thread: &str,
 ) -> awaken_run_executor_acp::McpServerConfig {
     use awaken_run_executor_acp::{McpCredential, McpServerConfig, McpTransport};
-    let credential = match (&prepared.bearer, trusted) {
-        (Some(bearer), true) => McpCredential::TrustedInline {
-            secret: bearer.expose_secret().to_string(),
-        },
-        // α: a secretless broker/gateway reference the sandbox's egress route resolves.
-        (Some(_), false) => McpCredential::Reference {
-            reference: format!("session-mcp:{}", prepared.name),
-        },
-        (None, _) => McpCredential::None,
+    let (url, credential) = match (&prepared.bearer, trusted, relay) {
+        // β: a trusted local run may carry the raw bearer inline, dialing the server directly.
+        (Some(bearer), true, _) => (
+            prepared.url.clone(),
+            McpCredential::TrustedInline {
+                secret: bearer.expose_secret().to_string(),
+            },
+        ),
+        // α RESOLVED: a sandboxed run dials the host's loopback relay, which injects the real
+        // bearer out of the sandbox's address space — the sandbox itself holds no credential.
+        (Some(_), false, Some(relay)) => {
+            (relay.route_url(thread, &prepared.name), McpCredential::None)
+        }
+        // α UNRESOLVED (no relay wired): a secretless reference a broker/gateway resolves
+        // out-of-band — the raw bearer still never enters the sandbox.
+        (Some(_), false, None) => (
+            prepared.url.clone(),
+            McpCredential::Reference {
+                reference: format!("session-mcp:{}", prepared.name),
+            },
+        ),
+        (None, _, _) => (prepared.url.clone(), McpCredential::None),
     };
     McpServerConfig {
         name: prepared.name.clone(),
-        transport: McpTransport::Http {
-            url: prepared.url.clone(),
-        },
+        transport: McpTransport::Http { url },
         credential,
     }
 }
@@ -86,13 +99,15 @@ pub fn project_staged_mcp(
 pub fn acp_mcp_plugin_value(
     staged: &[PreparedMcpServer],
     trusted: bool,
+    relay: Option<&crate::mcp_relay::McpRelay>,
+    thread: &str,
 ) -> Option<serde_json::Value> {
     if staged.is_empty() {
         return None;
     }
     let servers: Vec<_> = staged
         .iter()
-        .map(|p| project_staged_mcp(p, trusted))
+        .map(|p| project_staged_mcp(p, trusted, relay, thread))
         .collect();
     serde_json::to_value(servers).ok()
 }
@@ -117,13 +132,15 @@ pub fn overlay_acp_mcp(
     staged: &[PreparedMcpServer],
     is_acp: bool,
     trusted: bool,
+    relay: Option<&crate::mcp_relay::McpRelay>,
+    thread: &str,
 ) -> awaken_runtime_contract::runnable::RunnableConfig {
     use awaken_runtime_contract::runnable::RunnableConfig;
     if staged.is_empty() || !is_acp {
         return config;
     }
     let (mut snapshot, install) = config.into_parts();
-    if let Some(value) = acp_mcp_plugin_value(staged, trusted) {
+    if let Some(value) = acp_mcp_plugin_value(staged, trusted, relay, thread) {
         let acp = snapshot
             .resolved_spec
             .plugin_config
@@ -391,29 +408,51 @@ mod alpha_beta_tests {
     fn trusted_gets_beta_inline_sandboxed_gets_alpha_reference() {
         let p = prepared(Some("sk-RAW-SECRET"));
         // β: trusted may carry the raw bearer inline (NOT sandbox-safe).
-        let t = project_staged_mcp(&p, true);
+        let t = project_staged_mcp(&p, true, None, "");
         assert!(matches!(t.credential, McpCredential::TrustedInline { .. }));
         assert!(!t.is_sandbox_safe());
-        // α: a sandboxed run gets a secretless reference (sandbox-safe).
-        let s = project_staged_mcp(&p, false);
+        // α (no relay): a sandboxed run gets a secretless reference (sandbox-safe).
+        let s = project_staged_mcp(&p, false, None, "");
         assert!(matches!(s.credential, McpCredential::Reference { .. }));
         assert!(s.is_sandbox_safe());
         // No bearer → None.
         assert!(matches!(
-            project_staged_mcp(&prepared(None), false).credential,
+            project_staged_mcp(&prepared(None), false, None, "").credential,
             McpCredential::None
         ));
     }
 
     #[test]
     fn the_plugin_value_never_carries_a_raw_secret_for_a_sandboxed_run() {
-        assert!(acp_mcp_plugin_value(&[], false).is_none());
-        let v = acp_mcp_plugin_value(&[prepared(Some("sk-RAW-SECRET"))], false).unwrap();
+        assert!(acp_mcp_plugin_value(&[], false, None, "").is_none());
+        let v = acp_mcp_plugin_value(&[prepared(Some("sk-RAW-SECRET"))], false, None, "").unwrap();
         assert!(v.is_array());
         assert!(
             !v.to_string().contains("sk-RAW-SECRET"),
             "a sandboxed projection must never serialize the raw bearer"
         );
+    }
+
+    #[tokio::test]
+    async fn a_relay_resolves_alpha_to_a_loopback_url_with_no_sandbox_credential() {
+        let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
+        let p = prepared(Some("sk-RAW-SECRET"));
+        relay.set_routes("t1", std::slice::from_ref(&p));
+        // Sandboxed + relay: the projected server dials the relay (loopback), holds NO
+        // credential (the relay injects the real bearer host-side), never the raw secret.
+        let s = project_staged_mcp(&p, false, Some(&relay), "t1");
+        assert!(matches!(s.credential, McpCredential::None));
+        assert!(s.is_sandbox_safe());
+        let url = match &s.transport {
+            awaken_run_executor_acp::McpTransport::Http { url } => url.clone(),
+            other => panic!("expected http transport, got {other:?}"),
+        };
+        assert!(
+            url.starts_with("http://127.0.0.1:"),
+            "dials the loopback relay: {url}"
+        );
+        assert!(url.ends_with("/t1/gh"), "routed by thread+name: {url}");
+        assert!(!serde_json::to_string(&s).unwrap().contains("sk-RAW-SECRET"));
     }
 
     #[test]
@@ -427,7 +466,14 @@ mod alpha_beta_tests {
         let acp = RunnableConfig::builder("a")
             .model(ModelBinding::new("default", "m", "default"))
             .build();
-        let out = overlay_acp_mcp(acp, &[prepared(Some("sk-RAW-SECRET"))], true, false);
+        let out = overlay_acp_mcp(
+            acp,
+            &[prepared(Some("sk-RAW-SECRET"))],
+            true,
+            false,
+            None,
+            "",
+        );
         let pc = &out.snapshot().resolved_spec.plugin_config;
         assert!(pc["acp"]["mcp_servers"].is_array());
         assert!(!serde_json::to_string(pc).unwrap().contains("sk-RAW-SECRET"));
@@ -437,7 +483,7 @@ mod alpha_beta_tests {
         let native = RunnableConfig::builder("b")
             .model(ModelBinding::new("p", "m", "acp:claude"))
             .build();
-        let out2 = overlay_acp_mcp(native, &[prepared(Some("sk"))], false, false);
+        let out2 = overlay_acp_mcp(native, &[prepared(Some("sk"))], false, false, None, "");
         assert!(
             !out2
                 .snapshot()

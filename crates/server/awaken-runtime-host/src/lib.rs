@@ -34,6 +34,7 @@ mod hub;
 mod judge;
 mod live_inbox;
 mod mcp;
+mod mcp_relay;
 mod memory;
 mod memory_store_api;
 mod model_route;
