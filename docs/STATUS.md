@@ -173,6 +173,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0055-typed-state-kernel-loop-actions-as-state.md` | Decision record | Not required | n/a |
 | `adr/0056-sandbox-reuse-two-orthogonal-volumes.md` | Decision record | Not required | n/a |
 | `adr/0057-unified-agent-configuration.md` | Decision record | Not required | n/a |
+| `adr/0058-one-neutral-event-vocabulary-message-sourced-classify-routed-two-tier-projection.md` | Decision record | Not required | n/a |
 
 ## Implementation Context
 
