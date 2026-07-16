@@ -7,7 +7,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Message;
-use awaken_agent_contract::event::AgentEvent;
+use awaken_agent_contract::event::{AgentEvent, Fact, Transcoder};
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use axum::Router;
 use axum::body::Body;
@@ -26,8 +26,7 @@ use awaken_protocol_transport::{
     paginate_history,
 };
 
-use crate::encoder::{encode_close, encode_history, encode_step};
-use crate::live::AgUiLiveTranscoder;
+use crate::encoder::{AgUiEncoder, encode_close, encode_history, encode_step};
 use crate::request::{ToolResultInput, process};
 use crate::types::{AgUiEvent, RunAgentInput};
 
@@ -153,19 +152,28 @@ fn stream_turn(
     tokio::spawn(async move {
         let (live_tx, mut live_rx) = mpsc::unbounded_channel::<AgentEvent>();
         let sink: Arc<dyn StreamSink> = Arc::new(ChannelStreamSink::new(live_tx));
-        let mut transcoder = AgUiLiveTranscoder::new(thread.clone(), run_id.clone());
+        // One transcoder instance for both tiers (ADR-0058 Axis 9): live `delta()`
+        // for increments + `fact(RunStarted)` to open the stream. The authoritative
+        // terminus comes from the committed tail, not the live channel (G10/G13).
+        let mut transcoder = AgUiEncoder::new(thread.clone(), run_id.clone());
         let close_thread = thread.clone();
         let turn =
             tokio::spawn(async move { rt.run_streaming(&thread, agent, messages, sink).await });
         while let Some(event) = live_rx.recv().await {
-            for wire in transcoder.transcode(&event) {
+            let wires = match &event {
+                AgentEvent::Delta(delta) => transcoder.delta(delta),
+                AgentEvent::Fact(fact @ Fact::RunStarted) => transcoder.fact(fact),
+                AgentEvent::Fact(_) => Vec::new(),
+            };
+            for wire in wires {
                 if out_tx.send(sse_line(&wire)).is_err() {
                     return;
                 }
             }
         }
         let started = transcoder.has_streamed();
-        let close = match turn.await {
+        let mut close = transcoder.finalize();
+        close.extend(match turn.await {
             Ok(Ok(outcome)) if started => encode_close(&outcome, &close_thread, &run_id),
             Ok(Ok(outcome)) => encode_step(&outcome, &close_thread, &run_id),
             Ok(Err(err)) => error_events(&close_thread, &run_id, err, started),
@@ -175,7 +183,7 @@ fn stream_turn(
                 DriverError::Internal("turn task cancelled".into()),
                 started,
             ),
-        };
+        });
         for event in close {
             if out_tx.send(sse_line(&event)).is_err() {
                 return;

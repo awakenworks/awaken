@@ -3,23 +3,37 @@
 //! the `Fact -> AgUiEvent` mapping. The encoder is per-stream: it holds the
 //! thread/run ids and mints tool-result message ids, so it is stateful `&mut self`.
 
+use std::collections::HashSet;
+
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_agent_contract::event::{
-    Fact, HistorySink, ToolUseRef, Transcoder, fold_history, fold_messages,
+    Delta, Fact, HistorySink, ToolUseRef, Transcoder, fold_history, fold_messages,
 };
 use awaken_protocol_transport::{StepOutcome, blocks_text};
 use serde_json::{Value, json};
 
 use crate::types::AgUiEvent;
 
-/// The AG-UI transcoder: neutral projection events to AG-UI events. `RunStarted`
-/// and the terminal event become `RUN_STARTED` / `RUN_FINISHED` carrying the
-/// stream's thread and run ids.
+/// The AG-UI transcoder: the one per-protocol adapter for both tiers (ADR-0058
+/// Axis 9). `fact()` projects committed whole-units (`RUN_STARTED`/`RUN_FINISHED`,
+/// `TOOL_CALL_END`, `TOOL_CALL_RESULT`); `delta()` projects live increments
+/// (`TEXT_MESSAGE_*`, `TOOL_CALL_START`/`TOOL_CALL_ARGS`) as the run streams. It
+/// holds the stream's thread/run ids and mints tool-result message ids, plus the
+/// live-prefix bookkeeping (`open_text`, `text_seq`, `tools`).
 pub struct AgUiEncoder {
     thread_id: String,
     run_id: String,
     tool_result_seq: u64,
+    /// `RUN_STARTED` already emitted (idempotent on a repeated `RunStarted`).
+    started: bool,
+    /// At least one live increment flowed — the router picks the committed tail.
+    streamed: bool,
+    /// The id of the open live text message, if a text run is currently streaming.
+    open_text: Option<String>,
+    text_seq: usize,
+    /// Call ids that already emitted `TOOL_CALL_START` live.
+    tools: HashSet<String>,
 }
 
 impl AgUiEncoder {
@@ -28,6 +42,28 @@ impl AgUiEncoder {
             thread_id: thread_id.into(),
             run_id: run_id.into(),
             tool_result_seq: 0,
+            started: false,
+            streamed: false,
+            open_text: None,
+            text_seq: 0,
+            tools: HashSet::new(),
+        }
+    }
+
+    /// True once any live increment has been emitted.
+    pub fn has_streamed(&self) -> bool {
+        self.streamed
+    }
+
+    /// Close any open live text message at stream end (before the committed tail).
+    pub fn finalize(&mut self) -> Vec<AgUiEvent> {
+        self.close_text()
+    }
+
+    fn close_text(&mut self) -> Vec<AgUiEvent> {
+        match self.open_text.take() {
+            Some(message_id) => vec![AgUiEvent::TextMessageEnd { message_id }],
+            None => Vec::new(),
         }
     }
 }
@@ -37,10 +73,17 @@ impl Transcoder for AgUiEncoder {
 
     fn fact(&mut self, event: &Fact) -> Vec<AgUiEvent> {
         match event {
-            Fact::RunStarted => vec![AgUiEvent::RunStarted {
-                thread_id: self.thread_id.clone(),
-                run_id: self.run_id.clone(),
-            }],
+            Fact::RunStarted => {
+                if self.started {
+                    Vec::new()
+                } else {
+                    self.started = true;
+                    vec![AgUiEvent::RunStarted {
+                        thread_id: self.thread_id.clone(),
+                        run_id: self.run_id.clone(),
+                    }]
+                }
+            }
             Fact::AssistantMessage { id, content } => {
                 let text = blocks_text(content);
                 if text.is_empty() {
@@ -101,6 +144,55 @@ impl Transcoder for AgUiEncoder {
             Fact::Continuation { .. } => Vec::new(),
         }
     }
+
+    fn delta(&mut self, delta: &Delta) -> Vec<AgUiEvent> {
+        self.streamed = true;
+        match delta {
+            Delta::TextDelta { delta } => {
+                let mut out = Vec::new();
+                let id = match &self.open_text {
+                    Some(id) => id.clone(),
+                    None => {
+                        let id = format!("{}-msg-{}", self.run_id, self.text_seq);
+                        self.text_seq += 1;
+                        self.open_text = Some(id.clone());
+                        out.push(AgUiEvent::TextMessageStart {
+                            message_id: id.clone(),
+                            role: "assistant".to_string(),
+                        });
+                        id
+                    }
+                };
+                out.push(AgUiEvent::TextMessageContent {
+                    message_id: id,
+                    delta: delta.clone(),
+                });
+                out
+            }
+            Delta::ToolCallDelta {
+                id,
+                name,
+                args_delta,
+            } => {
+                let mut out = self.close_text();
+                if self.tools.insert(id.clone()) {
+                    out.push(AgUiEvent::ToolCallStart {
+                        tool_call_id: id.clone(),
+                        tool_call_name: name.clone(),
+                    });
+                }
+                if !args_delta.is_empty() {
+                    out.push(AgUiEvent::ToolCallArgs {
+                        tool_call_id: id.clone(),
+                        delta: args_delta.clone(),
+                    });
+                }
+                out
+            }
+            // Reasoning is not projected to the AG-UI live prefix (opt-in tier).
+            Delta::ReasoningDelta { .. } => Vec::new(),
+        }
+    }
 }
 
 /// Project one committed step into an ordered AG-UI event stream (`RUN_STARTED` …
@@ -120,7 +212,7 @@ pub fn encode_step(outcome: &StepOutcome, thread_id: &str, run_id: &str) -> Vec<
 /// Project the *authoritative tail* of a committed step, for a turn whose
 /// in-flight prefix (`RUN_STARTED`, streamed `TEXT_MESSAGE_*`, and
 /// `TOOL_CALL_START`/`TOOL_CALL_ARGS`) was already emitted live (see
-/// [`crate::live::AgUiLiveTranscoder`]). Drops `RUN_STARTED` and assistant text
+/// the encoder's live `delta()`). Drops `RUN_STARTED` and assistant text
 /// (already streamed) and the tool `START`/`ARGS` (already streamed); keeps the
 /// closing `TOOL_CALL_END`, any `TOOL_CALL_RESULT`, and the terminal
 /// `RUN_FINISHED`. The live prefix plus this tail form one well-formed run.

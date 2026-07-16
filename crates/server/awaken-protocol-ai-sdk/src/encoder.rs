@@ -3,28 +3,76 @@
 //! owns the AI SDK *transcoder* — the `Fact -> UIStreamEvent` mapping — and
 //! the history read-model fold.
 
+use std::collections::HashSet;
+
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_agent_contract::event::{
-    Fact, HistorySink, ToolDisposition, ToolUseRef, Transcoder, fold_history, fold_messages,
+    Delta, Fact, HistorySink, ToolDisposition, ToolUseRef, Transcoder, fold_history, fold_messages,
 };
 use awaken_protocol_transport::{StepOutcome, blocks_text};
 use serde_json::Value;
 
 use crate::types::{UIStreamEvent, history_message, text_parts};
 
-/// The AI SDK v6 transcoder: neutral projection events to UI Message Stream parts.
-/// A pending tool (client- or built-in) is *not* provider-executed, so the client
-/// renders its interaction; a step boundary becomes `start`/`finish` frames.
+/// The AI SDK v6 transcoder: the one per-protocol adapter for both tiers (ADR-0058
+/// Axis 9). `fact()` projects committed whole-units (`tool-input-available`,
+/// `finish`); `delta()` projects live increments (`text-*`, `tool-input-delta`) as
+/// the run streams. A pending tool (client- or built-in) is *not* provider-executed,
+/// so the client renders its interaction; a step boundary becomes `start`/`finish`.
+/// State (`open_text`, `text_seq`, `tools`) is the live-prefix bookkeeping; committed
+/// projection via a fresh default is stateless.
 #[derive(Default)]
-pub struct AiSdkEncoder;
+pub struct AiSdkEncoder {
+    /// `start`/`start-step` already emitted (idempotent on a repeated `RunStarted`).
+    started: bool,
+    /// At least one live increment flowed — the router uses this to pick the
+    /// committed tail (`encode_close`) over the full projection (`encode_step`).
+    streamed: bool,
+    /// The id of the open live text block, if a text run is currently streaming.
+    open_text: Option<String>,
+    text_seq: usize,
+    /// Call ids that already emitted `tool-input-start` live.
+    tools: HashSet<String>,
+}
+
+impl AiSdkEncoder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// True once any live increment has been emitted, so the router knows to append
+    /// the committed *tail* rather than the full committed projection.
+    pub fn has_streamed(&self) -> bool {
+        self.streamed
+    }
+
+    /// Close any open live text run at stream end (before the committed tail).
+    pub fn finalize(&mut self) -> Vec<UIStreamEvent> {
+        self.close_text()
+    }
+
+    fn close_text(&mut self) -> Vec<UIStreamEvent> {
+        match self.open_text.take() {
+            Some(id) => vec![UIStreamEvent::TextEnd { id }],
+            None => Vec::new(),
+        }
+    }
+}
 
 impl Transcoder for AiSdkEncoder {
     type Output = UIStreamEvent;
 
     fn fact(&mut self, event: &Fact) -> Vec<UIStreamEvent> {
         match event {
-            Fact::RunStarted => vec![UIStreamEvent::Start, UIStreamEvent::StartStep],
+            Fact::RunStarted => {
+                if self.started {
+                    Vec::new()
+                } else {
+                    self.started = true;
+                    vec![UIStreamEvent::Start, UIStreamEvent::StartStep]
+                }
+            }
             Fact::AssistantMessage { id, content } => {
                 let text = blocks_text(content);
                 if text.is_empty() {
@@ -87,6 +135,54 @@ impl Transcoder for AiSdkEncoder {
             Fact::Continuation { .. } => Vec::new(),
         }
     }
+
+    fn delta(&mut self, delta: &Delta) -> Vec<UIStreamEvent> {
+        self.streamed = true;
+        match delta {
+            Delta::TextDelta { delta } => {
+                let mut out = Vec::new();
+                let id = match &self.open_text {
+                    Some(id) => id.clone(),
+                    None => {
+                        let id = format!("txt-{}", self.text_seq);
+                        self.text_seq += 1;
+                        self.open_text = Some(id.clone());
+                        out.push(UIStreamEvent::TextStart { id: id.clone() });
+                        id
+                    }
+                };
+                out.push(UIStreamEvent::TextDelta {
+                    id,
+                    delta: delta.clone(),
+                });
+                out
+            }
+            Delta::ToolCallDelta {
+                id,
+                name,
+                args_delta,
+            } => {
+                let mut out = self.close_text();
+                if self.tools.insert(id.clone()) {
+                    out.push(UIStreamEvent::ToolInputStart {
+                        tool_call_id: id.clone(),
+                        tool_name: name.clone(),
+                    });
+                }
+                // `args_delta` is already the de-accumulated suffix; the committed
+                // `tool-input-available` carries the parsed input (from `fact`).
+                if !args_delta.is_empty() {
+                    out.push(UIStreamEvent::ToolInputDelta {
+                        tool_call_id: id.clone(),
+                        input_text_delta: args_delta.clone(),
+                    });
+                }
+                out
+            }
+            // Reasoning is not projected to the AI SDK live prefix (opt-in tier).
+            Delta::ReasoningDelta { .. } => Vec::new(),
+        }
+    }
 }
 
 /// Project one committed step into an ordered UI Message Stream. Each response is a
@@ -100,13 +196,13 @@ pub fn encode_step(outcome: &StepOutcome) -> Vec<UIStreamEvent> {
     // The terminal event owns the failed / parked / finished distinction — a fault
     // becomes `RunFailed`, which transcodes to `error` + `finish("error")`.
     events.push(outcome.terminal_event());
-    AiSdkEncoder.transcode_facts(&events)
+    AiSdkEncoder::new().transcode_facts(&events)
 }
 
 /// Project the *authoritative tail* of a committed step, for a turn whose
 /// in-flight prefix — `start`/`start-step`, streamed `text-*`, and
 /// `tool-input-start`/`tool-input-delta` — was already emitted live (see
-/// [`crate::live::LiveTranscoder`]). Drops `RunStarted` (already `start`ed) and
+/// the encoder's live `delta()`). Drops `RunStarted` (already `start`ed) and
 /// assistant text (already streamed as deltas); keeps the parsed authoritative
 /// `tool-input-available`, any tool output, and the `finish` frames. The live
 /// prefix plus this tail form one well-formed UI Message Stream.
@@ -121,7 +217,7 @@ pub fn encode_close(outcome: &StepOutcome) -> Vec<UIStreamEvent> {
     // The live channel already carried `start`/`start-step` and every text delta;
     // emitting them again would double the stream. Keep only tool + finish frames.
     events.retain(|e| !matches!(e, Fact::AssistantMessage { .. }));
-    AiSdkEncoder.transcode_facts(&events)
+    AiSdkEncoder::new().transcode_facts(&events)
 }
 
 /// Parse a tool result's text as JSON, falling back to a string.
@@ -208,6 +304,123 @@ mod tests {
     use awaken_agent_contract::agent::message::Id;
     use awaken_protocol_transport::{Pending, StepFailure, Terminal};
     use serde_json::json;
+
+    // --- live `delta()` tier (the streamed prefix) ---
+
+    fn td(t: &str) -> Delta {
+        Delta::TextDelta { delta: t.into() }
+    }
+    fn tcd(id: &str, name: &str, args: &str) -> Delta {
+        Delta::ToolCallDelta {
+            id: id.into(),
+            name: name.into(),
+            args_delta: args.into(),
+        }
+    }
+
+    #[test]
+    fn delta_streams_text_then_tool_input_forwarding_suffixes() {
+        let mut enc = AiSdkEncoder::new();
+        let mut out = enc.fact(&Fact::RunStarted);
+        out.extend(enc.delta(&td("Let me ")));
+        out.extend(enc.delta(&td("read")));
+        out.extend(enc.delta(&tcd("c1", "read", "")));
+        out.extend(enc.delta(&tcd("c1", "read", "{\"path\":")));
+        out.extend(enc.delta(&tcd("c1", "read", "\"x\"}")));
+        out.extend(enc.finalize());
+        assert_eq!(
+            out,
+            vec![
+                UIStreamEvent::Start,
+                UIStreamEvent::StartStep,
+                UIStreamEvent::TextStart { id: "txt-0".into() },
+                UIStreamEvent::TextDelta {
+                    id: "txt-0".into(),
+                    delta: "Let me ".into(),
+                },
+                UIStreamEvent::TextDelta {
+                    id: "txt-0".into(),
+                    delta: "read".into(),
+                },
+                // the tool call closes the open text run, then streams args suffixes
+                UIStreamEvent::TextEnd { id: "txt-0".into() },
+                UIStreamEvent::ToolInputStart {
+                    tool_call_id: "c1".into(),
+                    tool_name: "read".into(),
+                },
+                UIStreamEvent::ToolInputDelta {
+                    tool_call_id: "c1".into(),
+                    input_text_delta: "{\"path\":".into(),
+                },
+                UIStreamEvent::ToolInputDelta {
+                    tool_call_id: "c1".into(),
+                    input_text_delta: "\"x\"}".into(),
+                },
+            ]
+        );
+        assert!(enc.has_streamed());
+    }
+
+    #[test]
+    fn delta_never_emits_authoritative_finish_or_input_available() {
+        let mut enc = AiSdkEncoder::new();
+        let mut out = enc.fact(&Fact::RunStarted);
+        out.extend(enc.delta(&tcd("c1", "read", "{}")));
+        out.extend(enc.finalize());
+        assert!(out.iter().all(|e| !matches!(
+            e,
+            UIStreamEvent::Finish { .. }
+                | UIStreamEvent::FinishStep
+                | UIStreamEvent::ToolInputAvailable { .. }
+        )));
+        assert!(out.contains(&UIStreamEvent::ToolInputStart {
+            tool_call_id: "c1".into(),
+            tool_name: "read".into(),
+        }));
+    }
+
+    #[test]
+    fn a_repeated_run_started_is_idempotent() {
+        let mut enc = AiSdkEncoder::new();
+        let mut out = enc.fact(&Fact::RunStarted);
+        out.extend(enc.fact(&Fact::RunStarted));
+        assert_eq!(out, vec![UIStreamEvent::Start, UIStreamEvent::StartStep]);
+    }
+
+    #[test]
+    fn delta_concurrent_tool_calls_stream_independently_by_call_id() {
+        let mut enc = AiSdkEncoder::new();
+        let mut out = Vec::new();
+        for d in [
+            tcd("c1", "read", ""),
+            tcd("c2", "write", ""),
+            tcd("c1", "read", "{\"a\":1}"),
+            tcd("c2", "write", "{\"b\":2}"),
+        ] {
+            out.extend(enc.delta(&d));
+        }
+        assert!(out.contains(&UIStreamEvent::ToolInputStart {
+            tool_call_id: "c1".into(),
+            tool_name: "read".into(),
+        }));
+        assert!(out.contains(&UIStreamEvent::ToolInputStart {
+            tool_call_id: "c2".into(),
+            tool_name: "write".into(),
+        }));
+        assert!(out.contains(&UIStreamEvent::ToolInputDelta {
+            tool_call_id: "c1".into(),
+            input_text_delta: "{\"a\":1}".into(),
+        }));
+    }
+
+    #[test]
+    fn delta_reasoning_is_not_projected() {
+        let mut enc = AiSdkEncoder::new();
+        let out = enc.delta(&Delta::ReasoningDelta {
+            delta: "hmm".into(),
+        });
+        assert!(out.is_empty());
+    }
 
     #[test]
     fn terminal_failure_surfaces_an_error_frame() {
@@ -375,7 +588,7 @@ mod tests {
 
     #[test]
     fn tool_result_error_maps_to_tool_output_error() {
-        let events = AiSdkEncoder.fact(&Fact::ToolResult {
+        let events = AiSdkEncoder::new().fact(&Fact::ToolResult {
             id: "c1".into(),
             content: vec![ContentBlock::text("it broke")],
             is_error: true,
@@ -389,7 +602,7 @@ mod tests {
 
     #[test]
     fn tool_result_success_maps_to_tool_output_available() {
-        let events = AiSdkEncoder.fact(&Fact::ToolResult {
+        let events = AiSdkEncoder::new().fact(&Fact::ToolResult {
             id: "c1".into(),
             content: vec![ContentBlock::text("ok")],
             is_error: false,
@@ -402,7 +615,7 @@ mod tests {
 
     #[test]
     fn run_failed_maps_to_error_then_finish_error() {
-        let events = AiSdkEncoder.fact(&Fact::RunFailed {
+        let events = AiSdkEncoder::new().fact(&Fact::RunFailed {
             code: "overloaded".into(),
             message: "try later".into(),
         });
@@ -418,7 +631,7 @@ mod tests {
 
     #[test]
     fn run_started_transcodes_to_start_and_start_step() {
-        let events = AiSdkEncoder.fact(&Fact::RunStarted);
+        let events = AiSdkEncoder::new().fact(&Fact::RunStarted);
         assert!(matches!(
             events.as_slice(),
             [UIStreamEvent::Start, UIStreamEvent::StartStep]
@@ -427,7 +640,7 @@ mod tests {
 
     #[test]
     fn waiting_transcodes_to_finish_step_then_tool_calls_finish() {
-        let events = AiSdkEncoder.fact(&Fact::Waiting {
+        let events = AiSdkEncoder::new().fact(&Fact::Waiting {
             pending_tool_use_id: Some("c1".into()),
         });
         assert!(matches!(events[0], UIStreamEvent::FinishStep));
@@ -440,7 +653,7 @@ mod tests {
     #[test]
     fn a_tool_call_transcodes_to_tool_input_available() {
         use awaken_agent_contract::event::ToolDisposition;
-        let events = AiSdkEncoder.fact(&Fact::ToolCall {
+        let events = AiSdkEncoder::new().fact(&Fact::ToolCall {
             id: "c1".into(),
             name: "read".into(),
             input: json!({ "path": "x" }),
@@ -458,7 +671,7 @@ mod tests {
     // the client to run it — the complement of the pending-client/built-in rows.
     #[test]
     fn an_executed_tool_call_is_provider_executed() {
-        let events = AiSdkEncoder.fact(&Fact::ToolCall {
+        let events = AiSdkEncoder::new().fact(&Fact::ToolCall {
             id: "c1".into(),
             name: "read".into(),
             input: json!({ "path": "x" }),
@@ -475,7 +688,7 @@ mod tests {
     // JSON string (the other arm from the JSON-parsing `history_merges` row).
     #[test]
     fn a_non_json_tool_result_falls_back_to_a_string_output() {
-        let events = AiSdkEncoder.fact(&Fact::ToolResult {
+        let events = AiSdkEncoder::new().fact(&Fact::ToolResult {
             id: "c1".into(),
             content: vec![ContentBlock::text("just text")],
             is_error: false,
