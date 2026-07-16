@@ -16,8 +16,8 @@ use async_trait::async_trait;
 use awaken_agent_channel::{AgentChannel, AgentTransport};
 use awaken_provisioning_contract as pc;
 use k8s_openapi::api::core::v1::{
-    Capabilities, Container, EmptyDirVolumeSource, EnvVar, Pod, PodSpec, ResourceRequirements,
-    SecurityContext, Volume, VolumeMount,
+    Capabilities, ConfigMap, ConfigMapVolumeSource, Container, EmptyDirVolumeSource, EnvVar, Pod,
+    PodSpec, ResourceRequirements, SecurityContext, Volume, VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
@@ -26,10 +26,56 @@ use kube::{Api, Client};
 use std::collections::BTreeMap;
 
 use crate::net::TcpAgentTransport;
-use crate::{ContainerPlan, ContainerRuntime, ContainerState, RuntimeError};
+use crate::{BindPlan, ContainerPlan, ContainerRuntime, ContainerState, RuntimeError};
 
 fn backend(e: impl std::fmt::Display) -> RuntimeError {
     RuntimeError::Backend(e.to_string())
+}
+
+/// The single ConfigMap data key each inline-content mount is stored under; the Pod
+/// projects it back to the mount's exact `mount_path` via a `subPath`.
+const CONFIGMAP_KEY: &str = "content";
+
+/// The Pod's inline-content binds — those carrying self-contained bytes (`Inline` /
+/// `Other{content}`) rather than a host ref. Each becomes a ConfigMap volume. The order
+/// is stable, so the i-th here names the i-th ConfigMap in both `create` and `build_pod`.
+fn content_binds(plan: &ContainerPlan) -> Vec<&BindPlan> {
+    plan.binds.iter().filter(|b| b.content.is_some()).collect()
+}
+
+/// Deterministic ConfigMap name for the i-th inline-content mount of Pod `awaken-{id}`.
+fn configmap_name(id: &str, i: usize) -> String {
+    format!("awaken-{id}-cfg-{i}")
+}
+
+/// Label the Pod's ConfigMaps carry so `remove` can reap them by selector — value is the
+/// Pod name (`awaken-{id}`), which is also the `container_id` handed back to `remove`.
+fn cfg_owner_label(id: &str) -> String {
+    format!("awaken-{id}")
+}
+
+/// Build a ConfigMap holding one inline-content mount's bytes under [`CONFIGMAP_KEY`].
+/// Immutable (the content is fixed at create) and owned by the same GC anchor as the Pod
+/// so it is reaped natively when set; labeled for best-effort `remove` in the ownerless
+/// case. ConfigMaps cap at ~1MiB — inline config (codex `config.toml`, resource bytes)
+/// is well under, and larger byte payloads belong on the blob-store path, not here.
+fn build_configmap(id: &str, i: usize, content: &str, owner: &Option<OwnerReference>) -> ConfigMap {
+    let mut labels = BTreeMap::new();
+    labels.insert("app".to_string(), "awaken-sandbox".to_string());
+    labels.insert("awaken-cfg-owner".to_string(), cfg_owner_label(id));
+    let mut data = BTreeMap::new();
+    data.insert(CONFIGMAP_KEY.to_string(), content.to_string());
+    ConfigMap {
+        metadata: ObjectMeta {
+            name: Some(configmap_name(id, i)),
+            labels: Some(labels),
+            owner_references: owner.clone().map(|o| vec![o]),
+            ..Default::default()
+        },
+        data: Some(data),
+        immutable: Some(true),
+        ..Default::default()
+    }
 }
 
 /// The Pod container's `resources.limits` from a spec's caps, or `None` when unset —
@@ -160,6 +206,10 @@ impl K8sRuntime {
         Api::namespaced(self.client.clone(), &self.namespace)
     }
 
+    fn configmaps(&self) -> Api<ConfigMap> {
+        Api::namespaced(self.client.clone(), &self.namespace)
+    }
+
     /// Probe the apiserver (for tests / health checks): `Ok` iff it responds.
     pub async fn ping(&self) -> Result<(), RuntimeError> {
         self.pods()
@@ -276,6 +326,29 @@ fn build_pod(
             });
         }
 
+        // Inline content (codex `config.toml`, ADR-0038 resource bytes) has no host path a
+        // Pod can bind — each is realized as a ConfigMap volume (the ConfigMaps are created
+        // alongside the Pod in `create`) and projected read-only as a single file at its
+        // exact `mount_path` via `subPath`, so the interior layout matches the bwrap tier.
+        for (i, bind) in content_binds(plan).iter().enumerate() {
+            let vol = format!("cfg-{i}");
+            volumes.push(Volume {
+                name: vol.clone(),
+                config_map: Some(ConfigMapVolumeSource {
+                    name: configmap_name(id, i),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+            agent_mounts.push(VolumeMount {
+                name: vol,
+                mount_path: bind.mount_path.clone(),
+                sub_path: Some(CONFIGMAP_KEY.to_string()),
+                read_only: Some(bind.read_only),
+                ..Default::default()
+            });
+        }
+
         let mut containers = vec![Container {
             name: "agent".into(),
             image: Some(plan.image.clone()),
@@ -376,6 +449,21 @@ fn hardened_security_context() -> SecurityContext {
 #[async_trait]
 impl ContainerRuntime for K8sRuntime {
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
+        // Realize inline-content mounts as ConfigMaps *before* the Pod: the Pod's volumes
+        // reference them by name, and the kubelet blocks the Pod as `ContainerCreating`
+        // until they exist. Ordered + named identically to `build_pod`'s projection.
+        let cms = self.configmaps();
+        for (i, bind) in content_binds(plan).iter().enumerate() {
+            let cm = build_configmap(
+                id,
+                i,
+                bind.content.as_deref().unwrap_or_default(),
+                &self.owner,
+            );
+            cms.create(&PostParams::default(), &cm)
+                .await
+                .map_err(backend)?;
+        }
         let pod = self.pod(id, plan);
         let created = self
             .pods()
@@ -478,6 +566,17 @@ impl ContainerRuntime for K8sRuntime {
     }
 
     async fn remove(&self, container_id: &str) -> Result<(), RuntimeError> {
+        // Reap the Pod's inline-content ConfigMaps too. Owner GC covers the owned case;
+        // this best-effort sweep (label = the Pod name) covers the ownerless dev/e2e case
+        // so inline-content maps don't leak. It precedes the Pod delete and never fails it.
+        let selector = format!("awaken-cfg-owner={container_id}");
+        let _ = self
+            .configmaps()
+            .delete_collection(
+                &DeleteParams::default(),
+                &ListParams::default().labels(&selector),
+            )
+            .await;
         self.pods()
             .delete(container_id, &DeleteParams::default())
             .await
@@ -610,6 +709,77 @@ mod tests {
         assert!(
             env.iter().any(|e| e.name == "AWAKEN_MOUNT_PATH"
                 && e.value.as_deref() == Some("/workspace/.mnt/a"))
+        );
+    }
+
+    #[test]
+    fn build_pod_projects_inline_content_as_configmap_subpath_volumes() {
+        // Inline-content binds (codex config.toml, ADR-0038 resource bytes) have no host
+        // path a Pod can bind — build_pod must project each as a ConfigMap volume mounted
+        // read-only at its exact mount_path via subPath, named to match `create`'s CMs.
+        let mut plan = plan_with_memory(Vec::new());
+        plan.binds = vec![
+            crate::BindPlan {
+                source_ref: String::new(),
+                mount_path: "/acp-config/config.toml".into(),
+                read_only: true,
+                content: Some("[mcp_servers.gh]\nx\n".into()),
+            },
+            // A ref-backed bind (no content) must NOT become a ConfigMap volume.
+            crate::BindPlan {
+                source_ref: "blob-123".into(),
+                mount_path: "/data/in".into(),
+                read_only: true,
+                content: None,
+            },
+        ];
+        let spec = build_pod("run-9", &plan, &None, "m", None, false)
+            .spec
+            .unwrap();
+
+        // One ConfigMap volume (only the content bind), named awaken-{id}-cfg-0, plus the
+        // 2 writable-rootfs emptyDirs. The ref-backed bind adds nothing on this tier.
+        let volumes = spec.volumes.as_ref().unwrap();
+        let cfg = volumes
+            .iter()
+            .find(|v| v.config_map.is_some())
+            .expect("a configmap volume");
+        assert_eq!(cfg.name, "cfg-0");
+        assert_eq!(cfg.config_map.as_ref().unwrap().name, "awaken-run-9-cfg-0");
+        assert_eq!(volumes.iter().filter(|v| v.config_map.is_some()).count(), 1);
+
+        // The agent mounts it as a single file at the exact path (subPath = the CM key).
+        let agent = &spec.containers[0];
+        let m = agent
+            .volume_mounts
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|m| m.name == "cfg-0")
+            .expect("the configmap mount");
+        assert_eq!(m.mount_path, "/acp-config/config.toml");
+        assert_eq!(m.sub_path.as_deref(), Some("content"));
+        assert_eq!(m.read_only, Some(true));
+    }
+
+    #[test]
+    fn build_configmap_holds_the_bytes_under_the_key_and_is_immutable() {
+        let cm = build_configmap("run-9", 0, "hello-inline", &None);
+        assert_eq!(cm.metadata.name.as_deref(), Some("awaken-run-9-cfg-0"));
+        assert_eq!(
+            cm.data.as_ref().unwrap().get("content").unwrap(),
+            "hello-inline"
+        );
+        assert_eq!(cm.immutable, Some(true));
+        // Labeled so `remove` reaps it by the Pod name (the container_id).
+        assert_eq!(
+            cm.metadata
+                .labels
+                .as_ref()
+                .unwrap()
+                .get("awaken-cfg-owner")
+                .map(String::as_str),
+            Some("awaken-run-9")
         );
     }
 

@@ -129,11 +129,13 @@ mod cgroup_host_config_tests {
                     source_ref: "/host/ro".into(),
                     mount_path: "/in".into(),
                     read_only: true,
+                    content: None,
                 },
                 crate::BindPlan {
                     source_ref: "/host/rw".into(),
                     mount_path: "/work".into(),
                     read_only: false,
+                    content: None,
                 },
             ],
             ..plan()
