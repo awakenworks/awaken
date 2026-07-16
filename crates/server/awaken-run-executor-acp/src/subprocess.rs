@@ -321,6 +321,56 @@ pub(crate) fn mcp_delivery(
     (!servers.is_empty()).then(|| cli.project_mcp(&servers))
 }
 
+/// A run's MCP servers projected into host-neutral, environment-agnostic delivery: the
+/// `session/new` params to thread in-band (`AcpSession` CLIs) and/or a config file to
+/// write (`ConfigFileToml` CLIs, delivered as [`crate::McpDelivery::ConfigFile`]). The
+/// ONE seam every [`AgentChannelSource`] uses to deliver MCP, so a sandboxed source
+/// delivers the same servers as the unsandboxed one — realizing each part per its
+/// environment (ADR-0057 `mcp_injection`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct McpInjection {
+    /// Servers passed at `session/new` (in-band over the ACP wire the executor drives).
+    pub session_servers: Vec<awaken_protocol_acp::SessionMcpServer>,
+    /// A config file to place in the CLI's config home: `(relative path, contents)`.
+    pub config_file: Option<(String, String)>,
+}
+
+/// Project `plugin_config`'s declared MCP servers for `cli`. `sandboxed` fail-closes on
+/// a β [`TrustedInline`](crate::McpCredential::TrustedInline) credential — a raw secret
+/// must never enter an isolated launch; only broker references (α) are sandbox-safe
+/// (G3/D-R2). The unsandboxed trusted-launch path passes `false`.
+pub fn mcp_injection(
+    cli: &AcpCli,
+    plugin_config: &BTreeMap<String, serde_json::Value>,
+    sandboxed: bool,
+) -> std::result::Result<McpInjection, OpenError> {
+    let servers = AcpSettings::from_plugin_config(plugin_config).mcp_servers;
+    if sandboxed {
+        for s in &servers {
+            if !s.is_sandbox_safe() {
+                return Err(OpenError(format!(
+                    "MCP server `{}` carries an inline secret; only a broker reference is \
+                     sandbox-safe",
+                    s.name
+                )));
+            }
+        }
+    }
+    if servers.is_empty() {
+        return Ok(McpInjection::default());
+    }
+    Ok(match cli.project_mcp(&servers) {
+        crate::McpDelivery::SessionServers(list) => McpInjection {
+            session_servers: list.iter().map(to_session_mcp_server).collect(),
+            config_file: None,
+        },
+        crate::McpDelivery::ConfigFile { path, contents } => McpInjection {
+            session_servers: Vec::new(),
+            config_file: Some((path.to_string(), contents)),
+        },
+    })
+}
+
 /// Write a `ConfigFileToml` CLI's MCP config into its config home before launch (codex
 /// `config.toml`). The config-home dir is the value the projection put in the launch env
 /// under the CLI's `config_home_env`. No-op when the run declares no MCP servers, the CLI
@@ -659,6 +709,82 @@ mod tests {
         })));
         assert_eq!(s.compact_window, Some(4096));
         assert!(s.mcp_servers.is_empty());
+    }
+
+    fn mcp_pc(servers: serde_json::Value) -> BTreeMap<String, serde_json::Value> {
+        BTreeMap::from([(
+            "acp".to_string(),
+            serde_json::json!({ "mcp_servers": servers }),
+        )])
+    }
+
+    #[test]
+    fn mcp_injection_delivers_session_servers_for_an_acp_session_cli() {
+        // claude is an AcpSession CLI → servers ride in-band at session/new, no config file.
+        let cli = crate::acp_cli("claude").unwrap();
+        let proj = mcp_injection(
+            cli,
+            &mcp_pc(serde_json::json!([{
+                "name": "gh",
+                "transport": { "kind": "http", "url": "https://mcp" },
+                "credential": { "auth": "reference", "reference": "broker://tok" }
+            }])),
+            true,
+        )
+        .unwrap();
+        assert_eq!(proj.session_servers.len(), 1);
+        assert_eq!(proj.session_servers[0].name, "gh");
+        assert!(proj.config_file.is_none());
+    }
+
+    #[test]
+    fn mcp_injection_delivers_a_config_file_for_a_config_file_cli() {
+        // codex is a ConfigFileToml CLI → a config file to place in the config home.
+        let cli = crate::acp_cli("codex").unwrap();
+        let proj = mcp_injection(
+            cli,
+            &mcp_pc(serde_json::json!([{
+                "name": "gh",
+                "transport": { "kind": "http", "url": "https://mcp" },
+                "credential": { "auth": "reference", "reference": "broker://tok" }
+            }])),
+            true,
+        )
+        .unwrap();
+        assert!(proj.session_servers.is_empty());
+        let (path, contents) = proj.config_file.expect("codex gets a config file");
+        assert!(path.ends_with("config.toml"), "path: {path}");
+        assert!(
+            contents.contains("[mcp_servers.gh]"),
+            "contents: {contents}"
+        );
+    }
+
+    #[test]
+    fn mcp_injection_fails_closed_on_an_inline_secret_when_sandboxed() {
+        // A β TrustedInline credential is a raw secret — rejected for a sandboxed launch,
+        // accepted for a trusted (unsandboxed) one.
+        let cli = crate::acp_cli("claude").unwrap();
+        let pc = mcp_pc(serde_json::json!([{
+            "name": "gh",
+            "transport": { "kind": "http", "url": "https://mcp" },
+            "credential": { "auth": "trusted_inline", "secret": "sk-raw" }
+        }]));
+        assert!(
+            mcp_injection(cli, &pc, true).is_err(),
+            "sandboxed must reject inline secret"
+        );
+        assert!(
+            mcp_injection(cli, &pc, false).is_ok(),
+            "trusted launch may use it"
+        );
+    }
+
+    #[test]
+    fn mcp_injection_is_empty_when_none_declared() {
+        let cli = crate::acp_cli("claude").unwrap();
+        let proj = mcp_injection(cli, &BTreeMap::new(), true).unwrap();
+        assert_eq!(proj, McpInjection::default());
     }
 
     #[test]
