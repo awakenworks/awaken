@@ -1,6 +1,7 @@
 pub mod awaken_run_executor_acp
 pub use awaken_run_executor_acp::AcpLaunchEvent
 pub use awaken_run_executor_acp::AcpLaunchStage
+pub use awaken_run_executor_acp::AgentChannelType
 pub use awaken_run_executor_acp::Codec
 pub use awaken_run_executor_acp::LaunchObserver
 pub enum awaken_run_executor_acp::McpCredential
