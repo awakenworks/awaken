@@ -99,7 +99,7 @@ projection *across* contexts is architecture to keep.
 |---|---|---|---|---|
 | 1 | Selection axis | `AxisBinding` semantics: Pin/Pool + `SelectionPolicy` + `AvailabilityLedger` | model axis (`ModelSelection`+`model_fallbacks`) and credential axis (`CredentialBinding` + the resolver's default vendor-pool derivation) are two instances of one shape | `Auto` collapses to Pin at publish; the default derivation expands to a Pool at resolve. No fourth shape may be added |
 | 2 | Executor axis | one concept, three context forms | `AgentKind` (authoring) ⇌ `backend_ref` (published language) ⇌ `Backend` (runtime ACL) → `DispatchRunExecutor` routing | projection + parse, round-trip tested; `LaunchSource` cli-match re-asserts it at worker open |
-| 3 | Model speech | `Offering.dialect` is the *only* dialect source | `ApiDialect` (wire protocol), `ModelDelivery` (dialect projected onto env keys), `AcpCli.speaks_dialect` (CLI's declared upstream), vendor (`provider_id`, ⊥ dialect) | check A joins ②↔③-dialect; check B joins vendor↔credential; `ResolvedModel` is the runtime terminal form |
+| 3 | Model speech | `Offering.dialect` is the *only* dialect source | `ApiDialect` (wire protocol), `ModelDelivery` (dialect projected onto env keys), a resolver-side CLI-id→dialect table (executor stays dialect-unaware), vendor (`provider_id`, ⊥ dialect) | check A joins ②↔③-dialect; check B joins vendor↔credential; `ResolvedModel` is the runtime terminal form |
 | 4 | Credential lifecycle | declare → select → materialize → inject | `CredentialSource` (secret-free row) → family 1 selection → `materialize`/`RedactedString`/lease → three exits (model client / ACP env-last / transport header); `McpCredential` α/β = sandbox-trust grading of the inject stage | selection collapses to ONE path (`resolve_credential`); `config_executor` inline `.find` retired |
 | 5 | External dependency auth | ONE declare table: `CredentialSource` keyed by *counterparty* (vendor slug or endpoint origin); optional refinements `McpServerDef` (referenced) / `InferenceProfile` (model override) | plane-local MCP projections stay (runtime plugin, ACP `McpDelivery`/`SessionMcpServer`, managed wire); the two overlapping protocol-managed shapes collapse to one | declare → select → materialize → inject (only the exit differs per kind) |
 | 6 | Session continuity (ACP) | intent × mechanism × facility | intent = `SessionReuse`/`session_mode`/`compact_window` (config); mechanism = `SessionPersistence`/`ModelSwitch::Relaunch` (catalog row); facility = `ConfigHome`/`SessionHome` (host) | `Warm ∧ LocalDir` → restore/harvest; `Gateway` → skip |
@@ -268,20 +268,27 @@ header name) comes from the discovered `AgentCard.security_schemes` — discover
 data, not config; default Bearer. No counterparty-tagged credential = anonymous
 (today's behavior); a card that demands auth with none fails closed.
 
-### D4 — Two independent resolve-time checks, not one merged equation
+### D4 — Two independent resolve-time checks, both in the resolver (NOT on the executor's `AcpCli`)
 
-The ACP catalog row declares which model dialect the CLI speaks upstream; the
-resolver enforces dialect compatibility (① ↔ ②) and vendor match (③ ↔ model)
+The resolver enforces dialect compatibility (① ↔ ②) and vendor match (③ ↔ model)
 separately.
 
-```rust
-pub struct AcpCli { /* … */ pub speaks_dialect: ApiDialect }
-//   claude-acp → AnthropicMessages   codex-acp → OpenAiChat   gemini → Gemini
+**Placement correction (verified against the crate graph):** `awaken-run-executor-acp`
+does **not** depend on `awaken-model-catalog`, and must not — the executor is a
+neutral leaf that consumes already-resolved strings (friction #11: dependency
+direction). So `speaks_dialect` can NOT be an `ApiDialect` field on `AcpCli` (that
+would pull the catalog into the executor). The CLI-id→expected-dialect mapping
+lives in the **resolver** (`awaken-config-resolver`, which already imports
+`ApiDialect`), as a small table keyed by the `acp:<cli>` id parsed from
+`backend_ref`. The executor stays dialect-unaware; it only receives the
+`ModelDelivery` env family the resolver already selected.
 
+```rust
+// awaken-config-resolver — a table, not a field on AcpCli:
+//   "claude" → AnthropicMessages   "codex" → OpenAiChat   "gemini" → Gemini
 // Check A (dialect compatibility, ① ↔ ②):
-//   Offering.dialect must be compatible with AcpCli.speaks_dialect,
-//   else ResolveError::DialectIncompatible. This also selects the ModelDelivery
-//   env family (ANTHROPIC_* / OPENAI_* / GEMINI_*).
+//   for an acp:<cli> backend, Offering.dialect must match the cli's expected
+//   dialect, else ResolveError::DialectIncompatible. Selects the env family.
 // Check B (vendor match, ③ ↔ model):
 //   CredentialSource.provider_id == Offering.provider_id (existing can_consume).
 //   Independent of dialect, so minimax × anthropic-messages × claude is legal.
@@ -554,7 +561,7 @@ the collision, and the containment.
    `Cow<'static, [_]>` so the *same* type serves the `&'static` built-in default
    (borrowed, still effectively zero-cost) and the DB override (owned) — dropping
    `Copy` for `Clone`. Projection functions are unchanged (they already read the
-   fields). Adding `speaks_dialect: ApiDialect` stays fine (`ApiDialect` is Copy).
+   fields). The dialect-compat table lives in the resolver, not on this row (D4).
    This avoids an eighth "same data, two shapes" pair in the ACP layer.
 
 7. **`A2aRunExecutor` is "config-free by design"; its `TransportFactory` is keyed
@@ -604,11 +611,13 @@ the collision, and the containment.
     **Containment:** `AgentConfig` references those planes only by opaque id/ref
     (`skill_ids`, `mcp_server_ids`, `credential: Option<CredentialOverride>`); the
     downstream resolver owns every typed join (it already holds `InferenceProfile`,
-    `McpServerDef`, `CredentialBinding`). `AcpCli.speaks_dialect: ApiDialect` lives
-    in the server-plane `awaken-run-executor-acp` (which may depend on the
-    catalog), never on the config-store aggregate. This is the single most
-    important constraint on the shape: it is why D5 extends `CredentialBinding` in
-    the vault rather than adding a credential enum to config-store.
+    `McpServerDef`, `CredentialBinding`, `ApiDialect`). The dialect-compat table
+    (CLI id → expected `ApiDialect`) lives in the **resolver**, NOT on the
+    executor's `AcpCli` — verified: `awaken-run-executor-acp` does not (and must
+    not) depend on `awaken-model-catalog`; it stays a neutral leaf consuming
+    resolved strings (D4). This is the single most important constraint on the
+    shape: it is why D5 extends `CredentialBinding` in the vault rather than adding
+    a credential enum to config-store, and why the dialect check is resolver-side.
 
 ## Reuse of existing types (normative — do not re-invent)
 
@@ -630,7 +639,7 @@ right column; introducing a parallel type is a defect, not a phase.
 | ACP launch-source selection | publicize the existing `LaunchSource{Fixed,Projected}` | `awaken-runtime-host::sandbox_source` | ~~`AcpLaunchSpec`~~ mirror enum |
 | Model materialization for ACP | `LaunchResolver` as adapter over `resolve_inference` (`ResolvedModel` = its env projection); `EnvLaunchResolver` = db-less fallback | host over `awaken-config-resolver` | a second model-materialization truth |
 | ACP settings codec | ONE `AcpSpec` serde type (= the `plugin_config["acp"]` codec) shared by authoring + executor | shared contract crate | a separate `AcpSettings` duplicating it |
-| CLI install strategy | one `bootstrap: Vec<BootstrapStep>` field on the `AcpCli` row (OnDemand/Prebaked are the command itself) | `awaken-run-executor-acp` | an `AcpProvisioning` enum re-encoding the command; per-agent provisioning |
+| CLI install strategy | a `bootstrap: Vec<BootstrapStep>` field on the `AcpCli` row (dialect mapping is resolver-side, NOT on AcpCli — D4) (OnDemand/Prebaked are the command itself) | `awaken-run-executor-acp` | an `AcpProvisioning` enum re-encoding the command; per-agent provisioning |
 | Hand transport | `ConnectionPlan` / `DialAddr` | `awaken-connection-plan` | ~~`HandTransport`~~ (alias `DialAddr`) |
 | Hand placement entry | `PlacementEntry` / `ConfigToolExecutorProvider` | `awaken-server::placement` | a second placement registry |
 | GDPR erasure / consent | ADR-0050 eraser fan-out + `consent_ceiling` | `awaken-data-subject` | any new erasure path |
@@ -739,7 +748,7 @@ on a claude-serving worker it fails closed with the mismatch error.
 
 **D `one-resolution-path`** — *Exactly one counterparty resolution; dialect
 checked; vendor keys auto-pool.*
-Adds: `AcpCli.speaks_dialect` (fields → `Cow`) + check A; `derive_vendor_pool`
+Adds: a resolver CLI-id→`ApiDialect` table + check A (`DialectIncompatible`); `AcpCli` fields → `Cow`; `derive_vendor_pool`
 default + check B; `LaunchResolver` as adapter over `resolve_inference`.
 Retires: the inline `.find(first Active)` at `config_executor.rs:69`;
 `EnvLaunchResolver` as production default (demoted to db-less fallback, its only
