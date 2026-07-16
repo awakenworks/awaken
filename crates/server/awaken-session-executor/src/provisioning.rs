@@ -371,6 +371,36 @@ impl SharedHost {
         }
     }
 
+    /// Harvest a thread's run-authored skills into the durable catalog (ADR-0036 D6/D8,
+    /// symmetric to `harvest_thread_memory`): scan the workspace skill dir for skills the
+    /// agent authored this run — the self-authoring loop a Hermes-style agent runs — and
+    /// persist each under its id, so a skill written in this session is delivered to the
+    /// next one that opens against the same catalog. A no-op for a thread with no live
+    /// environment or a host with no durable skill store (nothing to persist into).
+    /// Idempotent: a re-scanned delivered skill puts identical bytes back under the same id.
+    pub async fn harvest_thread_skills(&self, thread: &str) {
+        if !self.has_skill_store() {
+            return;
+        }
+        let env = {
+            let sessions = self.sessions.lock().await;
+            sessions.get(thread).map(|ctx| ctx.env.clone())
+        };
+        let Some(env) = env else {
+            return;
+        };
+        self.persist_authored_skills(env.as_ref()).await;
+    }
+
+    /// Scan a live environment's workspace skill dir and persist each authored skill to the
+    /// durable catalog. Split from [`harvest_thread_skills`](Self::harvest_thread_skills) so
+    /// the scan→store path is testable with a real sandbox, without a full `SessionCtx`.
+    async fn persist_authored_skills(&self, env: &awaken_sandbox_local::LocalSandbox) {
+        for skill in env.scan_skill_dir(crate::skills::DEFAULT_SKILLS_SUBDIR) {
+            self.skill_store_put(&skill.id, &skill.content).await;
+        }
+    }
+
     /// Collect a session's output artifacts (ADR-0038): the files the agent wrote
     /// under the environment's `outputs/` dir, each stored into the blob store and
     /// returned as `(content_id, logical_path)`. This is the sandbox→host reverse
@@ -763,7 +793,44 @@ mod provisioning_registry_tests {
         );
         host.harvest_thread_memory("t").await; // no env → no store write
         host.harvest_thread_repo("t").await; // no env → no push
+        host.harvest_thread_skills("t").await; // no env / no store → no persist
         assert!(host.session_artifacts("t").await.is_empty());
         assert!(host.session_artifacts("never-seen").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn harvest_persists_an_agent_authored_skill_to_the_durable_catalog() {
+        // Hermes-style self-authoring (ADR-0036 D6/D8): a skill the agent writes under the
+        // workspace this run must be harvested into the durable catalog so the next session
+        // delivers it — the skill analogue of memory write-back.
+        let dir = std::env::temp_dir().join(format!("awaken-skillharvest-{}", std::process::id()));
+        let host = SharedHost::new(Arc::new(NoLlm), "test").with_skill_store(dir.join("store"));
+
+        // A real sandbox env with a skill authored under the workspace `skills/` dir.
+        let base = dir.join("sbx");
+        let env = LocalProvider::new(&base)
+            .create_sandbox(&subrun_sandbox_spec("t"))
+            .await
+            .unwrap();
+        let skill_dir = base.join("t").join("skills").join("notes");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\ndescription: authored this run\n---\nremember to hydrate",
+        )
+        .unwrap();
+
+        // The catalog is empty until the run-authored skill is harvested; after harvest it
+        // holds the skill, addressable for delivery to the next session.
+        assert!(host.skill_store_list().await.is_empty());
+        host.persist_authored_skills(&env).await;
+        let ids = host.skill_store_list().await;
+        assert!(
+            ids.iter().any(|id| id.contains("notes")),
+            "the authored skill must be persisted to the durable catalog: {ids:?}"
+        );
+
+        pc::Sandbox::dispose(&env).await.unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
