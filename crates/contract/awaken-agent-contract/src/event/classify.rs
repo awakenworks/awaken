@@ -9,7 +9,7 @@
 //! Channels are decided by the *transport contract* each satisfies, never by
 //! content (Axis 5):
 //!
-//! - **live** — best-effort, lossy, pre-commit broadcast. Carries [`Progress`]
+//! - **live** — best-effort, lossy, pre-commit broadcast. Carries [`Live`]
 //!   increments plus the opening `RunStarted` (Axis 6).
 //! - **audit** — the durable, not-truth event log (`audit::RunEvent` → `Draft`).
 //!   Carries run-lifecycle facts. Content whole-units are canonical *message*
@@ -18,7 +18,7 @@
 //! Canonical truth is the message commit itself (unchanged); it is not a channel
 //! `classify` routes to — a query re-folds messages on demand.
 
-use crate::event::agent::{AgentEvent, Committed, Progress};
+use crate::event::agent::{AgentEvent, Committed, Live};
 
 /// Which producer-authority tier an event belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,7 +26,7 @@ pub enum Tier {
     /// Authoritative whole-unit / lifecycle, from the fold.
     Committed,
     /// Best-effort increment, from the live stream.
-    Progress,
+    Live,
 }
 
 /// Where a single event is routed. Decided once, here, for the whole system.
@@ -42,18 +42,18 @@ pub struct Routing {
 
 /// The one routing decision. Total over `AgentEvent`; the compiler enforces
 /// exhaustiveness and the conformance test enforces the invariants that couple the
-/// fields (e.g. every `Progress` is live-only, never audited).
+/// fields (e.g. every `Live` is live-only, never audited).
 pub fn classify(event: &AgentEvent) -> Routing {
     match event {
         // Best-effort increments: live only, never truth, never audit.
-        AgentEvent::Progress(p) => match p {
-            Progress::TextDelta { .. }
-            | Progress::ReasoningDelta { .. }
-            | Progress::ToolCallDelta { .. } => Routing {
-                tier: Tier::Progress,
-                live: true,
-                audit: false,
-            },
+        AgentEvent::Live(p) => match p {
+            Live::TextDelta { .. } | Live::ReasoningDelta { .. } | Live::ToolCallDelta { .. } => {
+                Routing {
+                    tier: Tier::Live,
+                    live: true,
+                    audit: false,
+                }
+            }
         },
         AgentEvent::Committed(c) => match c {
             // The run boundary opens the live stream *and* is an audited phase fact.
@@ -95,9 +95,9 @@ mod tests {
     /// `classify` forces a row here too (the match won't compile without it).
     fn every_variant() -> Vec<AgentEvent> {
         vec![
-            AgentEvent::Progress(Progress::TextDelta { delta: "x".into() }),
-            AgentEvent::Progress(Progress::ReasoningDelta { delta: "x".into() }),
-            AgentEvent::Progress(Progress::ToolCallDelta {
+            AgentEvent::Live(Live::TextDelta { delta: "x".into() }),
+            AgentEvent::Live(Live::ReasoningDelta { delta: "x".into() }),
+            AgentEvent::Live(Live::ToolCallDelta {
                 id: "c1".into(),
                 name: "t".into(),
                 args_delta: "{}".into(),
@@ -138,29 +138,29 @@ mod tests {
         for e in every_variant() {
             let r = classify(&e);
             match e {
-                AgentEvent::Progress(_) => assert_eq!(r.tier, Tier::Progress),
+                AgentEvent::Live(_) => assert_eq!(r.tier, Tier::Live),
                 AgentEvent::Committed(_) => assert_eq!(r.tier, Tier::Committed),
             }
         }
     }
 
     // INVARIANT (Axis 6): the live stream is best-effort and carries no
-    // authoritative terminus. So every `Progress` is live and never audited, and no
+    // authoritative terminus. So every `Live` is live and never audited, and no
     // `Committed` lifecycle terminus is ever broadcast live.
     #[test]
-    fn progress_is_live_only_and_never_audited() {
+    fn live_tier_is_broadcast_and_never_audited() {
         for e in every_variant() {
-            if let AgentEvent::Progress(_) = e {
+            if let AgentEvent::Live(_) = e {
                 let r = classify(&e);
-                assert!(r.live, "progress increments broadcast live: {e:?}");
-                assert!(!r.audit, "progress increments are never audited: {e:?}");
+                assert!(r.live, "live increments broadcast live: {e:?}");
+                assert!(!r.audit, "live increments are never audited: {e:?}");
             }
         }
     }
 
     // INVARIANT: only the run boundary is both committed and live; every other
     // committed variant stays off the best-effort live channel (its increments,
-    // if any, already streamed as `Progress`).
+    // if any, already streamed as `Live`).
     #[test]
     fn only_run_started_is_both_committed_and_live() {
         for e in every_variant() {
