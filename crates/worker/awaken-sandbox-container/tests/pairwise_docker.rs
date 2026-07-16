@@ -232,6 +232,55 @@ async fn a_file_mount_resolved_from_the_blob_source_is_readable_in_a_real_contai
 }
 
 #[tokio::test]
+async fn a_cachevolume_binds_a_host_directory_the_repo_checkout_shape() {
+    let Some((provider, rt)) = setup().await else {
+        return;
+    };
+    // A repo checkout on the container tier reuses the CacheVolume primitive: the host clones
+    // (or otherwise stages) the repo into a host DIRECTORY, and CacheVolume binds that dir in
+    // place — no new mechanism. This proves CacheVolume binds a directory (nested files, RW),
+    // which is exactly the repo-into-container shape (host stages, container binds).
+    let dir = std::env::temp_dir().join(format!("awaken-repo-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("src/main.rs"), b"// repo-dir-marker\n").unwrap();
+    std::fs::write(dir.join(".git/HEAD"), b"ref: refs/heads/main\n").unwrap();
+    let host_dir = dir.to_string_lossy().to_string();
+
+    let spec = pc::SandboxSpec {
+        scope: "pw-repodir".into(),
+        isolation: pc::IsolationClass::Container,
+        mounts: vec![pc::MountRequirement {
+            mount_id: "repo".into(),
+            source: pc::MountSource::CacheVolume {
+                host_path: host_dir,
+                key: "repo".into(),
+            },
+            mount_path: "/workspace/repo".into(),
+            access: pc::MountAccess::ReadWrite,
+            lifetime: pc::MountLifetime::Session,
+            required: true,
+        }],
+        env: Vec::new(),
+        network: pc::NetworkPolicy::Unrestricted,
+        outputs_path: "/mnt/session/outputs".into(),
+        limits: Default::default(),
+        lease_ttl_secs: None,
+        extra: Some(serde_json::json!({
+            "command": ["sh", "-c",
+                "grep -q repo-dir-marker /workspace/repo/src/main.rs && test -f /workspace/repo/.git/HEAD"]
+        })),
+    };
+    let exit = run_to_exit(&provider, &rt, "pw-repodir", &spec).await;
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        exit,
+        Some(0),
+        "a CacheVolume must bind a host directory (nested files + .git) into the container"
+    );
+}
+
+#[tokio::test]
 async fn file_bind_is_readable_and_read_only_is_enforced_in_a_real_container() {
     let Some((provider, rt)) = setup().await else {
         return;
