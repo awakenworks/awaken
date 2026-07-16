@@ -13,8 +13,65 @@ use awaken_agent_contract::event::{
     Fact, ToolDisposition, Transcoder, fold_messages as fold, terminal_waiting,
 };
 
-use crate::state::{AgentCapabilities, OutcomeIteration};
+use crate::state::{AgentCapabilities, CustomTool, OutcomeIteration};
 use crate::types::{OutboundKind, StopReason};
+
+/// Reserved MCP tool-name prefix — a custom tool may not claim it.
+const MCP_RESERVED_PREFIX: &str = "mcp__";
+/// Anthropic's custom-tool name length ceiling.
+const MAX_TOOL_NAME_LEN: usize = 128;
+/// JSON-Schema composition keywords the managed toolset input_schema rejects.
+const FORBIDDEN_SCHEMA_KEYS: [&str; 2] = ["$ref", "oneOf"];
+
+/// Validate a host/client-declared custom tool against the Managed Agents rules the
+/// real API enforces at definition time, so an invalid definition fails closed here
+/// rather than silently working on awaken yet 400-ing on Anthropic. The `Err` string
+/// is the `invalid_request_error` wire message. Rules (per the conformance matrix):
+/// name charset `[A-Za-z0-9_-]`, length `1..=128`, no reserved `mcp__` prefix, and
+/// no `$ref` / `oneOf` composition anywhere in `input_schema`.
+pub fn validate_custom_tool(tool: &CustomTool) -> Result<(), String> {
+    if tool.name.is_empty() || tool.name.len() > MAX_TOOL_NAME_LEN {
+        return Err(format!(
+            "custom tool name must be 1..={MAX_TOOL_NAME_LEN} characters (got {})",
+            tool.name.len()
+        ));
+    }
+    if !tool
+        .name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(format!(
+            "custom tool name `{}` has invalid characters (allowed: A-Za-z0-9_-)",
+            tool.name
+        ));
+    }
+    if tool.name.starts_with(MCP_RESERVED_PREFIX) {
+        return Err(format!(
+            "custom tool name `{}` may not start with the reserved `{MCP_RESERVED_PREFIX}` prefix",
+            tool.name
+        ));
+    }
+    if let Some(key) = first_forbidden_schema_key(&tool.input_schema) {
+        return Err(format!(
+            "custom tool `{}` input_schema may not use `{key}`",
+            tool.name
+        ));
+    }
+    Ok(())
+}
+
+/// The first forbidden JSON-Schema composition keyword found anywhere in the tree.
+fn first_forbidden_schema_key(v: &serde_json::Value) -> Option<&'static str> {
+    match v {
+        serde_json::Value::Object(map) => FORBIDDEN_SCHEMA_KEYS
+            .into_iter()
+            .find(|k| map.contains_key(*k))
+            .or_else(|| map.values().find_map(first_forbidden_schema_key)),
+        serde_json::Value::Array(items) => items.iter().find_map(first_forbidden_schema_key),
+        _ => None,
+    }
+}
 
 /// The versioned built-in toolset id (Managed Agents wire vocabulary, G16).
 const AGENT_TOOLSET_TYPE: &str = "agent_toolset_20260401";
@@ -288,5 +345,59 @@ fn terminal_event(stop: StopReason, pending: Option<(&str, bool)>) -> Fact {
         StopReason::RequiresAction { .. } => terminal_waiting(pending.map(|p| p.0)),
         StopReason::RetriesExhausted => Fact::RunFinished { exhausted: true },
         StopReason::EndTurn => Fact::RunFinished { exhausted: false },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tool(name: &str, schema: serde_json::Value) -> CustomTool {
+        CustomTool {
+            name: name.to_string(),
+            description: "d".to_string(),
+            input_schema: schema,
+        }
+    }
+
+    #[test]
+    fn validate_custom_tool_accepts_well_formed_tools() {
+        assert!(
+            validate_custom_tool(&tool(
+                "submit_answer",
+                serde_json::json!({ "type": "object", "properties": { "x": { "type": "string" } } }),
+            ))
+            .is_ok()
+        );
+        // Hyphen/digit/underscore charset and a full-length (128) name are in range.
+        assert!(
+            validate_custom_tool(&tool("a-1_B", serde_json::json!({ "type": "object" }))).is_ok()
+        );
+        assert!(validate_custom_tool(&tool(&"x".repeat(128), serde_json::json!({}))).is_ok());
+    }
+
+    #[test]
+    fn validate_custom_tool_rejects_the_documented_violations() {
+        // Charset: spaces and dots are out.
+        assert!(validate_custom_tool(&tool("has space", serde_json::json!({}))).is_err());
+        assert!(validate_custom_tool(&tool("dots.bad", serde_json::json!({}))).is_err());
+        // Reserved MCP prefix.
+        assert!(validate_custom_tool(&tool("mcp__srv__t", serde_json::json!({}))).is_err());
+        // Length: empty and 129 chars both rejected.
+        assert!(validate_custom_tool(&tool("", serde_json::json!({}))).is_err());
+        assert!(validate_custom_tool(&tool(&"x".repeat(129), serde_json::json!({}))).is_err());
+        // Composition keywords rejected at the top level and when nested.
+        assert!(validate_custom_tool(&tool("t", serde_json::json!({ "$ref": "#/x" }))).is_err());
+        assert!(validate_custom_tool(&tool("t", serde_json::json!({ "oneOf": [] }))).is_err());
+        assert!(
+            validate_custom_tool(&tool(
+                "t",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": { "y": { "oneOf": [{ "type": "string" }] } }
+                }),
+            ))
+            .is_err()
+        );
     }
 }

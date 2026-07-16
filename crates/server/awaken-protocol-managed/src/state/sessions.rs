@@ -150,6 +150,14 @@ impl ManagedState {
         // not an empty set. The wire shaping lives in `project`; the host supplies
         // neutral data.
         let caps = self.runtime.capabilities();
+        // Fail closed on a custom tool the real Managed API would reject at
+        // definition time (charset / reserved `mcp__` prefix / `$ref`·`oneOf` /
+        // length), so an invalid tool surfaces here as a 400 instead of silently
+        // diverging from Anthropic at the first turn.
+        for tool in &caps.custom_tools {
+            project::validate_custom_tool(tool)
+                .map_err(|msg| StateError::Run(RunError::bad_request(msg)))?;
+        }
         let session = Session {
             id: id.clone(),
             kind: "session",
