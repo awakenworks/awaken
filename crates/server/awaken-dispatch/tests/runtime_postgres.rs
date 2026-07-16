@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::store::run_store::RunStore;
-use awaken_agent_contract::store::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::run_store::RunStore;
+use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;

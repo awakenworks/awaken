@@ -24,7 +24,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::WaitingTicket;
-use awaken_agent_contract::store::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_ext_builtin_tools::{Toolset, builtin_tools, executable_hand_tools};
 use awaken_ext_permission::{
     Mode, PermissionRule, PermissionRuleset, RulePermissionPolicy, ToolCallPattern,

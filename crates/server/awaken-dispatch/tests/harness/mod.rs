@@ -36,12 +36,12 @@ use std::sync::atomic::AtomicBool;
 
 use awaken_agent_contract::agent::run::Record as RunRecord;
 use awaken_agent_contract::agent::waiting::WaitingTicket;
-use awaken_agent_contract::commit::coordinator::{
+use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator as CommitCoordinator, Error as CommitError,
 };
-use awaken_agent_contract::commit::staged::{CommitRecord, ThreadCommit};
-use awaken_agent_contract::store::run_store::RunStore;
-use awaken_agent_contract::store::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
+use awaken_agent_contract::thread::read::run_store::RunStore;
+use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime_contract::metrics::{InferenceMetric, MetricsRecorder};
 
 pub const FP: &str = "catalog-a";

@@ -3,7 +3,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_agent_contract::store::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime_contract::agent_resolver::AgentResolver;
 use awaken_runtime_contract::capability::RuntimeCapabilitySource;
 use awaken_runtime_contract::catalog::{

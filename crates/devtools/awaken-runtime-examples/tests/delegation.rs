@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Role;
-use awaken_agent_contract::store::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime_contract::agent_resolver::{AgentError, AgentRequest, AgentResolver, AgentStep};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, THREAD_USAGE_STATE_KEY, ThreadUsage,

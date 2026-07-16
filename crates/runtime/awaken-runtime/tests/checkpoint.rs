@@ -10,7 +10,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::store::stream_checkpoint::{StreamCheckpoint, StreamCheckpointStore};
+use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::{
     MemoryCommitCoordinator, MemoryStreamCheckpointStore, MemoryStreamSink,

@@ -12,17 +12,18 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::{WaitingReason, WaitingTicket};
 use awaken_agent_contract::audit::draft::Draft;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
-use awaken_agent_contract::commit::coordinator::{Coordinator, Error};
-use awaken_agent_contract::commit::staged::ThreadCommit;
-use awaken_agent_contract::fact::run::Fact as RunFact;
-use awaken_agent_contract::store::checkpoint::{CheckpointReader, EventScope};
-use awaken_agent_contract::store::run_store::RunStore;
-use awaken_agent_contract::store::stream_checkpoint::{
+use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
+use awaken_agent_contract::stream::checkpoint::{
     PartialToolCall, StreamCheckpoint, StreamCheckpointStore,
 };
-use awaken_agent_contract::store::thread_reader::ThreadReader;
-use awaken_agent_contract::stream::event::{Event as StreamEvent, Kind as StreamKind};
+use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
+use awaken_agent_contract::thread::commit::RunFact;
+use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error};
+use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+use awaken_agent_contract::thread::read::run_store::RunStore;
+use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_store_inmem::{
     MemoryCommitCoordinator, MemoryStreamCheckpointStore, MemoryStreamSink, replay_latest_phase,
     replay_state,
@@ -551,11 +552,11 @@ async fn stream_sink_records_events_in_send_order() {
     let sink = MemoryStreamSink::new();
     assert!(sink.events().is_empty(), "fresh sink is empty");
     for kind in [
-        StreamKind::RunStarted,
-        StreamKind::OutputText {
-            text: "hi".to_string(),
-        },
-        StreamKind::RunFinished,
+        AgentEvent::Fact(Fact::RunStarted),
+        AgentEvent::Delta(Delta::TextDelta {
+            delta: "hi".to_string(),
+        }),
+        AgentEvent::Fact(Fact::RunFinished { exhausted: false }),
     ] {
         sink.send(StreamEvent {
             run_id: RunId("r".to_string()),
@@ -566,8 +567,11 @@ async fn stream_sink_records_events_in_send_order() {
     }
     let events = sink.events();
     assert_eq!(events.len(), 3);
-    assert_eq!(events[0].kind, StreamKind::RunStarted);
-    assert_eq!(events[2].kind, StreamKind::RunFinished);
+    assert_eq!(events[0].kind, AgentEvent::Fact(Fact::RunStarted));
+    assert_eq!(
+        events[2].kind,
+        AgentEvent::Fact(Fact::RunFinished { exhausted: false })
+    );
 }
 
 // ---- MemoryStreamCheckpointStore: overwrite + delete idempotency ----------

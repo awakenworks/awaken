@@ -9,7 +9,7 @@
 use crate::agent::run::{Id as RunId, Record as RunRecord};
 use crate::agent::thread::Id as ThreadId;
 use crate::audit::record::Record as EventRecord;
-use crate::store::thread_reader::ThreadReader;
+use crate::thread::read::thread_reader::ThreadReader;
 
 /// The scope a committed-event read is addressed by. The event sequence (`u64`)
 /// is the cursor; `from` is exclusive.

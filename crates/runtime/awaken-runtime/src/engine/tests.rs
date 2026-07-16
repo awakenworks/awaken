@@ -339,7 +339,7 @@ impl StreamCheckpointStore for SpyCheckpointStore {
     }
 }
 
-fn one_turn_request() -> ChatRequest {
+fn one_step_request() -> ChatRequest {
     ChatRequest {
         model_binding: ModelBinding {
             provider_identity_ref: "p".to_string(),
@@ -386,7 +386,7 @@ fn recording() -> RecordingSink {
 fn content_gate_is_closed_by_default_and_open_at_full() {
     use awaken_runtime_contract::{CaptureDecision, ContentCapture, ContentKind};
     // Default decision (Structured) records nothing...
-    let rendered = super::content::render_chat_messages(&one_turn_request().messages);
+    let rendered = super::content::render_chat_messages(&one_step_request().messages);
     assert!(
         CaptureDecision::default()
             .content(ContentKind::InputMessages, &rendered)
@@ -415,7 +415,7 @@ async fn interrupted_text_stream_is_continued_from_the_partial() {
 
     let response = infer_with_retry(
         &llm,
-        one_turn_request(),
+        one_step_request(),
         &policy(2),
         &breaker,
         &sink,
@@ -470,7 +470,7 @@ async fn completed_tool_calls_before_a_drop_are_executed_without_re_inferring() 
 
     let response = infer_with_retry(
         &llm,
-        one_turn_request(),
+        one_step_request(),
         &policy(2),
         &breaker,
         &sink,
@@ -512,7 +512,7 @@ async fn completed_tool_calls_are_salvaged_even_when_the_retry_budget_is_spent()
 
     let response = infer_with_retry(
         &llm,
-        one_turn_request(),
+        one_step_request(),
         &policy(0),
         &breaker,
         &sink,
@@ -548,7 +548,7 @@ async fn an_in_flight_tool_call_is_dropped_and_the_text_continues() {
 
     let response = infer_with_retry(
         &llm,
-        one_turn_request(),
+        one_step_request(),
         &policy(2),
         &breaker,
         &sink,
@@ -596,7 +596,7 @@ async fn the_interruption_boundary_flushes_a_checkpoint_then_clears_it_on_return
 
     let result = infer_with_retry(
         &llm,
-        one_turn_request(),
+        one_step_request(),
         &policy(0),
         &breaker,
         &sink,
@@ -643,7 +643,7 @@ async fn a_persisted_text_partial_resumes_in_a_fresh_call() {
 
     let response = infer_with_retry(
         &llm,
-        one_turn_request(),
+        one_step_request(),
         &policy(2),
         &breaker,
         &sink,
@@ -687,7 +687,7 @@ async fn a_persisted_completed_tool_call_resumes_without_calling_the_model() {
 
     let response = infer_with_retry(
         &llm,
-        one_turn_request(),
+        one_step_request(),
         &policy(2),
         &breaker,
         &sink,

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
-use awaken_agent_contract::project::{AgentEvent, terminal_waiting};
+use awaken_agent_contract::event::{Fact, terminal_waiting};
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use serde_json::Value;
 
@@ -83,17 +83,17 @@ impl StepOutcome {
     /// failed / parked / finished distinction. Event-stream adapters (AI-SDK,
     /// AG-UI) transcode it; the request/response A2A adapter maps the same states
     /// onto a `Task` state directly.
-    pub fn terminal_event(&self) -> AgentEvent {
+    pub fn terminal_event(&self) -> Fact {
         match &self.terminal {
-            Terminal::Failed(failure) => AgentEvent::RunFailed {
+            Terminal::Failed(failure) => Fact::RunFailed {
                 code: failure.code.clone(),
                 message: failure.message.clone(),
             },
             Terminal::Waiting { pending } => {
                 terminal_waiting(pending.as_ref().map(|p| p.tool_use_id.as_str()))
             }
-            Terminal::Exhausted => AgentEvent::RunFinished { exhausted: true },
-            Terminal::Finished => AgentEvent::RunFinished { exhausted: false },
+            Terminal::Exhausted => Fact::RunFinished { exhausted: true },
+            Terminal::Finished => Fact::RunFinished { exhausted: false },
         }
     }
 }
@@ -280,7 +280,7 @@ mod tests {
     fn finished_projects_to_run_finished_not_exhausted() {
         assert_eq!(
             outcome(Terminal::Finished).terminal_event(),
-            AgentEvent::RunFinished { exhausted: false }
+            Fact::RunFinished { exhausted: false }
         );
     }
 
@@ -290,7 +290,7 @@ mod tests {
         // a failure. Adapters must not render it as an error frame.
         assert_eq!(
             outcome(Terminal::Exhausted).terminal_event(),
-            AgentEvent::RunFinished { exhausted: true }
+            Fact::RunFinished { exhausted: true }
         );
     }
 
@@ -305,7 +305,7 @@ mod tests {
         .terminal_event();
         assert_eq!(
             ev,
-            AgentEvent::RunFailed {
+            Fact::RunFailed {
                 code: "inference_failed".into(),
                 message: "upstream 503".into(),
             }
@@ -320,7 +320,7 @@ mod tests {
         .terminal_event();
         assert_eq!(
             ev,
-            AgentEvent::Waiting {
+            Fact::Waiting {
                 pending_tool_use_id: Some("call-7".into()),
             }
         );
@@ -331,7 +331,7 @@ mod tests {
         let ev = outcome(Terminal::Waiting { pending: None }).terminal_event();
         assert_eq!(
             ev,
-            AgentEvent::Waiting {
+            Fact::Waiting {
                 pending_tool_use_id: None,
             }
         );
