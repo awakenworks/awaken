@@ -176,6 +176,19 @@ pub struct Usage {
     pub cache_creation_input_tokens: u64,
 }
 
+/// `BetaManagedAgentsSpanModelUsage` — token usage for a *single* model request
+/// (as opposed to the session's accumulated [`Usage`]). Carried by
+/// `span.model_request_end`; reuses [`Usage`]'s four token fields (flattened) and
+/// adds the optional inference-speed mode.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SpanModelUsage {
+    #[serde(flatten)]
+    pub usage: Usage,
+    /// Inference speed mode (`standard`/`fast`); omitted when the model reports none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed: Option<String>,
+}
+
 /// `BetaManagedAgentsSession` response (minimal but SDK-parseable).
 #[derive(Debug, Clone, Serialize)]
 pub struct Session {
@@ -359,6 +372,13 @@ impl SessionError {
 pub enum OutboundKind {
     #[serde(rename = "agent.message")]
     AgentMessage { content: Vec<ContentBlock> },
+    /// The agent's extended-thinking block (`agent.thinking`) — `{id, type,
+    /// processed_at}`, no payload, mirroring the SDK's
+    /// `BetaManagedAgentsAgentThinkingEvent`. Wire type defined for catalog
+    /// completeness; not yet emitted — awaken's stream carries no thinking channel
+    /// (see the conformance matrix's `agent.thinking` gap).
+    #[serde(rename = "agent.thinking")]
+    AgentThinking {},
     #[serde(rename = "agent.tool_use")]
     AgentToolUse {
         name: String,
@@ -404,6 +424,13 @@ pub enum OutboundKind {
     SessionStatusRunning {},
     #[serde(rename = "session.status_idle")]
     SessionStatusIdle { stop_reason: StopReason },
+    /// The session is recovering from a transient error and is rescheduled for
+    /// execution (`session.status_rescheduled`) — `{id, type, processed_at}`, no
+    /// payload. Wire type defined for catalog completeness; not yet emitted — the
+    /// runtime collapses transient retries below the projection seam (see the
+    /// conformance matrix's `session.status_rescheduled` gap).
+    #[serde(rename = "session.status_rescheduled")]
+    SessionStatusRescheduled {},
     /// The session reached its irreversible terminal state (emitted when the
     /// session is archived — this server models archive as termination, stamping
     /// `archived_at` and `status: "terminated"`). A client streaming or listing
@@ -438,6 +465,16 @@ pub enum OutboundKind {
         session_thread_id: String,
         agent_name: String,
         stop_reason: StopReason,
+    },
+    /// A subagent child thread hit a transient error and is retrying
+    /// (`session.thread_status_rescheduled`) — same identity shape as the other
+    /// thread-status events. Wire type defined for catalog completeness; not yet
+    /// emitted — the thread rescheduled fact isn't surfaced (see the conformance
+    /// matrix's `thread_status_rescheduled` gap).
+    #[serde(rename = "session.thread_status_rescheduled")]
+    SessionThreadStatusRescheduled {
+        session_thread_id: String,
+        agent_name: String,
     },
     /// The session's `metadata`/`title` changed (`session.updated`), carrying the
     /// title (when the update set it) and the full metadata bag (when non-empty).
@@ -475,6 +512,24 @@ pub enum OutboundKind {
     /// processed_at}`, no payload (aligned to `@anthropic-ai/sdk`, not guessed).
     #[serde(rename = "agent.thread_context_compacted")]
     ThreadContextCompacted {},
+    /// A model request was initiated (`span.model_request_start`) — `{id, type,
+    /// processed_at}`, no payload; its `id` is referenced by the paired
+    /// `span.model_request_end`. Wire type defined for catalog completeness; not
+    /// yet emitted — the model call sits below the runtime seam (see the
+    /// conformance matrix's `span.model_request_*` gap).
+    #[serde(rename = "span.model_request_start")]
+    SpanModelRequestStart {},
+    /// A model request completed (`span.model_request_end`), carrying the paired
+    /// start id, a nullable error flag, and this single request's token usage.
+    /// Wire type defined for catalog completeness; not yet emitted (same gap as
+    /// `span.model_request_start`).
+    #[serde(rename = "span.model_request_end")]
+    SpanModelRequestEnd {
+        model_request_start_id: String,
+        // Nullable per the SDK (`boolean | null`): the key is always present.
+        is_error: Option<bool>,
+        model_usage: SpanModelUsage,
+    },
     #[serde(rename = "span.outcome_evaluation_start")]
     SpanOutcomeEvaluationStart { outcome_id: String, iteration: u32 },
     /// A progress ping while a revision cycle is being graded
@@ -495,6 +550,7 @@ impl OutboundKind {
     pub fn type_str(&self) -> &'static str {
         match self {
             OutboundKind::AgentMessage { .. } => "agent.message",
+            OutboundKind::AgentThinking {} => "agent.thinking",
             OutboundKind::AgentToolUse { .. } => "agent.tool_use",
             OutboundKind::AgentToolResult { .. } => "agent.tool_result",
             OutboundKind::AgentCustomToolUse { .. } => "agent.custom_tool_use",
@@ -503,11 +559,15 @@ impl OutboundKind {
             OutboundKind::SessionError { .. } => "session.error",
             OutboundKind::SessionStatusRunning {} => "session.status_running",
             OutboundKind::SessionStatusIdle { .. } => "session.status_idle",
+            OutboundKind::SessionStatusRescheduled {} => "session.status_rescheduled",
             OutboundKind::SessionStatusTerminated {} => "session.status_terminated",
             OutboundKind::SessionDeleted {} => "session.deleted",
             OutboundKind::SessionThreadCreated { .. } => "session.thread_created",
             OutboundKind::SessionThreadStatusRunning { .. } => "session.thread_status_running",
             OutboundKind::SessionThreadStatusIdle { .. } => "session.thread_status_idle",
+            OutboundKind::SessionThreadStatusRescheduled { .. } => {
+                "session.thread_status_rescheduled"
+            }
             OutboundKind::SessionUpdated { .. } => "session.updated",
             OutboundKind::SessionThreadStatusTerminated { .. } => {
                 "session.thread_status_terminated"
@@ -515,6 +575,8 @@ impl OutboundKind {
             OutboundKind::AgentThreadMessageSent { .. } => "agent.thread_message_sent",
             OutboundKind::AgentThreadMessageReceived { .. } => "agent.thread_message_received",
             OutboundKind::ThreadContextCompacted { .. } => "agent.thread_context_compacted",
+            OutboundKind::SpanModelRequestStart {} => "span.model_request_start",
+            OutboundKind::SpanModelRequestEnd { .. } => "span.model_request_end",
             OutboundKind::SpanOutcomeEvaluationStart { .. } => "span.outcome_evaluation_start",
             OutboundKind::SpanOutcomeEvaluationOngoing { .. } => "span.outcome_evaluation_ongoing",
             OutboundKind::SpanOutcomeEvaluationEnd { .. } => "span.outcome_evaluation_end",
@@ -671,5 +733,85 @@ mod tests {
             without,
             InboundEvent::UserMessage { model: None, .. }
         ));
+    }
+
+    /// The newly catalogued outbound wire types serialize to exactly the shape the
+    /// installed SDK declares (`events.d.ts`) — the `type` tag plus the right field
+    /// set. Guards the type-catalog completion against silently diverging from the
+    /// SDK even before emission is wired.
+    #[test]
+    fn newly_catalogued_outbound_events_serialize_to_the_sdk_wire_shape() {
+        use std::collections::BTreeSet;
+        let ev = |kind| Event {
+            id: "evt_0".to_string(),
+            kind,
+            processed_at: Some("2026-01-01T00:00:00Z".to_string()),
+        };
+        let keys =
+            |v: &Value| -> BTreeSet<String> { v.as_object().unwrap().keys().cloned().collect() };
+        let bare: BTreeSet<String> = ["id", "type", "processed_at"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        // No-payload events: exactly {id, type, processed_at} + the right tag.
+        for (kind, ty) in [
+            (OutboundKind::AgentThinking {}, "agent.thinking"),
+            (
+                OutboundKind::SessionStatusRescheduled {},
+                "session.status_rescheduled",
+            ),
+            (
+                OutboundKind::SpanModelRequestStart {},
+                "span.model_request_start",
+            ),
+        ] {
+            let v = serde_json::to_value(ev(kind)).unwrap();
+            assert_eq!(v["type"], ty);
+            assert_eq!(
+                keys(&v),
+                bare,
+                "{ty} is a bare {{id,type,processed_at}} event"
+            );
+        }
+
+        // thread_status_rescheduled carries the thread's identity.
+        let v = serde_json::to_value(ev(OutboundKind::SessionThreadStatusRescheduled {
+            session_thread_id: "sthr_1".to_string(),
+            agent_name: "researcher".to_string(),
+        }))
+        .unwrap();
+        assert_eq!(v["type"], "session.thread_status_rescheduled");
+        assert_eq!(v["session_thread_id"], "sthr_1");
+        assert_eq!(v["agent_name"], "researcher");
+
+        // model_request_end carries the paired start id, a nullable error flag, and
+        // this single request's token usage (four SDK fields; speed omitted here).
+        let v = serde_json::to_value(ev(OutboundKind::SpanModelRequestEnd {
+            model_request_start_id: "evt_start".to_string(),
+            is_error: None,
+            model_usage: SpanModelUsage {
+                usage: Usage {
+                    input_tokens: 10,
+                    output_tokens: 20,
+                    cache_read_input_tokens: 0,
+                    cache_creation_input_tokens: 0,
+                },
+                speed: None,
+            },
+        }))
+        .unwrap();
+        assert_eq!(v["type"], "span.model_request_end");
+        assert_eq!(v["model_request_start_id"], "evt_start");
+        assert!(
+            v["is_error"].is_null(),
+            "is_error is present and null (SDK: boolean | null)"
+        );
+        assert_eq!(v["model_usage"]["input_tokens"], 10);
+        assert_eq!(v["model_usage"]["output_tokens"], 20);
+        assert!(
+            v["model_usage"].get("speed").is_none(),
+            "speed is omitted when None"
+        );
     }
 }
