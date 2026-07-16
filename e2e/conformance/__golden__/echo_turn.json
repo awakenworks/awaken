@@ -1,0 +1,20 @@
+[
+  {
+    "type": "session.status_running"
+  },
+  {
+    "type": "agent.message",
+    "content": [
+      {
+        "type": "text",
+        "text": "Echo: work"
+      }
+    ]
+  },
+  {
+    "type": "session.status_idle",
+    "stop_reason": {
+      "type": "end_turn"
+    }
+  }
+]
