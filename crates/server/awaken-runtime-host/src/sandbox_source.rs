@@ -473,6 +473,7 @@ pub struct ContainerChannelSource {
     launch: LaunchSource,
     egress: ThreadEgress,
     codec: awaken_run_executor_acp::Codec,
+    resources: Option<ThreadResources>,
 }
 
 impl ContainerChannelSource {
@@ -485,6 +486,7 @@ impl ContainerChannelSource {
             launch: LaunchSource::Fixed(launch),
             egress: ThreadEgress::default(),
             codec: awaken_run_executor_acp::Codec::Newline,
+            resources: None,
         }
     }
 
@@ -501,6 +503,7 @@ impl ContainerChannelSource {
             launch: LaunchSource::Projected { cli, resolver },
             egress: ThreadEgress::default(),
             codec: awaken_run_executor_acp::Codec::Acp,
+            resources: None,
         }
     }
 
@@ -528,10 +531,28 @@ impl ContainerChannelSource {
         self
     }
 
+    /// Carry the host's staged resource mounts (ADR-0038) into the container — the same
+    /// registry the bwrap source uses; the container provider materializes their inline
+    /// content to a host bind.
+    #[must_use]
+    pub fn with_thread_resources(mut self, resources: ThreadResources) -> Self {
+        self.resources = Some(resources);
+        self
+    }
+
+    /// The staged file/resource mounts for `thread`. Empty when no registry is wired.
+    fn resource_mounts(&self, thread: &str) -> Vec<pc::MountRequirement> {
+        self.resources
+            .as_ref()
+            .map(|r| r.mounts_for(thread))
+            .unwrap_or_default()
+    }
+
     /// The provisioning request for one run: a Container-tier spec scoped to the thread,
     /// carrying the ACP CLI argv as the container's main command (process-as-container)
     /// and the launch env as inline process vars; network from the thread's egress
-    /// registration. The image is the provider's worker-configured default.
+    /// registration, plus the session's staged resource mounts. The image is the
+    /// provider's worker-configured default.
     fn spec(&self, thread: &str, launch: &AcpLaunch) -> pc::SandboxSpec {
         let network = if self.egress.denies(thread) {
             pc::NetworkPolicy::None
@@ -552,7 +573,7 @@ impl ContainerChannelSource {
         pc::SandboxSpec {
             scope: thread.to_string(),
             isolation: pc::IsolationClass::Container,
-            mounts: Vec::new(),
+            mounts: self.resource_mounts(thread),
             env,
             network,
             outputs_path: "/mnt/session/outputs".to_string(),
@@ -571,10 +592,10 @@ impl AgentChannelSource for ContainerChannelSource {
         // The container command is fixed, or projected from the run's selected CLI.
         let launch = self.launch.resolve(activation)?;
         // Deliver this run's declared MCP servers. `session/new` servers (claude/gemini/
-        // opencode) ride in-band over the ACP wire the executor drives — no filesystem
-        // needed, so they work on the container tier today. Fail-closed on an inline
-        // secret. A config-file CLI (codex) needs the config file materialized into the
-        // container interior — deferred until the container tier resolves mount content.
+        // opencode) ride in-band over the ACP wire the executor drives; a config-file CLI
+        // (codex) gets its config.toml as an inline mount the container tier materializes
+        // into a host bind at the interior config home. Fail-closed on an inline secret.
+        let mut launch = launch;
         let injection = match self.launch.cli() {
             Some(cli) => awaken_run_executor_acp::mcp_injection(
                 cli,
@@ -583,9 +604,28 @@ impl AgentChannelSource for ContainerChannelSource {
             )?,
             None => awaken_run_executor_acp::McpInjection::default(),
         };
+        // The codex config mount + `CODEX_HOME` override applied to the launch BEFORE the
+        // spec is built (the container env is derived from `launch.env`); the container
+        // tier can enforce a read-only bind, so `read_only = true`.
+        let config_mount = self.launch.cli().and_then(|cli| {
+            acp_config_mount(
+                cli,
+                injection.config_file.clone(),
+                SANDBOX_CONFIG_HOME,
+                true,
+            )
+        });
+        if let Some((_, (env_key, env_val))) = &config_mount {
+            launch.env.retain(|(k, _)| k != env_key);
+            launch.env.push((env_key.clone(), env_val.clone()));
+        }
+        let mut spec = self.spec(thread, &launch);
+        if let Some((mount, _)) = config_mount {
+            spec.mounts.push(mount);
+        }
         let session = self
             .provider
-            .open_agent(&self.spec(thread, &launch))
+            .open_agent(&spec)
             .await
             .map_err(|e| OpenError(format!("containerized agent launch: {e}")))?;
         Ok(AgentSession {
@@ -634,9 +674,9 @@ pub async fn build_acp_channel_source(
                 .with_thread_egress(egress)
                 .with_thread_resources(resources),
         )),
-        SandboxTier::Docker => build_docker_source(image, source, egress),
-        SandboxTier::Podman => build_podman_source(image, source, egress),
-        SandboxTier::K8s => build_k8s_source(image, source, egress).await,
+        SandboxTier::Docker => build_docker_source(image, source, egress, resources),
+        SandboxTier::Podman => build_podman_source(image, source, egress, resources),
+        SandboxTier::K8s => build_k8s_source(image, source, egress, resources).await,
     }
 }
 
@@ -707,8 +747,13 @@ fn container_source(
     provider: Arc<dyn AgentContainerProvider>,
     source: LaunchSource,
     egress: ThreadEgress,
+    resources: ThreadResources,
 ) -> Arc<dyn AgentChannelSource> {
-    Arc::new(ContainerChannelSource::from_source(provider, source).with_thread_egress(egress))
+    Arc::new(
+        ContainerChannelSource::from_source(provider, source)
+            .with_thread_egress(egress)
+            .with_thread_resources(resources),
+    )
 }
 
 #[cfg(feature = "container-docker")]
@@ -716,6 +761,7 @@ fn build_docker_source(
     image: Option<&str>,
     source: LaunchSource,
     egress: ThreadEgress,
+    resources: ThreadResources,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
     let runtime =
         awaken_sandbox_container::docker::DockerRuntime::connect_local(CONTAINER_AGENT_PORT)
@@ -724,7 +770,12 @@ fn build_docker_source(
         std::sync::Arc::new(runtime),
         container_image(image)?,
     );
-    Ok(container_source(Arc::new(provider), source, egress))
+    Ok(container_source(
+        Arc::new(provider),
+        source,
+        egress,
+        resources,
+    ))
 }
 
 #[cfg(not(feature = "container-docker"))]
@@ -732,6 +783,7 @@ fn build_docker_source(
     _image: Option<&str>,
     _source: LaunchSource,
     _egress: ThreadEgress,
+    _resources: ThreadResources,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
     Err("AWAKEN_SANDBOX_TIER=docker needs the `container-docker` feature".into())
 }
@@ -741,13 +793,19 @@ fn build_podman_source(
     image: Option<&str>,
     source: LaunchSource,
     egress: ThreadEgress,
+    resources: ThreadResources,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
     let runtime = awaken_sandbox_container::podman::PodmanRuntime::new(CONTAINER_AGENT_PORT);
     let provider = awaken_sandbox_container::ContainerProvider::new(
         std::sync::Arc::new(runtime),
         container_image(image)?,
     );
-    Ok(container_source(Arc::new(provider), source, egress))
+    Ok(container_source(
+        Arc::new(provider),
+        source,
+        egress,
+        resources,
+    ))
 }
 
 #[cfg(not(feature = "container-podman"))]
@@ -755,6 +813,7 @@ fn build_podman_source(
     _image: Option<&str>,
     _source: LaunchSource,
     _egress: ThreadEgress,
+    _resources: ThreadResources,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
     Err("AWAKEN_SANDBOX_TIER=podman needs the `container-podman` feature".into())
 }
@@ -764,6 +823,7 @@ async fn build_k8s_source(
     image: Option<&str>,
     source: LaunchSource,
     egress: ThreadEgress,
+    resources: ThreadResources,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
     // The Pod's reachable agent address + namespace come from the worker's env; the
     // Service/NodePort exposure is a cluster-deployment concern outside this process.
@@ -782,7 +842,12 @@ async fn build_k8s_source(
         std::sync::Arc::new(runtime),
         container_image(image)?,
     );
-    Ok(container_source(Arc::new(provider), source, egress))
+    Ok(container_source(
+        Arc::new(provider),
+        source,
+        egress,
+        resources,
+    ))
 }
 
 #[cfg(not(feature = "container-k8s"))]
@@ -790,6 +855,7 @@ async fn build_k8s_source(
     _image: Option<&str>,
     _source: LaunchSource,
     _egress: ThreadEgress,
+    _resources: ThreadResources,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
     Err("AWAKEN_SANDBOX_TIER=k8s needs the `container-k8s` feature".into())
 }
