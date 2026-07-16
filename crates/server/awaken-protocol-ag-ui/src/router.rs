@@ -157,6 +157,8 @@ fn stream_turn(
         // terminus comes from the committed tail, not the live channel (G10/G13).
         let mut transcoder = AgUiEncoder::new(thread.clone(), run_id.clone());
         let close_thread = thread.clone();
+        // A handle kept out of the turn task so a client disconnect can cancel it.
+        let rt_cancel = rt.clone();
         let turn =
             tokio::spawn(async move { rt.run_streaming(&thread, agent, messages, sink).await });
         while let Some(event) = live_rx.recv().await {
@@ -167,6 +169,9 @@ fn stream_turn(
             };
             for wire in wires {
                 if out_tx.send(sse_line(&wire)).is_err() {
+                    // Client hung up: cancel the in-flight turn so it ends promptly
+                    // instead of running to completion detached (a token leak).
+                    let _ = rt_cancel.interrupt(&close_thread).await;
                     return;
                 }
             }

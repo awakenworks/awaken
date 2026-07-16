@@ -172,7 +172,12 @@ fn stream_turn(
             };
             for wire in wires {
                 if out_tx.send(sse_line(&wire)).is_err() {
-                    return; // the client hung up
+                    // The client hung up: cancel the in-flight turn so it ends
+                    // promptly instead of running to completion detached (a token
+                    // leak). The cooperative cancel lets the run commit cleanly, so
+                    // the spawned turn finishes on its own — no hard abort needed.
+                    let _ = rt_usage.interrupt(&thread_usage).await;
+                    return;
                 }
             }
         }
