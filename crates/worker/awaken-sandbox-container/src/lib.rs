@@ -60,6 +60,10 @@ pub struct BindPlan {
     /// stage it to a host file and repoint `source_ref`; k8s projects it as a ConfigMap
     /// volume. `None` for ref-backed binds (File/Resource store id, CacheVolume path).
     pub content: Option<String>,
+    /// Self-contained BINARY single-file content — a resolved File/Resource whose bytes are
+    /// not valid UTF-8. docker/podman bind the staged host file (byte-safe); k8s projects it
+    /// as a ConfigMap `binaryData` entry (its text `data` counterpart is `content`).
+    pub content_bytes: Option<Vec<u8>>,
 }
 
 /// A memory-store mount realized as a **memoryd sidecar** sharing an `emptyDir` with
@@ -270,6 +274,7 @@ mod cgroup_caps_tests {
                 mount_path: "/data".into(),
                 read_only: true,
                 content: None,
+                content_bytes: None,
             }],
             outputs_volume: "/mnt/session/outputs".into(),
             network: NetworkMode::None,
@@ -646,6 +651,25 @@ impl Drop for StagingGuard {
     }
 }
 
+/// The per-run host staging dir (created once, lazily), kept alive by the returned guard.
+fn staging_dir(
+    guard: &mut Option<StagingGuard>,
+    scope: &str,
+) -> Result<std::path::PathBuf, pc::SandboxError> {
+    if let Some(g) = guard {
+        return Ok(g.0.clone());
+    }
+    let d = std::env::temp_dir().join(format!(
+        "awaken-acp-stage-{}-{}",
+        stage_name(scope),
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&d)
+        .map_err(|e| err(RuntimeError::Backend(format!("stage dir: {e}"))))?;
+    *guard = Some(StagingGuard(d.clone()));
+    Ok(d)
+}
+
 /// Flatten a sandbox-absolute mount path to a single staging filename.
 fn stage_name(mount_path: &str) -> String {
     mount_path
@@ -778,28 +802,19 @@ async fn resolve_and_stage(
             }
         };
         // 2. Stage the bytes to a host file the docker/podman tier binds read-only.
-        let dir = match &guard {
-            Some(g) => g.0.clone(),
-            None => {
-                let d = std::env::temp_dir().join(format!(
-                    "awaken-acp-stage-{}-{}",
-                    stage_name(&spec.scope),
-                    std::process::id()
-                ));
-                std::fs::create_dir_all(&d)
-                    .map_err(|e| err(RuntimeError::Backend(format!("stage dir: {e}"))))?;
-                guard = Some(StagingGuard(d.clone()));
-                d
-            }
-        };
+        let dir = staging_dir(&mut guard, &spec.scope)?;
         let host_file = dir.join(stage_name(&bind.mount_path));
         std::fs::write(&host_file, &bytes)
             .map_err(|e| err(RuntimeError::Backend(format!("stage mount content: {e}"))))?;
         bind.source_ref = host_file.to_string_lossy().into_owned();
-        // 3. For the k8s tier: record UTF-8 bytes as `content` so `build_pod` projects a
-        // ConfigMap. Inline/Other already carry content; a resolved File/Resource fills it.
-        if !had_content && let Ok(text) = String::from_utf8(bytes) {
-            bind.content = Some(text);
+        // 3. For the k8s tier: record the bytes so `build_pod` projects a ConfigMap — UTF-8
+        // as `content` (ConfigMap `data`), otherwise as `content_bytes` (ConfigMap
+        // `binaryData`). Inline/Other already carry `content`; a resolved File/Resource fills one.
+        if !had_content {
+            match String::from_utf8(bytes) {
+                Ok(text) => bind.content = Some(text),
+                Err(e) => bind.content_bytes = Some(e.into_bytes()),
+            }
         }
     }
     Ok(guard)
@@ -815,6 +830,9 @@ fn binds_of(spec: &pc::SandboxSpec) -> Vec<BindPlan> {
             mount_path: m.mount_path.clone(),
             read_only: m.access == pc::MountAccess::ReadOnly,
             content: inline_content_of(&m.source),
+            // Binary single-file content is only known after a File/Resource resolves in
+            // `resolve_and_stage`; the plan starts with none.
+            content_bytes: None,
         })
         .collect()
 }

@@ -10,8 +10,9 @@
 //! **out of the sandbox's address space** (the sandbox only reaches loopback over shared-net).
 //!
 //! A deny-egress (`--unshare-net`) thread cannot reach loopback — but such a thread cannot
-//! reach the real MCP server either, so MCP is moot there. Buffered request/response forward
-//! (the JSON-RPC MCP call path); SSE streaming is a follow-up.
+//! reach the real MCP server either, so MCP is moot there. The request body is buffered; the
+//! response is streamed straight through, so an MCP Streamable-HTTP `text/event-stream` reply
+//! is forwarded live rather than stalled.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -123,14 +124,16 @@ async fn forward(
                 .get(reqwest::header::CONTENT_TYPE)
                 .and_then(|v| v.to_str().ok())
                 .map(String::from);
-            let body = resp.bytes().await.unwrap_or_default().to_vec();
+            // Stream the response body straight through — MCP Streamable HTTP replies as an
+            // SSE stream (`text/event-stream`), so buffering would stall long-poll notifications.
             let mut out = Response::builder().status(status);
             if let Some(ct) = content_type {
                 out = out.header(header::CONTENT_TYPE, ct);
             }
-            out.body(Body::from(body)).unwrap_or_else(|_| {
-                (StatusCode::BAD_GATEWAY, "relay response build").into_response()
-            })
+            out.body(Body::from_stream(resp.bytes_stream()))
+                .unwrap_or_else(|_| {
+                    (StatusCode::BAD_GATEWAY, "relay response build").into_response()
+                })
         }
         Err(e) => (StatusCode::BAD_GATEWAY, format!("relay upstream: {e}")).into_response(),
     }
@@ -194,6 +197,112 @@ mod tests {
         assert!(
             !body.contains("session-mcp"),
             "placeholder must not reach upstream: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_streams_an_sse_response_through_with_its_content_type() {
+        // Upstream replies as `text/event-stream` — the MCP Streamable HTTP shape. The relay
+        // must pass the stream (and content-type) through, not buffer/rewrite it.
+        async fn sse(_req: Request) -> Response {
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/event-stream")
+                .body(Body::from(
+                    "event: message\ndata: {\"jsonrpc\":\"2.0\"}\n\n",
+                ))
+                .unwrap()
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new().route("/", axum::routing::any(sse));
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let relay = McpRelay::start().await.unwrap();
+        relay.set_routes(
+            "t1",
+            &[PreparedMcpServer {
+                name: "gh".into(),
+                url: format!("http://{addr}/"),
+                bearer: Some(awaken_agent_contract::RedactedString::from(
+                    "tok".to_string(),
+                )),
+                refresh: None,
+            }],
+        );
+        let resp = reqwest::Client::new()
+            .post(relay.route_url("t1", "gh"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/event-stream"),
+            "the SSE content-type is preserved through the relay"
+        );
+        let body = resp.text().await.unwrap();
+        assert!(
+            body.contains("data: {\"jsonrpc\""),
+            "SSE body streamed through: {body}"
+        );
+    }
+
+    /// Live end-to-end against the REAL GitHub MCP (`api.githubcopilot.com/mcp/`), gated on
+    /// `AWAKEN_GITHUB_MCP_TOKEN` (a fine-grained PAT / installation token) — self-skips
+    /// otherwise. Proves the full Managed-Agents path: the sandbox would send the α placeholder
+    /// as its bearer; the relay injects the real token, so GitHub MCP authenticates the call.
+    #[tokio::test]
+    async fn relay_reaches_the_real_github_mcp_when_a_token_is_present() {
+        let Ok(token) = std::env::var("AWAKEN_GITHUB_MCP_TOKEN") else {
+            eprintln!(
+                "skipping: set AWAKEN_GITHUB_MCP_TOKEN to run the live GitHub MCP relay test"
+            );
+            return;
+        };
+        let relay = McpRelay::start().await.unwrap();
+        relay.set_routes(
+            "t1",
+            &[PreparedMcpServer {
+                name: "github".into(),
+                url: "https://api.githubcopilot.com/mcp/".into(),
+                bearer: Some(awaken_agent_contract::RedactedString::from(token)),
+                refresh: None,
+            }],
+        );
+        // An MCP `initialize` handshake through the relay, carrying only the α placeholder.
+        let body = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "awaken-relay-test", "version": "0" }
+            }
+        });
+        let resp = reqwest::Client::new()
+            .post(relay.route_url("t1", "github"))
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .bearer_auth("session-mcp:github")
+            .json(&body)
+            .send()
+            .await
+            .expect("relay forwards to the real GitHub MCP");
+        // A bad/absent token 401s at GitHub — so not-401 proves the relay injected the real
+        // credential out of the sandbox's address space and GitHub accepted it.
+        assert_ne!(
+            resp.status(),
+            reqwest::StatusCode::UNAUTHORIZED,
+            "the relay-injected token must authenticate to the real GitHub MCP (got {})",
+            resp.status()
+        );
+        assert!(
+            resp.status().is_success() || resp.status().is_redirection(),
+            "GitHub MCP responded through the relay: {}",
+            resp.status()
         );
     }
 
