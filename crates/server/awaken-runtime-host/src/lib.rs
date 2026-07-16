@@ -90,7 +90,7 @@ pub use crate::data_subject_api::{consent_router, erasure_router, install_captur
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::redact::PiiRedactor;
 pub use crate::sandbox_source::{
-    ContainerChannelSource, LaunchSource, SandboxChannelSource, ThreadEgress,
+    ContainerChannelSource, LaunchSource, SandboxChannelSource, ThreadEgress, ThreadResources,
     build_acp_channel_source,
 };
 // The config data plane (ADR-0036/slice A): the service + its router + the

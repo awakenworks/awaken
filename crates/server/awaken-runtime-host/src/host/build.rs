@@ -81,7 +81,7 @@ impl SharedHost {
             compact_runner: None,
             config_service: None,
             thread_mcp: std::sync::Mutex::new(HashMap::new()),
-            thread_resources: std::sync::Mutex::new(HashMap::new()),
+            thread_resources: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
             thread_egress: crate::sandbox_source::ThreadEgress::new(),
             file_store: Arc::new(InMemoryFileStore::new()),
             memory_stores,

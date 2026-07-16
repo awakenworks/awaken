@@ -195,8 +195,10 @@ pub struct SharedHost {
     thread_mcp: std::sync::Mutex<HashMap<String, Vec<PreparedMcpServer>>>,
     /// Per-thread staged resource mounts + prompt fragments (ADR-0038), set by a
     /// session's `prepare_session` and consumed by `sandbox_spec` (mounts) and the
-    /// run's system prompt (fragments). A thread with no entry mounts nothing.
-    pub(crate) thread_resources: std::sync::Mutex<HashMap<String, StagedResources>>,
+    /// run's system prompt (fragments). A thread with no entry mounts nothing. A shared
+    /// handle (like [`Self::thread_egress`]) so a sandboxed ACP channel source can carry
+    /// the same resource mounts into the bwrap/container sandbox it launches the CLI in.
+    pub(crate) thread_resources: std::sync::Arc<std::sync::Mutex<HashMap<String, StagedResources>>>,
     /// Per-thread network-egress denial, set by a session's `prepare_session` from its
     /// environment's networking policy. A thread with no entry (or `false`) shares the
     /// host network; `true` runs its `bash` under a `bwrap --unshare-net` namespace

@@ -117,11 +117,13 @@ impl crate::host::SharedHost {
         };
         let dep = crate::DeploymentConfig::from_env();
         let egress = self.thread_egress();
+        let resources = self.thread_resources_handle();
         let channel = crate::build_acp_channel_source(
             dep.sandbox_tier,
             dep.container_image.as_deref(),
             source,
             egress,
+            resources,
             base,
         )
         .await
