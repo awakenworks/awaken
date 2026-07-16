@@ -10,6 +10,7 @@ import { useState } from "react";
 import { Card, SchemaForm, Switch } from "../ui";
 import type { JsonSchema } from "../ui";
 import { useApp } from "../../lib/app-state";
+import StateMachineEditor from "./StateMachineEditor";
 
 /** Friendly title + one-line description for a known runtime plugin. */
 export const BEHAVIORS: Record<string, { title: string; zh: string; desc: string; descZh: string }> = {
@@ -26,10 +27,10 @@ export const BEHAVIORS: Record<string, { title: string; zh: string; desc: string
     descZh: "按需把相关的长期记忆召回到上下文。",
   },
   state_machine: {
-    title: "Tool-call ordering",
-    zh: "工具调用顺序",
-    desc: "Constrain the order tools may be called in (e.g. read a file before writing it).",
-    descZh: "约束工具调用的顺序(例如先读文件再写)。",
+    title: "Tool-call ordering & reminders",
+    zh: "工具顺序与提醒",
+    desc: "A state machine over tool calls: constrain their order (e.g. read a file before writing it) and/or emit periodic system reminders (background tasks, todos).",
+    descZh: "一台跑在工具调用上的状态机:约束调用顺序(如先读后写),并/或周期性注入 system reminder(后台任务、待办)。",
   },
 };
 
@@ -85,7 +86,11 @@ export default function BehaviorCard({
       </label>
       {enabled && (
         <div style={{ marginTop: 10 }}>
-          {schema ? (
+          {id === "state_machine" ? (
+            // The state machine gets a purpose-built diagram + table editor (not the
+            // generic schema form) — its nested graph is far clearer visually.
+            <StateMachineEditor value={config} onChange={onConfig} />
+          ) : schema ? (
             <>
               <SchemaForm schema={schema} value={config} onChange={onConfig} />
               <details style={{ marginTop: 8 }}>
