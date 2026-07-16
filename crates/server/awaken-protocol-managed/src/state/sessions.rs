@@ -466,18 +466,32 @@ impl ManagedState {
     /// client observes the deletion, and a subsequent `events.list`/`retrieve`
     /// is a 404 (delete removes the session; it does not tombstone it as archive
     /// does).
-    pub fn delete_session(&self, id: &str) -> Result<(), StateError> {
-        let deleted_id = self.next_event_id();
-        let mut sessions = self.sessions.lock().unwrap();
-        let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
-        let from = record.events.len();
-        record.events.push(Event {
-            id: deleted_id,
-            kind: OutboundKind::SessionDeleted {},
-            processed_at: Some(PROCESSED_AT.to_string()),
-        });
-        self.broadcast_committed_from(id, record, from);
-        sessions.remove(id);
+    pub async fn delete_session(&self, id: &str) -> Result<(), StateError> {
+        // Broadcast + drop under the lock, then release it before the async sink
+        // (a std `MutexGuard` must not be held across `.await`). The owner index is
+        // left intact by the removal, so it is still resolvable for the fact below.
+        {
+            let deleted_id = self.next_event_id();
+            let mut sessions = self.sessions.lock().unwrap();
+            let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
+            let from = record.events.len();
+            record.events.push(Event {
+                id: deleted_id,
+                kind: OutboundKind::SessionDeleted {},
+                processed_at: Some(PROCESSED_AT.to_string()),
+            });
+            self.broadcast_committed_from(id, record, from);
+            sessions.remove(id);
+        }
+        // Project the deletion as a lifecycle fact so a webhook subscriber is
+        // notified, mirroring create's `session.status_idled` and archive's
+        // `session.status_terminated`. The owner is resolved from the persisted
+        // owner (the delete edge carries only the id).
+        if let Some(sink) = &self.lifecycle_sink {
+            let owner = self.resolve_owner(id).await;
+            sink.emit(id, owner.as_deref(), lifecycle_event::SESSION_DELETED)
+                .await;
+        }
         Ok(())
     }
 

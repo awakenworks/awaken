@@ -589,3 +589,64 @@ async fn archive_session_fires_the_terminated_fact_once() {
         "the sink sees the session, its owner, and the terminated fact",
     );
 }
+
+/// Deleting a session fires the lifecycle sink with the `session.deleted` fact and
+/// the session's owner — a webhook subscriber is notified of a deletion just as it
+/// is of create (`session.status_idled`) and archive (`session.status_terminated`).
+/// The owner is still resolvable because delete drops the record but not the owner
+/// index.
+#[tokio::test]
+async fn delete_session_fires_the_deleted_fact_with_the_owner() {
+    #[derive(Default)]
+    struct CapturingSink {
+        seen: Mutex<Vec<(String, Option<String>, String)>>,
+    }
+    #[async_trait::async_trait]
+    impl SessionLifecycleSink for CapturingSink {
+        async fn emit(&self, session_id: &str, workspace_id: Option<&str>, event_type: &str) {
+            self.seen.lock().unwrap().push((
+                session_id.to_string(),
+                workspace_id.map(str::to_string),
+                event_type.to_string(),
+            ));
+        }
+    }
+
+    let sink = Arc::new(CapturingSink::default());
+    let state = ManagedState::new(PreparingFake {
+        captured: Arc::new(Mutex::new(Vec::new())),
+        fail_with: None,
+    })
+    .with_lifecycle_sink(sink.clone());
+
+    let session = state
+        .create_session(
+            awaken_protocol_managed::types::SessionCreateParams {
+                agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
+                environment_id: None,
+                title: None,
+                metadata: Default::default(),
+                mcp_servers: Vec::new(),
+                vault_ids: Vec::new(),
+                resources: Vec::new(),
+            },
+            Some("wrkspc_acme".to_string()),
+        )
+        .await
+        .expect("create session");
+
+    state.delete_session(&session.id).await.expect("delete");
+
+    let seen = sink.seen.lock().unwrap();
+    // create's idled, then the deleted fact.
+    assert_eq!(seen.len(), 2, "idled on create, deleted on delete");
+    assert_eq!(
+        seen[1],
+        (
+            session.id.clone(),
+            Some("wrkspc_acme".to_string()),
+            "session.deleted".to_string()
+        ),
+        "the sink sees the session, its owner, and the deleted fact",
+    );
+}

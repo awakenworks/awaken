@@ -144,8 +144,9 @@ pub trait SessionLifecycleSink: Send + Sync {
 /// place, owned by the projecting crate — is why the wire crate needs no dependency
 /// on the webhook delivery machinery: it emits fact names, the sink maps them.
 ///
-/// Wired to the sink today: [`SESSION_IDLED`] (on create) and [`SESSION_TERMINATED`]
-/// (on archive) — the two session-level transitions a webhook consumer acts on.
+/// Wired to the sink today: [`SESSION_IDLED`] (on create), [`SESSION_TERMINATED`]
+/// (on archive), and [`SESSION_DELETED`] (on delete) — the session-level transitions
+/// a webhook consumer acts on.
 ///
 /// The rest of Anthropic's catalog is projected onto the SSE stream but not yet
 /// fanned to webhooks, and maps to existing `OutboundKind` events: `session.status_
@@ -158,6 +159,10 @@ pub mod lifecycle_event {
     pub const SESSION_IDLED: &str = "session.status_idled";
     /// Session terminated (archived). Anthropic `session.status_terminated`.
     pub const SESSION_TERMINATED: &str = "session.status_terminated";
+    /// Session deleted (record dropped, not tombstoned). Matches the SSE
+    /// terminal transition name `session.deleted` — the delete edge carries no
+    /// status, so the fact is the past-tense event, not a `status_*` name.
+    pub const SESSION_DELETED: &str = "session.deleted";
 }
 
 /// Why a session operation failed (mapped to an HTTP status by the router).
@@ -445,7 +450,7 @@ mod tests {
             "a fresh session has no committed events"
         );
 
-        state.delete_session(&id).expect("delete");
+        state.delete_session(&id).await.expect("delete");
 
         // The terminal frame reached the open stream before the record was dropped.
         match rx
