@@ -687,10 +687,11 @@ impl SessionRuntime for ManagedHost {
         thread: &str,
         resource: awaken_protocol_managed::SessionResource,
     ) -> Result<(), RunError> {
-        // Flush in-sandbox memory edits before dropping the cached sandbox, then stage
-        // the new resource (fail closed on a missing backing store) and evict so the
-        // next turn rebuilds WITH it.
+        // Flush in-sandbox memory edits AND run-authored skills before dropping the cached
+        // sandbox (else the evicted workspace loses them), then stage the new resource
+        // (fail closed on a missing backing store) and evict so the next turn rebuilds WITH it.
         self.host.harvest_thread_memory(thread).await;
+        self.host.harvest_thread_skills(thread).await;
         let one = self.stage_one_resource(&resource).await?;
         self.host.merge_thread_resources(thread, one);
         self.host.sessions.lock().await.remove(thread);
@@ -703,9 +704,10 @@ impl SessionRuntime for ManagedHost {
         resource: awaken_protocol_managed::SessionResource,
     ) -> Result<(), RunError> {
         // Flush write-back while the old sandbox is still live (preserve edits to other
-        // still-mounted memory stores), drop this resource's mount + prompt, then evict
-        // so the next turn rebuilds WITHOUT it.
+        // still-mounted memory stores + run-authored skills), drop this resource's mount +
+        // prompt, then evict so the next turn rebuilds WITHOUT it.
         self.host.harvest_thread_memory(thread).await;
+        self.host.harvest_thread_skills(thread).await;
         let logical = resource.mount_path.trim_start_matches('/').to_string();
         self.host
             .remove_thread_resource(thread, &logical, &resource_prompt(&resource));
