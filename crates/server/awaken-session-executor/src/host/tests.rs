@@ -79,6 +79,60 @@ async fn interrupt_is_a_noop_when_nothing_runs() {
         .expect("interrupt is a no-op");
 }
 
+/// A model that blocks on its first inference until released, so a concurrent
+/// `interrupt` lands while a plain `run` turn is mid-flight.
+struct BlockOnceModel {
+    reached: Arc<tokio::sync::Notify>,
+    gate: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for BlockOnceModel {
+    async fn infer(
+        &self,
+        _request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        self.reached.notify_one();
+        self.gate.notified().await;
+        Ok(ChatResponse {
+            output: AssistantOutput::text("too late"),
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+/// The real-turn interrupt the conformance matrix flagged as unasserted: a plain
+/// `run` (a managed session's normal turn), interrupted while its inference is in
+/// flight, ends `Cancelled` promptly instead of running to completion.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupt_ends_an_in_flight_run_as_cancelled() {
+    let reached = Arc::new(tokio::sync::Notify::new());
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let host = Arc::new(SharedHost::new(
+        Arc::new(BlockOnceModel {
+            reached: reached.clone(),
+            gate: gate.clone(),
+        }),
+        "scripted",
+    ));
+
+    let driver = host.clone();
+    let task = tokio::spawn(async move { driver.run(None, "t-int", user("go")).await });
+
+    // The turn is blocked mid-inference; interrupt it, then release the gate.
+    reached.notified().await;
+    host.interrupt("t-int").await.expect("interrupt");
+    gate.notify_one();
+
+    let result = task.await.expect("join").expect("run");
+    assert!(
+        matches!(result.phase, Phase::Ended(EndCause::Cancelled)),
+        "an interrupted in-flight turn ends Cancelled, not run to completion: {:?}",
+        result.phase
+    );
+}
+
 /// The main assistant answers plainly; the memory extractor (identified by its
 /// system instructions) saves one memory then reports done.
 struct MemoryHostModel;
