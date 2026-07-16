@@ -253,9 +253,25 @@ async fn list_work(
 async fn poll_work(
     State(state): State<Arc<EnvironmentState>>,
     Path(id): Path<String>,
+    Query(poll): Query<PollParams>,
 ) -> Result<Json<Option<Work>>, WireError> {
     require_env(&state, &id).await?;
-    Ok(Json(state.work.claim(&id).await.map(|w| w.project())))
+    // The `worker_id` the SDK poller sends identifies the caller for the
+    // `workers_polling` liveness count; absent, the poll is anonymous ("").
+    let worker_id = poll.worker_id.unwrap_or_default();
+    Ok(Json(
+        state
+            .work
+            .claim(&id, &worker_id, now_ms())
+            .await
+            .map(|w| w.project()),
+    ))
+}
+
+/// The poll query: the worker's identity for the `workers_polling` liveness count.
+#[derive(serde::Deserialize)]
+struct PollParams {
+    worker_id: Option<String>,
 }
 
 /// `GET /v1/environments/:id/work/stats` — the queue's depth + pending count.
@@ -264,7 +280,7 @@ async fn work_stats(
     Path(id): Path<String>,
 ) -> Result<Json<WorkQueueStats>, WireError> {
     require_env(&state, &id).await?;
-    Ok(Json(state.work.stats(&id).await))
+    Ok(Json(state.work.stats(&id, now_ms()).await))
 }
 
 async fn retrieve_work(
@@ -316,10 +332,20 @@ async fn heartbeat_work(
     require_env(&state, &id).await?;
     let hb = state
         .work
-        .heartbeat(&id, &wid)
+        .heartbeat(&id, &wid, now_ms())
         .await
         .ok_or_else(|| not_found("work"))?;
     Ok(Json(hb))
+}
+
+/// Wall-clock now in epoch ms — read only at this HTTP edge and passed into the
+/// (clock-free) work queue, so the queue's lease/poll bookkeeping is deterministic
+/// under test while production uses real time.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// `POST …/work/:wid/stop` — request the worker stop the item.
