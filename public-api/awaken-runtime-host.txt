@@ -240,6 +240,7 @@ pub fn awaken_runtime_host::SandboxChannelSource::new(impl core::convert::Into<s
 pub fn awaken_runtime_host::SandboxChannelSource::projecting(impl core::convert::Into<std::path::PathBuf>, awaken_run_executor_acp::acp_cli::AcpCli, alloc::sync::Arc<dyn awaken_run_executor_acp::subprocess::LaunchResolver>) -> Self
 pub fn awaken_runtime_host::SandboxChannelSource::with_codec(self, awaken_protocol_acp::Codec) -> Self
 pub fn awaken_runtime_host::SandboxChannelSource::with_thread_egress(self, awaken_runtime_host::ThreadEgress) -> Self
+pub fn awaken_runtime_host::SandboxChannelSource::with_thread_resources(self, awaken_runtime_host::ThreadResources) -> Self
 impl awaken_run_executor_acp::AgentChannelSource for awaken_runtime_host::SandboxChannelSource
 pub fn awaken_runtime_host::SandboxChannelSource::open<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::activation::RunActivation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_executor_acp::AgentSession, awaken_run_executor_acp::OpenError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_runtime_host::SharedHost
@@ -366,6 +367,7 @@ impl awaken_runtime_host::ThreadEventHub
 pub fn awaken_runtime_host::ThreadEventHub::new() -> Self
 pub fn awaken_runtime_host::ThreadEventHub::publish(&self, &str, awaken_runtime_host::ThreadEvent)
 pub fn awaken_runtime_host::ThreadEventHub::subscribe(&self, &str) -> tokio::sync::broadcast::Receiver<awaken_runtime_host::ThreadEvent>
+pub struct awaken_runtime_host::ThreadResources(_)
 pub struct awaken_runtime_host::VaultRefresher
 impl awaken_runtime_host::VaultRefresher
 pub fn awaken_runtime_host::VaultRefresher::new(awaken_runtime_host::PreparedMcpRefresh) -> Self
@@ -376,7 +378,7 @@ pub fn awaken_runtime_host::ExecutorProvider::executor_for(&self, &str) -> core:
 pub fn awaken_runtime_host::advertised_tools(&std::collections::hash::set::HashSet<alloc::string::String>, &std::collections::hash::set::HashSet<alloc::string::String>, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub fn awaken_runtime_host::authorable_config_sections() -> alloc::vec::Vec<awaken_runtime_contract::capability::PluginCapability>
 pub fn awaken_runtime_host::block_text(&[awaken_agent_contract::agent::content::ContentBlock]) -> alloc::string::String
-pub async fn awaken_runtime_host::build_acp_channel_source(awaken_runtime_host::SandboxTier, core::option::Option<&str>, awaken_runtime_host::LaunchSource, awaken_runtime_host::ThreadEgress, std::path::PathBuf) -> core::result::Result<alloc::sync::Arc<dyn awaken_run_executor_acp::AgentChannelSource>, alloc::string::String>
+pub async fn awaken_runtime_host::build_acp_channel_source(awaken_runtime_host::SandboxTier, core::option::Option<&str>, awaken_runtime_host::LaunchSource, awaken_runtime_host::ThreadEgress, awaken_runtime_host::ThreadResources, std::path::PathBuf) -> core::result::Result<alloc::sync::Arc<dyn awaken_run_executor_acp::AgentChannelSource>, alloc::string::String>
 pub fn awaken_runtime_host::commit_ingest_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> axum::routing::Router
 pub fn awaken_runtime_host::consent_router(alloc::sync::Arc<dyn awaken_data_subject::DataSubjectRepo>) -> axum::routing::Router
 pub fn awaken_runtime_host::default_models() -> alloc::vec::Vec<awaken_runtime_host::ModelEntry>
