@@ -90,14 +90,14 @@ impl ManagedState {
             });
         }
         // A terminal run fault projects a `session.error` before the turn's idle,
-        // so a streaming/listing client observes the failure. The neutral fault
-        // `message` is carried through; the SDK's `unknown_error` fallback is the
-        // honest projection until the runtime classifies faults per-variant.
+        // so a streaming/listing client observes the failure. The neutral fault's
+        // `code` classifies the SDK error variant + retry status; its `message` is
+        // carried through.
         if let Some(failure) = &outcome.failure {
             record.events.push(Event {
                 id: self.next_event_id(),
                 kind: OutboundKind::SessionError {
-                    error: SessionError::exhausted(failure.message.clone()),
+                    error: SessionError::classify(&failure.code, failure.message.clone()),
                 },
                 processed_at: Some(PROCESSED_AT.to_string()),
             });
