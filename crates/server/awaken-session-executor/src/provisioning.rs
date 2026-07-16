@@ -341,11 +341,13 @@ impl SharedHost {
         Ok(())
     }
 
-    /// Push a thread's github_repository edits back to their remotes (ADR-0038
-    /// write-back, symmetric to `harvest_thread_memory`): host-side `add`/`commit`/
-    /// `push` with the held token. A no-op for a thread with no repos or no live env;
-    /// a clean working tree pushes nothing. Best-effort — a push failure is logged by
-    /// the caller's context, not fatal to an already-finished turn.
+    /// Push a thread's github_repository commits back to their remotes (ADR-0038
+    /// write-back, symmetric to `harvest_thread_memory`): host-side `push` with the held
+    /// token. The AGENT authors the commits (its own message + identity) in the jail; the
+    /// host only pushes them (it alone holds the token) — it never fabricates a commit. A
+    /// no-op for a thread with no repos, no live env, or nothing the agent committed.
+    /// Best-effort — a push failure is logged by the caller's context, not fatal to an
+    /// already-finished turn.
     pub async fn harvest_thread_repo(&self, thread: &str) {
         let (env, repos) = {
             let sessions = self.sessions.lock().await;
@@ -363,10 +365,9 @@ impl SharedHost {
             return;
         };
         for repo in repos {
-            let _ = env.commit_and_push(
+            let _ = env.push_repo(
                 &repo.logical,
                 repo.token.as_ref().map(|t| t.expose_secret()),
-                "Awaken agent session changes",
             );
         }
     }
