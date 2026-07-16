@@ -55,6 +55,11 @@ pub struct BindPlan {
     pub source_ref: String,
     pub mount_path: String,
     pub read_only: bool,
+    /// Self-contained content (`Inline` / `Other{content}`) carried in the plan itself,
+    /// not a host ref — the tier realizes it in-band without a blob store: docker/podman
+    /// stage it to a host file and repoint `source_ref`; k8s projects it as a ConfigMap
+    /// volume. `None` for ref-backed binds (File/Resource store id, CacheVolume path).
+    pub content: Option<String>,
 }
 
 /// A memory-store mount realized as a **memoryd sidecar** sharing an `emptyDir` with
@@ -264,6 +269,7 @@ mod cgroup_caps_tests {
                 source_ref: "/host/data".into(),
                 mount_path: "/data".into(),
                 read_only: true,
+                content: None,
             }],
             outputs_volume: "/mnt/session/outputs".into(),
             network: NetworkMode::None,
@@ -714,8 +720,21 @@ fn binds_of(spec: &pc::SandboxSpec) -> Vec<BindPlan> {
             source_ref: mount_ref(&m.source),
             mount_path: m.mount_path.clone(),
             read_only: m.access == pc::MountAccess::ReadOnly,
+            content: inline_content_of(&m.source),
         })
         .collect()
+}
+
+/// The self-contained bytes of a content-bearing mount (`Inline`, `Other{content}`),
+/// carried in the plan so a tier without a blob store can realize it in-band — docker
+/// stages it to a host file, k8s projects it as a ConfigMap. `None` for ref-backed
+/// sources (their bytes live in a store the tier resolves by `source_ref`).
+fn inline_content_of(source: &pc::MountSource) -> Option<String> {
+    match source {
+        pc::MountSource::Inline { contents } => Some(contents.clone()),
+        pc::MountSource::Other(v) => v.get("content").and_then(|c| c.as_str()).map(String::from),
+        _ => None,
+    }
 }
 
 /// The memory-store mounts a spec requests, pulled out of the byte-bind set so the

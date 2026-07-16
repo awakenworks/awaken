@@ -178,6 +178,7 @@ fn mount_ref_covers_every_source_kind() {
         source_ref: mount_ref(&src),
         mount_path: String::new(),
         read_only: false,
+        content: None,
     };
     assert_eq!(
         s(pc::MountSource::MemoryStore {
@@ -502,6 +503,7 @@ async fn open_channel_is_the_agent_transport_capability() {
         container_id: "cid-x".into(),
         outputs_path: "/mnt/session/outputs".into(),
         realized: Vec::new(),
+        _staging: None,
     };
     rt.st.lock().unwrap().alive.insert("cid-x".into(), true);
     // Drive it through the neutral AgentTransport port.

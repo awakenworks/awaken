@@ -50,6 +50,51 @@ fn spec(scope: &str) -> pc::SandboxSpec {
     }
 }
 
+/// A busybox fixture that reads the ConfigMap-projected file at `/acp-config/config.toml`
+/// and echoes its contents back over the wire — so the host can prove the inline content
+/// was materialized *inside the Pod*, not merely planned. Same newline-wire shape as
+/// `agent_argv`, but the reply text is whatever the mounted file holds.
+fn cat_mount_argv() -> Vec<String> {
+    let script = "read _p; \
+        printf '{\"type\":\"message\",\"text\":\"%s\"}\\n' \"$(cat /acp-config/config.toml)\"; \
+        printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
+    vec![
+        "nc".into(),
+        "-lk".into(),
+        "-p".into(),
+        "8080".into(),
+        "-e".into(),
+        "sh".into(),
+        "-c".into(),
+        script.into(),
+    ]
+}
+
+/// The e2e spec with one `Inline` mount the container tier realizes as a ConfigMap volume
+/// (the codex `config.toml` / ADR-0038 resource path on the k8s tier).
+fn inline_spec(scope: &str, marker: &str) -> pc::SandboxSpec {
+    pc::SandboxSpec {
+        scope: scope.into(),
+        isolation: pc::IsolationClass::Container,
+        mounts: vec![pc::MountRequirement {
+            mount_id: "cfg".into(),
+            source: pc::MountSource::Inline {
+                contents: marker.into(),
+            },
+            mount_path: "/acp-config/config.toml".into(),
+            access: pc::MountAccess::ReadOnly,
+            lifetime: pc::MountLifetime::PerRun,
+            required: true,
+        }],
+        env: Vec::new(),
+        network: pc::NetworkPolicy::Unrestricted,
+        outputs_path: "/mnt/session/outputs".into(),
+        limits: pc::ResourceLimits::default(),
+        lease_ttl_secs: None,
+        extra: Some(serde_json::json!({ "command": cat_mount_argv(), "image": "awaken-bb:1" })),
+    }
+}
+
 fn kubectl(args: &[&str]) -> std::process::Output {
     std::process::Command::new("kubectl")
         .args(args)
@@ -157,4 +202,127 @@ async fn a_pod_agent_speaks_the_wire_over_a_port_forward() {
         "the Pod agent's reply must reach the host over the forwarded port: {got:?}"
     );
     assert!(got.contains("turn_end"), "the turn completed: {got:?}");
+}
+
+#[tokio::test]
+async fn inline_content_reaches_the_pod_as_a_configmap_volume() {
+    if std::env::var("AWAKEN_K8S_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping: set AWAKEN_K8S_E2E=1 with a reachable cluster to run");
+        return;
+    }
+    if !kubectl(&["get", "nodes"]).status.success() {
+        eprintln!("skipping: no reachable Kubernetes cluster");
+        return;
+    }
+
+    let local_port: u16 = 18081;
+    let addr = format!("127.0.0.1:{local_port}").parse().unwrap();
+    let scope = format!("k8s-cfg-{}", std::process::id());
+    let pod = format!("awaken-{scope}");
+    let marker = "inline-configmap-marker-42";
+    let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
+
+    let runtime = K8sRuntime::connect("default", addr)
+        .await
+        .expect("connect to the cluster");
+    let provider = ContainerProvider::new(Arc::new(runtime), "awaken-bb:1");
+
+    let sandbox = provider
+        .create_container(&inline_spec(&scope, marker))
+        .await
+        .expect("create the agent Pod with a ConfigMap-backed inline mount");
+
+    // The ConfigMap must exist (created before the Pod, referenced as a volume).
+    let cm = kubectl(&[
+        "get",
+        "configmap",
+        &format!("{pod}-cfg-0"),
+        "-o",
+        "jsonpath={.data.content}",
+    ]);
+    let cm_data = String::from_utf8_lossy(&cm.stdout).to_string();
+
+    let ready = {
+        let mut ok = false;
+        for _ in 0..120 {
+            let phase = kubectl(&["get", "pod", &pod, "-o", "jsonpath={.status.phase}"]);
+            if String::from_utf8_lossy(&phase.stdout) == "Running" {
+                ok = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        ok
+    };
+
+    let mut forward = std::process::Command::new("kubectl")
+        .args([
+            "port-forward",
+            &format!("pod/{pod}"),
+            &format!("{local_port}:8080"),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn port-forward");
+
+    let mut got = String::new();
+    if ready {
+        let mut channel = None;
+        for _ in 0..100 {
+            match awaken_agent_channel::AgentTransport::open_channel(&sandbox).await {
+                Ok(c) => {
+                    channel = Some(c);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
+            }
+        }
+        if let Some(mut channel) = channel {
+            let _ = channel.write_all(b"hello\n").await;
+            let _ = channel.flush().await;
+            let mut buf = vec![0u8; 512];
+            for _ in 0..50 {
+                match tokio::time::timeout(Duration::from_secs(2), channel.read(&mut buf)).await {
+                    Ok(Ok(0)) => break,
+                    Ok(Ok(n)) => {
+                        got.push_str(&String::from_utf8_lossy(&buf[..n]));
+                        if got.contains("turn_end") {
+                            break;
+                        }
+                    }
+                    _ => break,
+                }
+            }
+        }
+    }
+
+    let _ = forward.kill();
+    let _ = pc::Sandbox::dispose(&sandbox).await;
+    let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
+
+    // The ConfigMap held the inline bytes verbatim.
+    assert_eq!(
+        cm_data, marker,
+        "the ConfigMap must hold the inline content"
+    );
+    assert!(ready, "the agent Pod must reach Running");
+    // The Pod `cat`ed the ConfigMap-projected file and sent it back — proof the inline
+    // content was materialized *inside the Pod*, at the exact mount_path, and readable.
+    assert!(
+        got.contains(marker),
+        "the ConfigMap-projected inline content must be readable at the mount_path in the Pod: {got:?}"
+    );
+
+    // dispose() reaps the ConfigMap too (best-effort label sweep); it must be gone.
+    let after = kubectl(&[
+        "get",
+        "configmap",
+        &format!("{pod}-cfg-0"),
+        "--ignore-not-found",
+    ]);
+    assert!(
+        String::from_utf8_lossy(&after.stdout).trim().is_empty(),
+        "dispose must reap the inline-content ConfigMap"
+    );
 }
