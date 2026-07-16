@@ -15,3 +15,6 @@ coverage/
 
 # k3d topology e2e: host-built binary copied into the image build context
 deploy/k3d/awaken-server-local
+
+# Local Claude Code worktrees/scratch (never tracked)
+.claude/
