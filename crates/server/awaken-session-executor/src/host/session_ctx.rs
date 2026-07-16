@@ -68,6 +68,11 @@ pub(crate) struct SessionCtx {
     /// held by neither the run loop nor the state lock, so interrupt never blocks
     /// on the loop that holds `state`.
     pub(crate) cancel: std::sync::Mutex<Option<CancellationToken>>,
+    /// The in-flight run's transient-retry counter (incremented by the inference
+    /// seam on each transparent retry), so `finish_step` can report whether the
+    /// turn was auto-recovered (`session.status_rescheduled`). Same brief-lock
+    /// discipline as `cancel`; a fresh counter is installed per run in `context`.
+    pub(crate) reschedule: std::sync::Mutex<Option<Arc<std::sync::atomic::AtomicU32>>>,
     /// The in-flight run's live inbox plus the previous attempt's unconsumed
     /// leftovers. Same locking discipline as `cancel`; lifecycle and lookup
     /// live in [`crate::live_inbox`].
@@ -83,11 +88,16 @@ impl SessionCtx {
     pub(crate) fn context(&self) -> RuntimeRunContext {
         let token = CancellationToken::new();
         *self.cancel.lock().expect("cancel mutex poisoned") = Some(token.clone());
+        // A fresh transient-retry counter for this run; the inference seam bumps it
+        // and `finish_step` reads it to report `session.status_rescheduled`.
+        let reschedule = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        *self.reschedule.lock().expect("reschedule mutex poisoned") = Some(reschedule.clone());
         let mut ctx = RuntimeRunContext::new()
             .with_commit(self.commit.clone())
             .with_reader(self.commit.clone())
             .with_stream_checkpoint(self.stream_checkpoint.clone())
             .with_cancellation(token)
+            .with_reschedules(reschedule)
             // ADR-0050 D5: resolve the content-capture decision for this turn.
             // Open/single-machine reads the env default; managed overrides with
             // the ceiling × request × consent meet.
