@@ -599,14 +599,20 @@ impl SharedHost {
         let compacted = !waiting
             && awaken_ext_compact::compaction_count(&ctx.commit.committed_state(&ctx.thread_id))
                 > st.compactions_before;
+        // The run's transient-retry counter: non-zero ⇒ the inference seam
+        // transparently retried at least once, so the turn was auto-recovered.
+        let rescheduled = ctx
+            .reschedule
+            .lock()
+            .expect("reschedule mutex poisoned")
+            .as_ref()
+            .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed) > 0);
         RunResult {
             new_messages,
             phase,
             pending,
             compacted,
-            // Wired to the run's transient-retry counter in a follow-up; the adapter
-            // projection + the neutral plumbing land first.
-            rescheduled: false,
+            rescheduled,
         }
     }
 

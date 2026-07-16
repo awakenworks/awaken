@@ -412,6 +412,8 @@ async fn interrupted_text_stream_is_continued_from_the_partial() {
     let llm: Arc<dyn LlmExecutor> = flaky.clone();
     let breaker = crate::circuit_breaker::CircuitBreaker::default();
     let sink = recording();
+    // The transient-retry counter the host reads to surface session.status_rescheduled.
+    let reschedules = Arc::new(std::sync::atomic::AtomicU32::new(0));
 
     let response = infer_with_retry(
         &llm,
@@ -424,12 +426,19 @@ async fn interrupted_text_stream_is_continued_from_the_partial() {
         &awaken_runtime_contract::CaptureDecision::default(),
         None,
         &awaken_runtime_contract::metrics::NoopRecorder,
+        Some(&reschedules),
     )
     .await
     .expect("continues past the drop");
 
     // The committed step is the whole text: prefix + continuation, stitched once.
     assert_eq!(response.output.text_content(), "The answer is 42");
+    // The single transparent retry was counted, so the host reports a reschedule.
+    assert_eq!(
+        reschedules.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "one transparent retry is counted for session.status_rescheduled"
+    );
 
     let requests = flaky.requests.lock().unwrap();
     assert_eq!(requests.len(), 2, "one drop, one successful retry");
@@ -479,6 +488,7 @@ async fn completed_tool_calls_before_a_drop_are_executed_without_re_inferring() 
         &awaken_runtime_contract::CaptureDecision::default(),
         None,
         &awaken_runtime_contract::metrics::NoopRecorder,
+        None,
     )
     .await
     .expect("salvages the completed tool call");
@@ -521,6 +531,7 @@ async fn completed_tool_calls_are_salvaged_even_when_the_retry_budget_is_spent()
         &awaken_runtime_contract::CaptureDecision::default(),
         None,
         &awaken_runtime_contract::metrics::NoopRecorder,
+        None,
     )
     .await
     .expect("salvages the completed tool call despite a spent budget");
@@ -557,6 +568,7 @@ async fn an_in_flight_tool_call_is_dropped_and_the_text_continues() {
         &awaken_runtime_contract::CaptureDecision::default(),
         None,
         &awaken_runtime_contract::metrics::NoopRecorder,
+        None,
     )
     .await
     .expect("continues the text past the in-flight tool");
@@ -605,6 +617,7 @@ async fn the_interruption_boundary_flushes_a_checkpoint_then_clears_it_on_return
         &awaken_runtime_contract::CaptureDecision::default(),
         None,
         &awaken_runtime_contract::metrics::NoopRecorder,
+        None,
     )
     .await;
     assert!(result.is_err(), "no retry budget: the drop stands");
@@ -652,6 +665,7 @@ async fn a_persisted_text_partial_resumes_in_a_fresh_call() {
         &awaken_runtime_contract::CaptureDecision::default(),
         None,
         &awaken_runtime_contract::metrics::NoopRecorder,
+        None,
     )
     .await
     .expect("resumes from the persisted partial");
@@ -696,6 +710,7 @@ async fn a_persisted_completed_tool_call_resumes_without_calling_the_model() {
         &awaken_runtime_contract::CaptureDecision::default(),
         None,
         &awaken_runtime_contract::metrics::NoopRecorder,
+        None,
     )
     .await
     .expect("resumes the completed tool call");

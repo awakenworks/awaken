@@ -636,6 +636,7 @@ async fn infer_step(
             &context.capture.decision,
             context.content_sink(),
             runtime.metrics(),
+            context.reschedules.as_ref(),
         )
         .await
         {
