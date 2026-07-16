@@ -723,6 +723,9 @@ impl RawTool for DraftAgent {
             skills: args.skills,
             multiagent: args.multiagent,
             metadata: args.metadata,
+            // Compaction is derived from the model at publish; the admin assistant does not
+            // author a per-agent strategy yet (default = model-derived window).
+            compaction: None,
         };
         let out = validate_persist_emit(call.call_id, config, &self.validator, &self.store).await?;
         // Resources are a SEPARATE store: only bind them once the config validated + was
