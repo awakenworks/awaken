@@ -168,6 +168,52 @@ async fn file_mount_is_realized_and_readable_by_a_process() {
 }
 
 #[tokio::test]
+async fn inline_mount_realizes_ephemeral_content_without_a_store() {
+    // ADR-0057: inline ephemeral content (a projected config.toml) ships in the spec
+    // — no store, no id, self-contained — and is readable inside the sandbox. It is
+    // never harvested: `Inline` is neither `Secret` (writeback) nor `MemoryStore`
+    // (harvested), so no realizer copies it back — a one-way projection.
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = LocalProvider::new(tmp.path());
+    let mut spec = spec("t-inline");
+    spec.mounts.push(pc::MountRequirement {
+        mount_id: "cfg".into(),
+        source: pc::MountSource::Inline {
+            contents: "[mcp_servers.github]\nurl = \"https://mcp\"\n".into(),
+        },
+        mount_path: "/workspace/config.toml".into(),
+        // The Workdir tier cannot OS-enforce read-only (a real RO guarantee is the
+        // bwrap/container tier's job); realize a read-write copy of the projection here.
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::PerRun,
+        required: true,
+    });
+
+    let sandbox = provider.create(&spec).await.unwrap();
+    assert_eq!(sandbox.realized().len(), 1);
+
+    let proc = sandbox
+        .spawn(sh(
+            r#"cat workspace/config.toml > "$AWAKEN_OUTPUTS_DIR/seen.toml""#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(proc.wait().await.unwrap().code, Some(0));
+
+    let artifacts = sandbox.artifacts().await.unwrap();
+    let seen = artifacts
+        .iter()
+        .find(|a| a.path.ends_with("/seen.toml"))
+        .unwrap();
+    assert_eq!(
+        sandbox.read_artifact(&seen.id).await.unwrap(),
+        b"[mcp_servers.github]\nurl = \"https://mcp\"\n",
+    );
+    // Never harvested/written back — the projection is one-way.
+    assert!(!spec.mounts[0].is_secret_writeback());
+}
+
+#[tokio::test]
 async fn required_mount_without_a_resolvable_source_errors() {
     let tmp = tempfile::tempdir().unwrap();
     let provider = LocalProvider::new(tmp.path());

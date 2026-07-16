@@ -77,6 +77,22 @@ pub enum MountSource {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         content_hash: Option<String>,
     },
+    /// **Inline ephemeral content** (ADR-0057): small, **non-secret**, per-run *derived*
+    /// bytes carried in the spec itself — e.g. a launched CLI's `config.toml` projected
+    /// from `plugin_config`. Distinct from `File`/`Resource` (durable, content-addressed,
+    /// store-resolved): this is a **projection**, so it is
+    /// - **one-way**: written in at realize, **NEVER harvested/written back** (like
+    ///   `CacheVolume`'s never-harvest, but for derived config) — harvesting a projection
+    ///   would let a stale render impersonate the authoritative source;
+    /// - **regenerable**: losing it costs a re-derive, never data loss;
+    /// - **non-secret**: a credential stays a broker reference (`Secret`/`EnvValue::Secret`),
+    ///   never inline bytes (G3).
+    ///
+    /// Self-contained (no store lookup), so it is portable to a remote worker. Emitted
+    /// paired with `MountAccess::ReadOnly` + `MountLifetime::PerRun`; the never-harvest
+    /// property is intrinsic — it is neither `Secret` (writeback) nor `MemoryStore`
+    /// (harvested), so no realizer copies it back.
+    Inline { contents: String },
     /// Forward-compat escape: an unknown source a newer provider understands.
     Other(Value),
 }
