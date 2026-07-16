@@ -320,7 +320,7 @@ async fn delete_session(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, WireErr> {
-    state.delete_session(&id).map_err(error_response)?;
+    state.delete_session(&id).await.map_err(error_response)?;
     Ok(Json(
         serde_json::json!({ "id": id, "type": "session_deleted" }),
     ))
