@@ -391,6 +391,27 @@ mod tests {
         }
     }
 
+    /// Budget exhaustion (`Terminal::Exhausted` → `RunFinished{exhausted:true}`)
+    /// closes an AG-UI run with `RUN_FINISHED`, like a natural end — never
+    /// `RUN_ERROR`. Pins that exhaustion is not surfaced as a fault.
+    #[test]
+    fn an_exhausted_run_finishes_cleanly_not_as_error() {
+        let outcome = StepOutcome {
+            terminal: Terminal::Exhausted,
+            ..Default::default()
+        };
+        let step = encode_step(&outcome, "t1", "r1");
+        assert!(
+            step.iter()
+                .any(|e| matches!(e, AgUiEvent::RunFinished { .. })),
+            "RUN_FINISHED: {step:?}",
+        );
+        assert!(
+            !step.iter().any(|e| matches!(e, AgUiEvent::RunError { .. })),
+            "an exhausted run is not RUN_ERROR: {step:?}",
+        );
+    }
+
     #[test]
     fn plain_turn_brackets_with_run_events() {
         let outcome = StepOutcome {

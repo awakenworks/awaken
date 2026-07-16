@@ -469,6 +469,31 @@ mod tests {
         );
     }
 
+    /// Budget exhaustion (`Terminal::Exhausted` → `RunFinished{exhausted:true}`) is
+    /// a clean terminus on the AI-SDK wire: the protocol has no "exhausted" finish
+    /// reason, so it closes with `finish("stop")` like a natural end — never an
+    /// error frame. Pins that exhaustion doesn't leak as a fault.
+    #[test]
+    fn an_exhausted_run_finishes_cleanly_not_as_error() {
+        let outcome = StepOutcome {
+            terminal: Terminal::Exhausted,
+            ..Default::default()
+        };
+        let step = encode_step(&outcome);
+        assert!(
+            step.iter().any(
+                |e| matches!(e, UIStreamEvent::Finish { finish_reason: Some(r), .. } if r == "stop")
+            ),
+            "finish(stop): {step:?}",
+        );
+        assert!(
+            !step
+                .iter()
+                .any(|e| matches!(e, UIStreamEvent::Error { .. })),
+            "an exhausted run is not an error: {step:?}",
+        );
+    }
+
     // REGRESSION (the live-merge, ADR-0058 Axis 9): a streamed step's committed
     // tail must NOT re-emit assistant text — the live `delta()` already streamed it
     // as `text-*`. `encode_close` drops the `AssistantMessage`, so the tail carries
