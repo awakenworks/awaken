@@ -604,6 +604,9 @@ impl SharedHost {
             phase,
             pending,
             compacted,
+            // Wired to the run's transient-retry counter in a follow-up; the adapter
+            // projection + the neutral plumbing land first.
+            rescheduled: false,
         }
     }
 

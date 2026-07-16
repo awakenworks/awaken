@@ -22,6 +22,10 @@ pub struct StepOutcome {
     /// `true` when this turn folded its context — projected as an
     /// `agent.thread_context_compacted` event ahead of the turn's messages.
     pub compacted: bool,
+    /// `true` when the runtime transparently retried a transient inference failure
+    /// during this turn (auto-recovery) — projected as a `session.status_rescheduled`
+    /// event ahead of the turn's messages, so a client observes the recovery.
+    pub rescheduled: bool,
     /// Set when the run ended in a terminal fault (the neutral `EndCause::Error`) —
     /// projected as a `session.error` event before the turn goes idle, so a client
     /// observes the failure. `None` on a normal completion.

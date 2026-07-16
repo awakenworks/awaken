@@ -185,6 +185,7 @@ async fn a_terminal_run_fault_projects_session_error_before_idle() {
             stop: StopReason::EndTurn,
             pending: None,
             compacted: false,
+            rescheduled: false,
             failure: Some(StepFailure {
                 code: "provider_unavailable".into(),
                 message: "upstream model timed out".into(),
@@ -239,6 +240,7 @@ async fn a_classified_fault_projects_the_matching_sdk_error_variant() {
                 stop: StopReason::EndTurn,
                 pending: None,
                 compacted: false,
+                rescheduled: false,
                 failure: Some(StepFailure {
                     code: code.into(),
                     message: "boom".into(),
@@ -263,6 +265,36 @@ async fn a_classified_fault_projects_the_matching_sdk_error_variant() {
     }
 }
 
+/// A turn the runtime transparently retried (transient auto-recovery) projects
+/// `session.status_rescheduled` between the running marker and the turn's output,
+/// so a client observes the recovery rather than an unexplained pause.
+#[tokio::test]
+async fn a_rescheduled_turn_projects_the_rescheduled_status() {
+    let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
+        StepOutcome {
+            messages: vec![assistant_text("a", "after a retry")],
+            stop: StopReason::EndTurn,
+            pending: None,
+            compacted: false,
+            rescheduled: true,
+            failure: None,
+        }
+    }))));
+    let id = create(&app).await;
+    send_user(&app, &id, "go").await;
+    let list = list_events(&app, &id).await;
+    assert_eq!(
+        types(&list),
+        vec![
+            "session.status_running",
+            "session.status_rescheduled",
+            "agent.message",
+            "session.status_idle",
+        ],
+        "the transient retry surfaces as session.status_rescheduled before the output"
+    );
+}
+
 // --- CE: compaction marker ---------------------------------------------------
 
 /// A turn that folded its context projects `agent.thread_context_compacted` ahead
@@ -275,6 +307,7 @@ async fn a_compacted_turn_projects_the_compaction_marker() {
             stop: StopReason::EndTurn,
             pending: None,
             compacted: true,
+            rescheduled: false,
             failure: None,
         }
     }))));
@@ -319,6 +352,7 @@ async fn session_usage_reflects_the_runtime_tally() {
             stop: StopReason::EndTurn,
             pending: None,
             compacted: false,
+            rescheduled: false,
             failure: None,
         })
         .with_usage(usage),
@@ -363,6 +397,7 @@ async fn an_all_empty_text_assistant_message_is_dropped() {
             stop: StopReason::EndTurn,
             pending: None,
             compacted: false,
+            rescheduled: false,
             failure: None,
         }
     }))));
@@ -414,6 +449,7 @@ async fn an_mcp_tool_call_projects_mcp_events() {
             stop: StopReason::EndTurn,
             pending: None,
             compacted: false,
+            rescheduled: false,
             failure: None,
         }
     }))));
@@ -460,6 +496,7 @@ async fn a_retries_exhausted_turn_idles_with_that_stop_reason() {
             stop: StopReason::RetriesExhausted,
             pending: None,
             compacted: false,
+            rescheduled: false,
             failure: None,
         }
     }))));
@@ -511,6 +548,7 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
             stop: StopReason::EndTurn,
             pending: None,
             compacted: false,
+            rescheduled: false,
             failure: None,
         }
     }))));
@@ -587,6 +625,7 @@ async fn updating_a_session_commits_a_session_updated_event() {
             stop: StopReason::EndTurn,
             pending: None,
             compacted: false,
+            rescheduled: false,
             failure: None,
         }
     }))));
@@ -623,6 +662,7 @@ async fn archiving_commits_a_terminal_event_and_fences_writes() {
             stop: StopReason::EndTurn,
             pending: None,
             compacted: false,
+            rescheduled: false,
             failure: None,
         }
     }))));

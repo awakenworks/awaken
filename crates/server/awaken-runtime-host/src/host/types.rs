@@ -24,6 +24,9 @@ pub struct RunResult {
     /// older turns). Read from durable thread state at the terminal step, so a
     /// parked→resumed turn reports it exactly once.
     pub compacted: bool,
+    /// `true` when the runtime transparently retried a transient inference failure
+    /// during this turn (auto-recovery), read from the run's reschedule counter.
+    pub rescheduled: bool,
 }
 
 /// The neutral resume command: answer a built-in tool's permission gate, or
