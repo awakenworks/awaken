@@ -639,7 +639,7 @@ pub fn egress_plan(
 /// the sandbox is dropped (after the container is gone). The container tier binds host
 /// paths, so self-contained content (`Inline` / `Other{content}`) is written here and the
 /// bind repointed at the host file — the counterpart of the bwrap tier's `resolve_source`
-/// + write. Content-addressed `File`/`Resource` (a store id, not bytes) still needs a
+/// plus write. Content-addressed `File`/`Resource` (a store id, not bytes) still needs a
 /// blob-store resolve on this tier; the ACP resource path rides `Other{content}` so it
 /// works today.
 #[derive(Debug)]
