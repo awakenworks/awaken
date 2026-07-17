@@ -16,11 +16,17 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use awaken_session_contract::work_queue::{
-    LeaseBook, LeaseReceipt, QueueStats, WorkItem, WorkPayload, WorkQueue, WorkState,
+    LeaseReceipt, QueueStats, WorkItem, WorkPayload, WorkQueue, WorkState,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgRow};
+
+// The in-memory reference backend + the reclaim/poll `LeaseBook` the sqlite/postgres
+// backends share live here beside the durable siblings (issue A / Phase 1): the port +
+// value objects stay inward in `awaken-session-contract`.
+mod inmem;
+pub use inmem::{InMemoryWorkQueue, LEASE_TTL_MS, LeaseBook, POLLER_WINDOW_MS};
 
 /// The frozen presence timestamp the managed wire uses (parity with the in-memory
 /// queue — timestamps carry presence, not wall time, in the open-tier projection).
@@ -711,8 +717,8 @@ impl WorkQueue for PostgresWorkQueue {
 
 #[cfg(test)]
 mod tests {
+    use super::LEASE_TTL_MS;
     use super::*;
-    use awaken_session_contract::work_queue::LEASE_TTL_MS;
 
     fn q() -> SqliteWorkQueue {
         SqliteWorkQueue::open_in_memory().unwrap()

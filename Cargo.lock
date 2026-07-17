@@ -927,6 +927,7 @@ dependencies = [
  "awaken-provisioning-contract",
  "awaken-session-contract",
  "awaken-tenancy",
+ "awaken-work-store",
  "axum",
  "form_urlencoded",
  "http-body-util",

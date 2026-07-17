@@ -69,4 +69,4 @@ pub use state::{
     RunError, RunErrorKind, SessionInit, SessionLifecycleSink, SessionResource, SessionRuntime,
     SessionUsage, StateError, StepFailure, StepOutcome, Terminus,
 };
-pub use work_queue::{InMemoryWorkQueue, WorkItem, WorkQueue, WorkState};
+pub use work_queue::{WorkItem, WorkQueue, WorkState};

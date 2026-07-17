@@ -755,6 +755,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # adapter defines the wire DTOs + encoder over them and re-exports each moved
         # port via a shim until consumers flip to the contract directly.
         "awaken-session-contract",
+        # The in-memory reference WorkQueue backend the environments Default wires (the
+        # port + value objects stay inward in session-contract; the backend lives beside
+        # the durable sqlite/postgres siblings in the store crate).
+        "awaken-work-store",
         # Live SSE previews stream agent.message deltas over an SSE body;
         # form_urlencoded parses the managed wire's cursor/query params.
         "async-stream",
