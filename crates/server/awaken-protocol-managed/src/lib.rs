@@ -41,7 +41,6 @@ pub mod types;
 pub mod cron;
 pub mod env_registry;
 mod preview;
-mod session_repo;
 mod state;
 /// The self-hosted environment work queue as a port ([`work_queue::WorkQueue`]),
 /// with an in-memory default; durable (sqlite/postgres) backends fold in behind it.
@@ -58,7 +57,9 @@ pub use routes::vaults::{
     McpProbe, McpProbeStatus, McpRefreshBinding, TokenEndpointAuthBinding, VaultState, vault_router,
 };
 pub use routes::{WorkspaceScope, enforce_managed_beta, router};
-pub use session_repo::{
+// The session-repository port family now lives in `awaken-session-contract`;
+// re-exported so existing `awaken_protocol_managed::…` paths keep resolving.
+pub use awaken_session_contract::{
     InMemoryScopedSessionStore, InMemorySessionRepository, ManagedSessionRepository,
     PersistedSession, ScopedSessionRepo, ScopedSessionStore,
 };
