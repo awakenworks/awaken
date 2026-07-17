@@ -126,6 +126,18 @@ pub awaken_session_contract::CustomTool::name: alloc::string::String
 pub struct awaken_session_contract::Decision
 pub awaken_session_contract::Decision::allow: bool
 pub awaken_session_contract::Decision::note: core::option::Option<alloc::string::String>
+pub struct awaken_session_contract::InMemoryScopedSessionStore
+impl awaken_session_contract::InMemoryScopedSessionStore
+pub fn awaken_session_contract::InMemoryScopedSessionStore::new() -> Self
+impl awaken_session_contract::ScopedSessionStore for awaken_session_contract::InMemoryScopedSessionStore
+pub fn awaken_session_contract::InMemoryScopedSessionStore::get_scoped<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_session_contract::PersistedSession>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_session_contract::InMemoryScopedSessionStore::save_scoped<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, awaken_session_contract::PersistedSession) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub struct awaken_session_contract::InMemorySessionRepository
+impl awaken_session_contract::ManagedSessionRepository for awaken_session_contract::InMemorySessionRepository
+pub fn awaken_session_contract::InMemorySessionRepository::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_session_contract::PersistedSession>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_session_contract::InMemorySessionRepository::owner<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_session_contract::InMemorySessionRepository::save<'life0, 'async_trait>(&'life0 self, awaken_session_contract::PersistedSession) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_session_contract::InMemorySessionRepository::set_owner<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub struct awaken_session_contract::LiveInboxEntry
 pub awaken_session_contract::LiveInboxEntry::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_session_contract::LiveInboxEntry::id: u64
@@ -160,12 +172,29 @@ pub awaken_session_contract::Pending::client_executed: bool
 pub awaken_session_contract::Pending::input: serde_json::value::Value
 pub awaken_session_contract::Pending::name: alloc::string::String
 pub awaken_session_contract::Pending::tool_use_id: alloc::string::String
+pub struct awaken_session_contract::PersistedSession
+pub awaken_session_contract::PersistedSession::agent_id: alloc::string::String
+pub awaken_session_contract::PersistedSession::environment_id: alloc::string::String
+pub awaken_session_contract::PersistedSession::mcp_servers: alloc::vec::Vec<serde_json::value::Value>
+pub awaken_session_contract::PersistedSession::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub awaken_session_contract::PersistedSession::model: alloc::string::String
+pub awaken_session_contract::PersistedSession::session_id: alloc::string::String
+pub awaken_session_contract::PersistedSession::title: core::option::Option<alloc::string::String>
 pub struct awaken_session_contract::RunError
 pub awaken_session_contract::RunError::kind: awaken_session_contract::RunErrorKind
 pub awaken_session_contract::RunError::message: alloc::string::String
 impl awaken_session_contract::RunError
 pub fn awaken_session_contract::RunError::bad_request(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_session_contract::RunError::internal(impl core::convert::Into<alloc::string::String>) -> Self
+pub struct awaken_session_contract::ScopedSessionRepo<S: awaken_session_contract::ScopedSessionStore>
+impl<S: awaken_session_contract::ScopedSessionStore> awaken_session_contract::ScopedSessionRepo<S>
+pub fn awaken_session_contract::ScopedSessionRepo<S>::new(alloc::sync::Arc<S>, awaken_tenancy::ScopeId) -> Self
+pub fn awaken_session_contract::ScopedSessionRepo<S>::scope(&self) -> &awaken_tenancy::ScopeId
+impl<S: awaken_session_contract::ScopedSessionStore> awaken_session_contract::ManagedSessionRepository for awaken_session_contract::ScopedSessionRepo<S>
+pub fn awaken_session_contract::ScopedSessionRepo<S>::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_session_contract::PersistedSession>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_session_contract::ScopedSessionRepo<S>::owner<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_session_contract::ScopedSessionRepo<S>::save<'life0, 'async_trait>(&'life0 self, awaken_session_contract::PersistedSession) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_session_contract::ScopedSessionRepo<S>::set_owner<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub struct awaken_session_contract::SessionInit
 pub awaken_session_contract::SessionInit::agent_id: alloc::string::String
 pub awaken_session_contract::SessionInit::deny_egress: bool
@@ -197,8 +226,29 @@ pub awaken_session_contract::StepOutcome::rescheduled: bool
 pub awaken_session_contract::StepOutcome::stop: awaken_session_contract::Terminus
 pub trait awaken_session_contract::AgentConfigSource: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::AgentConfigSource::agent_view(&self, &str) -> core::option::Option<awaken_session_contract::AgentConfigView>
+pub trait awaken_session_contract::ManagedSessionRepository: core::marker::Send + core::marker::Sync
+pub fn awaken_session_contract::ManagedSessionRepository::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_session_contract::PersistedSession>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_session_contract::ManagedSessionRepository::owner<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_session_contract::ManagedSessionRepository::save<'life0, 'async_trait>(&'life0 self, awaken_session_contract::PersistedSession) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_session_contract::ManagedSessionRepository::set_owner<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+impl awaken_session_contract::ManagedSessionRepository for awaken_session_contract::InMemorySessionRepository
+pub fn awaken_session_contract::InMemorySessionRepository::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_session_contract::PersistedSession>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_session_contract::InMemorySessionRepository::owner<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_session_contract::InMemorySessionRepository::save<'life0, 'async_trait>(&'life0 self, awaken_session_contract::PersistedSession) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_session_contract::InMemorySessionRepository::set_owner<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+impl<S: awaken_session_contract::ScopedSessionStore> awaken_session_contract::ManagedSessionRepository for awaken_session_contract::ScopedSessionRepo<S>
+pub fn awaken_session_contract::ScopedSessionRepo<S>::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_session_contract::PersistedSession>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_session_contract::ScopedSessionRepo<S>::owner<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_session_contract::ScopedSessionRepo<S>::save<'life0, 'async_trait>(&'life0 self, awaken_session_contract::PersistedSession) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_session_contract::ScopedSessionRepo<S>::set_owner<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub trait awaken_session_contract::McpProbe: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::McpProbe::probe<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_agent_contract::secret::RedactedString) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_session_contract::McpProbeStatus> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub trait awaken_session_contract::ScopedSessionStore: core::marker::Send + core::marker::Sync
+pub fn awaken_session_contract::ScopedSessionStore::get_scoped<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_session_contract::PersistedSession>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_session_contract::ScopedSessionStore::save_scoped<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, awaken_session_contract::PersistedSession) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_session_contract::ScopedSessionStore for awaken_session_contract::InMemoryScopedSessionStore
+pub fn awaken_session_contract::InMemoryScopedSessionStore::get_scoped<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_session_contract::PersistedSession>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_session_contract::InMemoryScopedSessionStore::save_scoped<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, awaken_session_contract::PersistedSession) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_session_contract::SessionLifecycleSink: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::SessionLifecycleSink::emit<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<&'life2 str>, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub trait awaken_session_contract::SessionRuntime: core::marker::Send + core::marker::Sync
