@@ -55,7 +55,7 @@ fi
 step "G1/G5/G2/G3 container tier against a real Docker daemon"
 if docker info >/dev/null 2>&1; then
   docker image inspect busybox:latest >/dev/null 2>&1 || docker pull busybox:latest >/dev/null
-  for t in docker_it docker_e2e pairwise_docker pool_docker; do
+  for t in docker_it docker_e2e pairwise_docker pool_docker hand_docker; do
     run "docker:$t" cargo test -q -p awaken-sandbox-container --features docker --test "$t"
   done
   # The awaken-sandbox acp bridge as a real container ENTRYPOINT (the production image
