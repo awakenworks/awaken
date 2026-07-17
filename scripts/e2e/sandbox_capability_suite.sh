@@ -58,6 +58,9 @@ if docker info >/dev/null 2>&1; then
   for t in docker_it docker_e2e pairwise_docker pool_docker; do
     run "docker:$t" cargo test -q -p awaken-sandbox-container --features docker --test "$t"
   done
+  # The awaken-sandbox acp bridge as a real container ENTRYPOINT (the production image
+  # shape: ENTRYPOINT=bridge, Cmd=CLI argv).
+  run "docker:acp-bridge-smoke" bash deploy/images/sandbox/smoke.sh
 else
   skip "no reachable Docker daemon"
 fi
