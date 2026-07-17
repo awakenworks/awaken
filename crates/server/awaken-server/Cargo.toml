@@ -94,6 +94,13 @@ tower = { version = "0.5", features = ["util"] }
 # wake selector. This is the *wake* channel only and is independent of the crate's
 # non-optional `async-nats` used for the ADR-0045 hand relay — do not conflate them.
 nats = ["awaken-runtime-host/nats"]
+# Container sandbox tiers (AWAKEN_SANDBOX_TIER=docker|podman|k8s). Each passes through
+# to awaken-runtime-host → awaken-sandbox-container so the served binary can realize an
+# ACP session inside a container/Pod instead of a bwrap namespace. Off by default: a
+# build without them fails closed if AWAKEN_SANDBOX_TIER names a container backend.
+container-docker = ["awaken-runtime-host/container-docker"]
+container-podman = ["awaken-runtime-host/container-podman"]
+container-k8s = ["awaken-runtime-host/container-k8s"]
 
 [dev-dependencies]
 awaken-scenario-host = { workspace = true }

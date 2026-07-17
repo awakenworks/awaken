@@ -106,6 +106,12 @@ awaken-control = { workspace = true }
 # the served binary via awaken-server → awaken-runtime-host. Used by the k3d
 # nats_wake e2e, which builds the scenario-host bin with `--features nats`.
 nats = ["awaken-server/nats"]
+# Container sandbox tiers, passed through to the served binary via awaken-server →
+# awaken-runtime-host → awaken-sandbox-container. The k3d managed-protocol e2e builds
+# the scenario-host bin with `--features container-k8s` to realize ACP sessions in Pods.
+container-docker = ["awaken-server/container-docker"]
+container-podman = ["awaken-server/container-podman"]
+container-k8s = ["awaken-server/container-k8s"]
 
 [lints]
 workspace = true

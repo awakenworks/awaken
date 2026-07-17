@@ -18,6 +18,14 @@ path = "src/main.rs"
 # `awaken_server::ConfigExecutorProvider` over the SAME shared control-plane stores
 # `awaken-cli` opens — no mocks. `NoModelConfiguredExecutor` is only the auxiliary
 # fallback for a run whose model is not yet published.
+[features]
+# Container sandbox tiers (AWAKEN_SANDBOX_TIER=docker|podman|k8s), passed through to
+# the shared host via awaken-server so a database-less worker can realize its ACP
+# sessions inside containers/Pods. Off by default (bwrap namespace tier).
+container-docker = ["awaken-server/container-docker"]
+container-podman = ["awaken-server/container-podman"]
+container-k8s = ["awaken-server/container-k8s"]
+
 [dependencies]
 # The neutral host substrate: SharedHost, the dispatch pool, and the worker dispatch
 # store that routes the drain over HTTP to the cell server.
