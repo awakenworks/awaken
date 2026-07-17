@@ -14,8 +14,10 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use awaken_protocol_managed::types::environment::{WorkData, WorkHeartbeat, WorkQueueStats};
-use awaken_protocol_managed::work_queue::{LeaseBook, WorkItem, WorkQueue, WorkState};
+use awaken_protocol_managed::types::environment::WorkData;
+use awaken_protocol_managed::work_queue::{
+    LeaseBook, LeaseReceipt, QueueStats, WorkItem, WorkQueue, WorkState,
+};
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sqlx::Row;
@@ -326,7 +328,7 @@ impl WorkQueue for SqliteWorkQueue {
         item
     }
 
-    async fn heartbeat(&self, env_id: &str, wid: &str, now_ms: u64) -> Option<WorkHeartbeat> {
+    async fn heartbeat(&self, env_id: &str, wid: &str, now_ms: u64) -> Option<LeaseReceipt> {
         let mut guard = self.conn.lock().expect("work queue mutex poisoned");
         let tx = guard
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -339,9 +341,7 @@ impl WorkQueue for SqliteWorkQueue {
         .expect("heartbeat");
         tx.commit().expect("commit heartbeat");
         self.book.lease(wid, now_ms); // extend the lease
-        Some(WorkHeartbeat {
-            object_type: "work_heartbeat",
-            last_heartbeat: OBJECT_AT,
+        Some(LeaseReceipt {
             lease_extended: true,
             state: current.state.as_str(),
             ttl_seconds: HEARTBEAT_TTL_SECONDS,
@@ -389,7 +389,7 @@ impl WorkQueue for SqliteWorkQueue {
         item
     }
 
-    async fn stats(&self, env_id: &str, now_ms: u64) -> WorkQueueStats {
+    async fn stats(&self, env_id: &str, now_ms: u64) -> QueueStats {
         let conn = self.conn.lock().expect("work queue mutex poisoned");
         let count = |state_clause: &str| -> usize {
             conn.query_row(
@@ -407,8 +407,7 @@ impl WorkQueue for SqliteWorkQueue {
         // processing (queued OR pending), and pollers are counted from the liveness
         // book, not proxied from the active count.
         let has_unfinished = depth > 0 || pending > 0;
-        WorkQueueStats {
-            object_type: "work_queue_stats",
+        QueueStats {
             depth,
             pending,
             oldest_queued_at: has_unfinished.then(|| OBJECT_AT.to_string()),
@@ -616,7 +615,7 @@ impl WorkQueue for PostgresWorkQueue {
         self.fetch_owned(env_id, wid).await
     }
 
-    async fn heartbeat(&self, env_id: &str, wid: &str, now_ms: u64) -> Option<WorkHeartbeat> {
+    async fn heartbeat(&self, env_id: &str, wid: &str, now_ms: u64) -> Option<LeaseReceipt> {
         let current = self.fetch_owned(env_id, wid).await?;
         sqlx::query(
             "UPDATE work_queue_item SET latest_heartbeat_at = $1 \
@@ -629,9 +628,7 @@ impl WorkQueue for PostgresWorkQueue {
         .await
         .expect("heartbeat");
         self.book.lease(wid, now_ms); // extend the lease
-        Some(WorkHeartbeat {
-            object_type: "work_heartbeat",
-            last_heartbeat: OBJECT_AT,
+        Some(LeaseReceipt {
             lease_extended: true,
             state: current.state.as_str(),
             ttl_seconds: HEARTBEAT_TTL_SECONDS,
@@ -675,7 +672,7 @@ impl WorkQueue for PostgresWorkQueue {
         self.fetch_owned(env_id, wid).await
     }
 
-    async fn stats(&self, env_id: &str, now_ms: u64) -> WorkQueueStats {
+    async fn stats(&self, env_id: &str, now_ms: u64) -> QueueStats {
         let count = |clause: &'static str| {
             let pool = self.pool.clone();
             let env = env_id.to_string();
@@ -694,8 +691,7 @@ impl WorkQueue for PostgresWorkQueue {
         // Parity with the in-memory queue: oldest persists while processing, and
         // pollers come from the liveness book (not the active-count proxy).
         let has_unfinished = depth > 0 || pending > 0;
-        WorkQueueStats {
-            object_type: "work_queue_stats",
+        QueueStats {
             depth,
             pending,
             oldest_queued_at: has_unfinished.then(|| OBJECT_AT.to_string()),

@@ -26,7 +26,7 @@ use crate::types::environment::{
     WorkHeartbeat, WorkQueueStats, WorkUpdateParams,
 };
 use crate::types::{ErrorResponse, Page, PageQuery, paginate};
-use crate::work_queue::{InMemoryWorkQueue, WorkQueue};
+use crate::work_queue::{InMemoryWorkQueue, OBJECT_AT, WorkQueue};
 
 /// The self-hosted environment registry + work queue, both behind ports so a
 /// durable backend (sqlite/postgres) serves standalone and distributed deployments
@@ -280,7 +280,14 @@ async fn work_stats(
     Path(id): Path<String>,
 ) -> Result<Json<WorkQueueStats>, WireError> {
     require_env(&state, &id).await?;
-    Ok(Json(state.work.stats(&id, now_ms()).await))
+    let s = state.work.stats(&id, now_ms()).await;
+    Ok(Json(WorkQueueStats {
+        object_type: "work_queue_stats",
+        depth: s.depth,
+        pending: s.pending,
+        oldest_queued_at: s.oldest_queued_at,
+        workers_polling: s.workers_polling,
+    }))
 }
 
 async fn retrieve_work(
@@ -335,7 +342,13 @@ async fn heartbeat_work(
         .heartbeat(&id, &wid, now_ms())
         .await
         .ok_or_else(|| not_found("work"))?;
-    Ok(Json(hb))
+    Ok(Json(WorkHeartbeat {
+        object_type: "work_heartbeat",
+        last_heartbeat: OBJECT_AT,
+        lease_extended: hb.lease_extended,
+        state: hb.state,
+        ttl_seconds: hb.ttl_seconds,
+    }))
 }
 
 /// Wall-clock now in epoch ms — read only at this HTTP edge and passed into the
