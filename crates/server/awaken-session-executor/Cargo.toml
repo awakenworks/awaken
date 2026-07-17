@@ -58,7 +58,6 @@ awaken-credential-vault = { workspace = true }
 awaken-data-subject = { workspace = true }
 awaken-protocol-managed = { workspace = true }
 awaken-protocol-transport = { workspace = true }
-awaken-protocol-a2a = { workspace = true }
 async-trait.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

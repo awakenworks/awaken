@@ -137,10 +137,6 @@ pub use crate::mcp::{ExtMcpProbe, PreparedMcpRefresh, VaultRefresher};
 // `SharedHost::with_skills`. The whole set is fronted by the single `Skill` tool.
 pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
 pub use awaken_sandbox_local::content_fingerprint;
-// A remote delegate's transport belongs to the A2A bounded context; re-export it so
-// a composition-root caller configures a remote agent from one import.
-pub use awaken_protocol_a2a::{HttpTransport, Response, Transport};
-
 // ── Managed Agents adapter over the shared host ─────────────────────────────
 
 /// Translate the runtime contract's edit refusal into the wire-facing error.

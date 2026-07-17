@@ -246,9 +246,6 @@ async fn delegate_card(
     respond(
         host.remote_agent_card(&agent_id)
             .await
-            .and_then(|card| {
-                serde_json::to_value(card).map_err(|e| HostError::internal(e.to_string()))
-            })
             .map(|card| json!({ "agent_id": agent_id, "card": card })),
     )
 }
