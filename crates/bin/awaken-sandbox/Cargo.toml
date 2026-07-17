@@ -19,6 +19,16 @@ path = "src/lib.rs"
 name = "awaken-sandbox"
 path = "src/main.rs"
 
+[features]
+# The `hand` role (ADR-0044/0045 tool executor). FAT: it pulls the tool implementations
+# + the executor channel + the connection transport, so it is OFF by default — the acp
+# image builds thin (bridge only), the hand image builds `--features hand`.
+hand = [
+    "dep:awaken-tool-relay",
+    "dep:awaken-ext-builtin-tools",
+    "dep:awaken-connection-plan",
+]
+
 [dependencies]
 tokio = { workspace = true, features = [
     "rt-multi-thread",
@@ -28,6 +38,17 @@ tokio = { workspace = true, features = [
     "process",
     "signal",
 ] }
+# `hand` role only (optional): serve_hand + the executable hand tools over a unix/TCP
+# channel — the transport that crosses a `--network none` sandbox boundary (C5).
+awaken-tool-relay = { workspace = true, optional = true }
+awaken-ext-builtin-tools = { workspace = true, optional = true }
+awaken-connection-plan = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util"] }
+# hand-role integration test: drive the real hand with a real ToolCall over a socket.
+awaken-runtime-contract = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

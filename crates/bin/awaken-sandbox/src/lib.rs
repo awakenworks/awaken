@@ -5,3 +5,8 @@
 //! role is unit-testable without spawning the binary.
 
 pub mod bridge;
+
+/// The `hand` role (ADR-0044/0045 tool executor). Behind the `hand` feature — it pulls
+/// the tool implementations + executor channel, so the default (acp) build stays thin.
+#[cfg(feature = "hand")]
+pub mod hand;

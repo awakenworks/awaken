@@ -111,6 +111,9 @@ wrappers = [
     "awaken-run-ingress-contract",
     "awaken-run-ingress",
     "awaken-sandbox-local",
+    # The execution-plane binary's `hand` role (feature-gated) drives ToolCall through
+    # the remote executor; dev-dep for its integration test (C5, ADR-0044/0045).
+    "awaken-sandbox",
     "awaken-protocol-mcp",
     "awaken-server",
     # Stage B2: the authoring plane + the composition root.
@@ -167,6 +170,8 @@ wrappers = [
     "awaken-run-ingress",
     "awaken-runtime-examples",
     "awaken-sandbox-local",
+    # The execution-plane binary's `hand` role builds the hand's toolset (ADR-0044/0045).
+    "awaken-sandbox",
     # ADR-0044 remote-hand mode: server-local builds the hand's toolset directly.
     "awaken-server",
     # Stage A: the test-only scenario host builds the hand's toolset for e2e.

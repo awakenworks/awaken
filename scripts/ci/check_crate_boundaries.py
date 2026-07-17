@@ -1331,7 +1331,17 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # (later slices) the hand tool-executor + memoryd sidecar. A leaf that names no
     # awaken domain crate — it runs INSIDE the sandbox, opposite the control plane, so
     # it must not import control/runtime crates. tokio-only for now.
-    "awaken-sandbox": {"tokio"},
+    "awaken-sandbox": {
+        "tokio",
+        # `hand` role only (optional feature): the tool executor + its channel/transport.
+        # All lower-layer worker/runtime crates — bin depends down, no cycle.
+        "awaken-tool-relay",
+        "awaken-ext-builtin-tools",
+        "awaken-connection-plan",
+        # dev-only: the hand-role test drives a real ToolCall through the hand.
+        "awaken-runtime-contract",
+        "serde_json",
+    },
     # The PRODUCTION database-less worker (Stage C): a peer of the control / data
     # planes. It composes the neutral host (runtime-host) with the data plane's
     # ConfigExecutorProvider + NoModelConfiguredExecutor (awaken-server) over the

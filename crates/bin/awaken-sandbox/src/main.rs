@@ -15,15 +15,41 @@ async fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("acp") => run_acp(&args[1..]).await,
+        Some("hand") => run_hand(&args[1..]).await,
         Some(role) => {
-            eprintln!("awaken-sandbox: unknown role `{role}` (expected: acp)");
+            eprintln!("awaken-sandbox: unknown role `{role}` (expected: acp | hand)");
             ExitCode::FAILURE
         }
         None => {
-            eprintln!("usage: awaken-sandbox <acp> [args...]");
+            eprintln!("usage: awaken-sandbox <acp|hand> [args...]");
             ExitCode::FAILURE
         }
     }
+}
+
+#[cfg(feature = "hand")]
+async fn run_hand(args: &[String]) -> ExitCode {
+    use awaken_sandbox::hand::{parse_hand_args, serve};
+    let bind = match parse_hand_args(args) {
+        Ok(bind) => bind,
+        Err(msg) => {
+            eprintln!("awaken-sandbox hand: {msg}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match serve(bind).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("awaken-sandbox hand: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(not(feature = "hand"))]
+async fn run_hand(_args: &[String]) -> ExitCode {
+    eprintln!("awaken-sandbox: the `hand` role needs a build with `--features hand`");
+    ExitCode::FAILURE
 }
 
 async fn run_acp(args: &[String]) -> ExitCode {
