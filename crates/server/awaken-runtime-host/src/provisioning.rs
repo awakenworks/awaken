@@ -247,6 +247,7 @@ impl SharedHost {
     /// process restart when the host runs under a storage dir.
     pub async fn create_memory_store(&self) -> String {
         self.memory_stores
+            .blob()
             .create(HOST_MEMORY_WORKSPACE)
             .await
             .expect("create durable memory store")
@@ -255,6 +256,7 @@ impl SharedHost {
     /// The current bytes of a memory store; `None` if the id is unknown.
     pub async fn memory_get(&self, id: &str) -> Option<Vec<u8>> {
         self.memory_stores
+            .blob()
             .get(HOST_MEMORY_WORKSPACE, id)
             .await
             .unwrap_or(None)
@@ -289,6 +291,7 @@ impl SharedHost {
         let realized = env.list_files(".mnt");
         for (store_id, bytes) in select_memory_writebacks(&mounts, &realized) {
             self.memory_stores
+                .blob()
                 .put(HOST_MEMORY_WORKSPACE, &store_id, &bytes)
                 .await
                 .expect("persist harvested memory write-back");

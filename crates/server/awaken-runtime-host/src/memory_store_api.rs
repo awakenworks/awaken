@@ -336,7 +336,8 @@ async fn archive_store(
 async fn path_of(state: &MemoryStoreApi, store: &str, mid: &str) -> Option<String> {
     state
         .host
-        .memory_fs
+        .memory_stores
+        .fs()
         .list(store, "/")
         .await
         .ok()?
@@ -404,7 +405,13 @@ async fn create_memory(
         return not_found("memory_store");
     }
     // The durable path-addressed store is the source of truth for the head.
-    match state.host.memory_fs.create(&id, path, content).await {
+    match state
+        .host
+        .memory_stores
+        .fs()
+        .create(&id, path, content)
+        .await
+    {
         Ok(mem) => {
             record_version(
                 &state,
@@ -432,7 +439,7 @@ async fn list_memories(
     // works after a restart even though the in-memory registry is empty.
     let prefix = q.get("path_prefix").map(String::as_str).unwrap_or("/");
     let basic = q.get("view").map(String::as_str) == Some("basic");
-    let entries = match state.host.memory_fs.list(&id, prefix).await {
+    let entries = match state.host.memory_stores.fs().list(&id, prefix).await {
         Ok(entries) => entries,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
@@ -444,7 +451,8 @@ async fn list_memories(
         } else {
             state
                 .host
-                .memory_fs
+                .memory_stores
+                .fs()
                 .get_by_path(&id, &entry.path)
                 .await
                 .ok()
@@ -478,7 +486,7 @@ async fn get_memory(
     let Some(path) = path_of(&state, &id, &mid).await else {
         return not_found("memory");
     };
-    match state.host.memory_fs.get_by_path(&id, &path).await {
+    match state.host.memory_stores.fs().get_by_path(&id, &path).await {
         Ok(Some(mem)) => (StatusCode::OK, Json(project_memory(&mem, &id))).into_response(),
         _ => not_found("memory"),
     }
@@ -496,7 +504,7 @@ async fn update_memory(
     let Some(path) = path_of(&state, &id, &mid).await else {
         return not_found("memory");
     };
-    let Ok(Some(current)) = state.host.memory_fs.get_by_path(&id, &path).await else {
+    let Ok(Some(current)) = state.host.memory_stores.fs().get_by_path(&id, &path).await else {
         return not_found("memory");
     };
     // The CAS base: an explicit precondition (stale → conflict) else the live sha.
@@ -514,7 +522,8 @@ async fn update_memory(
 
     let updated = match state
         .host
-        .memory_fs
+        .memory_stores
+        .fs()
         .update(&id, &mid, &new_content, &base_sha)
         .await
     {
@@ -526,7 +535,13 @@ async fn update_memory(
     // An optional path change is a rename on the store (keeps the id + open fds).
     let final_mem = match body.get("path").and_then(Value::as_str) {
         Some(new_path) if new_path != path => {
-            match state.host.memory_fs.rename(&id, &path, new_path).await {
+            match state
+                .host
+                .memory_stores
+                .fs()
+                .rename(&id, &path, new_path)
+                .await
+            {
                 Ok(m) => m,
                 Err(e) => return err(StatusCode::BAD_REQUEST, e.to_string()),
             }
@@ -553,7 +568,8 @@ async fn delete_memory(
     };
     if state
         .host
-        .memory_fs
+        .memory_stores
+        .fs()
         .delete_by_path(&id, &path)
         .await
         .is_err()

@@ -13,39 +13,10 @@ impl SharedHost {
         // unset → ephemeral.
         let deployment = crate::deployment_config::DeploymentConfig::from_env();
         let store_dir = deployment.storage_dir.clone();
-        // The ADR-0038 memory_store family persists under the storage dir when set so
-        // a harvested write-back outlives the process; otherwise a per-process temp dir
-        // (unit tests / ephemeral use) keeps it in-run only.
-        let memory_store_root = match &store_dir {
-            Some(dir) => dir.join("memory_stores"),
-            // Ephemeral: a per-instance dir (pid + a process-local counter), so two
-            // hosts in one process (parallel unit tests) never share a memory store.
-            None => {
-                static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                std::env::temp_dir().join(format!("awaken-memstore-{}-{n}", std::process::id()))
-            }
-        };
-        let memory_stores: Arc<dyn awaken_memory_store::MemoryBlobStore> = Arc::new(
-            awaken_memory_store::FsMemoryBlobStore::open(&memory_store_root)
-                .expect("open durable memory-store root"),
-        );
-        // ADR-0053 path-addressed memory files persist alongside, under the same
-        // durability rule. Backed by the SQLite store so rename-replace and CAS are
-        // **crash-atomic** (one transaction) — the plain-file backend is only no-loss
-        // (a crash mid-rename can leave a transient duplicate source).
-        let memory_fs: Arc<dyn awaken_memory_store::MemoryFs> = Arc::new(match &store_dir {
-            Some(dir) => {
-                let db = dir.join("memory_fs.db");
-                awaken_memory_store::SqliteMemoryFs::open(
-                    db.to_str().expect("memory-fs db path is valid UTF-8"),
-                )
-                .expect("open durable memory-fs sqlite store")
-            }
-            // No durable dir → an ephemeral in-memory database (dies with the process).
-            None => awaken_memory_store::SqliteMemoryFs::open_in_memory()
-                .expect("open ephemeral memory-fs sqlite store"),
-        });
+        // The ADR-0038/0053 memory content stores follow one storage-dir durability
+        // rule, owned by `MemoryStores::open` (durable under the dir; ephemeral
+        // per-process otherwise). Identity is a separate concern — see `memory_registry`.
+        let memory_stores = crate::memory_stores::MemoryStores::open(store_dir.as_deref());
         Self {
             llm,
             model_ref: model_ref.into(),
@@ -84,7 +55,6 @@ impl SharedHost {
             thread_egress: crate::sandbox_source::ThreadEgress::new(),
             file_store: Arc::new(InMemoryFileStore::new()),
             memory_stores,
-            memory_fs,
             // Default to an ephemeral in-memory identity registry; the composition root
             // overrides it with the durable admin backend via `with_memory_registry`.
             memory_registry: Arc::new(awaken_config_resolver::InMemoryMemoryStoreRegistry::new()),

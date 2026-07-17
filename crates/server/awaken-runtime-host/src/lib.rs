@@ -37,6 +37,7 @@ mod mcp;
 mod mcp_relay;
 mod memory;
 mod memory_store_api;
+mod memory_stores;
 mod model_route;
 mod models;
 mod provisioning;

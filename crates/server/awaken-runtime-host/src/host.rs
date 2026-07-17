@@ -202,25 +202,17 @@ pub struct SharedHost {
     /// Content-addressed blob store backing the Files API, file-resource mounts, and
     /// collected artifacts. In-memory by default (one server process).
     pub(crate) file_store: Arc<dyn FileStore>,
-    /// Mutable, id-keyed memory stores (ADR-0038 MemoryStore family): unlike the
-    /// content-addressed `file_store`, a memory store keeps a stable id whose bytes a
-    /// session mounts read-write and the host harvests back after a turn. Backed by
-    /// the durable [`awaken_memory_store::MemoryBlobStore`] — under the storage dir it
-    /// survives a restart, so memory written in one process is visible to the next; an
-    /// ephemeral per-process dir when the host has no storage dir (unit tests).
-    pub(crate) memory_stores: Arc<dyn awaken_memory_store::MemoryBlobStore>,
-    /// Durable, **path-addressed** memory files (ADR-0053): a store holds many
-    /// memories, each at a path with a `content_sha256` + monotonic version, updated
-    /// under compare-and-swap. Backs the `/memories` HTTP endpoints as the durable
-    /// source of truth (survives a restart under the storage dir) and is the seam the
-    /// write-through FUSE mount projects.
-    pub(crate) memory_fs: Arc<dyn awaken_memory_store::MemoryFs>,
+    /// The memory resource plane's *content* backends (ADR-0038/0053): the id-keyed
+    /// read-write blob store + the path-addressed CAS `/memories` store, both governed
+    /// by one storage-dir durability rule and grouped behind one type that owns that
+    /// construction invariant. See [`crate::memory_stores`].
+    pub(crate) memory_stores: crate::memory_stores::MemoryStores,
     /// The control-plane registry of memory-store **identity** (id/name/description/
-    /// metadata/archived), ADR-0038. Mirrors the `McpStore` pattern: injected by the
-    /// composition root with the durable admin backend so a store's identity survives a
-    /// restart and the admin assistant can enumerate stores. Defaults to a
-    /// process-lifetime in-memory registry (ephemeral) so tests / scenario hosts keep
-    /// working. Store *content* stays in `memory_stores` / `memory_fs`, not here.
+    /// metadata/archived), ADR-0038. A different bounded context from the content
+    /// stores above: it lives beside its siblings (`McpStore`, `WebhookStore`) in
+    /// `awaken-config-resolver` and is injected by the composition root with the durable
+    /// admin backend so a store's identity survives a restart and the admin assistant
+    /// can enumerate stores. Defaults to a process-lifetime in-memory registry.
     pub(crate) memory_registry: Arc<dyn awaken_config_resolver::MemoryStoreRegistry>,
     /// An optional tool gate that replaces the default authorization gate on every
     /// thread's runtime. Used to exercise scheduled actions (ADR-0020, slice E): a
