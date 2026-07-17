@@ -249,7 +249,13 @@ mod tests {
                     && l.trim_end().ends_with(" 0")),
             "the connection-load gauge reads 0: {scrape}"
         );
-        // Draining is NOT a metric — it is the `/readyz` 503 signal (#4).
-        assert!(!scrape.contains("awaken_brain_draining"), "{scrape}");
+        // Draining is exposed as a gauge too (autoscale/dashboard visibility),
+        // complementary to the `/readyz` 503 the k8s Service routes on.
+        assert!(
+            scrape
+                .lines()
+                .any(|l| l.starts_with("awaken_brain_draining") && l.trim_end().ends_with(" 0")),
+            "the draining gauge reads 0: {scrape}"
+        );
     }
 }
