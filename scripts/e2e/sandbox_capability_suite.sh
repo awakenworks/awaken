@@ -103,6 +103,16 @@ else
   skip "/dev/fuse or fusermount unavailable (copy fallback path is the alternative)"
 fi
 
+# ── Layer 6: memoryd copy sidecar in a real container (G7, portable) ──────────
+# The copy realization (harvest→persist→re-materialize) through the real memoryd image
+# ENTRYPOINT + SIGTERM harvest + sqlite persistence, no /dev/fuse needed.
+step "G7 memoryd copy sidecar (real Docker container)"
+if docker version >/dev/null 2>&1; then
+  run "memoryd container roundtrip" bash scripts/e2e/memoryd_container_e2e.sh
+else
+  skip "no Docker daemon (memoryd copy-sidecar container proof)"
+fi
+
 # ── Optional: line-coverage of the pure-Rust sandbox-change surface (COVERAGE=1) ─
 # The container/k8s/FUSE layers are integration-tested against real substrates
 # (measured by their own runs); this reports the lib-testable dispose surface.
