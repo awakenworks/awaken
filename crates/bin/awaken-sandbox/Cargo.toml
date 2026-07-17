@@ -13,8 +13,9 @@ path = "src/lib.rs"
 #   - acp     : a stdio<->TCP bridge that spawns the process-as-container ACP CLI and
 #               bridges its stdio to a dialed socket (the image ENTRYPOINT; the CLI argv
 #               arrives as the container Cmd = `command_of(spec)`).
-#   - hand    : the neutral tool-execution endpoint (ADR-0044/0045) — added later.
-#   - memoryd : the memory FUSE/copy sidecar — added later.
+#   - hand    : the neutral tool-execution endpoint (ADR-0044/0045).
+#   - memoryd : the memory FUSE/copy sidecar (ADR-0053) that projects a durable
+#               memory store into a shared pod volume, FUSE-first with a copy fallback.
 [[bin]]
 name = "awaken-sandbox"
 path = "src/main.rs"
@@ -30,6 +31,17 @@ hand = [
     "dep:async-nats",
     "dep:futures",
     "dep:serde_json",
+]
+# The `memoryd` role (ADR-0053 memory sidecar). FAT + Linux-only: it pulls the
+# write-through FUSE server (fuser/libc, needs /dev/fuse) + the durable sqlite store,
+# so it is OFF by default — the acp image builds thin, the memoryd image builds
+# `--features memoryd`. The copy fallback within works without /dev/fuse.
+memoryd = [
+    "dep:awaken-sandbox-memoryd",
+    "dep:awaken-memory-store",
+    # The store-owned sqlite backing database (SqliteMemoryFs + the memory-store
+    # scoped migrations); the FUSE server projects it as files.
+    "awaken-memory-store/sqlite",
 ]
 
 [dependencies]
@@ -51,11 +63,17 @@ awaken-connection-plan = { workspace = true, optional = true }
 async-nats = { version = "0.38", optional = true }
 futures = { version = "0.3", optional = true }
 serde_json = { workspace = true, optional = true }
+# `memoryd` role only (optional): the write-through FUSE server that projects a durable
+# memory store as files (FUSE-first, copy fallback), over a store-owned sqlite database.
+awaken-sandbox-memoryd = { workspace = true, optional = true }
+awaken-memory-store = { workspace = true, optional = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
 # hand-role integration test: drive the real hand with a real ToolCall over a socket.
 awaken-runtime-contract = { workspace = true }
+# memoryd-role integration test: seed + assert a sqlite-backed store across a copy cycle.
+awaken-memory-store = { workspace = true, features = ["sqlite"] }
 
 [lints]
 workspace = true

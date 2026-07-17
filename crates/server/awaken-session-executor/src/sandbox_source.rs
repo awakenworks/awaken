@@ -805,6 +805,28 @@ fn warm_wrap<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     }
 }
 
+/// Spawn the cross-restart container reaper on `runtime` (docker/podman): a background
+/// sweep that reaps awaken-labeled containers a *crashed* worker left behind — exited
+/// (agent done) or aged past the cap (hung / leaked warm instance). On by default (a
+/// safety net); `AWAKEN_SANDBOX_REAP=0` disables it, `AWAKEN_SANDBOX_REAP_INTERVAL`
+/// (seconds) tunes the cadence. NOT wired for k8s: pods carry `ownerReferences`, so
+/// native GC reaps them (its `list_managed` is empty → a reaper there is a no-op).
+/// Called once per host from the composition seam, so exactly one loop runs.
+#[cfg(any(feature = "container-docker", feature = "container-podman"))]
+fn spawn_container_reaper<R: awaken_sandbox_container::ContainerRuntime + 'static>(
+    runtime: Arc<R>,
+) {
+    if std::env::var("AWAKEN_SANDBOX_REAP").as_deref() == Ok("0") {
+        return;
+    }
+    let interval = std::env::var("AWAKEN_SANDBOX_REAP_INTERVAL")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(awaken_sandbox_container::reaper::DEFAULT_INTERVAL_SECS);
+    awaken_sandbox_container::SandboxReaper::from_env(runtime)
+        .spawn(std::time::Duration::from_secs(interval));
+}
+
 /// Wrap a worker-configured [`AgentContainerProvider`] into a [`ContainerChannelSource`].
 #[cfg(any(
     feature = "container-docker",
@@ -831,13 +853,14 @@ fn build_docker_source(
     egress: ThreadEgress,
     resources: ThreadResources,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
-    let runtime =
+    let runtime = std::sync::Arc::new(
         awaken_sandbox_container::docker::DockerRuntime::connect_local(CONTAINER_AGENT_PORT)
-            .map_err(|e| format!("docker runtime: {e}"))?;
-    let provider = awaken_sandbox_container::ContainerProvider::new(
-        std::sync::Arc::new(runtime),
-        container_image(image)?,
+            .map_err(|e| format!("docker runtime: {e}"))?,
     );
+    // Sweep leaked containers of a crashed prior worker (startup + periodic).
+    spawn_container_reaper(runtime.clone());
+    let provider =
+        awaken_sandbox_container::ContainerProvider::new(runtime, container_image(image)?);
     Ok(container_source(
         warm_wrap(provider),
         source,
@@ -863,11 +886,12 @@ fn build_podman_source(
     egress: ThreadEgress,
     resources: ThreadResources,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
-    let runtime = awaken_sandbox_container::podman::PodmanRuntime::new(CONTAINER_AGENT_PORT);
-    let provider = awaken_sandbox_container::ContainerProvider::new(
-        std::sync::Arc::new(runtime),
-        container_image(image)?,
-    );
+    let runtime = std::sync::Arc::new(awaken_sandbox_container::podman::PodmanRuntime::new(
+        CONTAINER_AGENT_PORT,
+    ));
+    spawn_container_reaper(runtime.clone());
+    let provider =
+        awaken_sandbox_container::ContainerProvider::new(runtime, container_image(image)?);
     Ok(container_source(
         warm_wrap(provider),
         source,

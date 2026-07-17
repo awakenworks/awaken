@@ -1333,7 +1333,12 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "async-nats",
         "futures",
         "serde_json",
-        # dev-only: the hand-role test drives a real ToolCall through the hand.
+        # `memoryd` role only (optional feature): the FUSE/copy memory sidecar + the
+        # durable sqlite store it projects. Lower-layer worker/resource crates.
+        "awaken-sandbox-memoryd",
+        "awaken-memory-store",
+        # dev-only: the hand-role test drives a real ToolCall through the hand;
+        # the memoryd-role test seeds + asserts a sqlite-backed store.
         "awaken-runtime-contract",
     },
     # The PRODUCTION database-less worker (Stage C): a peer of the control / data

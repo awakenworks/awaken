@@ -1,10 +1,15 @@
 //! `awaken-sandbox` — the execution-plane binary (opposite the control-plane
-//! `awaken`). The first arg selects the role the pod runs. Slice 1 ships `acp`; `hand`
-//! and `memoryd` land in later slices.
+//! `awaken`). The first arg selects the role the pod runs: `acp`, `hand`, or `memoryd`.
 //!
 //!   awaken-sandbox acp [--listen ADDR] <cli> [cli-args...]
 //!       Bridge a dialed TCP socket to a process-as-container ACP CLI's stdio. This is
 //!       the sandbox image ENTRYPOINT; the CLI argv is the container `Cmd`.
+//!   awaken-sandbox hand <--unix PATH|--listen ADDR|--dial ADDR|--nats URL [SUBJECT]>
+//!       Serve the neutral tool-execution endpoint (ADR-0044/0045). `--features hand`.
+//!   awaken-sandbox memoryd
+//!       Project a durable memory store into the shared pod volume (ADR-0053), FUSE-first
+//!       with a copy fallback. Env-driven (AWAKEN_MEMORY_STORE_ID / _MOUNT_PATH /
+//!       _MEMORY_MODE / _MEMORY_STORE_DIR). `--features memoryd`.
 
 use std::process::ExitCode;
 
@@ -16,12 +21,13 @@ async fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         Some("acp") => run_acp(&args[1..]).await,
         Some("hand") => run_hand(&args[1..]).await,
+        Some("memoryd") => run_memoryd(&args[1..]).await,
         Some(role) => {
-            eprintln!("awaken-sandbox: unknown role `{role}` (expected: acp | hand)");
+            eprintln!("awaken-sandbox: unknown role `{role}` (expected: acp | hand | memoryd)");
             ExitCode::FAILURE
         }
         None => {
-            eprintln!("usage: awaken-sandbox <acp|hand> [args...]");
+            eprintln!("usage: awaken-sandbox <acp|hand|memoryd> [args...]");
             ExitCode::FAILURE
         }
     }
@@ -49,6 +55,17 @@ async fn run_hand(args: &[String]) -> ExitCode {
 #[cfg(not(feature = "hand"))]
 async fn run_hand(_args: &[String]) -> ExitCode {
     eprintln!("awaken-sandbox: the `hand` role needs a build with `--features hand`");
+    ExitCode::FAILURE
+}
+
+#[cfg(feature = "memoryd")]
+async fn run_memoryd(args: &[String]) -> ExitCode {
+    awaken_sandbox::memoryd::run(args).await
+}
+
+#[cfg(not(feature = "memoryd"))]
+async fn run_memoryd(_args: &[String]) -> ExitCode {
+    eprintln!("awaken-sandbox: the `memoryd` role needs a build with `--features memoryd`");
     ExitCode::FAILURE
 }
 

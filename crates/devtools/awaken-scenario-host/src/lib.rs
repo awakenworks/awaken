@@ -931,6 +931,9 @@ pub fn build_remote_hand_router() -> Router {
     //   - AWAKEN_REMOTE_HAND=host:port (or tcp://host:port) → Direct-over-network:
     //     dial a hand serving the executor channel on TCP (e.g. a k8s Service in
     //     another pod). The tool calls leave the brain pod entirely.
+    //   - AWAKEN_REMOTE_HAND_UNIX=/path/hand.sock → Co-located (C5): the hand runs in
+    //     this run's `--network none` sandbox container; dial the unix socket it bound
+    //     in the shared rendezvous — the transport that crosses a network-denied edge.
     //   - unset → the degenerate in-process hand: a framed duplex to a serve_hand
     //     task in this same process.
     let executor: Arc<dyn awaken_runtime_contract::tool::ToolExecutor> = if let Some(nats_url) =
@@ -965,6 +968,30 @@ pub fn build_remote_hand_router() -> Router {
                     .accept()
                     .await
                     .unwrap_or_else(|e| panic!("brain rendezvous accept failed: {e}"))
+            })
+        });
+        Arc::new(RemoteToolExecutor::new(channel))
+    } else if let Some(sock) = std::env::var("AWAKEN_REMOTE_HAND_UNIX")
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        // Co-located topology (C5, ADR-0044/0045): the hand runs INSIDE this run's
+        // sandbox container and the container's network is DENIED (`--network none`),
+        // so no TCP port can be published. The brain dials the unix socket the hand
+        // bound in the shared host<->container rendezvous (a CacheVolume bind-mount) —
+        // the one transport that crosses a network-denied boundary. Same requester
+        // role and ChannelFactory as the TCP branch; only DialAddr flips to Unix.
+        let plan = awaken_connection_plan::ConnectionPlan::unix_dial(&sock);
+        let channel = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                awaken_connection_plan::connect_with_retry(
+                    &awaken_connection_plan::TokioChannelFactory,
+                    &plan,
+                    240,
+                    std::time::Duration::from_millis(500),
+                )
+                .await
+                .unwrap_or_else(|e| panic!("could not reach co-located hand at unix://{sock}: {e}"))
             })
         });
         Arc::new(RemoteToolExecutor::new(channel))
