@@ -21,8 +21,39 @@ use axum::{Json, Router};
 use awaken_agent_contract::agent::content::ContentBlock;
 
 use crate::routes::{ManagedJson, error_response};
-use crate::state::{LiveInboxSnapshot, ManagedState};
+use crate::state::{LiveInboxEntry, LiveInboxSnapshot, ManagedState};
 use crate::types::ErrorResponse;
+
+/// The wire shape of a queued live-inbox message. The neutral [`LiveInboxEntry`]
+/// (the port's shape) projects onto this at the route; the extension's snapshot
+/// endpoint `Json`s it.
+#[derive(serde::Serialize)]
+struct WireLiveInboxEntry {
+    id: u64,
+    content: Vec<ContentBlock>,
+}
+
+/// The wire shape of the live-inbox snapshot the GET endpoint returns. Mirrors the
+/// neutral [`LiveInboxSnapshot`], adding the serde surface (kept out of the port).
+#[derive(serde::Serialize)]
+struct WireLiveInboxSnapshot {
+    active: bool,
+    version: u64,
+    messages: Vec<WireLiveInboxEntry>,
+}
+
+/// Project the neutral snapshot onto its wire shape.
+fn project_snapshot(snapshot: LiveInboxSnapshot) -> WireLiveInboxSnapshot {
+    WireLiveInboxSnapshot {
+        active: snapshot.active,
+        version: snapshot.version,
+        messages: snapshot
+            .messages
+            .into_iter()
+            .map(|LiveInboxEntry { id, content }| WireLiveInboxEntry { id, content })
+            .collect(),
+    }
+}
 
 /// Build the live-inbox router. Merged into the managed router at the same host,
 /// but a distinct protocol: its own routes, bodies, and error mapping.
@@ -66,11 +97,11 @@ struct LiveInboxQueuedResponse {
 async fn live_inbox_snapshot(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-) -> Result<Json<LiveInboxSnapshot>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<WireLiveInboxSnapshot>, (StatusCode, Json<ErrorResponse>)> {
     state
         .live_inbox_snapshot(&id)
         .await
-        .map(Json)
+        .map(|snapshot| Json(project_snapshot(snapshot)))
         .map_err(error_response)
 }
 
