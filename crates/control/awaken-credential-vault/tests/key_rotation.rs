@@ -1,10 +1,12 @@
-//! KNOWN GAP (adjudicate): no key rotation / dual-key read. The AEAD
-//! [`SealedAeadSecretStore`] holds exactly ONE key/cipher (see `src/sealed.rs`);
-//! there is no path that reads a blob under a prior key during a rotation. This
-//! suite DOCUMENTS that absence — a blob sealed under the old key becomes
-//! UNREADABLE the instant the key changes, with no grace window in which both the
-//! old and new keys open it. Pins the CURRENT behavior; does not endorse it. The
-//! only migration available today is to re-seal every plaintext under the new key.
+//! CONTRACT: single-key AEAD sealing (hard cutover). The AEAD
+//! [`SealedAeadSecretStore`] holds exactly ONE key/cipher (see `src/sealed.rs`), so
+//! sealing is a single-key scheme by design: a blob sealed under a given key opens
+//! ONLY under that same key, and a wrong/rotated key fails closed (the AEAD tag
+//! rejects it) rather than leaking plaintext — the correct, secure behavior. There
+//! is deliberately no dual-key grace window; rotating the sealing key is a hard
+//! cutover, and the supported migration is to re-seal every plaintext under the new
+//! key. This suite asserts that documented contract. (An overlapping dual-key
+//! rotation window is a possible future feature, not a defect in this scheme.)
 #![cfg(feature = "sealed-aead")]
 
 use std::sync::Arc;
@@ -18,12 +20,12 @@ use awaken_credential_vault::{
 const OLD_KEY: [u8; 32] = [1u8; 32];
 const NEW_KEY: [u8; 32] = [2u8; 32];
 
-/// KNOWN GAP (adjudicate): no key rotation / dual-key read. A secret sealed under
-/// `OLD_KEY`, then read through a store built with `NEW_KEY` over the SAME at-rest
-/// blobs, fails closed as `Seal`. There is no dual-key window: the store cannot be
-/// asked to fall back to the prior key, so the only recovery is to re-seal the
-/// plaintext under the new key (after which the old-key store can no longer read it
-/// either). This pins the asymmetry a real rotation would have to bridge.
+/// CONTRACT: single-key sealing is a hard cutover. A secret sealed under `OLD_KEY`,
+/// then read through a store built with `NEW_KEY` over the SAME at-rest blobs, fails
+/// closed as `Seal` — a wrong key MUST NOT open the ciphertext. The supported
+/// migration is to re-seal the plaintext under the new key (after which the old-key
+/// store can no longer read it either). This asserts that secure hard-cutover
+/// contract; a dual-key overlap window would be a future feature, not a fix.
 #[tokio::test]
 async fn a_rotated_key_cannot_read_blobs_sealed_under_the_old_key() {
     // Shared at-rest blobs, so only the KEY changes between the two stores.

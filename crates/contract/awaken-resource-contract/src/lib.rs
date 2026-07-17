@@ -172,6 +172,21 @@ pub enum MemErr {
     Storage(String),
 }
 
+/// Contract-level path-length check — the port's single path-length predicate,
+/// symmetric with how [`MAX_MEMORY_BYTES`] bounds content (via [`MemErr::TooLarge`]).
+/// A path whose UTF-8 length exceeds [`MAX_PATH_BYTES`] is rejected with an
+/// [`MemErr::InvalidPath`] that names the cap, so every backend enforces one
+/// identical limit instead of each re-deriving its own.
+pub fn validate_path_len(path: &str) -> Result<(), MemErr> {
+    if path.len() > MAX_PATH_BYTES {
+        Err(MemErr::InvalidPath(format!(
+            "path exceeds {MAX_PATH_BYTES} bytes"
+        )))
+    } else {
+        Ok(())
+    }
+}
+
 /// A path-addressed, CAS memory store — the seam a write-through FUSE mount calls
 /// (ADR-0053). All methods are store-scoped by an opaque, globally-unique `store` id.
 #[async_trait]

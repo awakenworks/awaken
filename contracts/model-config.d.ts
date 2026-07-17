@@ -406,7 +406,7 @@ export interface MCPServerDefCredentialBinding {
 
 /**
  * A model reachable on a protocol surface. `model_id` references the catalog's
- * `ModelSpec` (the intrinsic model attributes, owned by `awaken-agent-contract`).
+ * [`ModelAttributes`] (the intrinsic model attributes the control plane publishes).
  */
 export interface Offering {
     dialect: APIDialect;
@@ -462,8 +462,14 @@ export interface ProtocolEndpoint {
  */
 export interface ProviderCatalog {
     endpoints: { [key: string]: EndpointValue };
-    offerings: OfferingElement[];
-    providers: { [key: string]: ProviderValue };
+    /**
+     * The published attributes of the models the offerings reference, keyed by
+     * `model_id`. Absent for a model whose attributes aren't published (the consumer
+     * then falls back — e.g. compaction stays message-count based).
+     */
+    model_attributes?: { [key: string]: ModelAttributeValue };
+    offerings:         OfferingElement[];
+    providers:         { [key: string]: ProviderValue };
     [property: string]: any;
 }
 
@@ -489,8 +495,28 @@ export interface EndpointValue {
 }
 
 /**
+ * The published intrinsic attributes of a catalog model, keyed by `model_id`. This is
+ * the control plane's OWN projection of what a console publishes — deliberately not the
+ * agent-domain `ModelSpec` (a runtime type the control plane must not depend on, per the
+ * dependency-direction ban); it carries only what the catalog's consumers read. Extended
+ * as the console publishes more attributes.
+ */
+export interface ModelAttributeValue {
+    /**
+     * Max context window in tokens — the single budget both the ACP CLIs' auto-compact
+     * window and the native compaction ext derive from. Absent → the consumer falls back.
+     */
+    context_window?: number | null;
+    /**
+     * Max output tokens the model emits, when published.
+     */
+    max_output_tokens?: number | null;
+    [property: string]: any;
+}
+
+/**
  * A model reachable on a protocol surface. `model_id` references the catalog's
- * `ModelSpec` (the intrinsic model attributes, owned by `awaken-agent-contract`).
+ * [`ModelAttributes`] (the intrinsic model attributes the control plane publishes).
  */
 export interface OfferingElement {
     dialect: APIDialect;
@@ -546,6 +572,33 @@ export interface Provider {
  */
 export interface ResolveAgentMCPRequest {
     workspace_id: string;
+    [property: string]: any;
+}
+
+/**
+ * The ordered candidate list a profile resolves to (E3-2): one secret-free view per
+ * model in the profile's axis, in failover order.
+ */
+export interface ResolvedCandidatesView {
+    candidates: CandidateElement[];
+    [property: string]: any;
+}
+
+/**
+ * The **secret-free** result of a resolve (ADR-0043): the execution triple + the
+ * adapter/endpoint it binds to, and whether a credential resolved — never the
+ * secret itself. This is what an operator's "test binding" call sees.
+ */
+export interface CandidateElement {
+    adapter_kind: string;
+    base_url?:    null | string;
+    /**
+     * Whether a credential was materialized (never the value).
+     */
+    credential_present:   boolean;
+    model_id:             string;
+    protocol_endpoint_id: string;
+    provider_id:          string;
     [property: string]: any;
 }
 

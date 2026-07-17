@@ -870,7 +870,7 @@
         }
       },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "A model reachable on a protocol surface. `model_id` references the catalog's\n`ModelSpec` (the intrinsic model attributes, owned by `awaken-agent-contract`).",
+      "description": "A model reachable on a protocol surface. `model_id` references the catalog's\n[`ModelAttributes`] (the intrinsic model attributes the control plane publishes).",
       "properties": {
         "dialect": {
           "$ref": "#/$defs/ApiDialect"
@@ -1034,8 +1034,32 @@
             }
           ]
         },
+        "ModelAttributes": {
+          "description": "The published intrinsic attributes of a catalog model, keyed by `model_id`. This is\nthe control plane's OWN projection of what a console publishes — deliberately not the\nagent-domain `ModelSpec` (a runtime type the control plane must not depend on, per the\ndependency-direction ban); it carries only what the catalog's consumers read. Extended\nas the console publishes more attributes.",
+          "properties": {
+            "context_window": {
+              "description": "Max context window in tokens — the single budget both the ACP CLIs' auto-compact\nwindow and the native compaction ext derive from. Absent → the consumer falls back.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "max_output_tokens": {
+              "description": "Max output tokens the model emits, when published.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "Offering": {
-          "description": "A model reachable on a protocol surface. `model_id` references the catalog's\n`ModelSpec` (the intrinsic model attributes, owned by `awaken-agent-contract`).",
+          "description": "A model reachable on a protocol surface. `model_id` references the catalog's\n[`ModelAttributes`] (the intrinsic model attributes the control plane publishes).",
           "properties": {
             "dialect": {
               "$ref": "#/$defs/ApiDialect"
@@ -1152,6 +1176,13 @@
           "additionalProperties": {
             "$ref": "#/$defs/ProtocolEndpoint"
           },
+          "type": "object"
+        },
+        "model_attributes": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ModelAttributes"
+          },
+          "description": "The published attributes of the models the offerings reference, keyed by\n`model_id`. Absent for a model whose attributes aren't published (the consumer\nthen falls back — e.g. compaction stays message-count based).",
           "type": "object"
         },
         "offerings": {
@@ -1285,6 +1316,60 @@
         "binding"
       ],
       "title": "ResolveRequest",
+      "type": "object"
+    },
+    "ResolvedCandidatesView": {
+      "$defs": {
+        "ResolvedInferenceView": {
+          "description": "The **secret-free** result of a resolve (ADR-0043): the execution triple + the\nadapter/endpoint it binds to, and whether a credential resolved — never the\nsecret itself. This is what an operator's \"test binding\" call sees.",
+          "properties": {
+            "adapter_kind": {
+              "type": "string"
+            },
+            "base_url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "credential_present": {
+              "description": "Whether a credential was materialized (never the value).",
+              "type": "boolean"
+            },
+            "model_id": {
+              "type": "string"
+            },
+            "protocol_endpoint_id": {
+              "type": "string"
+            },
+            "provider_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "model_id",
+            "provider_id",
+            "protocol_endpoint_id",
+            "adapter_kind",
+            "credential_present"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The ordered candidate list a profile resolves to (E3-2): one secret-free view per\nmodel in the profile's axis, in failover order.",
+      "properties": {
+        "candidates": {
+          "items": {
+            "$ref": "#/$defs/ResolvedInferenceView"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "candidates"
+      ],
+      "title": "ResolvedCandidatesView",
       "type": "object"
     },
     "ResolvedInferenceView": {
