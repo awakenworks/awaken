@@ -6,10 +6,9 @@
 use awaken_provisioning_contract::NetworkPolicy;
 use serde_json::Value;
 
+pub use awaken_env_store::InMemoryEnvRegistry;
 use awaken_session_contract::env_registry::OBJECT_AT;
-pub use awaken_session_contract::env_registry::{
-    EnvItem, EnvRegistry, EnvUpdate, InMemoryEnvRegistry,
-};
+pub use awaken_session_contract::env_registry::{EnvItem, EnvRegistry, EnvUpdate};
 
 use crate::types::environment::Environment;
 

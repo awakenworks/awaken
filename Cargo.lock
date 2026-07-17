@@ -922,6 +922,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-config-resolver",
  "awaken-credential-vault",
+ "awaken-env-store",
  "awaken-managed-bridge",
  "awaken-model-catalog",
  "awaken-provisioning-contract",
