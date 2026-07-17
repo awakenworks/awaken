@@ -1615,3 +1615,130 @@ async fn a_relaunch_open_failure_mid_run_classifies_and_ends() {
         "the first open ran the turn; the relaunch attempted a second open and failed"
     );
 }
+
+// ── Backend matrix (P1-#4): every catalog CLI drives, not just claude ─────────
+//
+// The per-row *projection* is covered exhaustively in `acp_cli.rs`
+// (`every_cli_*`), and claude is driven end-to-end over the real ACP codec
+// (`open_and_drive_inject_*`). What was missing is the parity across the whole
+// catalog *through the executor's own launch seam*: that EVERY row
+// (claude/codex/gemini/opencode) projects a launchable process through
+// `ProjectingChannelSource` and drives a plain turn to a committed reply. This is
+// the hermetic analogue of awaken-next's `e2e_external_cli_acp` multi-CLI matrix
+// — no real binaries, so the drive path's row-agnosticism is pinned in CI.
+
+/// A model resolver for the matrix: fixed coordinates, no per-run env (a plain
+/// turn declares no MCP, so no config-home is needed — keeping it row-agnostic).
+struct MatrixModel;
+impl LaunchResolver for MatrixModel {
+    fn model(&self, _a: &RunActivation) -> std::result::Result<ResolvedModel, OpenError> {
+        Ok(ResolvedModel {
+            base_url: "https://gateway.example/anthropic".to_string(),
+            model: "MiniMax-M2".to_string(),
+            api_key: "matrix-materialized-key".to_string(), // awaken-allow: secret
+        })
+    }
+}
+
+#[test]
+fn every_backend_row_projects_a_launchable_process_through_the_source() {
+    // The source seam (not just `AcpCli::project`) must be row-agnostic: for each
+    // catalog CLI, `ProjectingChannelSource::plan` yields the row's own command as
+    // argv[0] and delivers the resolved model under that row's env keys.
+    let model = MatrixModel.model(&activation()).unwrap();
+    for cli in known_acp_clis() {
+        let source = ProjectingChannelSource::new(*cli, Arc::new(MatrixModel));
+        let launch = source.plan(&activation()).expect("plan");
+        let env = |k: &str| {
+            launch
+                .env
+                .iter()
+                .find(|(kk, _)| kk == k)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(
+            launch.argv.first().map(String::as_str),
+            Some(cli.command),
+            "{}: argv[0] is the row's command",
+            cli.id
+        );
+        let d = &cli.model_delivery;
+        assert_eq!(
+            env(d.base_url).as_deref(),
+            Some(model.base_url.as_str()),
+            "{}: base_url delivered",
+            cli.id
+        );
+        assert_eq!(
+            env(d.model).as_deref(),
+            Some(model.model.as_str()),
+            "{}: model delivered",
+            cli.id
+        );
+        assert_eq!(
+            env(d.key).as_deref(),
+            Some(model.api_key.as_str()),
+            "{}: secret delivered by the host",
+            cli.id
+        );
+    }
+}
+
+/// A generic ACP JSON-RPC agent (shell builtins only) that answers any prompt with
+/// the single word `pong` and a natural `end_turn`. Handshake: `id:1` initialize,
+/// `id:2` session/new, `id:3` prompt → `session/update` chunk + result. Used to
+/// drive each catalog row hermetically over the official codec.
+#[cfg(feature = "real-acp")]
+const PONG_ECHO: &str = "while IFS= read -r line; do \
+      case \"$line\" in \
+        *'\"id\":1'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}';; \
+        *'\"id\":2'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\"}}';; \
+        *'\"id\":3'*) \
+          printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"pong\"}}}}'; \
+          printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; \
+          exit 0;; \
+      esac; \
+    done";
+
+/// Drive EVERY catalog row to a committed reply over the real ACP JSON-RPC codec.
+/// Each row is launched via `ProjectingChannelSource` (the production seam), with
+/// its command swapped for the hermetic `PONG_ECHO` agent — so the projection,
+/// spawn, codec, drive, and commit path is exercised identically for
+/// claude/codex/gemini/opencode. Gated on `real-acp`: only the official codec
+/// serializes the `session/new`→prompt handshake the agent answers.
+#[cfg(feature = "real-acp")]
+#[tokio::test]
+async fn every_backend_row_drives_a_plain_turn_to_a_committed_reply() {
+    for row in known_acp_clis() {
+        let mut cli = *row;
+        cli.command = "/bin/sh";
+        cli.args = &["-c", PONG_ECHO];
+        let source = Arc::new(ProjectingChannelSource::new(cli, Arc::new(MatrixModel)));
+        let exec = AcpRunExecutor::new(source);
+
+        // Reflect the scenario: the run binds this row's backend (acp:<id>).
+        let mut act = activation();
+        act.snapshot.resolved_spec.model_binding =
+            ModelBinding::new("prov", "model", format!("acp:{}", row.id));
+
+        let coord = Arc::new(RecordingCoordinator::default());
+        let phase = exec
+            .execute(act, RuntimeRunContext::new().with_commit(coord.clone()))
+            .await
+            .unwrap_or_else(|e| panic!("{}: drive failed: {e:?}", row.id));
+
+        assert_eq!(
+            phase,
+            Phase::Ended(EndCause::NaturalEnd),
+            "{}: a plain turn ends naturally",
+            row.id
+        );
+        let commits = coord.commits.lock().unwrap();
+        let reply = commits
+            .first()
+            .and_then(|c| c.messages.first())
+            .map(|m| m.text_content())
+            .unwrap_or_default();
+        assert_eq!(reply, "pong", "{}: committed the agent's reply", row.id);
+    }
+}
