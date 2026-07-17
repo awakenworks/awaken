@@ -393,3 +393,94 @@ async fn memory_store_realizes_as_copy_and_harvests_on_dispose() {
         Some("v2"),
     );
 }
+
+/// The bwrap FUSE-splice (ADR-0053 item 2): a memory store FUSE-mounted on the host is
+/// bound into the bwrap mount+user namespace, so the agent reads/writes it LIVE inside
+/// the sandbox (write-through), not a harvested copy. This proves the host FUSE mount
+/// survives the bind into bwrap's namespace under `--unshare-user` (the mount's owner
+/// uid is identity-mapped, so no `allow_other` is needed). Gated on bwrap + /dev/fuse;
+/// a host without either realizes the copy fallback (covered by `memory_mount.rs`), so
+/// this asserts the live path only when FUSE is actually realized.
+#[tokio::test]
+async fn bwrap_splices_a_live_fuse_memory_mount_into_the_namespace() {
+    if !bwrap_works().await {
+        eprintln!("skipping: bwrap/userns unavailable on this host");
+        return;
+    }
+    if !std::path::Path::new("/dev/fuse").exists() {
+        eprintln!("skipping: no /dev/fuse (copy fallback is covered by memory_mount.rs)");
+        return;
+    }
+    use awaken_memory_store::{InMemoryFs, MemoryFs};
+    use awaken_sandbox_memoryd::MemoryStoreMounter;
+
+    let fs = Arc::new(InMemoryFs::new());
+    fs.create("s", "/note.md", "v1").await.unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    // The FUSE-preferring mounter (not `copy_only`): it FUSE-mounts the store at the
+    // host path the provider then binds into the namespace.
+    let provider = NamespaceProvider::new(tmp.path())
+        .with_memory_mounter(Arc::new(MemoryStoreMounter::new(fs.clone())));
+
+    let mut spec = spec("t-mem-fuse");
+    spec.mounts.push(pc::MountRequirement {
+        mount_id: "mem".into(),
+        source: pc::MountSource::MemoryStore {
+            store_id: "s".into(),
+        },
+        mount_path: "/mnt/memory".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Durable,
+        required: true,
+    });
+    let sandbox = provider.create(&spec).await.unwrap();
+
+    // Only assert the SPLICE when FUSE was actually realized; otherwise it fell back to
+    // copy (a legitimate outcome this host doesn't exercise), covered elsewhere.
+    let is_fuse = sandbox
+        .realized()
+        .iter()
+        .any(|m| m.mount_path == "/mnt/memory" && matches!(m.realization, pc::Realization::Fuse));
+    if !is_fuse {
+        eprintln!("skipping: memory realized as copy here, not FUSE (fallback covered elsewhere)");
+        sandbox.dispose().await.ok();
+        return;
+    }
+
+    // INSIDE the bwrap namespace: read the seeded memory (proves the live FUSE mount is
+    // visible through the bind) and write an edit back through it (write-through).
+    let proc = sandbox
+        .spawn(sh(
+            "cat /mnt/memory/note.md > /mnt/session/outputs/read.txt && printf v2 > /mnt/memory/note.md",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        proc.wait().await.unwrap().code,
+        Some(0),
+        "the agent read + wrote the FUSE memory mount inside the namespace"
+    );
+    let arts = sandbox.artifacts().await.unwrap();
+    let read = arts
+        .iter()
+        .find(|a| a.path.ends_with("/read.txt"))
+        .expect("read.txt artifact");
+    assert_eq!(
+        sandbox.read_artifact(&read.id).await.unwrap(),
+        b"v1",
+        "the seeded memory was visible LIVE inside the bwrap namespace (spliced FUSE mount)"
+    );
+
+    // dispose unmounts the FUSE mount (write-through already flushed the edit to the store).
+    sandbox.dispose().await.unwrap();
+    assert_eq!(
+        fs.get_by_path("s", "/note.md")
+            .await
+            .unwrap()
+            .unwrap()
+            .content
+            .as_deref(),
+        Some("v2"),
+        "the in-namespace write propagated LIVE to the durable store through the FUSE mount"
+    );
+}
