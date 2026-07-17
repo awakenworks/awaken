@@ -42,11 +42,10 @@ use axum::Router;
 // re-exports a composition root (and the integration tests) drive directly.
 pub use awaken_managed_routers::{default_models, files_router, models_router};
 pub use awaken_runtime_host::{
-    ConfigService, ExecutorProvider, ExtMcpProbe, HostResume, HttpTransport, ManagedHost,
-    PreparedMcpRefresh, ProtocolHost, Response, SharedHost, SkillContext, SkillSpec, ThreadEvent,
-    ThreadEventHub, Transport, VaultRefresher, advertised_tools, capabilities_router,
-    config_router, content_fingerprint, durable_ops_router, memory_stores_router, parse_skill_md,
-    skills_router,
+    ConfigService, ExecutorProvider, ExtMcpProbe, HostResume, ManagedHost, PreparedMcpRefresh,
+    ProtocolHost, SharedHost, SkillContext, SkillSpec, ThreadEvent, ThreadEventHub, VaultRefresher,
+    advertised_tools, capabilities_router, config_router, content_fingerprint, durable_ops_router,
+    memory_stores_router, parse_skill_md, skills_router,
 };
 
 /// An [`ExecutorProvider`] mapping a model ref to a labeled executor, so a

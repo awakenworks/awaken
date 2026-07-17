@@ -2,6 +2,7 @@
 //! `with_*` methods, per-thread registration, and the process dispatch pool.
 
 use super::*;
+use awaken_runtime_contract::agent_resolver::RemoteDelegate;
 
 impl SharedHost {
     /// A host over `llm`. Configure it with the chainable `with_*` builders
@@ -413,13 +414,16 @@ impl SharedHost {
         self
     }
 
-    pub fn with_remote_a2a(
+    /// Register a remote delegate behind the neutral [`RemoteDelegate`] port. The
+    /// composition root builds the protocol adapter (e.g. an A2A delegate over an
+    /// `HttpTransport`) and injects it here, so the host names no wire type.
+    pub fn with_remote_delegate(
         mut self,
         agent_id: impl Into<String>,
-        transport: Arc<dyn Transport>,
+        delegate: Arc<dyn RemoteDelegate>,
     ) -> Self {
         let agent_id = agent_id.into();
-        self.delegates.add_remote(agent_id, transport);
+        self.delegates.add_remote(agent_id, delegate);
         self
     }
 

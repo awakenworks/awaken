@@ -24,12 +24,14 @@ use axum::Router;
 // the two port adapters, the per-plane routers, and the authoring/transport
 // re-exports a composition root (and the integration tests) drive directly.
 pub use awaken_managed_routers::{default_models, files_router, models_router};
+// The A2A remote-delegate adapter + its transport constructor: the composition root
+// builds the delegate here and injects it behind the host's neutral RemoteDelegate port.
+use awaken_run_executor_a2a::{A2aRemoteDelegate, HttpTransport};
 pub use awaken_runtime_host::{
-    ConfigService, ExecutorProvider, ExtMcpProbe, HostResume, HttpTransport, ManagedHost,
-    PreparedMcpRefresh, ProtocolHost, Response, SharedHost, SkillContext, SkillSpec, ThreadEvent,
-    ThreadEventHub, Transport, VaultRefresher, advertised_tools, capabilities_router,
-    config_router, content_fingerprint, durable_ops_router, memory_stores_router, parse_skill_md,
-    skills_router,
+    ConfigService, ExecutorProvider, ExtMcpProbe, HostResume, ManagedHost, PreparedMcpRefresh,
+    ProtocolHost, SharedHost, SkillContext, SkillSpec, ThreadEvent, ThreadEventHub, VaultRefresher,
+    advertised_tools, capabilities_router, config_router, content_fingerprint, durable_ops_router,
+    memory_stores_router, parse_skill_md, skills_router,
 };
 
 use awaken_server::placement;
@@ -1233,8 +1235,10 @@ pub fn build_remote_delegation_router() -> Router {
     let url = std::env::var("AWAKEN_REMOTE_AGENT_URL")
         .expect("AWAKEN_REMOTE_AGENT_URL must be set for delegate-remote mode");
     let (model, model_ref) = scenario_model(Arc::new(DelegatingModel), "delegate-remote");
-    let host = SharedHost::new(model, model_ref)
-        .with_remote_a2a("researcher", Arc::new(HttpTransport::new(url)));
+    let host = SharedHost::new(model, model_ref).with_remote_delegate(
+        "researcher",
+        Arc::new(A2aRemoteDelegate::new(Arc::new(HttpTransport::new(url)))),
+    );
     mount(Arc::new(host))
 }
 

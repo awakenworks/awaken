@@ -16,13 +16,21 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Phase};
 use awaken_protocol_a2a::client::send_message;
-use awaken_protocol_a2a::{HttpTransport, Task, TaskState, Transport};
+use awaken_protocol_a2a::{Task, TaskState};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{
     Cancellation, Error, ExecutorCapabilities, Result, RunExecutor, Wait,
 };
 use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+
+// The A2A adapter of the neutral `RemoteDelegate` port (Phase 2): the host holds a
+// remote delegate behind the port and names no A2A type. The transport constructors
+// are re-exported so a composition root can build a delegate without depending on the
+// A2A protocol crate directly.
+mod delegate;
+pub use awaken_protocol_a2a::{HttpTransport, Transport};
+pub use delegate::A2aRemoteDelegate;
 
 /// Builds a [`Transport`] for a dial endpoint. Injectable so a test can substitute a
 /// mock for the `HttpTransport`.

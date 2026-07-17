@@ -26,7 +26,7 @@ pub mod subagent_runner;
 pub mod tool;
 
 pub use activation::RunActivation;
-pub use agent_resolver::{AgentError, AgentRequest, AgentResolver, AgentStep};
+pub use agent_resolver::{AgentError, AgentRequest, AgentResolver, AgentStep, RemoteDelegate};
 pub use boundary::{BoundaryOutcome, evaluate_boundary};
 pub use capture::{CaptureDecision, ContentCapture, ContentKind, ContentRedactor, NoopRedactor};
 pub use catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};

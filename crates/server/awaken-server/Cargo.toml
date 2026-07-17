@@ -94,6 +94,8 @@ container-k8s = ["awaken-runtime-host/container-k8s"]
 
 [dev-dependencies]
 awaken-scenario-host = { workspace = true }
+# The A2A remote-delegate adapter the a2a-loopback e2e wraps its mock transports in.
+awaken-run-executor-a2a = { workspace = true }
 http-body-util = "0.1"
 awaken-agent-contract = { workspace = true }
 # mcp_sessions test: drives the VaultRefresher's RFC 6749 refresh grant and

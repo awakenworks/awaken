@@ -25,7 +25,6 @@ use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_ext_goal::{DelegateGrader, GoalPlugin, GoalSpec, Grader, KeywordGrader};
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
 use awaken_file_store::{FileStore, InMemoryFileStore};
-use awaken_protocol_a2a::Transport;
 use awaken_run_ingress::{
     AnyDispatchStore, CompletionSink, DEFAULT_LEASE_MS, DispatchPool, DispatchQueue,
     DispatchServiceConfig, DurableRunIngress, RunExecutionRequest, SubmitOptions, SystemClock,
