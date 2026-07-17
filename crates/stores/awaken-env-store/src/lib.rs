@@ -14,6 +14,11 @@ use serde_json::Value;
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgRow};
 
+// The in-memory reference backend lives here beside the durable siblings (issue A /
+// Phase 1); the port + value objects stay inward in `awaken-session-contract`.
+mod inmem;
+pub use inmem::InMemoryEnvRegistry;
+
 /// The frozen presence timestamp the managed wire uses (parity with the registry).
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 /// The store's table namespace / bundle prefix (`env_registry_env`).

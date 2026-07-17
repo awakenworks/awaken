@@ -1,4 +1,17 @@
 pub mod awaken_env_store
+pub struct awaken_env_store::InMemoryEnvRegistry
+impl awaken_env_store::InMemoryEnvRegistry
+pub fn awaken_env_store::InMemoryEnvRegistry::new() -> Self
+impl awaken_session_contract::env_registry::EnvRegistry for awaken_env_store::InMemoryEnvRegistry
+pub fn awaken_env_store::InMemoryEnvRegistry::archive<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_session_contract::env_registry::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_env_store::InMemoryEnvRegistry::create<'life0, 'async_trait>(&'life0 self, alloc::string::String, alloc::string::String, alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_session_contract::env_registry::EnvItem> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_env_store::InMemoryEnvRegistry::delete<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = bool> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_env_store::InMemoryEnvRegistry::exists<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = bool> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_env_store::InMemoryEnvRegistry::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_session_contract::env_registry::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_env_store::InMemoryEnvRegistry::list_active<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<awaken_session_contract::env_registry::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_env_store::InMemoryEnvRegistry::update<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_session_contract::env_registry::EnvUpdate) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_session_contract::env_registry::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl core::default::Default for awaken_env_store::InMemoryEnvRegistry
+pub fn awaken_env_store::InMemoryEnvRegistry::default() -> Self
 pub struct awaken_env_store::PostgresEnvRegistry
 impl awaken_env_store::PostgresEnvRegistry
 pub async fn awaken_env_store::PostgresEnvRegistry::connect(&str) -> core::result::Result<Self, alloc::string::String>
