@@ -43,6 +43,7 @@ awaken-store-fs = { workspace = true }
 awaken-store-postgres = { workspace = true }
 # The durable WorkQueue backend (sqlite/postgres), extracted from this host.
 awaken-work-store = { workspace = true }
+awaken-session-store = { workspace = true }
 awaken-config-store = { workspace = true }
 # The config-authoring plane, extracted so awaken-control can share it without
 # depending on this execution host. Re-exported below for the composition root.

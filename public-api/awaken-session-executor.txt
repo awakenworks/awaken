@@ -4,8 +4,10 @@ pub use awaken_session_executor::ConfigPlane
 pub use awaken_session_executor::ConfigService
 pub use awaken_session_executor::ConfigServiceAgentSource
 pub use awaken_session_executor::ConfigServiceReconciler
+pub use awaken_session_executor::HttpDispatchQueue
 pub use awaken_session_executor::HttpTransport
 pub use awaken_session_executor::ModelResolver
+pub use awaken_session_executor::PostgresManagedSessionRepository
 pub use awaken_session_executor::PostgresWorkQueue
 pub use awaken_session_executor::PublishError
 pub use awaken_session_executor::RESERVED_ADMIN_SCOPE
@@ -14,6 +16,7 @@ pub use awaken_session_executor::Response
 pub use awaken_session_executor::ScopedToolCatalog
 pub use awaken_session_executor::SkillContext
 pub use awaken_session_executor::SkillSpec
+pub use awaken_session_executor::SqliteManagedSessionRepository
 pub use awaken_session_executor::SqliteWorkQueue
 pub use awaken_session_executor::StaticToolCatalog
 pub use awaken_session_executor::ToolCatalogSource
@@ -22,6 +25,7 @@ pub use awaken_session_executor::capabilities_router
 pub use awaken_session_executor::config_router
 pub use awaken_session_executor::content_fingerprint
 pub use awaken_session_executor::parse_skill_md
+pub use awaken_session_executor::worker_dispatch_store
 pub enum awaken_session_executor::AcpStop
 pub awaken_session_executor::AcpStop::EndTurn
 pub awaken_session_executor::AcpStop::MaxTurns
@@ -110,33 +114,6 @@ pub fn awaken_session_executor::EnvLaunchResolver::model(&self, &awaken_runtime_
 pub struct awaken_session_executor::ExtMcpProbe
 impl awaken_session_contract::mcp_probe::McpProbe for awaken_session_executor::ExtMcpProbe
 pub fn awaken_session_executor::ExtMcpProbe::probe<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_agent_contract::secret::RedactedString) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_session_contract::mcp_probe::McpProbeStatus> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub struct awaken_session_executor::HttpDispatchQueue
-impl awaken_session_executor::HttpDispatchQueue
-pub fn awaken_session_executor::HttpDispatchQueue::new(impl core::convert::Into<alloc::string::String>) -> Self
-impl awaken_dispatch_contract::dispatch::DispatchQueue for awaken_session_executor::HttpDispatchQueue
-pub fn awaken_session_executor::HttpDispatchQueue::cancel<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_contract::agent::thread::Id>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_session_executor::HttpDispatchQueue::claim<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_dispatch_contract::dispatch::Claimed>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_session_executor::HttpDispatchQueue::current_epoch<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<u64>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_session_executor::HttpDispatchQueue::dead_letters<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::run::Id>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_session_executor::HttpDispatchQueue::enqueue_with<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::request::RunExecutionRequest, awaken_dispatch_contract::dispatch::SubmitOptions) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_session_executor::HttpDispatchQueue::list_dispatches<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_dispatch_contract::dispatch::DispatchSummary>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_session_executor::HttpDispatchQueue::parked_run<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::thread::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_contract::agent::run::Id>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_session_executor::HttpDispatchQueue::purge_dead_letters<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_session_executor::HttpDispatchQueue::purge_dead_letters_before<'life0, 'async_trait>(&'life0 self, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_session_executor::HttpDispatchQueue::reap<'life0, 'async_trait>(&'life0 self, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_session_executor::HttpDispatchQueue::renew_lease<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id, &'life2 str, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub fn awaken_session_executor::HttpDispatchQueue::renew_owned_leases<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_session_executor::HttpDispatchQueue::requeue<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_session_executor::HttpDispatchQueue::settle<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id, u64, awaken_dispatch_contract::dispatch::DispatchOutcome, &'life2 [alloc::string::String]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::SettleOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub fn awaken_session_executor::HttpDispatchQueue::superseded<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::run::Id>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-impl awaken_dispatch_contract::dispatch::Inbox for awaken_session_executor::HttpDispatchQueue
-pub fn awaken_session_executor::HttpDispatchQueue::append<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::dispatch::PendingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_session_executor::HttpDispatchQueue::edit<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64, awaken_runtime_contract::resume::ResumeResult) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::CasOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_session_executor::HttpDispatchQueue::list<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::thread::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_dispatch_contract::dispatch::PendingRecord>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_session_executor::HttpDispatchQueue::retract<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::CasOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-impl awaken_dispatch_contract::dispatch::Outbox for awaken_session_executor::HttpDispatchQueue
-pub fn awaken_session_executor::HttpDispatchQueue::relay<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_session_executor::HttpDispatchQueue::stage<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::dispatch::PendingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_session_executor::ManagedHost
 impl awaken_session_executor::ManagedHost
 pub fn awaken_session_executor::ManagedHost::new(alloc::sync::Arc<awaken_session_executor::SharedHost>) -> Self
@@ -188,15 +165,6 @@ pub fn awaken_session_executor::PostgresEnvRegistry::exists<'life0, 'life1, 'asy
 pub fn awaken_session_executor::PostgresEnvRegistry::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_protocol_managed::env_registry::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_executor::PostgresEnvRegistry::list_active<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<awaken_protocol_managed::env_registry::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_session_executor::PostgresEnvRegistry::update<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_protocol_managed::env_registry::EnvUpdate) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_protocol_managed::env_registry::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub struct awaken_session_executor::PostgresManagedSessionRepository
-impl awaken_session_executor::PostgresManagedSessionRepository
-pub async fn awaken_session_executor::PostgresManagedSessionRepository::connect(&str) -> core::result::Result<Self, alloc::string::String>
-pub async fn awaken_session_executor::PostgresManagedSessionRepository::with_pool(sqlx_postgres::PgPool) -> core::result::Result<Self, alloc::string::String>
-impl awaken_protocol_managed::session_repo::ManagedSessionRepository for awaken_session_executor::PostgresManagedSessionRepository
-pub fn awaken_session_executor::PostgresManagedSessionRepository::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_protocol_managed::session_repo::PersistedSession>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_session_executor::PostgresManagedSessionRepository::owner<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_session_executor::PostgresManagedSessionRepository::save<'life0, 'async_trait>(&'life0 self, awaken_protocol_managed::session_repo::PersistedSession) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_session_executor::PostgresManagedSessionRepository::set_owner<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub struct awaken_session_executor::PreparedMcpRefresh
 pub awaken_session_executor::PreparedMcpRefresh::access_token_ref: awaken_credential_vault::SecretRef
 pub awaken_session_executor::PreparedMcpRefresh::client_id: alloc::string::String
@@ -318,15 +286,6 @@ pub fn awaken_session_executor::SqliteEnvRegistry::exists<'life0, 'life1, 'async
 pub fn awaken_session_executor::SqliteEnvRegistry::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_protocol_managed::env_registry::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_executor::SqliteEnvRegistry::list_active<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<awaken_protocol_managed::env_registry::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_session_executor::SqliteEnvRegistry::update<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_protocol_managed::env_registry::EnvUpdate) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_protocol_managed::env_registry::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub struct awaken_session_executor::SqliteManagedSessionRepository
-impl awaken_session_executor::SqliteManagedSessionRepository
-pub fn awaken_session_executor::SqliteManagedSessionRepository::open(&str) -> core::result::Result<Self, alloc::string::String>
-pub fn awaken_session_executor::SqliteManagedSessionRepository::open_in_memory() -> core::result::Result<Self, alloc::string::String>
-impl awaken_protocol_managed::session_repo::ManagedSessionRepository for awaken_session_executor::SqliteManagedSessionRepository
-pub fn awaken_session_executor::SqliteManagedSessionRepository::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_protocol_managed::session_repo::PersistedSession>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_session_executor::SqliteManagedSessionRepository::owner<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_session_executor::SqliteManagedSessionRepository::save<'life0, 'async_trait>(&'life0 self, awaken_protocol_managed::session_repo::PersistedSession) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_session_executor::SqliteManagedSessionRepository::set_owner<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub struct awaken_session_executor::ThreadEgress(_)
 impl awaken_session_executor::ThreadEgress
 pub fn awaken_session_executor::ThreadEgress::denies(&self, &str) -> bool
@@ -366,4 +325,3 @@ pub fn awaken_session_executor::models_router(alloc::sync::Arc<alloc::vec::Vec<a
 pub fn awaken_session_executor::platform_plugin_capabilities() -> alloc::vec::Vec<awaken_runtime_contract::capability::PluginCapability>
 pub async fn awaken_session_executor::resolve_sandbox_tier(awaken_session_executor::SandboxTier, &std::path::Path) -> core::result::Result<awaken_session_executor::SandboxTier, alloc::string::String>
 pub fn awaken_session_executor::skills_router(alloc::sync::Arc<awaken_session_executor::SharedHost>) -> axum::routing::Router
-pub fn awaken_session_executor::worker_dispatch_store(impl core::convert::Into<alloc::string::String>) -> alloc::sync::Arc<awaken_dispatch::any::AnyDispatchStore>
