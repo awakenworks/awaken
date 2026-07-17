@@ -1585,12 +1585,21 @@ mod tests {
     fn namespace_degrade_policy_is_usable_without_bwrap_by_default_but_strict_when_explicit() {
         // Tier left at the default (unset AWAKEN_SANDBOX_TIER) → degrade to Local without
         // bwrap, so a dev/single-machine worker runs out of the box (no opt-in needed).
-        assert!(namespace_degrades_to_local(false, false), "unset tier auto-degrades");
+        assert!(
+            namespace_degrades_to_local(false, false),
+            "unset tier auto-degrades"
+        );
         // Explicit `AWAKEN_SANDBOX_TIER=namespace` → fail closed without bwrap (an operator
         // who asked for OS isolation must not silently lose it) ...
-        assert!(!namespace_degrades_to_local(true, false), "explicit namespace fails closed");
+        assert!(
+            !namespace_degrades_to_local(true, false),
+            "explicit namespace fails closed"
+        );
         // ... unless they ALSO opt into the fallback.
-        assert!(namespace_degrades_to_local(true, true), "explicit + opt-in degrades");
+        assert!(
+            namespace_degrades_to_local(true, true),
+            "explicit + opt-in degrades"
+        );
     }
 
     #[tokio::test]

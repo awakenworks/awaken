@@ -629,6 +629,7 @@ pub async fn build_acp_container_router() -> Router {
         awaken_session_executor::LaunchSource::Fixed(launch),
         host.thread_egress(),
         host.thread_resources_handle(),
+        host.thread_sandbox(),
         base,
     )
     .await

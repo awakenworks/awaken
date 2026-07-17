@@ -564,7 +564,7 @@ mod tests {
         );
         assert_eq!(
             rs.decide("bash", &json!({ "command": "ls" })),
-            ToolPermissionBehavior::Ask,
+            ToolPermissionBehavior::RequireConfirmation,
             "a benign bash call falls through to the ask default"
         );
     }
