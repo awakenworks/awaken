@@ -830,6 +830,61 @@ async fn refusal_maps_to_stopped() {
     assert!(matches!(phase, Phase::Ended(EndCause::Stopped(_))));
 }
 
+// M12/T82: the driver-error seam `failure_cause` preserves a rate-limit (HARD-limit
+// banner) as a terminal Inference error stamped with the neutral `"acp_failure"` code —
+// never a success, never a bare stop. The RateLimited class terminates as `Error`
+// (`AcpFailure::termination`), so the run surfaces `EndCause::Error(Failure::Inference)`
+// carrying the raw provider message. Timeout/Refusal are the two classes that instead
+// map to `Stopped` — pinned here as the masking contrast so a refactor cannot silently
+// fold a rate-limit into a stop (which a host would not retry as an error).
+#[test]
+fn a_rate_limited_acp_failure_ends_error_with_the_acp_failure_code() {
+    use awaken_protocol_acp::error::{AcpFailure, AcpFailureClass};
+
+    let rate_limited = AcpFailure {
+        class: AcpFailureClass::RateLimited {
+            retry_after_secs: Some(30),
+        },
+        message: "quota exhausted".to_string(),
+    };
+    match failure_cause(&rate_limited) {
+        EndCause::Error(Failure::Inference { code, message }) => {
+            assert_eq!(
+                code, "acp_failure",
+                "the neutral rate-limit code is preserved"
+            );
+            assert_eq!(
+                message, "quota exhausted",
+                "the raw provider message rides along"
+            );
+        }
+        other => panic!("a rate-limited failure must be a terminal Inference error, got {other:?}"),
+    }
+
+    // Contrast: only Timeout and Refusal short-circuit to a (non-retryable) Stopped.
+    let timeout = AcpFailure {
+        class: AcpFailureClass::Timeout,
+        message: "deadline".to_string(),
+    };
+    assert!(matches!(failure_cause(&timeout), EndCause::Stopped(_)));
+    let refusal = AcpFailure {
+        class: AcpFailureClass::Refusal,
+        message: "refused".to_string(),
+    };
+    assert!(matches!(failure_cause(&refusal), EndCause::Stopped(_)));
+
+    // A permanent/credential/transient failure is likewise an Error with the same code
+    // (masked-preservation: the host, not this crate, decides retryability).
+    let permanent = AcpFailure {
+        class: AcpFailureClass::Permanent,
+        message: "boom".to_string(),
+    };
+    assert!(matches!(
+        failure_cause(&permanent),
+        EndCause::Error(Failure::Inference { .. })
+    ));
+}
+
 // Fail-open guard (the class found in run-executor-a2a): a clean turn that ends on
 // `TerminationReason::Error` — the agent reporting an error as its own terminal frame,
 // NOT a driver/IO fault — flows through the `Idle` boundary arm's `end_cause`. It must
