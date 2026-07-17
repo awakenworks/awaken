@@ -59,8 +59,7 @@ impl SharedHost {
             gate_override: None,
             dispatch_pool: std::sync::OnceLock::new(),
             completion: Arc::new(CompletionRegistry::default()),
-            remote_hand: None,
-            tool_executor_provider: None,
+            hand_placement: crate::hand_placement::HandPlacement::new(),
             capture_sink: None,
             admin_tools: Vec::new(),
             // Default α: never hand a raw MCP bearer to the CLI — a trusted-local
@@ -400,7 +399,7 @@ impl SharedHost {
     /// (ADR-0044) — instead of the in-process registry. The brain still commits
     /// the hand's returned output. `None` (the default) keeps in-process execution.
     pub fn with_remote_hand(mut self, hand: Arc<dyn ToolExecutor>) -> Self {
-        self.remote_hand = Some(hand);
+        self.hand_placement.set_remote_hand(hand);
         self
     }
 
@@ -410,7 +409,7 @@ impl SharedHost {
     /// fall back to `remote_hand`/in-process. This is the seam a config-driven
     /// self-hosted brain–hand split — or a host's own richer policy — plugs into.
     pub fn with_tool_executor_provider(mut self, provider: Arc<dyn ToolExecutorProvider>) -> Self {
-        self.tool_executor_provider = Some(provider);
+        self.hand_placement.set_provider(provider);
         self
     }
 

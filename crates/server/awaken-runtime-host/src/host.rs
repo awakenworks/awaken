@@ -227,16 +227,11 @@ pub struct SharedHost {
     /// (event-driven completion), so the durable foreground path never pays a poll
     /// interval. Injected into the pool as its `CompletionSink`.
     pub(crate) completion: Arc<CompletionRegistry>,
-    /// When set (ADR-0044), every run's tool calls are routed through this remote
-    /// hand instead of the in-process registry. The host owns no placement policy:
-    /// a caller connects a hand and injects the executor via [`with_remote_hand`].
-    /// `None` is the in-process default (`LocalToolExecutor`), untouched.
-    pub(crate) remote_hand: Option<Arc<dyn ToolExecutor>>,
-    /// Hand placement (ADR-0046): the per-run provider that selects a run's
-    /// `ToolExecutor`. `None` (default) leaves `remote_hand`/in-process behavior
-    /// unchanged; when set, a run the provider places (returns `Some`) takes
-    /// precedence over the session-wide `remote_hand`.
-    pub(crate) tool_executor_provider: Option<Arc<dyn ToolExecutorProvider>>,
+    /// Where this host's runs execute tool calls (ADR-0044/0046): the session-wide
+    /// remote hand + the per-run placement provider, sealed behind one type owning
+    /// their precedence (provider placement overrides the hand). Cloned into each
+    /// `SessionCtx`. See [`crate::hand_placement`].
+    pub(crate) hand_placement: crate::hand_placement::HandPlacement,
     /// Subject-tagged captured-content sink (ADR-0050): when set, a run whose
     /// capture level permits content writes it here (attributed to the
     /// `AWAKEN_CONTENT_SUBJECT` on the open surface). `None` = spans only.

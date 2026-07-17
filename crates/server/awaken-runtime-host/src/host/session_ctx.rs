@@ -46,13 +46,10 @@ pub(crate) struct SessionCtx {
     /// This thread's interrupted-stream checkpoint store (Phase 3), wired into
     /// every run context so an inference drop flushes durably at its boundary.
     pub(crate) stream_checkpoint: Arc<dyn StreamCheckpointStore>,
-    /// The host's remote hand (ADR-0044), cloned from `SharedHost::remote_hand` at
-    /// session creation. When set, every run context routes tool calls to it.
-    pub(crate) remote_hand: Option<Arc<dyn ToolExecutor>>,
-    /// The host's hand-placement provider (ADR-0046), cloned from
-    /// `SharedHost::tool_executor_provider`. When set, `context_for` asks it per
-    /// run which executor to use, overriding the session-wide `remote_hand`.
-    pub(crate) tool_executor_provider: Option<Arc<dyn ToolExecutorProvider>>,
+    /// Where this session's runs execute tool calls (ADR-0044/0046), cloned from
+    /// `SharedHost::hand_placement` at session creation: the session-wide remote hand
+    /// and the per-run placement provider, behind one type owning their precedence.
+    pub(crate) hand_placement: crate::hand_placement::HandPlacement,
     /// Subject-tagged captured-content sink for this session (ADR-0050), from
     /// the host. `None` = content is recorded to spans only.
     pub(crate) capture_sink: Option<Arc<dyn awaken_runtime_contract::CaptureSink>>,
@@ -117,7 +114,7 @@ impl SessionCtx {
         }
         // ADR-0044: route this run's tool calls to the host's remote hand, if one
         // is wired; otherwise the kernel's in-process LocalToolExecutor runs them.
-        if let Some(hand) = &self.remote_hand {
+        if let Some(hand) = self.hand_placement.session_hand() {
             ctx = ctx.with_tool_executor(hand.clone());
         }
         ctx
@@ -129,9 +126,7 @@ impl SessionCtx {
     /// `remote_hand`; otherwise this is exactly [`context`](Self::context).
     pub(crate) async fn context_for(&self, activation: &RunActivation) -> RuntimeRunContext {
         let mut ctx = self.context();
-        if let Some(provider) = &self.tool_executor_provider
-            && let Some(executor) = provider.provide(activation).await
-        {
+        if let Some(executor) = self.hand_placement.placed(activation).await {
             ctx = ctx.with_tool_executor(executor);
         }
         ctx

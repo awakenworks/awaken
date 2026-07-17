@@ -29,6 +29,7 @@ mod dispatch_transport_client;
 mod durable_ops;
 mod env_store;
 mod files;
+mod hand_placement;
 mod host;
 mod hub;
 mod judge;
