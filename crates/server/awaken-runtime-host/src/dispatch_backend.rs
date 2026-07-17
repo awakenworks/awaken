@@ -237,3 +237,27 @@ pub(crate) fn shared_durable_store(
         }
     }
 }
+
+// N6: selecting `AWAKEN_DISPATCH_WAKE=nats` on a binary built WITHOUT `--features nats`
+// is a hard startup error, never a silent degrade to poll-only (which would look like a
+// working wake but never nudge a peer, stalling cross-node dispatch). This gate only
+// compiles in the default (no-nats) build — exactly the build that must fail closed.
+#[cfg(all(test, not(feature = "nats")))]
+mod nats_feature_gate_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn nats_wake_without_the_feature_fails_closed_at_startup() {
+        // The no-feature variant returns the error before touching Postgres, so the URL
+        // is never dialed — a bad DSN here is fine. (`AnyDispatchStore` is not `Debug`, so
+        // match rather than `expect_err`.)
+        let err = match connect_postgres_with_nats_wake("postgres://ignored/db").await {
+            Ok(_) => panic!("nats wake without --features nats must fail closed, got Ok"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("without --features nats"),
+            "the error must name the missing feature so the operator can act, got: {err}"
+        );
+    }
+}

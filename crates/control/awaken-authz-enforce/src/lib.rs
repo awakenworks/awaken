@@ -158,15 +158,23 @@ impl EnforceEngine {
             .policy
             .evaluate(&request)
             .decision;
-        match decision {
-            AuthorizationDecision::Allow => SessionDecision::Allow,
-            // Fail-closed: a bare `Deny` and an approval requirement both degrade
-            // to `Deny` here. Approval is a management-plane concept the seeded
-            // engine never installs at the session axis, so this arm's second half
-            // is defensive, not reachable through `EnforceEngine::seeded`.
-            AuthorizationDecision::Deny | AuthorizationDecision::RequireApproval => {
-                SessionDecision::Deny
-            }
+        collapse_session_decision(decision)
+    }
+}
+
+/// Collapse the shared engine's three-way [`AuthorizationDecision`] into the session
+/// surface's two-way [`SessionDecision`], **fail-closed**: only an explicit `Allow`
+/// allows; both a bare `Deny` and an `RequireApproval` degrade to `Deny`. Approval is a
+/// management-plane concept the seeded engine never installs at the session axis, so the
+/// `RequireApproval` arm is defensive — but it is pinned here (rather than inlined) so a
+/// future refactor cannot silently map it to `Allow` and open the session surface. See
+/// [`SessionDecision`].
+#[must_use]
+fn collapse_session_decision(decision: AuthorizationDecision) -> SessionDecision {
+    match decision {
+        AuthorizationDecision::Allow => SessionDecision::Allow,
+        AuthorizationDecision::Deny | AuthorizationDecision::RequireApproval => {
+            SessionDecision::Deny
         }
     }
 }
@@ -342,6 +350,29 @@ mod tests {
         let (principal, ws) = engine.authenticate(&secret).expect("authenticate");
         assert_eq!(ws.0, WS);
         (engine, secret, principal)
+    }
+
+    // M6/T44: the three-way→two-way collapse at the session boundary is fail-closed.
+    // `Allow` is the only decision that allows; both a bare `Deny` and — critically — a
+    // `RequireApproval` (an approval requirement the seeded engine never installs, hence
+    // otherwise unreachable through the public seam) degrade to `Deny`. Pinning all three
+    // rows here guarantees a refactor cannot fold `RequireApproval` into `Allow` and open
+    // the session surface to an un-approved request.
+    #[test]
+    fn require_approval_collapses_to_deny_fail_closed() {
+        assert_eq!(
+            collapse_session_decision(AuthorizationDecision::Allow),
+            SessionDecision::Allow
+        );
+        assert_eq!(
+            collapse_session_decision(AuthorizationDecision::Deny),
+            SessionDecision::Deny
+        );
+        assert_eq!(
+            collapse_session_decision(AuthorizationDecision::RequireApproval),
+            SessionDecision::Deny,
+            "an approval requirement must fail closed at the session axis, never allow"
+        );
     }
 
     #[test]
