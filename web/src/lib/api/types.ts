@@ -273,9 +273,31 @@ export type EnvNetworking =
   | { type: "unrestricted" }
   | { type: "limited"; allowed_hosts?: string[]; allow_package_managers?: boolean; allow_mcp_servers?: boolean };
 
+/** A sandbox mount made visible inside the isolated worker. */
+export interface SandboxMount {
+  mount_path: string;
+  access: "read_only" | "read_write";
+}
+/** Egress policy: full, deny-by-default allowlist, or none. */
+export type SandboxNetwork =
+  | { mode: "unrestricted" }
+  | { mode: "allowlist"; hosts?: string[] }
+  | { mode: "none" };
+/** The `config.sandbox` an environment persists — a UI projection of the backend
+ * `SandboxSpec` (see /v1/capabilities `sandbox.config_schema`). */
+export interface SandboxConfig {
+  isolation?: "workdir" | "namespace" | "container";
+  mounts?: SandboxMount[];
+  network?: SandboxNetwork;
+  limits?: { cpu_millis?: number | null; memory_bytes?: number | null };
+}
 export interface EnvironmentConfig {
   type: "cloud" | "self_hosted";
   networking?: EnvNetworking;
+  /** Execution backend: "awaken" (native) or "acp:<cli>". Absent = native. */
+  runtime?: string;
+  /** Present when the worker runs in an isolated sandbox. */
+  sandbox?: SandboxConfig;
 }
 export interface Environment {
   id: string;
@@ -483,11 +505,33 @@ export interface PolicyCap {
   config_section: string;
   config_schema: Record<string, unknown>;
 }
+/** An execution backend an environment can bind (the "where/how it runs" axis).
+ * `awaken` = native; `acp:<cli>` routes to an ACP CLI adapter. */
+export interface RuntimeCap {
+  id: string;
+  label: string;
+  kind: "native" | "acp";
+  cli?: string | null;
+  description: string;
+}
+/** A one-click sandbox starting point over `sandbox.config_schema`. */
+export interface SandboxPreset {
+  id: string;
+  label: string;
+  description: string;
+  spec: SandboxConfig;
+}
+export interface SandboxCapability {
+  config_schema: Record<string, unknown>;
+  presets: SandboxPreset[];
+}
 export interface Capabilities {
   runtime_version: string;
   tools: ToolCap[];
   plugins: PluginCap[];
   policies?: PolicyCap[];
+  runtimes?: RuntimeCap[];
+  sandbox?: SandboxCapability;
 }
 
 // ---- permission policy (the `permission` plugin_config section) ----

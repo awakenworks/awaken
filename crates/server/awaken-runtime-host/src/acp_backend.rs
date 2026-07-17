@@ -152,20 +152,25 @@ impl crate::host::SharedHost {
             (None, None) => return self,
         };
         let dep = crate::DeploymentConfig::from_env();
-        // Probe the OS-native sandbox once: a bwrap-less host fails closed at startup
-        // (clear guidance) or degrades to unsandboxed local with an opt-in, so a worker
-        // without bwrap still works instead of failing every run opaquely.
-        let tier = crate::resolve_sandbox_tier(dep.sandbox_tier, &base)
+        // Probe the OS-native sandbox once. A bwrap-less host degrades to unsandboxed local
+        // ACP when the tier was left at its default (dev/single-machine ergonomics — the
+        // environment still runs) and fails closed only when `AWAKEN_SANDBOX_TIER=namespace`
+        // was requested EXPLICITLY, so an operator who asked for isolation never silently
+        // loses it. So a worker without bwrap works out of the box.
+        let tier_explicit = std::env::var_os("AWAKEN_SANDBOX_TIER").is_some();
+        let tier = crate::resolve_sandbox_tier(dep.sandbox_tier, tier_explicit, &base)
             .await
             .unwrap_or_else(|e| panic!("configure the ACP sandbox tier: {e}"));
         let egress = self.thread_egress();
         let resources = self.thread_resources_handle();
+        let sandbox = self.thread_sandbox();
         let channel = crate::build_acp_channel_source(
             tier,
             dep.container_image.as_deref(),
             source,
             egress,
             resources,
+            sandbox,
             base,
         )
         .await

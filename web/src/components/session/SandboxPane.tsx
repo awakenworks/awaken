@@ -6,7 +6,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { api, ws } from "../../lib/api/client";
-import type { Session } from "../../lib/api/types";
+import type { Environment, Page, Session } from "../../lib/api/types";
 import { useApp } from "../../lib/app-state";
 import { Button, Card, EmptyState, Pill, UsageBadges } from "../ui";
 import Transcript from "./Transcript";
@@ -27,10 +27,29 @@ export default function SandboxPane({
   const app = useApp();
   const [sid, setSid] = useState<string | null>(null);
   const [latencyMs, setLatencyMs] = useState<number | undefined>();
+  const [envId, setEnvId] = useState("");
+
+  // The environments the scratch run can execute in — picking one that carries an ACP
+  // runtime + sandbox is how you test the agent AS claude/codex inside its bwrap, not
+  // just native (the two axes — agent × environment — meet here, at run time).
+  const envs = useQuery({
+    queryKey: ["environments"],
+    queryFn: () => api.get<Page<Environment>>(ws("/v1/environments")),
+  });
+  const chosen = (envs.data?.data ?? []).find((e) => e.id === envId);
 
   const start = useMutation({
-    mutationFn: () =>
-      api.post<Session>(ws("/v1/sessions"), { agent: agentId, title: `sandbox · ${agentId}` }),
+    mutationFn: () => {
+      const runtime = chosen?.config.runtime;
+      return api.post<Session>(ws("/v1/sessions"), {
+        agent: agentId,
+        title: `sandbox · ${agentId}`,
+        ...(envId ? { environment_id: envId } : {}),
+        // The environment carries the runtime; declare it on the session metadata the
+        // host reads (same wiring as the Sessions surface).
+        ...(runtime ? { metadata: { "awaken.runtime": runtime } } : {}),
+      });
+    },
     onSuccess: (s) => {
       setSid(s.id);
       setLatencyMs(undefined);
@@ -66,9 +85,24 @@ export default function SandboxPane({
           "对已发布的 agent 开一个临时会话——问它点什么,看它实时作答。",
         )}
         action={
-          <Button variant="primary" disabled={start.isPending} onClick={() => start.mutate()}>
-            {start.isPending ? app.t("Starting…", "启动中…") : app.t("Start session", "开始会话")}
-          </Button>
+          <div className="col" style={{ gap: 8, alignItems: "center" }}>
+            <label className="row" style={{ gap: 6, fontSize: 12 }}>
+              <span className="mut">{app.t("Environment", "运行环境")}</span>
+              <select className="input mono" style={{ height: 28 }} value={envId} onChange={(e) => setEnvId(e.target.value)}>
+                <option value="">{app.t("Native (no sandbox)", "原生(无沙箱)")}</option>
+                {(envs.data?.data ?? []).map((e) => (
+                  <option key={e.id} value={e.id}>
+                    {e.name}
+                    {e.config.runtime ? ` · ${e.config.runtime}` : ""}
+                    {e.config.sandbox ? " · sandboxed" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <Button variant="primary" disabled={start.isPending} onClick={() => start.mutate()}>
+              {start.isPending ? app.t("Starting…", "启动中…") : app.t("Start session", "开始会话")}
+            </Button>
+          </div>
         }
       />
     );
@@ -80,6 +114,7 @@ export default function SandboxPane({
       <div className="row" style={{ justifyContent: "space-between", marginBottom: 8 }}>
         <span className="row">
           <Pill tone="agent">{agentId}</Pill>
+          {chosen?.config.runtime && <Pill tone="info">⚙ {chosen.config.runtime}{chosen.config.sandbox ? " · sandboxed" : ""}</Pill>}
           <code className="mut" style={{ fontSize: 11 }}>
             {sid}
           </code>

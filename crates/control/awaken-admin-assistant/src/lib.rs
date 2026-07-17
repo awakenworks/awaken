@@ -45,6 +45,10 @@ pub const VALIDATE_TOOL: &str = "admin_validate_agent";
 /// Explain how to use the console (read-only help): return a curated topic, or the
 /// topic index. Lets the assistant double as an in-console user manual.
 pub const EXPLAIN_TOOL: &str = "admin_explain_console";
+/// Draft (author + persist) an execution ENVIRONMENT: the runtime backend (native or
+/// `acp:<cli>`) + an isolated sandbox (isolation/network/limits). The "where/how it
+/// runs" axis, distinct from an agent (the "what it is"); a session binds the two.
+pub const CREATE_ENV_TOOL: &str = "admin_draft_environment";
 
 /// The reserved agent id the management assistant is published under. It is a
 /// deliberately un-tenant-like id, seeded once into the reserved scope (ADR-0052 D2).
@@ -59,6 +63,7 @@ pub fn admin_tool_ids() -> Vec<String> {
         PATCH_TOOL.to_string(),
         VALIDATE_TOOL.to_string(),
         EXPLAIN_TOOL.to_string(),
+        CREATE_ENV_TOOL.to_string(),
     ]
 }
 
@@ -110,6 +115,19 @@ unpublished draft and validates it.
 use `admin_validate_agent` to confirm. Iterate until it compiles cleanly.
 4. Briefly tell the operator what you drafted and the trade-offs. NEVER publish — \
 publishing is the operator's decision in the console.
+
+To AUTHOR an ENVIRONMENT (the 'where/how it runs' — an ACP CLI and/or an isolated \
+sandbox, distinct from an agent), use `admin_draft_environment`:
+1. Call `admin_get_platform_capabilities` first; use its `runtimes` (the valid `runtime` \
+ids: `awaken` native or `acp:<cli>`) and `sandbox.config_schema` + `sandbox.presets`.
+2. Set `runtime` to the operator's chosen backend (e.g. `acp:claude` for Claude Code), \
+`placement` (`self_hosted` unless they say cloud), and — when they want isolation — a \
+`sandbox` conforming to `sandbox.config_schema`. Start from the closest preset spec and \
+adjust; do NOT invent isolation/network shapes. For 'lock it down / no internet' use \
+`network.mode: none`; for 'only reach X' use `allowlist` with `hosts`.
+3. A runtime does NOT go on the agent — an environment carries it. A session binds an \
+agent to an environment. So 'run this agent as claude in a locked-down sandbox' = author \
+the agent normally, THEN author an environment with that runtime + sandbox.
 
 AUTHORING RULES:
 - Plugin sections (e.g. `state_machine`, `permission`, `compact`, `memory`) MUST conform \
@@ -233,6 +251,17 @@ pub trait DraftStore: Send + Sync {
     async fn get_resources(&self, agent_id: &str) -> Result<Vec<ResourceSpec>, String>;
 }
 
+/// A write port over the managed-plane environment registry — the "where/how it runs"
+/// resource, distinct from an agent draft. `admin_draft_environment` persists through
+/// it (the same `POST /v1/environments` the console's New-environment modal drives).
+/// The impl lives at the composition root, which owns the `EnvironmentState`.
+#[async_trait]
+pub trait EnvironmentAuthor: Send + Sync {
+    /// Create an environment named `name` with the given opaque `config` blob
+    /// (`{type, runtime?, sandbox?}`). Returns the new environment id.
+    async fn create(&self, name: &str, config: serde_json::Value) -> Result<String, String>;
+}
+
 /// A structured record of one management tool invocation (ADR-0052 D6). Emitted on
 /// **every** call. Carries only a short, non-secret summary — never the full arguments.
 pub type AdminAuditEvent = ManagementAuditRecord;
@@ -283,6 +312,14 @@ pub struct PlatformCapabilities {
     /// Ids of the memory stores an agent may bind (data-plane inventory).
     #[serde(default)]
     pub memory_stores: Vec<String>,
+    /// Execution backends an environment may bind (`awaken` native + `acp:<cli>`), each
+    /// `{id,label,kind,cli,description}`. Grounds `admin_draft_environment`'s `runtime`.
+    #[serde(default)]
+    pub runtimes: Vec<serde_json::Value>,
+    /// The sandbox capability `{config_schema, presets}` — the same schema the console
+    /// renders — so the assistant authors a schema-conformant `config.sandbox`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<serde_json::Value>,
 }
 
 /// One composable plugin and the config-section keys it reads, plus its full JSON
@@ -461,10 +498,30 @@ pub fn admin_tool_descriptors() -> Vec<ToolDescriptor> {
                 }
             }),
         ),
+        ToolDescriptor::pinned(
+            "admin",
+            CREATE_ENV_TOOL,
+            "Author and persist an execution ENVIRONMENT — the 'where/how it runs' resource \
+             a session binds (distinct from an agent). Sets the `runtime` backend (`awaken` \
+             native, or `acp:claude`/`acp:codex`/… for an ACP CLI — see capabilities \
+             `runtimes`), the `placement` (cloud | self_hosted), and an optional `sandbox` \
+             (isolation/network/limits) conforming to capabilities `sandbox.config_schema` — \
+             prefer a preset spec. Returns the new environment id.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "A short environment name." },
+                    "runtime": { "type": "string", "description": "Backend id: `awaken` or `acp:<cli>` (from capabilities runtimes)." },
+                    "placement": { "type": "string", "enum": ["cloud", "self_hosted"], "description": "Where the worker runs; default self_hosted." },
+                    "sandbox": { "type": "object", "description": "Optional isolation/network/limits per capabilities sandbox.config_schema." }
+                },
+                "required": ["name"]
+            }),
+        ),
     ]
 }
 
-/// The five executable management tools, erased for runtime registration (D3). The
+/// The six executable management tools, erased for runtime registration (D3). The
 /// host registers these globally (the runtime tool registry stays global); the
 /// compile-time scope projection is what fences them to the reserved scope.
 #[must_use]
@@ -472,6 +529,7 @@ pub fn admin_tools(
     reader: Arc<dyn CapabilityReader>,
     validator: Arc<dyn DraftValidator>,
     store: Arc<dyn DraftStore>,
+    env_author: Arc<dyn EnvironmentAuthor>,
     audit: Arc<dyn AuditSink>,
 ) -> Vec<Arc<dyn RawTool>> {
     vec![
@@ -495,8 +553,88 @@ pub fn admin_tools(
             store: store.clone(),
             audit: audit.clone(),
         }),
-        Arc::new(ExplainConsole { store, audit }),
+        Arc::new(ExplainConsole {
+            store: store.clone(),
+            audit: audit.clone(),
+        }),
+        Arc::new(DraftEnvironment {
+            author: env_author,
+            store,
+            audit,
+        }),
     ]
+}
+
+// ---- Tool 6: admin_draft_environment (author an execution environment) -----------
+
+struct DraftEnvironment {
+    author: Arc<dyn EnvironmentAuthor>,
+    store: Arc<dyn DraftStore>,
+    audit: Arc<dyn AuditSink>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DraftEnvArgs {
+    name: String,
+    #[serde(default)]
+    runtime: Option<String>,
+    #[serde(default)]
+    placement: Option<String>,
+    #[serde(default)]
+    sandbox: Option<serde_json::Value>,
+}
+
+#[async_trait]
+impl RawTool for DraftEnvironment {
+    fn id(&self) -> &str {
+        CREATE_ENV_TOOL
+    }
+
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        let args: DraftEnvArgs = match serde_json::from_value(call.arguments.clone()) {
+            Ok(a) => a,
+            Err(e) => {
+                return Ok(ToolOutput::error(
+                    call.call_id,
+                    format!("bad admin_draft_environment args: {e}"),
+                ));
+            }
+        };
+        // Assemble the same `config` shape the console's New-environment modal posts:
+        // {type, runtime?, sandbox?}. `awaken` runtime is the native default → omitted.
+        let mut config = serde_json::json!({
+            "type": args.placement.as_deref().unwrap_or("self_hosted"),
+        });
+        if let Some(rt) = args
+            .runtime
+            .as_deref()
+            .filter(|r| !r.is_empty() && *r != "awaken")
+        {
+            config["runtime"] = serde_json::json!(rt);
+        }
+        if let Some(sb) = &args.sandbox {
+            config["sandbox"] = sb.clone();
+        }
+        audit(
+            &self.store,
+            &self.audit,
+            CREATE_ENV_TOOL,
+            &call.call_id,
+            format!(
+                "draft environment `{}` runtime={:?}",
+                args.name, args.runtime
+            ),
+        )
+        .await?;
+        let id = match self.author.create(&args.name, config).await {
+            Ok(id) => id,
+            Err(e) => return Ok(ToolOutput::error(call.call_id, e)),
+        };
+        Ok(ToolOutput::ok(
+            call.call_id,
+            serde_json::json!({ "id": id, "status": "created" }).to_string(),
+        ))
+    }
 }
 
 // ---- Tool 5: admin_explain_console (read-only in-console user manual) ------------

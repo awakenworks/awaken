@@ -21,7 +21,7 @@ pub use binding_resolver::{
     AssistantBindingReconciler, ConfigServiceReconciler, ModelResolver, ResolvedModel,
     needs_resolution,
 };
-pub use capabilities::capabilities_router;
+pub use capabilities::{capabilities_router, runtime_catalog, sandbox_capability};
 pub use config_plane::{ConfigPlane, ConfigService, ConfigServiceAgentSource, config_router};
 pub use publication::{PublishError, ValidationIssue};
 pub use tool_catalog::{

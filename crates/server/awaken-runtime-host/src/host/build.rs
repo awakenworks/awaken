@@ -77,6 +77,7 @@ impl SharedHost {
             mcp_relay: tokio::sync::OnceCell::new(),
             thread_resources: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
             thread_egress: crate::sandbox_source::ThreadEgress::new(),
+            thread_sandbox: crate::sandbox_source::ThreadSandbox::new(),
             file_store: match store_dir.as_ref() {
                 Some(dir) => Arc::new(
                     awaken_file_store::sqlite::SqliteFileStore::open(
@@ -482,6 +483,22 @@ impl SharedHost {
     /// [`crate::SandboxChannelSource`] before `with_acp` consumes the builder.
     pub fn thread_egress(&self) -> crate::sandbox_source::ThreadEgress {
         self.thread_egress.clone()
+    }
+
+    /// Stage `thread`'s environment sandbox overlay (isolation/network/limits), from its
+    /// `config.sandbox`, consumed by `sandbox_spec` and a sandboxed ACP channel source.
+    pub fn register_thread_sandbox(
+        &self,
+        thread: &str,
+        over: awaken_provisioning_contract::SandboxOverride,
+    ) {
+        self.thread_sandbox.set(thread, over);
+    }
+
+    /// The shared per-thread sandbox-override handle, for wiring a sandboxed/container
+    /// ACP channel source (like [`Self::thread_egress`]) before the builder is consumed.
+    pub fn thread_sandbox(&self) -> crate::sandbox_source::ThreadSandbox {
+        self.thread_sandbox.clone()
     }
 
     /// Stage MCP servers for `thread`, to be connected when the thread's context

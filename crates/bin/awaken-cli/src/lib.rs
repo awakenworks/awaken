@@ -829,6 +829,11 @@ async fn management_router_over(
             platform_workspace.clone(),
             resource_store.clone(),
         )),
+        // Author environments through the SAME managed-plane registry the console's
+        // New-environment modal drives, so `admin_draft_environment` persists for real.
+        Arc::new(awaken_control::EnvironmentStateAuthor::new(
+            env_state.clone(),
+        )),
         Arc::new(awaken_admin_assistant::TracingAuditSink),
     );
 

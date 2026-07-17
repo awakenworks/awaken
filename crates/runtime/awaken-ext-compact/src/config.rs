@@ -143,8 +143,8 @@ fn compact_example() -> serde_json::Value {
         "keep_last": 8,
         "trigger_ratio": 0.8,
         "instructions": "Summarize the older turns into a compact briefing. Preserve open \
-tasks, decisions made, and any file paths, identifiers, and commands referenced. Drop \
-resolved chatter and duplicated tool output."
+    tasks, decisions made, and any file paths, identifiers, and commands referenced. Drop \
+    resolved chatter and duplicated tool output."
     })
 }
 
@@ -288,7 +288,10 @@ mod tests {
         // The when-vs-what distinction (instructions is a prompt, not a size) must ride on
         // the schema so an author reading it doesn't mis-model `instructions`.
         let desc = schema["description"].as_str().unwrap();
-        assert!(desc.contains("COMPACTION PROMPT"), "guide frames instructions as a prompt");
+        assert!(
+            desc.contains("COMPACTION PROMPT"),
+            "guide frames instructions as a prompt"
+        );
         // The worked example parses back into a valid config (instructions is a string prompt).
         let example = &schema["examples"][0];
         let cfg: CompactConfig = serde_json::from_value(example.clone()).unwrap();

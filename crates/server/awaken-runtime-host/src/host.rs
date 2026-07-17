@@ -203,6 +203,11 @@ pub struct SharedHost {
     /// with no egress. A shared handle, so a sandboxed ACP channel source can follow
     /// the same registrations (see [`crate::SandboxChannelSource`]).
     pub(crate) thread_egress: crate::sandbox_source::ThreadEgress,
+    /// Per-thread sandbox overlay (isolation/network/limits), set by `prepare_session`
+    /// from the session environment's `config.sandbox`. A thread with no entry keeps the
+    /// host's synthesized spec. A shared handle so both `sandbox_spec` and a sandboxed
+    /// ACP channel source apply the SAME environment override (see [`crate::SandboxChannelSource`]).
+    pub(crate) thread_sandbox: crate::sandbox_source::ThreadSandbox,
     /// Content-addressed blob store backing the Files API, file-resource mounts, and
     /// collected artifacts. In-memory by default (one server process).
     pub(crate) file_store: Arc<dyn FileStore>,

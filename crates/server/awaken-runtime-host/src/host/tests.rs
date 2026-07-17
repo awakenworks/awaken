@@ -645,6 +645,7 @@ async fn prepare_session_stages_egress_into_the_sandbox_spec() {
         model: None,
         runtime: None,
         deny_egress: deny,
+        sandbox: None,
     };
 
     // Egress denial rides the Workdir spec's opaque `extra` (a bwrap convenience,
@@ -671,6 +672,67 @@ async fn prepare_session_stages_egress_into_the_sandbox_spec() {
         !denies(host.sandbox_spec("t-open")),
         "an unrestricted session keeps the host network"
     );
+}
+
+/// The environment's `config.sandbox` overlay reaches the sandbox spec: a session whose
+/// `SessionInit.sandbox` sets isolation/network/limits stages the thread so its rebuilt
+/// spec reflects them (superseding the hardcoded Workdir/Unrestricted defaults). This is
+/// the S4 chain end: env config → SessionInit → prepare_session → sandbox_spec.
+#[tokio::test]
+async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
+    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+    use awaken_provisioning_contract::{IsolationClass, NetworkPolicy};
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let managed = crate::ManagedHost::new(host.clone());
+
+    // The session carries the raw `config.sandbox` blob (the host parses it).
+    let init = SessionInit {
+        agent_id: "a".into(),
+        mcp_servers: Vec::new(),
+        resources: Vec::new(),
+        model: None,
+        runtime: None,
+        deny_egress: false,
+        sandbox: Some(serde_json::json!({
+            "isolation": "namespace",
+            "network": { "mode": "allowlist", "hosts": ["api.github.com"] },
+            "limits": { "cpu_millis": 2000, "memory_bytes": 4294967296u64 }
+        })),
+    };
+    managed.prepare_session("t-sb", init).await.unwrap();
+
+    let spec = host.sandbox_spec("t-sb");
+    assert_eq!(
+        spec.isolation,
+        IsolationClass::Namespace,
+        "env isolation overlaid"
+    );
+    assert_eq!(
+        spec.network,
+        NetworkPolicy::Allowlist {
+            hosts: vec!["api.github.com".into()]
+        },
+        "env allowlist supersedes the default unrestricted network"
+    );
+    assert_eq!(spec.limits.cpu_millis, Some(2000));
+    assert_eq!(spec.limits.memory_bytes, Some(4_294_967_296));
+
+    // A session with no override keeps the host default (Workdir, no limits).
+    let bare = SessionInit {
+        agent_id: "a".into(),
+        mcp_servers: Vec::new(),
+        resources: Vec::new(),
+        model: None,
+        runtime: None,
+        deny_egress: false,
+        sandbox: None,
+    };
+    managed.prepare_session("t-bare", bare).await.unwrap();
+    assert_eq!(
+        host.sandbox_spec("t-bare").isolation,
+        IsolationClass::Workdir
+    );
+    assert!(!host.sandbox_spec("t-bare").limits.is_set());
 }
 
 /// A published agent's bound memory store (ADR-0038) is mounted in EVERY session it
@@ -723,6 +785,7 @@ async fn prepare_session_mounts_the_agents_bound_memory_store() {
         model: None,
         runtime: None,
         deny_egress: false,
+        sandbox: None,
     };
 
     // A BARE session for the bound agent — no wire resources at all — still mounts it.
@@ -806,6 +869,7 @@ async fn prepare_session_mounts_bound_file_and_stages_bound_repo() {
                 model: None,
                 runtime: None,
                 deny_egress: false,
+                sandbox: None,
             },
         )
         .await
@@ -860,6 +924,7 @@ async fn a_github_repository_resource_injects_a_scoped_github_mcp_server() {
                 model: None,
                 runtime: None,
                 deny_egress: false,
+                sandbox: None,
             },
         )
         .await
@@ -930,6 +995,7 @@ async fn rotating_a_github_repository_token_re_keys_the_clone_and_mcp_bearer() {
                 model: None,
                 runtime: None,
                 deny_egress: false,
+                sandbox: None,
             },
         )
         .await
@@ -989,6 +1055,7 @@ fn bare_session(agent: &str, workspace: &str) -> awaken_protocol_managed::Sessio
         model: None,
         runtime: None,
         deny_egress: false,
+        sandbox: None,
     }
 }
 
