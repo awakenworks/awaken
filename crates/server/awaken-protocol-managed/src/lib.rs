@@ -60,9 +60,9 @@ pub use routes::{WorkspaceScope, enforce_managed_beta, router};
 // The session-repository port family now lives in `awaken-session-contract`;
 // re-exported so existing `awaken_protocol_managed::…` paths keep resolving.
 pub use awaken_session_contract::{
-    InMemoryScopedSessionStore, InMemorySessionRepository, ManagedSessionRepository,
-    PersistedSession, ScopedSessionRepo, ScopedSessionStore,
+    ManagedSessionRepository, PersistedSession, ScopedSessionRepo, ScopedSessionStore,
 };
+pub use awaken_session_store::{InMemoryScopedSessionStore, InMemorySessionRepository};
 pub use state::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, ManagedState, McpServerBinding, OutcomeIteration, OutcomeReport, Pending,

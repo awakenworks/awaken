@@ -32,6 +32,5 @@ pub use session::{
     RunErrorKind, SessionInit, SessionRuntime, SessionUsage, StepFailure, StepOutcome, Terminus,
 };
 pub use session_repo::{
-    InMemoryScopedSessionStore, InMemorySessionRepository, ManagedSessionRepository,
-    PersistedSession, ScopedSessionRepo, ScopedSessionStore,
+    ManagedSessionRepository, PersistedSession, ScopedSessionRepo, ScopedSessionStore,
 };

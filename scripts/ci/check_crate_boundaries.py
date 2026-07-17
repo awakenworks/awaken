@@ -670,6 +670,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # from awaken-runtime-host so the host stays lean (Step 3b).
     "awaken-session-store": {
         "awaken-session-contract",
+        # The opaque tenancy ScopeId the in-memory scoped-session store keys its
+        # isolation fence by (durable backends bind it as an opaque column).
+        "awaken-tenancy",
         "awaken-scoped-migration",
         "awaken-scoped-migration-sqlite",
         "async-trait",
@@ -755,11 +758,12 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # adapter defines the wire DTOs + encoder over them and re-exports each moved
         # port via a shim until consumers flip to the contract directly.
         "awaken-session-contract",
-        # The in-memory reference WorkQueue + EnvRegistry backends the environments
-        # Default wires (the ports + value objects stay inward in session-contract; the
-        # backends live beside the durable sqlite/postgres siblings in the store crates).
+        # The in-memory reference WorkQueue + EnvRegistry + session-repository backends
+        # the Managed Default wires (the ports + value objects stay inward in
+        # session-contract; the backends live beside the durable sqlite/postgres siblings).
         "awaken-work-store",
         "awaken-env-store",
+        "awaken-session-store",
         # Live SSE previews stream agent.message deltas over an SSE body;
         # form_urlencoded parses the managed wire's cursor/query params.
         "async-stream",
