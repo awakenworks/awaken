@@ -6,6 +6,8 @@ pub awaken_agent_contract::agent::content::ContentBlock::Image
 pub awaken_agent_contract::agent::content::ContentBlock::Image::source: awaken_agent_contract::agent::content::ImageSource
 pub awaken_agent_contract::agent::content::ContentBlock::Text
 pub awaken_agent_contract::agent::content::ContentBlock::Text::text: alloc::string::String
+pub awaken_agent_contract::agent::content::ContentBlock::Thinking
+pub awaken_agent_contract::agent::content::ContentBlock::Thinking::text: alloc::string::String
 pub awaken_agent_contract::agent::content::ContentBlock::ToolResult
 pub awaken_agent_contract::agent::content::ContentBlock::ToolResult::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_agent_contract::agent::content::ContentBlock::ToolResult::tool_use_id: alloc::string::String
@@ -17,6 +19,7 @@ impl awaken_agent_contract::agent::content::ContentBlock
 pub fn awaken_agent_contract::agent::content::ContentBlock::image_base64(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_agent_contract::agent::content::ContentBlock::image_url(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_agent_contract::agent::content::ContentBlock::text(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_agent_contract::agent::content::ContentBlock::thinking(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_agent_contract::agent::content::ContentBlock::tool_result(impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>) -> Self
 pub fn awaken_agent_contract::agent::content::ContentBlock::tool_use(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, serde_json::value::Value) -> Self
 pub enum awaken_agent_contract::agent::content::ImageSource
@@ -223,6 +226,7 @@ pub enum awaken_agent_contract::event::agent::Fact
 pub awaken_agent_contract::event::agent::Fact::AssistantMessage
 pub awaken_agent_contract::event::agent::Fact::AssistantMessage::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_agent_contract::event::agent::Fact::AssistantMessage::id: alloc::string::String
+pub awaken_agent_contract::event::agent::Fact::AssistantThinking
 pub awaken_agent_contract::event::agent::Fact::Continuation
 pub awaken_agent_contract::event::agent::Fact::Continuation::detail: serde_json::value::Value
 pub awaken_agent_contract::event::agent::Fact::Continuation::steered: bool
@@ -295,6 +299,7 @@ pub enum awaken_agent_contract::event::Fact
 pub awaken_agent_contract::event::Fact::AssistantMessage
 pub awaken_agent_contract::event::Fact::AssistantMessage::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_agent_contract::event::Fact::AssistantMessage::id: alloc::string::String
+pub awaken_agent_contract::event::Fact::AssistantThinking
 pub awaken_agent_contract::event::Fact::Continuation
 pub awaken_agent_contract::event::Fact::Continuation::detail: serde_json::value::Value
 pub awaken_agent_contract::event::Fact::Continuation::steered: bool

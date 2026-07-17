@@ -141,7 +141,8 @@ impl Transcoder for AgUiEncoder {
             }],
             // An internal continuation-guard round is not an AG-UI wire frame; the
             // committed fold never emits it into this stream.
-            Fact::Continuation { .. } => Vec::new(),
+            // Reasoning is not in the AG-UI vocabulary; drop the marker.
+            Fact::Continuation { .. } | Fact::AssistantThinking => Vec::new(),
         }
     }
 

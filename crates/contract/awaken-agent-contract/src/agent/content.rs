@@ -39,6 +39,14 @@ pub enum ContentBlock {
         tool_use_id: String,
         content: Vec<ContentBlock>,
     },
+    /// The model's extended-thinking (reasoning) content, folded from the
+    /// provider's reasoning stream (Axis 10b). It interleaves with `Text` in an
+    /// assistant turn but is NOT part of the answer: `extract_text` ignores it,
+    /// and a protocol adapter projects only its *presence* as a contentless
+    /// reasoning-progress marker — the reasoning text is not on any answer wire.
+    Thinking {
+        text: String,
+    },
 }
 
 /// Where image bytes come from: inline base64, or a URL the provider fetches.
@@ -83,6 +91,10 @@ impl ContentBlock {
             content,
         }
     }
+
+    pub fn thinking(text: impl Into<String>) -> Self {
+        Self::Thinking { text: text.into() }
+    }
 }
 
 /// A plain-text view of content: the text of every `Text` block, plus the text
@@ -94,7 +106,9 @@ pub fn extract_text(blocks: &[ContentBlock]) -> String {
         match block {
             ContentBlock::Text { text } => out.push_str(text),
             ContentBlock::ToolResult { content, .. } => out.push_str(&extract_text(content)),
-            ContentBlock::Image { .. } | ContentBlock::ToolUse { .. } => {}
+            ContentBlock::Image { .. }
+            | ContentBlock::ToolUse { .. }
+            | ContentBlock::Thinking { .. } => {}
         }
     }
     out
