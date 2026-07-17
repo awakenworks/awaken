@@ -466,4 +466,40 @@ MCP:           F77/F79 → E4(工具注入) ; F78 → 工具列表 version bump
 4. **横切断言**:`F98 密钥不泄漏`在**每个** durable 场景重跑(SENTINEL 扫 SDK+HTTP+stdout+stderr+trace);`F92 trace 连通`在任何跑真轮的场景可附加。
 5. **自跳过是覆盖声明而非通过**:`E21/E22`(bwrap/docker 缺失自跳过)必须在 CI 打印"skipped: no bwrap/docker",否则被误读为"已覆盖"——按 e2e 铁律,未跑真依赖就是没覆盖。
 6. **后端等价类一致性**:S1/S2/S3/S4 上的 `F1..F12` 必须产出**逐字节等价** EVENT-SEQ;S5/S7 上 `F34/F35/F41` 验证 `FOR UPDATE SKIP LOCKED` owner 租约的 exactly-once。建议以同一断言函数参数化后端跑一致性测试(MemoryDispatchStore 是 pg 必须匹配的可执行规格)。
+
+---
+
+## 9. 执行结果与残余范围(2026-07-18 补齐)
+
+基于本设计与配套单模块设计做了一轮缺口分析 → 补齐 → 真验证。**结论:代码库整体已达 A 级,绝大多数判定表/矩阵格已有测试;缺口分析代理报出的多数"缺口"是假阳性(漏看文件底 `#[cfg(test)]`),需逐个直接核验。** 真缺口已补齐并真验证:
+
+**新增并已验证通过(真实二进制/进程/HTTP/磁盘):**
+
+| 用例 | 类型 | 位置 | 验证 |
+|---|---|---|---|
+| M12/T82 acp 限流保留 `acp_failure` code | 单元 | `awaken-run-executor-acp/src/tests.rs` | ✓ 绿 |
+| M6/T44 authz `RequireApproval→Deny` fail-closed 坍缩(抽出 `collapse_session_decision` seam) | 单元 | `awaken-authz-enforce/src/lib.rs` | ✓ 绿(29/29) |
+| N6 nats 无 `--features nats` 硬错 | 单元 | `awaken-runtime-host/src/dispatch_backend.rs` | ✓ 绿 |
+| N5 durable ingress 落在易失队列→拒启 | e2e | `deployment_config_e2e.mjs` | ✓ 真二进制拒启 |
+| N4 embedded IAM 无 data dir→拒启 | e2e | `deployment_config_e2e.mjs` | ✓ 真二进制拒启 |
+| F9/F10/F98 acp+mcp+secret-nonleak 跨 fs/durable 后端参数化 | e2e 脚本 | `e2e/package.json` `test:fs`/`test:durable` | ✓ `test:fs` 全 8 文件绿 |
+
+**既有测试在装备环境下真跑确认(此前无依赖时自跳过 = 未覆盖):**
+
+| 流 | 效果 | 命令 | 结果 |
+|---|---|---|---|
+| F49/F51 bwrap net-policy | E21 net=UP/DOWN | `node acp_sandboxed_e2e.mjs` | ✓ 真 bwrap `--unshare-net` |
+| F47/F48/F54 沙箱供给+反向通道+fail-closed | E19/E20 | `node sandbox_provisioning_e2e.mjs` | ✓ |
+| F50 容器 agent 往返 | E22 MARKER | `node managed_container_agent_e2e.mjs` | ✓ 真 Docker |
+| F52 FUSE 内核挂载机制 | E19 | `cargo test -p awaken-sandbox-memoryd`(`kernel_vfs.rs` 有 /dev/fuse 时真挂载) | ✓ 3+44 绿 |
+
+> 教训:**"自跳过"必须在 CI 打印 `skipped: no bwrap/docker/fuse`**。本轮在装备了 bwrap+docker+/dev/fuse+k3d 的机器上真跑,证实这些路径确实工作——在缺依赖的 CI 上它们只是声明覆盖,不等于验证。
+
+**残余范围(需 k8s 活集群 / 重特性构建,机制已被单测覆盖,故文档化而非造 stub):**
+
+- **N7b**(`--features container-k8s` 构建下 k8s tier 缺 `AWAKEN_K8S_AGENT_ADDR` 报错):错误在连集群前返回,无需集群,但需重编 kube 依赖。机制同 N6 模式;k8s pids fail-closed 已由 `awaken-sandbox-container` 的 `a_pids_limit_is_flagged_unenforceable_on_k8s_so_create_fails_closed`(M8/T55)单测覆盖。运行:`cargo test -p awaken-sandbox-container --features container-k8s`。
+- **N10 / F55**(k3d 活集群:封闭 pod 无反向 hand 不可达 / k8s pids create 级 fail-closed):需 `deploy/k3d/*.yaml` + 活集群。正向拓扑已由 `e2e/k3d/topology_e2e.sh`(reverse `--dial`)覆盖;负向为集群测。运行:`bash e2e/k3d/<scenario>_e2e.sh`(需 `k3d cluster create`)。
+- **F35/F34/F41 pg 分布式**、**S5–S9 postgres 场景**:需 `AWAKEN_DATABASE_URL` 活 Postgres,现有 `durable_pg_*`/`durable_soak_*` + `deploy/k3d/*postgres*.yaml` 覆盖,pg 限的存储/派工单测在无 DSN 时静默早返回(非跳过声明,已在 M10/M11 文档标注)。
+
+**未发现 fail-open 代码 bug**:所有安全敏感 fail-closed 分支在代码中均存在,仅部分欠测;唯一结构性欠测(M6 `RequireApproval` 因无注入 seam 不可达)已通过抽出 `collapse_session_decision` 纯函数修复并钉住。
 7. **与单模块设计的关系**:本份的 F→E 边在跨越模块;每条 F 内部的分支细节(为何 park、为何 fail-closed)由 `cause-effect-graph-test-design.md` 的 112 因/110 果单测护住。两层合起来 = 单元判定表(内部正确)+ e2e 矩阵(集成 × 部署正确)。
