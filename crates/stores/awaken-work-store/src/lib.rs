@@ -14,10 +14,10 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use awaken_protocol_managed::work_queue::{
+use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
+use awaken_session_contract::work_queue::{
     LeaseBook, LeaseReceipt, QueueStats, WorkItem, WorkPayload, WorkQueue, WorkState,
 };
-use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgRow};
@@ -712,7 +712,7 @@ impl WorkQueue for PostgresWorkQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_protocol_managed::work_queue::LEASE_TTL_MS;
+    use awaken_session_contract::work_queue::LEASE_TTL_MS;
 
     fn q() -> SqliteWorkQueue {
         SqliteWorkQueue::open_in_memory().unwrap()
