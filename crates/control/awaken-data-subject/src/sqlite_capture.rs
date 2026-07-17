@@ -148,14 +148,18 @@ impl CaptureSink for SqliteCapturedContentStore {
 
 #[async_trait]
 impl ContentEraser for SqliteCapturedContentStore {
-    async fn erase_subject(&self, subject: &DataSubjectId) -> usize {
+    async fn erase_subject(
+        &self,
+        subject: &DataSubjectId,
+    ) -> Result<usize, awaken_runtime_contract::ErasureError> {
         let conn = self.conn.lock().unwrap();
-        // Restricted (Art. 18) rows survive erasure until released.
+        // Restricted (Art. 18) rows survive erasure until released. A DELETE that
+        // errors is surfaced (fail-closed) rather than swallowed to a `0` count.
         conn.execute(
             &format!("DELETE FROM {NS}_captured WHERE subject = ?1 AND restricted = 0"),
             params![subject.0],
         )
-        .unwrap_or(0)
+        .map_err(|e| awaken_runtime_contract::ErasureError(e.to_string()))
     }
 }
 
@@ -197,7 +201,10 @@ mod tests {
         assert_eq!(s.len(), 4);
 
         // Erase subject a → its 3 records gone, b remains.
-        assert_eq!(s.erase_subject(&DataSubjectId("a".into())).await, 3);
+        assert_eq!(
+            s.erase_subject(&DataSubjectId("a".into())).await.unwrap(),
+            3
+        );
         assert_eq!(s.len(), 1);
 
         // TTL sweep removes b (age 150 >= ttl 100 at now=250).
@@ -223,13 +230,19 @@ mod tests {
         assert_eq!(s.restrict(&DataSubjectId("a".into())), 2);
 
         // Erasure + TTL both skip restricted rows.
-        assert_eq!(s.erase_subject(&DataSubjectId("a".into())).await, 0);
+        assert_eq!(
+            s.erase_subject(&DataSubjectId("a".into())).await.unwrap(),
+            0
+        );
         assert_eq!(s.sweep_expired(1, 10_000), 0);
         assert_eq!(s.len(), 2);
 
         // Release, then erase works.
         assert_eq!(s.release(&DataSubjectId("a".into())), 2);
-        assert_eq!(s.erase_subject(&DataSubjectId("a".into())).await, 2);
+        assert_eq!(
+            s.erase_subject(&DataSubjectId("a".into())).await.unwrap(),
+            2
+        );
         assert!(s.is_empty());
     }
 }

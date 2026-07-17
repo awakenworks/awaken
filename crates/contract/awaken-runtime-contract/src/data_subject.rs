@@ -43,6 +43,16 @@ pub struct ErasureReceipt {
     pub records_removed: usize,
 }
 
+/// A right-to-erasure (GDPR Art. 17) failure. A content-store DELETE or the
+/// accountability write did not complete, so the erasure did **not** happen — the
+/// caller must learn this instead of receiving a clean success receipt. Erasure is
+/// fail-closed: an unsurfaced backend error is a compliance breach (the subject is
+/// told their data was erased when it was not), so every backend failure propagates
+/// as this error rather than being swallowed into a `records_removed: 0` receipt.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("erasure failed: {0}")]
+pub struct ErasureError(pub String);
+
 /// Resolves the consent ceiling and executes erasure for a data subject (D10a).
 /// The **one** customization seam: swap the impl to change where subject facts
 /// come from. Consulted at the run/turn boundary, never on the inference hot
@@ -54,8 +64,11 @@ pub trait DataSubjectResolver: Send + Sync {
     /// `Structured`.
     async fn consent_ceiling(&self, subject: &DataSubjectId, purpose: Purpose) -> ContentCapture;
 
-    /// Erase all content attributed to `subject`; returns a receipt.
-    async fn erase(&self, subject: &DataSubjectId) -> ErasureReceipt;
+    /// Erase all content attributed to `subject`; returns a receipt on success.
+    /// Fail-closed: if any content-store DELETE or the accountability write fails,
+    /// this surfaces an [`ErasureError`] — a partial/failed erasure must never be
+    /// reported as a clean success receipt.
+    async fn erase(&self, subject: &DataSubjectId) -> Result<ErasureReceipt, ErasureError>;
 }
 
 /// Where the runtime writes captured prompt/completion/tool content when the
@@ -80,7 +93,10 @@ pub trait CaptureSink: Send + Sync {
 #[async_trait]
 pub trait ContentEraser: Send + Sync {
     /// Erase content attributed to `subject`; return the number of records removed.
-    async fn erase_subject(&self, subject: &DataSubjectId) -> usize;
+    /// Fail-closed: a backend DELETE failure surfaces as an [`ErasureError`] and is
+    /// never collapsed into a `0` count (which a clean "nothing matched" also
+    /// reports) — the resolver must be able to tell a real erasure from a no-op.
+    async fn erase_subject(&self, subject: &DataSubjectId) -> Result<usize, ErasureError>;
 }
 
 /// The standalone/open null object: no consent subsystem, so it never clamps
@@ -95,8 +111,8 @@ impl DataSubjectResolver for NullResolver {
         ContentCapture::Full
     }
 
-    async fn erase(&self, _subject: &DataSubjectId) -> ErasureReceipt {
-        ErasureReceipt::default()
+    async fn erase(&self, _subject: &DataSubjectId) -> Result<ErasureReceipt, ErasureError> {
+        Ok(ErasureReceipt::default())
     }
 }
 
@@ -112,7 +128,7 @@ mod tests {
             r.consent_ceiling(&s, Purpose::TelemetryContent).await,
             ContentCapture::Full
         );
-        assert_eq!(r.erase(&s).await, ErasureReceipt::default());
+        assert_eq!(r.erase(&s).await.unwrap(), ErasureReceipt::default());
     }
 
     #[test]

@@ -42,7 +42,7 @@ impl CapturedContentBackend for InMemoryCapturedContentStore {
         InMemoryCapturedContentStore::sweep_expired(self, ttl_millis, now)
     }
     async fn erase_subject(&self, subject: &DataSubjectId) -> usize {
-        ContentEraser::erase_subject(self, subject).await
+        ContentEraser::erase_subject(self, subject).await.unwrap()
     }
     async fn len(&self) -> usize {
         InMemoryCapturedContentStore::len(self)
@@ -67,7 +67,7 @@ impl CapturedContentBackend for SqliteCapturedContentStore {
         SqliteCapturedContentStore::sweep_expired(self, ttl_millis, now)
     }
     async fn erase_subject(&self, subject: &DataSubjectId) -> usize {
-        ContentEraser::erase_subject(self, subject).await
+        ContentEraser::erase_subject(self, subject).await.unwrap()
     }
     async fn len(&self) -> usize {
         SqliteCapturedContentStore::len(self)
@@ -244,7 +244,7 @@ mod postgres {
             PgCapturedContentStore::sweep_expired(self, ttl_millis, now).await
         }
         async fn erase_subject(&self, subject: &DataSubjectId) -> usize {
-            ContentEraser::erase_subject(self, subject).await
+            ContentEraser::erase_subject(self, subject).await.unwrap()
         }
         async fn len(&self) -> usize {
             PgCapturedContentStore::len(self).await

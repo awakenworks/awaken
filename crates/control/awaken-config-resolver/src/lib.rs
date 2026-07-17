@@ -176,6 +176,9 @@ async fn resolve_inference_toggled(
         secret_store,
         Some(offering.provider_id.0.as_str()),
         None,
+        // The inference path carries no workspace parameter; the pool fence
+        // (member vs pool workspace) is intrinsic and always applied.
+        None,
     )
     .await?;
 
@@ -370,6 +373,7 @@ async fn resolve_credential(
     secret_store: &dyn SecretStore,
     offering_provider: Option<&str>,
     availability: Option<(&AvailabilityLedger, u64)>,
+    expected_workspace: Option<&str>,
 ) -> Result<Option<RedactedString>, ResolveError> {
     match binding {
         CredentialBinding::None => Ok(None),
@@ -379,6 +383,17 @@ async fn resolve_credential(
             let source = sources
                 .get(credential_source_id.0.as_str())
                 .ok_or_else(|| ResolveError::SourceMissing(credential_source_id.0.clone()))?;
+            // Read-side tenant fence (SEC): when the caller knows the owning
+            // workspace, a source belonging to a DIFFERENT workspace is treated as
+            // ABSENT — the same `SourceMissing` an unknown id yields, so a
+            // cross-tenant `Exact` binding neither materializes B's secret nor leaks
+            // that the id exists. `SourceLookup.get` is a by-id primitive; tenancy is
+            // enforced here, at the resolution layer where both workspaces are known.
+            if let Some(ws) = expected_workspace
+                && source.workspace_id != ws
+            {
+                return Err(ResolveError::SourceMissing(credential_source_id.0.clone()));
+            }
             if let Some(provider) = offering_provider
                 && !can_consume(provider, source)
             {
@@ -412,6 +427,14 @@ async fn resolve_credential(
                 let Some(source) = sources.get(member.credential_source_id.0.as_str()) else {
                     continue;
                 };
+                // Read-side tenant fence (SEC): a pool may only draw on sources it
+                // owns. A member whose source belongs to a different workspace than
+                // the pool is skipped like an absent member (fail over); if that
+                // leaves nothing eligible the pool errors NoEligibleCredential — a
+                // cross-tenant source is never smuggled through the pool.
+                if source.workspace_id != pool.workspace_id {
+                    continue;
+                }
                 if offering_provider.is_some_and(|provider| !can_consume(provider, source)) {
                     continue;
                 }
@@ -679,8 +702,18 @@ pub async fn resolve_mcp_servers(
     for def in defs {
         // MCP-server credential: not a model provider, so no can_consume join and no
         // availability ledger.
-        let credential =
-            resolve_credential(&def.credential_binding, sources, secret_store, None, None).await?;
+        // The managed-MCP path prefetches per-binding and carries no workspace
+        // parameter; the intrinsic pool fence (member vs pool workspace) still
+        // applies, closing the reachable cross-tenant pool hole.
+        let credential = resolve_credential(
+            &def.credential_binding,
+            sources,
+            secret_store,
+            None,
+            None,
+            None,
+        )
+        .await?;
         resolved.push(ResolvedMcpServer {
             name: def.display_name.clone(),
             url: def.url.clone(),
@@ -1206,6 +1239,7 @@ mod tests {
             &store,
             Some("anthropic"),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1224,6 +1258,7 @@ mod tests {
             &sources,
             &store,
             Some("anthropic"),
+            None,
             None,
         )
         .await
@@ -1246,6 +1281,7 @@ mod tests {
             &sources,
             &store,
             Some("anthropic"),
+            None,
             None,
         )
         .await
@@ -1280,6 +1316,7 @@ mod tests {
             &ctx,
             &store,
             Some("anthropic"),
+            None,
             None,
         )
         .await
@@ -1334,6 +1371,7 @@ mod tests {
             &store,
             Some("anthropic"),
             Some((&ledger, 5_000)),
+            None,
         )
         .await
         .unwrap();
@@ -1347,6 +1385,7 @@ mod tests {
             &store,
             Some("anthropic"),
             Some((&ledger, 5_000)),
+            None,
         )
         .await
         .unwrap_err();
@@ -1365,6 +1404,7 @@ mod tests {
             &store,
             Some("anthropic"),
             Some((&ledger, 20_000)),
+            None,
         )
         .await
         .unwrap();
@@ -1385,6 +1425,7 @@ mod tests {
             },
             &sources,
             &store,
+            None,
             None,
             None,
         )
@@ -1422,6 +1463,7 @@ mod tests {
             &store,
             Some("anthropic"),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1457,6 +1499,7 @@ mod tests {
             &store,
             Some("anthropic"),
             None,
+            None,
         )
         .await
         .unwrap_err();
@@ -1472,14 +1515,12 @@ mod tests {
     // ---- SEC: read-side workspace fence on credential materialization ----
 
     #[tokio::test]
-    async fn resolve_credential_pool_materializes_a_source_from_another_workspace() {
-        // KNOWN BUG (adjudicate): `resolve_credential` never compares `workspace_id`.
-        // A CredentialPool owned by workspace A whose member references a
-        // CredentialSource owned by workspace B still materializes B's secret —
-        // a read-side tenant fence is MISSING (neither the pool's `workspace_id`
-        // nor the source's is consulted). This test PINS the current (fail-open)
-        // behavior so a future fence flips it deliberately; it is not an
-        // endorsement. Escalated in the report for adjudication.
+    async fn resolve_credential_pool_skips_a_cross_workspace_member_and_fails_closed() {
+        // FAIL-CLOSED: a CredentialPool owned by workspace A whose member references
+        // a CredentialSource owned by workspace B must NOT materialize B's secret.
+        // The read-side tenant fence skips the cross-workspace member like an absent
+        // one; with nothing eligible left the pool errors NoEligibleCredential — the
+        // pool's `workspace_id` is intrinsic, so this fence needs no extra parameter.
         let store = InMemorySecretStore::new();
         // The victim secret is owned by workspace B.
         let foreign = create_source(
@@ -1507,7 +1548,7 @@ mod tests {
                 policy: SelectionPolicy::FirstHealthy,
             },
         };
-        let got = resolve_credential(
+        let err = resolve_credential(
             &CredentialBinding::OneOfCredentialPool {
                 credential_pool_id: CredentialPoolId("p".into()),
             },
@@ -1515,21 +1556,25 @@ mod tests {
             &store,
             Some("anthropic"),
             None,
+            None,
         )
         .await
-        .unwrap();
-        // CURRENT behavior: the cross-tenant secret materializes (no workspace fence).
-        assert_eq!(
-            got.unwrap().expose_secret(),
-            "sk-tenant-b-secret",
-            "cross-workspace credential materializes today (fail-open)"
-        );
+        .unwrap_err();
+        // The cross-tenant member is excluded; the pool is exhausted, fail-closed.
+        match err {
+            ResolveError::NoEligibleCredential { pool_id, total, .. } => {
+                assert_eq!(pool_id, "p");
+                assert_eq!(total, 1, "the sole member was excluded by the tenant fence");
+            }
+            other => panic!("expected NoEligibleCredential, got {other:?}"),
+        }
     }
 
     #[tokio::test]
-    async fn resolve_credential_exact_materializes_a_source_from_another_workspace() {
-        // KNOWN BUG (adjudicate): the same missing fence on the `Exact` path — an
-        // `Exact` binding naming a source owned by another workspace materializes it.
+    async fn resolve_credential_exact_fences_a_cross_workspace_source() {
+        // FAIL-CLOSED: an `Exact` binding naming a source owned by another workspace
+        // is rejected as `SourceMissing` (no existence leak) when the caller supplies
+        // the owning workspace — the foreign secret never materializes.
         let store = InMemorySecretStore::new();
         let foreign = create_source(
             CredentialCreateParams {
@@ -1546,7 +1591,7 @@ mod tests {
         .unwrap();
         let mut sources = HashMap::new();
         sources.insert(foreign.id.0.clone(), foreign.clone());
-        let got = resolve_credential(
+        let err = resolve_credential(
             &CredentialBinding::Exact {
                 credential_source_id: CredentialSourceId(foreign.id.0.clone()),
             },
@@ -1554,10 +1599,30 @@ mod tests {
             &store,
             Some("anthropic"),
             None,
+            // The binding's owning workspace is A; the source belongs to B.
+            Some("wrkspc_a"),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, ResolveError::SourceMissing(id) if *id == foreign.id.0),
+            "a cross-workspace Exact source is fenced as SourceMissing (no leak), got {err:?}"
+        );
+
+        // Same-workspace Exact still materializes (the fence does not over-reach).
+        let ok = resolve_credential(
+            &CredentialBinding::Exact {
+                credential_source_id: CredentialSourceId(foreign.id.0.clone()),
+            },
+            &sources,
+            &store,
+            Some("anthropic"),
+            None,
+            Some("wrkspc_b"),
         )
         .await
         .unwrap();
-        assert_eq!(got.unwrap().expose_secret(), "sk-exact-b");
+        assert_eq!(ok.unwrap().expose_secret(), "sk-exact-b");
     }
 
     // ---- CEG 02: resolve_inference_toggled core (A3) ----
