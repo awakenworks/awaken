@@ -27,4 +27,5 @@ impl core::convert::From<alloc::string::String> for awaken_tenancy::ScopeId
 pub fn awaken_tenancy::ScopeId::from(alloc::string::String) -> Self
 impl core::fmt::Display for awaken_tenancy::ScopeId
 pub fn awaken_tenancy::ScopeId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_tenancy::WorkspaceScope(pub alloc::string::String)
 pub fn awaken_tenancy::resolve_scope(&awaken_tenancy::Authority, &[awaken_tenancy::ScopeClaim]) -> core::result::Result<awaken_tenancy::ScopeId, awaken_tenancy::ScopeRejection>

@@ -32,6 +32,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ScopeId(pub String);
 
+/// The tenant workspace an ingress edge resolved for a session, handed to the core
+/// so an edge projection (webhooks / usage) can stamp it. This is a **tenancy**
+/// concept (orthogonal to the session-runtime contract, which never sees tenancy):
+/// it lives here beside [`ScopeId`], the opaque handle it corresponds to, so the
+/// managed session edge and its consumers depend on the tenancy contract rather
+/// than on a protocol adapter. `None`/absent when the edge resolved no workspace.
+#[derive(Debug, Clone)]
+pub struct WorkspaceScope(pub String);
+
 impl ScopeId {
     /// Borrow the underlying id.
     #[must_use]
