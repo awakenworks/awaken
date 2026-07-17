@@ -1,6 +1,6 @@
-//! The managed webhook bridge: connects the managed session lifecycle
-//! (protocol-managed's `SessionLifecycleSink` port) to `awaken-webhook`'s neutral
-//! delivery machinery, backed by the **config plane**. Subscriptions are an
+//! The managed webhook bridge: connects the managed session lifecycle (the
+//! `SessionLifecycleSink` port, in `awaken-session-contract`) to `awaken-webhook`'s
+//! neutral delivery machinery, backed by the **config plane**. Subscriptions are an
 //! id-addressed config resource (`awaken-config-resolver`'s [`WebhookStore`],
 //! durably the admin store) and their `whsec_` signing secret is sealed in the
 //! [`SecretStore`] — this crate holds no store of its own. It exposes the
@@ -18,7 +18,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use awaken_agent_contract::RedactedString;
 use awaken_config_resolver::{WebhookEndpointDef, WebhookStore};
 use awaken_credential_vault::{SecretRef, SecretStore};
-use awaken_protocol_managed::{SessionLifecycleSink, WorkspaceScope};
+use awaken_session_contract::SessionLifecycleSink;
+use awaken_tenancy::WorkspaceScope;
 use awaken_webhook::{
     ReqwestSender, ResolvedSubscription, SubscriptionSource, WebhookDispatcher, WebhookEvent,
     WebhookSender, generate_secret,
