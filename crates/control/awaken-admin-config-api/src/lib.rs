@@ -33,9 +33,10 @@ pub use awaken_config_resolver::{
     ResourceStore, WebhookStore,
 };
 pub use router::{
-    AdminState, CredentialProbe, CredentialValidation, EnterCredentialRequest, ProbeStatus,
-    ResolveAgentMcpRequest, ResolveProfileRequest, ResolveRequest, ResolvedCandidatesView,
-    ResolvedInferenceView, ResolvedMcpServerView, ValidateCredentialRequest, admin_router,
+    AdminState, CooldownRequest, CredentialProbe, CredentialValidation, EnterCredentialRequest,
+    PoolEligibleView, ProbeStatus, ResolveAgentMcpRequest, ResolveProfileRequest, ResolveRequest,
+    ResolvedCandidatesView, ResolvedInferenceView, ResolvedMcpServerView,
+    ValidateCredentialRequest, admin_router,
 };
 
 /// The API surface version this crate serves.
