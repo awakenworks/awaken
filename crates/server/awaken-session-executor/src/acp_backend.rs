@@ -15,13 +15,26 @@ use awaken_run_executor_acp::AcpRunExecutor;
 pub(crate) struct AcpBackend {
     pub(crate) executor: Arc<AcpRunExecutor>,
     thread_runtime: Mutex<HashMap<String, String>>,
+    /// The deployment's DEFAULT backend adapter (e.g. `"acp:claude"`), applied to a
+    /// thread that staged none. This is how a single-purpose ACP deployment routes
+    /// every session to the CLI WITHOUT a per-session `awaken.runtime` override — the
+    /// backend is a property of the deployment/agent, not a client-supplied knob. A
+    /// mixed host leaves it `None`, so only explicitly-selected `acp:*` threads route.
+    default_adapter: Option<String>,
 }
 
 impl AcpBackend {
+    /// Set the deployment default backend adapter (see [`Self::default_adapter`]).
+    fn with_default_adapter(mut self, adapter: String) -> Self {
+        self.default_adapter = Some(adapter);
+        self
+    }
+
     pub(crate) fn new(executor: Arc<AcpRunExecutor>) -> Self {
         Self {
             executor,
             thread_runtime: Mutex::new(HashMap::new()),
+            default_adapter: None,
         }
     }
 
@@ -37,11 +50,18 @@ impl AcpBackend {
     /// typed [`Backend`](awaken_runtime_contract::resolved::Backend) so the `acp:`
     /// parsing lives in one place, not duplicated as a string check here.
     pub(crate) fn is_acp(&self, thread: &str) -> bool {
-        self.thread_runtime
+        let staged = self
+            .thread_runtime
             .lock()
             .expect("acp thread-runtime mutex poisoned")
             .get(thread)
-            .is_some_and(|a| awaken_runtime_contract::resolved::Backend::from_ref(a).is_acp())
+            .cloned();
+        // The thread's explicit selection, else the deployment default — either way
+        // the `acp:` parse lives in the one `Backend::from_ref`, never a string check.
+        match staged.as_deref().or(self.default_adapter.as_deref()) {
+            Some(adapter) => awaken_runtime_contract::resolved::Backend::from_ref(adapter).is_acp(),
+            None => false,
+        }
     }
 }
 
@@ -85,6 +105,22 @@ impl crate::host::SharedHost {
     /// `.with_launch_observer(host.acp_launch_observer())` before passing it here.
     pub fn with_acp(mut self, executor: Arc<AcpRunExecutor>) -> Self {
         self.acp = Some(Arc::new(AcpBackend::new(executor)));
+        self
+    }
+
+    /// Serve `acp:*` sessions on `executor` AND make `default_adapter` (e.g.
+    /// `"acp:claude"`) the deployment's default backend: every session routes to the
+    /// ACP CLI unless it explicitly selects another runtime. This is the "backend
+    /// resolved from the deployment/agent, not from a client `awaken.runtime` knob"
+    /// path — for a single-purpose ACP deployment, sessions carry no runtime metadata.
+    pub fn with_acp_default(
+        mut self,
+        executor: Arc<AcpRunExecutor>,
+        default_adapter: impl Into<String>,
+    ) -> Self {
+        self.acp = Some(Arc::new(
+            AcpBackend::new(executor).with_default_adapter(default_adapter.into()),
+        ));
         self
     }
 
@@ -243,6 +279,26 @@ mod tests {
         host.register_thread_runtime("t", "acp:claude");
         let acp = host.acp.as_ref().expect("acp backend wired");
         assert!(acp.is_acp("t"));
+        assert!(!acp.is_acp("native-thread"));
+    }
+
+    #[test]
+    fn a_deployment_default_backend_routes_a_session_with_no_runtime_metadata() {
+        // A single-purpose ACP deployment declares its default backend, so a session
+        // carrying NO `awaken.runtime` override still routes to the ACP CLI — the
+        // backend comes from the deployment, not a per-session client knob.
+        let launch = awaken_run_executor_acp::AcpLaunch::custom(vec!["true".into()], vec![]);
+        let source = Arc::new(awaken_run_executor_acp::SubprocessChannelSource::new(
+            launch,
+        ));
+        let executor = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
+        let host =
+            SharedHost::new(Arc::new(NoLlm), "test").with_acp_default(executor, "acp:custom");
+        let acp = host.acp.as_ref().expect("acp backend wired");
+        // An unstaged thread inherits the deployment default → routes to ACP.
+        assert!(acp.is_acp("unstaged-thread"));
+        // An explicit non-ACP selection still overrides the default (native path).
+        host.register_thread_runtime("native-thread", "awaken");
         assert!(!acp.is_acp("native-thread"));
     }
 

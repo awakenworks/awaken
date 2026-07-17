@@ -121,8 +121,10 @@ impl SharedHost {
 
     /// A shared clone of the thread-resources registry (like [`Self::thread_egress`]),
     /// so a sandboxed ACP channel source reads the SAME staged mounts the native
-    /// `sandbox_spec` does and carries them into the bwrap/container sandbox.
-    pub(crate) fn thread_resources_handle(&self) -> crate::sandbox_source::ThreadResources {
+    /// `sandbox_spec` does and carries them into the bwrap/container sandbox. `pub` so a
+    /// composition root (e.g. a scenario host wiring a container-tier ACP source) can
+    /// pass it to [`crate::build_acp_channel_source`], symmetric with `thread_egress`.
+    pub fn thread_resources_handle(&self) -> crate::sandbox_source::ThreadResources {
         crate::sandbox_source::ThreadResources::new(self.thread_resources.clone())
     }
 
