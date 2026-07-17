@@ -87,35 +87,44 @@ async fn a_containerized_agent_speaks_the_wire_over_a_published_port() {
         .await
         .expect("create container");
 
-    let mut channel = None;
-    for _ in 0..100 {
-        match awaken_agent_channel::AgentTransport::open_channel(&sandbox).await {
-            Ok(c) => {
-                channel = Some(c);
-                break;
-            }
-            Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
-        }
-    }
-    let mut channel = channel.expect("dial the published agent port");
-
-    // Drive the newline wire: write a prompt line, read the reply lines.
-    channel.write_all(b"hello\n").await.expect("write prompt");
-    channel.flush().await.ok();
-
-    let mut buf = vec![0u8; 512];
+    // Retry the WHOLE exchange (open + write + read), not just the dial: Docker's
+    // port-proxy accepts a connection the instant the container starts, but the `nc`
+    // agent inside takes a moment to bind :8080 — so an early dial "succeeds" yet the
+    // proxied read returns empty (the backend isn't listening yet). Re-opening a fresh
+    // channel per attempt until the reply arrives makes the first-turn cold-start
+    // deterministic (a warm agent answers on the first attempt).
     let mut got = String::new();
     for _ in 0..50 {
-        match tokio::time::timeout(Duration::from_secs(2), channel.read(&mut buf)).await {
-            Ok(Ok(0)) => break,
-            Ok(Ok(n)) => {
-                got.push_str(&String::from_utf8_lossy(&buf[..n]));
-                if got.contains("turn_end") {
-                    break;
-                }
-            }
-            _ => break,
+        let Ok(mut channel) = awaken_agent_channel::AgentTransport::open_channel(&sandbox).await
+        else {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        };
+        if channel.write_all(b"hello\n").await.is_err() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
         }
+        channel.flush().await.ok();
+        let mut buf = vec![0u8; 512];
+        let mut this = String::new();
+        for _ in 0..20 {
+            match tokio::time::timeout(Duration::from_secs(1), channel.read(&mut buf)).await {
+                Ok(Ok(0)) => break,
+                Ok(Ok(n)) => {
+                    this.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    if this.contains("turn_end") {
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
+        if this.contains("turn_end") {
+            got = this;
+            break;
+        }
+        // Empty/partial reply → the agent wasn't ready; back off and re-open.
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
     // Clean up the container before asserting, so a failure still reaps it.
