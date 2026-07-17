@@ -51,7 +51,6 @@ mod skills;
 mod skills_api;
 mod store;
 mod subagent;
-mod work_store;
 mod worker_http;
 
 // The config-authoring plane now lives in the shared `awaken-config-service` crate
@@ -128,7 +127,9 @@ pub use crate::memory_store_api::memory_stores_router;
 pub use crate::models::{ModelEntry, default_models, models_router};
 pub use crate::session_store::{PostgresManagedSessionRepository, SqliteManagedSessionRepository};
 pub use crate::skills_api::skills_router;
-pub use crate::work_store::{PostgresWorkQueue, SqliteWorkQueue};
+// The durable WorkQueue backends now live in `awaken-work-store` (a stores/ leaf);
+// re-exported so composition roots keep using `awaken_runtime_host::{Sqlite,Postgres}WorkQueue`.
+pub use awaken_work_store::{PostgresWorkQueue, SqliteWorkQueue};
 // The model-route seam (R1/R2/R5): a composition root supplies its own
 // `ExecutorProvider` to map a session's model ref to a labeled executor.
 pub use crate::model_route::ExecutorProvider;

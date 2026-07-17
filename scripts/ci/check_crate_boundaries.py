@@ -620,6 +620,19 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "tokio",
     },
+    # Durable WorkQueue backend (the self-hosted environment work queue): sqlite +
+    # postgres at parity, implementing the session contract's `WorkQueue` port.
+    # Extracted from awaken-runtime-host so the host stays lean (Step 3b).
+    "awaken-work-store": {
+        "awaken-session-contract",
+        "awaken-scoped-migration",
+        "awaken-scoped-migration-sqlite",
+        "async-trait",
+        "rusqlite",
+        "sqlx",
+        "serde_json",
+        "tokio",
+    },
     # SQLite durable store: the sibling backend, allowed to name the `rusqlite`
     # driver. Same neutral commit/read ports, embedded engine (ADR-0012).
     "awaken-store-sqlite": {
@@ -1069,6 +1082,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # not a paid differentiator — the closed line is placement/sharding/tenancy
         # (the horizontal-scaling fan-out ABOVE this store port), not the DB driver.
         "awaken-store-postgres",
+        "awaken-work-store",
         "awaken-config-store",
         # The config-authoring plane, extracted to a shared crate; the host re-exports
         # it (config service + routers + resolver + tool catalog) for the composition

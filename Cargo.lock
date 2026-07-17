@@ -1147,6 +1147,7 @@ dependencies = [
  "awaken-store-postgres",
  "awaken-store-sqlite",
  "awaken-tenancy",
+ "awaken-work-store",
  "axum",
  "base64 0.22.1",
  "form_urlencoded",
@@ -1523,6 +1524,20 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower",
+]
+
+[[package]]
+name = "awaken-work-store"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-scoped-migration",
+ "awaken-scoped-migration-sqlite",
+ "awaken-session-contract",
+ "rusqlite",
+ "serde_json",
+ "sqlx",
+ "tokio",
 ]
 
 [[package]]
