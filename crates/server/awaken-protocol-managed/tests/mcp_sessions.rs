@@ -211,9 +211,10 @@ async fn create_binds_mcp_server_to_vault_credential_and_echoes_the_wire_shape()
         .vaults
         .credential_source_id(&vault_id, &cred_id)
         .expect("wire credential maps to a domain source");
+    // The binding carries the neutral row-id string (the port speaks no vault vocab).
     assert_eq!(
         init.mcp_servers[0].credential_source_id.as_ref(),
-        Some(&expected)
+        Some(&expected.0)
     );
     // The credential was entered without a refresh object, so the binding
     // carries no refresh configuration.

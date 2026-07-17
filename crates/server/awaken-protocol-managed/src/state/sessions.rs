@@ -93,7 +93,9 @@ impl ManagedState {
                 McpServerBinding {
                     name: server.name.clone(),
                     url: server.url.clone(),
-                    credential_source_id,
+                    // Store the neutral row id string on the binding; the typed lookup
+                    // above stays local to this vault-aware assembly.
+                    credential_source_id: credential_source_id.map(|id| id.0),
                     refresh,
                 }
             })

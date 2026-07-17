@@ -832,7 +832,9 @@ impl SessionRuntime for ManagedHost {
         for binding in &init.mcp_servers {
             let (bearer, refresh) = match &binding.credential_source_id {
                 Some(source_id) => {
-                    let row = mcp.credentials.get(source_id).await.map_err(|e| {
+                    // Re-type the port's neutral id string into the vault's domain id.
+                    let source_id = awaken_credential_vault::CredentialSourceId(source_id.clone());
+                    let row = mcp.credentials.get(&source_id).await.map_err(|e| {
                         RunError::bad_request(format!("mcp server `{}`: {e}", binding.name))
                     })?;
                     let bearer = awaken_credential_vault::materialize(&row, &*mcp.secrets)
