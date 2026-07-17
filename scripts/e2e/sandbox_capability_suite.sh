@@ -55,7 +55,7 @@ fi
 step "G1/G5/G2/G3 container tier against a real Docker daemon"
 if docker info >/dev/null 2>&1; then
   docker image inspect busybox:latest >/dev/null 2>&1 || docker pull busybox:latest >/dev/null
-  for t in docker_it docker_e2e pairwise_docker pool_docker hand_docker; do
+  for t in docker_it docker_e2e pairwise_docker pool_docker hand_docker reaper_docker; do
     run "docker:$t" cargo test -q -p awaken-sandbox-container --features docker --test "$t"
   done
   # The awaken-sandbox acp bridge as a real container ENTRYPOINT (the production image
@@ -99,6 +99,8 @@ step "G7 memoryd FUSE write-through"
 if [ -e /dev/fuse ] && { command -v fusermount >/dev/null || command -v fusermount3 >/dev/null; }; then
   run "memoryd fuse kernel_vfs" cargo test -q -p awaken-sandbox-memoryd --test kernel_vfs
   run "sandbox-local memory_mount" cargo test -q -p awaken-sandbox-local --test memory_mount
+  # ADR-0053 item 2: a host FUSE mount spliced LIVE into the bwrap namespace (write-through).
+  run "bwrap fuse-splice" cargo test -q -p awaken-sandbox-local --test namespace_provider bwrap_splices
 else
   skip "/dev/fuse or fusermount unavailable (copy fallback path is the alternative)"
 fi

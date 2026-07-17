@@ -172,10 +172,15 @@ pub struct NamespaceProvider {
     base: PathBuf,
     blobs: std::collections::HashMap<String, Vec<u8>>,
     file_store: Option<Arc<dyn pc::BlobSource>>,
-    /// Optional memory-store realizer. On this tier it should be a copy-only mounter
-    /// ([`MemoryStoreMounter::copy_only`]): a host FUSE mount cannot yet be spliced
-    /// into the bwrap namespace (ADR-0053 item 2), so the store is materialized to
-    /// files that bind in, and harvested back on dispose.
+    /// Optional memory-store realizer. A FUSE-preferring mounter
+    /// ([`MemoryStoreMounter::new`]) works on this tier: the store is FUSE-mounted on the
+    /// host path that then binds into the bwrap namespace, so the agent reads/writes it
+    /// LIVE (write-through) — the ADR-0053 item-2 splice, which survives bwrap's
+    /// `--unshare-user` (the mount's owner uid is identity-mapped, so no `allow_other` is
+    /// needed; proven by `namespace_provider::bwrap_splices_a_live_fuse_memory_mount…`).
+    /// A copy-only mounter ([`MemoryStoreMounter::copy_only`]) is the fallback for a host
+    /// without `/dev/fuse`: the store is materialized to files that bind in, harvested on
+    /// dispose. The FUSE-preferring mounter degrades to copy automatically off `/dev/fuse`.
     memory_mounter: Option<Arc<dyn pc::MemoryMounter>>,
 }
 
@@ -246,9 +251,11 @@ impl NamespaceProvider {
         let mut secret_paths: Vec<PathBuf> = Vec::new();
         for req in &spec.mounts {
             let host = root.resolve(&req.mount_path).map_err(err)?;
-            // memory_store is a keyed store, not a byte blob (ADR-0038/0053): realize
-            // it as a directory of materialized files that bind into the namespace,
-            // harvested back on dispose (copy-only tier; live FUSE-in-bwrap is item 2).
+            // memory_store is a keyed store, not a byte blob (ADR-0038/0053): the mounter
+            // realizes it at `host` (a live FUSE mount with a FUSE-preferring mounter, or
+            // materialized files on the copy fallback) which then binds into the namespace
+            // — live write-through FUSE-in-bwrap works (ADR-0053 item 2); copy harvests on
+            // dispose.
             if let pc::MountSource::MemoryStore { store_id } = &req.source {
                 let Some(mounter) = &self.memory_mounter else {
                     return Err(err(format!(
