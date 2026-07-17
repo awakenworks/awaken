@@ -22,7 +22,7 @@
 
 use awaken_resource_contract::{
     FileStoreError, MAX_MEMORY_BYTES, MAX_PATH_BYTES, MemErr, Memory, MemoryEntry,
-    MemoryStoreError, SkillStoreError,
+    MemoryStoreError, SkillStoreError, validate_path_len,
 };
 
 fn sample_memory(content: Option<&str>) -> Memory {
@@ -222,29 +222,24 @@ fn memory_entry_round_trips_over_the_wire_mirroring_memory() {
 // R8: `MAX_PATH_BYTES` is a bare cap *constant*. Contrast `MAX_MEMORY_BYTES`, which
 // the contract surfaces through a first-class port error (`MemErr::TooLarge`) that
 // interpolates the cap — so every backend must reject over-cap content identically.
-// The path cap has NO such analogue: there is no `MemErr::PathTooLong`, and nothing
-// in the contract says an over-cap path maps to `MemErr::InvalidPath`. Enforcement
-// therefore lives only in the backends.
-//
-// KNOWN GAP (adjudicate): MAX_PATH_BYTES has no contract-level enforcement predicate;
-// enforcement lives in backends → drift risk. This test characterizes the current
-// surface (the constant is the only path-length contract the port exposes) and does
-// NOT add a predicate to src.
+// The path cap now has a contract-level predicate too: `validate_path_len` maps an
+// over-cap path to an `InvalidPath` that names `MAX_PATH_BYTES`, symmetric with
+// `TooLarge`, so every backend enforces one identical limit instead of drifting.
 #[test]
-fn max_path_bytes_has_no_contract_level_enforcement_predicate() {
-    // The cap is exposed only as a plain constant.
+fn max_path_bytes_has_a_contract_level_enforcement_predicate() {
+    // The cap is exposed as a constant...
     assert_eq!(MAX_PATH_BYTES, 1024);
 
-    // The only path-shaped error is the reason-free `InvalidPath(String)`, which the
-    // contract does NOT tie to the cap: building it from an over-cap path neither
-    // validates nor references `MAX_PATH_BYTES`. Pin the asymmetry vs. `TooLarge`
-    // (which DOES interpolate `MAX_MEMORY_BYTES`) so a future contract predicate is a
-    // visible, deliberate change here.
-    let over = MemErr::InvalidPath("x".repeat(MAX_PATH_BYTES + 1));
-    let shown = over.to_string();
+    // ...and `validate_path_len` is the port's single path-length predicate: an
+    // at-cap path is accepted, an over-cap path is rejected with an `InvalidPath`
+    // that interpolates the cap — the same shape `TooLarge` gives for content.
+    assert!(validate_path_len(&"x".repeat(MAX_PATH_BYTES)).is_ok());
+    let err = validate_path_len(&"x".repeat(MAX_PATH_BYTES + 1)).unwrap_err();
+    assert!(matches!(err, MemErr::InvalidPath(_)));
+    let shown = err.to_string();
     assert!(shown.starts_with("invalid path: "));
     assert!(
-        !shown.contains(&MAX_PATH_BYTES.to_string()),
-        "InvalidPath must NOT interpolate the path cap (no contract predicate): {shown}"
+        shown.contains(&MAX_PATH_BYTES.to_string()),
+        "the predicate must name the path cap: {shown}"
     );
 }

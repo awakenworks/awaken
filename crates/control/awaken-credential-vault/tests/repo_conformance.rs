@@ -103,15 +103,16 @@ async fn put_is_upsert(repo: &dyn CredentialRepo) {
     assert_eq!(repo.list_pools("ws").await.unwrap().len(), 1);
 }
 
-// KNOWN BUG (adjudicate): cross-tenant get — `CredentialRepo::get` is keyed by
-// source id ONLY and is NOT workspace-scoped. A caller holding an id from another
-// workspace reads the row straight across the tenant boundary; only `list` filters
-// by workspace. This characterization pins the CURRENT behavior on EVERY backend
-// (in-memory, sqlite, postgres) so it can be adjudicated in one place; it does not
-// endorse it. Mirrors the in-memory-only `get_is_not_workspace_scoped_and_reads_
-// across_workspaces` unit test in `src/repo.rs`, extending the pin to the durable
-// backends.
-async fn get_reads_across_workspaces(repo: &dyn CredentialRepo) {
+// CONTRACT: `CredentialRepo::get` is a deliberate unscoped by-id PRIMITIVE — it is
+// keyed by source id only, while `list` is the workspace-scoped enumeration face.
+// Tenant isolation for secret *materialization* is enforced one layer up, in
+// `awaken-config-resolver::resolve_credential` (a pool member / Exact binding whose
+// source `workspace_id` differs from the pool's is fenced there), and a caller audit
+// confirms every `get` caller either goes through that fence or only reads secret-free
+// management rows. This test pins the primitive's contract across EVERY backend
+// (in-memory, sqlite, postgres); it mirrors the `get_is_an_unscoped_by_id_primitive_
+// fenced_at_resolution` unit in `src/repo.rs`, extending it to the durable backends.
+async fn get_is_an_unscoped_by_id_primitive(repo: &dyn CredentialRepo) {
     repo.put(source("cred:owned", "ws-owner")).await.unwrap();
 
     // `list` for an unrelated workspace correctly hides the row...
@@ -130,7 +131,7 @@ async fn run_all(make: impl Fn() -> Box<dyn CredentialRepo>) {
     pools_round_trip_and_scope_by_workspace(&*make()).await;
     missing_rows_are_not_found(&*make()).await;
     put_is_upsert(&*make()).await;
-    get_reads_across_workspaces(&*make()).await;
+    get_is_an_unscoped_by_id_primitive(&*make()).await;
 }
 
 #[tokio::test]
@@ -208,7 +209,7 @@ mod postgres {
         pools_round_trip_and_scope_by_workspace(&repo("t_cred_pools").await.unwrap()).await;
         missing_rows_are_not_found(&repo("t_cred_missing").await.unwrap()).await;
         put_is_upsert(&repo("t_cred_upsert").await.unwrap()).await;
-        get_reads_across_workspaces(&repo("t_cred_xtenant").await.unwrap()).await;
+        get_is_an_unscoped_by_id_primitive(&repo("t_cred_xtenant").await.unwrap()).await;
     }
 
     /// The durable secret path on Postgres: AEAD sealing composed over the

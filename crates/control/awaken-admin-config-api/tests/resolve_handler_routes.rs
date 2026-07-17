@@ -315,14 +315,11 @@ async fn resolve_profile_route_missing_profile_is_404() {
 }
 
 // ---------------------------------------------------------------------------
-// TASK 1 — resolve_profile_candidates_route through the handler
-// (this route currently has NO handler-level test)
-//
-// KNOWN GAP (adjudicate): resolve_profile_candidates_route absent from openapi
-// paths() — `/v1/config/inference-profiles/{id}/resolve-candidates` is mounted by
-// `admin_router` but is not registered in `openapi::paths()`, so it is undocumented
-// and the `openapi_contract` drift gate never probes it. Pinned in the openapi test
-// (see `openapi_contract.rs::resolve_candidates_route_is_undocumented_known_gap`).
+// TASK 1 — resolve_profile_candidates_route through the handler.
+// `/v1/config/inference-profiles/{id}/resolve-candidates` is mounted by
+// `admin_router` AND documented in `openapi::paths()` (response schema
+// `ResolvedCandidatesView`), so the `openapi_contract` drift gate probes it; these
+// tests exercise the handler behavior end-to-end.
 // ---------------------------------------------------------------------------
 
 /// resolve_profile_candidates_route (success): a multi-model profile resolves its
