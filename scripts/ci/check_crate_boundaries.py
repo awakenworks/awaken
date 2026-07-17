@@ -198,7 +198,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # scoped tool catalog — it names neither SharedHost nor run execution.
     "awaken-config-service": {
         "awaken-runtime-contract",
-        "awaken-protocol-managed",
+        "awaken-session-contract",
         "awaken-config-store",
         "awaken-config-resolver",
         "awaken-tenancy",

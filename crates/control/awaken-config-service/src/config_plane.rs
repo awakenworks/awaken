@@ -421,17 +421,17 @@ impl ConfigPlane {
 }
 
 /// Adapts the config plane to the managed agents registry's projection port
-/// ([`awaken_protocol_managed::AgentConfigSource`]): `/v1/agents` reads an agent's
+/// ([`awaken_session_contract::AgentConfigSource`]): `/v1/agents` reads an agent's
 /// model/system/tools from the published config truth ([`ConfigService::installed`])
 /// rather than a second copy. This is the host-side half of the "retreat to
 /// projection" seam — the managed adapter names only the port, never this type.
 pub struct ConfigServiceAgentSource(pub Arc<ConfigService>);
 
-impl awaken_protocol_managed::AgentConfigSource for ConfigServiceAgentSource {
-    fn agent_view(&self, agent_id: &str) -> Option<awaken_protocol_managed::AgentConfigView> {
+impl awaken_session_contract::AgentConfigSource for ConfigServiceAgentSource {
+    fn agent_view(&self, agent_id: &str) -> Option<awaken_session_contract::AgentConfigView> {
         let runnable = self.0.installed(agent_id)?;
         let spec = &runnable.snapshot().resolved_spec;
-        Some(awaken_protocol_managed::AgentConfigView {
+        Some(awaken_session_contract::AgentConfigView {
             model: Some(spec.model_binding.model_ref.clone()),
             system: (!spec.instructions.is_empty()).then(|| spec.instructions.clone()),
             tool_ids: spec.tool_descriptors.iter().map(|d| d.id.clone()).collect(),
@@ -453,7 +453,7 @@ pub fn config_router(plane: ConfigPlane) -> Router {
 
 /// The request's owner scope, stamped by the workspace-path rewrite
 /// (`WorkspaceScope`) or the seeded [`DEFAULT_SCOPE`] for a flat/single-tenant call.
-fn request_scope(ext: Option<Extension<awaken_protocol_managed::WorkspaceScope>>) -> ScopeId {
+fn request_scope(ext: Option<Extension<awaken_tenancy::WorkspaceScope>>) -> ScopeId {
     ext.map(|Extension(w)| ScopeId::from(w.0))
         .unwrap_or_else(|| ScopeId::from(DEFAULT_SCOPE))
 }
@@ -462,7 +462,7 @@ fn request_scope(ext: Option<Extension<awaken_protocol_managed::WorkspaceScope>>
 /// `published` when a compiled config is currently installed for it.
 async fn list_configs(
     State(plane): State<ConfigPlane>,
-    scope: Option<Extension<awaken_protocol_managed::WorkspaceScope>>,
+    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
 ) -> (StatusCode, Json<Value>) {
     let scope = request_scope(scope);
     match plane.list(&scope).await {
@@ -488,7 +488,7 @@ async fn list_configs(
 async fn get_config(
     State(plane): State<ConfigPlane>,
     Path(id): Path<String>,
-    scope: Option<Extension<awaken_protocol_managed::WorkspaceScope>>,
+    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
 ) -> (StatusCode, Json<Value>) {
     let scope = request_scope(scope);
     match plane.get(&scope, &id).await {
@@ -512,7 +512,7 @@ async fn get_config(
 
 async fn validate(
     State(plane): State<ConfigPlane>,
-    scope: Option<Extension<awaken_protocol_managed::WorkspaceScope>>,
+    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
@@ -547,7 +547,7 @@ async fn validate(
 
 async fn put_config(
     State(plane): State<ConfigPlane>,
-    scope: Option<Extension<awaken_protocol_managed::WorkspaceScope>>,
+    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
@@ -678,7 +678,7 @@ fn managed_from_agent_config(cfg: &AgentConfig, published: bool) -> Value {
 
 async fn publish(
     State(plane): State<ConfigPlane>,
-    scope: Option<Extension<awaken_protocol_managed::WorkspaceScope>>,
+    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
     Path(id): Path<String>,
 ) -> (StatusCode, Json<Value>) {
     match plane.publish(&request_scope(scope), &id).await {
@@ -714,8 +714,8 @@ mod resource_prompt_tests {
     use awaken_runtime_contract::resolved::ContextPolicy;
 
     use crate::binding_resolver::{ModelResolver, ResolvedModel};
-    use awaken_protocol_managed::WorkspaceScope;
     use awaken_runtime_contract::resolved::ModelBinding;
+    use awaken_tenancy::WorkspaceScope;
 
     fn agent_config(id: &str) -> AgentConfig {
         AgentConfig {
