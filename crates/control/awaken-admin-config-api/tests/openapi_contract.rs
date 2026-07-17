@@ -122,20 +122,22 @@ async fn every_documented_operation_is_mounted() {
     }
 }
 
-/// The `openapi_contract` gate only catches *documented-but-unmounted*; the reverse
-/// (mounted-but-undocumented) is a review concern. This pins one such omission that
-/// is live today so it is not lost: `resolve_profile_candidates_route` is mounted by
-/// `admin_router` at `.../resolve-candidates` but has no `openapi::paths()` entry,
-/// so it is absent from the emitted contract and never drift-probed above.
-///
-// KNOWN GAP (adjudicate): resolve_profile_candidates_route absent from openapi paths()
+/// `resolve_profile_candidates_route` is mounted by `admin_router` at
+/// `.../resolve-candidates` and is now DOCUMENTED in `openapi::paths()` with its
+/// `ResolvedCandidatesView` response schema — so it is emitted in the contract and
+/// covered by the documented↔mounted drift probe above (no longer an omission).
 #[test]
-fn resolve_candidates_route_is_undocumented_known_gap() {
+fn resolve_candidates_route_is_documented_and_schema_backed() {
     let doc = openapi_document();
     let paths = doc["paths"].as_object().expect("paths object");
-    assert!(
-        !paths.contains_key("/v1/config/inference-profiles/{id}/resolve-candidates"),
-        "resolve-candidates is now documented — adjudicate the KNOWN GAP and fold it \
-         into the mounted-operation drift assertions above"
-    );
+    let op = paths
+        .get("/v1/config/inference-profiles/{id}/resolve-candidates")
+        .and_then(|p| p.get("post"))
+        .expect("resolve-candidates POST is documented");
+    assert_eq!(op["operationId"], "resolve_profile_candidates");
+    // Its response schema is registered in components.
+    let schemas = doc["components"]["schemas"]
+        .as_object()
+        .expect("schemas object");
+    assert!(schemas.contains_key("ResolvedCandidatesView"));
 }

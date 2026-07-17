@@ -80,6 +80,7 @@ pub fn contract_schemas() -> Map<String, Value> {
 
     // Route responses (secret-free views).
     add!("ResolvedInferenceView", crate::ResolvedInferenceView);
+    add!("ResolvedCandidatesView", crate::ResolvedCandidatesView);
     add!("ResolvedMcpServerView", crate::ResolvedMcpServerView);
     add!("CredentialValidation", crate::CredentialValidation);
 
@@ -267,6 +268,10 @@ fn paths() -> Value {
         "/v1/config/inference-profiles/{id}/resolve": {
             "post": op("resolve_profile", "inference", "Dry-run resolve an authored profile (secret-free view)",
                 &id("Inference profile id"), Some(schema_ref("ResolveProfileRequest")), 200, schema_ref("ResolvedInferenceView"))
+        },
+        "/v1/config/inference-profiles/{id}/resolve-candidates": {
+            "post": op("resolve_profile_candidates", "inference", "Dry-run resolve every candidate in a profile's model axis, in failover order (secret-free views)",
+                &id("Inference profile id"), Some(schema_ref("ResolveProfileRequest")), 200, schema_ref("ResolvedCandidatesView"))
         },
         "/v1/config/inference/resolve": {
             "post": op("resolve_inference", "inference", "Dry-run resolve a model + credential binding against the catalog (secret-free view)",
