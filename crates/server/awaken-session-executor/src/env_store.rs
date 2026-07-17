@@ -1,7 +1,7 @@
 //! Durable [`EnvRegistry`] backends: the self-hosted environment registry over a
 //! store, so an environment (user-created config) survives a restart and is visible
 //! to a worker on any node. SQLite (embedded) and Postgres (distributed) share one
-//! portable bundle, the sibling of [`crate::work_store`].
+//! portable bundle, mirroring the extracted `awaken-work-store` backend.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
