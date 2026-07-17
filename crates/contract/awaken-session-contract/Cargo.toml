@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# Agent-domain vocabulary in the port signatures (e.g. `RedactedString` on the MCP
+# probe). A contract/ leaf itself — dependencies point inward.
+awaken-agent-contract.workspace = true
+async-trait.workspace = true
 
 [lints]
 workspace = true

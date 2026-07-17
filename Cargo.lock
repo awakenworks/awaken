@@ -1352,6 +1352,10 @@ dependencies = [
 [[package]]
 name = "awaken-session-contract"
 version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+]
 
 [[package]]
 name = "awaken-skill-store"

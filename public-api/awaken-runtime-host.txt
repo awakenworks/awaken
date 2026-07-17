@@ -106,8 +106,8 @@ impl awaken_run_executor_acp::subprocess::LaunchResolver for awaken_runtime_host
 pub fn awaken_runtime_host::EnvLaunchResolver::extra_env(&self, &awaken_runtime_contract::activation::RunActivation) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
 pub fn awaken_runtime_host::EnvLaunchResolver::model(&self, &awaken_runtime_contract::activation::RunActivation) -> core::result::Result<awaken_run_executor_acp::acp_cli::ResolvedModel, awaken_run_executor_acp::OpenError>
 pub struct awaken_runtime_host::ExtMcpProbe
-impl awaken_protocol_managed::routes::vaults::McpProbe for awaken_runtime_host::ExtMcpProbe
-pub fn awaken_runtime_host::ExtMcpProbe::probe<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_agent_contract::secret::RedactedString) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_protocol_managed::routes::vaults::McpProbeStatus> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+impl awaken_session_contract::mcp_probe::McpProbe for awaken_runtime_host::ExtMcpProbe
+pub fn awaken_runtime_host::ExtMcpProbe::probe<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_agent_contract::secret::RedactedString) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_session_contract::mcp_probe::McpProbeStatus> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub struct awaken_runtime_host::HttpDispatchQueue
 impl awaken_runtime_host::HttpDispatchQueue
 pub fn awaken_runtime_host::HttpDispatchQueue::new(impl core::convert::Into<alloc::string::String>) -> Self
