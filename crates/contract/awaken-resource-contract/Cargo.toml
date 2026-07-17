@@ -11,6 +11,8 @@ serde = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+# Property-based (formal) verification of the crate's pure decision functions (ADR-0059).
+proptest = { workspace = true }
 
 [lints]
 workspace = true
