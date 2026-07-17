@@ -120,7 +120,14 @@ The goal's cleanup clause ("is the uncovered code redundant/duplicate — if so,
 - **Structural conformance**: `npm run test:conformance` — event catalog + `MANAGED_BETA` +
   serde golden vs the installed SDK. Green.
 - **Behavioral coverage**: the ~170 `*_e2e.mjs` suites, +3 this pass (104 in the default
-  `test` script; the management surface in `test:extended`).
+  `test` script; the management surface in `test:extended`). **Cumulative run of the default
+  suite (each suite spawned independently): 100 pass / 4 fail / 104.** The 3 new suites pass.
+  The 4 failures are pre-existing in subsystems untouched by this work and unrelated to the
+  docs-coverage or layout changes: `managed_git_repo_e2e` + `managed_full_chain_e2e` (the
+  ADR-0038 host-side clone / push-back / harvest path) and `durable_worker_metrics_e2e` +
+  `brain_drain_e2e` (missing `/metrics` gauges). They appear only in the full `test` script,
+  not in any CI subset (`test:management`/`extended`/`protocols`/`xservice`), so they have
+  been ungated + red independent of this pass.
 - **Rust line/region coverage attributable to the e2e**: `bash e2e/coverage.sh` (instruments
   `awaken-server`/`awaken` via `cargo llvm-cov`, drives the full suite, reports *overall* and
   *e2e-surface* figures). Run on demand — it does a dedicated instrumented build.
