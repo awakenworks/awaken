@@ -54,6 +54,7 @@ pub struct awaken_sandbox_container::ContainerProvider<R: awaken_sandbox_contain
 impl<R: awaken_sandbox_container::ContainerRuntime + 'static> awaken_sandbox_container::ContainerProvider<R>
 pub async fn awaken_sandbox_container::ContainerProvider<R>::create_container(&self, &awaken_provisioning_contract::spec::SandboxSpec) -> core::result::Result<awaken_sandbox_container::ContainerSandbox<R>, awaken_provisioning_contract::sandbox::SandboxError>
 pub fn awaken_sandbox_container::ContainerProvider<R>::new(alloc::sync::Arc<R>, impl core::convert::Into<alloc::string::String>) -> Self
+pub async fn awaken_sandbox_container::ContainerProvider<R>::open_agent_from(&self, awaken_sandbox_container::ContainerSandbox<R>) -> core::result::Result<awaken_sandbox_container::AgentContainerSession, awaken_provisioning_contract::sandbox::SandboxError>
 pub fn awaken_sandbox_container::ContainerProvider<R>::with_blob(self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::vec::Vec<u8>>) -> Self
 pub fn awaken_sandbox_container::ContainerProvider<R>::with_blob_source(self, alloc::sync::Arc<dyn awaken_provisioning_contract::sandbox::BlobSource>) -> Self
 pub fn awaken_sandbox_container::ContainerProvider<R>::with_egress_proxy(self, awaken_sandbox_container::EgressProxy) -> Self
