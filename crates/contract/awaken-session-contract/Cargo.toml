@@ -10,5 +10,9 @@ license.workspace = true
 awaken-agent-contract.workspace = true
 async-trait.workspace = true
 
+[dev-dependencies]
+# The work-queue port's in-memory impl is exercised by `#[tokio::test]`s.
+tokio = { workspace = true, features = ["rt", "macros"] }
+
 [lints]
 workspace = true

@@ -242,7 +242,7 @@ async fn list_work(
         .list(&id)
         .await
         .iter()
-        .map(|w| w.project())
+        .map(crate::work_queue::project_work)
         .collect();
     Ok(Json(paginate(data, &page, |w| w.id.as_str())))
 }
@@ -264,7 +264,8 @@ async fn poll_work(
             .work
             .claim(&id, &worker_id, now_ms())
             .await
-            .map(|w| w.project()),
+            .as_ref()
+            .map(crate::work_queue::project_work),
     ))
 }
 
@@ -300,7 +301,7 @@ async fn retrieve_work(
         .get(&id, &wid)
         .await
         .ok_or_else(|| not_found("work"))?;
-    Ok(Json(work.project()))
+    Ok(Json(crate::work_queue::project_work(&work)))
 }
 
 async fn update_work(
@@ -314,7 +315,7 @@ async fn update_work(
         .update_metadata(&id, &wid, params.metadata.unwrap_or_default())
         .await
         .ok_or_else(|| not_found("work"))?;
-    Ok(Json(work.project()))
+    Ok(Json(crate::work_queue::project_work(&work)))
 }
 
 /// `POST …/work/:wid/ack` — the worker acknowledges it picked up the item.
@@ -328,7 +329,7 @@ async fn ack_work(
         .ack(&id, &wid)
         .await
         .ok_or_else(|| not_found("work"))?;
-    Ok(Json(work.project()))
+    Ok(Json(crate::work_queue::project_work(&work)))
 }
 
 /// `POST …/work/:wid/heartbeat` — extend the lease; returns the TTL.
@@ -372,7 +373,7 @@ async fn stop_work(
         .stop(&id, &wid)
         .await
         .ok_or_else(|| not_found("work"))?;
-    Ok(Json(work.project()))
+    Ok(Json(crate::work_queue::project_work(&work)))
 }
 
 #[cfg(test)]

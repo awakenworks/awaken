@@ -14,9 +14,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use awaken_protocol_managed::types::environment::WorkData;
 use awaken_protocol_managed::work_queue::{
-    LeaseBook, LeaseReceipt, QueueStats, WorkItem, WorkQueue, WorkState,
+    LeaseBook, LeaseReceipt, QueueStats, WorkItem, WorkPayload, WorkQueue, WorkState,
 };
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -68,10 +67,10 @@ fn state_from_wire(s: &str) -> WorkState {
     }
 }
 
-fn data_of(data_type: &str, data_id: String) -> WorkData {
+fn data_of(data_type: &str, data_id: String) -> WorkPayload {
     match data_type {
-        "healthcheck" => WorkData::HealthCheck { id: data_id },
-        _ => WorkData::Session { id: data_id },
+        "healthcheck" => WorkPayload::HealthCheck { id: data_id },
+        _ => WorkPayload::Session { id: data_id },
     }
 }
 
@@ -725,7 +724,7 @@ mod tests {
         let id = q.enqueue_healthcheck("env_a").await;
         let w = q.get("env_a", &id).await.expect("seeded");
         assert_eq!(w.state, WorkState::Queued);
-        assert!(matches!(w.data, WorkData::HealthCheck { id: ref d } if *d == id));
+        assert!(matches!(w.data, WorkPayload::HealthCheck { id: ref d } if *d == id));
     }
 
     #[tokio::test]

@@ -13,6 +13,7 @@
 
 mod agent_config;
 mod mcp_probe;
+pub mod work_queue;
 
 pub use agent_config::{AgentConfigSource, AgentConfigView};
 pub use mcp_probe::{McpProbe, McpProbeStatus};
