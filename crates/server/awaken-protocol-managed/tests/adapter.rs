@@ -1080,6 +1080,116 @@ async fn system_message_and_interrupt_reach_the_runtime() {
     );
 }
 
+/// A runtime that records the ORDER of `interrupt` vs `run` calls and echoes each
+/// turn, so a test can prove the documented interrupt-then-redirect batch flow.
+struct InterruptRedirectFake {
+    order: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl SessionRuntime for InterruptRedirectFake {
+    async fn run(
+        &self,
+        _a: &str,
+        _t: &str,
+        content: Vec<ContentBlock>,
+    ) -> Result<StepOutcome, RunError> {
+        let text = Message::new(Id("u".into()), Role::User, content).text_content();
+        self.order.lock().unwrap().push(format!("run:{text}"));
+        Ok(StepOutcome {
+            messages: vec![Message::text(
+                Id("a".into()),
+                Role::Assistant,
+                format!("on it: {text}"),
+            )],
+            stop: StopReason::EndTurn,
+            pending: None,
+            compacted: false,
+            rescheduled: false,
+            failure: None,
+        })
+    }
+    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<StepOutcome, RunError> {
+        Err(RunError::internal("unused"))
+    }
+    async fn resume_custom(
+        &self,
+        _t: &str,
+        _tid: &str,
+        _c: &str,
+        _e: bool,
+    ) -> Result<StepOutcome, RunError> {
+        Err(RunError::internal("unused"))
+    }
+    async fn add_system(&self, _t: &str, _x: &str) -> Result<(), RunError> {
+        Ok(())
+    }
+    async fn interrupt(&self, _thread: &str) -> Result<(), RunError> {
+        self.order.lock().unwrap().push("interrupt".into());
+        Ok(())
+    }
+    async fn define_outcome(
+        &self,
+        _t: &str,
+        _d: &str,
+        _r: &str,
+        _m: u32,
+    ) -> Result<OutcomeReport, RunError> {
+        Err(RunError::internal("unused"))
+    }
+    fn model(&self) -> String {
+        "test-model".into()
+    }
+}
+
+/// The documented interrupt-then-redirect batch (events-and-streaming: "Send a
+/// `user.interrupt` event to stop the agent mid-execution, then follow up with a
+/// `user.message` event to redirect it"): a single `events` array carrying
+/// `[user.interrupt, user.message]` interrupts first, then runs the redirect turn —
+/// in that order — and the new direction produces the turn's `agent.message`.
+#[tokio::test]
+async fn interrupt_then_message_redirects_in_order() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let app = router(Arc::new(ManagedState::new(InterruptRedirectFake {
+        order: order.clone(),
+    })));
+    let id = create(&app).await;
+
+    json_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [
+            { "type": "user.interrupt" },
+            { "type": "user.message", "content": [{ "type": "text", "text": "fix line 42 instead" }] }
+        ] }),
+    )
+    .await;
+
+    // The interrupt is handled before the redirect turn runs (documented order).
+    assert_eq!(
+        *order.lock().unwrap(),
+        vec![
+            "interrupt".to_string(),
+            "run:fix line 42 instead".to_string()
+        ],
+        "interrupt is processed first, then the redirect message runs the turn"
+    );
+    // The redirect produced this turn's agent.message (the new direction ran).
+    let list = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert!(
+        types(&list).contains(&"agent.message".to_string()),
+        "the redirect turn projected an agent.message: {}",
+        list
+    );
+}
+
 #[tokio::test]
 async fn retrieve_session_and_sse_event_names() {
     let app = router(Arc::new(ManagedState::new(EchoFake)));
