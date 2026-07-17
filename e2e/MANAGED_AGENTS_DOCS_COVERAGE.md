@@ -165,13 +165,18 @@ small (base-enum additions rippled to only a handful of `_`-less matches). This 
   serde golden vs the installed SDK. Green.
 - **Behavioral coverage**: the ~170 `*_e2e.mjs` suites, +3 this pass (104 in the default
   `test` script; the management surface in `test:extended`). **Cumulative run of the default
-  suite (each suite spawned independently): 100 pass / 4 fail / 104.** The 3 new suites pass.
-  The 4 failures are pre-existing in subsystems untouched by this work and unrelated to the
-  docs-coverage or layout changes: `managed_git_repo_e2e` + `managed_full_chain_e2e` (the
-  ADR-0038 host-side clone / push-back / harvest path) and `durable_worker_metrics_e2e` +
-  `brain_drain_e2e` (missing `/metrics` gauges). They appear only in the full `test` script,
-  not in any CI subset (`test:management`/`extended`/`protocols`/`xservice`), so they have
-  been ungated + red independent of this pass.
+  suite (each suite spawned independently): 104 pass / 0 fail / 104** — the whole deterministic
+  suite is green. The 4 formerly-failing suites were fixed (they were real gaps, not
+  environmental):
+  - `managed_git_repo_e2e` + `managed_full_chain_e2e` — ADR-0038's `push_repo_at` pushes only
+    what the agent *committed*, but the fake-upstream scripts wrote the repo file without a
+    commit → nothing to push. Fixed: the scripted agent now runs a `bash` commit in the jail
+    before harvest.
+  - `durable_worker_metrics_e2e` + `brain_drain_e2e` — `awaken-scenario-host` never registered
+    the `awaken_brain_active_streams` gauge (parity gap vs the real `awaken` binary), the
+    `awaken_brain_draining` gauge was never implemented (drain state was `/readyz`-only), and
+    the test parser didn't handle OTel's `{otel_scope_name=...}` labels. Fixed: register both
+    gauges in the shared `register_active_streams_gauge`; tolerant Prometheus parsing.
 - **Rust line/region coverage attributable to the e2e**: `bash e2e/coverage.sh` (instruments
   `awaken-server`/`awaken` via `cargo llvm-cov`, drives the full suite, reports *overall* and
   *e2e-surface* figures). Run on demand — it does a dedicated instrumented build.
