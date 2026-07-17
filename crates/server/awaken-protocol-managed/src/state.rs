@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use async_trait::async_trait;
 use tokio::sync::broadcast;
 
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -121,18 +120,10 @@ pub struct ManagedState {
 /// A sink for committed session lifecycle facts, projected to external consumers
 /// (webhooks). The Managed adapter calls it after a lifecycle transition commits,
 /// handing the session's persisted owner (S3) so the consumer can stamp tenancy.
-/// Implemented in the assembly layer over a webhook dispatcher; kept here so the
-/// wire crate depends on no delivery machinery.
-#[async_trait]
-pub trait SessionLifecycleSink: Send + Sync {
-    /// `event_type` is the `OutboundKind` wire name (e.g. `session.status_idle`);
-    /// `workspace_id` is the session's owning workspace (absent on the bare
-    /// pre-owner surface). The **org** is a deployment-level attribution the sink
-    /// itself carries (from its assembly config / `AWAKEN_ORG_ID`), not a
-    /// per-session axis — org is cloud-only (ADR-0048 D4), so the core never
-    /// resolves it. Must not block the caller for long — deliver out-of-band.
-    async fn emit(&self, session_id: &str, workspace_id: Option<&str>, event_type: &str);
-}
+/// The port now lives in `awaken-session-contract` (a contract/ leaf); re-exported
+/// here so existing `awaken_protocol_managed::…` paths keep resolving. The fact
+/// catalog below (the projected wire event names) stays in this adapter.
+pub use awaken_session_contract::SessionLifecycleSink;
 
 /// The webhook lifecycle-fact catalog projected through [`SessionLifecycleSink`],
 /// named to match Anthropic's official Managed Agents webhook event set. These are
@@ -301,6 +292,7 @@ impl ManagedState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use awaken_agent_contract::agent::message::Message;
     use std::collections::BTreeMap;
 

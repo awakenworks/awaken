@@ -5,11 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-# The bridge between the managed session lifecycle (protocol-managed's
-# SessionLifecycleSink port) and the neutral webhook dispatcher — plus the
-# subscription CRUD surface and the guard→WorkspaceScope mapping. All open
-# crates (no admin-config-api / iam-server), so the standalone can use it too.
-awaken-protocol-managed = { workspace = true }
+# The bridge between the managed session lifecycle (the `SessionLifecycleSink` port,
+# now in the session contract — a contract/ leaf, not the wire adapter) and the
+# neutral webhook dispatcher — plus the subscription CRUD surface and the
+# guard→WorkspaceScope mapping (WorkspaceScope from tenancy). All open crates.
+awaken-session-contract = { workspace = true }
+awaken-tenancy = { workspace = true }
 awaken-authz-enforce = { workspace = true }
 awaken-webhook = { workspace = true }
 # Subscriptions are a config resource: the read-side WebhookStore port + the
