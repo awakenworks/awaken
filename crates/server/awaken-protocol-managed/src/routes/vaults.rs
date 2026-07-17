@@ -86,45 +86,11 @@ fn apply_metadata_patch(
     }
 }
 
-/// The stored refresh configuration of an `mcp_oauth` credential, exposed for a
-/// session's transport-level token refresh (consumer: `ManagedState::create_session`
-/// → [`crate::McpServerBinding`], which the server's `ManagedHost::prepare_session`
-/// turns into a live refresher on the MCP transport). Secret-free by construction:
-/// it carries the sealed refresh token's [`SecretRef`] (and, for a
-/// confidential-client scheme, the sealed client secret's ref via
-/// [`TokenEndpointAuthBinding`]), never material.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct McpRefreshBinding {
-    pub token_endpoint: String,
-    pub client_id: String,
-    /// The ref the sealed refresh token lives under (`sec:refresh:{source_id}`), as a
-    /// plain string — the port speaks no control-plane vocabulary; the host re-types it
-    /// into the vault's `SecretRef` at the secret-store lookup.
-    pub refresh_token_ref: String,
-    /// How the refresher must authenticate the grant at the token endpoint.
-    pub token_endpoint_auth: TokenEndpointAuthBinding,
-    pub scope: Option<String>,
-    pub resource: Option<String>,
-}
-
-/// The client-authentication method of a refresh grant, as the session's
-/// refresher must apply it (consumer: the server's `VaultRefresher` grant
-/// construction — RFC 6749 §2.3.1 `Basic` header for `client_secret_basic`,
-/// `client_secret` form field for `client_secret_post`). A confidential scheme
-/// carries the sealed client secret's ref (`sec:client:{source_id}`), never
-/// material.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TokenEndpointAuthBinding {
-    None,
-    /// Carries the sealed client secret's ref as a plain string (`sec:client:…`); the
-    /// host re-types it into the vault's `SecretRef` at the secret-store lookup.
-    ClientSecretBasic {
-        secret_ref: String,
-    },
-    ClientSecretPost {
-        secret_ref: String,
-    },
-}
+// The session MCP-server credential bindings now live in `awaken-session-contract`
+// (a contract/ leaf) — they are secret-free plain data. Re-exported here so existing
+// `awaken_protocol_managed::…` paths keep resolving until consumers flip to the
+// contract directly.
+pub use awaken_session_contract::{McpRefreshBinding, TokenEndpointAuthBinding};
 
 // The live MCP-probe port + its status now live in `awaken-session-contract`
 // (a contract/ leaf), re-exported here so existing `awaken_protocol_managed::…` paths

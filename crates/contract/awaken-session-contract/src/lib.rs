@@ -12,8 +12,10 @@
 //! until they are flipped to depend on this crate directly.
 
 mod agent_config;
+mod mcp_binding;
 mod mcp_probe;
 pub mod work_queue;
 
 pub use agent_config::{AgentConfigSource, AgentConfigView};
+pub use mcp_binding::{McpRefreshBinding, TokenEndpointAuthBinding};
 pub use mcp_probe::{McpProbe, McpProbeStatus};

@@ -218,7 +218,7 @@ pub awaken_runtime_host::PreparedMcpRefresh::resource: core::option::Option<allo
 pub awaken_runtime_host::PreparedMcpRefresh::scope: core::option::Option<alloc::string::String>
 pub awaken_runtime_host::PreparedMcpRefresh::secrets: alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>
 pub awaken_runtime_host::PreparedMcpRefresh::token_endpoint: alloc::string::String
-pub awaken_runtime_host::PreparedMcpRefresh::token_endpoint_auth: awaken_protocol_managed::routes::vaults::TokenEndpointAuthBinding
+pub awaken_runtime_host::PreparedMcpRefresh::token_endpoint_auth: awaken_session_contract::mcp_binding::TokenEndpointAuthBinding
 pub struct awaken_runtime_host::ProtocolHost
 impl awaken_runtime_host::ProtocolHost
 pub fn awaken_runtime_host::ProtocolHost::new(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> Self

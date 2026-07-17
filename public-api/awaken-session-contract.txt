@@ -90,10 +90,23 @@ pub awaken_session_contract::McpProbeStatus::Invalid
 pub awaken_session_contract::McpProbeStatus::Invalid::http_status: u16
 pub awaken_session_contract::McpProbeStatus::Unknown
 pub awaken_session_contract::McpProbeStatus::Valid
+pub enum awaken_session_contract::TokenEndpointAuthBinding
+pub awaken_session_contract::TokenEndpointAuthBinding::ClientSecretBasic
+pub awaken_session_contract::TokenEndpointAuthBinding::ClientSecretBasic::secret_ref: alloc::string::String
+pub awaken_session_contract::TokenEndpointAuthBinding::ClientSecretPost
+pub awaken_session_contract::TokenEndpointAuthBinding::ClientSecretPost::secret_ref: alloc::string::String
+pub awaken_session_contract::TokenEndpointAuthBinding::None
 pub struct awaken_session_contract::AgentConfigView
 pub awaken_session_contract::AgentConfigView::model: core::option::Option<alloc::string::String>
 pub awaken_session_contract::AgentConfigView::system: core::option::Option<alloc::string::String>
 pub awaken_session_contract::AgentConfigView::tool_ids: alloc::vec::Vec<alloc::string::String>
+pub struct awaken_session_contract::McpRefreshBinding
+pub awaken_session_contract::McpRefreshBinding::client_id: alloc::string::String
+pub awaken_session_contract::McpRefreshBinding::refresh_token_ref: alloc::string::String
+pub awaken_session_contract::McpRefreshBinding::resource: core::option::Option<alloc::string::String>
+pub awaken_session_contract::McpRefreshBinding::scope: core::option::Option<alloc::string::String>
+pub awaken_session_contract::McpRefreshBinding::token_endpoint: alloc::string::String
+pub awaken_session_contract::McpRefreshBinding::token_endpoint_auth: awaken_session_contract::TokenEndpointAuthBinding
 pub trait awaken_session_contract::AgentConfigSource: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::AgentConfigSource::agent_view(&self, &str) -> core::option::Option<awaken_session_contract::AgentConfigView>
 pub trait awaken_session_contract::McpProbe: core::marker::Send + core::marker::Sync
