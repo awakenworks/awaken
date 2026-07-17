@@ -454,6 +454,79 @@ mod tests {
         );
     }
 
+    /// A runtime whose sandbox teardown always fails — to prove the terminal edges
+    /// are BEST-EFFORT: a dispose failure is logged, never propagated, so it cannot
+    /// resurrect a deleted session.
+    struct EndSessionFailer;
+
+    #[async_trait]
+    impl SessionRuntime for EndSessionFailer {
+        async fn run(
+            &self,
+            _agent: &str,
+            _thread: &str,
+            _content: Vec<ContentBlock>,
+        ) -> Result<StepOutcome, RunError> {
+            unreachable!()
+        }
+        async fn resume(
+            &self,
+            _thread: &str,
+            _tool_use_id: &str,
+            _decision: Decision,
+        ) -> Result<StepOutcome, RunError> {
+            unreachable!()
+        }
+        async fn resume_custom(
+            &self,
+            _thread: &str,
+            _tool_use_id: &str,
+            _content: &str,
+            _is_error: bool,
+        ) -> Result<StepOutcome, RunError> {
+            unreachable!()
+        }
+        async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+            Ok(())
+        }
+        async fn define_outcome(
+            &self,
+            _thread: &str,
+            _description: &str,
+            _rubric: &str,
+            _max_iterations: u32,
+        ) -> Result<OutcomeReport, RunError> {
+            unreachable!()
+        }
+        async fn end_session(&self, _thread: &str) -> Result<(), RunError> {
+            Err(RunError::internal("sandbox dispose blew up"))
+        }
+        fn model(&self) -> String {
+            "host-default-model".to_string()
+        }
+    }
+
+    /// A sandbox teardown failure at delete is swallowed (best-effort): the delete is
+    /// terminal, so the session is still removed and reads 404 afterwards — a dispose
+    /// error must never leave a "deleted" session alive.
+    #[tokio::test]
+    async fn delete_is_best_effort_when_sandbox_teardown_fails() {
+        let state = ManagedState::new(EndSessionFailer);
+        let id = state
+            .create_session(bare_create_params(), None)
+            .await
+            .expect("create")
+            .id;
+        state
+            .delete_session(&id)
+            .await
+            .expect("delete stays terminal despite a sandbox teardown failure");
+        assert!(
+            matches!(state.get_session(&id), Err(StateError::NotFound)),
+            "the session is gone even though its sandbox dispose errored"
+        );
+    }
+
     fn sample_persisted(id: &str) -> PersistedSession {
         let mut metadata = BTreeMap::new();
         metadata.insert("team".to_string(), "research".to_string());
