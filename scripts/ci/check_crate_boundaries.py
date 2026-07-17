@@ -652,6 +652,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "sqlx",
         "serde_json",
         "tokio",
+        # dev-only: property-based (formal) verification of the store's invariants.
+        "proptest",
     },
     # Durable EnvRegistry backend (the self-hosted environment registry): sqlite +
     # postgres at parity, implementing the session contract's env-registry port.
@@ -666,6 +668,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "tokio",
         "tempfile",
+        # dev-only: property-based (formal) verification of the store's invariants.
+        "proptest",
     },
     # Durable ManagedSessionRepository backend (the managed session aggregate): sqlite +
     # postgres at parity, implementing the session contract's repository port. Extracted
@@ -684,6 +688,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tokio",
         # dev-only: the sqlite backend tests open a temp on-disk database.
         "tempfile",
+        # dev-only: property-based (formal) verification of the store's invariants.
+        "proptest",
     },
     # SQLite durable store: the sibling backend, allowed to name the `rusqlite`
     # driver. Same neutral commit/read ports, embedded engine (ADR-0012).
