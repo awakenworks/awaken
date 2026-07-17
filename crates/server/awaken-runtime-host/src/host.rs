@@ -125,21 +125,10 @@ pub struct SharedHost {
     pub(crate) provider: LocalProvider,
     grader: Arc<dyn Grader>,
     pub(crate) client_tools: HashSet<String>,
-    /// Skills offered on every thread (ADR-0036). The whole set is fronted by the
-    /// single `Skill` tool; the model activates one by id to load its instructions.
-    pub(crate) skills: Vec<SkillSpec>,
-    /// An optional durable delivered-skill catalog (resources plane). When set, its
-    /// `SKILL.md`s are offered alongside the static `skills` and survive a restart, so
-    /// a catalog configured through `/v1/skills` outlives the process. The host reads
-    /// the bytes and feeds them to the extension's `SkillSource`, so the runtime stays
-    /// store-unaware.
-    pub(crate) skill_store: Option<Arc<dyn awaken_skill_store::SkillStore>>,
-    /// In-memory snapshot of the delivered catalog `(id, content)`, read
-    /// *synchronously* by the capability advertisement (`skill_ids`) and the
-    /// run-loop `SkillSource` scan — refreshed from the async `skill_store` on a
-    /// write and at each session's setup (`reload_skill_cache`). This is how a
-    /// network-DB (async) catalog serves the host's sync read paths.
-    pub(crate) skill_cache: std::sync::Mutex<Vec<(String, String)>>,
+    /// The skill offering (ADR-0036): the static configured set, the optional durable
+    /// `/v1/skills` catalog, and its sync-read cache — grouped behind one type that
+    /// owns the cache↔store coherence invariant. See [`crate::skill_catalog`].
+    pub(crate) skills: crate::skill_catalog::SkillCatalog,
     pub(crate) delegates: HashSet<String>,
     /// Whether a native subagent (delegation / skill fork) reuses the parent agent's
     /// sandbox (`true`, the default — `默认共用`) or runs in a fresh, isolated one.

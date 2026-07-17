@@ -44,6 +44,7 @@ mod redact;
 mod run_exec;
 mod sandbox_source;
 mod session_store;
+mod skill_catalog;
 mod skills;
 mod skills_api;
 mod store;
@@ -964,7 +965,7 @@ impl SessionRuntime for ManagedHost {
                     input_schema: d.parameters,
                 })
                 .collect(),
-            skills: self.host.skill_ids(),
+            skills: self.host.skills.ids(),
             delegates: self.host.delegate_ids(),
         }
     }

@@ -54,9 +54,7 @@ impl SharedHost {
             provider: LocalProvider::new(sub_base("")),
             grader: Arc::new(KeywordGrader),
             client_tools: HashSet::new(),
-            skills: Vec::new(),
-            skill_store: None,
-            skill_cache: std::sync::Mutex::new(Vec::new()),
+            skills: crate::skill_catalog::SkillCatalog::new(),
             delegates: HashSet::new(),
             // Subagents share the parent's sandbox by default (`默认共用`).
             subagent_reuse_sandbox: true,
@@ -285,7 +283,7 @@ impl SharedHost {
     /// activated skill's instructions. The host stays out of skill
     /// authoring/collection — it only carries the offered set.
     pub fn with_skills(mut self, skills: Vec<SkillSpec>) -> Self {
-        self.skills.extend(skills);
+        self.skills.add_specs(skills);
         self
     }
 
@@ -298,7 +296,7 @@ impl SharedHost {
     pub fn with_skill_store(mut self, dir: impl Into<PathBuf>) -> Self {
         let store = awaken_skill_store::FsSkillStore::open(dir.into())
             .expect("open durable skill store root");
-        self.skill_store = Some(Arc::new(store));
+        self.skills.set_store(Arc::new(store));
         self
     }
 
@@ -309,7 +307,7 @@ impl SharedHost {
         mut self,
         store: Arc<dyn awaken_skill_store::SkillStore>,
     ) -> Self {
-        self.skill_store = Some(store);
+        self.skills.set_store(store);
         self
     }
 

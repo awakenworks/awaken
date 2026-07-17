@@ -284,10 +284,13 @@ impl SharedHost {
         let mut skill_registry: Option<Arc<dyn SkillRegistry>> = None;
         // Refresh the delivered-catalog snapshot from the (async) store for this
         // session; `Some` (possibly empty) exactly when a durable store is wired.
-        self.reload_skill_cache().await;
-        let delivered = self.has_skill_store().then(|| self.skill_cache_snapshot());
+        self.skills.reload_cache().await;
+        let delivered = self
+            .skills
+            .has_store()
+            .then(|| self.skills.cache_snapshot());
         if let Some(wiring) = crate::skills::wire_skills(
-            &self.skills,
+            self.skills.specs(),
             delivered,
             env.clone(),
             self.llm.clone(),

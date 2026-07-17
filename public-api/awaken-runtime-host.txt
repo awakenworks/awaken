@@ -313,15 +313,8 @@ pub fn awaken_runtime_host::SharedHost::file_store(&self) -> alloc::sync::Arc<dy
 pub async fn awaken_runtime_host::SharedHost::harvest_thread_memory(&self, &str)
 pub async fn awaken_runtime_host::SharedHost::harvest_thread_repo(&self, &str)
 pub async fn awaken_runtime_host::SharedHost::harvest_thread_skills(&self, &str)
-pub fn awaken_runtime_host::SharedHost::has_skill_store(&self) -> bool
 pub async fn awaken_runtime_host::SharedHost::memory_get(&self, &str) -> core::option::Option<alloc::vec::Vec<u8>>
-pub async fn awaken_runtime_host::SharedHost::reload_skill_cache(&self)
 pub async fn awaken_runtime_host::SharedHost::session_artifacts(&self, &str) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
-pub fn awaken_runtime_host::SharedHost::skill_by_catalog_id(&self, &str) -> core::option::Option<(alloc::string::String, alloc::string::String)>
-pub fn awaken_runtime_host::SharedHost::skill_cache_snapshot(&self) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
-pub fn awaken_runtime_host::SharedHost::skill_ids(&self) -> alloc::vec::Vec<alloc::string::String>
-pub async fn awaken_runtime_host::SharedHost::skill_store_list(&self) -> alloc::vec::Vec<alloc::string::String>
-pub async fn awaken_runtime_host::SharedHost::skill_store_put(&self, &str, &str) -> core::option::Option<alloc::string::String>
 impl awaken_runtime_host::SharedHost
 pub async fn awaken_runtime_host::SharedHost::live_inbox(&self, &str) -> core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
 impl awaken_runtime_host::SharedHost

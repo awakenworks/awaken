@@ -260,60 +260,6 @@ impl SharedHost {
             .unwrap_or(None)
     }
 
-    /// Store (or overwrite) a delivered skill's `SKILL.md` `content` under `id` in the
-    /// durable catalog, returning the safe id it is addressable by. `None` when this
-    /// host has no durable skill store wired (nothing to persist into).
-    pub async fn skill_store_put(&self, id: &str, content: &str) -> Option<String> {
-        let store = self.skill_store.as_ref()?;
-        let out = store
-            .put(HOST_SKILL_WORKSPACE, id, content)
-            .await
-            .expect("persist durable skill");
-        // Keep the sync-read cache current for advertisement + scan.
-        self.reload_skill_cache().await;
-        Some(out)
-    }
-
-    /// The ids currently in the durable skill catalog (read straight from the store,
-    /// so the CRUD `list` reflects any peer node's writes). Empty when no store is
-    /// wired.
-    pub async fn skill_store_list(&self) -> Vec<String> {
-        match self.skill_store.as_ref() {
-            Some(store) => store
-                .list(HOST_SKILL_WORKSPACE)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(id, _)| id)
-                .collect(),
-            None => Vec::new(),
-        }
-    }
-
-    /// Refresh the in-memory delivered-catalog snapshot from the async store. Called
-    /// on a write and at each session's setup so the sync read paths (advertisement,
-    /// run-loop scan) see the current catalog.
-    pub async fn reload_skill_cache(&self) {
-        if let Some(store) = self.skill_store.as_ref() {
-            let snapshot = store.list(HOST_SKILL_WORKSPACE).await.unwrap_or_default();
-            *self.skill_cache.lock().expect("skill cache poisoned") = snapshot;
-        }
-    }
-
-    /// A clone of the cached delivered catalog `(id, content)` — the synchronous read
-    /// the host's `SkillSource` bridge scans (the run-loop scan cannot await).
-    pub fn skill_cache_snapshot(&self) -> Vec<(String, String)> {
-        self.skill_cache
-            .lock()
-            .expect("skill cache poisoned")
-            .clone()
-    }
-
-    /// Whether this host has a durable skill catalog wired.
-    pub fn has_skill_store(&self) -> bool {
-        self.skill_store.is_some()
-    }
-
     /// Harvest a thread's read-write memory mounts back into their stores (ADR-0038):
     /// read each realized `.mnt/<logical>` file and persist it under the store id, so a
     /// memory write in this session is visible to the next one that mounts the same id.
@@ -433,7 +379,7 @@ impl SharedHost {
     /// environment or a host with no durable skill store (nothing to persist into).
     /// Idempotent: a re-scanned delivered skill puts identical bytes back under the same id.
     pub async fn harvest_thread_skills(&self, thread: &str) {
-        if !self.has_skill_store() {
+        if !self.skills.has_store() {
             return;
         }
         let env = {
@@ -451,7 +397,7 @@ impl SharedHost {
     /// the scan→store path is testable with a real sandbox, without a full `SessionCtx`.
     async fn persist_authored_skills(&self, env: &awaken_sandbox_local::LocalSandbox) {
         for skill in env.scan_skill_dir(crate::skills::DEFAULT_SKILLS_SUBDIR) {
-            self.skill_store_put(&skill.id, &skill.content).await;
+            self.skills.store_put(&skill.id, &skill.content).await;
         }
     }
 
@@ -491,36 +437,6 @@ impl SharedHost {
             .iter()
             .map(|id| crate::config::client_tool_descriptor(id))
             .collect()
-    }
-
-    /// The skill ids offered on every thread (advertised as the agent's `skills`):
-    /// the static configured set plus any durable `/v1/skills` catalog, de-duplicated
-    /// with the static set winning, so the advertisement matches what `list_skills`
-    /// resolves.
-    pub fn skill_ids(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.skills.iter().map(|s| s.id.clone()).collect();
-        // The durable catalog is read from the sync cache (refreshed on write and at
-        // session setup); a network-DB store cannot be awaited from this sync path.
-        // A durable skill is advertised by its tagged catalog id (not its name) so the
-        // official worker can download it — `/v1/skills` resolves the same id.
-        for (stem, _) in self.skill_cache_snapshot() {
-            let id = awaken_skill_store::catalog_id(&stem);
-            if !ids.contains(&id) {
-                ids.push(id);
-            }
-        }
-        ids
-    }
-
-    /// Resolve an advertised durable-catalog skill id back to its `(stem, content)`.
-    /// Accepts the tagged catalog id (what advertisement + the worker use) and, as a
-    /// courtesy, the raw durable stem. Lets the `/v1/skills` read paths serve any
-    /// advertised id even for skills that never went through the SDK create route
-    /// (harvested / legacy-delivered), where the in-memory registry has no entry.
-    pub fn skill_by_catalog_id(&self, id: &str) -> Option<(String, String)> {
-        self.skill_cache_snapshot()
-            .into_iter()
-            .find(|(stem, _)| awaken_skill_store::catalog_id(stem) == id || stem == id)
     }
 
     /// The delegate agent ids (advertised as the agent's `multiagent` roster).
@@ -890,9 +806,9 @@ mod provisioning_registry_tests {
 
         // The catalog is empty until the run-authored skill is harvested; after harvest it
         // holds the skill, addressable for delivery to the next session.
-        assert!(host.skill_store_list().await.is_empty());
+        assert!(host.skills.store_list().await.is_empty());
         host.persist_authored_skills(&env).await;
-        let ids = host.skill_store_list().await;
+        let ids = host.skills.store_list().await;
         assert!(
             ids.iter().any(|id| id.contains("notes")),
             "the authored skill must be persisted to the durable catalog: {ids:?}"
@@ -909,14 +825,15 @@ mod provisioning_registry_tests {
         // never the skill's name (which used to 404). This pins that round-trip.
         let dir = std::env::temp_dir().join(format!("awaken-skillid-{}", std::process::id()));
         let host = SharedHost::new(Arc::new(NoLlm), "test").with_skill_store(dir.join("store"));
-        host.skill_store_put(
-            "Greeter",
-            "---\nname: Greeter\ndescription: hi\n---\nsay hi",
-        )
-        .await;
+        host.skills
+            .store_put(
+                "Greeter",
+                "---\nname: Greeter\ndescription: hi\n---\nsay hi",
+            )
+            .await;
 
         let cid = awaken_skill_store::catalog_id("Greeter");
-        let advertised = host.skill_ids();
+        let advertised = host.skills.ids();
         assert!(
             advertised.contains(&cid),
             "advertisement {advertised:?} must offer the catalog id {cid}"
@@ -927,10 +844,15 @@ mod provisioning_registry_tests {
         );
 
         let (_stem, content) = host
-            .skill_by_catalog_id(&cid)
+            .skills
+            .by_catalog_id(&cid)
             .expect("the advertised catalog id must resolve to the skill");
         assert!(content.contains("say hi"));
-        assert!(host.skill_by_catalog_id("skill_deadbeefdeadbeef").is_none());
+        assert!(
+            host.skills
+                .by_catalog_id("skill_deadbeefdeadbeef")
+                .is_none()
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
