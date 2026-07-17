@@ -89,6 +89,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # only; names no wire, store, or plane. Ports move here incrementally.
     "awaken-session-contract": {
         "awaken-agent-contract",
+        "awaken-tenancy",
         "async-trait",
         "serde_json",
         "thiserror",

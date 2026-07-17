@@ -17,6 +17,7 @@ mod mcp_binding;
 mod mcp_probe;
 mod resource;
 mod session;
+mod session_repo;
 pub mod work_queue;
 
 pub use agent_config::{AgentConfigSource, AgentConfigView};
@@ -28,4 +29,8 @@ pub use session::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, McpServerBinding, OutcomeIteration, OutcomeReport, Pending, RunError,
     RunErrorKind, SessionInit, SessionRuntime, SessionUsage, StepFailure, StepOutcome, Terminus,
+};
+pub use session_repo::{
+    InMemoryScopedSessionStore, InMemorySessionRepository, ManagedSessionRepository,
+    PersistedSession, ScopedSessionRepo, ScopedSessionStore,
 };
