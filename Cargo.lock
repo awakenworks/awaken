@@ -1168,10 +1168,12 @@ dependencies = [
 name = "awaken-sandbox"
 version = "1.0.0-dev"
 dependencies = [
+ "async-nats",
  "awaken-connection-plan",
  "awaken-ext-builtin-tools",
  "awaken-runtime-contract",
  "awaken-tool-relay",
+ "futures",
  "serde_json",
  "tokio",
 ]

@@ -1338,9 +1338,11 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-tool-relay",
         "awaken-ext-builtin-tools",
         "awaken-connection-plan",
+        "async-nats",
+        "futures",
+        "serde_json",
         # dev-only: the hand-role test drives a real ToolCall through the hand.
         "awaken-runtime-contract",
-        "serde_json",
     },
     # The PRODUCTION database-less worker (Stage C): a peer of the control / data
     # planes. It composes the neutral host (runtime-host) with the data plane's
