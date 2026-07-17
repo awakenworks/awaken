@@ -83,6 +83,16 @@ pub fn contract_schemas() -> Map<String, Value> {
     add!("ResolvedCandidatesView", crate::ResolvedCandidatesView);
     add!("ResolvedMcpServerView", crate::ResolvedMcpServerView);
     add!("CredentialValidation", crate::CredentialValidation);
+    add!("PoolEligibleView", crate::PoolEligibleView);
+
+    // Model attributes (published independently of offerings) and the credential
+    // availability / cooldown surface.
+    add!("ModelAttributes", awaken_model_catalog::ModelAttributes);
+    add!(
+        "AvailabilityState",
+        awaken_credential_vault::AvailabilityState
+    );
+    add!("CooldownRequest", crate::CooldownRequest);
 
     // RFC 9457 problem details (`awaken-api-contract::ApiError`). Hand-written:
     // the foundation crate derives schemars 0.8 while this crate is on
@@ -229,6 +239,10 @@ fn paths() -> Value {
             "get": op("get_catalog", "catalog", "Snapshot the full authored catalog (what the resolver binds against)",
                 &[], None, 200, schema_ref("ProviderCatalog"))
         },
+        "/v1/config/model-attributes/{model_id}": {
+            "put": op("put_model_attributes", "catalog", "Author (upsert) a model's intrinsic attributes; published independently of offerings",
+                &[path_param("model_id", "Model id")], Some(schema_ref("ModelAttributes")), 200, schema_ref("ModelAttributes"))
+        },
         "/v1/config/credentials": {
             "post": op("post_credential", "credentials", "Enter a credential (secret-in; the secret is sealed and never echoed)",
                 &[], Some(schema_ref("EnterCredentialRequest")), 201, schema_ref("CredentialSource")),
@@ -253,11 +267,23 @@ fn paths() -> Value {
             "post": op("validate_credential", "credentials", "Live-probe a credential against its provider endpoint (secret-free result)",
                 &id("Credential source id"), Some(schema_ref("ValidateCredentialRequest")), 200, schema_ref("CredentialValidation"))
         },
+        "/v1/config/credentials/{id}/cooldown": {
+            "post": op("cooldown_credential", "credentials", "Record a cooldown signal (quota/exhausted/clear) against a credential source",
+                &id("Credential source id"), Some(schema_ref("CooldownRequest")), 200, schema_ref("AvailabilityState"))
+        },
+        "/v1/config/credentials/{id}/availability": {
+            "get": op("get_availability", "credentials", "Current availability of a credential source (cooldown auto-resumes by time)",
+                &id("Credential source id"), None, 200, schema_ref("AvailabilityState"))
+        },
         "/v1/config/credential-pools/{id}": {
             "put": op("put_pool", "credentials", "Author (upsert) a credential pool; the path id is authoritative",
                 &id("Credential pool id"), Some(schema_ref("CredentialPool")), 200, schema_ref("CredentialPool")),
             "get": op("get_pool", "credentials", "Fetch a credential pool",
                 &id("Credential pool id"), None, 200, schema_ref("CredentialPool"))
+        },
+        "/v1/config/credential-pools/{id}/eligible": {
+            "get": op("get_pool_eligible", "credentials", "Which pool members are selectable right now (selection order minus cooled members)",
+                &id("Credential pool id"), None, 200, schema_ref("PoolEligibleView"))
         },
         "/v1/config/inference-profiles/{id}": {
             "put": op("put_profile", "inference", "Author (upsert) an inference profile",
@@ -270,7 +296,7 @@ fn paths() -> Value {
                 &id("Inference profile id"), Some(schema_ref("ResolveProfileRequest")), 200, schema_ref("ResolvedInferenceView"))
         },
         "/v1/config/inference-profiles/{id}/resolve-candidates": {
-            "post": op("resolve_profile_candidates", "inference", "Dry-run resolve every candidate in a profile's model axis, in failover order (secret-free views)",
+            "post": op("resolve_profile_candidates", "inference", "Dry-run resolve a profile's whole model axis into its ordered failover candidate list",
                 &id("Inference profile id"), Some(schema_ref("ResolveProfileRequest")), 200, schema_ref("ResolvedCandidatesView"))
         },
         "/v1/config/inference/resolve": {
