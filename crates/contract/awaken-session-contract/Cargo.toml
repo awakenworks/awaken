@@ -9,6 +9,10 @@ license.workspace = true
 # probe). A contract/ leaf itself — dependencies point inward.
 awaken-agent-contract.workspace = true
 async-trait.workspace = true
+# `serde_json::Value` types the free-form tool input/schema on the neutral vocab
+# (Pending.input, CustomTool.input_schema); thiserror derives the port error enums.
+serde_json.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 # The work-queue port's in-memory impl is exercised by `#[tokio::test]`s.

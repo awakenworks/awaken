@@ -3,24 +3,10 @@
 
 use super::*;
 
-/// One session-mounted resource (ADR-0038), parsed from a wire `resources[]` entry.
-/// `kind` is the wire discriminant (`file` / `memory_store` / `github_repository`);
-/// `id` is the backing reference (`file_id` / `memory_store_id` / repo `url`);
-/// `mount_path` is where it appears in the sandbox; `instructions` is optional
-/// per-binding guidance rendered into the system prompt.
-#[derive(Debug, Clone)]
-pub struct SessionResource {
-    pub kind: String,
-    pub id: String,
-    pub mount_path: String,
-    pub instructions: Option<String>,
-    /// `github_repository` only: the GitHub PAT the host uses to clone/push. Never
-    /// echoed back and never placed in the sandbox (host-side git transport only).
-    pub auth_token: Option<String>,
-    /// `github_repository` only: the branch to check out (`checkout.name`); `None`
-    /// clones the remote's default branch.
-    pub git_ref: Option<String>,
-}
+// The neutral [`SessionResource`] now lives in `awaken-session-contract`; this module
+// keeps the Managed wire parse form + the DTO projection over it. Re-exported so
+// existing `crate::state::SessionResource` paths keep resolving.
+pub use awaken_session_contract::SessionResource;
 
 /// The repo name for a default mount path: the URL's last path segment, minus a
 /// trailing `.git`. Falls back to `repo` when the URL has no usable segment.

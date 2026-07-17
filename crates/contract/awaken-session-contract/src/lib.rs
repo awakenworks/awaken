@@ -14,8 +14,16 @@
 mod agent_config;
 mod mcp_binding;
 mod mcp_probe;
+mod resource;
+mod session;
 pub mod work_queue;
 
 pub use agent_config::{AgentConfigSource, AgentConfigView};
 pub use mcp_binding::{McpRefreshBinding, TokenEndpointAuthBinding};
 pub use mcp_probe::{McpProbe, McpProbeStatus};
+pub use resource::SessionResource;
+pub use session::{
+    AgentCapabilities, BuiltinTool, CustomTool, Decision, LiveInboxEntry, LiveInboxError,
+    LiveInboxSnapshot, McpServerBinding, OutcomeIteration, OutcomeReport, Pending, RunError,
+    RunErrorKind, SessionInit, SessionRuntime, SessionUsage, StepFailure, StepOutcome, Terminus,
+};

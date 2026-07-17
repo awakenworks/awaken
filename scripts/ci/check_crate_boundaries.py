@@ -86,7 +86,13 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # wire adapter so the host + other implementors depend on a contract/ leaf, not on
     # a protocol adapter. Dependencies point inward — agent-domain vocab + async-trait
     # only; names no wire, store, or plane. Ports move here incrementally.
-    "awaken-session-contract": {"awaken-agent-contract", "async-trait", "tokio"},
+    "awaken-session-contract": {
+        "awaken-agent-contract",
+        "async-trait",
+        "serde_json",
+        "thiserror",
+        "tokio",
+    },
     # Resources-plane ports (FileStore / MemoryBlobStore / MemoryFs / SkillStore) +
     # the value/error types in their signatures — mirrors awaken-provisioning-contract.
     # A foundation leaf: no backend, SQL driver, or filesystem, so an adapter reusing

@@ -13,13 +13,12 @@ use async_trait::async_trait;
 use tokio::sync::broadcast;
 
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::page::paginate_by_id;
 
 use crate::ext::AwakenModelSelection;
 use crate::preview::PreviewSink;
 use crate::project::{self, project_messages, project_step};
-use crate::routes::vaults::{McpRefreshBinding, VaultState};
+use crate::routes::vaults::VaultState;
 use crate::session_repo::{InMemorySessionRepository, ManagedSessionRepository, PersistedSession};
 use crate::types::{
     ConfirmResult, Event, EventReceipt, InboundEvent, ListEventsResponse, ModelConfig,
@@ -302,6 +301,7 @@ impl ManagedState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_agent_contract::agent::message::Message;
     use std::collections::BTreeMap;
 
     /// A runtime that reports a non-empty committed transcript, so a session can
