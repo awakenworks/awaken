@@ -554,6 +554,60 @@ pub fn build_acp_sandboxed_router() -> Router {
     mount_with_managed(host, managed_state).merge(environments)
 }
 
+/// The container-tier sibling of [`build_acp_sandboxed_router`]: the deterministic ACP
+/// agent runs as a **process-as-container** in a real Docker container (not a bwrap
+/// namespace), driven through the full external SDK → managed → container-agent path.
+/// The agent is a busybox `nc` fixture speaking the newline ACP wire (the same shape
+/// the k8s adapter e2e bakes), so no LLM or API key is needed. Realized through the
+/// production seam [`awaken_runtime_host::build_acp_channel_source`] at the `Docker`
+/// tier — which also spawns the cross-restart reaper. Needs the binary built with
+/// `--features container-docker` and a running Docker daemon (the router build fails
+/// closed otherwise, never a silent non-container fallback).
+pub async fn build_acp_container_router() -> Router {
+    // The deterministic in-container agent: busybox `nc` listens on the container's
+    // agent port (8080, the tier's fixed internal port) and, per connection, reads the
+    // prompt line and replies with a fixed marker over the newline wire.
+    let script = "read _p; \
+        printf '%s\\n' '{\"type\":\"message\",\"text\":\"CONTAINER-AGENT-OK\"}'; \
+        printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
+    let launch = awaken_run_executor_acp::AcpLaunch::custom(
+        vec![
+            "nc".into(),
+            "-lk".into(),
+            "-p".into(),
+            "8080".into(),
+            "-e".into(),
+            "sh".into(),
+            "-c".into(),
+            script.into(),
+        ],
+        vec![],
+    );
+    let image = std::env::var("AWAKEN_SANDBOX_IMAGE").unwrap_or_else(|_| "awaken-bb:1".into());
+    let base = std::env::temp_dir().join(format!("awaken-acp-ctr-{}", std::process::id()));
+    let host = SharedHost::new(Arc::new(EchoModel), "awaken");
+    let source = awaken_runtime_host::build_acp_channel_source(
+        awaken_runtime_host::SandboxTier::Docker,
+        Some(&image),
+        awaken_runtime_host::LaunchSource::Fixed(launch),
+        host.thread_egress(),
+        host.thread_resources_handle(),
+        base,
+    )
+    .await
+    .expect(
+        "build the Docker container ACP source \
+         (needs --features container-docker + a running Docker daemon)",
+    );
+    let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
+    // This is a single-purpose ACP deployment: make `acp` the DEFAULT backend so a
+    // session routes to the containerized agent WITHOUT a client `awaken.runtime`
+    // override — the backend is resolved from the deployment, not per-session metadata.
+    let host = Arc::new(host.with_acp_default(acp, "acp:custom"));
+    let managed_state = Arc::new(ManagedState::new(ManagedHost::new(host.clone())));
+    mount_with_managed(host, managed_state)
+}
+
 // ── Router assembly ─────────────────────────────────────────────────────────
 
 /// Mount every public protocol adapter over one shared host. Managed Agents, AI

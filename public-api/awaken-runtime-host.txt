@@ -207,6 +207,7 @@ impl awaken_runtime_host::SharedHost
 pub fn awaken_runtime_host::SharedHost::acp_launch_observer(&self) -> alloc::sync::Arc<dyn awaken_protocol_acp::LaunchObserver>
 pub fn awaken_runtime_host::SharedHost::register_thread_runtime(&self, &str, &str)
 pub fn awaken_runtime_host::SharedHost::with_acp(self, alloc::sync::Arc<awaken_run_executor_acp::AcpRunExecutor>) -> Self
+pub fn awaken_runtime_host::SharedHost::with_acp_default(self, alloc::sync::Arc<awaken_run_executor_acp::AcpRunExecutor>, impl core::convert::Into<alloc::string::String>) -> Self
 pub async fn awaken_runtime_host::SharedHost::with_acp_from_env(self) -> Self
 pub fn awaken_runtime_host::SharedHost::with_projected_acp(self, awaken_run_executor_acp::acp_cli::AcpCli, core::option::Option<std::path::PathBuf>) -> Self
 impl awaken_runtime_host::SharedHost
@@ -270,6 +271,7 @@ pub async fn awaken_runtime_host::SharedHost::harvest_thread_repo(&self, &str)
 pub async fn awaken_runtime_host::SharedHost::harvest_thread_skills(&self, &str)
 pub async fn awaken_runtime_host::SharedHost::memory_get(&self, &str) -> core::option::Option<alloc::vec::Vec<u8>>
 pub async fn awaken_runtime_host::SharedHost::session_artifacts(&self, &str) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub fn awaken_runtime_host::SharedHost::thread_resources_handle(&self) -> awaken_runtime_host::ThreadResources
 impl awaken_runtime_host::SharedHost
 pub async fn awaken_runtime_host::SharedHost::live_inbox(&self, &str) -> core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
 impl awaken_runtime_host::SharedHost
