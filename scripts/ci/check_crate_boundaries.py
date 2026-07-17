@@ -662,6 +662,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-ext-builtin-tools",
         "awaken-observability",
         "tracing",
+        # The worker HTTP dispatch client (`HttpDispatchQueue`) posts claim/settle.
+        "reqwest",
         "awaken-scoped-migration",
         # ADR-0005: the sync rusqlite runner lives in the sibling crate.
         "awaken-scoped-migration-sqlite",

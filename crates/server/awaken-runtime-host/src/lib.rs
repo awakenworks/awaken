@@ -25,7 +25,6 @@ mod delegate;
 mod deployment_config;
 mod dispatch_backend;
 mod dispatch_transport;
-mod dispatch_transport_client;
 mod durable_ops;
 mod env_store;
 mod files;
@@ -119,7 +118,8 @@ pub use crate::deployment_config::{
     DeploymentConfig, DispatchBackend, SandboxTier, StoreKind, Wake,
 };
 pub use crate::dispatch_transport::dispatch_transport_router;
-pub use crate::dispatch_transport_client::{HttpDispatchQueue, worker_dispatch_store};
+// The worker HTTP dispatch client now lives in awaken-run-ingress; re-exported so
+// composition roots keep using `awaken_runtime_host::{HttpDispatchQueue, worker_dispatch_store}`.
 pub use crate::durable_ops::durable_ops_router;
 pub use crate::env_store::{PostgresEnvRegistry, SqliteEnvRegistry};
 pub use crate::files::files_router;
@@ -127,6 +127,7 @@ pub use crate::memory_store_api::memory_stores_router;
 pub use crate::models::{ModelEntry, default_models, models_router};
 pub use crate::session_store::{PostgresManagedSessionRepository, SqliteManagedSessionRepository};
 pub use crate::skills_api::skills_router;
+pub use awaken_run_ingress::{HttpDispatchQueue, worker_dispatch_store};
 // The durable WorkQueue backends now live in `awaken-work-store` (a stores/ leaf);
 // re-exported so composition roots keep using `awaken_runtime_host::{Sqlite,Postgres}WorkQueue`.
 pub use awaken_work_store::{PostgresWorkQueue, SqliteWorkQueue};

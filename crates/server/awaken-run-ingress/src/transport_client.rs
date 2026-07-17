@@ -11,12 +11,12 @@
 use async_trait::async_trait;
 use serde_json::json;
 
-use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_run_ingress::{
+use crate::{
     CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchQueue, DispatchSummary, Inbox,
     Outbox, PendingInput, PendingRecord, RunExecutionRequest, SettleOutcome, SubmitOptions,
 };
+use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
 
 /// Build a worker's process dispatch store: an [`HttpDispatchQueue`] pointed at the
@@ -25,11 +25,11 @@ use awaken_runtime_contract::resume::ResumeResult;
 /// the transport instead of a local queue.
 pub fn worker_dispatch_store(
     server_url: impl Into<String>,
-) -> std::sync::Arc<awaken_run_ingress::AnyDispatchStore> {
-    std::sync::Arc::new(awaken_run_ingress::AnyDispatchStore::from_dispatch(
-        std::sync::Arc::new(HttpDispatchQueue::new(server_url))
-            as std::sync::Arc<dyn awaken_run_ingress::Dispatch>,
-    ))
+) -> std::sync::Arc<crate::AnyDispatchStore> {
+    std::sync::Arc::new(crate::AnyDispatchStore::from_dispatch(std::sync::Arc::new(
+        HttpDispatchQueue::new(server_url),
+    )
+        as std::sync::Arc<dyn crate::Dispatch>))
 }
 
 /// A `Dispatch` store whose worker verbs are HTTP calls to a cell server.

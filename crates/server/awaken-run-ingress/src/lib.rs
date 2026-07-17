@@ -29,11 +29,14 @@ mod request;
 mod send_message;
 mod service;
 mod sqlite;
+mod transport_client;
 mod wake;
 mod worker;
 
 pub use any::AnyDispatchStore;
 pub use capability::RunIngressCapabilities;
+// The database-less worker's HTTP dispatch client (drives claim/settle over the wire
+// to a cell server's dispatch_transport_router), extracted from awaken-runtime-host.
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use commit_fence::FencedCommitCoordinator;
 pub use dispatch::{
@@ -51,6 +54,7 @@ pub use request::{ModelResolverFn, RunExecutionContext, RunExecutionRequest};
 pub use send_message::OutboxMessageSender;
 pub use service::{DispatchService, DispatchServiceConfig};
 pub use sqlite::{SqliteDispatchStore, StoreError as SqliteStoreError};
+pub use transport_client::{HttpDispatchQueue, worker_dispatch_store};
 #[cfg(feature = "nats")]
 pub use wake::NatsWakeSignal;
 pub use wake::{LocalWakeSignal, PgNotifyWake, WakeSignal};
