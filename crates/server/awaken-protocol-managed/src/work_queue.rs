@@ -28,14 +28,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 
-use crate::types::environment::{Work, WorkData, WorkHeartbeat, WorkQueueStats};
+use crate::types::environment::{Work, WorkData};
 
 /// The frozen object timestamp the managed wire uses (single-machine builds have
 /// no real clock in the *projection*; wire timestamps carry presence, not wall
 /// time). Real wall time enters only as the `now_ms` argument the routes pass to
 /// the lease/poll bookkeeping — never onto the wire — so the wire shape is
 /// unchanged while leases can expire and pollers can be counted.
-const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
+pub(crate) const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 /// The lease TTL a heartbeat reports (seconds).
 const HEARTBEAT_TTL_SECONDS: u64 = 60;
 /// The lease window in ms: an `active` item whose lease last extended more than
@@ -110,6 +110,27 @@ impl WorkItem {
     }
 }
 
+/// The neutral heartbeat receipt (the port's shape): the lease was extended and
+/// its TTL. The route projects this to the wire `WorkHeartbeat` (adding the
+/// `object_type` tag), mirroring [`WorkItem::project`].
+#[derive(Debug, Clone)]
+pub struct LeaseReceipt {
+    pub lease_extended: bool,
+    pub state: &'static str,
+    pub ttl_seconds: u64,
+}
+
+/// The neutral queue statistics (the port's shape): depth, in-flight count, the
+/// oldest unfinished item's timestamp, and the live poller count. The route
+/// projects this to the wire `WorkQueueStats`.
+#[derive(Debug, Clone)]
+pub struct QueueStats {
+    pub depth: usize,
+    pub pending: usize,
+    pub oldest_queued_at: Option<String>,
+    pub workers_polling: i64,
+}
+
 /// The port the environments work-queue routes drive. In-memory by default; a
 /// durable impl (sqlite / postgres) backs it at parity. Membership is enforced by
 /// the port: an operation on a `wid` that does not belong to `env_id` returns
@@ -132,7 +153,7 @@ pub trait WorkQueue: Send + Sync {
     /// Acknowledge receipt (queued→starting), stamping `acknowledged_at`.
     async fn ack(&self, env_id: &str, wid: &str) -> Option<WorkItem>;
     /// Record a heartbeat at `now_ms` (extending the lease) and return the TTL receipt.
-    async fn heartbeat(&self, env_id: &str, wid: &str, now_ms: u64) -> Option<WorkHeartbeat>;
+    async fn heartbeat(&self, env_id: &str, wid: &str, now_ms: u64) -> Option<LeaseReceipt>;
     /// Request a stop (→stopped).
     async fn stop(&self, env_id: &str, wid: &str) -> Option<WorkItem>;
     /// Merge a metadata patch (each present key upserts).
@@ -143,7 +164,7 @@ pub trait WorkQueue: Send + Sync {
         patch: BTreeMap<String, String>,
     ) -> Option<WorkItem>;
     /// Queue stats for `env_id` as of `now_ms` (for the `workers_polling` window).
-    async fn stats(&self, env_id: &str, now_ms: u64) -> WorkQueueStats;
+    async fn stats(&self, env_id: &str, now_ms: u64) -> QueueStats;
     /// Drop all work for `env_id` (on environment delete).
     async fn remove_env(&self, env_id: &str);
 }
@@ -356,12 +377,10 @@ impl WorkQueue for InMemoryWorkQueue {
         })
     }
 
-    async fn heartbeat(&self, env_id: &str, wid: &str, now_ms: u64) -> Option<WorkHeartbeat> {
+    async fn heartbeat(&self, env_id: &str, wid: &str, now_ms: u64) -> Option<LeaseReceipt> {
         let hb = self.with_owned(env_id, wid, |w| {
             w.latest_heartbeat_at = Some(OBJECT_AT.to_string());
-            WorkHeartbeat {
-                object_type: "work_heartbeat",
-                last_heartbeat: OBJECT_AT,
+            LeaseReceipt {
                 lease_extended: true,
                 state: w.state.as_str(),
                 ttl_seconds: HEARTBEAT_TTL_SECONDS,
@@ -394,7 +413,7 @@ impl WorkQueue for InMemoryWorkQueue {
         })
     }
 
-    async fn stats(&self, env_id: &str, now_ms: u64) -> WorkQueueStats {
+    async fn stats(&self, env_id: &str, now_ms: u64) -> QueueStats {
         let works = self.works.lock().unwrap();
         let in_env: Vec<&WorkItem> = works
             .values()
@@ -423,8 +442,7 @@ impl WorkQueue for InMemoryWorkQueue {
         // SDK's semantics), so it stays set once a worker claims the last queued item —
         // not just while `depth > 0`. Only a fully drained queue (all stopped) is null.
         let has_unfinished = queued > 0 || pending > 0;
-        WorkQueueStats {
-            object_type: "work_queue_stats",
+        QueueStats {
             depth: queued,
             pending,
             oldest_queued_at: has_unfinished.then(|| OBJECT_AT.to_string()),

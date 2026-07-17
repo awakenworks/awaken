@@ -13,11 +13,25 @@ pub struct Pending {
     pub client_executed: bool,
 }
 
+/// The neutral terminus of a step — the runtime's outcome, free of any wire
+/// vocabulary (the managed adapter maps this + `pending` to the wire `StopReason`
+/// at projection time). `Parked` carries no ids here; the pending tool supplies
+/// them. Keeping the port neutral lets it live in a protocol-agnostic contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Terminus {
+    /// A natural end of turn (→ wire `end_turn`).
+    End,
+    /// The run parked awaiting a decision on `pending` (→ wire `requires_action`).
+    Parked,
+    /// The run gave up after exhausting its retries/steps (→ wire `retries_exhausted`).
+    Exhausted,
+}
+
 /// The result of running one step (a new turn, or a resume). `pending` is set when
-/// `stop` is `RequiresAction`.
+/// `stop` is `Parked`.
 pub struct StepOutcome {
     pub messages: Vec<Message>,
-    pub stop: StopReason,
+    pub stop: Terminus,
     pub pending: Option<Pending>,
     /// `true` when this turn folded its context — projected as an
     /// `agent.thread_context_compacted` event ahead of the turn's messages.

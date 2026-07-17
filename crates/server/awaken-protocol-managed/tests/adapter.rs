@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
-use awaken_protocol_managed::types::StopReason;
+use awaken_protocol_managed::Terminus;
 use awaken_protocol_managed::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, ManagedState, OutcomeIteration,
     OutcomeReport, Pending, RunError, RunErrorKind, SessionRuntime, StepOutcome, router,
@@ -76,7 +76,7 @@ impl SessionRuntime for EchoFake {
                 Role::Assistant,
                 format!("echo: {user_text}"),
             )],
-            stop: StopReason::EndTurn,
+            stop: Terminus::End,
             pending: None,
             compacted: false,
             rescheduled: false,
@@ -464,9 +464,7 @@ impl SessionRuntime for ParkingFake {
                     input: serde_json::json!({ "path": "x.txt", "content": "hi" }),
                 }],
             }],
-            stop: StopReason::RequiresAction {
-                event_ids: Vec::new(),
-            },
+            stop: Terminus::Parked,
             pending: Some(Pending {
                 tool_use_id: "call-1".into(),
                 name: "write".into(),
@@ -497,7 +495,7 @@ impl SessionRuntime for ParkingFake {
                 },
                 Message::text(Id("a2".into()), Role::Assistant, "done"),
             ],
-            stop: StopReason::EndTurn,
+            stop: Terminus::End,
             pending: None,
             compacted: false,
             rescheduled: false,
@@ -764,9 +762,7 @@ impl SessionRuntime for CustomToolFake {
                     input: serde_json::json!({ "question": "6x7" }),
                 }],
             }],
-            stop: StopReason::RequiresAction {
-                event_ids: Vec::new(),
-            },
+            stop: Terminus::Parked,
             pending: Some(Pending {
                 tool_use_id: "cc1".into(),
                 name: "submit_answer".into(),
@@ -800,7 +796,7 @@ impl SessionRuntime for CustomToolFake {
                 },
                 Message::text(Id("a2".into()), Role::Assistant, format!("got: {content}")),
             ],
-            stop: StopReason::EndTurn,
+            stop: Terminus::End,
             pending: None,
             compacted: false,
             rescheduled: false,
@@ -1077,6 +1073,116 @@ async fn system_message_and_interrupt_reach_the_runtime() {
         *interrupts.lock().unwrap(),
         vec![id.clone()],
         "user.interrupt reached runtime.interrupt with the session thread"
+    );
+}
+
+/// A runtime that records the ORDER of `interrupt` vs `run` calls and echoes each
+/// turn, so a test can prove the documented interrupt-then-redirect batch flow.
+struct InterruptRedirectFake {
+    order: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl SessionRuntime for InterruptRedirectFake {
+    async fn run(
+        &self,
+        _a: &str,
+        _t: &str,
+        content: Vec<ContentBlock>,
+    ) -> Result<StepOutcome, RunError> {
+        let text = Message::new(Id("u".into()), Role::User, content).text_content();
+        self.order.lock().unwrap().push(format!("run:{text}"));
+        Ok(StepOutcome {
+            messages: vec![Message::text(
+                Id("a".into()),
+                Role::Assistant,
+                format!("on it: {text}"),
+            )],
+            stop: Terminus::End,
+            pending: None,
+            compacted: false,
+            rescheduled: false,
+            failure: None,
+        })
+    }
+    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<StepOutcome, RunError> {
+        Err(RunError::internal("unused"))
+    }
+    async fn resume_custom(
+        &self,
+        _t: &str,
+        _tid: &str,
+        _c: &str,
+        _e: bool,
+    ) -> Result<StepOutcome, RunError> {
+        Err(RunError::internal("unused"))
+    }
+    async fn add_system(&self, _t: &str, _x: &str) -> Result<(), RunError> {
+        Ok(())
+    }
+    async fn interrupt(&self, _thread: &str) -> Result<(), RunError> {
+        self.order.lock().unwrap().push("interrupt".into());
+        Ok(())
+    }
+    async fn define_outcome(
+        &self,
+        _t: &str,
+        _d: &str,
+        _r: &str,
+        _m: u32,
+    ) -> Result<OutcomeReport, RunError> {
+        Err(RunError::internal("unused"))
+    }
+    fn model(&self) -> String {
+        "test-model".into()
+    }
+}
+
+/// The documented interrupt-then-redirect batch (events-and-streaming: "Send a
+/// `user.interrupt` event to stop the agent mid-execution, then follow up with a
+/// `user.message` event to redirect it"): a single `events` array carrying
+/// `[user.interrupt, user.message]` interrupts first, then runs the redirect turn —
+/// in that order — and the new direction produces the turn's `agent.message`.
+#[tokio::test]
+async fn interrupt_then_message_redirects_in_order() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let app = router(Arc::new(ManagedState::new(InterruptRedirectFake {
+        order: order.clone(),
+    })));
+    let id = create(&app).await;
+
+    json_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [
+            { "type": "user.interrupt" },
+            { "type": "user.message", "content": [{ "type": "text", "text": "fix line 42 instead" }] }
+        ] }),
+    )
+    .await;
+
+    // The interrupt is handled before the redirect turn runs (documented order).
+    assert_eq!(
+        *order.lock().unwrap(),
+        vec![
+            "interrupt".to_string(),
+            "run:fix line 42 instead".to_string()
+        ],
+        "interrupt is processed first, then the redirect message runs the turn"
+    );
+    // The redirect produced this turn's agent.message (the new direction ran).
+    let list = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert!(
+        types(&list).contains(&"agent.message".to_string()),
+        "the redirect turn projected an agent.message: {}",
+        list
     );
 }
 
