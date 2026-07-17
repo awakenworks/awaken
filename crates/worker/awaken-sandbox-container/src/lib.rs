@@ -1154,6 +1154,31 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             _staging: staging,
         })
     }
+
+    /// Open the ACP channel on an ALREADY-CREATED container and build the agent
+    /// session — the second half of [`open_agent`], split out so a warm pool can
+    /// pre-`create_container` (paying the cold-start cost off the request path) and
+    /// then attach the channel on hand-out. `create_container` + `open_agent_from`
+    /// == `open_agent`.
+    pub async fn open_agent_from(
+        &self,
+        sandbox: ContainerSandbox<R>,
+    ) -> Result<AgentContainerSession, pc::SandboxError> {
+        let channel = sandbox
+            .open_channel()
+            .await
+            .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
+        let handle = pc::Sandbox::handle(&sandbox);
+        let process: Box<dyn pc::ProcessHandle> = Box::new(ContainerProcess {
+            runtime: self.runtime.clone(),
+            container_id: sandbox.container_id.clone(),
+        });
+        Ok(AgentContainerSession {
+            channel,
+            process,
+            handle,
+        })
+    }
 }
 
 /// A running process-as-container agent, handed to the host's ACP
@@ -1187,20 +1212,7 @@ impl<R: ContainerRuntime + 'static> AgentContainerProvider for ContainerProvider
         spec: &pc::SandboxSpec,
     ) -> Result<AgentContainerSession, pc::SandboxError> {
         let sandbox = self.create_container(spec).await?;
-        let channel = sandbox
-            .open_channel()
-            .await
-            .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
-        let handle = pc::Sandbox::handle(&sandbox);
-        let process: Box<dyn pc::ProcessHandle> = Box::new(ContainerProcess {
-            runtime: self.runtime.clone(),
-            container_id: sandbox.container_id.clone(),
-        });
-        Ok(AgentContainerSession {
-            channel,
-            process,
-            handle,
-        })
+        self.open_agent_from(sandbox).await
     }
 }
 
@@ -1413,6 +1425,14 @@ pub mod k8s;
 /// feature; compile-verified here, running requires the `podman` binary.
 #[cfg(feature = "podman")]
 pub mod podman;
+
+/// Warm container pool (pre-provisioned reusable capacity): cold-start + reuse. Gated
+/// on `connection` (present under every real backend), which brings the tokio runtime
+/// the pool's off-path replenish spawns onto.
+#[cfg(feature = "connection")]
+pub mod pool;
+#[cfg(feature = "connection")]
+pub use pool::{WarmContainerPool, pool_key};
 
 #[cfg(test)]
 mod tests;

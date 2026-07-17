@@ -31,7 +31,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring"], opti
 [features]
 # Real remote transport (TCP dial + reverse-dial pairing) producing an AgentChannel.
 # Enable to build/test the network path; default off.
-connection = ["dep:awaken-connection", "dep:tokio", "tokio/net", "tokio/io-util"]
+connection = ["dep:awaken-connection", "dep:tokio", "tokio/net", "tokio/io-util", "tokio/rt"]
 # Real Docker ContainerRuntime (bollard). Dials the published agent port via the
 # `connection` transport. Compile-verified; running needs a Docker daemon.
 docker = ["dep:bollard", "dep:futures-util", "connection"]
