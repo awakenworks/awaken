@@ -81,7 +81,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # ingress reconciliation (`resolve_scope`). A foundation leaf, serde-only;
     # names no iam/store/wire — the `ScopeId → ScopeRef` ACL lives in the PDP
     # adapter, never here.
-    "awaken-tenancy": {"serde"},
+    # dev-only: serde_json drives the ScopeId wire (scope_id column) round-trip test.
+    "awaken-tenancy": {"serde", "serde_json"},
     # The neutral session-runtime ports + signature vocabulary (session runtime, work
     # queue, MCP probe, agent-config source, session repo), extracted from the Managed
     # wire adapter so the host + other implementors depend on a contract/ leaf, not on
@@ -123,6 +124,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # lives here beside the Meter it feeds. A foundation contract leaf — no
         # domain capability travels, only the structure-only metric vocabulary.
         "awaken-runtime-contract",
+        # dev-only: trace_http span-middleware tests drive a real axum Router via
+        # tower::ServiceExt::oneshot on a tokio runtime.
+        "tokio",
+        "tower",
     },
     # Host-side credential vocabulary (Credential / AuthChallenge /
     # CredentialRefresher) shared by the outbound wire clients (awaken-ext-mcp,
@@ -324,6 +329,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-store-conformance": {
         "awaken-agent-contract",
         "serde_json",
+        # `join!` drives the concurrent-append case portably (no per-backend spawn).
+        "tokio",
     },
     # Dispatch / run-ingress contract (ADR-0039 2.1): the durable-dispatch port
     # surface, factored out of the host so backends can depend on it (G2).
@@ -541,6 +548,13 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # both the Postgres and SQLite runners without duplication (ADR-0012).
     "awaken-store-schema": {
         "awaken-scoped-migration",
+        # dev-deps: prove the portable bundle APPLIES on both real backends it
+        # drives (embedded SQLite + skip-on-unreachable Postgres). The lib names no
+        # SQL driver; these runners/drivers live only in the test build.
+        "awaken-scoped-migration-sqlite",
+        "rusqlite",
+        "sqlx",
+        "tokio",
     },
     # Postgres durable store: a crate allowed to name the SQL driver (`sqlx`) and
     # the migration runner. It implements the neutral CommitCoordinator / read
@@ -557,6 +571,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde",
         "serde_json",
         "thiserror",
+        # dev-dep: run the shared store conformance suite against Postgres so it
+        # cannot diverge from the other backends (ADR-0039 2.6).
+        "awaken-store-conformance",
     },
     # Config domain store: compiles a declarative config into a published
     # snapshot/install and persists it under the `config` namespace. Depends on
@@ -694,6 +711,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tracing",
         # The worker HTTP dispatch client (`HttpDispatchQueue`) posts claim/settle.
         "reqwest",
+        # dev-only: the transport_client e2e stands up a real axum server mirroring a
+        # cell server's dispatch_transport_router so the client crosses a real socket.
+        "axum",
         "awaken-scoped-migration",
         # ADR-0005: the sync rusqlite runner lives in the sibling crate.
         "awaken-scoped-migration-sqlite",
@@ -1087,6 +1107,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-runtime",
         # Oneshot-forwarding + the worker-facing HTTP dispatch-transport middleware.
         "tower",
+        # dev-only: the files/models routers were extracted to this sibling adapter;
+        # runtime-host's files + resource-composition HTTP tests drive them.
+        "awaken-managed-routers",
         # The OTel-backed metrics recorder injected into each per-thread runtime
         # (#2), so a server with OTLP configured exports model/tool metrics.
         "awaken-observability",

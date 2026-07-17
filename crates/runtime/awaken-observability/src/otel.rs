@@ -209,3 +209,97 @@ mod file_exporter {
         }
     }
 }
+
+#[cfg(test)]
+mod file_sink_tests {
+    use super::file_exporter::JsonFileSpanExporter;
+    use opentelemetry::trace::TracerProvider as _;
+    use opentelemetry_sdk::trace::SdkTracerProvider;
+    use tracing_subscriber::Registry;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    /// The `AWAKEN_TRACE_FILE` sink is the collector-free contract the e2e trace
+    /// validator reads back: each finished span appended as ONE JSON line with a
+    /// fixed shape. This drives a real span through the exporter (exactly as
+    /// `build_layer` wires it, minus the env/global install) and asserts the emitted
+    /// line's fields round-trip. Deterministic: a simple exporter flushes on span end.
+    #[test]
+    fn exported_span_round_trips_as_one_json_line() {
+        // Unique temp path (no `tempfile` dev-dep); cleaned up at the end.
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "awaken-obs-trace-{}-{}.jsonl",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(JsonFileSpanExporter::new(path.clone().into_os_string()))
+            .build();
+        let tracer = provider.tracer("awaken-observability-file-sink-test");
+        let subscriber =
+            Registry::default().with(tracing_opentelemetry::layer().with_tracer(tracer));
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("file.sink.span", sink.attr = "banana");
+            span.in_scope(|| {});
+        });
+        provider
+            .force_flush()
+            .expect("flush the span to the file sink");
+
+        let contents = std::fs::read_to_string(&path).expect("the sink file was written");
+        let _ = std::fs::remove_file(&path);
+
+        // Exactly one non-empty JSON line for the one finished span.
+        let lines: Vec<&str> = contents.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(lines.len(), 1, "one span → one line: {contents:?}");
+
+        let value: serde_json::Value =
+            serde_json::from_str(lines[0]).expect("the line is valid JSON");
+        let obj = value.as_object().expect("the line is a JSON object");
+
+        // Field shape the validator keys on.
+        assert_eq!(
+            obj.get("name").and_then(|v| v.as_str()),
+            Some("file.sink.span"),
+            "name round-trips: {value}"
+        );
+        let trace_id = obj
+            .get("trace_id")
+            .and_then(|v| v.as_str())
+            .expect("trace_id");
+        assert_eq!(trace_id.len(), 32, "trace_id is 32 hex: {value}");
+        assert!(
+            trace_id.chars().all(|c| c.is_ascii_hexdigit()) && trace_id != "0".repeat(32),
+            "trace_id is a valid non-zero hex id: {value}"
+        );
+        let span_id = obj
+            .get("span_id")
+            .and_then(|v| v.as_str())
+            .expect("span_id");
+        assert_eq!(span_id.len(), 16, "span_id is 16 hex: {value}");
+        assert!(
+            span_id.chars().all(|c| c.is_ascii_hexdigit()) && span_id != "0".repeat(16),
+            "span_id is a valid non-zero hex id: {value}"
+        );
+        // A root span has an explicit null parent (not a missing key).
+        assert!(
+            obj.contains_key("parent_span_id") && obj["parent_span_id"].is_null(),
+            "a root span carries an explicit null parent_span_id: {value}"
+        );
+        // Attributes round-trip as a string map.
+        let attrs = obj
+            .get("attributes")
+            .and_then(|v| v.as_object())
+            .expect("attributes is a JSON object");
+        assert_eq!(
+            attrs.get("sink.attr").and_then(|v| v.as_str()),
+            Some("banana"),
+            "the span attribute round-trips through the file line: {value}"
+        );
+    }
+}

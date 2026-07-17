@@ -103,12 +103,34 @@ async fn put_is_upsert(repo: &dyn CredentialRepo) {
     assert_eq!(repo.list_pools("ws").await.unwrap().len(), 1);
 }
 
+// KNOWN BUG (adjudicate): cross-tenant get — `CredentialRepo::get` is keyed by
+// source id ONLY and is NOT workspace-scoped. A caller holding an id from another
+// workspace reads the row straight across the tenant boundary; only `list` filters
+// by workspace. This characterization pins the CURRENT behavior on EVERY backend
+// (in-memory, sqlite, postgres) so it can be adjudicated in one place; it does not
+// endorse it. Mirrors the in-memory-only `get_is_not_workspace_scoped_and_reads_
+// across_workspaces` unit test in `src/repo.rs`, extending the pin to the durable
+// backends.
+async fn get_reads_across_workspaces(repo: &dyn CredentialRepo) {
+    repo.put(source("cred:owned", "ws-owner")).await.unwrap();
+
+    // `list` for an unrelated workspace correctly hides the row...
+    assert_eq!(repo.list("ws-other").await.unwrap().len(), 0);
+    // ...but a direct `get` by id returns it regardless of workspace.
+    let cross = repo
+        .get(&CredentialSourceId("cred:owned".into()))
+        .await
+        .unwrap();
+    assert_eq!(cross.workspace_id, "ws-owner");
+}
+
 /// Run every suite, each on a fresh repo from `make`.
 async fn run_all(make: impl Fn() -> Box<dyn CredentialRepo>) {
     sources_round_trip_and_scope_by_workspace(&*make()).await;
     pools_round_trip_and_scope_by_workspace(&*make()).await;
     missing_rows_are_not_found(&*make()).await;
     put_is_upsert(&*make()).await;
+    get_reads_across_workspaces(&*make()).await;
 }
 
 #[tokio::test]
@@ -186,6 +208,7 @@ mod postgres {
         pools_round_trip_and_scope_by_workspace(&repo("t_cred_pools").await.unwrap()).await;
         missing_rows_are_not_found(&repo("t_cred_missing").await.unwrap()).await;
         put_is_upsert(&repo("t_cred_upsert").await.unwrap()).await;
+        get_reads_across_workspaces(&repo("t_cred_xtenant").await.unwrap()).await;
     }
 
     /// The durable secret path on Postgres: AEAD sealing composed over the

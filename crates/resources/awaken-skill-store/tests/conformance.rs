@@ -4,6 +4,88 @@
 //! listing, and idempotent delete.
 
 use awaken_skill_store::{FsSkillStore, InMemorySkillStore, SkillStore};
+use std::sync::Arc;
+
+/// A real, multiline `SKILL.md` body (YAML frontmatter + Markdown, blank lines,
+/// trailing newline, unicode) round-trips through `put`/`get` byte-for-byte on every
+/// backend — the store is opaque to content, so nothing is normalized or truncated.
+async fn verbatim_skill_md_round_trips(store: &dyn SkillStore) {
+    let body = "---\n\
+name: Code Reviewer\n\
+description: Reviews a diff for correctness and style.\n\
+allowed-tools:\n\
+  - read\n\
+  - grep\n\
+---\n\
+\n\
+# Code Reviewer\n\
+\n\
+Review the current diff. Focus on:\n\
+\n\
+1. **Correctness** — off-by-one, nil deref, races.\n\
+2. Style — naming, dead code.\n\
+\n\
+> Note: keep findings terse. 你好, café — unicode survives.\n";
+    let id = store.put("wsV", "code-reviewer", body).await.unwrap();
+    assert_eq!(id, "code-reviewer");
+    assert_eq!(
+        store.get("wsV", "code-reviewer").await.unwrap().as_deref(),
+        Some(body),
+        "the SKILL.md body is stored and returned verbatim"
+    );
+    // It also lists with the same verbatim content.
+    let listed = store.list("wsV").await.unwrap();
+    assert_eq!(
+        listed,
+        vec![("code-reviewer".to_string(), body.to_string())]
+    );
+}
+
+/// Concurrent `put`s of the SAME id resolve to exactly one surviving entry whose
+/// content is one of the racers' bodies (last write wins), never a partial blend and
+/// never a duplicate list row.
+async fn concurrent_put_same_id_last_wins<S>(store: Arc<S>)
+where
+    S: SkillStore + Send + Sync + 'static,
+{
+    let mut handles = Vec::new();
+    for i in 0..8u32 {
+        let store = store.clone();
+        handles.push(tokio::spawn(async move {
+            store.put("wsC", "dup", &format!("body-{i}")).await.unwrap()
+        }));
+    }
+    for h in handles {
+        assert_eq!(h.await.unwrap(), "dup", "every put addresses the same stem");
+    }
+    // Exactly one entry, and its content is one of the written bodies.
+    let listed = store.list("wsC").await.unwrap();
+    assert_eq!(
+        listed.len(),
+        1,
+        "concurrent same-id puts collapse to one entry"
+    );
+    let survivor = store.get("wsC", "dup").await.unwrap().unwrap();
+    assert!(
+        (0..8u32).any(|i| survivor == format!("body-{i}")),
+        "the survivor is one whole racer's body (last write wins), got {survivor:?}"
+    );
+    assert_eq!(listed[0].1, survivor, "list and get agree on the survivor");
+}
+
+#[tokio::test]
+async fn in_memory_verbatim_and_concurrent() {
+    verbatim_skill_md_round_trips(&InMemorySkillStore::new()).await;
+    concurrent_put_same_id_last_wins(Arc::new(InMemorySkillStore::new())).await;
+}
+
+#[tokio::test]
+async fn fs_verbatim_and_concurrent() {
+    let dir = tempfile::tempdir().unwrap();
+    verbatim_skill_md_round_trips(&FsSkillStore::open(dir.path()).unwrap()).await;
+    let dir2 = tempfile::tempdir().unwrap();
+    concurrent_put_same_id_last_wins(Arc::new(FsSkillStore::open(dir2.path()).unwrap())).await;
+}
 
 async fn put_get_list_delete_and_scope_by_workspace(store: &dyn SkillStore) {
     // put returns the sanitized id it is addressable by.

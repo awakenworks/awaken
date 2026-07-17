@@ -186,4 +186,119 @@ mod tests {
         assert_eq!(entries[0].content, "two");
         assert_eq!(entries[1].content, "one");
     }
+
+    /// The whole isolation story: `sanitize_stem` output is a bare, separator-free
+    /// file stem, so `root.join(stem + ".md")` can never climb out of `root`.
+    /// A hostile-input table (no proptest in this workspace) stands in for a fuzz
+    /// harness — every case must satisfy the same structural invariants.
+    #[test]
+    fn sanitize_stem_never_yields_a_path_that_escapes_root() {
+        let hostile = [
+            "/etc/passwd",
+            "//etc//passwd",
+            "../../etc/passwd",
+            "../../../../../../root/.ssh/id_rsa",
+            "..\\..\\Windows\\system32",
+            "C:\\Windows\\System32",
+            "foo/bar/baz",
+            "a\0b",                 // embedded NUL
+            "\0\0\0",               // all NUL
+            "\u{202E}drowssap",     // right-to-left override
+            "e\u{0301}",            // NFD "é" (combining acute) — normalization trick
+            "\u{FF0F}etc\u{FF0F}x", // fullwidth solidus (looks like '/')
+            "%2e%2e%2f",            // percent-encoded ../
+            ".",
+            "..",
+            "./.././.",
+            "",
+            "   ",
+            "\n\t\r",
+            "😀🔥",            // emoji only
+            &"x/".repeat(500), // very long with separators
+        ];
+        let root = PathBuf::from("/srv/awaken/memories");
+        for input in hostile {
+            let stem = sanitize_stem(input);
+            // 1. A stem is never empty (falls back to "memory").
+            assert!(!stem.is_empty(), "empty stem for {input:?}");
+            // 2. A stem holds no path separators, dots, NULs, or whitespace — only
+            //    the alphabet `sanitize_stem` promises (word chars and '-').
+            for ch in stem.chars() {
+                assert!(
+                    ch.is_ascii_alphanumeric() || ch == '_' || ch == '-',
+                    "stem {stem:?} from {input:?} leaked char {ch:?}"
+                );
+            }
+            assert!(!stem.contains('/'), "stem {stem:?} from {input:?} has '/'");
+            assert!(
+                !stem.contains('\\'),
+                "stem {stem:?} from {input:?} has '\\'"
+            );
+            assert!(!stem.contains('.'), "stem {stem:?} from {input:?} has '.'");
+            assert!(!stem.contains('\0'), "stem {stem:?} from {input:?} has NUL");
+            // 3. The written path is always a direct child of root — one component
+            //    beyond it, never a sibling or an ancestor.
+            let path = root.join(format!("{stem}.md"));
+            assert!(
+                path.starts_with(&root),
+                "path {path:?} from {input:?} escaped root"
+            );
+            assert_eq!(
+                path.parent(),
+                Some(root.as_path()),
+                "path {path:?} from {input:?} is not a direct child of root"
+            );
+        }
+    }
+
+    #[test]
+    fn two_memory_dirs_at_distinct_roots_cannot_read_each_others_entries() {
+        let stamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("awaken-mem-iso-{stamp}"));
+        let root_a = base.join("a");
+        let root_b = base.join("b");
+        let dir_a = MemoryDir::new(&root_a);
+        let dir_b = MemoryDir::new(&root_b);
+
+        dir_a.write("secret", "ALPHA-ONLY").unwrap();
+        dir_b.write("secret", "BETA-ONLY").unwrap();
+        // Even a hostile name in B cannot plant a file A will enumerate: the stem is
+        // clamped, so it lands under B's own root, not A's.
+        dir_b.write("../a/leak", "BETA-ESCAPE-ATTEMPT").unwrap();
+
+        let a_entries = dir_a.entries();
+        assert_eq!(a_entries.len(), 1, "A sees only its own memory");
+        assert_eq!(a_entries[0].content, "ALPHA-ONLY");
+        for e in &a_entries {
+            assert!(
+                e.path.starts_with(&root_a),
+                "A entry escaped its root: {:?}",
+                e.path
+            );
+            assert!(
+                !e.content.contains("BETA"),
+                "A read B's memory: {}",
+                e.content
+            );
+        }
+
+        let b_entries = dir_b.entries();
+        // B holds its own two writes; the escape attempt stayed inside B.
+        assert_eq!(b_entries.len(), 2);
+        for e in &b_entries {
+            assert!(
+                e.path.starts_with(&root_b),
+                "B entry escaped its root: {:?}",
+                e.path
+            );
+            assert!(
+                !e.content.contains("ALPHA"),
+                "B read A's memory: {}",
+                e.content
+            );
+        }
+    }
 }

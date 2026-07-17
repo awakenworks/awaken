@@ -98,4 +98,74 @@ mod tests {
                 .is_err()
         );
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn non_string_name_or_content_is_rejected() {
+        // `as_str()` yields None for any non-string JSON, so the tool rejects it as
+        // invalid arguments rather than coercing (numbers, bools, arrays, objects,
+        // and explicit null all fail the same way).
+        let tool = WriteMemoryTool::new(MemoryDir::new(std::env::temp_dir().join("nonstring")));
+        for name in [
+            serde_json::json!(42),
+            serde_json::json!(true),
+            serde_json::json!(["a"]),
+            serde_json::json!({ "k": "v" }),
+            serde_json::Value::Null,
+        ] {
+            let err = tool
+                .call(serde_json::json!({ "name": name, "content": "ok" }))
+                .await;
+            assert!(
+                matches!(err, Err(ToolError::InvalidArguments(_))),
+                "name {err:?}"
+            );
+        }
+        for content in [
+            serde_json::json!(3.14),
+            serde_json::json!(false),
+            serde_json::json!([]),
+            serde_json::Value::Null,
+        ] {
+            let err = tool
+                .call(serde_json::json!({ "name": "ok", "content": content }))
+                .await;
+            assert!(
+                matches!(err, Err(ToolError::InvalidArguments(_))),
+                "content {err:?}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn oversized_content_is_written_whole_while_an_oversized_name_is_clamped() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("awaken-writetool-big-{stamp}"));
+        let tool = WriteMemoryTool::new(MemoryDir::new(&root));
+
+        // Content is never capped by the tool: a large body is persisted verbatim.
+        let big = "Z".repeat(200_000);
+        // The name is far longer than the 120-char stem bound: it is sanitized and
+        // truncated to a single safe stem, so the write still lands under root.
+        let long_name = "n".repeat(500);
+        let out = tool
+            .call(serde_json::json!({ "name": long_name, "content": big }))
+            .await
+            .unwrap();
+        assert!(out.contains("saved memory"));
+
+        // Exactly one file was written, its stem clamped to the 120-char bound, and
+        // it holds the full oversized content unchanged.
+        let entries = tool.store.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].content.len(), 200_000);
+        let stem = entries[0].path.file_stem().unwrap().to_string_lossy();
+        assert_eq!(
+            stem.chars().count(),
+            120,
+            "stem clamped to the length bound"
+        );
+    }
 }

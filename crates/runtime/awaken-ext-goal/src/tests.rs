@@ -736,3 +736,98 @@ fn resolve_configured_rejects_a_malformed_config() {
     });
     assert!(plugin.resolve_configured(Some(&config)).is_err());
 }
+
+// ── GoalOutcome::Interrupted is dead vocabulary ─────────────────────────────
+//
+// KNOWN BUG (adjudicate): dead variant. `GoalOutcome::Interrupted` is declared
+// (with a token and a terminal classification) but NO code path in this crate
+// ever constructs it. `classify` — the *only* place a verdict meets the budget —
+// can return Satisfied / Failed / MaxIterationsReached / NeedsRevision but never
+// Interrupted; and `GoalGuard::evaluate` only ever concludes with those four (or
+// steers). A cancelled run is handled by the runtime dropping the guard, not by
+// this crate emitting an `Interrupted` outcome. These tests characterize that
+// unreachability so a future "interrupted" wiring (or the variant's removal) is a
+// deliberate, test-visible change rather than silent drift.
+
+#[test]
+fn classify_never_yields_interrupted_across_the_verdict_budget_cross_product() {
+    // Exhaustive over every grader verdict and a spread of iteration/budget pairs:
+    // Interrupted is unreachable from the one place the budget meets the verdict.
+    let verdicts = [met("y"), unmet("n"), unfit("bad")];
+    for v in &verdicts {
+        for iteration in 0..=6u32 {
+            for max in 1..=6u32 {
+                let outcome = classify(v, iteration, max);
+                assert_ne!(
+                    outcome,
+                    GoalOutcome::Interrupted,
+                    "classify produced the dead Interrupted variant for {:?} @ {iteration}/{max}",
+                    v.result
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_guard_never_concludes_or_steers_with_interrupted() {
+    // Drive the guard across its terminal and steer paths (met / unmet-in-budget /
+    // spent budget / grader error / empty run) and confirm the emitted result token
+    // is never the Interrupted token — the guard has no path that produces it.
+    let cases: Vec<(GoalGuard, Vec<Message>, usize)> = vec![
+        (fixed_guard(spec(3), met("ok")), vec![assistant("d")], 0),
+        (fixed_guard(spec(3), unmet("x")), vec![assistant("d")], 0),
+        (fixed_guard(spec(1), unmet("x")), vec![assistant("d")], 0),
+        (fixed_guard(spec(3), unfit("bad")), vec![assistant("d")], 0),
+        (
+            GoalGuard::new(spec(3), Arc::new(ErrGrader)),
+            vec![assistant("d")],
+            0,
+        ),
+        (fixed_guard(spec(3), met("ok")), vec![tool_msg("t")], 0),
+    ];
+    for (guard, convo, fc) in cases {
+        let d = evaluate(&guard, &convo, fc).await;
+        assert_ne!(
+            result_token(&d),
+            GoalOutcome::Interrupted.token(),
+            "no guard path emits the Interrupted token"
+        );
+    }
+}
+
+// ── GradeResult / GoalOutcome serde round-trips ─────────────────────────────
+
+#[test]
+fn grade_result_round_trips_snake_case() {
+    for (variant, tag) in [
+        (GradeResult::Satisfied, "satisfied"),
+        (GradeResult::NeedsRevision, "needs_revision"),
+        (GradeResult::Failed, "failed"),
+    ] {
+        let json = serde_json::to_value(variant).unwrap();
+        assert_eq!(json, serde_json::json!(tag), "GradeResult wire token");
+        let back: GradeResult = serde_json::from_value(json).unwrap();
+        assert_eq!(back, variant);
+    }
+}
+
+#[test]
+fn goal_outcome_round_trips() {
+    // NOTE: `GoalOutcome` has no `rename_all`, so its serde wire form is the
+    // PascalCase variant name — distinct from the public `token()` (snake_case),
+    // which is the shape the managed adapter actually emits. Round-trip pins the
+    // serde form so a later rename is deliberate.
+    for (variant, tag) in [
+        (GoalOutcome::Satisfied, "Satisfied"),
+        (GoalOutcome::NeedsRevision, "NeedsRevision"),
+        (GoalOutcome::MaxIterationsReached, "MaxIterationsReached"),
+        (GoalOutcome::Failed, "Failed"),
+        (GoalOutcome::Interrupted, "Interrupted"),
+    ] {
+        let json = serde_json::to_value(variant).unwrap();
+        assert_eq!(json, serde_json::json!(tag));
+        let back: GoalOutcome = serde_json::from_value(json).unwrap();
+        assert_eq!(back, variant);
+    }
+}

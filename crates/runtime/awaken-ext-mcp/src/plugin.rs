@@ -361,6 +361,61 @@ mod tests {
         );
     }
 
+    /// A transport advertising several tools, to pin the registry projection.
+    struct MultiToolTransport;
+
+    #[async_trait]
+    impl McpToolTransport for MultiToolTransport {
+        async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+            Ok(["read", "write", "delete"]
+                .into_iter()
+                .map(|name| serde_json::from_value(serde_json::json!({ "name": name })).unwrap())
+                .collect())
+        }
+        async fn call_tool(
+            &self,
+            _tool_name: &str,
+            _arguments: Value,
+        ) -> Result<CallToolResult, McpTransportError> {
+            Ok(CallToolResult {
+                content: vec![ToolContent::Text {
+                    text: "ok".to_string(),
+                    annotations: None,
+                    meta: None,
+                }],
+                structured_content: None,
+                is_error: Some(false),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_exposes_exactly_every_advertised_tool_with_no_gating() {
+        // The registry projection is 1:1 with the server's advertised tool list:
+        // every advertised tool becomes a dynamic tool, in order, with no
+        // allow-list or gating hook between `tools/list` and the projection.
+        let (_tx, rx) = broadcast::channel(4);
+        let server = McpServer::start("srv", Arc::new(MultiToolTransport), rx)
+            .await
+            .expect("starts");
+        let ids: Vec<_> = server
+            .plugin()
+            .resolve()
+            .dynamic_tools
+            .iter()
+            .map(|t| t.descriptor.id.clone())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                "mcp__srv__read".to_string(),
+                "mcp__srv__write".to_string(),
+                "mcp__srv__delete".to_string(),
+            ],
+            "exactly the advertised tools are exposed, in order",
+        );
+    }
+
     #[tokio::test]
     async fn host_declared_sensitive_fields_mark_the_descriptor_across_refreshes() {
         let transport = Arc::new(SwappingTransport {

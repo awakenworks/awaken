@@ -1,0 +1,308 @@
+//! The Skills API (`/v1/skills`, ADR-0036) end-to-end through its real axum router.
+//! Two create paths coexist: the SDK multipart upload (a `SKILL.md` + supporting
+//! files) and the legacy JSON `{id, content}` delivery. Both feed the runtime's
+//! durable delivered-skill catalog; the SDK's richer object + version history lives
+//! in an in-memory registry keyed by skill id.
+//!
+//! The in-module unit test already covers the durable-only catalog-id fallback; this
+//! binary drives the untested SDK surface: multipart create, list, retrieve, the
+//! `versions` subresource (create / list / retrieve / content / delete), the legacy
+//! JSON path's fail-closed 409 when no durable store is wired, and the error arms.
+
+use std::sync::Arc;
+
+use awaken_runtime_contract::llm::{ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult};
+use awaken_runtime_host::{SharedHost, skills_router};
+use axum::Router;
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use serde_json::{Value, json};
+use tower::ServiceExt;
+
+struct NoLlm;
+#[async_trait::async_trait]
+impl LlmExecutor for NoLlm {
+    async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
+        unreachable!("the skills API never infers")
+    }
+}
+
+/// A router over a host backed by a durable skill store in a fresh temp dir, so the
+/// SDK delivery (`store_put`) actually persists.
+fn router_with_store() -> (Router, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!(
+        "awaken-skillsapi-http-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let host =
+        Arc::new(SharedHost::new(Arc::new(NoLlm), "test").with_skill_store(dir.join("store")));
+    (skills_router(host), dir)
+}
+static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+const BOUNDARY: &str = "X-SKILL-BOUNDARY";
+
+fn multipart_skill(content: &str) -> Vec<u8> {
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"file\"; filename=\"SKILL.md\"\r\n",
+    );
+    body.extend_from_slice(b"Content-Type: text/markdown\r\n\r\n");
+    body.extend_from_slice(content.as_bytes());
+    body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+    body
+}
+
+async fn post_multipart(router: &Router, uri: &str, content: &str) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={BOUNDARY}"),
+        )
+        .body(Body::from(multipart_skill(content)))
+        .unwrap();
+    read(router.clone().oneshot(req).await.unwrap()).await
+}
+
+async fn post_json(router: &Router, uri: &str, body: Value) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    read(router.clone().oneshot(req).await.unwrap()).await
+}
+
+async fn get(router: &Router, uri: &str) -> (StatusCode, String) {
+    let resp = router
+        .clone()
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).to_string())
+}
+
+async fn delete(router: &Router, uri: &str) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(uri)
+        .body(Body::empty())
+        .unwrap();
+    read(router.clone().oneshot(req).await.unwrap()).await
+}
+
+async fn read(resp: axum::response::Response) -> (StatusCode, Value) {
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+const SKILL_V1: &str = "---\nname: Greeter\ndescription: says hi\n---\nsay hello";
+const SKILL_V2: &str = "---\nname: Greeter\ndescription: says hi\n---\nsay HELLO LOUDER";
+
+#[tokio::test]
+async fn sdk_multipart_create_list_retrieve_and_version_lifecycle() {
+    let (router, dir) = router_with_store();
+
+    // Multipart create (SDK path) registers a v1 and returns the tagged catalog id.
+    let (status, created) = post_multipart(&router, "/v1/skills", SKILL_V1).await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let id = created["id"].as_str().unwrap().to_string();
+    assert_eq!(created["type"], "skill");
+    assert_eq!(created["latest_version"], "1");
+    assert_eq!(created["source"], "api");
+
+    // List surfaces it.
+    let (status, list) = get(&router, "/v1/skills").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        list.contains(&id),
+        "list surfaces the created skill: {list}"
+    );
+
+    // Retrieve by id.
+    let (status, got) = read(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/skills/{id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got["id"], id.as_str());
+
+    // Add a version (SDK multipart).
+    let (status, v2) =
+        post_multipart(&router, &format!("/v1/skills/{id}/versions"), SKILL_V2).await;
+    assert_eq!(status, StatusCode::OK, "{v2}");
+    assert_eq!(v2["type"], "skill_version");
+    let vid = v2["id"].as_str().unwrap().to_string();
+
+    // List versions → two rows.
+    let (status, versions) = read(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/skills/{id}/versions"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(versions["data"].as_array().unwrap().len(), 2, "{versions}");
+
+    // `latest` content downloads the newest version's SKILL.md.
+    let (status, content) = get(&router, &format!("/v1/skills/{id}/versions/latest/content")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content.contains("LOUDER"), "latest content: {content}");
+
+    // Retrieve a specific version by its id.
+    let (status, one) = get(&router, &format!("/v1/skills/{id}/versions/{vid}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(one.contains(&vid));
+
+    // Delete the newer version → receipt; the skill survives.
+    let (status, receipt) = delete(&router, &format!("/v1/skills/{id}/versions/{vid}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(receipt["type"], "skill_version_deleted");
+
+    // Delete the skill → receipt.
+    let (status, receipt) = delete(&router, &format!("/v1/skills/{id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(receipt["type"], "skill_deleted");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn legacy_json_create_fails_closed_without_a_durable_store() {
+    // No `with_skill_store`: the host has no durable skill catalog, so the legacy
+    // `{id, content}` delivery has nowhere to land → 409 (fail closed, no silent drop).
+    let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test"));
+    let router = skills_router(host);
+    let (status, v) = post_json(
+        &router,
+        "/v1/skills",
+        json!({ "id": "greeter", "content": SKILL_V1 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{v}");
+}
+
+#[tokio::test]
+async fn legacy_json_create_delivers_with_a_durable_store() {
+    let (router, dir) = router_with_store();
+    let (status, v) = post_json(
+        &router,
+        "/v1/skills",
+        json!({ "id": "greeter", "content": SKILL_V1 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["type"], "skill");
+    // The delivered id retrieves.
+    let stored_id = v["id"].as_str().unwrap().to_string();
+    let (status, _) = get(&router, &format!("/v1/skills/{stored_id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// KNOWN BUG (adjudicate): the two `POST /v1/skills` create paths disagree on the
+// no-durable-store case. The legacy JSON path fails CLOSED (409, asserted above in
+// `legacy_json_create_fails_closed_without_a_durable_store`), but the SDK multipart
+// path ignores `store_put`'s `None` (`let _ = ...`) and returns 200 with only an
+// ephemeral in-memory registry entry. So on a store-less host an SDK skill upload
+// reports success while the skill is neither delivered on any thread nor persisted
+// across a restart — contradicting the module's "BOTH feed the durable catalog …
+// survives a restart" contract. This test CHARACTERIZES the current (fail-open)
+// behavior; it is not an endorsement.
+#[tokio::test]
+async fn sdk_multipart_create_fails_open_without_a_durable_store() {
+    let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test"));
+    let router = skills_router(host);
+    // Multipart succeeds (200) even though nothing durable backs it…
+    let (status, created) = post_multipart(&router, "/v1/skills", SKILL_V1).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "current behavior: SDK create reports success with no durable store: {created}"
+    );
+    // …in contrast to the legacy JSON path, which 409s on the very same host.
+    let (json_status, _) = post_json(
+        &router,
+        "/v1/skills",
+        json!({ "id": "greeter", "content": SKILL_V1 }),
+    )
+    .await;
+    assert_eq!(
+        json_status,
+        StatusCode::CONFLICT,
+        "the sibling JSON path fails CLOSED on the same store-less host"
+    );
+}
+
+#[tokio::test]
+async fn error_arms_are_fail_closed() {
+    let (router, dir) = router_with_store();
+
+    // Retrieve / delete an unknown skill → 404.
+    let (status, _) = get(&router, "/v1/skills/skill_missing").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = delete(&router, "/v1/skills/skill_missing").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // A version create against an unknown skill → 404.
+    let (status, _) = post_multipart(&router, "/v1/skills/skill_missing/versions", SKILL_V1).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // A multipart create with no file part → 400 (no SKILL.md).
+    let body = format!(
+        "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"display_title\"\r\n\r\nX\r\n--{BOUNDARY}--\r\n"
+    );
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/skills")
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={BOUNDARY}"),
+        )
+        .body(Body::from(body))
+        .unwrap();
+    let (status, _) = read(router.clone().oneshot(req).await.unwrap()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // A version retrieve/content on an unknown version → 404.
+    let (status, created) = post_multipart(&router, "/v1/skills", SKILL_V1).await;
+    assert_eq!(status, StatusCode::OK);
+    let id = created["id"].as_str().unwrap().to_string();
+    let (status, _) = get(&router, &format!("/v1/skills/{id}/versions/999")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = get(&router, &format!("/v1/skills/{id}/versions/999/content")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

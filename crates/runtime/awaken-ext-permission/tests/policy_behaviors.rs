@@ -6,7 +6,11 @@
 //! `actions::` mutation helpers are intentionally out of scope for this crate.
 
 use awaken_ext_permission::{
-    Mode, PermissionRule, PermissionRuleset, ToolCallPattern, ToolPermissionBehavior, parse_ruleset,
+    Mode, PermissionRule, PermissionRuleset, RulePermissionPolicy, ToolCallPattern,
+    ToolPermissionBehavior, parse_ruleset, permission_config_schema,
+};
+use awaken_runtime_contract::permission::{
+    PermissionContext, PermissionDecision, PermissionPolicy,
 };
 use serde_json::json;
 
@@ -458,4 +462,179 @@ fn equal_specificity_first_rule_wins_allow_vs_ask() {
         ToolPermissionBehavior::Allow
     );
     assert_eq!(ask_first.decide("Bash", &call), ToolPermissionBehavior::Ask);
+}
+
+// ---------------------------------------------------------------------------
+// Serde/wire fail-open: mode/behavior tag parsing. A silent fall-through of an
+// UNKNOWN tag to `Default`/`Ask` would be a fail-open (a typo'd `bypassPermissions`
+// or `deny` quietly changing the policy's default). These pin that the wire form
+// is exactly the serde renames and that anything else is REJECTED at parse.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn camel_case_mode_tag_parses_to_the_bypass_mode() {
+    // The canonical camelCase tag deserializes and the resulting ruleset behaves
+    // as bypass (every unmatched call allowed).
+    let set = parse_ruleset(&json!({ "mode": "bypassPermissions" })).unwrap();
+    assert_eq!(set.mode, Mode::BypassPermissions);
+    assert_eq!(
+        set.decide("Bash", &json!({"command": "rm -rf /"})),
+        ToolPermissionBehavior::Allow,
+        "bypass mode allows even a dangerous unmatched call"
+    );
+}
+
+#[test]
+fn every_mode_camel_case_tag_parses() {
+    for (tag, mode) in [
+        ("default", Mode::Default),
+        ("acceptEdits", Mode::AcceptEdits),
+        ("plan", Mode::Plan),
+        ("bypassPermissions", Mode::BypassPermissions),
+    ] {
+        let set = parse_ruleset(&json!({ "mode": tag })).unwrap();
+        assert_eq!(set.mode, mode, "tag `{tag}` maps to its mode");
+    }
+}
+
+#[test]
+fn an_unknown_mode_tag_is_rejected_not_silently_defaulted() {
+    // A typo (`bypasspermissions`, wrong case) must be a hard parse error, never a
+    // silent fall to `Mode::Default`. If this ever regresses to Default, an author
+    // who meant to bypass would instead get the (safer) default — but a `plan`
+    // typo would silently DROP a read-only lock, a genuine fail-open.
+    let err = parse_ruleset(&json!({ "mode": "bypasspermissions" })).unwrap_err();
+    assert!(
+        err.contains("invalid permission config"),
+        "unknown mode is a surfaced config error: {err}"
+    );
+}
+
+#[test]
+fn an_unknown_default_behavior_tag_is_rejected_not_silently_defaulted() {
+    // A misspelled behavior (`deni`) must not silently fall to the `ask` default;
+    // a dropped `deny` default would be a fail-open. Parse must reject it.
+    let err = parse_ruleset(&json!({ "default_behavior": "deni" })).unwrap_err();
+    assert!(
+        err.contains("invalid permission config"),
+        "unknown behavior is a surfaced config error: {err}"
+    );
+    // A misspelled rule behavior is equally rejected.
+    let err = parse_ruleset(&json!({
+        "rules": [ { "pattern": "Bash", "behavior": "denyy" } ]
+    }))
+    .unwrap_err();
+    assert!(
+        err.contains("invalid permission config"),
+        "unknown rule behavior is rejected: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Config schema drift guard: the hand-authored `permission_config_schema` enum
+// arrays must stay in lock-step with the serde renames of `ToolPermissionBehavior`
+// and `Mode`. If a variant is added/renamed and the schema is not updated, a
+// console form would offer a value the parser rejects (or hide a valid one).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn schema_behavior_enum_matches_the_serialized_behavior_variants() {
+    let schema = permission_config_schema();
+    let wire = |b: ToolPermissionBehavior| serde_json::to_value(b).unwrap();
+    let expected = vec![
+        wire(ToolPermissionBehavior::Allow),
+        wire(ToolPermissionBehavior::Ask),
+        wire(ToolPermissionBehavior::Deny),
+    ];
+    assert_eq!(
+        schema["properties"]["default_behavior"]["enum"],
+        json!(expected),
+        "default_behavior enum drifted from the ToolPermissionBehavior variants"
+    );
+    // The rule-behavior enum uses the same closed set.
+    assert_eq!(
+        schema["properties"]["rules"]["items"]["properties"]["behavior"]["enum"],
+        json!(expected)
+    );
+}
+
+#[test]
+fn schema_mode_enum_matches_the_serialized_mode_variants() {
+    let schema = permission_config_schema();
+    let wire = |m: Mode| serde_json::to_value(m).unwrap();
+    let expected = json!([
+        wire(Mode::Default),
+        wire(Mode::AcceptEdits),
+        wire(Mode::Plan),
+        wire(Mode::BypassPermissions),
+    ]);
+    assert_eq!(
+        schema["properties"]["mode"]["enum"], expected,
+        "mode enum drifted from the Mode variants (camelCase serde renames)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The async port impl (`RulePermissionPolicy`): Deny carries a reason naming the
+// tool, and an Ask ticket is correlated to the call id so the operator's later
+// decision resumes exactly this invocation (ADR-0030 D2).
+// ---------------------------------------------------------------------------
+
+fn policy_ctx(tool: &str, call_id: &str, args: serde_json::Value) -> PermissionContext {
+    PermissionContext {
+        tool_id: tool.to_string(),
+        call_id: call_id.to_string(),
+        arguments: args,
+    }
+}
+
+#[tokio::test]
+async fn port_deny_reason_names_the_tool() {
+    let policy = RulePermissionPolicy::new(ruleset(
+        ToolPermissionBehavior::Ask,
+        vec![rule("Bash(rm *)", ToolPermissionBehavior::Deny)],
+    ));
+    match policy
+        .decide(&policy_ctx("Bash", "c-9", json!({"command": "rm -rf /"})))
+        .await
+    {
+        PermissionDecision::Deny { reason } => {
+            assert!(
+                reason.contains("Bash"),
+                "deny reason names the tool: {reason}"
+            );
+            assert!(reason.contains("denied by policy"), "reason: {reason}");
+        }
+        other => panic!("expected deny, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn port_ask_ticket_is_correlated_to_the_call_id() {
+    // An unmatched call under the default `ask` yields a ticket keyed to THIS
+    // call id, so the resumed decision targets exactly this invocation.
+    let policy = RulePermissionPolicy::new(ruleset(ToolPermissionBehavior::Ask, vec![]));
+    for call_id in ["c-1", "call-42"] {
+        match policy
+            .decide(&policy_ctx("WebFetch", call_id, json!({})))
+            .await
+        {
+            PermissionDecision::Ask { ticket_id } => {
+                assert_eq!(ticket_id, format!("perm-{call_id}"));
+            }
+            other => panic!("expected ask, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn port_allow_maps_to_allow_decision() {
+    let policy = RulePermissionPolicy::new(ruleset(
+        ToolPermissionBehavior::Deny,
+        vec![rule("Read", ToolPermissionBehavior::Allow)],
+    ));
+    assert!(matches!(
+        policy.decide(&policy_ctx("Read", "c-1", json!({}))).await,
+        PermissionDecision::Allow
+    ));
 }

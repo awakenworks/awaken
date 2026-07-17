@@ -121,3 +121,21 @@ async fn every_documented_operation_is_mounted() {
         }
     }
 }
+
+/// The `openapi_contract` gate only catches *documented-but-unmounted*; the reverse
+/// (mounted-but-undocumented) is a review concern. This pins one such omission that
+/// is live today so it is not lost: `resolve_profile_candidates_route` is mounted by
+/// `admin_router` at `.../resolve-candidates` but has no `openapi::paths()` entry,
+/// so it is absent from the emitted contract and never drift-probed above.
+///
+// KNOWN GAP (adjudicate): resolve_profile_candidates_route absent from openapi paths()
+#[test]
+fn resolve_candidates_route_is_undocumented_known_gap() {
+    let doc = openapi_document();
+    let paths = doc["paths"].as_object().expect("paths object");
+    assert!(
+        !paths.contains_key("/v1/config/inference-profiles/{id}/resolve-candidates"),
+        "resolve-candidates is now documented — adjudicate the KNOWN GAP and fold it \
+         into the mounted-operation drift assertions above"
+    );
+}

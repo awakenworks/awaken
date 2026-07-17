@@ -605,6 +605,57 @@ mod tests {
         );
     }
 
+    /// The live-stream text→tool transition: when a tool call begins mid-stream,
+    /// `delta()` must first CLOSE the open text run (`close_text()` emits a
+    /// `TEXT_MESSAGE_END` for the streaming message) BEFORE opening the tool call
+    /// with `TOOL_CALL_START`. Without that close the client would leave a text
+    /// message unterminated when the model pivots from prose to a tool call. Pins
+    /// the ordering: END for the open text precedes START for the tool.
+    #[test]
+    fn close_text_emits_text_message_end_on_a_text_to_tool_transition() {
+        let mut enc = AgUiEncoder::new("t1", "r1");
+        // Open a live text run.
+        let opened = enc.delta(&Delta::TextDelta {
+            delta: "let me look".into(),
+        });
+        let text_id = match &opened[0] {
+            AgUiEvent::TextMessageStart { message_id, .. } => message_id.clone(),
+            other => panic!("expected TEXT_MESSAGE_START, got {other:?}"),
+        };
+        // Now a tool call arrives: the open text must be ended before the tool starts.
+        let transition = enc.delta(&Delta::ToolCallDelta {
+            id: "c1".into(),
+            name: "read".into(),
+            args_delta: String::new(),
+        });
+        let end = transition
+            .iter()
+            .position(
+                |e| matches!(e, AgUiEvent::TextMessageEnd { message_id } if *message_id == text_id),
+            )
+            .expect("TEXT_MESSAGE_END for the open text run");
+        let start = transition
+            .iter()
+            .position(|e| matches!(e, AgUiEvent::ToolCallStart { tool_call_id, .. } if tool_call_id == "c1"))
+            .expect("TOOL_CALL_START for the new tool call");
+        assert!(
+            end < start,
+            "the open text must END before the tool STARTs: {transition:?}"
+        );
+        // A second tool delta does not re-close (the text run is already ended).
+        let again = enc.delta(&Delta::ToolCallDelta {
+            id: "c1".into(),
+            name: "read".into(),
+            args_delta: "{}".into(),
+        });
+        assert!(
+            again
+                .iter()
+                .all(|e| !matches!(e, AgUiEvent::TextMessageEnd { .. })),
+            "no spurious second TEXT_MESSAGE_END: {again:?}"
+        );
+    }
+
     #[test]
     fn a_tool_call_transcodes_to_start_args_end() {
         use awaken_agent_contract::event::ToolDisposition;

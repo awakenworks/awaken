@@ -718,4 +718,58 @@ mod tests {
             .unwrap();
         assert_eq!(phase, Phase::Ended(EndCause::Indeterminate));
     }
+
+    /// A remote task parked in `input-required` is `Indeterminate` (proved in the
+    /// pure `end_cause_of` unit) — but the executor must ALSO commit the agent's
+    /// partial message through the same boundary as the terminal states, so a reader
+    /// sees the "I need more input" prompt. The pure unit never touches the commit
+    /// path; drive the real HTTP server + commit coordinator to prove the partial
+    /// reply is durably committed alongside the Indeterminate phase.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_input_required_task_commits_the_partial_message() {
+        let backend = serve(
+            r#"{"task":{"id":"t","contextId":"c","status":{"state":"input-required","message":{"messageId":"m","role":"agent","parts":[{"text":"which file?"}]}}}}"#,
+        )
+        .await;
+        let rec = Arc::new(Rec::default());
+        let phase = A2aRunExecutor::over_http()
+            .execute(
+                activation(&backend),
+                RuntimeRunContext::new().with_commit(rec.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(phase, Phase::Ended(EndCause::Indeterminate));
+        let commits = rec.0.lock().unwrap();
+        assert_eq!(
+            commits[0].messages[0].text_content(),
+            "which file?",
+            "the partial 'input-required' prompt is committed for the reader"
+        );
+    }
+
+    /// The `auth-required` twin: an Indeterminate park whose partial message is still
+    /// committed. Closes the same gap for the auth-park state.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_auth_required_task_commits_the_partial_message() {
+        let backend = serve(
+            r#"{"task":{"id":"t","contextId":"c","status":{"state":"auth-required","message":{"messageId":"m","role":"agent","parts":[{"text":"please authenticate"}]}}}}"#,
+        )
+        .await;
+        let rec = Arc::new(Rec::default());
+        let phase = A2aRunExecutor::over_http()
+            .execute(
+                activation(&backend),
+                RuntimeRunContext::new().with_commit(rec.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(phase, Phase::Ended(EndCause::Indeterminate));
+        let commits = rec.0.lock().unwrap();
+        assert_eq!(
+            commits[0].messages[0].text_content(),
+            "please authenticate",
+            "the partial 'auth-required' prompt is committed for the reader"
+        );
+    }
 }

@@ -28,5 +28,15 @@ opentelemetry-prometheus = "0.28"
 prometheus = { version = "0.13", default-features = false }
 awaken-runtime-contract = { workspace = true }
 
+[dev-dependencies]
+# Repo-standard helpers for driving an assembled axum `Router` through its
+# `tower::Service` impl (`ServiceExt::oneshot`) so the real `trace_http` ingress
+# middleware can be exercised end-to-end in-process. A current-thread `tokio`
+# runtime drives the request (the SDK's simple span exporter flushes via its own
+# `futures` executor, which would panic if nested inside `futures::block_on`).
+# Both are already in the workspace lock.
+tokio = { workspace = true, features = ["rt", "macros"] }
+tower = { version = "0.5", features = ["util"] }
+
 [lints]
 workspace = true

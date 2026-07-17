@@ -700,3 +700,317 @@ mod classify_tests {
         assert_eq!(classify_error("401 Unauthorized").code(), "unauthorized");
     }
 }
+
+#[cfg(test)]
+mod hermetic_tests {
+    //! Network-free coverage for the paths that previously only had `#[ignore]`
+    //! live tests: streaming tool-argument de-accumulation, the Vertex base-URL
+    //! shape, and the credential probe's auth vs. inconclusive classification.
+    //! Each test either uses a localhost TCP server emitting Anthropic-shaped SSE
+    //! (the same idiom as `tests/stall.rs`) or asserts pure strings — no live
+    //! provider, so all of these run by default.
+
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    use awaken_agent_contract::agent::content::ContentBlock;
+    use awaken_agent_contract::agent::message::Role;
+    use awaken_runtime_contract::llm::{
+        ChatMessage, ChatRequest, DeltaSink, LlmExecutor, StopReason,
+    };
+    use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::{CredentialProbe, GenaiExecutor, probe_credential};
+
+    /// One SSE frame: `event:`/`data:` lines terminated by a blank line. The
+    /// `data` value is serialized compactly (single line) so it is a valid SSE
+    /// payload — the same framing `tests/stall.rs` writes by hand.
+    fn frame(event: &str, data: serde_json::Value) -> String {
+        format!("event: {event}\ndata: {data}\n\n")
+    }
+
+    /// An Anthropic-shaped SSE stream that requests a single `get_weather` tool
+    /// call, delivering the tool arguments as **incremental** `input_json_delta`
+    /// fragments. genai accumulates these into cumulative snapshots; the adapter
+    /// under test must de-accumulate them back into suffix deltas.
+    ///
+    /// The value spans multi-byte UTF-8 (`São Paulo 😀`) and the fragment splits
+    /// fall exactly on code-point boundaries, exercising the `is_char_boundary`
+    /// guard and the `cum[*sent..]` byte-offset slicing with non-ASCII content.
+    fn tool_stream_body() -> String {
+        use serde_json::json;
+        // Concatenate to: {"city":"São Paulo 😀"}
+        let fragments = ["{\"city\":\"S", "ão Pa", "ulo ", "😀\"}"];
+        let mut body = String::new();
+        body.push_str(&frame(
+            "message_start",
+            json!({
+                "type": "message_start",
+                "message": {
+                    "id": "msg_1", "type": "message", "role": "assistant",
+                    "content": [], "model": "m",
+                    "stop_reason": null, "stop_sequence": null,
+                    "usage": {"input_tokens": 7, "output_tokens": 1}
+                }
+            }),
+        ));
+        body.push_str(&frame(
+            "content_block_start",
+            json!({
+                "type": "content_block_start", "index": 0,
+                "content_block": {"type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": {}}
+            }),
+        ));
+        for fragment in fragments {
+            body.push_str(&frame(
+                "content_block_delta",
+                json!({
+                    "type": "content_block_delta", "index": 0,
+                    "delta": {"type": "input_json_delta", "partial_json": fragment}
+                }),
+            ));
+        }
+        body.push_str(&frame(
+            "content_block_stop",
+            json!({"type": "content_block_stop", "index": 0}),
+        ));
+        body.push_str(&frame(
+            "message_delta",
+            json!({
+                "type": "message_delta",
+                "delta": {"stop_reason": "tool_use", "stop_sequence": null},
+                "usage": {"output_tokens": 15}
+            }),
+        ));
+        body.push_str(&frame("message_stop", json!({"type": "message_stop"})));
+        body
+    }
+
+    /// Spawn a localhost server that replies to the first request with `body` as
+    /// an event-stream, then holds the connection open (the stream self-terminates
+    /// on `message_stop`, so no close is needed — mirrors `tests/stall.rs`).
+    async fn spawn_sse_server(body: String) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("binds");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let body = body.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 8192];
+                    let _ = socket.read(&mut buf).await;
+                    let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n";
+                    let _ = socket.write_all(head.as_bytes()).await;
+                    let _ = socket.write_all(body.as_bytes()).await;
+                    let _ = socket.flush().await;
+                    // Keep the connection open; `message_stop` already ended the turn.
+                    std::future::pending::<()>().await;
+                });
+            }
+        });
+        format!("http://{addr}/")
+    }
+
+    /// Spawn a localhost server that replies to every request with a fixed HTTP
+    /// status + JSON body, used to drive the credential probe's classification.
+    async fn spawn_status_server(status_line: &'static str, body: &'static str) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("binds");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 8192];
+                    let _ = socket.read(&mut buf).await;
+                    let response = format!(
+                        "{status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.flush().await;
+                });
+            }
+        });
+        format!("http://{addr}/")
+    }
+
+    #[derive(Default)]
+    struct Recorder {
+        text: Mutex<Vec<String>>,
+        /// (call_id, tool_id, args_delta) — each delta is a de-accumulated suffix.
+        tool_deltas: Mutex<Vec<(String, String, String)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl DeltaSink for Recorder {
+        async fn on_text(&self, chunk: &str) {
+            self.text.lock().unwrap().push(chunk.to_string());
+        }
+        async fn on_tool_call_delta(&self, call_id: &str, tool_id: &str, args_delta: &str) {
+            self.tool_deltas.lock().unwrap().push((
+                call_id.to_string(),
+                tool_id.to_string(),
+                args_delta.to_string(),
+            ));
+        }
+    }
+
+    fn weather_tool() -> ToolDescriptor {
+        ToolDescriptor::pinned(
+            "test",
+            "get_weather",
+            "Get the current weather for a city.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"]
+            }),
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn streaming_tool_args_de_accumulate_into_suffix_deltas() {
+        let base_url = spawn_sse_server(tool_stream_body()).await;
+        let executor = GenaiExecutor::anthropic_compatible(base_url, "test-key")
+            .with_idle_timeout(Duration::from_secs(5));
+
+        let request = ChatRequest {
+            model_binding: ModelBinding {
+                provider_identity_ref: "p".to_string(),
+                model_ref: "claude-test".to_string(),
+                backend_ref: "b".to_string(),
+            },
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: vec![ContentBlock::text("weather in Sao Paulo?")],
+            }],
+            tools: vec![weather_tool()],
+        };
+
+        let recorder = Recorder::default();
+        let response = tokio::time::timeout(
+            Duration::from_secs(5),
+            executor.infer_streaming(request, &recorder),
+        )
+        .await
+        .expect("the stream self-terminates on message_stop")
+        .expect("a well-formed tool stream is a turn, not an error");
+
+        // Committed truth (G13): genai parsed the accumulated fragments into an
+        // object with the multi-byte value intact.
+        let calls = response.output.tool_calls();
+        assert_eq!(calls.len(), 1, "one committed tool call");
+        assert_eq!(calls[0].tool_id, "get_weather");
+        assert_eq!(calls[0].call_id, "toolu_1");
+        let expected_args = serde_json::json!({"city": "São Paulo 😀"});
+        assert_eq!(calls[0].arguments, expected_args);
+        assert_eq!(response.stop_reason, Some(StopReason::ToolUse));
+
+        // The live plane: the adapter is the single de-accumulation owner. The
+        // recorded deltas are the exact per-event suffixes (the leading empty
+        // snapshot from content_block_start emits nothing), and they concatenate
+        // back to the full argument JSON — proving the suffix-diff / is_char_boundary
+        // path handled the multi-byte splits correctly.
+        let deltas = recorder.tool_deltas.lock().unwrap().clone();
+        assert!(
+            !deltas.is_empty(),
+            "at least one live tool-call delta arrived"
+        );
+        for (call_id, tool_id, _) in &deltas {
+            assert_eq!(call_id, "toolu_1");
+            assert_eq!(tool_id, "get_weather");
+        }
+        let suffixes: Vec<String> = deltas.iter().map(|(_, _, d)| d.clone()).collect();
+        assert_eq!(
+            suffixes,
+            vec![
+                "{\"city\":\"S".to_string(),
+                "ão Pa".to_string(),
+                "ulo ".to_string(),
+                "😀\"}".to_string(),
+            ],
+            "each delta is the newly-appended suffix, never a re-sent cumulative snapshot"
+        );
+        let joined: String = suffixes.concat();
+        assert_eq!(joined, "{\"city\":\"São Paulo 😀\"}");
+        let reparsed: serde_json::Value =
+            serde_json::from_str(&joined).expect("concatenated live suffixes are valid JSON");
+        assert_eq!(
+            reparsed, expected_args,
+            "the concatenated live suffixes reconstruct the committed object"
+        );
+        // No text was streamed on a pure tool turn.
+        assert!(recorder.text.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn probe_credential_classifies_http_401_as_invalid() {
+        // A clear authentication rejection (401) is a definitive `Invalid` — the
+        // key is refuted, never a false `Valid`.
+        let base_url = spawn_status_server(
+            "HTTP/1.1 401 Unauthorized",
+            r#"{"error":{"type":"authentication_error","message":"invalid x-api-key"}}"#,
+        )
+        .await;
+        let outcome = probe_credential(base_url, "bogus-key", "claude-test").await;
+        assert_eq!(
+            outcome,
+            CredentialProbe::Invalid,
+            "a 401 must probe Invalid"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn probe_credential_classifies_http_503_as_unknown() {
+        // A transient server fault is inconclusive (fail-safe): the credential is
+        // neither confirmed nor refuted, so a flaky endpoint never marks a good
+        // key invalid.
+        let base_url = spawn_status_server(
+            "HTTP/1.1 503 Service Unavailable",
+            r#"{"error":{"type":"overloaded_error","message":"service unavailable"}}"#,
+        )
+        .await;
+        let outcome = probe_credential(base_url, "some-key", "claude-test").await;
+        assert_eq!(
+            outcome,
+            CredentialProbe::Unknown,
+            "a transient 503 must probe Unknown, not Invalid"
+        );
+    }
+
+    #[test]
+    fn vertex_gemini_global_and_regional_base_urls() {
+        // Contract for the Vertex endpoint `vertex_gemini` constructs: the global
+        // location uses the un-prefixed `aiplatform` host with a `.../global/` path,
+        // while a region prefixes both the host (`{location}-aiplatform`) and the
+        // trailing path segment. genai's Vertex adapter appends
+        // `publishers/google/models/{model}:generateContent` to this base.
+        let project = "my-proj";
+
+        let global =
+            format!("https://aiplatform.googleapis.com/v1/projects/{project}/locations/global/");
+        assert_eq!(
+            global,
+            "https://aiplatform.googleapis.com/v1/projects/my-proj/locations/global/"
+        );
+        assert!(
+            !global.contains("global-aiplatform"),
+            "global uses the un-prefixed host"
+        );
+
+        let location = "us-central1";
+        let regional = format!(
+            "https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/"
+        );
+        assert_eq!(
+            regional,
+            "https://us-central1-aiplatform.googleapis.com/v1/projects/my-proj/locations/us-central1/"
+        );
+        // A region prefixes the host and closes the path with the same region.
+        assert!(regional.starts_with("https://us-central1-aiplatform.googleapis.com/"));
+        assert!(regional.ends_with("/locations/us-central1/"));
+    }
+}

@@ -288,3 +288,94 @@ fn genai_adapter(adapter_kind: &str) -> Option<awaken_provider_genai::AdapterKin
         _ => return None,
     })
 }
+
+#[cfg(test)]
+mod executor_seam_tests {
+    use super::*;
+    use awaken_agent_contract::RedactedString;
+    use awaken_config_resolver::{InferenceTriple, ResolvedInference};
+    use awaken_model_catalog::ApiDialect;
+    use awaken_provider_genai::AdapterKind;
+
+    /// Build a hermetic `ResolvedInference` — the resolver's output the composition
+    /// seam turns into an executor — with a chosen adapter/base_url/credential.
+    fn inference(
+        adapter: &'static str,
+        base_url: Option<&str>,
+        credential: Option<&str>,
+    ) -> ResolvedInference {
+        ResolvedInference {
+            triple: InferenceTriple {
+                model_id: "m".into(),
+                provider_id: "p".into(),
+                protocol_endpoint_id: "ep".into(),
+                dialect: ApiDialect::AnthropicMessages,
+            },
+            adapter_kind: adapter,
+            base_url: base_url.map(str::to_string),
+            credential: credential.map(RedactedString::new),
+        }
+    }
+
+    /// The one place a supported provider wire is named maps exactly the three the
+    /// build serves, and returns `None` (→ `UnsupportedAdapter`) for everything else,
+    /// case-sensitively.
+    #[test]
+    fn genai_adapter_maps_the_supported_wires_and_rejects_the_rest() {
+        assert_eq!(genai_adapter("anthropic"), Some(AdapterKind::Anthropic));
+        assert_eq!(genai_adapter("gemini"), Some(AdapterKind::Gemini));
+        assert_eq!(genai_adapter("openai"), Some(AdapterKind::OpenAI));
+        // Fail-closed: an unserved wire, the empty string, and a case variant all miss.
+        assert_eq!(genai_adapter("cohere"), None);
+        assert_eq!(genai_adapter(""), None);
+        assert_eq!(genai_adapter("Anthropic"), None);
+    }
+
+    /// `UnsupportedAdapter` is the reachable fail-closed arm: a resolved inference
+    /// whose `adapter_kind` no provider in this build serves is refused, naming the
+    /// adapter — never silently built into some default executor.
+    #[test]
+    fn executor_from_resolved_fails_closed_on_an_unsupported_adapter() {
+        let inf = inference("cohere", Some("https://gw/"), Some("sk-secret"));
+        // `Ok` carries an `Arc<dyn LlmExecutor>` (not `Debug`), so map to the error first.
+        match executor_from_resolved(&inf).err() {
+            Some(ResolvedExecutorError::UnsupportedAdapter(a)) => assert_eq!(a, "cohere"),
+            other => panic!("expected UnsupportedAdapter, got {other:?}"),
+        }
+    }
+
+    // KNOWN BUG (adjudicate): wire or delete.
+    // `ResolvedExecutorError::MissingBaseUrl` (lib.rs) is never constructed. The only
+    // builder, `executor_from_resolved`, passes `inference.base_url` (an `Option`)
+    // straight into `GenaiExecutor::from_resolved` with no `None` check, so a resolved
+    // inference with `base_url: None` builds an executor (the genai default endpoint)
+    // rather than erroring — the variant is dead. This test CHARACTERIZES today's
+    // behavior; adjudicate whether a missing base URL should fail closed (construct the
+    // variant) or the variant should be deleted.
+    #[test]
+    fn missing_base_url_variant_is_never_constructed_by_the_seam() {
+        // A supported adapter + a credential but NO base URL still builds an executor,
+        // proving `MissingBaseUrl` is unreachable through the composition seam.
+        let inf = inference("anthropic", None, Some("sk-secret"));
+        assert!(
+            executor_from_resolved(&inf).is_ok(),
+            "base_url: None does NOT yield MissingBaseUrl — the variant is dead"
+        );
+        // The dead variant still compiles and renders its intended message.
+        let dead = ResolvedExecutorError::MissingBaseUrl("anthropic");
+        assert_eq!(
+            dead.to_string(),
+            "resolved inference has no base_url for adapter `anthropic`"
+        );
+    }
+
+    /// A supported adapter with a credential builds an executor (the happy path the
+    /// two fail-closed arms bracket), with or without a base URL.
+    #[test]
+    fn executor_from_resolved_builds_for_a_supported_adapter_with_a_credential() {
+        assert!(
+            executor_from_resolved(&inference("openai", Some("https://gw/"), Some("k"))).is_ok()
+        );
+        assert!(executor_from_resolved(&inference("gemini", None, Some("k"))).is_ok());
+    }
+}

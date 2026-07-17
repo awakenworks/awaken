@@ -224,4 +224,79 @@ mod tests {
         keys.dedup();
         assert_eq!(keys.len(), n, "duplicate topic key");
     }
+
+    // Task 1: corpus determinism — EVERY curated topic is a complete 5-section
+    // explanation (plus a non-empty key + title), so `explain(Some(key))` can never
+    // return a blank section for any topic the index advertises.
+    #[test]
+    fn every_topic_has_five_nonempty_sections() {
+        assert!(!TOPICS.is_empty(), "the curated corpus must not be empty");
+        for t in TOPICS {
+            // The struct-level invariant: key + title + all 5 sections are non-empty.
+            for (field, value) in [
+                ("key", t.key),
+                ("title", t.title),
+                ("what", t.what),
+                ("why", t.why),
+                ("location", t.location),
+                ("how", t.how),
+                ("gotcha", t.gotcha),
+            ] {
+                assert!(
+                    !value.trim().is_empty(),
+                    "topic `{}` has an empty `{field}` field",
+                    t.key
+                );
+            }
+            // The projected payload for every topic carries all 5 rendered sections.
+            let v = explain(Some(t.key));
+            assert_eq!(v["topic"], t.key);
+            for k in ["what", "why", "where", "how", "gotchas"] {
+                assert!(
+                    v[k].as_str().is_some_and(|s| !s.trim().is_empty()),
+                    "topic `{}` renders an empty `{k}` section",
+                    t.key
+                );
+            }
+        }
+    }
+
+    // Task 1: lookup is case-insensitive AND whitespace-trimmed, so an operator's loose
+    // topic string ("  Connect-Model  ") still resolves to the exact curated topic.
+    #[test]
+    fn lookup_is_case_insensitive_and_whitespace_trimmed() {
+        for probe in [
+            "connect-model",
+            "CONNECT-MODEL",
+            "Connect-Model",
+            "  connect-model  ",
+            "\tConnect-Model\n",
+        ] {
+            let v = explain(Some(probe));
+            assert_eq!(
+                v["topic"], "connect-model",
+                "probe {probe:?} should resolve to the connect-model topic"
+            );
+            // A resolved topic never carries the unknown-topic note.
+            assert!(v.get("unknown_topic").is_none(), "probe {probe:?} misfired");
+        }
+    }
+
+    // Task 1: a whitespace-only / empty topic is treated as "no topic" → the index,
+    // not an unknown-topic miss (the `filter(|t| !t.is_empty())` after trim).
+    #[test]
+    fn blank_topic_is_treated_as_the_index() {
+        for probe in ["", "   ", "\t\n"] {
+            let v = explain(Some(probe));
+            assert_eq!(
+                v["topics"].as_array().map(Vec::len),
+                Some(TOPICS.len()),
+                "blank probe {probe:?} should return the full index"
+            );
+            assert!(
+                v.get("unknown_topic").is_none(),
+                "blank probe {probe:?} must not be an unknown-topic miss"
+            );
+        }
+    }
 }

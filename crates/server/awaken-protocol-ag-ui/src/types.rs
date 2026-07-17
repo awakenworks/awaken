@@ -167,6 +167,90 @@ mod tests {
         );
     }
 
+    // BYTE-COMPAT PIN: the AG-UI SDK keys the text-message lifecycle on the exact
+    // camelCase field `messageId` (plus `role` on START, `delta` on CONTENT). A
+    // rename to snake_case (`message_id`) would break every `HttpAgent` consumer, so
+    // pin the literal wire shape of all three TEXT_MESSAGE_* frames.
+    #[test]
+    fn text_message_frames_pin_camel_case_field_names() {
+        assert_eq!(
+            serde_json::to_value(AgUiEvent::TextMessageStart {
+                message_id: "m1".into(),
+                role: "assistant".into(),
+            })
+            .unwrap(),
+            json!({ "type": "TEXT_MESSAGE_START", "messageId": "m1", "role": "assistant" })
+        );
+        assert_eq!(
+            serde_json::to_value(AgUiEvent::TextMessageContent {
+                message_id: "m1".into(),
+                delta: "hi".into(),
+            })
+            .unwrap(),
+            json!({ "type": "TEXT_MESSAGE_CONTENT", "messageId": "m1", "delta": "hi" })
+        );
+        assert_eq!(
+            serde_json::to_value(AgUiEvent::TextMessageEnd {
+                message_id: "m1".into(),
+            })
+            .unwrap(),
+            json!({ "type": "TEXT_MESSAGE_END", "messageId": "m1" })
+        );
+    }
+
+    // BYTE-COMPAT PIN: the tool-call lifecycle keys on `toolCallId` throughout and
+    // `toolCallName` on START (note: NOT `toolName` — AG-UI's spelling differs from
+    // the AI SDK's). A snake_case rename must fail these.
+    #[test]
+    fn tool_call_frames_pin_camel_case_field_names() {
+        assert_eq!(
+            serde_json::to_value(AgUiEvent::ToolCallStart {
+                tool_call_id: "c1".into(),
+                tool_call_name: "read".into(),
+            })
+            .unwrap(),
+            json!({ "type": "TOOL_CALL_START", "toolCallId": "c1", "toolCallName": "read" })
+        );
+        assert_eq!(
+            serde_json::to_value(AgUiEvent::ToolCallArgs {
+                tool_call_id: "c1".into(),
+                delta: "{\"p\":".into(),
+            })
+            .unwrap(),
+            json!({ "type": "TOOL_CALL_ARGS", "toolCallId": "c1", "delta": "{\"p\":" })
+        );
+        assert_eq!(
+            serde_json::to_value(AgUiEvent::ToolCallEnd {
+                tool_call_id: "c1".into(),
+            })
+            .unwrap(),
+            json!({ "type": "TOOL_CALL_END", "toolCallId": "c1" })
+        );
+    }
+
+    // `RunAgentInput` reads only the fields the runtime slice needs; the AG-UI SDK
+    // sends a much richer body (`tools`, `context`, `state`, `forwardedProps`,
+    // `runId` sibling keys). The decode must TOLERATE those unknown fields — a strict
+    // `deny_unknown_fields` regression would reject every real SDK request. Pin that
+    // a fully-populated real-shaped body still parses and reads the known fields.
+    #[test]
+    fn run_agent_input_tolerates_unknown_fields() {
+        let input: RunAgentInput = serde_json::from_value(json!({
+            "threadId": "t1",
+            "runId": "r1",
+            "messages": [{ "role": "user", "content": "go" }],
+            "tools": [{ "name": "read", "parameters": {} }],
+            "context": [{ "description": "d", "value": "v" }],
+            "state": { "arbitrary": "blob" },
+            "forwardedProps": { "anything": true },
+        }))
+        .expect("a real-shaped AG-UI body with extra fields must parse");
+        assert_eq!(input.thread_id.as_deref(), Some("t1"));
+        assert_eq!(input.run_id.as_deref(), Some("r1"));
+        assert_eq!(input.messages.len(), 1);
+        assert_eq!(input.messages[0].role, "user");
+    }
+
     #[test]
     fn tool_call_result_wire_shape() {
         let ev = AgUiEvent::ToolCallResult {

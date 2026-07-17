@@ -3,7 +3,7 @@
 //! run-end continuation guard — driven through the plugin's public
 //! `Contributions`, with a hand-built state `Store`.
 
-use awaken_agent_contract::agent::message::Message;
+use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::state::{Command, FoldStateKey, StateKey, Store};
 use awaken_ext_state_machine::{
@@ -390,6 +390,73 @@ async fn observer_emits_transition_message() {
         Some("b")
     );
     assert_eq!(Metrics::load_or_default(&store).total.emitted, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Emit message role defaulting (build_message): positioned targets
+// (Session/Conversation) default an unset role to User and honor an explicit
+// role; system targets force System regardless of the configured role.
+// ---------------------------------------------------------------------------
+
+/// Emit a transition message with the given target/role and return its role.
+async fn emitted_role(target: &str, role_json: &str) -> Role {
+    let cfg = format!(
+        r#"{{"machines":[{{"name":"m","scope":"run","key":"","initial":"a",
+            "transitions":[{{"on":"X","from":"a","to":"b",
+                "emit":{{"target":"{target}","content":"note"{role_json}}}}}]}}]}}"#
+    );
+    let p = plugin(&cfg);
+    let contributions = p.resolve();
+    let observer = &contributions.phase_hooks[0];
+    let store = Store::new();
+    let reaction = after_tool(
+        observer,
+        &call("X", json!({})),
+        &ToolOutput::ok("call-1", "ok"),
+        &store,
+    )
+    .await;
+    assert_eq!(
+        reaction.messages.len(),
+        1,
+        "the transition emits one message"
+    );
+    reaction.messages[0].role
+}
+
+#[tokio::test]
+async fn session_target_without_a_role_defaults_to_user() {
+    assert_eq!(emitted_role("session", "").await, Role::User);
+}
+
+#[tokio::test]
+async fn conversation_target_without_a_role_defaults_to_user() {
+    assert_eq!(emitted_role("conversation", "").await, Role::User);
+}
+
+#[tokio::test]
+async fn positioned_targets_honor_an_explicit_role() {
+    assert_eq!(
+        emitted_role("session", r#","role":"assistant""#).await,
+        Role::Assistant
+    );
+    assert_eq!(
+        emitted_role("conversation", r#","role":"user""#).await,
+        Role::User
+    );
+}
+
+#[tokio::test]
+async fn system_targets_force_system_role_even_when_a_role_is_configured() {
+    // The system band is always System-role; a configured role is ignored there.
+    assert_eq!(
+        emitted_role("system", r#","role":"user""#).await,
+        Role::System
+    );
+    assert_eq!(
+        emitted_role("suffix_system", r#","role":"assistant""#).await,
+        Role::System
+    );
 }
 
 // ---------------------------------------------------------------------------

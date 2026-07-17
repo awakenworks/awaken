@@ -38,7 +38,11 @@ nats = ["dep:async-nats", "dep:futures-lite"]
 [dev-dependencies]
 awaken-store-postgres = { workspace = true }
 awaken-store-sqlite = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
+# dev-only: the transport_client e2e stands up a real axum server mirroring a cell
+# server's dispatch_transport_router on an ephemeral port, so the `HttpDispatchQueue`
+# client's claim/settle cross a real socket (no mock transport).
+axum = { workspace = true }
 
 [lints]
 workspace = true

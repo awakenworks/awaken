@@ -108,3 +108,6 @@ awaken-store-inmem = { workspace = true }
 # Drives the durable-ops axum router in-process (ServiceExt::oneshot) to exercise
 # the SharedHost operational verbs over their real HTTP surface.
 tower = { version = "0.5", features = ["util"] }
+# The per-plane files/models routers were extracted to this sibling adapter crate;
+# the files + resource-composition HTTP tests drive them over one SharedHost.
+awaken-managed-routers = { workspace = true }

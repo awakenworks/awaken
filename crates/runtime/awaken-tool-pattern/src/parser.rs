@@ -715,4 +715,220 @@ mod tests {
         let p = parse_pattern("Bas[hH]").unwrap();
         assert_eq!(p.tool, ToolMatcher::Glob("Bas[hH]".into()));
     }
+
+    // -----------------------------------------------------------------------
+    // parse <-> Display round-trip fidelity (`parse(p.to_string()) == p`)
+    //
+    // proptest is NOT a dev-dependency of this crate, so this uses an
+    // exhaustive hand-written table of representative canonical `Pattern`
+    // values covering every variant (tool: exact/glob/regex incl. escaped
+    // slash; args: any/primary/all six field ops; nested paths: index /
+    // any-index / wildcard; multi-field AND). Every value here is one the
+    // parser can itself emit, so both directions must agree.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn parse_display_round_trip_exhaustive() {
+        let re = |s: &str| regex::Regex::new(s).unwrap();
+        let field = |name: &str| PathSegment::Field(name.into());
+        let cond = |path: Vec<PathSegment>, op: MatchOp, value: &str| FieldCondition {
+            path,
+            op,
+            value: value.into(),
+        };
+
+        let patterns: Vec<ToolCallPattern> = vec![
+            // --- tool-only (ArgMatcher::Any) across all ToolMatcher kinds ---
+            ToolCallPattern {
+                tool: ToolMatcher::Exact("Bash".into()),
+                args: ArgMatcher::Any,
+            },
+            ToolCallPattern {
+                tool: ToolMatcher::Glob("mcp__github__*".into()),
+                args: ArgMatcher::Any,
+            },
+            ToolCallPattern {
+                tool: ToolMatcher::Glob("Bas?".into()),
+                args: ArgMatcher::Any,
+            },
+            ToolCallPattern {
+                tool: ToolMatcher::Glob("Bas[hH]".into()),
+                args: ArgMatcher::Any,
+            },
+            ToolCallPattern {
+                tool: ToolMatcher::Regex(re("mcp__(github|gitlab)__.*")),
+                args: ArgMatcher::Any,
+            },
+            // escaped-slash regex tool — the tricky escaping case
+            ToolCallPattern {
+                tool: ToolMatcher::Regex(re(r"foo\/bar")),
+                args: ArgMatcher::Any,
+            },
+            // --- primary glob (the only Primary form the parser emits) ---
+            ToolCallPattern {
+                tool: ToolMatcher::Exact("Bash".into()),
+                args: ArgMatcher::Primary {
+                    op: MatchOp::Glob,
+                    value: "npm *".into(),
+                },
+            },
+            ToolCallPattern {
+                tool: ToolMatcher::Glob("Bas*".into()),
+                args: ArgMatcher::Primary {
+                    op: MatchOp::Glob,
+                    value: "git status".into(),
+                },
+            },
+            // --- named fields, one entry per operator ---
+            ToolCallPattern {
+                tool: ToolMatcher::Exact("Edit".into()),
+                args: ArgMatcher::Fields(vec![cond(
+                    vec![field("file_path")],
+                    MatchOp::Glob,
+                    "src/**/*.rs",
+                )]),
+            },
+            ToolCallPattern {
+                tool: ToolMatcher::Exact("Bash".into()),
+                args: ArgMatcher::Fields(vec![cond(vec![field("command")], MatchOp::Exact, "ls")]),
+            },
+            ToolCallPattern {
+                tool: ToolMatcher::Exact("Bash".into()),
+                args: ArgMatcher::Fields(vec![cond(
+                    vec![field("command")],
+                    MatchOp::Regex,
+                    "(?i)rm",
+                )]),
+            },
+            ToolCallPattern {
+                tool: ToolMatcher::Exact("Bash".into()),
+                args: ArgMatcher::Fields(vec![cond(
+                    vec![field("command")],
+                    MatchOp::NotGlob,
+                    "rm *",
+                )]),
+            },
+            ToolCallPattern {
+                tool: ToolMatcher::Exact("Bash".into()),
+                args: ArgMatcher::Fields(vec![cond(
+                    vec![field("command")],
+                    MatchOp::NotExact,
+                    "rm",
+                )]),
+            },
+            ToolCallPattern {
+                tool: ToolMatcher::Exact("Bash".into()),
+                args: ArgMatcher::Fields(vec![cond(
+                    vec![field("command")],
+                    MatchOp::NotRegex,
+                    "^rm",
+                )]),
+            },
+            // --- multi-field AND ---
+            ToolCallPattern {
+                tool: ToolMatcher::Exact("Tool".into()),
+                args: ArgMatcher::Fields(vec![
+                    cond(vec![field("f1")], MatchOp::Glob, "a*"),
+                    cond(vec![field("f2")], MatchOp::Exact, "b"),
+                ]),
+            },
+            // --- nested field paths: specific index / any-index / wildcard ---
+            ToolCallPattern {
+                tool: ToolMatcher::Exact("Tool".into()),
+                args: ArgMatcher::Fields(vec![cond(
+                    vec![field("items"), PathSegment::Index(0), field("name")],
+                    MatchOp::Exact,
+                    "foo",
+                )]),
+            },
+            ToolCallPattern {
+                tool: ToolMatcher::Exact("Tool".into()),
+                args: ArgMatcher::Fields(vec![cond(
+                    vec![field("a"), field("b"), PathSegment::AnyIndex, field("c")],
+                    MatchOp::Glob,
+                    "pat",
+                )]),
+            },
+            ToolCallPattern {
+                tool: ToolMatcher::Exact("Tool".into()),
+                args: ArgMatcher::Fields(vec![cond(
+                    vec![PathSegment::Wildcard, field("id")],
+                    MatchOp::NotExact,
+                    "secret",
+                )]),
+            },
+            // --- value with a lone backslash before a non-special char:
+            //     Display emits it verbatim, parse preserves it => round-trips ---
+            ToolCallPattern {
+                tool: ToolMatcher::Exact("T".into()),
+                args: ArgMatcher::Fields(vec![cond(
+                    vec![field("f")],
+                    MatchOp::Exact,
+                    r"hello\nworld",
+                )]),
+            },
+        ];
+
+        for p in &patterns {
+            let s = p.to_string();
+            let reparsed = ToolCallPattern::parse(&s)
+                .unwrap_or_else(|e| panic!("failed to reparse {s:?}: {e}"));
+            assert_eq!(&reparsed, p, "round-trip mismatch for {s:?}");
+            // Display of the reparsed pattern must reproduce the original string.
+            assert_eq!(reparsed.to_string(), s, "second Display differs for {s:?}");
+        }
+    }
+
+    // KNOWN BUG (adjudicate): `FieldCondition`'s Display impl (types.rs) writes
+    // the value verbatim inside quotes and does NOT escape `"` or `\`, while
+    // `parse_quoted_value` REQUIRES them escaped. A pattern whose field value
+    // contains a bare `"` therefore cannot survive a Display->parse round-trip
+    // (it either fails to parse or reparses to a different value), which breaks
+    // serde serialization for such patterns. Characterized here; NOT fixed.
+    #[test]
+    fn field_value_with_quote_breaks_round_trip() {
+        let p = ToolCallPattern {
+            tool: ToolMatcher::Exact("T".into()),
+            args: ArgMatcher::Fields(vec![FieldCondition {
+                path: vec![PathSegment::Field("f".into())],
+                op: MatchOp::Exact,
+                value: r#"say "hi""#.into(),
+            }]),
+        };
+        // Display emits the inner quotes unescaped.
+        let s = p.to_string();
+        assert_eq!(s, r#"T(f = "say "hi"")"#);
+        // Which does not reproduce the original pattern on reparse.
+        match ToolCallPattern::parse(&s) {
+            Ok(reparsed) => assert_ne!(reparsed, p, "unexpectedly round-tripped a quoted value"),
+            Err(_) => { /* also acceptable: the malformed Display is unparseable */ }
+        }
+    }
+
+    // KNOWN BUG (adjudicate): sibling of the above for backslashes. Display
+    // emits a `\\` (two backslashes) verbatim; parse collapses `\\` -> `\`,
+    // silently dropping one. So a value containing consecutive backslashes does
+    // not round-trip. Characterized; NOT fixed.
+    #[test]
+    fn field_value_with_double_backslash_loses_a_backslash() {
+        let p = ToolCallPattern {
+            tool: ToolMatcher::Exact("T".into()),
+            args: ArgMatcher::Fields(vec![FieldCondition {
+                path: vec![PathSegment::Field("f".into())],
+                op: MatchOp::Exact,
+                value: r"a\\b".into(), // a, backslash, backslash, b
+            }]),
+        };
+        let s = p.to_string();
+        assert_eq!(s, r#"T(f = "a\\b")"#);
+        let reparsed = ToolCallPattern::parse(&s).unwrap();
+        assert_ne!(reparsed, p, "double-backslash unexpectedly round-tripped");
+        if let ArgMatcher::Fields(c) = &reparsed.args {
+            assert_eq!(
+                c[0].value, r"a\b",
+                "one backslash should be lost on reparse"
+            );
+        } else {
+            panic!("expected Fields");
+        }
+    }
 }

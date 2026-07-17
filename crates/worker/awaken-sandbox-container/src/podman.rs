@@ -455,6 +455,37 @@ mod tests {
         assert!(rt.agent_addr("cid").await.is_err());
     }
 
+    /// Cold-start bounded-retry-then-fail-closed: when the agent's port is NEVER
+    /// published (`podman port` keeps returning empty), `open_channel` must retry a
+    /// BOUNDED number of times and then fail closed rather than spin forever — so a
+    /// genuinely dead agent still surfaces an error. Driven entirely through the scripted
+    /// `CommandExec` (no daemon, no binary); `start_paused` auto-advances the backoff so
+    /// the ~6s bound resolves instantly and deterministically. This exercises the SAME
+    /// loop shape the (non-injectable, bollard-bound) `docker::open_channel` runs.
+    #[tokio::test(start_paused = true)]
+    async fn open_channel_retries_a_bounded_number_then_fails_closed() {
+        // Every `podman port` reports nothing published → agent_addr errs each attempt.
+        let (rt, fake) = runtime_with(9000, |_| ok(""));
+        let e = rt.open_channel("cid").await;
+        assert!(
+            e.is_err(),
+            "a never-reachable agent must fail closed, not hang"
+        );
+        // The retry is bounded (the loop is `for _ in 0..40`): exactly 40 port lookups
+        // were attempted, then it gave up — never an unbounded spin.
+        let port_attempts = fake
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|argv| argv.first().map(String::as_str) == Some("port"))
+            .count();
+        assert_eq!(
+            port_attempts, 40,
+            "open_channel must retry a bounded number of times then fail closed"
+        );
+    }
+
     #[tokio::test]
     async fn inspect_reads_running_true_as_running_and_anything_else_as_gone() {
         let (running, _) = runtime_with(9000, |_| ok("true"));

@@ -597,4 +597,75 @@ mod tests {
             .expect_err("request on a closed peer fails");
         assert!(matches!(err, McpTransportError::ConnectionClosed));
     }
+
+    #[tokio::test]
+    async fn concurrent_requests_resolve_out_of_order_to_the_right_id() {
+        // The peer's core job: several in-flight requests are demuxed by id
+        // through the `pending` map. Fire three concurrently, then answer them in
+        // REVERSE order, so responses arrive out of order w.r.t. the requests —
+        // each future must still resolve to its OWN result, never a sibling's.
+        let (peer, _notif, mut server_r, mut server_w) = wired(None);
+        let peer = Arc::new(peer);
+
+        // Each request carries a distinct marker `n`; handles[i] is the task for n=i.
+        let mut handles = Vec::new();
+        for n in 0..3i64 {
+            let peer = Arc::clone(&peer);
+            handles.push(tokio::spawn(async move {
+                peer.request("echo", json!({ "n": n }), Duration::from_secs(5))
+                    .await
+            }));
+        }
+
+        // Read all three requests, remembering each wire id -> its marker n.
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            let req = read_line(&mut server_r).await;
+            let id = req["id"].as_i64().expect("numeric id");
+            let n = req["params"]["n"].as_i64().expect("marker");
+            seen.push((id, n));
+        }
+        // Reply in reverse arrival order; the result echoes that id's own marker.
+        for (id, n) in seen.into_iter().rev() {
+            let reply = format!(
+                "{}\n",
+                json!({ "jsonrpc": "2.0", "id": id, "result": { "n": n } })
+            );
+            server_w.write_all(reply.as_bytes()).await.unwrap();
+        }
+
+        // Every future resolves to its own marker despite the reversed replies.
+        for (i, handle) in handles.into_iter().enumerate() {
+            let result = handle.await.unwrap().expect("resolves");
+            assert_eq!(
+                result["n"], i as i64,
+                "request n={i} resolved to the wrong response"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn notify_does_not_check_liveness_unlike_request() {
+        // Characterize the request/notify asymmetry on a closed peer: request()
+        // consults is_alive() and fails fast, but notify() does not — it only
+        // queues to the write task, so the first notify still returns Ok even
+        // though the stream is gone (fire-and-forget, liveness unchecked).
+        let (peer, _notif, server_r, server_w) = wired(None);
+        drop(server_w);
+        drop(server_r);
+        tokio::time::timeout(Duration::from_secs(5), peer.closed())
+            .await
+            .expect("closed resolves");
+        assert!(!peer.is_alive());
+
+        let err = peer
+            .request("ping", json!({}), Duration::from_secs(5))
+            .await
+            .expect_err("request rejected on a closed peer");
+        assert!(matches!(err, McpTransportError::ConnectionClosed));
+
+        peer.notify("notifications/progress", json!({}))
+            .await
+            .expect("notify queues despite closure — liveness is not checked");
+    }
 }

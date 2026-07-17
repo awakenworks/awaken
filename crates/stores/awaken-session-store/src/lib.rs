@@ -364,6 +364,43 @@ mod tests {
         assert_eq!(reopened.owner("sesn_missing").await, None);
     }
 
+    /// KNOWN BUG (adjudicate): `decode` reads `metadata_json`/`mcp_json` with
+    /// `serde_json::from_str(...).unwrap_or_default()`, so a row whose JSON columns are
+    /// corrupt (truncated write, manual edit, a schema drift) decodes SILENTLY to an
+    /// empty `metadata`/`mcp_servers` instead of surfacing an error — a fail-open that
+    /// masks data loss on read. This characterizes the current swallowing behavior; a
+    /// fix would return a decode error (or the `get` port would become fallible) and
+    /// this test would flip to assert that.
+    #[tokio::test]
+    async fn corrupt_json_columns_decode_to_defaults_instead_of_erroring() {
+        let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
+        repo.save(sample("sesn_1")).await;
+        // Corrupt both JSON payload columns out-of-band (an on-disk corruption / drift).
+        {
+            let conn = repo.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE managed_session \
+                 SET metadata_json = ?2, mcp_json = ?3 WHERE session_id = ?1",
+                params!["sesn_1", "{not valid json", "also-not-json"],
+            )
+            .unwrap();
+        }
+        // The corrupt row still decodes — to empty collections, not an error.
+        let got = repo.get("sesn_1").await.expect("row still returned");
+        assert!(
+            got.metadata.is_empty(),
+            "corrupt metadata_json silently decodes to an empty map (fail-open)"
+        );
+        assert!(
+            got.mcp_servers.is_empty(),
+            "corrupt mcp_json silently decodes to an empty vec (fail-open)"
+        );
+        // The intact, non-JSON columns are unaffected — proving the loss is scoped to
+        // the swallowed JSON payloads, not a wholesale read failure.
+        assert_eq!(got.agent_id, "coder");
+        assert_eq!(got.model, "kimi-k2");
+    }
+
     /// Live Postgres round-trip, isolated in its own schema. Skips when no Postgres
     /// is reachable (`AWAKEN_TEST_DATABASE_URL`), proving the shared portable bundle
     /// and the same behavior on the network backend.
@@ -409,5 +446,68 @@ mod tests {
         updated.title = None; // exercises the nullable title column
         repo.save(updated.clone()).await;
         assert_eq!(repo.get("sesn_1").await, Some(updated));
+    }
+
+    /// Postgres parity for the ADR-0051 owner `scope_id` — the same `set_owner` / `owner`
+    /// + default-seed assertions the sqlite `owner_scope_is_recorded_and_survives_a_reopen`
+    /// test has, which the pg test previously OMITTED. A second pool over the same schema
+    /// stands in for a restart (the cross-process fence input the edge guard reads). Skips
+    /// when no Postgres is reachable (`AWAKEN_TEST_DATABASE_URL`), isolated in its schema.
+    #[tokio::test]
+    async fn postgres_owner_scope_is_recorded_and_survives_a_reopen() {
+        use sqlx::Executor;
+        use sqlx::postgres::{PgPool, PgPoolOptions};
+
+        let url = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
+            "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
+        });
+        let Ok(admin) = PgPool::connect(&url).await else {
+            println!("[skip] no Postgres reachable");
+            return;
+        };
+        let _ = admin
+            .execute("DROP SCHEMA IF EXISTS t_managed_session_owner CASCADE")
+            .await;
+        admin
+            .execute("CREATE SCHEMA t_managed_session_owner")
+            .await
+            .expect("create schema");
+        admin.close().await;
+
+        let pool = || {
+            let url = url.clone();
+            async move {
+                PgPoolOptions::new()
+                    .after_connect(|conn, _meta| {
+                        Box::pin(async move {
+                            conn.execute("SET search_path = t_managed_session_owner")
+                                .await?;
+                            Ok(())
+                        })
+                    })
+                    .connect(&url)
+                    .await
+                    .expect("schema pool")
+            }
+        };
+
+        // First "process": save + stamp an owner.
+        let repo = PostgresManagedSessionRepository::with_pool(pool().await)
+            .await
+            .expect("store");
+        repo.save(sample("sesn_1")).await;
+        repo.set_owner("sesn_1", "ws_a").await;
+        assert_eq!(repo.owner("sesn_1").await, Some("ws_a".to_string()));
+
+        // Second "process": a fresh pool over the same schema still reads the owner.
+        let reopened = PostgresManagedSessionRepository::with_pool(pool().await)
+            .await
+            .expect("store");
+        assert_eq!(reopened.owner("sesn_1").await, Some("ws_a".to_string()));
+        // A row saved but never owner-stamped defaults to the seeded scope.
+        reopened.save(sample("sesn_2")).await;
+        assert_eq!(reopened.owner("sesn_2").await, Some("default".to_string()));
+        // An unknown session has no owner.
+        assert_eq!(reopened.owner("sesn_missing").await, None);
     }
 }

@@ -493,6 +493,74 @@ async fn list_published_returns_only_published_rows_of_the_scope_in_insertion_or
     );
 }
 
+#[tokio::test]
+async fn list_published_warm_load_latest_per_agent_is_deterministic_on_sqlite() {
+    // TASK 1: multiple publications for the SAME agent id (distinct fingerprints via
+    // distinct instructions). SQLite orders `list_published_scoped` by `rowid ASC` — a
+    // monotonic per-row integer, i.e. insertion order — so a warm-load that folds the
+    // oldest-first list into an agent-keyed map DETERMINISTICALLY keeps the last-inserted
+    // publication per agent ("latest wins", the warm-install reload contract).
+    let store = SqliteConfigStore::open_in_memory().expect("store");
+    let a = ScopeId::from("ws_a");
+
+    let v1 = publication_for(&agent_with("dup", "v1"));
+    let v2 = publication_for(&agent_with("dup", "v2"));
+    let v3 = publication_for(&agent_with("dup", "v3"));
+    // Same agent, three distinct content addresses (fingerprint tracks instructions).
+    assert_eq!(v1.agent_id, "dup");
+    assert_eq!(v3.agent_id, "dup");
+    assert_ne!(v1.fingerprint, v2.fingerprint);
+    assert_ne!(v2.fingerprint, v3.fingerprint);
+
+    store.put_publication_scoped(&a, &v1).await.expect("v1");
+    store.put_publication_scoped(&a, &v2).await.expect("v2");
+    store.put_publication_scoped(&a, &v3).await.expect("v3");
+
+    let listed = store.list_published_scoped(&a).await.expect("list");
+    // rowid ASC == insertion order, deterministically.
+    let order: Vec<String> = listed.iter().map(|p| p.fingerprint.clone()).collect();
+    assert_eq!(
+        order,
+        vec![
+            v1.fingerprint.clone(),
+            v2.fingerprint.clone(),
+            v3.fingerprint.clone(),
+        ],
+        "sqlite must reload oldest-first by rowid"
+    );
+
+    // Warm-load fold: agent-keyed map, oldest-first, last write wins → v3, deterministically.
+    let mut warm: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for p in &listed {
+        warm.insert(p.agent_id.clone(), p.fingerprint.clone());
+    }
+    assert_eq!(warm.get("dup"), Some(&v3.fingerprint));
+}
+
+// --- TASK 2: PublicationState serde round-trip -------------------------------
+
+#[test]
+fn publication_state_round_trips_through_serde_for_every_variant() {
+    // Every variant serializes and deserializes back to an equal value. The `state`
+    // column and record carry this enum; a lossy round-trip would silently reclassify
+    // a publication's lifecycle (and the SQL filter `state = 'published'` depends on the
+    // exact lowercase token).
+    for state in [PublicationState::Compiled, PublicationState::Published] {
+        let json = serde_json::to_string(&state).expect("serialize");
+        let back: PublicationState = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(state, back, "PublicationState {state:?} did not round-trip");
+    }
+    // Pin the lowercase wire tokens the schema's `state` column and SQL filter depend on.
+    assert_eq!(
+        serde_json::to_string(&PublicationState::Compiled).unwrap(),
+        "\"compiled\""
+    );
+    assert_eq!(
+        serde_json::to_string(&PublicationState::Published).unwrap(),
+        "\"published\""
+    );
+}
+
 // --- CEG: migration idempotency ----------------------------------------------
 
 #[tokio::test]

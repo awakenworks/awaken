@@ -838,8 +838,11 @@ mod tests {
         use sqlx::Executor;
         use sqlx::postgres::{PgPool, PgPoolOptions};
 
-        let url = std::env::var("AWAKEN_TEST_DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://postgres:pw@127.0.0.1:5455/cov".to_string());
+        // Aligned with the memory/session/skill store pg tests' default URL/port
+        // (was the divergent `:5455/cov`) so one reachable Postgres runs them all.
+        let url = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
+            "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
+        });
         let Ok(admin) = PgPool::connect(&url).await else {
             println!("[skip] no Postgres reachable");
             return;
@@ -906,5 +909,75 @@ mod tests {
         assert!(q.stop("env_a", &hc).await.is_some());
         q.remove_env("env_a").await;
         assert!(q.list("env_a").await.is_empty(), "remove_env purges");
+    }
+
+    /// The whole point of `FOR UPDATE SKIP LOCKED` in the pg `claim`: under real
+    /// concurrent contention for one environment, the single-active-lease cap holds —
+    /// with one queued item and N workers claiming at once, exactly ONE wins the lease
+    /// and the rest get `None` (they skip the row locked by the winner or see the cap).
+    /// Distinct pool connections per task make the transactions genuinely concurrent.
+    /// Skips when no Postgres is reachable (`AWAKEN_TEST_DATABASE_URL`), own schema.
+    #[tokio::test]
+    async fn postgres_concurrent_claim_yields_a_single_active_lease() {
+        use std::sync::Arc;
+
+        use sqlx::Executor;
+        use sqlx::postgres::{PgPool, PgPoolOptions};
+
+        let url = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
+            "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
+        });
+        let Ok(admin) = PgPool::connect(&url).await else {
+            println!("[skip] no Postgres reachable");
+            return;
+        };
+        let _ = admin
+            .execute("DROP SCHEMA IF EXISTS t_work_queue_claim CASCADE")
+            .await;
+        admin
+            .execute("CREATE SCHEMA t_work_queue_claim")
+            .await
+            .expect("schema");
+        admin.close().await;
+        let pool = PgPoolOptions::new()
+            .max_connections(16)
+            .after_connect(|conn, _| {
+                Box::pin(async move {
+                    conn.execute("SET search_path = t_work_queue_claim").await?;
+                    Ok(())
+                })
+            })
+            .connect(&url)
+            .await
+            .expect("schema pool");
+        let q = Arc::new(PostgresWorkQueue::with_pool(pool).await.expect("store"));
+
+        // One queued item, N workers race to claim it concurrently.
+        q.enqueue_session("env_a", "s1").await;
+        let mut handles = Vec::new();
+        for w in 0..8u32 {
+            let q = q.clone();
+            handles.push(tokio::spawn(async move {
+                q.claim("env_a", &format!("worker_{w}"), 0).await
+            }));
+        }
+        let mut winners = 0;
+        for h in handles {
+            if h.await.unwrap().is_some() {
+                winners += 1;
+            }
+        }
+        assert_eq!(
+            winners, 1,
+            "exactly one worker wins the lease under concurrent contention"
+        );
+        // And the store agrees: exactly one active row (pending == 1), depth drained.
+        let st = q.stats("env_a", 0).await;
+        assert_eq!(
+            (st.depth, st.pending),
+            (0, 1),
+            "the single-active cap holds: one active lease, nothing left queued"
+        );
+        q.remove_env("env_a").await;
     }
 }

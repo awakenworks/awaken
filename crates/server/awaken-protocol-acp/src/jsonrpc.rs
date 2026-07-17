@@ -1259,4 +1259,169 @@ mod tests {
             RequestPermissionOutcome::Cancelled
         ));
     }
+
+    // ── Multi-chunk streaming + interleave ordering ──────────────────────────
+
+    #[tokio::test]
+    async fn multiple_agent_message_chunks_interleave_with_a_tool_call_in_seq_order() {
+        // A real turn streams several `agent_message_chunk`s, possibly interleaved with
+        // a tool call. The driver must project each into its own neutral event, in the
+        // arrival order, at strictly increasing seqs (concatenation is the store's job
+        // downstream — the ACL never merges chunks). Assert the exact ordered projection
+        // Message("Hello ") → ToolCall(read) → Message("world") → TurnEnd.
+        let (mut ours, theirs) = channel();
+        let updates = vec![
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hello "}}}}"#.into(),
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"tool_call","toolCallId":"c1","title":"read","rawInput":{"path":"a.txt"}}}}"#.into(),
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"world"}}}}"#.into(),
+        ];
+        let agent = tokio::spawn(scripted_agent(theirs, updates, "end_turn"));
+
+        let mut sink = RecordingSink::default();
+        let reason = run_turn(ours.as_mut(), "go", &mut sink, None)
+            .await
+            .unwrap();
+        assert_eq!(reason, TerminationReason::NaturalEnd);
+
+        // Exact ordered projection, including the synthetic terminal TurnEnd.
+        let shape: Vec<AgentEvent> = sink.events.iter().map(|(_, e)| e.clone()).collect();
+        assert_eq!(
+            shape,
+            vec![
+                AgentEvent::Message {
+                    text: "Hello ".into()
+                },
+                AgentEvent::ToolCall {
+                    id: "c1".into(),
+                    name: "read".into(),
+                    input: serde_json::json!({ "path": "a.txt" }),
+                },
+                AgentEvent::Message {
+                    text: "world".into()
+                },
+                AgentEvent::TurnEnd {
+                    reason: TerminationReason::NaturalEnd,
+                },
+            ],
+            "{shape:?}"
+        );
+        // Strictly increasing seqs, 1..=4, no gaps.
+        let seqs: Vec<u64> = sink.events.iter().map(|(s, _)| *s).collect();
+        assert_eq!(seqs, vec![1, 2, 3, 4]);
+        agent.await.unwrap();
+    }
+
+    // ── JSON-RPC error-response + stale-id pump branches ─────────────────────
+
+    #[tokio::test]
+    async fn a_jsonrpc_error_response_to_the_prompt_surfaces_as_frame() {
+        // `pump_to_response` returns the target id's `result`, but when the agent answers
+        // that id with a JSON-RPC `error` object instead, the turn fails with
+        // `AcpError::Frame` (the error-response arm — never reached by the happy-path
+        // tests, which always answer with `result`).
+        let (mut ours, theirs) = channel();
+        let agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            io.read().await; // initialize
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#,
+            )
+            .await;
+            io.read().await; // session/new
+            io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-1"}}"#)
+                .await;
+            io.read().await; // prompt (id 3) — answered with an error, not a result
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":"internal agent fault"}}"#,
+            )
+            .await;
+        });
+
+        let mut sink = RecordingSink::default();
+        let err = run_turn(ours.as_mut(), "p", &mut sink, None)
+            .await
+            .unwrap_err();
+        match err {
+            AcpError::Frame(detail) => assert!(
+                detail.contains("internal agent fault"),
+                "the frame carries the agent's error body: {detail}"
+            ),
+            other => panic!("expected AcpError::Frame, got {other:?}"),
+        }
+        agent.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_stale_response_to_an_earlier_id_is_skipped_while_pumping() {
+        // While pumping for the prompt response (id 3), a response bearing an unrelated
+        // id (a late reply to an earlier request) must be skipped — the `continue`
+        // branch — and the real id-3 response still resolves the turn. The projected
+        // agent message proves the pump kept reading past the stale frame.
+        let (mut ours, theirs) = channel();
+        let updates = vec![
+            // A stale response to id 99 arrives before the real prompt response.
+            r#"{"jsonrpc":"2.0","id":99,"result":{"ignored":true}}"#.into(),
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"past the stale id"}}}}"#.into(),
+        ];
+        let agent = tokio::spawn(scripted_agent(theirs, updates, "end_turn"));
+
+        let mut sink = RecordingSink::default();
+        let reason = run_turn(ours.as_mut(), "p", &mut sink, None).await.unwrap();
+        assert_eq!(reason, TerminationReason::NaturalEnd);
+        assert!(
+            sink.events.iter().any(|(_, e)| matches!(
+                e,
+                AgentEvent::Message { text } if text == "past the stale id"
+            )),
+            "the message after the stale id still projected: {:?}",
+            sink.events
+        );
+        agent.await.unwrap();
+    }
+
+    // ── CHARACTERIZATION: `streamed_hard_limit` is UNWIRED here ───────────────
+
+    #[tokio::test]
+    async fn a_quota_banner_streamed_as_assistant_text_is_not_failed_closed() {
+        // KNOWN BUG (adjudicate): `error::streamed_hard_limit` detects a provider's HARD
+        // quota banner that arrives as assistant TEXT ("You've hit your weekly limit ·
+        // resets …") — the case where the CLI then hangs — and classifies it RateLimited
+        // so the turn can fail closed. But `run_turn` never consults it: an
+        // `agent_message_chunk` is projected verbatim as `AgentEvent::Message` and the
+        // turn ends on its `stopReason` like any other. This test PINS that current
+        // (unwired) behavior: the banner is committed as a plain assistant message and
+        // the turn ends `NaturalEnd`, NOT an Error/rate-limit termination.
+        let banner = "You've hit your weekly limit · resets Jun 30";
+        // Sanity: the detector itself WOULD flag this text — so the gap is purely that
+        // the driver does not call it, not that the text is unrecognized.
+        assert!(
+            crate::streamed_hard_limit(banner).is_some(),
+            "precondition: the banner is a recognized hard-limit banner"
+        );
+
+        let (mut ours, theirs) = channel();
+        let updates = vec![format!(
+            r#"{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"sess-1","update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"{banner}"}}}}}}}}"#
+        )];
+        let agent = tokio::spawn(scripted_agent(theirs, updates, "end_turn"));
+
+        let mut sink = RecordingSink::default();
+        let reason = run_turn(ours.as_mut(), "p", &mut sink, None).await.unwrap();
+        // The turn is NOT failed closed: it ends naturally…
+        assert_eq!(
+            reason,
+            TerminationReason::NaturalEnd,
+            "the quota banner does not fail the turn closed (unwired detector)"
+        );
+        // …and the banner is committed verbatim as an ordinary assistant message.
+        assert!(
+            sink.events.iter().any(|(_, e)| matches!(
+                e,
+                AgentEvent::Message { text } if text == banner
+            )),
+            "the banner is projected as plain assistant text: {:?}",
+            sink.events
+        );
+        agent.await.unwrap();
+    }
 }

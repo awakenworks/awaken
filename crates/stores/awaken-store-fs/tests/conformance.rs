@@ -27,3 +27,29 @@ async fn commits_accumulate() {
 async fn terminal_run_is_fenced() {
     awaken_store_conformance::terminal_run_is_fenced(&fresh("fence").await).await;
 }
+
+#[tokio::test]
+async fn waiting_ticket_parks_then_clears() {
+    awaken_store_conformance::waiting_ticket_parks_then_clears(&fresh("wait").await).await;
+}
+
+#[tokio::test]
+async fn concurrent_appends_are_dense_and_distinct() {
+    awaken_store_conformance::concurrent_appends_are_dense_and_distinct(&fresh("concurrent").await)
+        .await;
+}
+
+#[tokio::test]
+async fn empty_store_reads_are_absent() {
+    awaken_store_conformance::empty_store_reads_are_absent(&fresh("empty").await).await;
+}
+
+#[tokio::test]
+async fn committed_state_replays() {
+    awaken_store_conformance::committed_state_replays(&fresh("state").await).await;
+}
+
+// The multi-thread isolation case (`two_threads_in_one_store_are_isolated`) is NOT
+// run here: the fs store reuses the single-thread in-memory reference as its read
+// model, so it inherits the same flattening. That divergence is characterized in
+// `thread_isolation_and_waiting.rs`.

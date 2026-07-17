@@ -460,4 +460,42 @@ mod tests {
         );
         assert!(spec.body.contains("still body"));
     }
+
+    #[test]
+    fn skill_spec_round_trips_snake_case_wire() {
+        // A fully-populated spec must survive a serde round-trip unchanged, and the
+        // wire keys are the snake_case field names (the config/authoring contract).
+        let spec = SkillSpec {
+            id: "deploy".into(),
+            name: "Deploy".into(),
+            description: "ship it".into(),
+            when_to_use: Some("releasing".into()),
+            allowed_tools: vec!["bash".into(), "read".into()],
+            model_invocable: true,
+            user_invocable: false,
+            argument_hint: Some("<env>".into()),
+            arguments: vec!["env".into()],
+            model_override: Some("opus".into()),
+            context: SkillContext::Fork,
+            agent: Some("general-purpose".into()),
+            paths: vec!["src/**".into()],
+            category: Some("ops".into()),
+            tags: vec!["ci".into()],
+            version: Some("2.0".into()),
+            provenance: SkillProvenance::AgentCreated,
+            dir: Some("skills/deploy".into()),
+            body: "the steps".into(),
+        };
+        let json = serde_json::to_value(&spec).unwrap();
+        // Spot-check the snake_case wire keys and the enum tokens.
+        assert!(json.get("when_to_use").is_some());
+        assert!(json.get("allowed_tools").is_some());
+        assert!(json.get("model_invocable").is_some());
+        assert!(json.get("model_override").is_some());
+        assert_eq!(json["context"], "fork");
+        assert_eq!(json["provenance"], "agent_created");
+
+        let back: SkillSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, spec);
+    }
 }

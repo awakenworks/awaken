@@ -165,3 +165,66 @@ async fn postgres_list_published_reloads_published_rows_of_the_scope() {
     assert_eq!(b_list.len(), 1);
     assert_eq!(b_list[0].fingerprint, p_b.fingerprint);
 }
+
+/// TASK 1 (pg equivalent): multiple publications for the SAME agent id. SQLite orders
+/// `list_published_scoped` by `rowid ASC` (a monotonic per-row integer), giving a
+/// deterministic oldest-first reload and a deterministic "latest per agent" warm-load;
+/// Postgres orders by `created_at ASC`, which has NO tie-break key. This test pins the
+/// DETERMINISTIC guarantee (every published row of the agent is reloaded — set parity
+/// with sqlite) and characterizes the non-deterministic ordering below. Substrate-bound:
+/// skips when no Postgres is reachable.
+#[tokio::test]
+async fn postgres_list_published_warm_load_same_agent_reloads_the_full_set() {
+    let Some(pool) = schema_pool("t_config_warmload").await else {
+        return;
+    };
+    let store = PostgresConfigStore::with_pool(pool).await.expect("store");
+    let a = ScopeId::from("ws_a");
+
+    let tools = vec![ToolDescriptor::pinned(
+        "test",
+        "echo",
+        "Echo",
+        serde_json::json!({"type": "object"}),
+    )];
+    // Same agent id "dup", distinct instructions → distinct content-address fingerprints.
+    let pub_v = |instr: &str| -> StoredPublication {
+        let cfg = AgentConfig {
+            id: "dup".to_string(),
+            instructions: instr.to_string(),
+            max_steps: 8,
+            model_binding: awaken_config_store::ModelSelection::pinned("p", "m", "b"),
+            tool_ids: vec!["echo".to_string()],
+            ..Default::default()
+        };
+        StoredPublication::published(compile(&cfg, &tools).expect("compile"), &cfg.id)
+    };
+
+    let v1 = pub_v("v1");
+    let v2 = pub_v("v2");
+    let v3 = pub_v("v3");
+    store.put_publication_scoped(&a, &v1).await.expect("v1");
+    store.put_publication_scoped(&a, &v2).await.expect("v2");
+    store.put_publication_scoped(&a, &v3).await.expect("v3");
+
+    let listed = store.list_published_scoped(&a).await.expect("list");
+    // Deterministic: every published row of the agent is reloaded (set parity with sqlite).
+    let got: std::collections::BTreeSet<String> =
+        listed.iter().map(|p| p.fingerprint.clone()).collect();
+    let want: std::collections::BTreeSet<String> = [
+        v1.fingerprint.clone(),
+        v2.fingerprint.clone(),
+        v3.fingerprint.clone(),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(got, want, "pg must reload every published row of the agent");
+
+    // KNOWN BUG (adjudicate): list_published_scoped pg tie-break non-determinism vs sqlite rowid
+    // Postgres `ORDER BY created_at ASC` has no secondary key, so rows sharing a `created_at`
+    // (same-instant inserts) come back in an UNDEFINED relative order. The "latest publication
+    // per agent" that a warm-load derives is therefore NOT deterministic on pg the way sqlite's
+    // `rowid ASC` makes it. We assert only the order-insensitive set here, characterizing (not
+    // fixing) the parity hole; a fix would add a monotonic tie-break (e.g. a serial column) to
+    // the pg ORDER BY so warm-load's latest-per-agent matches sqlite.
+}

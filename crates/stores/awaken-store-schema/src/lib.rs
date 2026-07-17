@@ -123,4 +123,59 @@ mod tests {
         assert_eq!(bundle.bundle_id(), COMMIT_BUNDLE_ID);
         assert_eq!(COMMIT_BUNDLE_ID, "awaken.runtime_commit");
     }
+
+    // Every portable token in the schema resolves to a concrete, dialect-specific
+    // form, and no `{...}` token survives rendering. This pins the token vocabulary
+    // the schema relies on so a future column that introduces an unsupported token
+    // (a typo, or a token the migrator does not expand) is caught here rather than
+    // as a raw `{token}` reaching a live DDL statement. The two dialects render
+    // differently (JSONB vs TEXT, etc.), so both are checked.
+    #[test]
+    fn every_portable_token_renders_to_a_concrete_dialect_form() {
+        use awaken_scoped_migration::{Dialect, render};
+
+        for (_, _, template) in COMMIT_SPECS {
+            for (dialect, json, ts, now, pk) in [
+                (
+                    Dialect::Postgres,
+                    "JSONB",
+                    "TIMESTAMPTZ",
+                    "now()",
+                    "BIGSERIAL",
+                ),
+                (
+                    Dialect::Sqlite,
+                    "TEXT",
+                    "TEXT",
+                    "CURRENT_TIMESTAMP",
+                    "AUTOINCREMENT",
+                ),
+            ] {
+                let sql = render(template, dialect, "runtime");
+                // No token leaks through: every `{...}` was expanded (prefix included).
+                assert!(
+                    !sql.contains('{') && !sql.contains('}'),
+                    "unexpanded token in {dialect:?}: {sql}"
+                );
+                assert!(
+                    sql.contains("runtime_"),
+                    "{{prefix}} expanded in {dialect:?}"
+                );
+                // `{json}` is on every table (phase / data / kind / payload / ticket).
+                assert!(
+                    sql.contains(json),
+                    "{{json}} → {json} in {dialect:?}: {sql}"
+                );
+                if template.contains("{timestamptz}") {
+                    assert!(sql.contains(ts), "{{timestamptz}} → {ts} in {dialect:?}");
+                }
+                if template.contains("{now}") {
+                    assert!(sql.contains(now), "{{now}} → {now} in {dialect:?}");
+                }
+                if template.contains("{pk_autoinc}") {
+                    assert!(sql.contains(pk), "{{pk_autoinc}} → {pk} in {dialect:?}");
+                }
+            }
+        }
+    }
 }

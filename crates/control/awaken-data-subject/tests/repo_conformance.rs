@@ -1,10 +1,134 @@
 //! Backend-generic conformance for `DataSubjectRepo`, run against every backend
-//! (in-memory + sqlite), plus a sqlite cross-restart durability check.
+//! (in-memory + sqlite), plus a sqlite cross-restart durability check. The
+//! captured-content erasure/TTL/Art.18 suite is likewise backend-generic, run over
+//! the same body for in-memory, sqlite, and (feature-gated) Postgres.
 
+use async_trait::async_trait;
 use awaken_data_subject::{
     ConsentGrant, ConsentStatus, DataSubject, DataSubjectId, DataSubjectRepo,
-    InMemoryDataSubjectRepo, LawfulBasis, Purpose, SqliteDataSubjectRepo,
+    InMemoryCapturedContentStore, InMemoryDataSubjectRepo, LawfulBasis, Purpose,
+    SqliteCapturedContentStore, SqliteDataSubjectRepo,
 };
+use awaken_runtime_contract::{CaptureSink, ContentEraser, ContentKind};
+
+/// Backend-generic surface for the captured-content stores, so one erasure/TTL/
+/// Art.18 conformance body runs over every backend. Each backend's inherent methods
+/// (sync for sqlite/in-mem, async for pg) are adapted to this async trait; the
+/// content-facing ports (`CaptureSink`/`ContentEraser`) are called through their
+/// real trait impls.
+#[async_trait]
+trait CapturedContentBackend {
+    async fn insert(&self, subject: &DataSubjectId, purpose: Purpose, content: &str, now: i64);
+    async fn restrict(&self, subject: &DataSubjectId) -> usize;
+    async fn release(&self, subject: &DataSubjectId) -> usize;
+    async fn sweep_expired(&self, ttl_millis: i64, now: i64) -> usize;
+    async fn erase_subject(&self, subject: &DataSubjectId) -> usize;
+    async fn len(&self) -> usize;
+    async fn record(&self, subject: &DataSubjectId, purpose: Purpose, content: &str);
+}
+
+#[async_trait]
+impl CapturedContentBackend for InMemoryCapturedContentStore {
+    async fn insert(&self, subject: &DataSubjectId, purpose: Purpose, content: &str, now: i64) {
+        InMemoryCapturedContentStore::insert(self, subject.clone(), purpose, content, now);
+    }
+    async fn restrict(&self, subject: &DataSubjectId) -> usize {
+        InMemoryCapturedContentStore::restrict(self, subject)
+    }
+    async fn release(&self, subject: &DataSubjectId) -> usize {
+        InMemoryCapturedContentStore::release(self, subject)
+    }
+    async fn sweep_expired(&self, ttl_millis: i64, now: i64) -> usize {
+        InMemoryCapturedContentStore::sweep_expired(self, ttl_millis, now)
+    }
+    async fn erase_subject(&self, subject: &DataSubjectId) -> usize {
+        ContentEraser::erase_subject(self, subject).await
+    }
+    async fn len(&self) -> usize {
+        InMemoryCapturedContentStore::len(self)
+    }
+    async fn record(&self, subject: &DataSubjectId, purpose: Purpose, content: &str) {
+        CaptureSink::record(self, subject, purpose, ContentKind::InputMessages, content).await;
+    }
+}
+
+#[async_trait]
+impl CapturedContentBackend for SqliteCapturedContentStore {
+    async fn insert(&self, subject: &DataSubjectId, purpose: Purpose, content: &str, now: i64) {
+        SqliteCapturedContentStore::insert(self, subject, purpose, content, now);
+    }
+    async fn restrict(&self, subject: &DataSubjectId) -> usize {
+        SqliteCapturedContentStore::restrict(self, subject)
+    }
+    async fn release(&self, subject: &DataSubjectId) -> usize {
+        SqliteCapturedContentStore::release(self, subject)
+    }
+    async fn sweep_expired(&self, ttl_millis: i64, now: i64) -> usize {
+        SqliteCapturedContentStore::sweep_expired(self, ttl_millis, now)
+    }
+    async fn erase_subject(&self, subject: &DataSubjectId) -> usize {
+        ContentEraser::erase_subject(self, subject).await
+    }
+    async fn len(&self) -> usize {
+        SqliteCapturedContentStore::len(self)
+    }
+    async fn record(&self, subject: &DataSubjectId, purpose: Purpose, content: &str) {
+        CaptureSink::record(self, subject, purpose, ContentKind::InputMessages, content).await;
+    }
+}
+
+/// The captured-content erasure/TTL/Art.18 contract, identical across backends:
+/// keyed erasure removes exactly a subject's non-restricted rows, a TTL sweep
+/// drops aged rows, and an Art.18-restricted row is exempt from both until released.
+async fn captured_content_erasure_ttl_and_restriction(store: &dyn CapturedContentBackend) {
+    let a = DataSubjectId("subj_a".into());
+    let b = DataSubjectId("subj_b".into());
+    let tc = Purpose::TelemetryContent;
+
+    // Explicit-time inserts so the TTL math is deterministic.
+    store.insert(&a, tc, "x1", 100).await;
+    store.insert(&a, tc, "x2", 100).await;
+    store.insert(&b, tc, "y1", 100).await;
+    assert_eq!(store.len().await, 3);
+
+    // Erasure removes exactly the subject's (non-restricted) rows.
+    assert_eq!(store.erase_subject(&a).await, 2);
+    assert_eq!(store.len().await, 1, "only b's row remains");
+
+    // TTL sweep drops b's aged row (age 900 ≥ 50ms).
+    assert_eq!(store.sweep_expired(50, 1_000).await, 1);
+    assert_eq!(store.len().await, 0);
+
+    // Art. 18: a restricted row is exempt from both erasure and the TTL sweep.
+    store.insert(&b, tc, "y2", 100).await;
+    assert_eq!(store.restrict(&b).await, 1);
+    assert_eq!(store.erase_subject(&b).await, 0, "restricted → not erased");
+    assert_eq!(
+        store.sweep_expired(0, i64::MAX).await,
+        0,
+        "restricted → not swept"
+    );
+    assert_eq!(store.len().await, 1);
+    // Released, it becomes erasable/sweepable again.
+    assert_eq!(store.release(&b).await, 1);
+    assert_eq!(store.sweep_expired(0, i64::MAX).await, 1);
+    assert_eq!(store.len().await, 0);
+
+    // The CaptureSink port records a row (wall-clock time).
+    store.record(&a, tc, "live").await;
+    assert_eq!(store.len().await, 1);
+}
+
+#[tokio::test]
+async fn in_memory_captured_content_conforms() {
+    captured_content_erasure_ttl_and_restriction(&InMemoryCapturedContentStore::new()).await;
+}
+
+#[tokio::test]
+async fn sqlite_captured_content_conforms() {
+    let store = SqliteCapturedContentStore::open_in_memory().unwrap();
+    captured_content_erasure_ttl_and_restriction(&store).await;
+}
 
 fn subject(id: &str, org: &str) -> DataSubject {
     DataSubject::new(DataSubjectId(id.into()), org, 100)
@@ -102,9 +226,33 @@ async fn sqlite_survives_reopen() {
 mod postgres {
     use super::*;
     use awaken_data_subject::{PgCapturedContentStore, PgDataSubjectRepo};
-    use awaken_runtime_contract::{CaptureSink, ContentEraser, ContentKind};
     use sqlx::Executor;
     use sqlx::postgres::{PgPool, PgPoolOptions};
+
+    #[async_trait]
+    impl CapturedContentBackend for PgCapturedContentStore {
+        async fn insert(&self, subject: &DataSubjectId, purpose: Purpose, content: &str, now: i64) {
+            PgCapturedContentStore::insert(self, subject, purpose, content, now).await;
+        }
+        async fn restrict(&self, subject: &DataSubjectId) -> usize {
+            PgCapturedContentStore::restrict(self, subject).await
+        }
+        async fn release(&self, subject: &DataSubjectId) -> usize {
+            PgCapturedContentStore::release(self, subject).await
+        }
+        async fn sweep_expired(&self, ttl_millis: i64, now: i64) -> usize {
+            PgCapturedContentStore::sweep_expired(self, ttl_millis, now).await
+        }
+        async fn erase_subject(&self, subject: &DataSubjectId) -> usize {
+            ContentEraser::erase_subject(self, subject).await
+        }
+        async fn len(&self) -> usize {
+            PgCapturedContentStore::len(self).await
+        }
+        async fn record(&self, subject: &DataSubjectId, purpose: Purpose, content: &str) {
+            CaptureSink::record(self, subject, purpose, ContentKind::InputMessages, content).await;
+        }
+    }
 
     fn database_url() -> String {
         std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
@@ -165,43 +313,7 @@ mod postgres {
             return;
         };
         let store = PgCapturedContentStore::with_pool(pool).await.unwrap();
-        let a = DataSubjectId("subj_a".into());
-        let b = DataSubjectId("subj_b".into());
-        let tc = Purpose::TelemetryContent;
-
-        // Explicit-time inserts so the TTL math is deterministic.
-        store.insert(&a, tc, "x1", 100).await;
-        store.insert(&a, tc, "x2", 100).await;
-        store.insert(&b, tc, "y1", 100).await;
-        assert_eq!(store.len().await, 3);
-
-        // Erasure removes exactly the subject's (non-restricted) rows.
-        assert_eq!(store.erase_subject(&a).await, 2);
-        assert_eq!(store.len().await, 1, "only b's row remains");
-
-        // TTL sweep drops b's aged row (age 900 ≥ 50ms).
-        assert_eq!(store.sweep_expired(50, 1_000).await, 1);
-        assert_eq!(store.len().await, 0);
-
-        // Art. 18: a restricted row is exempt from both erasure and the TTL sweep.
-        store.insert(&b, tc, "y2", 100).await;
-        assert_eq!(store.restrict(&b).await, 1);
-        assert_eq!(store.erase_subject(&b).await, 0, "restricted → not erased");
-        assert_eq!(
-            store.sweep_expired(0, i64::MAX).await,
-            0,
-            "restricted → not swept"
-        );
-        assert_eq!(store.len().await, 1);
-        // Released, it becomes erasable/sweepable again.
-        assert_eq!(store.release(&b).await, 1);
-        assert_eq!(store.sweep_expired(0, i64::MAX).await, 1);
-        assert_eq!(store.len().await, 0);
-
-        // The CaptureSink port records a row (wall-clock time).
-        store
-            .record(&a, tc, ContentKind::InputMessages, "live")
-            .await;
-        assert_eq!(store.len().await, 1);
+        // Same backend-generic body as in-mem/sqlite, over a fresh Postgres schema.
+        captured_content_erasure_ttl_and_restriction(&store).await;
     }
 }

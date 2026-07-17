@@ -1469,6 +1469,97 @@ mod tests {
         }
     }
 
+    // ---- SEC: read-side workspace fence on credential materialization ----
+
+    #[tokio::test]
+    async fn resolve_credential_pool_materializes_a_source_from_another_workspace() {
+        // KNOWN BUG (adjudicate): `resolve_credential` never compares `workspace_id`.
+        // A CredentialPool owned by workspace A whose member references a
+        // CredentialSource owned by workspace B still materializes B's secret —
+        // a read-side tenant fence is MISSING (neither the pool's `workspace_id`
+        // nor the source's is consulted). This test PINS the current (fail-open)
+        // behavior so a future fence flips it deliberately; it is not an
+        // endorsement. Escalated in the report for adjudication.
+        let store = InMemorySecretStore::new();
+        // The victim secret is owned by workspace B.
+        let foreign = create_source(
+            CredentialCreateParams {
+                workspace_id: "wrkspc_b".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("anthropic".into()),
+                env_key: None,
+                secret: Some(RedactedString::new("sk-tenant-b-secret")),
+                oauth_command: None,
+            },
+            &store,
+        )
+        .await
+        .unwrap();
+        let mut sources = HashMap::new();
+        sources.insert(foreign.id.0.clone(), foreign.clone());
+        // The pool is owned by workspace A, yet lists workspace B's source.
+        let ctx = PoolCtx {
+            sources,
+            pool: CredentialPool {
+                id: CredentialPoolId("p".into()),
+                workspace_id: "wrkspc_a".into(),
+                members: vec![member(&foreign.id.0, 0)],
+                policy: SelectionPolicy::FirstHealthy,
+            },
+        };
+        let got = resolve_credential(
+            &CredentialBinding::OneOfCredentialPool {
+                credential_pool_id: CredentialPoolId("p".into()),
+            },
+            &ctx,
+            &store,
+            Some("anthropic"),
+            None,
+        )
+        .await
+        .unwrap();
+        // CURRENT behavior: the cross-tenant secret materializes (no workspace fence).
+        assert_eq!(
+            got.unwrap().expose_secret(),
+            "sk-tenant-b-secret",
+            "cross-workspace credential materializes today (fail-open)"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_credential_exact_materializes_a_source_from_another_workspace() {
+        // KNOWN BUG (adjudicate): the same missing fence on the `Exact` path — an
+        // `Exact` binding naming a source owned by another workspace materializes it.
+        let store = InMemorySecretStore::new();
+        let foreign = create_source(
+            CredentialCreateParams {
+                workspace_id: "wrkspc_b".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("anthropic".into()),
+                env_key: None,
+                secret: Some(RedactedString::new("sk-exact-b")),
+                oauth_command: None,
+            },
+            &store,
+        )
+        .await
+        .unwrap();
+        let mut sources = HashMap::new();
+        sources.insert(foreign.id.0.clone(), foreign.clone());
+        let got = resolve_credential(
+            &CredentialBinding::Exact {
+                credential_source_id: CredentialSourceId(foreign.id.0.clone()),
+            },
+            &sources,
+            &store,
+            Some("anthropic"),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(got.unwrap().expose_secret(), "sk-exact-b");
+    }
+
     // ---- CEG 02: resolve_inference_toggled core (A3) ----
 
     #[tokio::test]

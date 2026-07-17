@@ -303,4 +303,51 @@ mod tests {
         }];
         assert_eq!(pool_key(&m), None);
     }
+
+    #[test]
+    fn pool_key_is_none_for_every_mount_source_kind() {
+        // No cross-session contamination: ANY declared mount — regardless of source kind
+        // — makes a spec non-poolable, because every kind either bakes session-specific
+        // bytes (File/Resource/Secret/Inline/Other) or binds a session-specific store /
+        // host path (MemoryStore/CacheVolume) into the container at create. A warm
+        // container pre-built without those could never serve a different session.
+        let sources = [
+            pc::MountSource::File {
+                file_id: "f".into(),
+                content_hash: None,
+            },
+            pc::MountSource::Resource {
+                resource_id: "r".into(),
+                content_hash: None,
+            },
+            pc::MountSource::Secret {
+                reference: "broker://k".into(),
+                content_hash: None,
+            },
+            pc::MountSource::MemoryStore {
+                store_id: "s".into(),
+            },
+            pc::MountSource::Inline {
+                contents: "x".into(),
+            },
+            pc::MountSource::CacheVolume {
+                host_path: "/cache".into(),
+                key: "k".into(),
+            },
+            pc::MountSource::Other(serde_json::json!({ "content": "x" })),
+        ];
+        for source in sources {
+            let mut m = spec("t", &["agent", "--acp"]);
+            let label = format!("{source:?}");
+            m.mounts = vec![pc::MountRequirement {
+                mount_id: "m".into(),
+                source,
+                mount_path: "/x".into(),
+                access: pc::MountAccess::ReadOnly,
+                lifetime: pc::MountLifetime::PerRun,
+                required: true,
+            }];
+            assert_eq!(pool_key(&m), None, "a {label} mount must not be poolable");
+        }
+    }
 }

@@ -290,4 +290,35 @@ mod tests {
         assert!(!root.parent().unwrap().join("passwd.md").exists());
         std::fs::remove_dir_all(&root).ok();
     }
+
+    /// `FsSkillStore::list` only projects `*.md` files: a stray non-`.md` file dropped
+    /// into a workspace directory (an editor swapfile, a `README`, a `.DS_Store`) must
+    /// not appear as a phantom skill, and it must not stop the real skills from listing.
+    #[tokio::test]
+    async fn list_ignores_non_md_files_in_the_workspace_dir() {
+        let root = scratch("stray");
+        let store = FsSkillStore::open(&root).unwrap();
+        // Two genuine skills (written as `<stem>.md` by `put`).
+        store.put("ws", "greet", "HELLO").await.unwrap();
+        store.put("ws", "review", "REVIEW").await.unwrap();
+        // Drop stray non-`.md` files directly into the workspace directory.
+        let ws_dir = root.join("ws");
+        std::fs::write(ws_dir.join("notes.txt"), "not a skill").unwrap();
+        std::fs::write(ws_dir.join("README"), "no extension at all").unwrap();
+        std::fs::write(ws_dir.join(".greet.md.swp"), "editor swapfile").unwrap();
+
+        let ids: Vec<String> = store
+            .list("ws")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["greet", "review"],
+            "only *.md files project as skills; stray files are filtered out"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
 }

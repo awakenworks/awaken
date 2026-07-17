@@ -838,6 +838,8 @@ dependencies = [
  "opentelemetry_sdk",
  "prometheus",
  "serde_json",
+ "tokio",
+ "tower",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
@@ -1048,6 +1050,7 @@ dependencies = [
  "awaken-scoped-migration-sqlite",
  "awaken-store-postgres",
  "awaken-store-sqlite",
+ "axum",
  "futures-lite",
  "reqwest 0.11.27",
  "rusqlite",
@@ -1153,6 +1156,7 @@ dependencies = [
  "awaken-ext-skills",
  "awaken-ext-state-machine",
  "awaken-file-store",
+ "awaken-managed-routers",
  "awaken-memory-store",
  "awaken-observability",
  "awaken-protocol-a2a",
@@ -1437,6 +1441,7 @@ version = "1.0.0-dev"
 dependencies = [
  "awaken-agent-contract",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -1470,6 +1475,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-runtime-contract",
  "awaken-scoped-migration",
+ "awaken-store-conformance",
  "awaken-store-schema",
  "serde_json",
  "sqlx",
@@ -1482,6 +1488,10 @@ name = "awaken-store-schema"
 version = "1.0.0-dev"
 dependencies = [
  "awaken-scoped-migration",
+ "awaken-scoped-migration-sqlite",
+ "rusqlite",
+ "sqlx",
+ "tokio",
 ]
 
 [[package]]
@@ -1506,6 +1516,7 @@ name = "awaken-tenancy"
 version = "1.0.0-dev"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]
