@@ -15,7 +15,6 @@ use tokio::sync::broadcast;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::page::paginate_by_id;
-use awaken_credential_vault::CredentialSourceId;
 
 use crate::ext::AwakenModelSelection;
 use crate::preview::PreviewSink;

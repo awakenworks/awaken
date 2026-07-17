@@ -141,7 +141,10 @@ pub struct SessionInit {
 pub struct McpServerBinding {
     pub name: String,
     pub url: String,
-    pub credential_source_id: Option<CredentialSourceId>,
+    /// The matched vault credential's neutral row id, as a plain string (the port
+    /// speaks no control-plane vocabulary — the host re-types it into the vault's
+    /// `CredentialSourceId` at the lookup). `None` = no vault credential matched.
+    pub credential_source_id: Option<String>,
     /// The matched credential's stored refresh configuration
     /// ([`VaultState::mcp_refresh_for_source`]), so the host can register a
     /// transport-level refresher next to the bearer. `None` when the credential

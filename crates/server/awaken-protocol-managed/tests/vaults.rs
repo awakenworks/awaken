@@ -807,7 +807,7 @@ async fn update_mcp_oauth_refresh_rotates_sealed_secrets() {
     assert_eq!(
         binding.token_endpoint_auth,
         TokenEndpointAuthBinding::ClientSecretPost {
-            secret_ref: SecretRef(format!("sec:client:{}", source_id.0))
+            secret_ref: format!("sec:client:{}", source_id.0)
         }
     );
 
@@ -882,7 +882,7 @@ async fn update_refresh_token_endpoint_auth_omitting_client_secret_keeps_the_sea
     assert_eq!(
         binding.token_endpoint_auth,
         TokenEndpointAuthBinding::ClientSecretPost {
-            secret_ref: SecretRef(format!("sec:client:{}", source_id.0))
+            secret_ref: format!("sec:client:{}", source_id.0)
         }
     );
 }
@@ -1508,7 +1508,7 @@ async fn mcp_refresh_for_source_exposes_public_and_confidential_refresh() {
     // The refresh token itself stays sealed: the binding carries only its ref.
     assert_eq!(
         binding.refresh_token_ref,
-        SecretRef(format!("sec:refresh:{}", source_id.0))
+        format!("sec:refresh:{}", source_id.0)
     );
 
     // An mcp_oauth credential entered WITHOUT a refresh object yields none.
@@ -1545,7 +1545,7 @@ async fn mcp_refresh_for_source_exposes_public_and_confidential_refresh() {
         assert_eq!(binding.client_id, "cli_conf");
         // The auth binding carries the sealed client secret's ref — the
         // deterministic `sec:client:{source_id}` shape, never material.
-        let secret_ref = SecretRef(format!("sec:client:{}", confidential_source.0));
+        let secret_ref = format!("sec:client:{}", confidential_source.0);
         let expected = match auth_type {
             "client_secret_basic" => TokenEndpointAuthBinding::ClientSecretBasic { secret_ref },
             _ => TokenEndpointAuthBinding::ClientSecretPost { secret_ref },
