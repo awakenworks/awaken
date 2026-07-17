@@ -378,6 +378,12 @@ pub enum AcpError {
     /// fail-closed rather than silently ignored.
     #[error("session mode not supported by the agent: {0}")]
     UnsupportedSessionMode(String),
+    /// A provider HARD-quota banner arrived as assistant TEXT (`"You've hit your
+    /// weekly limit · resets …"`) — the case where the CLI then hangs. The turn is
+    /// failed closed carrying the classified [`AcpFailure`] (a `RateLimited`), rather
+    /// than committing the banner as an ordinary assistant message.
+    #[error("provider hard-limit banner: {}", .0.message)]
+    HardLimit(AcpFailure),
 }
 
 /// The bridge: drive one turn of an opaque agent over a duplex channel.

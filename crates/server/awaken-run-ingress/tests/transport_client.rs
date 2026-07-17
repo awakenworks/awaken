@@ -333,30 +333,55 @@ async fn server_local_write_verbs_fail_closed() {
     ));
 }
 
-// KNOWN BUG (adjudicate): the module doc for `transport_client.rs` states the
-// operational verbs "(reap, dead-letter, purge, supersede, cancel, list) and the
-// Inbox/Outbox aggregates ... fail closed rather than pretend." In fact only
-// `requeue`/`cancel` and the inbox/outbox WRITE verbs fail closed; `reap`,
-// `dead_letters`, `purge_dead_letters(_before)`, `superseded`, `list_dispatches`,
-// `parked_run`, `Inbox::list`, and `Outbox::relay` return benign `Ok` no-ops (they
-// DO pretend). The inline comment even documents them as "benign no-ops" — so the
-// module-level doc contradicts the implementation. This test CHARACTERIZES today's
-// (no-op) behavior; adjudicate whether the doc should be corrected or these
-// maintenance verbs should also fail closed.
+// The server-local maintenance verbs FAIL CLOSED (`Rejected`) rather than pretend,
+// matching the module contract: a database-less worker must never silently no-op a
+// reap/dead-letter/purge/supersede/list/parked-run/relay it did not perform. The
+// pool's maintenance loop still ticks reap/purge/relay, but discards the result
+// (`let _ =` / `unwrap_or(0)`), so the rejection is harmless there while surfacing
+// anywhere the return value is consumed. The single legitimate exception is
+// `Inbox::list`: the db-less worker's own drive reads it (`worker.rs`, with `?`) and
+// the pending is already delivered in `Claimed.pending`, so an empty list is the
+// correct answer, not a pretended mutation.
 #[tokio::test]
-async fn maintenance_verbs_are_benign_noops_not_fail_closed() {
+async fn maintenance_verbs_fail_closed_except_the_legitimate_inbox_list_readback() {
     let queue = HttpDispatchQueue::new("http://127.0.0.1:1");
     let run = RunId("run-1".into());
     let thread = ThreadId("thread-1".into());
     let _ = &run;
 
-    assert_eq!(queue.reap(5, 0).await.unwrap(), 0);
-    assert_eq!(queue.dead_letters().await.unwrap(), Vec::new());
-    assert_eq!(queue.purge_dead_letters().await.unwrap(), 0);
-    assert_eq!(queue.purge_dead_letters_before(0).await.unwrap(), 0);
-    assert_eq!(queue.superseded().await.unwrap(), Vec::new());
-    assert!(queue.list_dispatches().await.unwrap().is_empty());
-    assert_eq!(queue.parked_run(&thread).await.unwrap(), None);
+    assert!(matches!(
+        queue.reap(5, 0).await,
+        Err(DispatchError::Rejected(_))
+    ));
+    assert!(matches!(
+        queue.dead_letters().await,
+        Err(DispatchError::Rejected(_))
+    ));
+    assert!(matches!(
+        queue.purge_dead_letters().await,
+        Err(DispatchError::Rejected(_))
+    ));
+    assert!(matches!(
+        queue.purge_dead_letters_before(0).await,
+        Err(DispatchError::Rejected(_))
+    ));
+    assert!(matches!(
+        queue.superseded().await,
+        Err(DispatchError::Rejected(_))
+    ));
+    assert!(matches!(
+        queue.list_dispatches().await,
+        Err(DispatchError::Rejected(_))
+    ));
+    assert!(matches!(
+        queue.parked_run(&thread).await,
+        Err(DispatchError::Rejected(_))
+    ));
+    assert!(matches!(
+        Outbox::relay(&queue).await,
+        Err(DispatchError::Rejected(_))
+    ));
+
+    // The one legitimate no-op read: an empty inbox is correct, not pretended.
     assert!(Inbox::list(&queue, &thread).await.unwrap().is_empty());
-    assert_eq!(Outbox::relay(&queue).await.unwrap(), 0);
 }

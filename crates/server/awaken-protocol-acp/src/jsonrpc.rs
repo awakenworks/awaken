@@ -394,6 +394,17 @@ async fn project_notification(
     };
     let notification: SessionNotification = parse(params)?;
     if let Some(event) = project_update(&notification.update) {
+        // A provider HARD-quota banner can arrive as assistant TEXT ("You've hit
+        // your weekly limit · resets …") rather than a structured error — the case
+        // where the CLI then hangs. Consult the detector before committing: a
+        // recognized banner fails the turn closed with the classified failure
+        // (RateLimited → Error) instead of landing as an ordinary assistant
+        // message. Any other text still projects normally below.
+        if let AgentEvent::Message { text } = &event {
+            if let Some(failure) = crate::streamed_hard_limit(text) {
+                return Err(AcpError::HardLimit(failure));
+            }
+        }
         *seq += 1;
         sink.append(*seq, &event).await?;
     }
@@ -1379,21 +1390,17 @@ mod tests {
         agent.await.unwrap();
     }
 
-    // ── CHARACTERIZATION: `streamed_hard_limit` is UNWIRED here ───────────────
+    // ── `streamed_hard_limit` is wired into the streaming driver ──────────────
 
     #[tokio::test]
-    async fn a_quota_banner_streamed_as_assistant_text_is_not_failed_closed() {
-        // KNOWN BUG (adjudicate): `error::streamed_hard_limit` detects a provider's HARD
-        // quota banner that arrives as assistant TEXT ("You've hit your weekly limit ·
-        // resets …") — the case where the CLI then hangs — and classifies it RateLimited
-        // so the turn can fail closed. But `run_turn` never consults it: an
-        // `agent_message_chunk` is projected verbatim as `AgentEvent::Message` and the
-        // turn ends on its `stopReason` like any other. This test PINS that current
-        // (unwired) behavior: the banner is committed as a plain assistant message and
-        // the turn ends `NaturalEnd`, NOT an Error/rate-limit termination.
+    async fn a_quota_banner_streamed_as_assistant_text_is_failed_closed() {
+        // `error::streamed_hard_limit` detects a provider's HARD quota banner that
+        // arrives as assistant TEXT ("You've hit your weekly limit · resets …") — the
+        // case where the CLI then hangs — and classifies it RateLimited. The streaming
+        // driver now consults it: such a banner fails the turn CLOSED (a `HardLimit`
+        // error carrying the RateLimited failure → Error termination) instead of being
+        // committed as an ordinary assistant message.
         let banner = "You've hit your weekly limit · resets Jun 30";
-        // Sanity: the detector itself WOULD flag this text — so the gap is purely that
-        // the driver does not call it, not that the text is unrecognized.
         assert!(
             crate::streamed_hard_limit(banner).is_some(),
             "precondition: the banner is a recognized hard-limit banner"
@@ -1406,22 +1413,32 @@ mod tests {
         let agent = tokio::spawn(scripted_agent(theirs, updates, "end_turn"));
 
         let mut sink = RecordingSink::default();
-        let reason = run_turn(ours.as_mut(), "p", &mut sink, None).await.unwrap();
-        // The turn is NOT failed closed: it ends naturally…
-        assert_eq!(
-            reason,
-            TerminationReason::NaturalEnd,
-            "the quota banner does not fail the turn closed (unwired detector)"
-        );
-        // …and the banner is committed verbatim as an ordinary assistant message.
+        let err = run_turn(ours.as_mut(), "p", &mut sink, None)
+            .await
+            .unwrap_err();
+        // Failed closed: a HardLimit error carrying a RateLimited failure that maps to
+        // an Error termination (the CLI is not left to hang on the banner).
+        match err {
+            AcpError::HardLimit(failure) => {
+                assert_eq!(
+                    failure.class,
+                    crate::AcpFailureClass::RateLimited {
+                        retry_after_secs: None
+                    }
+                );
+                assert_eq!(failure.termination(), TerminationReason::Error);
+            }
+            other => panic!("expected AcpError::HardLimit, got {other:?}"),
+        }
+        // The banner is NOT committed as a plain assistant message.
         assert!(
-            sink.events.iter().any(|(_, e)| matches!(
+            !sink.events.iter().any(|(_, e)| matches!(
                 e,
                 AgentEvent::Message { text } if text == banner
             )),
-            "the banner is projected as plain assistant text: {:?}",
+            "the banner is not projected as plain assistant text: {:?}",
             sink.events
         );
-        agent.await.unwrap();
+        agent.abort();
     }
 }

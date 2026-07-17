@@ -857,7 +857,7 @@ mod tests {
                 )]),
             },
             // --- value with a lone backslash before a non-special char:
-            //     Display emits it verbatim, parse preserves it => round-trips ---
+            //     Display escapes the `\` to `\\`, parse collapses it back => round-trips ---
             ToolCallPattern {
                 tool: ToolMatcher::Exact("T".into()),
                 args: ArgMatcher::Fields(vec![cond(
@@ -878,14 +878,12 @@ mod tests {
         }
     }
 
-    // KNOWN BUG (adjudicate): `FieldCondition`'s Display impl (types.rs) writes
-    // the value verbatim inside quotes and does NOT escape `"` or `\`, while
-    // `parse_quoted_value` REQUIRES them escaped. A pattern whose field value
-    // contains a bare `"` therefore cannot survive a Display->parse round-trip
-    // (it either fails to parse or reparses to a different value), which breaks
-    // serde serialization for such patterns. Characterized here; NOT fixed.
+    // `FieldCondition`'s Display impl (types.rs) escapes `\` then `"` inside the
+    // quoted value, exactly the inverse of `parse_quoted_value`'s unescaping, so a
+    // field value containing a bare `"` survives a Display->parse round-trip (and
+    // therefore serde serialization of such patterns).
     #[test]
-    fn field_value_with_quote_breaks_round_trip() {
+    fn field_value_with_quote_round_trips() {
         let p = ToolCallPattern {
             tool: ToolMatcher::Exact("T".into()),
             args: ArgMatcher::Fields(vec![FieldCondition {
@@ -894,22 +892,19 @@ mod tests {
                 value: r#"say "hi""#.into(),
             }]),
         };
-        // Display emits the inner quotes unescaped.
+        // Display escapes the inner quotes.
         let s = p.to_string();
-        assert_eq!(s, r#"T(f = "say "hi"")"#);
-        // Which does not reproduce the original pattern on reparse.
-        match ToolCallPattern::parse(&s) {
-            Ok(reparsed) => assert_ne!(reparsed, p, "unexpectedly round-tripped a quoted value"),
-            Err(_) => { /* also acceptable: the malformed Display is unparseable */ }
-        }
+        assert_eq!(s, r#"T(f = "say \"hi\"")"#);
+        // Which reparses back to the original pattern.
+        let reparsed = ToolCallPattern::parse(&s).unwrap();
+        assert_eq!(reparsed, p, "quoted value must round-trip");
     }
 
-    // KNOWN BUG (adjudicate): sibling of the above for backslashes. Display
-    // emits a `\\` (two backslashes) verbatim; parse collapses `\\` -> `\`,
-    // silently dropping one. So a value containing consecutive backslashes does
-    // not round-trip. Characterized; NOT fixed.
+    // Sibling of the above for backslashes: Display escapes each `\` to `\\`, which
+    // `parse_quoted_value` collapses back to a single `\`, so a value with
+    // consecutive backslashes round-trips with none lost.
     #[test]
-    fn field_value_with_double_backslash_loses_a_backslash() {
+    fn field_value_with_double_backslash_round_trips() {
         let p = ToolCallPattern {
             tool: ToolMatcher::Exact("T".into()),
             args: ArgMatcher::Fields(vec![FieldCondition {
@@ -918,15 +913,13 @@ mod tests {
                 value: r"a\\b".into(), // a, backslash, backslash, b
             }]),
         };
+        // Two backslashes are each escaped -> four backslashes on the wire.
         let s = p.to_string();
-        assert_eq!(s, r#"T(f = "a\\b")"#);
+        assert_eq!(s, r#"T(f = "a\\\\b")"#);
         let reparsed = ToolCallPattern::parse(&s).unwrap();
-        assert_ne!(reparsed, p, "double-backslash unexpectedly round-tripped");
+        assert_eq!(reparsed, p, "double-backslash must round-trip");
         if let ArgMatcher::Fields(c) = &reparsed.args {
-            assert_eq!(
-                c[0].value, r"a\b",
-                "one backslash should be lost on reparse"
-            );
+            assert_eq!(c[0].value, r"a\\b", "both backslashes preserved on reparse");
         } else {
             panic!("expected Fields");
         }

@@ -33,10 +33,25 @@ impl McpManager {
         Self::default()
     }
 
-    /// Add a connected server. Fails on a duplicate name.
+    /// Add a connected server. Fails closed on a duplicate raw name, and on a
+    /// sanitized-namespace collision: two distinct raw names (e.g. `a-b` and
+    /// `a.b`) can sanitize to the same `mcp__a_b__` namespace, which would shadow
+    /// each other's tool ids, so the second is rejected rather than silently
+    /// registered.
     pub fn add(&mut self, server: McpServer) -> Result<(), McpError> {
         if self.servers.iter().any(|s| s.name() == server.name()) {
             return Err(McpError::DuplicateServerName(server.name().to_string()));
+        }
+        if let Some(existing) = self
+            .servers
+            .iter()
+            .find(|s| s.namespace() == server.namespace())
+        {
+            return Err(McpError::NamespaceCollision {
+                name: server.name().to_string(),
+                namespace: server.namespace().to_string(),
+                existing: existing.name().to_string(),
+            });
         }
         self.servers.push(server);
         Ok(())
@@ -163,34 +178,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn servers_sanitizing_to_the_same_namespace_are_both_accepted_and_collide() {
+    async fn a_server_colliding_on_the_sanitized_namespace_is_rejected() {
         // "a-b" and "a.b" are distinct RAW names, but both sanitize to the same
-        // namespace `mcp__a_b__`.
+        // namespace `mcp__a_b__`. add() must fail closed on the second rather than
+        // register two servers that shadow each other's tool ids.
         let mut manager = McpManager::new();
         manager
             .add(server("a-b", "t", true).await)
             .expect("adds a-b");
-        manager
-            .add(server("a.b", "t", true).await)
-            .expect("adds a.b");
+        let err = manager.add(server("a.b", "t", true).await);
+        assert!(
+            matches!(
+                &err,
+                Err(McpError::NamespaceCollision { name, namespace, existing })
+                    if name == "a.b" && namespace == "mcp__a_b__" && existing == "a-b"
+            ),
+            "second add rejected with a namespace collision, got {err:?}"
+        );
 
-        // add() dedups by raw name only, so both are accepted...
-        assert_eq!(manager.len(), 2);
-
-        // ...and both plugins therefore project the SAME tool id — a collision.
+        // Only the first server is registered, so tool-id routing stays unambiguous.
+        assert_eq!(manager.len(), 1);
         let ids: Vec<_> = manager
             .plugins()
             .iter()
             .map(|p| p.resolve().dynamic_tools[0].descriptor.id.clone())
             .collect();
-        assert_eq!(
-            ids,
-            vec!["mcp__a_b__t".to_string(), "mcp__a_b__t".to_string()],
-        );
-
-        // KNOWN BUG (adjudicate): two servers collapsing to one sanitized
-        // namespace shadow each other's tool ids; add() never checks the
-        // sanitized namespace (only the raw name), so tool-id routing between
-        // them is ambiguous — a fail-open collision.
+        assert_eq!(ids, vec!["mcp__a_b__t".to_string()]);
     }
 }

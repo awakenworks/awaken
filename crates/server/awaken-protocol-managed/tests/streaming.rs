@@ -604,15 +604,13 @@ async fn archiving_a_child_thread_streams_thread_status_terminated() {
     );
 }
 
-/// KNOWN BUG (adjudicate): `state/threads.rs::archive_thread` commits
-/// `session.thread_status_terminated` to the event log but — unlike `append_step`,
-/// `append_outcome`, and the delete path — never calls `broadcast_committed_from`,
-/// so a client with an ALREADY-OPEN live stream never receives the child-thread
-/// termination in real time; only a reconnecting client sees it via backfill. This
-/// test characterizes the current behavior (the open subscriber gets nothing) so the
-/// gap is pinned; it is not asserting the behavior is correct.
+/// `state/threads.rs::archive_thread` commits `session.thread_status_terminated` to
+/// the event log AND — like `append_step`, `append_outcome`, and the delete path —
+/// calls `broadcast_committed_from`, so a client with an ALREADY-OPEN live stream
+/// receives the child-thread termination in real time (not only via reconnect
+/// backfill).
 #[tokio::test]
-async fn archive_thread_does_not_broadcast_to_an_open_live_stream() {
+async fn archive_thread_broadcasts_to_an_open_live_stream() {
     let state = ManagedState::new(DelegateFake);
     let id = state_create(&state).await;
     // Run the delegation turn, then open a subscription and drain the backfill turn
@@ -624,13 +622,13 @@ async fn archive_thread_does_not_broadcast_to_an_open_live_stream() {
     let child_id = format!("{id}:thread:0");
     state.archive_thread(&id, &child_id).expect("archive child");
 
-    // Nothing was broadcast for the terminate — the open stream is silent.
+    // The terminate was broadcast — the open stream receives it live.
     let (frames, _) = drain(&mut rx);
     assert!(
-        !committed_types(&frames).contains(&"session.thread_status_terminated"),
-        "archive_thread does not publish the terminated event to the open broadcast"
+        committed_types(&frames).contains(&"session.thread_status_terminated"),
+        "archive_thread publishes the terminated event to the open broadcast"
     );
-    // But it WAS committed to the durable log (a reconnect would replay it).
+    // And it was also committed to the durable log (a reconnect would replay it).
     let list = state.list_events(&id, None, None).expect("list");
     assert!(
         list.data
@@ -710,14 +708,13 @@ async fn session_stream_rejects_an_unsupported_event_deltas_value() {
     assert_eq!(json["error"]["type"], "invalid_request_error");
 }
 
-// === 1(b) Replay / Last-Event-ID characterization ===========================
+// === 1(b) Full-replay + dedupe-by-id contract ===============================
 
-/// CHARACTERIZATION: the SSE stream has NO incremental (cursor / `Last-Event-ID`)
-/// resume — it always replays the FULL committed snapshot, and a `Last-Event-ID`
-/// header is ignored. Replay-safety is instead provided by the snapshot/live
-/// dedupe-by-id (a client discards ids it already saw). This pins the current
-/// behavior; whether server-side incremental resume is wanted is an open product
-/// question (see report), not asserted here as a bug.
+/// The SSE stream's replay contract (by design): on (re)connect it always replays
+/// the FULL committed snapshot and does NOT honor `Last-Event-ID` for incremental
+/// resume. Replay-safety is provided by snapshot/live dedupe-by-id — a client
+/// discards ids it has already seen — so full replay is idempotent for the client
+/// and no committed event is ever missed. This asserts that documented contract.
 #[tokio::test]
 async fn the_stream_full_replays_and_ignores_last_event_id() {
     let app = router(Arc::new(ManagedState::new(EchoFake)));
