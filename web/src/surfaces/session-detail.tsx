@@ -144,6 +144,14 @@ export default function SessionDetailSurface() {
               <span>created {session.data?.created_at ?? "—"}</span>
               <span>status {session.data?.status ?? "—"}</span>
               <span>env {session.data?.environment_id ?? "—"}</span>
+              {/* Runtime provenance: which backend actually executed this run (native vs an
+                  ACP CLI), read off the session metadata the environment stamped at create. */}
+              <span className="row" style={{ gap: 6, alignItems: "center" }}>
+                runtime
+                <Pill tone={session.data?.metadata?.["awaken.runtime"] ? "agent" : "neutral"}>
+                  {session.data?.metadata?.["awaken.runtime"] ?? "native"}
+                </Pill>
+              </span>
             </div>
           </Card>
           <Card style={{ padding: "12px 14px" }}>

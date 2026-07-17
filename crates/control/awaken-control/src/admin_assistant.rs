@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_admin_assistant::{
-    ADMIN_ASSISTANT_AGENT_ID, CapabilityReader, DraftStore, DraftValidator, PlatformCapabilities,
-    PluginInfo, ResourceInventory, ResourceSpec, admin_assistant_config,
+    ADMIN_ASSISTANT_AGENT_ID, CapabilityReader, DraftStore, DraftValidator, EnvironmentAuthor,
+    PlatformCapabilities, PluginInfo, ResourceInventory, ResourceSpec, admin_assistant_config,
 };
 use awaken_config_resolver::{
     AgentResourceConfig, McpStore, MemoryStoreRegistry, ResourceAccess, ResourceBinding,
@@ -140,7 +140,33 @@ impl CapabilityReader for CatalogCapabilityReader {
             skills,
             mcp_servers,
             memory_stores,
+            // Deployment-level vocabulary for authoring an environment (the same catalog
+            // the console renders), so `admin_draft_environment` grounds its runtime +
+            // schema-conformant sandbox instead of guessing.
+            runtimes: awaken_config_service::runtime_catalog(),
+            sandbox: Some(awaken_config_service::sandbox_capability()),
         }
+    }
+}
+
+/// The [`EnvironmentAuthor`] port backed by the managed-plane [`EnvironmentState`], so
+/// the assistant's `admin_draft_environment` persists through the SAME registry the
+/// console's New-environment modal drives (`POST /v1/environments`).
+pub struct EnvironmentStateAuthor {
+    env_state: Arc<awaken_protocol_managed::EnvironmentState>,
+}
+
+impl EnvironmentStateAuthor {
+    #[must_use]
+    pub fn new(env_state: Arc<awaken_protocol_managed::EnvironmentState>) -> Self {
+        Self { env_state }
+    }
+}
+
+#[async_trait]
+impl EnvironmentAuthor for EnvironmentStateAuthor {
+    async fn create(&self, name: &str, config: serde_json::Value) -> Result<String, String> {
+        Ok(self.env_state.author(name, config).await)
     }
 }
 
@@ -589,9 +615,9 @@ mod tests {
             .expect("installed");
         let spec = &installed.resolved_spec;
         assert_eq!(spec.model_binding.model_ref, "m-1");
-        // It carries the five admin tool descriptors (nameable because it published in
-        // the reserved scope).
-        assert_eq!(spec.tool_descriptors.len(), 5);
+        // It carries the admin tool descriptors (nameable because it published in
+        // the reserved scope): capabilities/draft/patch/validate/explain + draft-environment.
+        assert_eq!(spec.tool_descriptors.len(), 6);
     }
 
     #[tokio::test]

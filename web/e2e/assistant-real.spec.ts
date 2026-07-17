@@ -46,6 +46,31 @@ test("Admin Assistant authors an agent with tools + a memory-store binding (real
   expect(res.resources?.[0]).toMatchObject({ kind: "memory_store", resource_id: ms });
 });
 
+test("Admin Assistant authors an ACP + sandbox environment from plain English (real model)", async ({ request }) => {
+  await configureKimi(request);
+  // Drive the assistant via its session API (no browser) — it should call
+  // admin_draft_environment and persist a real environment through /v1/environments.
+  const s = await (await request.post("/v1/sessions", { data: { agent: "__admin_assistant", title: "env-author" } })).json();
+  await request.post(`/v1/sessions/${s.id}/events`, {
+    data: { events: [{ type: "user.message", content: [{ type: "text", text:
+      'Create an execution environment named "e2e-claude-locked" that runs agents with the Claude Code runtime (acp:claude) inside a locked-down sandbox with NO network egress. Use admin_draft_environment.' }] }] },
+  });
+  // Poll until the assistant settles, then assert the environment persisted with the
+  // right runtime + sandbox (the weakest model gets this right because the capability
+  // view carries the runtime catalog + sandbox schema).
+  const deadline = Date.now() + 90_000;
+  let env: { name: string; config: { runtime?: string; sandbox?: { network?: { mode?: string } } } } | undefined;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 2500));
+    const envs = (await (await request.get("/v1/environments")).json()).data as typeof env[];
+    env = envs.find((e) => e!.name === "e2e-claude-locked");
+    if (env) break;
+  }
+  expect(env, "assistant authored the environment").toBeTruthy();
+  expect(env!.config.runtime).toBe("acp:claude");
+  expect(env!.config.sandbox?.network?.mode).toBe("none");
+});
+
 test("Admin Assistant answers a how-to question as an in-console manual (real model)", async ({ page, request }) => {
   await configureKimi(request);
   await page.goto("/w/default/assistant");

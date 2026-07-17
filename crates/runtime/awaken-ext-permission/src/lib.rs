@@ -301,8 +301,8 @@ pub fn permission_config_schema() -> Value {
                         "pattern": {
                             "type": "string",
                             "description": "A tool-call pattern: `bash` matches that tool, \
-`bash(command ~ \"*rm *\")` also matches on an argument, `mcp__github__*` globs a name. \
-Tool ids are CASE-SENSITIVE and lowercase (`bash`/`read`/`write`, NOT `Bash`)."
+    `bash(command ~ \"*rm *\")` also matches on an argument, `mcp__github__*` globs a name. \
+    Tool ids are CASE-SENSITIVE and lowercase (`bash`/`read`/`write`, NOT `Bash`)."
                         },
                         "behavior": { "type": "string", "enum": ["allow", "ask", "deny"] }
                     },

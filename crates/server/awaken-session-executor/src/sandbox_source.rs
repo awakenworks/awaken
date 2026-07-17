@@ -119,6 +119,44 @@ impl ThreadEgress {
     }
 }
 
+/// Shared per-thread sandbox overlays (isolation/network/limits), sourced from the
+/// session's environment `config.sandbox` at `prepare_session`. Read by BOTH the
+/// native `sandbox_spec` and [`SandboxChannelSource::spec`] (the ACP launch), so a
+/// UI-configured environment shapes the isolation of both. A thread with no entry
+/// keeps the host's synthesized spec. Mirrors [`ThreadEgress`] — the overlay's
+/// `NetworkPolicy` supersedes the coarse egress bool when both are present.
+#[derive(Clone, Default)]
+pub struct ThreadSandbox(
+    Arc<Mutex<HashMap<String, awaken_provisioning_contract::SandboxOverride>>>,
+);
+
+impl ThreadSandbox {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register `thread`'s sandbox overlay (replaces any prior registration).
+    pub fn set(&self, thread: &str, over: awaken_provisioning_contract::SandboxOverride) {
+        self.0
+            .lock()
+            .expect("thread sandbox mutex poisoned")
+            .insert(thread.to_string(), over);
+    }
+
+    /// Overlay `thread`'s override onto `spec` (no-op when unregistered).
+    pub fn apply(&self, thread: &str, spec: pc::SandboxSpec) -> pc::SandboxSpec {
+        match self
+            .0
+            .lock()
+            .expect("thread sandbox mutex poisoned")
+            .get(thread)
+        {
+            Some(over) => over.apply(spec),
+            None => spec,
+        }
+    }
+}
+
 /// The fixed interior path the namespace sandbox binds the workspace to and chdirs
 /// into (see `awaken-sandbox-local`), so a cwd-keyed CLI's session slug is stable
 /// across relaunches and machines regardless of the host workspace path.
@@ -264,6 +302,10 @@ pub struct SandboxChannelSource {
     /// The host's staged-resource registry (files/resources → sandbox mounts). `None`
     /// carries no resources (the trusted/test path); the production host wires it.
     resources: Option<ThreadResources>,
+    /// The host's per-thread sandbox-override registry (environment `config.sandbox`).
+    /// `None` keeps the provider-default isolation/network/limits; the production host
+    /// wires it so a UI-configured environment shapes the ACP CLI's bwrap.
+    sandbox: Option<ThreadSandbox>,
 }
 
 impl SandboxChannelSource {
@@ -278,6 +320,7 @@ impl SandboxChannelSource {
             egress: ThreadEgress::default(),
             codec: awaken_run_executor_acp::Codec::Newline,
             resources: None,
+            sandbox: None,
         }
     }
 
@@ -295,6 +338,7 @@ impl SandboxChannelSource {
             egress: ThreadEgress::default(),
             codec: awaken_run_executor_acp::Codec::Acp,
             resources: None,
+            sandbox: None,
         }
     }
 
@@ -321,6 +365,7 @@ impl SandboxChannelSource {
             // ACP — matching the source it replaces (`local_source`), never the fixture wire.
             codec: awaken_run_executor_acp::Codec::Acp,
             resources: None,
+            sandbox: None,
         }
     }
 
@@ -348,6 +393,14 @@ impl SandboxChannelSource {
         self
     }
 
+    /// Follow per-thread sandbox overrides (the host's [`ThreadSandbox`] handle), so a
+    /// UI-configured environment's isolation/network/limits shape the CLI's bwrap.
+    #[must_use]
+    pub fn with_thread_sandbox(mut self, sandbox: ThreadSandbox) -> Self {
+        self.sandbox = Some(sandbox);
+        self
+    }
+
     /// The staged file/resource mounts for `thread`. Empty when no registry is wired.
     fn resource_mounts(&self, thread: &str) -> Vec<pc::MountRequirement> {
         self.resources
@@ -359,13 +412,15 @@ impl SandboxChannelSource {
     /// The provisioning request for one run: sandbox scoped to the thread (so a
     /// multi-turn session reuses one workspace), network from its registration, and the
     /// session's staged file/resource mounts (ADR-0038) bound into the bwrap interior.
+    /// The environment's `config.sandbox` overlay (if any) then supersedes isolation /
+    /// network / limits — so a UI-authored sandbox shapes the ACP CLI's confinement.
     fn spec(&self, thread: &str) -> pc::SandboxSpec {
         let network = if self.egress.denies(thread) {
             pc::NetworkPolicy::None
         } else {
             pc::NetworkPolicy::Unrestricted
         };
-        pc::SandboxSpec {
+        let base = pc::SandboxSpec {
             scope: thread.to_string(),
             isolation: self.provider.isolation(),
             mounts: self.resource_mounts(thread),
@@ -375,6 +430,10 @@ impl SandboxChannelSource {
             limits: pc::ResourceLimits::default(),
             lease_ttl_secs: None,
             extra: None,
+        };
+        match &self.sandbox {
+            Some(sb) => sb.apply(thread, base),
+            None => base,
         }
     }
 
@@ -503,6 +562,7 @@ pub struct ContainerChannelSource {
     egress: ThreadEgress,
     codec: awaken_run_executor_acp::Codec,
     resources: Option<ThreadResources>,
+    sandbox: Option<ThreadSandbox>,
 }
 
 impl ContainerChannelSource {
@@ -516,6 +576,7 @@ impl ContainerChannelSource {
             egress: ThreadEgress::default(),
             codec: awaken_run_executor_acp::Codec::Newline,
             resources: None,
+            sandbox: None,
         }
     }
 
@@ -533,6 +594,7 @@ impl ContainerChannelSource {
             egress: ThreadEgress::default(),
             codec: awaken_run_executor_acp::Codec::Acp,
             resources: None,
+            sandbox: None,
         }
     }
 
@@ -569,6 +631,13 @@ impl ContainerChannelSource {
         self
     }
 
+    /// Follow per-thread sandbox overrides (the host's [`ThreadSandbox`] handle).
+    #[must_use]
+    pub fn with_thread_sandbox(mut self, sandbox: ThreadSandbox) -> Self {
+        self.sandbox = Some(sandbox);
+        self
+    }
+
     /// The staged file/resource mounts for `thread`. Empty when no registry is wired.
     fn resource_mounts(&self, thread: &str) -> Vec<pc::MountRequirement> {
         self.resources
@@ -599,7 +668,7 @@ impl ContainerChannelSource {
                 visibility: pc::EnvVisibility::Process,
             })
             .collect();
-        pc::SandboxSpec {
+        let base = pc::SandboxSpec {
             scope: thread.to_string(),
             isolation: pc::IsolationClass::Container,
             mounts: self.resource_mounts(thread),
@@ -610,6 +679,12 @@ impl ContainerChannelSource {
             lease_ttl_secs: None,
             // Process-as-container: the agent argv IS the container's main command.
             extra: Some(serde_json::json!({ "command": launch.argv })),
+        };
+        // The environment overlay tunes network/limits (its `isolation` only lowers the
+        // required minimum — the provider containerizes regardless); env + command kept.
+        match &self.sandbox {
+            Some(sb) => sb.apply(thread, base),
+            None => base,
         }
     }
 }
@@ -686,6 +761,7 @@ pub async fn build_acp_channel_source(
     source: LaunchSource,
     egress: ThreadEgress,
     resources: ThreadResources,
+    sandbox: ThreadSandbox,
     namespace_base: std::path::PathBuf,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
     use crate::deployment_config::SandboxTier;
@@ -696,16 +772,18 @@ pub async fn build_acp_channel_source(
         SandboxTier::Local => Ok(Arc::new(
             SandboxChannelSource::workdir(namespace_base, source)
                 .with_thread_egress(egress)
-                .with_thread_resources(resources),
+                .with_thread_resources(resources)
+                .with_thread_sandbox(sandbox),
         )),
         SandboxTier::Namespace => Ok(Arc::new(
             SandboxChannelSource::from_source(namespace_base, source)
                 .with_thread_egress(egress)
-                .with_thread_resources(resources),
+                .with_thread_resources(resources)
+                .with_thread_sandbox(sandbox),
         )),
-        SandboxTier::Docker => build_docker_source(image, source, egress, resources),
-        SandboxTier::Podman => build_podman_source(image, source, egress, resources),
-        SandboxTier::K8s => build_k8s_source(image, source, egress, resources).await,
+        SandboxTier::Docker => build_docker_source(image, source, egress, resources, sandbox),
+        SandboxTier::Podman => build_podman_source(image, source, egress, resources, sandbox),
+        SandboxTier::K8s => build_k8s_source(image, source, egress, resources, sandbox).await,
     }
 }
 
@@ -718,6 +796,7 @@ pub async fn build_acp_channel_source(
 /// Every other tier passes through unchanged.
 pub async fn resolve_sandbox_tier(
     tier: crate::deployment_config::SandboxTier,
+    tier_explicit: bool,
     namespace_base: &std::path::Path,
 ) -> Result<crate::deployment_config::SandboxTier, String> {
     use crate::deployment_config::SandboxTier;
@@ -730,20 +809,30 @@ pub async fn resolve_sandbox_tier(
         .await
     {
         Ok(()) => Ok(SandboxTier::Namespace),
-        Err(e) if allow_local_fallback() => {
+        Err(e) if namespace_degrades_to_local(tier_explicit, allow_local_fallback()) => {
             eprintln!(
-                "awaken: OS-native sandbox unavailable ({e}); \
-                 AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK=1 → degrading to UNSANDBOXED local \
-                 ACP execution (no OS isolation for this worker)"
+                "awaken: OS-native sandbox unavailable ({e}); running UNSANDBOXED local ACP \
+                 execution (no OS isolation for this worker). Install bwrap for isolation, or \
+                 set AWAKEN_SANDBOX_TIER=namespace to require it (fail closed)."
             );
             Ok(SandboxTier::Local)
         }
         Err(e) => Err(format!(
-            "OS-native sandbox unavailable: {e}. Install bwrap (Linux) / use macOS \
-             Seatbelt, or set AWAKEN_SANDBOX_TIER=local, or \
-             AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK=1 to run unsandboxed"
+            "OS-native sandbox unavailable: {e}. `AWAKEN_SANDBOX_TIER=namespace` was requested \
+             explicitly — install bwrap (Linux) / use macOS Seatbelt, drop the explicit tier to \
+             auto-degrade, or set AWAKEN_SANDBOX_TIER=local to run unsandboxed"
         )),
     }
+}
+
+/// Whether a `Namespace`-tier request with no available bwrap degrades to the
+/// UNSANDBOXED `Local` tier rather than failing closed. Degrade when the tier was left
+/// at its default (`AWAKEN_SANDBOX_TIER` unset → dev/single-machine ergonomics: a
+/// bwrap-less host still runs) OR the operator opted in explicitly. Fail closed ONLY
+/// when `namespace` was EXPLICITLY requested (an operator asked for OS isolation — honor
+/// it or refuse, never silently drop). Pure, so the policy is unit-testable off-host.
+fn namespace_degrades_to_local(tier_explicit: bool, fallback_optin: bool) -> bool {
+    !tier_explicit || fallback_optin
 }
 
 /// Whether an operator opted in (`AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK=1`) to degrade a
@@ -838,11 +927,13 @@ fn container_source(
     source: LaunchSource,
     egress: ThreadEgress,
     resources: ThreadResources,
+    sandbox: ThreadSandbox,
 ) -> Arc<dyn AgentChannelSource> {
     Arc::new(
         ContainerChannelSource::from_source(provider, source)
             .with_thread_egress(egress)
-            .with_thread_resources(resources),
+            .with_thread_resources(resources)
+            .with_thread_sandbox(sandbox),
     )
 }
 
@@ -852,6 +943,7 @@ fn build_docker_source(
     source: LaunchSource,
     egress: ThreadEgress,
     resources: ThreadResources,
+    sandbox: ThreadSandbox,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
     let runtime = std::sync::Arc::new(
         awaken_sandbox_container::docker::DockerRuntime::connect_local(CONTAINER_AGENT_PORT)
@@ -866,6 +958,7 @@ fn build_docker_source(
         source,
         egress,
         resources,
+        sandbox,
     ))
 }
 
@@ -875,6 +968,7 @@ fn build_docker_source(
     _source: LaunchSource,
     _egress: ThreadEgress,
     _resources: ThreadResources,
+    _sandbox: ThreadSandbox,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
     Err("AWAKEN_SANDBOX_TIER=docker needs the `container-docker` feature".into())
 }
@@ -885,6 +979,7 @@ fn build_podman_source(
     source: LaunchSource,
     egress: ThreadEgress,
     resources: ThreadResources,
+    sandbox: ThreadSandbox,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
     let runtime = std::sync::Arc::new(awaken_sandbox_container::podman::PodmanRuntime::new(
         CONTAINER_AGENT_PORT,
@@ -897,6 +992,7 @@ fn build_podman_source(
         source,
         egress,
         resources,
+        sandbox,
     ))
 }
 
@@ -906,6 +1002,7 @@ fn build_podman_source(
     _source: LaunchSource,
     _egress: ThreadEgress,
     _resources: ThreadResources,
+    _sandbox: ThreadSandbox,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
     Err("AWAKEN_SANDBOX_TIER=podman needs the `container-podman` feature".into())
 }
@@ -916,6 +1013,7 @@ async fn build_k8s_source(
     source: LaunchSource,
     egress: ThreadEgress,
     resources: ThreadResources,
+    sandbox: ThreadSandbox,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
     // The Pod's reachable agent address + namespace come from the worker's env; the
     // Service/NodePort exposure is a cluster-deployment concern outside this process.
@@ -939,6 +1037,7 @@ async fn build_k8s_source(
         source,
         egress,
         resources,
+        sandbox,
     ))
 }
 
@@ -948,6 +1047,7 @@ async fn build_k8s_source(
     _source: LaunchSource,
     _egress: ThreadEgress,
     _resources: ThreadResources,
+    _sandbox: ThreadSandbox,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
     Err("AWAKEN_SANDBOX_TIER=k8s needs the `container-k8s` feature".into())
 }
@@ -1062,6 +1162,48 @@ mod tests {
         assert!(
             source.open(&act).await.is_ok(),
             "the Workdir backend opens without an OS-native sandbox"
+        );
+    }
+
+    #[tokio::test]
+    async fn workdir_tier_launches_without_bwrap_and_fails_closed_on_unenforceable_isolation() {
+        // The "usable without bwrap" guarantee, in two halves:
+        // (1) An environment with no isolation demand launches a REAL ACP CLI subprocess on
+        //     the Local/Workdir tier — no OS sandbox needed.
+        let plain = SandboxChannelSource::workdir(
+            base(),
+            LaunchSource::Fixed(AcpLaunch::custom(vec!["true".into()], vec![])),
+        );
+        assert!(
+            plain.open(&acp_activation("genai")).await.is_ok(),
+            "the ACP CLI launches on the Local tier without bwrap"
+        );
+
+        // (2) An environment override still shapes the Local spec ...
+        let sandbox = ThreadSandbox::new();
+        sandbox.set(
+            "t",
+            awaken_provisioning_contract::SandboxOverride::from_config_value(
+                &serde_json::json!({ "network": { "mode": "none" } }),
+            )
+            .expect("override contributes"),
+        );
+        let strict = SandboxChannelSource::workdir(
+            base(),
+            LaunchSource::Fixed(AcpLaunch::custom(vec!["true".into()], vec![])),
+        )
+        .with_thread_sandbox(sandbox);
+        assert_eq!(
+            strict.spec("t").network,
+            pc::NetworkPolicy::None,
+            "the env egress policy reaches the Local-tier spec"
+        );
+        // ... but a no-egress guarantee the UNSANDBOXED Local tier cannot enforce fails
+        // CLOSED — it never silently runs with the egress it promised to deny. So bwrap-less
+        // is fully usable for what it CAN enforce, and honest about what it can't.
+        assert!(
+            strict.open(&acp_activation("genai")).await.is_err(),
+            "unenforceable no-egress fails closed on the Local tier"
         );
     }
 
@@ -1377,6 +1519,7 @@ mod tests {
             LaunchSource::Fixed(AcpLaunch::custom(vec!["claude".into()], vec![])),
             ThreadEgress::new(),
             ThreadResources::default(),
+            ThreadSandbox::new(),
             base(),
         )
         .await;
@@ -1394,6 +1537,7 @@ mod tests {
             LaunchSource::Fixed(AcpLaunch::custom(vec!["claude".into()], vec![])),
             ThreadEgress::new(),
             ThreadResources::default(),
+            ThreadSandbox::new(),
             base(),
         )
         .await;
@@ -1405,13 +1549,13 @@ mod tests {
         use crate::deployment_config::SandboxTier;
         // Only the namespace tier is bwrap-probed; the rest resolve to themselves.
         assert_eq!(
-            resolve_sandbox_tier(SandboxTier::Local, &base())
+            resolve_sandbox_tier(SandboxTier::Local, true, &base())
                 .await
                 .unwrap(),
             SandboxTier::Local
         );
         assert_eq!(
-            resolve_sandbox_tier(SandboxTier::Docker, &base())
+            resolve_sandbox_tier(SandboxTier::Docker, true, &base())
                 .await
                 .unwrap(),
             SandboxTier::Docker
@@ -1427,7 +1571,7 @@ mod tests {
         unsafe {
             std::env::set_var("AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK", "1");
         }
-        let resolved = resolve_sandbox_tier(SandboxTier::Namespace, &base()).await;
+        let resolved = resolve_sandbox_tier(SandboxTier::Namespace, true, &base()).await;
         unsafe {
             std::env::remove_var("AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK");
         }
@@ -1435,6 +1579,18 @@ mod tests {
             resolved,
             Ok(SandboxTier::Namespace | SandboxTier::Local)
         ));
+    }
+
+    #[test]
+    fn namespace_degrade_policy_is_usable_without_bwrap_by_default_but_strict_when_explicit() {
+        // Tier left at the default (unset AWAKEN_SANDBOX_TIER) → degrade to Local without
+        // bwrap, so a dev/single-machine worker runs out of the box (no opt-in needed).
+        assert!(namespace_degrades_to_local(false, false), "unset tier auto-degrades");
+        // Explicit `AWAKEN_SANDBOX_TIER=namespace` → fail closed without bwrap (an operator
+        // who asked for OS isolation must not silently lose it) ...
+        assert!(!namespace_degrades_to_local(true, false), "explicit namespace fails closed");
+        // ... unless they ALSO opt into the fallback.
+        assert!(namespace_degrades_to_local(true, true), "explicit + opt-in degrades");
     }
 
     #[tokio::test]
@@ -1449,6 +1605,7 @@ mod tests {
                 LaunchSource::Fixed(AcpLaunch::custom(vec!["claude".into()], vec![])),
                 ThreadEgress::new(),
                 ThreadResources::default(),
+                ThreadSandbox::new(),
                 base(),
             )
             .await;

@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use crate::admin_assistant::{
     CatalogCapabilityReader, ConfigServiceDraftStore, ConfigServiceDraftValidator,
-    HostResourceInventory, seed_admin_assistant,
+    EnvironmentStateAuthor, HostResourceInventory, seed_admin_assistant,
 };
 // Embedded management-plane IAM (ADR-0042/0043 P1): the authorizer, its boot
 // fn, the mint spec (tests / operator embeddings), and the bootstrap constants.

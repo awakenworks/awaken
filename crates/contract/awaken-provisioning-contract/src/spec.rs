@@ -191,3 +191,134 @@ mod tests {
         );
     }
 }
+
+/// A per-session overlay onto a synthesized [`SandboxSpec`], sourced from an
+/// environment's UI-authored `config.sandbox`. It carries only the fields a
+/// declarative environment can *enforce* — `isolation`, `network`, `limits` — each
+/// optional so a partial blob overrides just what it sets and leaves the rest at the
+/// host default. Content mounts are deliberately NOT here: those are the ADR-0038
+/// resource plane (files/memory/repos), realized as [`MountRequirement`]s from a
+/// content source; a bare UI mount path has no source to realize.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SandboxOverride {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub isolation: Option<IsolationClass>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<NetworkPolicy>,
+    pub limits: ResourceLimits,
+}
+
+impl SandboxOverride {
+    /// Parse an environment's `config.sandbox` blob (the console's UI projection:
+    /// `{isolation, network:{mode,hosts}, limits:{cpu_millis,memory_bytes}, ...}`).
+    /// The `network`/`limits`/`isolation` shapes deserialize straight onto the contract
+    /// enums, so this is a lenient field-by-field lift — unknown keys (e.g. UI `mounts`)
+    /// are ignored, and a field that fails to parse is simply left unset (never a hard
+    /// error that would block a session on a malformed knob). Returns `None` when the
+    /// blob contributes nothing.
+    #[must_use]
+    pub fn from_config_value(sandbox: &Value) -> Option<Self> {
+        let get = |k: &str| sandbox.get(k).cloned();
+        let over = SandboxOverride {
+            isolation: get("isolation").and_then(|v| serde_json::from_value(v).ok()),
+            network: get("network").and_then(|v| serde_json::from_value(v).ok()),
+            limits: get("limits")
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default(),
+        };
+        (!over.is_empty()).then_some(over)
+    }
+
+    /// Whether this overlay changes anything.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.isolation.is_none() && self.network.is_none() && !self.limits.is_set()
+    }
+
+    /// Overlay onto a base spec: each set field wins; unset fields keep the base's
+    /// synthesized value. Mounts/scope/outputs are the host's to decide, untouched.
+    #[must_use]
+    pub fn apply(&self, mut spec: SandboxSpec) -> SandboxSpec {
+        if let Some(isolation) = self.isolation {
+            spec.isolation = isolation;
+        }
+        if let Some(network) = &self.network {
+            spec.network = network.clone();
+        }
+        if self.limits.is_set() {
+            spec.limits = self.limits.clone();
+        }
+        spec
+    }
+}
+
+#[cfg(test)]
+mod sandbox_override_tests {
+    use super::*;
+    use crate::vocab::NetworkPolicy;
+
+    fn base() -> SandboxSpec {
+        SandboxSpec {
+            scope: "t".into(),
+            isolation: IsolationClass::Workdir,
+            mounts: Vec::new(),
+            env: Vec::new(),
+            network: NetworkPolicy::Unrestricted,
+            outputs_path: "/outputs".into(),
+            limits: ResourceLimits::default(),
+            lease_ttl_secs: None,
+            extra: None,
+        }
+    }
+
+    #[test]
+    fn parses_the_console_blob_and_overlays_the_enforceable_trio() {
+        // Exactly the shape the console's SandboxEditor / capabilities preset emit.
+        let blob = serde_json::json!({
+            "isolation": "namespace",
+            "mounts": [{ "mount_path": "/work", "access": "read_write" }], // ignored (no source)
+            "network": { "mode": "allowlist", "hosts": ["api.github.com"] },
+            "limits": { "cpu_millis": 2000, "memory_bytes": 4294967296u64 }
+        });
+        let over = SandboxOverride::from_config_value(&blob).expect("blob contributes");
+        let spec = over.apply(base());
+        assert_eq!(spec.isolation, IsolationClass::Namespace);
+        assert_eq!(
+            spec.network,
+            NetworkPolicy::Allowlist {
+                hosts: vec!["api.github.com".into()]
+            }
+        );
+        assert_eq!(spec.limits.cpu_millis, Some(2000));
+        assert_eq!(spec.limits.memory_bytes, Some(4_294_967_296));
+        // Mounts are the resource plane's, never lifted from the UI blob.
+        assert!(spec.mounts.is_empty());
+    }
+
+    #[test]
+    fn a_partial_blob_overrides_only_what_it_sets() {
+        let over = SandboxOverride::from_config_value(
+            &serde_json::json!({ "network": { "mode": "none" } }),
+        )
+        .expect("contributes");
+        assert!(over.isolation.is_none() && !over.limits.is_set());
+        let spec = over.apply(base());
+        assert_eq!(spec.network, NetworkPolicy::None);
+        assert_eq!(
+            spec.isolation,
+            IsolationClass::Workdir,
+            "base isolation kept"
+        );
+    }
+
+    #[test]
+    fn an_empty_or_junk_blob_contributes_nothing() {
+        assert!(SandboxOverride::from_config_value(&serde_json::json!({})).is_none());
+        // A malformed knob is left unset, never a hard error; here nothing parses → None.
+        assert!(
+            SandboxOverride::from_config_value(&serde_json::json!({ "isolation": "bogus" }))
+                .is_none()
+        );
+    }
+}
