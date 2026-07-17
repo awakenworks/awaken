@@ -97,8 +97,10 @@ fn apply_metadata_patch(
 pub struct McpRefreshBinding {
     pub token_endpoint: String,
     pub client_id: String,
-    /// The ref the sealed refresh token lives under (`sec:refresh:{source_id}`).
-    pub refresh_token_ref: SecretRef,
+    /// The ref the sealed refresh token lives under (`sec:refresh:{source_id}`), as a
+    /// plain string — the port speaks no control-plane vocabulary; the host re-types it
+    /// into the vault's `SecretRef` at the secret-store lookup.
+    pub refresh_token_ref: String,
     /// How the refresher must authenticate the grant at the token endpoint.
     pub token_endpoint_auth: TokenEndpointAuthBinding,
     pub scope: Option<String>,
@@ -114,8 +116,14 @@ pub struct McpRefreshBinding {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenEndpointAuthBinding {
     None,
-    ClientSecretBasic { secret_ref: SecretRef },
-    ClientSecretPost { secret_ref: SecretRef },
+    /// Carries the sealed client secret's ref as a plain string (`sec:client:…`); the
+    /// host re-types it into the vault's `SecretRef` at the secret-store lookup.
+    ClientSecretBasic {
+        secret_ref: String,
+    },
+    ClientSecretPost {
+        secret_ref: String,
+    },
 }
 
 /// The status a live MCP probe reports for an `mcp_oauth` credential.
@@ -314,7 +322,7 @@ impl VaultState {
                 } => Some(McpRefreshBinding {
                     token_endpoint: r.projection.token_endpoint.clone(),
                     client_id: r.projection.client_id.clone(),
-                    refresh_token_ref: r.refresh_token_ref.clone(),
+                    refresh_token_ref: r.refresh_token_ref.0.clone(),
                     token_endpoint_auth: r.token_endpoint_auth.clone(),
                     scope: r.projection.scope.clone(),
                     resource: r.projection.resource.clone(),
@@ -687,19 +695,19 @@ async fn create_credential(
                     let token_endpoint_auth = match (projection.token_endpoint_auth, client_secret)
                     {
                         (TokenEndpointAuthResponse::ClientSecretBasic, Some(cs)) => {
-                            let secret_ref = SecretRef(format!("sec:client:{}", source.id.0));
+                            let secret_ref = format!("sec:client:{}", source.id.0);
                             state
                                 .secrets
-                                .put(&secret_ref, RedactedString::new(cs))
+                                .put(&SecretRef(secret_ref.clone()), RedactedString::new(cs))
                                 .await
                                 .map_err(|e| bad_request(e.to_string()))?;
                             TokenEndpointAuthBinding::ClientSecretBasic { secret_ref }
                         }
                         (TokenEndpointAuthResponse::ClientSecretPost, Some(cs)) => {
-                            let secret_ref = SecretRef(format!("sec:client:{}", source.id.0));
+                            let secret_ref = format!("sec:client:{}", source.id.0);
                             state
                                 .secrets
-                                .put(&secret_ref, RedactedString::new(cs))
+                                .put(&SecretRef(secret_ref.clone()), RedactedString::new(cs))
                                 .await
                                 .map_err(|e| bad_request(e.to_string()))?;
                             TokenEndpointAuthBinding::ClientSecretPost { secret_ref }
@@ -981,7 +989,7 @@ async fn update_credential(
                             // The confidential binding always points at the stable
                             // `sec:client:{source_id}` ref: an omitted secret keeps
                             // the sealed value, a supplied one re-sealed it above.
-                            let client_ref = || SecretRef(format!("sec:client:{}", source_id.0));
+                            let client_ref = || format!("sec:client:{}", source_id.0);
                             let (tag, binding) = match tea {
                                 TokenEndpointAuthUpdate::None => (
                                     TokenEndpointAuthResponse::None,
