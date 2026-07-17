@@ -813,3 +813,312 @@ async fn no_tool_call_ever_publishes() {
     let stored = h.store.stored("support").unwrap();
     assert!(stored.model_binding.is_auto());
 }
+
+// ===================================================================================
+// Task 2: admin_explain_console THROUGH the RawTool interface (not just the pure fn),
+// asserting both the projected help payload AND the emitted audit line.
+// ===================================================================================
+
+#[tokio::test]
+async fn explain_console_tool_returns_a_topic_and_audits_the_topic_name() {
+    let h = Harness::new();
+    let out = h
+        .tool(EXPLAIN_TOOL)
+        .invoke(call(
+            EXPLAIN_TOOL,
+            serde_json::json!({ "topic": "connect-model" }),
+        ))
+        .await
+        .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    // The tool projects the pure `explain` payload verbatim (the full 5 sections).
+    let payload: serde_json::Value = serde_json::from_str(&out.content).unwrap();
+    assert_eq!(payload["topic"], "connect-model");
+    for k in ["what", "why", "where", "how", "gotchas"] {
+        assert!(payload[k].as_str().is_some_and(|s| !s.is_empty()));
+    }
+    // The audit line names the exact topic asked for (ADR-0052 D6).
+    let events = h.audit.0.lock().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].tool, EXPLAIN_TOOL);
+    assert_eq!(events[0].call_id, "c1");
+    assert_eq!(events[0].summary, "explain console `connect-model`");
+}
+
+#[tokio::test]
+async fn explain_console_tool_with_no_topic_returns_the_index_and_audits_it() {
+    let h = Harness::new();
+    // A missing/empty arg object is a well-formed index request.
+    let out = h
+        .tool(EXPLAIN_TOOL)
+        .invoke(call(EXPLAIN_TOOL, serde_json::json!({})))
+        .await
+        .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    let payload: serde_json::Value = serde_json::from_str(&out.content).unwrap();
+    assert!(payload["topics"].as_array().is_some_and(|a| !a.is_empty()));
+    // The index request audits the `(index)` placeholder, not a topic name.
+    let events = h.audit.0.lock().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].tool, EXPLAIN_TOOL);
+    assert_eq!(events[0].summary, "explain console `(index)`");
+}
+
+#[tokio::test]
+async fn explain_console_tool_falls_back_to_index_for_an_unknown_topic() {
+    let h = Harness::new();
+    let out = h
+        .tool(EXPLAIN_TOOL)
+        .invoke(call(
+            EXPLAIN_TOOL,
+            serde_json::json!({ "topic": "does-not-exist" }),
+        ))
+        .await
+        .unwrap();
+    // An unknown topic is still a successful (soft) call — the body carries the note.
+    assert!(!out.is_error, "{}", out.content);
+    let payload: serde_json::Value = serde_json::from_str(&out.content).unwrap();
+    assert_eq!(payload["unknown_topic"], "does-not-exist");
+    assert!(payload["topics"].as_array().is_some_and(|a| !a.is_empty()));
+    // The audit line still records the raw topic string the operator asked for.
+    let events = h.audit.0.lock().unwrap();
+    assert_eq!(events[0].summary, "explain console `does-not-exist`");
+}
+
+// ===================================================================================
+// Task 3: store.put / put_resources error branches. A DraftStore whose write ops fail
+// lets us assert the error SURFACES to the caller (it is not swallowed / fail-open).
+// ===================================================================================
+
+/// A DraftStore test double that can be told to fail `put` and/or `put_resources`,
+/// delegating everything else to an in-memory `MemDraftStore`. Lets a test drive the
+/// store-write error branches in `validate_persist_emit` / `persist_resources_after`.
+#[derive(Default)]
+struct FaultyStore {
+    fail_put: bool,
+    fail_put_resources: bool,
+    inner: MemDraftStore,
+}
+
+#[async_trait]
+impl DraftStore for FaultyStore {
+    async fn put(&self, draft: &AgentConfig) -> Result<(), String> {
+        if self.fail_put {
+            return Err("disk full".into());
+        }
+        self.inner.put(draft).await
+    }
+    async fn get(&self, id: &str) -> Result<Option<AgentConfig>, String> {
+        self.inner.get(id).await
+    }
+    async fn put_resources(
+        &self,
+        agent_id: &str,
+        resources: Vec<ResourceSpec>,
+    ) -> Result<(), String> {
+        if self.fail_put_resources {
+            return Err("resource store offline".into());
+        }
+        self.inner.put_resources(agent_id, resources).await
+    }
+    async fn get_resources(&self, agent_id: &str) -> Result<Vec<ResourceSpec>, String> {
+        self.inner.get_resources(agent_id).await
+    }
+}
+
+/// Build the admin toolset over an arbitrary `DraftStore` (so a test can inject a
+/// faulty one) with the passing `FakeValidator` and a capturing audit sink.
+fn tools_over_store(store: Arc<dyn DraftStore>) -> (Vec<Arc<dyn RawTool>>, Arc<CapturingAudit>) {
+    let audit = Arc::new(CapturingAudit::default());
+    let tools = admin_tools(
+        Arc::new(FakeCaps),
+        Arc::new(FakeValidator),
+        store,
+        audit.clone(),
+    );
+    (tools, audit)
+}
+
+fn find_tool(tools: &[Arc<dyn RawTool>], id: &str) -> Arc<dyn RawTool> {
+    tools
+        .iter()
+        .find(|t| t.id() == id)
+        .expect("tool exists")
+        .clone()
+}
+
+// Task 3a: on the DRAFT path, a `store.put` failure surfaces to the caller as a soft
+// tool error ("draft validated but could not be saved: <err>") — validation passed but
+// the persist failed, and the error is NOT swallowed.
+#[tokio::test]
+async fn draft_agent_surfaces_a_store_put_failure() {
+    let store = Arc::new(FaultyStore {
+        fail_put: true,
+        ..Default::default()
+    });
+    let (tools, _audit) = tools_over_store(store.clone());
+    let out = find_tool(&tools, CREATE_DRAFT_TOOL)
+        .invoke(call(
+            CREATE_DRAFT_TOOL,
+            serde_json::json!({ "id": "s", "instructions": "hi" }),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        out.is_error,
+        "a store put failure must be an error: {}",
+        out.content
+    );
+    assert!(out.content.contains("validated but could not be saved"));
+    assert!(out.content.contains("disk full"));
+}
+
+// Task 3b: on the PATCH path, a `store.put` failure on the re-save likewise surfaces.
+#[tokio::test]
+async fn patch_agent_surfaces_a_store_put_failure() {
+    // Seed a valid draft into a plain store, then move it into a put-faulty store so the
+    // patch can read it back but fail on the re-save.
+    let seed = MemDraftStore::default();
+    seed.put(&AgentConfig {
+        id: "s".into(),
+        instructions: "hi".into(),
+        max_steps: 8,
+        model_binding: ModelSelection::Auto,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let store = Arc::new(FaultyStore {
+        fail_put: true,
+        inner: seed,
+        ..Default::default()
+    });
+    let (tools, _audit) = tools_over_store(store.clone());
+    let out = find_tool(&tools, PATCH_TOOL)
+        .invoke(call(
+            PATCH_TOOL,
+            serde_json::json!({ "id": "s", "patch": { "max_steps": 3 } }),
+        ))
+        .await
+        .unwrap();
+    assert!(out.is_error, "{}", out.content);
+    assert!(out.content.contains("validated but could not be saved"));
+    assert!(out.content.contains("disk full"));
+}
+
+// Task 3c: `persist_resources_after` — the config saves, but binding the SEPARATE
+// data-plane resources fails. The error surfaces ("draft saved but its resources could
+// not be bound: <err>"); it is not swallowed. NOTE (characterization, not a bug): the
+// config IS left persisted while the resource bind failed — a partial write the caller
+// is told about via the error body.
+#[tokio::test]
+async fn draft_agent_surfaces_a_resource_bind_failure_after_saving_the_config() {
+    let store = Arc::new(FaultyStore {
+        fail_put_resources: true,
+        ..Default::default()
+    });
+    let (tools, _audit) = tools_over_store(store.clone());
+    let out = find_tool(&tools, CREATE_DRAFT_TOOL)
+        .invoke(call(
+            CREATE_DRAFT_TOOL,
+            serde_json::json!({
+                "id": "r",
+                "instructions": "hi",
+                "resources": [{ "kind": "memory_store", "resource_id": "mem_1" }]
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(out.is_error, "{}", out.content);
+    assert!(out.content.contains("resources could not be bound"));
+    assert!(out.content.contains("resource store offline"));
+    // Characterization: the CONFIG was still saved (partial write) even though the
+    // resource bind failed — the config store shows the draft.
+    assert!(
+        store.inner.stored("r").is_some(),
+        "the config is persisted even though the resource bind failed"
+    );
+    assert!(store.inner.stored_resources("r").is_empty());
+}
+
+// Task 3d: patch path — a present `resources` array triggers `put_resources`; its
+// failure surfaces to the caller the same way.
+#[tokio::test]
+async fn patch_agent_surfaces_a_resource_bind_failure() {
+    // Seed a draft with no resources, then arm the put_resources fault.
+    let seed = MemDraftStore::default();
+    seed.put(&AgentConfig {
+        id: "r".into(),
+        instructions: "hi".into(),
+        max_steps: 8,
+        model_binding: ModelSelection::Auto,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let store = Arc::new(FaultyStore {
+        fail_put_resources: true,
+        inner: seed,
+        ..Default::default()
+    });
+    let (tools, _audit) = tools_over_store(store.clone());
+    let out = find_tool(&tools, PATCH_TOOL)
+        .invoke(call(
+            PATCH_TOOL,
+            serde_json::json!({
+                "id": "r",
+                "patch": { "resources": [{ "kind": "memory_store", "resource_id": "mem_1" }] }
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(out.is_error, "{}", out.content);
+    assert!(out.content.contains("resources could not be bound"));
+    assert!(out.content.contains("resource store offline"));
+}
+
+// ===================================================================================
+// Task 4: the PATCH path re-runs the plugin-config size bound after merging (the draft
+// path is already covered; the patch path was not).
+// ===================================================================================
+
+#[tokio::test]
+async fn patch_agent_rechecks_plugin_config_size_after_merge() {
+    let h = Harness::new();
+    // Seed a small, valid draft.
+    h.tool(CREATE_DRAFT_TOOL)
+        .invoke(call(
+            CREATE_DRAFT_TOOL,
+            serde_json::json!({
+                "id": "p",
+                "instructions": "hi",
+                "plugin_config": { "compact": { "keep": 10 } }
+            }),
+        ))
+        .await
+        .unwrap();
+    let before = h.store.stored("p").unwrap();
+
+    // Patch in an oversized plugin section → the post-merge size check rejects it.
+    let big = "x".repeat(MAX_PLUGIN_CONFIG_BYTES + 1);
+    let out = h
+        .tool(PATCH_TOOL)
+        .invoke(call(
+            PATCH_TOOL,
+            serde_json::json!({
+                "id": "p",
+                "patch": { "plugin_config": { "state_machine": { "blob": big } } }
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(out.is_error, "{}", out.content);
+    assert!(out.content.contains("over the"));
+    assert!(out.content.contains("state_machine"));
+    // The oversized patch did NOT overwrite the stored draft (fail-closed).
+    assert_eq!(
+        h.store.stored("p").unwrap(),
+        before,
+        "an oversized patch must not overwrite the draft"
+    );
+}

@@ -442,6 +442,21 @@ mod tests {
         InMemoryWorkQueue::new()
     }
 
+    // Pin the Anthropic wire vocabulary each `WorkState` renders to. This is the
+    // wire-facing contract the durable work-store's `state_from_wire` (in
+    // `awaken-work-store`) must round-trip against — including `Stopping`, which no
+    // transition currently emits but is kept as wire vocabulary a future writer
+    // could persist. No inverse fn lives in THIS crate (the parse is in the store),
+    // so we pin `as_str` only.
+    #[test]
+    fn work_state_as_str_pins_the_wire_vocabulary() {
+        assert_eq!(WorkState::Queued.as_str(), "queued");
+        assert_eq!(WorkState::Starting.as_str(), "starting");
+        assert_eq!(WorkState::Active.as_str(), "active");
+        assert_eq!(WorkState::Stopping.as_str(), "stopping");
+        assert_eq!(WorkState::Stopped.as_str(), "stopped");
+    }
+
     #[tokio::test]
     async fn healthcheck_seed_carries_its_own_id_and_is_queued() {
         let q = q();

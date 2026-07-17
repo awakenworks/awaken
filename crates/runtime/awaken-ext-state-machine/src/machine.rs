@@ -425,6 +425,32 @@ mod tests {
     }
 
     #[test]
+    fn template_any_index_renders_the_first_matching_element() {
+        // `[*]` (AnyIndex) parses today but had no render coverage. `resolve_path`
+        // returns every element and `render` takes the first, so `{items[*]}` on a
+        // scalar array yields the head, and `{items[*].name}` walks each element and
+        // takes the first resolved field.
+        let head = KeyTemplate::parse("{items[*]}").unwrap();
+        assert_eq!(
+            head.render(&json!({"items": ["first", "second", "third"]})),
+            Some("first".to_string())
+        );
+        let field = KeyTemplate::parse("{items[*].name}").unwrap();
+        assert_eq!(
+            field.render(&json!({"items": [{"name": "alpha"}, {"name": "beta"}]})),
+            Some("alpha".to_string())
+        );
+        // A literal prefix composes with an AnyIndex field.
+        let prefixed = KeyTemplate::parse("item:{items[*].name}").unwrap();
+        assert_eq!(
+            prefixed.render(&json!({"items": [{"name": "alpha"}]})),
+            Some("item:alpha".to_string())
+        );
+        // An empty array resolves nothing → the whole render is None.
+        assert_eq!(head.render(&json!({"items": []})), None);
+    }
+
+    #[test]
     fn render_lossy_keeps_placeholder() {
         let t = KeyTemplate::parse("read {file_path} first").unwrap();
         assert_eq!(t.render_lossy(&json!({})), "read {file_path} first");

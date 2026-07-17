@@ -203,6 +203,37 @@ mod tests {
     }
 
     #[test]
+    fn thoughts_plans_commands_and_mode_updates_all_fold_to_none() {
+        // The `_ => None` catch-all swallows every non-transcript `SessionUpdate`.
+        // Pin each of the four explicitly — a thought chunk, an execution plan, an
+        // available-commands list, a current-mode flip — so a future projection change
+        // can't silently start committing them as neutral facts (they are UI/agent
+        // internals, never runtime truth). Previously none was asserted (the arm was
+        // reached only implicitly by the `user_message_chunk` case).
+        use agent_client_protocol::{
+            AvailableCommandsUpdate, CurrentModeUpdate, Plan, SessionModeId,
+        };
+        let thought = SessionUpdate::AgentThoughtChunk(ContentChunk::new(ContentBlock::from(
+            "let me reason about this",
+        )));
+        assert_eq!(project_update(&thought), None, "a thought chunk");
+
+        let plan = SessionUpdate::Plan(Plan::new(vec![]));
+        assert_eq!(project_update(&plan), None, "an execution plan");
+
+        let commands = SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(vec![]));
+        assert_eq!(
+            project_update(&commands),
+            None,
+            "an available-commands update"
+        );
+
+        let mode =
+            SessionUpdate::CurrentModeUpdate(CurrentModeUpdate::new(SessionModeId::new("plan")));
+        assert_eq!(project_update(&mode), None, "a current-mode update");
+    }
+
+    #[test]
     fn max_turn_requests_stop_reason_maps_to_timed_out() {
         // MaxTurnRequests shares the deadline-like `TimedOut` mapping with MaxTokens;
         // it was the one un-asserted terminal stop reason.

@@ -116,6 +116,146 @@ fn ticket(run: &str, thread: &str) -> WaitingTicket {
     }
 }
 
+/// Build a coordinator over a fresh, isolated Postgres schema, or `None` (skip)
+/// when no Postgres is reachable — the entry point every shared-conformance test
+/// below uses so pg runs the SAME suite as the other backends.
+async fn conformance_store(schema: &'static str) -> Option<PostgresCommitCoordinator> {
+    let pool = schema_pool(schema).await?;
+    Some(
+        PostgresCommitCoordinator::with_pool(pool)
+            .await
+            .expect("coordinator"),
+    )
+}
+
+// The shared store conformance suite (ADR-0039 2.6), run against the durable
+// Postgres backend under skip-on-unreachable. Previously Postgres re-implemented a
+// few cases by hand and OMITTED `events_ordered_and_paged` and `commits_accumulate`
+// entirely; wiring the harness here closes that parity hole so Postgres cannot
+// diverge from inmem/fs/sqlite on any covered behavior.
+
+#[tokio::test]
+async fn conformance_commit_then_read() {
+    let Some(store) = conformance_store("t_c_read").await else {
+        return;
+    };
+    awaken_store_conformance::commit_then_read(&store).await;
+}
+
+#[tokio::test]
+async fn conformance_events_ordered_and_paged() {
+    let Some(store) = conformance_store("t_c_events").await else {
+        return;
+    };
+    awaken_store_conformance::events_ordered_and_paged(&store).await;
+}
+
+#[tokio::test]
+async fn conformance_commits_accumulate() {
+    let Some(store) = conformance_store("t_c_acc").await else {
+        return;
+    };
+    awaken_store_conformance::commits_accumulate(&store).await;
+}
+
+#[tokio::test]
+async fn conformance_terminal_run_is_fenced() {
+    let Some(store) = conformance_store("t_c_fence").await else {
+        return;
+    };
+    awaken_store_conformance::terminal_run_is_fenced(&store).await;
+}
+
+#[tokio::test]
+async fn conformance_waiting_ticket_parks_then_clears() {
+    let Some(store) = conformance_store("t_c_wait").await else {
+        return;
+    };
+    awaken_store_conformance::waiting_ticket_parks_then_clears(&store).await;
+}
+
+#[tokio::test]
+async fn conformance_concurrent_appends_are_dense_and_distinct() {
+    let Some(store) = conformance_store("t_c_conc").await else {
+        return;
+    };
+    awaken_store_conformance::concurrent_appends_are_dense_and_distinct(&store).await;
+}
+
+// Postgres keys by thread, so it isolates two threads in one store (as SQLite does).
+#[tokio::test]
+async fn conformance_two_threads_in_one_store_are_isolated() {
+    let Some(store) = conformance_store("t_c_iso").await else {
+        return;
+    };
+    awaken_store_conformance::two_threads_in_one_store_are_isolated(&store).await;
+}
+
+#[tokio::test]
+async fn conformance_empty_store_reads_are_absent() {
+    let Some(store) = conformance_store("t_c_empty").await else {
+        return;
+    };
+    awaken_store_conformance::empty_store_reads_are_absent(&store).await;
+}
+
+// KNOWN BUG (adjudicate): like SQLite, Postgres persists committed state commands
+// (into `runtime_state_command`, asserted by
+// `commit_persists_facts_messages_and_serves_reads`) but does NOT serve them back
+// through `ThreadReader::committed_state` — it leaves the trait default, which
+// returns empty. The in-memory/fs backends project committed state (they pass the
+// shared `committed_state_replays` case); Postgres does not, so it is NOT wired to
+// that case. Consumers that read this port on resume — materialized-state rebuild,
+// token-usage accounting, compaction-count — read EMPTY against Postgres, silently
+// losing accumulated state on a durable resume. This pins the current behavior.
+#[tokio::test]
+async fn committed_state_read_returns_empty_despite_persisted_rows() {
+    let Some(pool) = schema_pool("t_c_state").await else {
+        return;
+    };
+    let store = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .expect("coordinator");
+    let thread = ThreadId("t-state".to_string());
+
+    store
+        .commit(ThreadCommit {
+            thread_id: thread.clone(),
+            run_fact: running("r-state"),
+            messages: vec![],
+            state: vec![
+                StateCommand::set(
+                    Scope::Thread,
+                    MergePolicy::Disjoint,
+                    "k1",
+                    serde_json::json!("v1"),
+                ),
+                StateCommand::set(
+                    Scope::Run,
+                    MergePolicy::Commutative,
+                    "k2",
+                    serde_json::json!(2),
+                ),
+            ],
+            events: vec![],
+            waiting: None,
+        })
+        .await
+        .expect("commit state");
+
+    // The rows landed durably in the same transaction...
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtime_state_command")
+        .fetch_one(&pool)
+        .await
+        .expect("count state rows");
+    assert_eq!(rows, 2, "both state commands persisted");
+    // ...but the read port returns nothing (the divergence).
+    assert!(
+        ThreadReader::committed_state(&store, &thread).is_empty(),
+        "KNOWN BUG: committed_state returns empty even though state commands persisted"
+    );
+}
+
 #[tokio::test]
 async fn commit_persists_facts_messages_and_serves_reads() {
     let Some(pool) = schema_pool("t_commit").await else {

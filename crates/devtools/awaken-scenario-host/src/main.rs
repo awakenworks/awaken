@@ -168,3 +168,103 @@ async fn shutdown_signal() {
         let _ = tokio::signal::ctrl_c().await;
     }
 }
+
+#[cfg(test)]
+mod dispatch_tests {
+    //! Pin `main()`'s `AWAKEN_MODEL_MODE` dispatch: every mode string must route to a
+    //! factory that actually assembles a mounted scenario router. The dispatch is an
+    //! inline `match` in `main()` (not a `pub` fn we can call), so — refactor-free — this
+    //! table MIRRORS those arms: each entry names the mode string and builds the SAME
+    //! factory the arm calls, then asserts the router it produced exposes the shared
+    //! protocol surface (`GET /v1/ai-sdk/threads/{id}/messages` → 200). A reviewer who
+    //! edits a `match` arm must keep this table in step; a mode wired to a factory that
+    //! fails to mount is caught here instead of only as a `e2e/*.mjs` boot failure.
+    //!
+    //! Covered here: every SYNC, environment-free arm. Excluded (documented, not unit-
+    //! testable refactor-free): the arms that PANIC without operator env or external
+    //! daemons — `real`/`real-gemini`/`real-resolved`/`oauth-resolved` (require a live
+    //! API key / project), `delegate-remote` (`AWAKEN_REMOTE_AGENT_URL`), `acp-container`
+    //! (a running Docker daemon), and the async management arms
+    //! (`management`/`acp-managed-mcp`/`acp-real-mcp`). The two async but env-free arms
+    //! (`config`, plus the default fallback) are asserted directly below.
+
+    use awaken_scenario_host as sh;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    /// The route every `mount`-based factory exposes — probe it to prove the arm's
+    /// router mounted the shared protocol surface.
+    const SHARED_PROBE: &str = "/v1/ai-sdk/threads/dispatch-probe/messages";
+
+    async fn mounts_shared_surface(app: axum::Router) -> bool {
+        app.oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(SHARED_PROBE)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+            == StatusCode::OK
+    }
+
+    #[tokio::test]
+    async fn every_sync_env_free_mode_string_maps_to_a_mounted_factory() {
+        // (AWAKEN_MODEL_MODE string, the router its `main()` arm builds). Kept in the
+        // same order as the `match` in `main()` so drift is easy to spot.
+        let dispatch: Vec<(&str, axum::Router)> = vec![
+            (
+                "probe",
+                sh::build_router(std::sync::Arc::new(sh::ProbeModel), "probe"),
+            ),
+            (
+                "revise",
+                sh::build_router(std::sync::Arc::new(sh::ReviseModel), "revise"),
+            ),
+            ("custom", sh::build_custom_router()),
+            ("remote-hand", sh::build_remote_hand_router()),
+            ("delegate", sh::build_delegation_router()),
+            ("statemachine", sh::build_statemachine_router()),
+            ("statemachine-rich", sh::build_statemachine_rich_router()),
+            ("schedule", sh::build_schedule_router()),
+            ("skills", sh::build_skills_router()),
+            ("skills-durable", sh::build_skills_durable_router()),
+            ("pool-failover", sh::build_pool_failover_router()),
+            ("vision", sh::build_vision_router()),
+            ("model-route", sh::build_model_route_router()),
+            ("acp", sh::build_acp_router()),
+            ("acp-jsonrpc", sh::build_acp_jsonrpc_router()),
+            ("acp-sandboxed", sh::build_acp_sandboxed_router()),
+            ("acp-gateway", sh::build_acp_gateway_router()),
+            ("memory", sh::build_memory_router()),
+            ("memory-resource", sh::build_memory_resource_router()),
+            ("git-repo", sh::build_git_repo_router()),
+            ("compaction", sh::build_compaction_router()),
+            ("error", sh::build_error_router()),
+            ("worker", sh::build_worker_router()),
+            ("full-chain", sh::build_full_chain_router()),
+            // The `_ =>` fallback: any unrecognized mode routes to the echo router.
+            ("<default/unknown>", sh::build_echo_router()),
+        ];
+        for (mode, app) in dispatch {
+            assert!(
+                mounts_shared_surface(app).await,
+                "AWAKEN_MODEL_MODE={mode} must map to a factory that mounts the shared surface"
+            );
+        }
+    }
+
+    // Multi-thread: `build_config_router`'s admin-assistant seeding resolves a model
+    // through `CatalogModelResolver`, which uses `block_in_place` (multi-thread only).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_config_mode_maps_to_the_config_factory() {
+        // `config` is async but environment-free (in-memory SQLite); assert it too.
+        assert!(
+            mounts_shared_surface(sh::build_config_router().await).await,
+            "AWAKEN_MODEL_MODE=config must map to a mounted config factory"
+        );
+    }
+}

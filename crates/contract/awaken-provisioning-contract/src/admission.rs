@@ -157,4 +157,59 @@ mod tests {
         d.max_concurrency = None;
         assert!(check_environment_soundness(&d).is_ok());
     }
+
+    #[test]
+    fn an_empty_summary_masks_a_lower_precedence_reserved_key() {
+        // Cause-effect masking: the checks run in order (summary → required_field →
+        // reserved env → writable_base), so a decl that violates BOTH the summary AND a
+        // reserved env key reports `EmptySummary` — the reserved-key fault stays masked,
+        // never reached. Mirrors the prepare/token precedence tests: pins the ordering,
+        // not just that each check fires in isolation.
+        let mut d = sound();
+        d.summary = "  ".into(); // highest-precedence fault
+        d.env_keys = vec!["PATH".into()]; // a reserved key that MUST stay masked
+        assert_eq!(
+            check_environment_soundness(&d),
+            Err(AdmissionError::EmptySummary)
+        );
+    }
+
+    #[test]
+    fn a_blank_required_field_masks_a_lower_precedence_reserved_key() {
+        // The next link in the chain: with a non-empty summary, a blank required_field
+        // (checked before env keys) masks a co-occurring reserved env key.
+        let mut d = sound();
+        d.kind = "image".into();
+        d.required_field = Some(("reference", String::new()));
+        d.env_keys = vec!["HOME".into()]; // reserved, but masked by the earlier fault
+        assert_eq!(
+            check_environment_soundness(&d),
+            Err(AdmissionError::MissingRequiredField {
+                kind: "image".into(),
+                field: "reference"
+            })
+        );
+    }
+
+    #[test]
+    fn a_whitespace_only_required_field_is_rejected_as_blank() {
+        // The required-field guard trims before the emptiness test (like `summary`), so a
+        // value that is only whitespace is a violation — a config author cannot smuggle a
+        // blank `reference`/`path_template` past admission by padding it with spaces.
+        // Only the `summary` trim path was covered before; this pins the field trim.
+        let mut d = sound();
+        d.kind = "image".into();
+        d.required_field = Some(("reference", "  \t \n".into()));
+        assert_eq!(
+            check_environment_soundness(&d),
+            Err(AdmissionError::MissingRequiredField {
+                kind: "image".into(),
+                field: "reference"
+            })
+        );
+        // A value with surrounding whitespace but real content is admitted (trim only
+        // gates emptiness; it does not reject a padded-but-present value).
+        d.required_field = Some(("reference", "  registry.io/img:1  ".into()));
+        assert!(check_environment_soundness(&d).is_ok());
+    }
 }

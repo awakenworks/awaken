@@ -180,6 +180,78 @@ impl ScopedSessionStore for InMemoryScopedSessionStore {
 }
 
 #[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn session(id: &str) -> PersistedSession {
+        PersistedSession {
+            session_id: id.to_string(),
+            agent_id: "assistant".into(),
+            model: "kimi".into(),
+            title: Some("Demo".into()),
+            metadata: BTreeMap::from([("k".to_string(), "v".to_string())]),
+            environment_id: "env".into(),
+            // The wire-echo shape the agent object reports — never a credential.
+            mcp_servers: vec![json!({"name": "gh", "type": "url", "url": "https://mcp.example"})],
+        }
+    }
+
+    // Item 3: the non-scoped in-memory repo round-trips a save→get, and an upsert by
+    // `session_id` replaces the prior row (idempotent by id).
+    #[tokio::test]
+    async fn in_memory_repo_saves_and_reads_back() {
+        let repo = InMemorySessionRepository::default();
+        assert_eq!(repo.get("s1").await, None, "empty before any save");
+        repo.save(session("s1")).await;
+        assert_eq!(repo.get("s1").await, Some(session("s1")));
+
+        // Upsert by id: a second save under the same id replaces the row.
+        let mut updated = session("s1");
+        updated.title = Some("Renamed".into());
+        repo.save(updated.clone()).await;
+        assert_eq!(repo.get("s1").await, Some(updated));
+    }
+
+    // Item 3: the tenancy-owner hooks default to no-op / None on the in-memory repo
+    // (same-process ownership lives in `ManagedState`'s index, not this store).
+    #[tokio::test]
+    async fn in_memory_repo_owner_defaults_are_noop_and_none() {
+        let repo = InMemorySessionRepository::default();
+        repo.save(session("s1")).await;
+        // `set_owner` is a no-op that must not error or affect `get`.
+        repo.set_owner("s1", "ws_a").await;
+        assert_eq!(repo.get("s1").await, Some(session("s1")));
+        // `owner` reports nothing for a backend that records no scope.
+        assert_eq!(repo.owner("s1").await, None);
+    }
+
+    // Item 6: `PersistedSession` equality + a serde-free structural round-trip through
+    // the port, carrying `mcp_servers: Vec<Value>` faithfully (the wire echo survives).
+    #[tokio::test]
+    async fn persisted_session_carries_mcp_servers_and_compares_by_value() {
+        let a = session("s1");
+        let b = session("s1");
+        assert_eq!(a, b, "same fields ⇒ equal");
+
+        let mut differ = session("s1");
+        differ.mcp_servers = vec![json!({"name": "other"})];
+        assert_ne!(a, differ, "differing mcp_servers ⇒ not equal");
+
+        // The Vec<Value> survives a store round-trip intact.
+        let repo = InMemorySessionRepository::default();
+        repo.save(a.clone()).await;
+        let back = repo.get("s1").await.expect("row exists");
+        assert_eq!(back.mcp_servers, a.mcp_servers);
+        assert_eq!(
+            back.mcp_servers[0]["url"],
+            json!("https://mcp.example"),
+            "the wire-echo url is preserved"
+        );
+    }
+}
+
+#[cfg(test)]
 mod scoped_tests {
     use super::*;
 

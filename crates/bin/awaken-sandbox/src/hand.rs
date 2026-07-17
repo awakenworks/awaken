@@ -202,4 +202,85 @@ mod tests {
         assert!(parse_hand_args(&[]).is_err());
         assert!(parse_hand_args(&["--unix".into()]).is_err());
     }
+
+    /// Drive the private `run_nats` at the library altitude when a broker is reachable:
+    /// serve the executor channel over NATS, then act as the brain — publish a real
+    /// `HandRequest` (a `bash` call) to the subject and assert the harvested `HandReply`.
+    ///
+    /// A local NATS is unlikely in CI, so this is skip-on-unreachable: it probes the
+    /// broker with a short timeout and returns early (a pass, logging "skipping") when
+    /// none answers. Point `AWAKEN_TEST_NATS_URL` at a broker to exercise the round trip.
+    /// Readiness is a request-retry loop (not a sleep): retry until the subscription
+    /// responds, so it is deterministic whether the broker is fast or slow to subscribe.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_nats_serves_a_real_tool_when_a_broker_is_reachable() {
+        use std::time::Duration;
+
+        use awaken_runtime_contract::llm::ToolCall;
+        use awaken_tool_relay::wire::{HandReply, HandRequest, HandResult};
+
+        let url =
+            std::env::var("AWAKEN_TEST_NATS_URL").unwrap_or_else(|_| "127.0.0.1:4222".to_string());
+
+        // Probe the broker; skip cleanly if unreachable (the CI-default case).
+        let client =
+            match tokio::time::timeout(Duration::from_millis(750), async_nats::connect(&url)).await
+            {
+                Ok(Ok(c)) => c,
+                _ => {
+                    eprintln!("run_nats test: no NATS broker reachable at {url}; skipping");
+                    return;
+                }
+            };
+
+        // A per-process subject so parallel test runs never cross-talk.
+        let subject = format!("awaken.hand.test.{}", std::process::id());
+        let serve_url = url.clone();
+        let serve_subject = subject.clone();
+        let server = tokio::spawn(async move { run_nats(&serve_url, &serve_subject).await });
+
+        // Brain side: a real HandRequest carrying a `bash` call.
+        let request = HandRequest::new(
+            1,
+            ToolCall {
+                call_id: "c1".into(),
+                tool_id: "bash".into(),
+                arguments: serde_json::json!({ "command": "echo nats-hand-ran-the-tool" }),
+            },
+        );
+        let payload = serde_json::to_vec(&request).expect("encode request");
+
+        // Retry-until-responded: `request()` errors with "no responders" until the
+        // hand's subscription is live, so loop until we get a reply.
+        let mut reply_bytes = None;
+        for _ in 0..100 {
+            match tokio::time::timeout(
+                Duration::from_millis(250),
+                client.request(subject.clone(), payload.clone().into()),
+            )
+            .await
+            {
+                Ok(Ok(msg)) => {
+                    reply_bytes = Some(msg.payload);
+                    break;
+                }
+                _ => tokio::time::sleep(Duration::from_millis(25)).await,
+            }
+        }
+        server.abort();
+
+        let reply: HandReply =
+            serde_json::from_slice(&reply_bytes.expect("the hand replied over NATS"))
+                .expect("decode reply");
+        match reply.result {
+            HandResult::Ok { output } => {
+                let rendered = serde_json::to_string(&output).expect("output serializes");
+                assert!(
+                    rendered.contains("nats-hand-ran-the-tool"),
+                    "the NATS hand executed bash and returned its output: {rendered}"
+                );
+            }
+            other => panic!("expected the NATS hand to run bash, got {other:?}"),
+        }
+    }
 }

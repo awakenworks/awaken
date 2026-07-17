@@ -633,6 +633,136 @@ async fn an_unscoped_request_falls_back_to_the_default_scope() {
 }
 
 #[tokio::test]
+async fn an_ssrf_shaped_url_is_rejected_on_the_update_path_too() {
+    // `put_subscription` runs `validate_url` BEFORE the create-vs-update branch, so an
+    // SSRF-shaped URL is rejected at admission on the UPDATE path as well — only the
+    // create path was covered. A tenant with an existing (safe) row must not be able
+    // to repoint it at a loopback/metadata/non-https target: 400, and the stored row
+    // is left untouched (no rewrite of url/event_types).
+    for bad in [
+        "https://169.254.169.254/latest/meta-data/", // cloud metadata (link-local)
+        "https://127.0.0.1/admin",                   // loopback
+        "http://hooks.example.com/x",                // non-https
+    ] {
+        let store = Arc::new(MemStore::default());
+        seed(&store, "wh1", "ws_a"); // an existing, owned row at a safe url
+        let (status, _) = call(
+            store.clone(),
+            Arc::new(MemSecrets::ok()),
+            "PUT",
+            "/v1/config/webhook-subscriptions/wh1",
+            Some("ws_a"),
+            Some(json!({ "url": bad, "event_types": ["run.failed"] })),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{bad} must be rejected on update"
+        );
+        let row = store.get("wh1").expect("the row still exists");
+        assert_eq!(
+            row.url, "https://old.example/hook",
+            "a rejected update must not repoint the endpoint at {bad}"
+        );
+        assert_eq!(
+            row.event_types,
+            vec!["run.completed".to_string()],
+            "nor rewrite its event types"
+        );
+    }
+}
+
+// --- assemble / assemble_loopback: the composition fns (the guarded-sender +
+//     strict-policy pairing vs. the loopback pairing) ---
+
+/// Drive one request through an arbitrary already-built router (the `assemble*`
+/// fns hand back their own `Router`, so the shared `call` helper does not apply).
+async fn drive(router: Router, method: &str, uri: &str, ws: &str, body: Value) -> StatusCode {
+    let mut req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    req.extensions_mut().insert(WorkspaceScope(ws.to_string()));
+    router.oneshot(req).await.unwrap().status()
+}
+
+/// `assemble` is the production composition: it pairs `ReqwestSender::guarded()`
+/// with `strict_endpoint_url_policy()`. The guarded-sender + strict-policy pairing
+/// is only covered downstream, so drive the CRUD router `assemble` returns and prove
+/// the STRICT policy is wired — a loopback endpoint is rejected at admission (400).
+/// Also confirm the returned lifecycle sink is a live `SessionLifecycleSink` (its
+/// no-owner path is a deterministic no-op, needing no network).
+#[tokio::test]
+async fn assemble_wires_the_strict_ssrf_policy_and_returns_a_working_sink() {
+    let store = Arc::new(MemStore::default());
+    let secrets = Arc::new(MemSecrets::ok());
+    let (sink, router) = awaken_webhook_managed::assemble(
+        store.clone() as Arc<dyn WebhookStore>,
+        secrets as Arc<dyn SecretStore>,
+        Some("org_root".into()),
+    );
+
+    // Strict policy wired: a loopback endpoint is rejected, and no row is stored.
+    let status = drive(
+        router,
+        "PUT",
+        "/v1/config/webhook-subscriptions/wh1",
+        "ws_a",
+        json!({ "url": "https://127.0.0.1/admin", "event_types": ["run.completed"] }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "assemble must wire the strict SSRF policy"
+    );
+    assert!(
+        store.get("wh1").is_none(),
+        "a rejected create stores no row"
+    );
+
+    // The returned sink is a real lifecycle sink: the no-owner emit is a no-op.
+    sink.emit("sesn_1", None, "session.created").await;
+}
+
+/// `assemble_loopback` is the e2e composition: `ReqwestSender::default()` paired
+/// with an admit-everything policy. Prove the PERMISSIVE policy is wired — the same
+/// `127.0.0.1` endpoint `assemble` rejects is ADMITTED here (201 Created), the exact
+/// behavioural difference between the two composition fns. This also transitively
+/// drives the private `assemble_with` both delegate to.
+#[tokio::test]
+async fn assemble_loopback_admits_a_loopback_endpoint_the_strict_path_rejects() {
+    let store = Arc::new(MemStore::default());
+    let secrets = Arc::new(MemSecrets::ok());
+    let (_sink, router) = awaken_webhook_managed::assemble_loopback(
+        store.clone() as Arc<dyn WebhookStore>,
+        secrets as Arc<dyn SecretStore>,
+        None,
+    );
+
+    let status = drive(
+        router,
+        "PUT",
+        "/v1/config/webhook-subscriptions/wh_lb",
+        "ws_a",
+        json!({ "url": "https://127.0.0.1:9999/hook", "event_types": ["run.completed"] }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "the loopback composition admits its own 127.0.0.1 receiver"
+    );
+    assert_eq!(
+        store.get("wh_lb").expect("the row is stored").workspace_id,
+        "ws_a"
+    );
+}
+
+#[tokio::test]
 async fn delete_of_an_owned_row_removes_it() {
     // The happy-path unsubscribe: a tenant deleting its own subscription tears the
     // row out (the counterpart to the cross-tenant no-op).

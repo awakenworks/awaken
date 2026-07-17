@@ -43,4 +43,4 @@ k8s = ["dep:kube", "dep:k8s-openapi", "dep:rustls", "connection"]
 podman = ["connection", "tokio/process"]
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "io-util", "net", "time"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "io-util", "net", "time", "test-util"] }

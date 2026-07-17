@@ -466,6 +466,60 @@ mod tests {
         );
     }
 
+    /// `TaskState::AuthRequired` had ZERO coverage: no test pinned its wire token.
+    /// The A2A JSON spelling is `"auth-required"` (hyphenated), with the proto token
+    /// `TASK_STATE_AUTH_REQUIRED` accepted on input for back-compat. A rename would
+    /// silently break a remote agent that parks a task awaiting auth, so pin the full
+    /// round-trip plus the input alias.
+    #[test]
+    fn task_state_auth_required_round_trips_on_the_a2a_wire_token() {
+        assert_eq!(
+            serde_json::to_value(TaskState::AuthRequired).unwrap(),
+            json!("auth-required")
+        );
+        let back: TaskState = serde_json::from_value(json!("auth-required")).unwrap();
+        assert_eq!(back, TaskState::AuthRequired);
+        let alias: TaskState = serde_json::from_value(json!("TASK_STATE_AUTH_REQUIRED")).unwrap();
+        assert_eq!(alias, TaskState::AuthRequired);
+    }
+
+    /// `InputRequired` had only a serialize assertion (in `task_state_tokens_...`),
+    /// never a full round-trip or its input alias. Close the same gap as
+    /// `AuthRequired`: `"input-required"` round-trips and `TASK_STATE_INPUT_REQUIRED`
+    /// is accepted.
+    #[test]
+    fn task_state_input_required_round_trips_and_accepts_the_proto_alias() {
+        let back: TaskState = serde_json::from_value(json!("input-required")).unwrap();
+        assert_eq!(back, TaskState::InputRequired);
+        assert_eq!(
+            serde_json::to_value(TaskState::InputRequired).unwrap(),
+            json!("input-required")
+        );
+        let alias: TaskState = serde_json::from_value(json!("TASK_STATE_INPUT_REQUIRED")).unwrap();
+        assert_eq!(alias, TaskState::InputRequired);
+    }
+
+    /// The outbound agent role: our replies are stamped `MessageRole::Agent`, which
+    /// must serialize as the A2A JSON token `"agent"` (the proto `ROLE_AGENT` is an
+    /// input alias only). A wrong outbound spelling would confuse clients keying on
+    /// the role; the `User` token is pinned alongside for contrast.
+    #[test]
+    fn message_role_serializes_with_the_a2a_wire_tokens() {
+        assert_eq!(
+            serde_json::to_value(MessageRole::Agent).unwrap(),
+            json!("agent")
+        );
+        assert_eq!(
+            serde_json::to_value(MessageRole::User).unwrap(),
+            json!("user")
+        );
+        // The proto tokens are accepted on input for back-compat.
+        assert_eq!(
+            serde_json::from_value::<MessageRole>(json!("ROLE_AGENT")).unwrap(),
+            MessageRole::Agent
+        );
+    }
+
     #[test]
     fn message_text_concatenates_parts() {
         let m = Message {

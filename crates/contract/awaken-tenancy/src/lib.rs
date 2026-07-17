@@ -355,4 +355,107 @@ mod tests {
         let auth = Authority::reaching([ws("b"), ws("a"), ws("b")]);
         assert_eq!(auth.reachable(), &[ws("a"), ws("b")]);
     }
+
+    // --- ScopeRejection Display: the human-readable rejection copy -------------
+
+    #[test]
+    fn scope_rejection_display_messages() {
+        assert_eq!(
+            ScopeRejection::NotAuthorized {
+                selected: ws("wrkspc_acme"),
+            }
+            .to_string(),
+            "not authorized for scope `wrkspc_acme`"
+        );
+        assert_eq!(
+            ScopeRejection::SelectionRequired.to_string(),
+            "a workspace must be named for this request"
+        );
+        assert_eq!(
+            ScopeRejection::NoAuthority.to_string(),
+            "the credential authorizes no scope"
+        );
+    }
+
+    // --- ScopeId is persisted as the `scope_id` column: pin the wire shape -----
+
+    #[test]
+    fn scope_id_serde_round_trips_as_a_bare_json_string() {
+        let id = ScopeId::from("wrkspc_acme");
+        // The newtype serializes transparently to the inner string — this is the
+        // durable/wire contract for the `scope_id` column, so pin the exact shape.
+        let json = serde_json::to_string(&id).expect("serialize ScopeId");
+        assert_eq!(json, "\"wrkspc_acme\"");
+
+        let back: ScopeId = serde_json::from_str(&json).expect("deserialize ScopeId");
+        assert_eq!(back, id);
+    }
+
+    #[test]
+    fn scope_id_deserializes_from_a_bare_json_string() {
+        // A raw JSON string (as written by any producer of the column) reads back
+        // into the newtype — the reverse direction of the wire contract.
+        let back: ScopeId = serde_json::from_str("\"wrkspc_beta\"").expect("deserialize ScopeId");
+        assert_eq!(back, ScopeId::from("wrkspc_beta"));
+        assert_eq!(back.as_str(), "wrkspc_beta");
+    }
+
+    // --- WorkspaceScope newtype: construction + accessor + clone --------------
+
+    #[test]
+    fn workspace_scope_wraps_and_exposes_its_inner_id() {
+        let scope = WorkspaceScope("wrkspc_acme".to_string());
+        assert_eq!(scope.0, "wrkspc_acme");
+        // Clone is the only other capability the newtype derives (Debug, Clone).
+        let cloned = scope.clone();
+        assert_eq!(cloned.0, "wrkspc_acme");
+        // Debug is derived and includes the wrapped value.
+        assert_eq!(format!("{scope:?}"), r#"WorkspaceScope("wrkspc_acme")"#);
+    }
+
+    // --- CHARACTERIZATION: "path + domain must agree" is NOT enforced ---------
+
+    // KNOWN BUG (adjudicate): resolve_scope silently takes first selector;
+    // disagreeing path/domain is NOT rejected despite the "must agree" doc.
+    //
+    // The doc comment on `resolve_scope` claims "if both are present they must
+    // agree — both are checked against the same authority". This test pins the
+    // ACTUAL behavior: only the FIRST selecting vehicle is examined. A second,
+    // disagreeing selector that names a scope the principal is NOT authorized for
+    // is silently ignored (never checked against the authority), so no
+    // `NotAuthorized` rejection is raised. This is a fail-open relative to the
+    // contract doc.
+    #[test]
+    fn disagreeing_path_and_domain_are_not_rejected_first_selector_wins() {
+        // Authority reaches ONLY ws_a. The path selects ws_a (authorized); the
+        // domain disagrees and selects ws_evil (NOT authorized). If path+domain
+        // were truly "both checked against the same authority", the disagreeing
+        // domain would trip NotAuthorized. It does not.
+        let auth = Authority::bound(ws("ws_a"));
+        let got = resolve_scope(
+            &auth,
+            &[
+                ScopeClaim::FromPath("ws_a".into()),
+                ScopeClaim::FromDomain("ws_evil".into()),
+            ],
+        );
+        // ACTUAL: first selector wins, disagreement silently accepted.
+        assert_eq!(got, Ok(ws("ws_a")));
+    }
+
+    // KNOWN BUG (adjudicate): symmetric case — domain first, path disagrees.
+    #[test]
+    fn disagreeing_domain_and_path_take_domain_when_it_is_first() {
+        // Ordering, not agreement, decides the outcome: swap the vehicles and the
+        // domain's scope wins even though the later path disagrees.
+        let auth = Authority::bound(ws("ws_a"));
+        let got = resolve_scope(
+            &auth,
+            &[
+                ScopeClaim::FromDomain("ws_a".into()),
+                ScopeClaim::FromPath("ws_evil".into()),
+            ],
+        );
+        assert_eq!(got, Ok(ws("ws_a")));
+    }
 }

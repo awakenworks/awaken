@@ -1272,6 +1272,90 @@ async fn open_and_drive_inject_a_trusted_inline_mcp_credential_into_session_new(
     );
 }
 
+/// The ACP `acp_session_id` is carried across the per-turn relaunch loop (R7): the id
+/// negotiated on turn 1's `session/new` is threaded into turn 2's config, so the
+/// relaunched CLI is resumed via `session/load` with the SAME id (context survives)
+/// rather than starting fresh. A fake ACP CLI (JSON-RPC, shell builtins) advertises
+/// `loadSession` and, per turn, reports which session verb it received — `new` (turn 1,
+/// no prior id) or `load-s1` (turn 2, resumed with the carried id `s1`). Each relaunch
+/// is a fresh child (the shell var resets), so the only thing that can carry `s1` into
+/// turn 2 is the executor threading it through `config.session_id`. Gated on `real-acp`:
+/// only the official codec negotiates/loads a session id (the newline stand-in leaves it
+/// `None`).
+#[cfg(feature = "real-acp")]
+#[tokio::test]
+async fn acp_session_id_is_carried_across_the_per_turn_relaunch() {
+    use awaken_runtime_contract::live_inbox::{LiveInbox, MessageOrigin};
+
+    // id:1 initialize (advertise loadSession) · id:2 session/new|load · id:3 prompt.
+    // The id:2 request distinguishes the verb by whether the carried id `s1` is present
+    // in it: turn 1's session/new has none (→ `new`, returns sessionId s1); turn 2's
+    // session/load carries `s1` (→ `load-s1`, empty result). The turn's agent message
+    // echoes which verb fired, so the committed transcript proves the carry.
+    const SESSION_CARRY_AGENT: &str = "while IFS= read -r line; do \
+          case \"$line\" in \
+            *'\"id\":1'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{\"loadSession\":true}}}';; \
+            *'\"id\":2'*) \
+              case \"$line\" in \
+                *s1*) K=load-s1; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}';; \
+                *) K=new; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\"}}';; \
+              esac;; \
+            *'\"id\":3'*) \
+              printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"turn:%s\"}}}}\\n' \"$K\"; \
+              printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; \
+              exit 0;; \
+          esac; \
+        done";
+
+    let mut cli = *acp_cli("claude").expect("claude in the catalog");
+    cli.command = "/bin/sh";
+    cli.args = &["-c", SESSION_CARRY_AGENT];
+    let source = Arc::new(ProjectingChannelSource::new(
+        cli,
+        Arc::new(FixedModel(ResolvedModel {
+            base_url: "u".into(),
+            model: "m".into(),
+            api_key: "k".into(), // awaken-allow: secret
+        })),
+    ));
+    let e = AcpRunExecutor::new(source);
+
+    // One queued steer forces exactly one relaunch → a second turn (without it the run
+    // ends after turn 1 and never relaunches, so the carry is never exercised).
+    let inbox = LiveInbox::new();
+    let _ = inbox.offer_as(
+        MessageOrigin::External,
+        Message::text(MessageId("steer".into()), Role::User, "keep going"),
+    );
+    let coord = Arc::new(RecordingCoordinator::default());
+    let phase = e
+        .execute(
+            activation(),
+            RuntimeRunContext::new()
+                .with_commit(coord.clone())
+                .with_live_inbox(inbox.clone()),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    let commits = coord.commits.lock().unwrap();
+    let texts: Vec<String> = commits[0]
+        .messages
+        .iter()
+        .map(|m| m.text_content())
+        .collect();
+    assert!(
+        texts.iter().any(|t| t == "turn:new"),
+        "turn 1 opened a fresh session via session/new; got {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|t| t == "turn:load-s1"),
+        "turn 2 resumed via session/load carrying the id `s1` — acp_session_id survived \
+         the per-turn relaunch; got {texts:?}"
+    );
+}
+
 #[test]
 fn projecting_source_reads_the_cli_compact_window_from_config() {
     let cli = *acp_cli("claude").expect("claude in the catalog");

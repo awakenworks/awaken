@@ -919,4 +919,162 @@ mod tests {
                 .contains("x-api-key: second")
         );
     }
+
+    // ---- server->client request path over the POST SSE response stream ----
+
+    use crate::sampling::{SamplingError, SamplingHandler, SamplingRequest, SamplingResponse};
+
+    /// Read one full HTTP request: headers, then the `Content-Length` body (the
+    /// `serve` helper above reads only headers; the reply POST bodies matter here).
+    async fn read_http(socket: &mut tokio::net::TcpStream) -> String {
+        let mut request = Vec::new();
+        let mut buf = [0u8; 4096];
+        let header_end = loop {
+            let n = socket.read(&mut buf).await.unwrap();
+            if n == 0 {
+                return String::from_utf8_lossy(&request).to_string();
+            }
+            request.extend_from_slice(&buf[..n]);
+            if let Some(pos) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                break pos + 4;
+            }
+        };
+        let headers = String::from_utf8_lossy(&request[..header_end]).to_ascii_lowercase();
+        let content_length = headers
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length:"))
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        while request.len() < header_end + content_length {
+            let n = socket.read(&mut buf).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            request.extend_from_slice(&buf[..n]);
+        }
+        String::from_utf8_lossy(&request).to_string()
+    }
+
+    /// A server that answers the first POST with an SSE body interleaving a
+    /// server->client `sampling/createMessage` request (id `srv-1`) BEFORE the
+    /// response to the client's request, then captures the reply POST the
+    /// transport sends back. Returns the base URL and a handle to the reply body.
+    async fn serve_interleaved_server_request() -> (String, tokio::task::JoinHandle<String>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = tokio::spawn(async move {
+            // conn 1: the tools/list POST -> SSE (server request, then response).
+            let (mut s1, _) = listener.accept().await.unwrap();
+            read_http(&mut s1).await;
+            let sse = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n\
+data: {\"jsonrpc\":\"2.0\",\"id\":\"srv-1\",\"method\":\"sampling/createMessage\",\"params\":{\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}}\n\n\
+data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}\n\n";
+            s1.write_all(sse.as_bytes()).await.unwrap();
+            s1.shutdown().await.ok();
+            // conn 2: the transport POSTs the reply back; capture it.
+            let (mut s2, _) = listener.accept().await.unwrap();
+            let reply = read_http(&mut s2).await;
+            s2.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            s2.shutdown().await.ok();
+            reply
+        });
+        (url, handle)
+    }
+
+    struct EchoSampler;
+    #[async_trait]
+    impl SamplingHandler for EchoSampler {
+        async fn create_message(
+            &self,
+            request: SamplingRequest,
+        ) -> Result<SamplingResponse, SamplingError> {
+            let last = request
+                .messages
+                .last()
+                .map(|m| m.content.clone())
+                .unwrap_or_default();
+            Ok(SamplingResponse::assistant(format!("echo: {last}")))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_server_sampling_request_over_http_is_handled_and_replied() {
+        // A server->client `sampling/createMessage` interleaved in a POST's SSE
+        // response is dispatched to the host handler, whose result is POSTed back
+        // as the reply — while the client's own tools/list still resolves.
+        let (url, server) = serve_interleaved_server_request().await;
+        let transport = HttpTransportBuilder::new(url)
+            .sampling(Arc::new(EchoSampler) as Arc<dyn SamplingHandler>)
+            .build();
+
+        let tools = transport
+            .list_tools()
+            .await
+            .expect("tools/list resolves past the interleaved server request");
+        assert!(tools.is_empty());
+
+        let reply = server.await.unwrap();
+        assert!(
+            reply.contains("\"id\":\"srv-1\""),
+            "the reply targets the server request id: {reply}"
+        );
+        assert!(
+            reply.contains("\"result\""),
+            "the reply is a JSON-RPC result, not an error: {reply}"
+        );
+        assert!(
+            reply.contains("echo: ping"),
+            "the reply carries the sampling handler's output: {reply}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_request_without_a_handler_fails_closed_method_not_found() {
+        // Same interleave, but no sampling handler registered (request_handler is
+        // None): the transport must reply with JSON-RPC -32601 (method not found)
+        // rather than silently dropping the server's request.
+        let (url, server) = serve_interleaved_server_request().await;
+        let transport = HttpTransportBuilder::new(url).build();
+
+        let tools = transport
+            .list_tools()
+            .await
+            .expect("tools/list still resolves");
+        assert!(tools.is_empty());
+
+        let reply = server.await.unwrap();
+        assert!(
+            reply.contains("\"id\":\"srv-1\""),
+            "the error reply targets the server request id: {reply}"
+        );
+        assert!(
+            reply.contains("\"error\"") && reply.contains("-32601"),
+            "fail-closed with method_not_found (-32601): {reply}"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_transport_reports_alive_even_after_the_server_is_gone() {
+        // Bind then immediately drop the listener, so the address is dead.
+        let addr = {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            listener.local_addr().unwrap()
+        };
+        let transport = HttpTransport::new(format!("http://{addr}"), Credential::None);
+
+        // A real call fails against the dead address...
+        assert!(
+            transport.list_tools().await.is_err(),
+            "the dead server is unreachable"
+        );
+        // ...yet liveness still reports true: HttpTransport never overrides the
+        // McpToolTransport::is_alive default (true for stateless transports).
+        assert!(transport.is_alive());
+
+        // KNOWN BUG (adjudicate): a dead HTTP server still reports alive, so the
+        // manager's ServerStatus.alive can never flag or reap it — unlike the
+        // process-backed stdio transport, which reports its child's liveness.
+    }
 }

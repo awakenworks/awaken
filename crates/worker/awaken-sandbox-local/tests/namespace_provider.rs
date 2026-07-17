@@ -134,6 +134,106 @@ async fn dispose_reaps_and_shreds_a_secret_mounted_sandbox() {
     ));
 }
 
+/// The key namespace invariant: a host path OUTSIDE the declared binds is INVISIBLE
+/// inside the bwrap namespace. The existing gated tests only prove declared binds are
+/// PRESENT and ro-binds reject writes — nothing proves non-bound paths are hidden. Here
+/// an unbound host file (in a second tempdir under `/tmp`, which the namespace shadows
+/// with a fresh tmpfs) cannot be read from inside, while `/workspace` (a declared bind)
+/// can — so a leak would flip the assertion. Gated on bwrap (exec-side).
+#[tokio::test]
+async fn an_unbound_host_path_is_invisible_inside_the_namespace() {
+    if !bwrap_works().await {
+        eprintln!("skipping: bwrap/userns unavailable on this host");
+        return;
+    }
+    // A secret on the host, deliberately NOT under the sandbox base nor any bind.
+    let outside = tempfile::tempdir().unwrap();
+    let secret = outside.path().join("host-secret.txt");
+    std::fs::write(&secret, "HOST-ONLY-SECRET").unwrap();
+    let secret_abs = secret.to_string_lossy().into_owned();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = NamespaceProvider::new(tmp.path());
+    let sandbox = provider.create(&spec("t-invisible")).await.unwrap();
+
+    // Inside the namespace: try to read the unbound host path (must be HIDDEN) and
+    // confirm the declared `/workspace` bind IS visible (contrast — proves a real leak
+    // would be caught, not masked by a broken probe).
+    let script = format!(
+        "{{ cat '{secret_abs}' >/dev/null 2>&1 && echo LEAK || echo HIDDEN; \
+          test -d /workspace && echo WS-OK || echo WS-MISSING; }} \
+          > /mnt/session/outputs/vis.txt"
+    );
+    let proc = sandbox.spawn(sh(&script)).await.unwrap();
+    assert_eq!(proc.wait().await.unwrap().code, Some(0));
+
+    let arts = sandbox.artifacts().await.unwrap();
+    let vis = arts
+        .iter()
+        .find(|a| a.path.ends_with("/vis.txt"))
+        .expect("vis.txt artifact");
+    let body = String::from_utf8(sandbox.read_artifact(&vis.id).await.unwrap()).unwrap();
+    assert!(
+        body.contains("HIDDEN") && !body.contains("LEAK"),
+        "an unbound host path must be invisible inside the namespace: {body}"
+    );
+    assert!(
+        body.contains("WS-OK"),
+        "the declared /workspace bind must be visible (contrast): {body}"
+    );
+
+    // And the bytes never leaked out either: the outputs file holds no secret content.
+    assert!(
+        !body.contains("HOST-ONLY-SECRET"),
+        "the host secret's bytes must never appear inside: {body}"
+    );
+    sandbox.dispose().await.unwrap();
+}
+
+/// Ungated companion to `dispose_reaps_and_shreds_a_secret_mounted_sandbox`: prove the
+/// credential bytes are actually ZEROED (not merely unlinked) before the tree is reaped.
+/// A second hard link to the secret inode, kept OUTSIDE the reaped tree, observes the
+/// in-place zero-write (`std::fs::write` truncates the inode) that both local tiers do —
+/// the namespace-tier twin of the Workdir `shred_tests` "reads zeros" assertion.
+#[tokio::test]
+async fn dispose_zeroes_the_credential_bytes_before_reaping() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = spec("t-shred-zero");
+    s.mounts.push(pc::MountRequirement {
+        mount_id: "auth".into(),
+        source: pc::MountSource::Secret {
+            reference: "broker://k".into(),
+            content_hash: None,
+        },
+        mount_path: "/workspace/.auth".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::PerRun,
+        required: true,
+    });
+    let provider =
+        NamespaceProvider::new(tmp.path()).with_blob("broker://k", b"sk-secret".to_vec());
+    let sandbox = provider.create(&s).await.unwrap();
+
+    // The realized credential path (root layout: <base>/<scope>/workspace/.auth).
+    let secret = tmp.path().join("t-shred-zero/workspace/.auth");
+    assert_eq!(std::fs::read(&secret).unwrap(), b"sk-secret");
+    // A second hard link OUTSIDE the reaped tree observes the same inode after dispose.
+    let observe = tmp.path().join("observe.auth");
+    std::fs::hard_link(&secret, &observe).unwrap();
+    assert_eq!(std::fs::read(&observe).unwrap(), b"sk-secret");
+
+    sandbox.dispose().await.unwrap();
+
+    // The directory entry is gone, but the surviving hard link proves the bytes were
+    // overwritten with zeros in place — a shred, not just an unlink.
+    assert!(!secret.exists(), "the sandbox tree was reaped");
+    assert_eq!(
+        std::fs::read(&observe).unwrap(),
+        vec![0u8; 9],
+        "the credential bytes must be zeroed before reap, not merely unlinked"
+    );
+}
+
 #[tokio::test]
 async fn host_allowlist_egress_is_rejected() {
     let tmp = tempfile::tempdir().unwrap();

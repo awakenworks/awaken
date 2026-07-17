@@ -476,4 +476,120 @@ mod tests {
             assert!(RESERVED_ENV_KEYS.contains(&key), "{key} is runtime-owned");
         }
     }
+
+    #[test]
+    fn an_inline_mount_source_round_trips_with_its_tag() {
+        // ADR-0057 `Inline`: small non-secret per-run derived bytes carried in the spec.
+        // The other-kind round-trip test skips it (and CacheVolume has its own), so its
+        // `kind: inline` wire form was uncovered despite crossing to a remote worker.
+        let src = MountSource::Inline {
+            contents: "[plugin]\nname = \"x\"\n".into(),
+        };
+        let wire = serde_json::to_string(&src).unwrap();
+        assert!(wire.contains("\"kind\":\"inline\""), "{wire}");
+        assert!(
+            wire.contains("[plugin]"),
+            "the derived bytes ride the wire: {wire}"
+        );
+        assert_eq!(serde_json::from_str::<MountSource>(&wire).unwrap(), src);
+    }
+
+    #[test]
+    fn an_explicit_other_kind_round_trips_when_its_value_has_no_kind_key() {
+        // `Other(Value)` catches the LITERAL `{"kind":"other", ...}` and reparses equal,
+        // as long as the wrapped object carries no `kind` key of its own (see the
+        // forward-compat characterization below for why that caveat matters).
+        let src = MountSource::Other(serde_json::json!({ "future_field": 42 }));
+        let wire = serde_json::to_string(&src).unwrap();
+        assert_eq!(wire, r#"{"kind":"other","future_field":42}"#);
+        assert_eq!(serde_json::from_str::<MountSource>(&wire).unwrap(), src);
+    }
+
+    #[test]
+    fn an_unknown_mount_kind_is_rejected_not_routed_to_other() {
+        // KNOWN BUG (adjudicate): `MountSource::Other` is documented as a "forward-compat
+        // escape … an unknown source a newer provider understands" that lets a provider
+        // "add kinds without a break". It does NOT: serde's internally-tagged enum only
+        // routes the LITERAL tag `"other"` to `Other`; any genuinely unknown `kind`
+        // fails deserialization with `unknown variant`. So an OLDER worker cannot in fact
+        // accept a NEWER provider's added kind — the wire is not forward-compatible.
+        // Pinning current behavior: an unknown kind is an error, never `Other`.
+        let err = serde_json::from_str::<MountSource>(r#"{"kind":"brand_new_kind","x":1}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("unknown variant") && err.contains("brand_new_kind"),
+            "unknown kinds error rather than routing to Other: {err}"
+        );
+    }
+
+    #[test]
+    fn an_other_value_carrying_its_own_kind_key_fails_to_round_trip() {
+        // KNOWN BUG (adjudicate): even the intended use of `Other` — wrapping a future
+        // provider's object that (naturally) carries its own `kind` discriminant — does
+        // NOT round-trip. The internally-tagged serializer prepends `"kind":"other"`, so
+        // an inner `kind` produces a DUPLICATE `kind` field on the wire, and re-parsing
+        // fails with `duplicate field kind`. `Other` therefore only survives a round-trip
+        // for objects that happen to omit `kind` — a hole in the forward-compat escape.
+        let src = MountSource::Other(serde_json::json!({ "kind": "future", "n": 7 }));
+        let wire = serde_json::to_string(&src).unwrap();
+        assert_eq!(wire, r#"{"kind":"other","kind":"future","n":7}"#);
+        let err = serde_json::from_str::<MountSource>(&wire)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("duplicate field"),
+            "duplicate kind on the wire: {err}"
+        );
+    }
+
+    #[test]
+    fn a_secret_env_value_round_trips_as_a_reference_only() {
+        // G3 core: a secret env var is a BROKER REFERENCE on the wire, never the bytes.
+        // Pins the `kind: secret` tag (the Inline vs Secret discriminant the realizer /
+        // egress substitution keys on).
+        let inline = EnvValue::Inline {
+            value: "UTC".into(),
+        };
+        let iw = serde_json::to_string(&inline).unwrap();
+        assert!(iw.contains("\"kind\":\"inline\""), "{iw}");
+        assert_eq!(serde_json::from_str::<EnvValue>(&iw).unwrap(), inline);
+
+        let secret = EnvValue::Secret {
+            reference: "broker://anthropic/key".into(),
+        };
+        let sw = serde_json::to_string(&secret).unwrap();
+        assert!(sw.contains("\"kind\":\"secret\""), "{sw}");
+        assert!(
+            sw.contains("broker://anthropic/key"),
+            "the reference, not bytes: {sw}"
+        );
+        assert!(
+            !sw.contains("\"value\""),
+            "a secret carries no inline value: {sw}"
+        );
+        assert_eq!(serde_json::from_str::<EnvValue>(&sw).unwrap(), secret);
+    }
+
+    #[test]
+    fn env_visibility_egress_only_round_trips_as_its_snake_case_tag() {
+        // `EgressOnly` (the placeholder-until-egress-substitution mode) must survive the
+        // wire so `prepare_environment` can gate it against `secret_egress_substitution`.
+        let var = EnvVar {
+            name: "API_KEY".into(),
+            value: EnvValue::Secret {
+                reference: "broker://k".into(),
+            },
+            visibility: EnvVisibility::EgressOnly,
+        };
+        let wire = serde_json::to_string(&var).unwrap();
+        assert!(wire.contains("\"visibility\":\"egress_only\""), "{wire}");
+        assert_eq!(serde_json::from_str::<EnvVar>(&wire).unwrap(), var);
+
+        // The `Process` counterpart (the only guarantee a local backend gives).
+        let proc = EnvVisibility::Process;
+        let pw = serde_json::to_string(&proc).unwrap();
+        assert_eq!(pw, "\"process\"");
+        assert_eq!(serde_json::from_str::<EnvVisibility>(&pw).unwrap(), proc);
+    }
 }

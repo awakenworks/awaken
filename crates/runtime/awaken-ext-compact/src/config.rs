@@ -92,4 +92,96 @@ mod tests {
     fn config_schema_is_an_object() {
         assert_eq!(config_schema()["type"], "object");
     }
+
+    // --- config-bounds fail-open: the schema declares bounds that deserialization
+    //     does NOT enforce. These pin the CURRENT (unvalidated) trigger behavior. ---
+
+    #[test]
+    fn trigger_ratio_zero_deserializes_and_folds_immediately() {
+        // KNOWN BUG (adjudicate): the schema declares `trigger_ratio` exclusiveMinimum 0,
+        // but serde enforces no lower bound — `0.0` deserializes clean. With a token
+        // budget of `0.0 * max_tokens == 0`, `est_tokens >= 0` is always true, so the
+        // token trigger fires on the very first turn (even ~0 estimated tokens).
+        let cfg: CompactConfig =
+            serde_json::from_value(serde_json::json!({ "trigger_ratio": 0.0, "max_tokens": 1000 }))
+                .unwrap();
+        assert_eq!(
+            cfg.trigger_ratio, 0.0,
+            "no lower-bound validation on deserialize"
+        );
+        // Pin: a zero-token conversation still folds (all but keep_last).
+        assert_eq!(
+            crate::fold::token_fold_point(0, 1000, cfg.trigger_ratio, 10, 2),
+            Some(8),
+            "trigger_ratio 0 folds immediately — fail-open"
+        );
+    }
+
+    #[test]
+    fn trigger_ratio_above_one_deserializes_and_disables_the_trigger() {
+        // KNOWN BUG (adjudicate): the schema declares `trigger_ratio` maximum 1, but
+        // `2.0` deserializes clean. The budget becomes `2.0 * max_tokens`, so the
+        // trigger never fires within the real window — compaction is silently disabled.
+        let cfg: CompactConfig =
+            serde_json::from_value(serde_json::json!({ "trigger_ratio": 2.0, "max_tokens": 1000 }))
+                .unwrap();
+        assert_eq!(
+            cfg.trigger_ratio, 2.0,
+            "no upper-bound validation on deserialize"
+        );
+        // Pin: even a context at the full window (1000) does not fold, because the
+        // budget is 2000. A valid ratio (<= 1) would have folded here.
+        assert_eq!(
+            crate::fold::token_fold_point(1000, 1000, cfg.trigger_ratio, 10, 2),
+            None,
+            "trigger_ratio > 1 never fires — fail-open"
+        );
+    }
+
+    #[test]
+    fn threshold_zero_deserializes_and_folds_every_nonempty_conversation() {
+        // KNOWN BUG (adjudicate): the schema declares `threshold` minimum 1, but `0`
+        // deserializes clean. `fold_point` triggers on `committed_len > threshold`, so
+        // a threshold of 0 folds every conversation of even one message.
+        let cfg: CompactConfig =
+            serde_json::from_value(serde_json::json!({ "threshold": 0 })).unwrap();
+        assert_eq!(cfg.threshold, 0, "no minimum validation on deserialize");
+        // Pin: a single-message conversation with keep_last 0 folds its only message.
+        assert_eq!(
+            crate::fold::fold_point(1, cfg.threshold, 0),
+            Some(1),
+            "threshold 0 folds a one-message conversation — fail-open"
+        );
+    }
+
+    // --- Serialize round-trip incl. `skip_serializing_if` on `instructions` ---
+
+    #[test]
+    fn serialize_round_trip_skips_none_instructions_and_emits_some() {
+        // Default: `instructions` is None → the field is omitted entirely.
+        let cfg = CompactConfig::default();
+        let value = serde_json::to_value(&cfg).unwrap();
+        assert!(
+            value.get("instructions").is_none(),
+            "None instructions must be skipped, not serialized as null: {value}"
+        );
+        assert_eq!(value["threshold"], 40);
+        assert_eq!(value["trigger_ratio"], 0.8);
+        // `max_tokens` has no skip, so it round-trips as an explicit null.
+        assert!(value["max_tokens"].is_null());
+        let back: CompactConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(back, cfg);
+
+        // Some: the field is present verbatim and round-trips.
+        let tuned = CompactConfig {
+            instructions: Some("Keep only API endpoints.".to_string()),
+            max_tokens: Some(2000),
+            ..Default::default()
+        };
+        let value = serde_json::to_value(&tuned).unwrap();
+        assert_eq!(value["instructions"], "Keep only API endpoints.");
+        assert_eq!(value["max_tokens"], 2000);
+        let back: CompactConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(back, tuned);
+    }
 }

@@ -285,4 +285,56 @@ mod tests {
         assert_eq!(ids, vec!["alpha".to_string()]);
         assert!(reg.get_memory_store("zeta").unwrap().archived);
     }
+
+    // ---- SEC: WebhookStore tenant fence + delete/disabled semantics ----
+
+    fn webhook(id: &str, workspace: &str, disabled: bool) -> WebhookEndpointDef {
+        WebhookEndpointDef {
+            id: id.to_string(),
+            workspace_id: workspace.to_string(),
+            url: format!("https://example.test/{id}"),
+            event_types: Vec::new(),
+            disabled,
+            secret_ref: awaken_credential_vault::SecretRef("whsec".into()),
+        }
+    }
+
+    #[test]
+    fn webhook_store_lists_by_workspace_including_disabled_and_deletes_idempotently() {
+        let store = InMemoryWebhookStore::new();
+        store.put(webhook("wh-a1", "wrkspc_a", false));
+        store.put(webhook("wh-a2", "wrkspc_a", true)); // disabled, still enumerated
+        store.put(webhook("wh-b1", "wrkspc_b", false));
+
+        // `list` is workspace-filtered (dispatch fan-out is per workspace), sorted
+        // by id, and INCLUDES disabled rows (CRUD list surfaces suspended ones).
+        let ids_a: Vec<String> = store.list("wrkspc_a").into_iter().map(|d| d.id).collect();
+        assert_eq!(ids_a, vec!["wh-a1".to_string(), "wh-a2".to_string()]);
+        // Workspace B's endpoint is never disclosed to A (the tenant fence).
+        assert!(
+            !ids_a.iter().any(|id| id == "wh-b1"),
+            "workspace A must not see workspace B's webhook: {ids_a:?}"
+        );
+        // The disabled row is present with its flag intact (list ≠ dispatch filter).
+        assert!(
+            store
+                .list("wrkspc_a")
+                .iter()
+                .find(|d| d.id == "wh-a2")
+                .unwrap()
+                .disabled
+        );
+
+        // `delete` is an idempotent unsubscribe: true once, false thereafter.
+        assert!(store.delete("wh-a1"), "first delete removes a row");
+        assert!(!store.delete("wh-a1"), "second delete is a no-op → false");
+        assert!(store.get("wh-a1").is_none());
+        // Deleting an unknown id is also false (never panics, never fabricates).
+        assert!(!store.delete("ghost"));
+
+        // The surviving (disabled) row is still listed and reachable.
+        let remaining: Vec<String> = store.list("wrkspc_a").into_iter().map(|d| d.id).collect();
+        assert_eq!(remaining, vec!["wh-a2".to_string()]);
+        assert!(store.list("wrkspc_b").iter().any(|d| d.id == "wh-b1"));
+    }
 }

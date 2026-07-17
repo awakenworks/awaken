@@ -161,4 +161,36 @@ mod tests {
         let err = manager.add(server("dup", "y", true).await);
         assert!(matches!(err, Err(McpError::DuplicateServerName(_))));
     }
+
+    #[tokio::test]
+    async fn servers_sanitizing_to_the_same_namespace_are_both_accepted_and_collide() {
+        // "a-b" and "a.b" are distinct RAW names, but both sanitize to the same
+        // namespace `mcp__a_b__`.
+        let mut manager = McpManager::new();
+        manager
+            .add(server("a-b", "t", true).await)
+            .expect("adds a-b");
+        manager
+            .add(server("a.b", "t", true).await)
+            .expect("adds a.b");
+
+        // add() dedups by raw name only, so both are accepted...
+        assert_eq!(manager.len(), 2);
+
+        // ...and both plugins therefore project the SAME tool id — a collision.
+        let ids: Vec<_> = manager
+            .plugins()
+            .iter()
+            .map(|p| p.resolve().dynamic_tools[0].descriptor.id.clone())
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["mcp__a_b__t".to_string(), "mcp__a_b__t".to_string()],
+        );
+
+        // KNOWN BUG (adjudicate): two servers collapsing to one sanitized
+        // namespace shadow each other's tool ids; add() never checks the
+        // sanitized namespace (only the raw name), so tool-id routing between
+        // them is ambiguous — a fail-open collision.
+    }
 }
