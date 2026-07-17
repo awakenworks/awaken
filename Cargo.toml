@@ -9,7 +9,8 @@ resolver = "2"
 #   crates/server/*     → resident daemon: Managed + protocol front doors, ingress/dispatch, host, local sandbox, notify.
 #   crates/worker/*     → on-demand isolated execution: container/k8s sandbox + channel/relay (links no stores).
 #   crates/control/*    → self-hosted config/vault/iam authoring plane (ADR-0043).
-#   crates/bin/*        → composed deployables (awaken-cli, server-local) + harnesses.
+#   crates/bin/*        → composed deployables: awaken-cli + the db-less worker daemon.
+#   crates/devtools/*   → dev tooling / harnesses / examples (publish=false), composed like bin/.
 #                         Boundaries enforced by scripts/ci/check_crate_boundaries.py.
 members = [
     "crates/contract/*",
@@ -20,6 +21,10 @@ members = [
     "crates/worker/*",
     "crates/control/*",
     "crates/bin/*",
+    # Dev tooling / harnesses / teaching examples (publish=false): scenario e2e host,
+    # runtime examples, eval. Composed like bin/ (may depend on any plane), kept out of
+    # bin/ so the deployables bucket holds only awaken-cli + the worker daemon.
+    "crates/devtools/*",
 ]
 
 [workspace.package]
@@ -104,13 +109,13 @@ awaken-sandbox-local = { path = "crates/worker/awaken-sandbox-local" }
 awaken-sandbox-memoryd = { path = "crates/worker/awaken-sandbox-memoryd" }
 awaken-sandbox-container = { path = "crates/worker/awaken-sandbox-container" }
 awaken-sandbox-manager = { path = "crates/worker/awaken-sandbox-manager" }
-awaken-runtime-examples = { path = "crates/bin/awaken-runtime-examples" }
+awaken-runtime-examples = { path = "crates/devtools/awaken-runtime-examples" }
 awaken-run-ingress-contract = { path = "crates/server/awaken-run-ingress-contract" }
 awaken-run-ingress = { path = "crates/server/awaken-run-ingress" }
 awaken-runtime-host = { path = "crates/server/awaken-runtime-host" }
 awaken-admin-assistant = { path = "crates/control/awaken-admin-assistant" }
 awaken-server = { path = "crates/server/awaken-server" }
-awaken-scenario-host = { path = "crates/bin/awaken-scenario-host" }
+awaken-scenario-host = { path = "crates/devtools/awaken-scenario-host" }
 awaken-cli = { path = "crates/bin/awaken-cli" }
 awaken-worker = { path = "crates/bin/awaken-worker" }
 awaken-authz-enforce = { path = "crates/control/awaken-authz-enforce" }

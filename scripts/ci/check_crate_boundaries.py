@@ -1613,6 +1613,20 @@ BUCKET_ALLOWED_DEPS = {
         "control",
         "bin",
     },
+    # Dev tooling / harnesses / teaching examples (publish=false): composed like bin/,
+    # so they may name any plane (they are composition roots for tests/examples). Kept
+    # out of bin/ so the deployables bucket holds only awaken-cli + the worker daemon.
+    "devtools": {
+        "contract",
+        "runtime",
+        "stores",
+        "resources",
+        "server",
+        "worker",
+        "control",
+        "bin",
+        "devtools",
+    },
 }
 
 
