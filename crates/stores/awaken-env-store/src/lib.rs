@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use awaken_protocol_managed::env_registry::{EnvItem, EnvRegistry, EnvUpdate};
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
+use awaken_session_contract::env_registry::{EnvItem, EnvRegistry, EnvUpdate};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::Value;
 use sqlx::Row;
@@ -438,7 +438,13 @@ mod tests {
         assert!(up.metadata.contains_key("keep"));
         assert!(!up.metadata.contains_key("drop"), "null deletes");
         // config preserved through the round-trip
-        assert!(up.network_policy().is_restricted());
+        assert_eq!(
+            up.config
+                .pointer("/networking/type")
+                .and_then(|v| v.as_str()),
+            Some("none"),
+            "config round-trips"
+        );
     }
 
     #[tokio::test]
@@ -531,7 +537,13 @@ mod tests {
             .await
             .expect("update");
         assert_eq!(up.name, "renamed");
-        assert!(up.network_policy().is_restricted(), "config round-trips");
+        assert_eq!(
+            up.config
+                .pointer("/networking/type")
+                .and_then(|v| v.as_str()),
+            Some("none"),
+            "config round-trips"
+        );
         assert_eq!(up.metadata.get("t").map(String::as_str), Some("x"));
         r.archive(&e.id).await.expect("archive");
         assert!(

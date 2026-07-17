@@ -100,6 +100,7 @@ awaken-store-sqlite = { path = "crates/stores/awaken-store-sqlite" }
 awaken-store-postgres = { path = "crates/stores/awaken-store-postgres" }
 awaken-work-store = { path = "crates/stores/awaken-work-store" }
 awaken-session-store = { path = "crates/stores/awaken-session-store" }
+awaken-env-store = { path = "crates/stores/awaken-env-store" }
 awaken-config-store = { path = "crates/control/awaken-config-store" }
 awaken-config-service = { path = "crates/control/awaken-config-service" }
 awaken-provisioning-contract = { path = "crates/worker/awaken-provisioning-contract" }

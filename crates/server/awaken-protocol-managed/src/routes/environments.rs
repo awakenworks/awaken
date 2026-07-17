@@ -66,7 +66,7 @@ impl EnvironmentState {
         self.envs
             .get(env_id)
             .await
-            .is_some_and(|rec| rec.network_policy().is_restricted())
+            .is_some_and(|rec| crate::env_registry::env_network_policy(&rec.config).is_restricted())
     }
 
     /// Whether `env_id` is a self-hosted environment. Sessions assigned to one are
@@ -146,7 +146,7 @@ async fn create_env(
         .await;
     // Seed one healthcheck work item so the queue is exercisable end to end.
     state.work.enqueue_healthcheck(&item.id).await;
-    Ok(Json(item.project()))
+    Ok(Json(crate::env_registry::project_env(&item)))
 }
 
 async fn retrieve_env(
@@ -158,7 +158,7 @@ async fn retrieve_env(
         .get(&id)
         .await
         .ok_or_else(|| not_found("environment"))?;
-    Ok(Json(item.project()))
+    Ok(Json(crate::env_registry::project_env(&item)))
 }
 
 async fn list_envs(
@@ -170,7 +170,7 @@ async fn list_envs(
         .list_active()
         .await
         .iter()
-        .map(|e| e.project())
+        .map(crate::env_registry::project_env)
         .collect();
     Json(paginate(data, &page, |e| e.id.as_str()))
 }
@@ -191,7 +191,7 @@ async fn update_env(
         .update(&id, patch)
         .await
         .ok_or_else(|| not_found("environment"))?;
-    Ok(Json(item.project()))
+    Ok(Json(crate::env_registry::project_env(&item)))
 }
 
 async fn delete_env(
@@ -217,7 +217,7 @@ async fn archive_env(
         .archive(&id)
         .await
         .ok_or_else(|| not_found("environment"))?;
-    Ok(Json(item.project()))
+    Ok(Json(crate::env_registry::project_env(&item)))
 }
 
 // ---- Work routes -----------------------------------------------------------

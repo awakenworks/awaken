@@ -511,6 +511,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-env-store"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-scoped-migration",
+ "awaken-scoped-migration-sqlite",
+ "awaken-session-contract",
+ "rusqlite",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-eval"
 version = "1.0.0-dev"
 dependencies = [
@@ -1119,6 +1134,7 @@ dependencies = [
  "awaken-config-store",
  "awaken-credential-vault",
  "awaken-data-subject",
+ "awaken-env-store",
  "awaken-ext-builtin-tools",
  "awaken-ext-compact",
  "awaken-ext-goal",

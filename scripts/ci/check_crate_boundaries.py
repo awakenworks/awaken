@@ -634,6 +634,20 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "tokio",
     },
+    # Durable EnvRegistry backend (the self-hosted environment registry): sqlite +
+    # postgres at parity, implementing the session contract's env-registry port.
+    # Extracted from awaken-runtime-host so the host stays lean (Step 3b).
+    "awaken-env-store": {
+        "awaken-session-contract",
+        "awaken-scoped-migration",
+        "awaken-scoped-migration-sqlite",
+        "async-trait",
+        "rusqlite",
+        "sqlx",
+        "serde_json",
+        "tokio",
+        "tempfile",
+    },
     # Durable ManagedSessionRepository backend (the managed session aggregate): sqlite +
     # postgres at parity, implementing the session contract's repository port. Extracted
     # from awaken-runtime-host so the host stays lean (Step 3b).
@@ -1102,6 +1116,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-store-postgres",
         "awaken-work-store",
         "awaken-session-store",
+        "awaken-env-store",
         "awaken-config-store",
         # The config-authoring plane, extracted to a shared crate; the host re-exports
         # it (config service + routers + resolver + tool catalog) for the composition

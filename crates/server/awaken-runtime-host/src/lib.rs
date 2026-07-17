@@ -26,7 +26,6 @@ mod deployment_config;
 mod dispatch_backend;
 mod dispatch_transport;
 mod durable_ops;
-mod env_store;
 mod files;
 mod hand_placement;
 mod host;
@@ -120,10 +119,10 @@ pub use crate::dispatch_transport::dispatch_transport_router;
 // The worker HTTP dispatch client now lives in awaken-run-ingress; re-exported so
 // composition roots keep using `awaken_runtime_host::{HttpDispatchQueue, worker_dispatch_store}`.
 pub use crate::durable_ops::durable_ops_router;
-pub use crate::env_store::{PostgresEnvRegistry, SqliteEnvRegistry};
 pub use crate::files::files_router;
 pub use crate::memory_store_api::memory_stores_router;
 pub use crate::models::{ModelEntry, default_models, models_router};
+pub use awaken_env_store::{PostgresEnvRegistry, SqliteEnvRegistry};
 // The durable session-repository backends now live in `awaken-session-store` (a
 // stores/ leaf); re-exported so composition roots keep their import paths.
 pub use crate::skills_api::skills_router;
