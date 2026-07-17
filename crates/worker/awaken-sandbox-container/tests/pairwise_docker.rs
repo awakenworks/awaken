@@ -325,3 +325,144 @@ async fn file_bind_is_readable_and_read_only_is_enforced_in_a_real_container() {
     // The host file is untouched by the confined write attempt.
     assert_eq!(std::fs::read(&host_file).unwrap(), b"seed-bytes");
 }
+
+/// G5: a memory cap the adapter set (`CgroupCaps::from_limits` -> bollard
+/// `HostConfig.memory` + swap pinned to it) is ENFORCED BY THE KERNEL, not merely
+/// planned. `dd` is the container's main process (process-as-container), so a cgroup
+/// OOM-kill surfaces as its exit code (137 = 128+SIGKILL). Writing 32 MiB to tmpfs
+/// `/dev/shm` (a memory cgroup accounts tmpfs pages) blows a 16 MiB cap but fits the
+/// default 64 MiB shm, so the SAME write under no cap completes (exit 0). The
+/// difference is the cgroup, not the workload — this is what a dropped/ignored limit
+/// (fail-open) would miss, the memory analogue of the egress `deny_egress` probe.
+#[tokio::test]
+async fn a_memory_cap_oom_kills_an_over_allocating_container() {
+    let Some((provider, rt)) = setup().await else {
+        return;
+    };
+
+    let hog = |scope: &str, limits: pc::ResourceLimits| pc::SandboxSpec {
+        scope: scope.into(),
+        isolation: pc::IsolationClass::Container,
+        mounts: Vec::new(),
+        env: Vec::new(),
+        network: pc::NetworkPolicy::None,
+        outputs_path: "/mnt/session/outputs".into(),
+        limits,
+        lease_ttl_secs: None,
+        extra: Some(serde_json::json!({
+            "command": ["dd", "if=/dev/zero", "of=/dev/shm/x", "bs=1M", "count=32"],
+        })),
+    };
+
+    // Capped at 16 MiB: the 32 MiB allocation blows the cgroup -> OOM-kill (137).
+    let capped = run_to_exit(
+        &provider,
+        &rt,
+        "mem-capped",
+        &hog(
+            "mem-capped",
+            pc::ResourceLimits {
+                memory_bytes: Some(16 * 1024 * 1024),
+                ..Default::default()
+            },
+        ),
+    )
+    .await;
+    assert_eq!(
+        capped,
+        Some(137),
+        "a memory-capped over-allocator is OOM-killed (exit 137); got {capped:?}"
+    );
+
+    // Uncapped: the identical allocation completes (exit 0) — proving the kill above
+    // was the cgroup, not the workload.
+    let uncapped = run_to_exit(
+        &provider,
+        &rt,
+        "mem-uncapped",
+        &hog("mem-uncapped", pc::ResourceLimits::default()),
+    )
+    .await;
+    assert_eq!(
+        uncapped,
+        Some(0),
+        "the same allocation without a cap completes (exit 0); got {uncapped:?}"
+    );
+}
+
+/// A long-lived process-as-container (sleep) used to prove cross-provider adoption.
+fn sleeper_spec(scope: &str) -> pc::SandboxSpec {
+    pc::SandboxSpec {
+        scope: scope.into(),
+        isolation: pc::IsolationClass::Container,
+        mounts: Vec::new(),
+        env: Vec::new(),
+        network: pc::NetworkPolicy::None,
+        outputs_path: "/mnt/session/outputs".into(),
+        limits: Default::default(),
+        lease_ttl_secs: None,
+        extra: Some(serde_json::json!({ "command": ["sleep", "30"] })),
+    }
+}
+
+/// G2 / ADR-0056 SPOF elimination on a shared substrate, verified against a REAL
+/// daemon: a container OUTLIVES the provider (worker) that created it, so a PEER
+/// provider over the SAME daemon re-ADOPTS the same running container from its durable
+/// handle — no dispose, no re-create, so in-flight sandbox state survives a worker
+/// crash. The handle round-trips through JSON first (the opaque `Claimed.sandbox`
+/// form). A handle whose container is gone fails closed (adopt refuses a dead sandbox).
+#[tokio::test]
+async fn a_peer_provider_re_adopts_a_live_container_from_its_durable_handle() {
+    let Some((provider_a, rt)) = setup().await else {
+        return;
+    };
+    let _ = rt.remove("awaken-adopt-me").await;
+
+    // Worker A creates a long-lived container and persists its handle as the opaque
+    // durable string, then "crashes": the sandbox is dropped WITHOUT dispose, so the
+    // container keeps running on the shared substrate.
+    let handle: pc::SandboxHandle = {
+        let sandbox = provider_a
+            .create(&sleeper_spec("adopt-me"))
+            .await
+            .expect("worker A creates a real container");
+        let wire = serde_json::to_string(&sandbox.handle()).expect("handle serializes");
+        serde_json::from_str(&wire).expect("handle round-trips as the durable form")
+        // `sandbox` dropped here — worker A crashes; the container is NOT disposed.
+    };
+
+    // Worker B: a fresh provider over the SAME daemon re-adopts the SAME container.
+    // adopt's internal `inspect` succeeding is itself the proof the container survived.
+    let (provider_b, _rt_b) = setup().await.expect("peer provider");
+    let adopted = provider_b
+        .adopt(&handle)
+        .await
+        .expect("a peer re-adopts the crashed worker's still-live container");
+    assert_eq!(
+        adopted.id(),
+        handle.sandbox_id,
+        "the adopted sandbox is the SAME one (same id), not a fresh create"
+    );
+    // Its main process is still running (poll = None) — state survived the crash.
+    let proc = adopted
+        .spawn(pc::Command::new(["true"]))
+        .await
+        .expect("handle to the still-running main process");
+    assert!(
+        proc.poll().await.expect("poll").is_none(),
+        "the adopted container is still running (its state survived worker A's crash)"
+    );
+
+    // Teardown reaps it; a later adopt of the now-gone handle fails closed.
+    adopted
+        .dispose()
+        .await
+        .expect("dispose reaps the adopted container");
+    for _ in 0..30 {
+        if provider_b.adopt(&handle).await.is_err() {
+            return; // gone -> adopt fails closed, as required
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("adopting a disposed/gone container must fail closed, but it kept succeeding");
+}
