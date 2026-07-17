@@ -15,6 +15,8 @@
 #                                       |                  | deny_egress confines (net UP vs DOWN)
 #   G5 cgroup enforcement               | real docker      | mem-cap -> OOM 137 ; uncapped -> 0 (boundary)
 #   G2 SPOF adopt                       | real docker      | peer re-adopts live handle ; gone -> fail closed
+#   G6 warm pool (cold-start + reuse)    | real docker      | pre-warm -> hand out over wire ; mount bypasses ;
+#                                        | + rust unit      | pool_key shape-match/boundary (mount -> None)
 #   G1 k8s pod tier                     | real k3d         | pod lifecycle ; agent-over-wire port-forward ;
 #                                       |                  | ConfigMap volume ; blob-source file ; binary data
 #   G7 memoryd FUSE write-through       | /dev/fuse host   | read/write/rename/persist-across-remount ;
@@ -53,7 +55,7 @@ fi
 step "G1/G5/G2/G3 container tier against a real Docker daemon"
 if docker info >/dev/null 2>&1; then
   docker image inspect busybox:latest >/dev/null 2>&1 || docker pull busybox:latest >/dev/null
-  for t in docker_it docker_e2e pairwise_docker; do
+  for t in docker_it docker_e2e pairwise_docker pool_docker; do
     run "docker:$t" cargo test -q -p awaken-sandbox-container --features docker --test "$t"
   done
 else
