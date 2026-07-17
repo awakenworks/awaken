@@ -15,11 +15,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `#[instrument]` span in the request path is captured on one trace.
     awaken_observability::init();
     // The single role axis (`AWAKEN_ROLE`, with backward-compatible inference from
-    // the historic `AWAKEN_HAND_*` / `AWAKEN_UPSTREAM_URL`). Hand and Worker are
-    // execution endpoints that never start the HTTP surface; Serve is the default —
-    // single-machine all-in-one, or a coordinator when the local pool is disabled.
+    // the historic `AWAKEN_UPSTREAM_URL`). Worker is an execution endpoint that never
+    // starts the HTTP surface; Serve is the default — single-machine all-in-one, or a
+    // coordinator when the local pool is disabled. (The hand is now the separate
+    // `awaken-sandbox hand` execution-plane binary, not a server role.)
     match awaken_server::deployment_role() {
-        awaken_server::Role::Hand => return awaken_server::run_hand_role().await,
         awaken_server::Role::Worker => {
             let upstream = std::env::var("AWAKEN_UPSTREAM_URL").unwrap_or_default();
             // Test-only echo-draining worker (the worker-pool e2e). The production
