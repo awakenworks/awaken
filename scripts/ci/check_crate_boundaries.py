@@ -1780,6 +1780,71 @@ def check_runtime_is_secret_resolution_free() -> list[str]:
     return errors
 
 
+# A contract/ crate is a port + value-object leaf (ports & adapters): it names only
+# data/serialization vocabulary + async-trait for dyn-safe ports. It must NOT pull an
+# async runtime, a DB driver, or an HTTP/wire framework as a NORMAL dependency —
+# those are the realizing *adapter's* concern, never the port's. Keeping the port
+# leaf free of them is what lets any plane depend on the contract without inheriting
+# a backend. Enforced categorically + directory-keyed so it stays correct as new
+# contract crates are added (mirrors this file's other invariants). Dev-deps are
+# test wiring and exempt (e.g. an in-crate `#[tokio::test]` for a port's reference
+# double is fine).
+CONTRACT_FORBIDDEN_DEPS: frozenset[str] = frozenset(
+    {
+        "tokio", "tokio-stream", "tokio-util",  # async runtime
+        "rusqlite", "sqlx", "redis", "deadpool",  # DB / pool backends
+        "axum", "hyper", "reqwest", "tonic",  # HTTP / RPC wire
+        "tower", "tower-http", "async-nats",  # middleware / broker wire
+    }
+)
+
+
+def contract_purity_violations(name: str, normal_deps: set[str]) -> list[str]:
+    """Pure, unit-testable predicate: the banned normal deps a contract/ crate names,
+    one message per offending dep (sorted-stable). Dev-deps are excluded by the caller."""
+    return [
+        f"contract/{name} has a normal dependency on `{dep}` — a contract/ crate is a "
+        f"port + value-object leaf (no runtime/backend/wire); move the impl to the "
+        f"adapter that realizes the port"
+        for dep in sorted(normal_deps & CONTRACT_FORBIDDEN_DEPS)
+    ]
+
+
+def check_contract_purity() -> list[str]:
+    """Every crate physically under crates/contract/ is a port leaf: no async runtime,
+    no DB driver, no HTTP/wire framework as a normal dependency (issue A / Phase 0.1)."""
+    errors: list[str] = []
+    for manifest_path in iter_crate_manifests():
+        if manifest_path.parent.parent.name != "contract":
+            continue
+        manifest = load_manifest(manifest_path)
+        errors.extend(
+            contract_purity_violations(package_name(manifest), normal_dependency_names(manifest))
+        )
+    return errors
+
+
+def _selftest_contract_purity() -> None:
+    """Cause-effect decision table for `contract_purity_violations` (the Phase 0.1 rule),
+    run on every CI invocation so a regression in the predicate fails fast.
+
+    Causes:  C2 = a banned crate appears in NORMAL deps; C3 = the banned crate is dev-only.
+    Effects: E1 = one violation reported per banned normal dep; E2 = no violation.
+    (C1 = "crate lives under contract/" is enforced by the directory filter in
+    check_contract_purity and is exercised live: stores/ crates carry rusqlite yet are
+    never flagged — that real-repo pass IS the C1=false case.)"""
+    # T1  C2=T single           -> E1 (names the dep)
+    v = contract_purity_violations("x-contract", {"tokio", "serde"})
+    assert len(v) == 1 and "tokio" in v[0], v
+    # T2  C2=T multiple         -> E1 per dep, sorted-stable (axum < rusqlite)
+    v = contract_purity_violations("x-contract", {"rusqlite", "axum", "serde_json"})
+    assert len(v) == 2 and "axum" in v[0] and "rusqlite" in v[1], v
+    # T3  C2=F (C3 modeled: a dev-only tokio never reaches the predicate) -> E2
+    assert contract_purity_violations("x-contract", {"serde", "async-trait", "thiserror"}) == []
+    # T4  C2=F empty            -> E2
+    assert contract_purity_violations("x-contract", set()) == []
+
+
 # NOTE: this repo is fully open source. The open/closed line is the REPOSITORY
 # boundary — closed commercial capabilities (placement, sharded dispatch, multi-
 # region, microVM sandbox, billing/license/oversight) live in the separate
@@ -1789,6 +1854,7 @@ def check_runtime_is_secret_resolution_free() -> list[str]:
 
 
 def main() -> int:
+    _selftest_contract_purity()
     errors = (
         check_dependencies()
         + check_neutral_code_boundaries()
@@ -1796,6 +1862,7 @@ def main() -> int:
         + check_tests_are_not_arch_owners()
         + check_bucket_direction()
         + check_runtime_is_secret_resolution_free()
+        + check_contract_purity()
     )
     if errors:
         for error in errors:
