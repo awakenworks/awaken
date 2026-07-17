@@ -139,8 +139,10 @@ pub struct Memory {
     pub content: Option<String>,
 }
 
-/// A directory-listing entry (no content).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A directory-listing entry (no content). Serializes with the same field names as a
+/// content-less [`Memory`], so a `MemoryFs::list` result crosses the managed/HTTP
+/// surfaces directly rather than being re-projected through `Memory` first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryEntry {
     pub id: String,
     pub path: String,

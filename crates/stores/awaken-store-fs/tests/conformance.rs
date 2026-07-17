@@ -49,7 +49,11 @@ async fn committed_state_replays() {
     awaken_store_conformance::committed_state_replays(&fresh("state").await).await;
 }
 
-// The multi-thread isolation case (`two_threads_in_one_store_are_isolated`) is NOT
-// run here: the fs store reuses the single-thread in-memory reference as its read
-// model, so it inherits the same flattening. That divergence is characterized in
-// `thread_isolation_and_waiting.rs`.
+// The fs store reuses the thread-keyed in-memory reference as its read model, so two
+// threads committed to one store stay isolated — it runs the shared multi-thread
+// isolation case (as the SQLite / Postgres backends do). `thread_isolation_and_waiting.rs`
+// additionally proves isolation and the waiting ticket survive a drop + reopen.
+#[tokio::test]
+async fn two_threads_in_one_store_are_isolated() {
+    awaken_store_conformance::two_threads_in_one_store_are_isolated(&fresh("iso").await).await;
+}

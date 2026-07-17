@@ -2,8 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Compaction configuration (the `compact` plugin section). `#[serde(default)]`
-/// so a partial section is valid.
+/// Compaction configuration (the `compact` plugin section). A partial section is
+/// valid (missing fields fall back to [`CompactConfig::default`]).
 ///
 /// Two trigger modes. When `max_tokens` is set (the model's context window),
 /// compaction is **token-aware**: it folds once the estimated context reaches
@@ -11,8 +11,13 @@ use serde::{Deserialize, Serialize};
 /// behavior. When `max_tokens` is `None`, it falls back to the message-count
 /// `threshold`. Either way, `keep_last` most-recent messages stay verbatim and
 /// the main agent's `ContextPolicy::KeepLast` must mirror it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+///
+/// Deserialization is **bounds-checked** against [`config_schema`]: an
+/// out-of-range value is rejected at load (fail-closed) rather than silently
+/// producing a degenerate trigger — a `trigger_ratio` of `0` folds every turn,
+/// `> 1` disables the token trigger, and a `threshold` of `0` folds one-message
+/// conversations, none of which the schema permits.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CompactConfig {
     /// Message-count trigger (fallback when `max_tokens` is unset): compact once
     /// the conversation exceeds this many messages.
@@ -30,7 +35,7 @@ pub struct CompactConfig {
     /// slice that tells the compactor what to preserve. `None` falls back to the
     /// built-in [`SUMMARIZE_PROMPT`](crate::SUMMARIZE_PROMPT). This is the one knob
     /// that shapes *what* the summary keeps (the thresholds shape *when* it fires).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
 }
 
@@ -43,6 +48,76 @@ impl Default for CompactConfig {
             trigger_ratio: 0.8,
             instructions: None,
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for CompactConfig {
+    /// Deserialize with the schema's bounds enforced (fail-closed): missing
+    /// fields fall back to [`CompactConfig::default`], then every value is checked
+    /// against the same bounds [`config_schema`] declares. An out-of-range knob is
+    /// rejected here rather than deserializing clean and producing a degenerate
+    /// trigger downstream.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Shadow with identical fields but the derived (unchecked) deserialize,
+        // seeded from `CompactConfig::default` for any missing field. Validation
+        // runs once on the fully-populated value.
+        #[derive(Deserialize)]
+        #[serde(default)]
+        struct Shadow {
+            threshold: usize,
+            keep_last: usize,
+            max_tokens: Option<u32>,
+            trigger_ratio: f64,
+            instructions: Option<String>,
+        }
+
+        impl Default for Shadow {
+            fn default() -> Self {
+                let d = CompactConfig::default();
+                Self {
+                    threshold: d.threshold,
+                    keep_last: d.keep_last,
+                    max_tokens: d.max_tokens,
+                    trigger_ratio: d.trigger_ratio,
+                    instructions: d.instructions,
+                }
+            }
+        }
+
+        let s = Shadow::deserialize(deserializer)?;
+
+        // `threshold` minimum 1 (a 0 folds every non-empty conversation).
+        if s.threshold < 1 {
+            return Err(serde::de::Error::custom(
+                "compact.threshold must be >= 1 (0 folds every conversation)",
+            ));
+        }
+        // `trigger_ratio` in (0, 1]: exclusiveMinimum 0 (a 0 budget folds every
+        // turn), maximum 1 (a > 1 budget never fires within the real window). Also
+        // reject non-finite values, which no fraction-of-window can be.
+        if !s.trigger_ratio.is_finite() || s.trigger_ratio <= 0.0 || s.trigger_ratio > 1.0 {
+            return Err(serde::de::Error::custom(
+                "compact.trigger_ratio must be in (0, 1]",
+            ));
+        }
+        // `max_tokens` minimum 1 when present (a 0-token window is a degenerate
+        // budget); `u32` already excludes negatives.
+        if matches!(s.max_tokens, Some(0)) {
+            return Err(serde::de::Error::custom(
+                "compact.max_tokens must be >= 1 when set",
+            ));
+        }
+
+        Ok(Self {
+            threshold: s.threshold,
+            keep_last: s.keep_last,
+            max_tokens: s.max_tokens,
+            trigger_ratio: s.trigger_ratio,
+            instructions: s.instructions,
+        })
     }
 }
 
@@ -93,65 +168,58 @@ mod tests {
         assert_eq!(config_schema()["type"], "object");
     }
 
-    // --- config-bounds fail-open: the schema declares bounds that deserialization
-    //     does NOT enforce. These pin the CURRENT (unvalidated) trigger behavior. ---
+    // --- config-bounds fail-closed: deserialization enforces the bounds the
+    //     schema declares, rejecting out-of-range knobs at load. ---
 
     #[test]
-    fn trigger_ratio_zero_deserializes_and_folds_immediately() {
-        // KNOWN BUG (adjudicate): the schema declares `trigger_ratio` exclusiveMinimum 0,
-        // but serde enforces no lower bound — `0.0` deserializes clean. With a token
-        // budget of `0.0 * max_tokens == 0`, `est_tokens >= 0` is always true, so the
-        // token trigger fires on the very first turn (even ~0 estimated tokens).
-        let cfg: CompactConfig =
-            serde_json::from_value(serde_json::json!({ "trigger_ratio": 0.0, "max_tokens": 1000 }))
-                .unwrap();
-        assert_eq!(
-            cfg.trigger_ratio, 0.0,
-            "no lower-bound validation on deserialize"
-        );
-        // Pin: a zero-token conversation still folds (all but keep_last).
-        assert_eq!(
-            crate::fold::token_fold_point(0, 1000, cfg.trigger_ratio, 10, 2),
-            Some(8),
-            "trigger_ratio 0 folds immediately — fail-open"
+    fn trigger_ratio_zero_is_rejected_at_load() {
+        // The schema declares `trigger_ratio` exclusiveMinimum 0. A `0.0` budget
+        // (`0.0 * max_tokens == 0`) would fold on the very first turn, so it must
+        // be rejected at deserialize rather than deserializing clean.
+        let err =
+            serde_json::from_value::<CompactConfig>(serde_json::json!({ "trigger_ratio": 0.0 }));
+        assert!(
+            err.is_err(),
+            "trigger_ratio 0 must be rejected (exclusiveMinimum 0): {err:?}"
         );
     }
 
     #[test]
-    fn trigger_ratio_above_one_deserializes_and_disables_the_trigger() {
-        // KNOWN BUG (adjudicate): the schema declares `trigger_ratio` maximum 1, but
-        // `2.0` deserializes clean. The budget becomes `2.0 * max_tokens`, so the
-        // trigger never fires within the real window — compaction is silently disabled.
-        let cfg: CompactConfig =
-            serde_json::from_value(serde_json::json!({ "trigger_ratio": 2.0, "max_tokens": 1000 }))
-                .unwrap();
-        assert_eq!(
-            cfg.trigger_ratio, 2.0,
-            "no upper-bound validation on deserialize"
-        );
-        // Pin: even a context at the full window (1000) does not fold, because the
-        // budget is 2000. A valid ratio (<= 1) would have folded here.
-        assert_eq!(
-            crate::fold::token_fold_point(1000, 1000, cfg.trigger_ratio, 10, 2),
-            None,
-            "trigger_ratio > 1 never fires — fail-open"
+    fn trigger_ratio_above_one_is_rejected_at_load() {
+        // The schema declares `trigger_ratio` maximum 1. A `2.0` budget never fires
+        // within the real window (compaction silently disabled), so it is rejected.
+        let err =
+            serde_json::from_value::<CompactConfig>(serde_json::json!({ "trigger_ratio": 2.0 }));
+        assert!(
+            err.is_err(),
+            "trigger_ratio > 1 must be rejected (maximum 1): {err:?}"
         );
     }
 
     #[test]
-    fn threshold_zero_deserializes_and_folds_every_nonempty_conversation() {
-        // KNOWN BUG (adjudicate): the schema declares `threshold` minimum 1, but `0`
-        // deserializes clean. `fold_point` triggers on `committed_len > threshold`, so
-        // a threshold of 0 folds every conversation of even one message.
-        let cfg: CompactConfig =
-            serde_json::from_value(serde_json::json!({ "threshold": 0 })).unwrap();
-        assert_eq!(cfg.threshold, 0, "no minimum validation on deserialize");
-        // Pin: a single-message conversation with keep_last 0 folds its only message.
-        assert_eq!(
-            crate::fold::fold_point(1, cfg.threshold, 0),
-            Some(1),
-            "threshold 0 folds a one-message conversation — fail-open"
+    fn threshold_zero_is_rejected_at_load() {
+        // The schema declares `threshold` minimum 1. A `0` folds every conversation
+        // of even one message, so it is rejected at deserialize.
+        let err = serde_json::from_value::<CompactConfig>(serde_json::json!({ "threshold": 0 }));
+        assert!(
+            err.is_err(),
+            "threshold 0 must be rejected (minimum 1): {err:?}"
         );
+    }
+
+    #[test]
+    fn in_range_bounds_still_deserialize() {
+        // The boundary-valid values the schema permits still load: trigger_ratio at
+        // the inclusive max, threshold at its minimum, max_tokens at its minimum.
+        let cfg: CompactConfig = serde_json::from_value(serde_json::json!({
+            "trigger_ratio": 1.0,
+            "threshold": 1,
+            "max_tokens": 1
+        }))
+        .expect("boundary-valid config deserializes");
+        assert_eq!(cfg.trigger_ratio, 1.0);
+        assert_eq!(cfg.threshold, 1);
+        assert_eq!(cfg.max_tokens, Some(1));
     }
 
     // --- Serialize round-trip incl. `skip_serializing_if` on `instructions` ---

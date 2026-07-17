@@ -199,49 +199,59 @@ async fn conformance_empty_store_reads_are_absent() {
     awaken_store_conformance::empty_store_reads_are_absent(&store).await;
 }
 
-// KNOWN BUG (adjudicate): like SQLite, Postgres persists committed state commands
-// (into `runtime_state_command`, asserted by
-// `commit_persists_facts_messages_and_serves_reads`) but does NOT serve them back
-// through `ThreadReader::committed_state` — it leaves the trait default, which
-// returns empty. The in-memory/fs backends project committed state (they pass the
-// shared `committed_state_replays` case); Postgres does not, so it is NOT wired to
-// that case. Consumers that read this port on resume — materialized-state rebuild,
-// token-usage accounting, compaction-count — read EMPTY against Postgres, silently
-// losing accumulated state on a durable resume. This pins the current behavior.
+// Postgres projects committed state commands back through the `committed_state`
+// read port (rebuilt from the durable `runtime_state_command` rows), so a resumed
+// run replays its accumulated state from durable truth — it runs the shared
+// `committed_state_replays` conformance case (as inmem/fs/sqlite do).
 #[tokio::test]
-async fn committed_state_read_returns_empty_despite_persisted_rows() {
-    let Some(pool) = schema_pool("t_c_state").await else {
+async fn conformance_committed_state_replays() {
+    let Some(store) = conformance_store("t_c_state").await else {
         return;
     };
-    let store = PostgresCommitCoordinator::with_pool(pool.clone())
-        .await
-        .expect("coordinator");
-    let thread = ThreadId("t-state".to_string());
+    awaken_store_conformance::committed_state_replays(&store).await;
+}
 
-    store
-        .commit(ThreadCommit {
-            thread_id: thread.clone(),
-            run_fact: running("r-state"),
-            messages: vec![],
-            state: vec![
-                StateCommand::set(
-                    Scope::Thread,
-                    MergePolicy::Disjoint,
-                    "k1",
-                    serde_json::json!("v1"),
-                ),
-                StateCommand::set(
-                    Scope::Run,
-                    MergePolicy::Commutative,
-                    "k2",
-                    serde_json::json!(2),
-                ),
-            ],
-            events: vec![],
-            waiting: None,
-        })
-        .await
-        .expect("commit state");
+// Durable state replay across a reconnect: committed state commands are served back
+// through `committed_state` from a fresh coordinator over the same schema, proving
+// the projection rebuilt from the durable `runtime_state_command` rows (not just an
+// in-process advance).
+#[tokio::test]
+async fn reconnect_replays_committed_state() {
+    let Some(pool) = schema_pool("t_c_state_reopen").await else {
+        return;
+    };
+    let thread = ThreadId("t-state".to_string());
+    let commands = vec![
+        StateCommand::set(
+            Scope::Thread,
+            MergePolicy::Disjoint,
+            "k1",
+            serde_json::json!("v1"),
+        ),
+        StateCommand::set(
+            Scope::Run,
+            MergePolicy::Commutative,
+            "k2",
+            serde_json::json!(2),
+        ),
+    ];
+
+    {
+        let store = PostgresCommitCoordinator::with_pool(pool.clone())
+            .await
+            .expect("coordinator");
+        store
+            .commit(ThreadCommit {
+                thread_id: thread.clone(),
+                run_fact: running("r-state"),
+                messages: vec![],
+                state: commands.clone(),
+                events: vec![],
+                waiting: None,
+            })
+            .await
+            .expect("commit state");
+    }
 
     // The rows landed durably in the same transaction...
     let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtime_state_command")
@@ -249,10 +259,15 @@ async fn committed_state_read_returns_empty_despite_persisted_rows() {
         .await
         .expect("count state rows");
     assert_eq!(rows, 2, "both state commands persisted");
-    // ...but the read port returns nothing (the divergence).
-    assert!(
-        ThreadReader::committed_state(&store, &thread).is_empty(),
-        "KNOWN BUG: committed_state returns empty even though state commands persisted"
+
+    // ...and a fresh coordinator rehydrates and serves them back through the port.
+    let reopened = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .expect("reconnect");
+    assert_eq!(
+        ThreadReader::committed_state(&reopened, &thread),
+        commands,
+        "committed state replays from durable truth after a reconnect"
     );
 }
 

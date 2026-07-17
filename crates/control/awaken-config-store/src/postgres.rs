@@ -169,12 +169,13 @@ impl ScopedConfigRegistry for PostgresConfigStore {
     ) -> Result<Vec<StoredPublication>, ConfigStoreError> {
         // Postgres is a durable store, so it must reload published publications for
         // warm-install (the default trait impl returns empty and is only right for
-        // the in-memory store). Oldest-first by insertion (`created_at` ascending, the
-        // Postgres analogue of SQLite's `rowid`), so a map keyed by agent keeps the
-        // latest publication per agent.
+        // the in-memory store). Oldest-first by insertion, with the monotonic `seq`
+        // identity column (migration V0005) as a deterministic tie-break for rows
+        // sharing a `created_at` — the Postgres analogue of SQLite's `rowid ASC`, so a
+        // map keyed by agent keeps the same latest-publication-per-agent on both.
         let rows = sqlx::query(&format!(
             "SELECT record FROM {NS}_publication \
-             WHERE scope_id = $1 AND state = 'published' ORDER BY created_at ASC"
+             WHERE scope_id = $1 AND state = 'published' ORDER BY created_at ASC, seq ASC"
         ))
         .bind(&scope.0)
         .fetch_all(&self.pool)

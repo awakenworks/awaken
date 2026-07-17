@@ -270,7 +270,20 @@ impl MemoryFs for PgMemoryFs {
         .bind(now)
         .execute(&mut *tx)
         .await
-        .map_err(mem_err)?;
+        // The existence pre-check is unlocked (`SELECT 1`, no `FOR UPDATE`), so two
+        // concurrent same-path creates can both pass it and race the INSERT. The
+        // `(store_id, path)` primary key serializes them; the loser must surface the
+        // DOMAIN conflict (`PathConflict`), not a leaked raw storage error, matching
+        // the in-process backends.
+        .map_err(|e| {
+            if e.as_database_error()
+                .is_some_and(sqlx::error::DatabaseError::is_unique_violation)
+            {
+                MemErr::PathConflict(path.to_string())
+            } else {
+                mem_err(e)
+            }
+        })?;
         tx.commit().await.map_err(mem_err)?;
         Ok(Memory {
             content_size: content.len() as u64,

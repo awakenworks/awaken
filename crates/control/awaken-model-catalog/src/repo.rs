@@ -120,6 +120,15 @@ impl CatalogRepo for InMemoryCatalogRepo {
             Some(existing) => *existing = offering,
             None => next.offerings.push(offering),
         }
+        // Keep offerings in `(model_id, protocol_endpoint_id)` order — the exact
+        // order the durable backends reload rows in (`ORDER BY model_id,
+        // protocol_endpoint_id`). Without this the in-memory repo would list in
+        // insertion order, so `resolve_offering`'s first-match could diverge from
+        // sqlite/postgres for the same writes.
+        next.offerings.sort_by(|a, b| {
+            (a.model_id.as_str(), a.protocol_endpoint_id.as_str())
+                .cmp(&(b.model_id.as_str(), b.protocol_endpoint_id.as_str()))
+        });
         // `ValidCatalog::parse` IS the write-time integrity check: if the new
         // offering breaks an invariant, parse fails and the stored `ValidCatalog`
         // is never reassigned, so a rejected write leaves no trace (fail-closed).
