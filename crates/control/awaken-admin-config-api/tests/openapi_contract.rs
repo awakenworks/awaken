@@ -1,10 +1,14 @@
 //! The OpenAPI registry ↔ router drift gate (mirrors oversight-next's
-//! `openapi_contract`). Every documented operation is probed against the real
-//! [`admin_router`]: a registry entry whose route is not mounted surfaces as a
-//! bare routing 404 (no problem+json body) or a 405, and fails here. The
-//! reverse direction (mounted but undocumented) is caught in review — adding a
-//! route without a registry entry leaves `contracts/openapi.json` stale, which
-//! `generate-contracts.sh --check` flags in CI.
+//! `openapi_contract`), enforced in BOTH directions:
+//!
+//! * documented → mounted: every documented operation is probed against the real
+//!   [`admin_router`]; a registry entry whose route is not mounted surfaces as a
+//!   bare routing 404 (no problem+json body) or a 405, and fails here.
+//! * mounted → documented: [`every_mounted_route_is_documented`] pins the full
+//!   mounted surface against the registry, so a route added to the router without
+//!   a matching registry entry fails the build. (Five live routes —
+//!   model-attributes, cooldown, availability, pool eligible, resolve-candidates —
+//!   had escaped the one-directional gate; this closes that hole.)
 
 use std::sync::Arc;
 
@@ -57,8 +61,13 @@ fn document_shape_and_schema_components() {
         "ResolveProfileRequest",
         "ResolveAgentMcpRequest",
         "ResolvedInferenceView",
+        "ResolvedCandidatesView",
         "ResolvedMcpServerView",
         "CredentialValidation",
+        "PoolEligibleView",
+        "ModelAttributes",
+        "AvailabilityState",
+        "CooldownRequest",
         "ApiError",
     ] {
         assert!(schemas.contains_key(name), "missing schema `{name}`");
@@ -89,6 +98,7 @@ async fn every_documented_operation_is_mounted() {
             let uri = template
                 .replace("{project_id}", "probe-project")
                 .replace("{agent_id}", "probe-agent")
+                .replace("{model_id}", "probe-model")
                 .replace("{id}", "probe-id");
             let request = Request::builder()
                 .method(method.to_uppercase().parse::<Method>().expect("method"))
@@ -122,22 +132,71 @@ async fn every_documented_operation_is_mounted() {
     }
 }
 
-/// `resolve_profile_candidates_route` is mounted by `admin_router` at
-/// `.../resolve-candidates` and is now DOCUMENTED in `openapi::paths()` with its
-/// `ResolvedCandidatesView` response schema — so it is emitted in the contract and
-/// covered by the documented↔mounted drift probe above (no longer an omission).
+/// The mounted → documented direction: the full surface [`admin_router`] mounts,
+/// as an explicit SSOT. Every entry must appear in the OpenAPI registry, so a
+/// route added to the router without a registry entry fails here (the hole that
+/// let model-attributes / cooldown / availability / eligible / resolve-candidates
+/// ship undocumented). Adding a route means adding it here AND to `openapi.rs` —
+/// the intended forcing function, mirroring oversight-next's hand-assembled gate.
 #[test]
-fn resolve_candidates_route_is_documented_and_schema_backed() {
+fn every_mounted_route_is_documented() {
+    // (METHOD, path-template) for every route `admin_router` mounts.
+    const MOUNTED: &[(&str, &str)] = &[
+        ("put", "/v1/config/providers/{id}"),
+        ("get", "/v1/config/providers/{id}"),
+        ("put", "/v1/config/endpoints/{id}"),
+        ("get", "/v1/config/endpoints/{id}"),
+        ("post", "/v1/config/offerings"),
+        ("put", "/v1/config/model-attributes/{model_id}"),
+        ("get", "/v1/config/catalog"),
+        ("post", "/v1/config/credentials"),
+        ("get", "/v1/config/credentials"),
+        ("get", "/v1/config/credentials/{id}"),
+        ("post", "/v1/config/credentials/{id}/archive"),
+        ("post", "/v1/config/credentials/{id}/validate"),
+        ("post", "/v1/config/credentials/{id}/cooldown"),
+        ("get", "/v1/config/credentials/{id}/availability"),
+        ("put", "/v1/config/credential-pools/{id}"),
+        ("get", "/v1/config/credential-pools/{id}"),
+        ("get", "/v1/config/credential-pools/{id}/eligible"),
+        ("put", "/v1/config/inference-profiles/{id}"),
+        ("get", "/v1/config/inference-profiles/{id}"),
+        ("post", "/v1/config/inference-profiles/{id}/resolve"),
+        (
+            "post",
+            "/v1/config/inference-profiles/{id}/resolve-candidates",
+        ),
+        ("post", "/v1/config/inference/resolve"),
+        ("get", "/v1/config/mcp-servers"),
+        ("put", "/v1/config/mcp-servers/{id}"),
+        ("get", "/v1/config/mcp-servers/{id}"),
+        ("put", "/v1/config/agents/{agent_id}/mcp"),
+        ("get", "/v1/config/agents/{agent_id}/mcp"),
+        ("post", "/v1/config/agents/{agent_id}/mcp/resolve"),
+        ("put", "/v1/config/agents/{agent_id}/resources"),
+        ("get", "/v1/config/agents/{agent_id}/resources"),
+    ];
+
     let doc = openapi_document();
     let paths = doc["paths"].as_object().expect("paths object");
-    let op = paths
-        .get("/v1/config/inference-profiles/{id}/resolve-candidates")
-        .and_then(|p| p.get("post"))
-        .expect("resolve-candidates POST is documented");
-    assert_eq!(op["operationId"], "resolve_profile_candidates");
-    // Its response schema is registered in components.
-    let schemas = doc["components"]["schemas"]
-        .as_object()
-        .expect("schemas object");
-    assert!(schemas.contains_key("ResolvedCandidatesView"));
+    for (method, template) in MOUNTED {
+        let item = paths
+            .get(*template)
+            .unwrap_or_else(|| panic!("undocumented route: {method} {template}"));
+        assert!(
+            item.get(method).is_some(),
+            "route {method} {template} is mounted but has no {method} operation documented",
+        );
+    }
+    // And the registry documents nothing the router does not mount (no phantom docs).
+    let documented: usize = paths
+        .values()
+        .map(|item| item.as_object().expect("path item").len())
+        .sum();
+    assert_eq!(
+        documented,
+        MOUNTED.len(),
+        "the OpenAPI registry documents {documented} operations but the router mounts {}",
+        MOUNTED.len(),
+    );
 }
