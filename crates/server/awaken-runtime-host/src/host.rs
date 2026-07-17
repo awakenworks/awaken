@@ -50,7 +50,6 @@ use awaken_store_fs::{FsCommitCoordinator, FsStreamCheckpointStore};
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
 use awaken_ext_compact::{CompactConfig, CompactPlugin};
-use awaken_runtime_contract::subagent_runner::SubagentRunner;
 
 use crate::agent_catalog::AgentCatalog;
 use crate::background::BackgroundRuns;
@@ -167,12 +166,12 @@ pub struct SharedHost {
     /// The relevance selector for recall (a `memory-selector` sub-agent), wired
     /// into the memory recall plugin when memory is enabled.
     memory_selector: Option<Arc<dyn awaken_ext_memory::RecallSelector>>,
-    /// Context compaction, when enabled with [`with_compaction`]. The config is
-    /// installed on the `compact` plugin (a `BeforeInference` hook); the summarizer
-    /// is a `compactor` sub-agent the plugin calls to fold the older slice. The main
-    /// agent runs a matching `KeepLast` window so those raw turns leave the model view.
-    compact_config: Option<CompactConfig>,
-    compact_runner: Option<Arc<dyn SubagentRunner>>,
+    /// Context compaction, when enabled with [`with_compaction`]: the resolved config
+    /// plus the `compactor` sub-agent runner, sealed as one [`crate::compact::Compaction`]
+    /// so the pair is present-or-absent atomically. The config drives the `compact`
+    /// plugin (a `BeforeInference` hook) and a matching `KeepLast` window so summarized
+    /// older turns leave the model view.
+    compaction: Option<crate::compact::Compaction>,
     /// The config data plane, when the server exposes `/v1/config/*`. A thread's
     /// runtime config is the installed (published) config for its agent, if any,
     /// else the built-in default (slice A).

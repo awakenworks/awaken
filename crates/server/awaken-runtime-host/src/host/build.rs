@@ -45,8 +45,7 @@ impl SharedHost {
             deployment,
             memory: None,
             memory_selector: None,
-            compact_config: None,
-            compact_runner: None,
+            compaction: None,
             config_service: None,
             thread_mcp: std::sync::Mutex::new(HashMap::new()),
             mcp_relay: tokio::sync::OnceCell::new(),
@@ -141,8 +140,8 @@ impl SharedHost {
 
     /// Install a resolved `CompactConfig` and wire the `compactor` sub-agent.
     fn enable_compaction(mut self, config: CompactConfig) -> Self {
-        self.compact_config = Some(config);
-        self.compact_runner = Some(build_compact_runner(self.llm.clone(), &self.model_ref));
+        let runner = build_compact_runner(self.llm.clone(), &self.model_ref);
+        self.compaction = Some(crate::compact::Compaction { config, runner });
         self
     }
 

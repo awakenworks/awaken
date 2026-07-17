@@ -328,15 +328,16 @@ impl SharedHost {
         // slice into a summary and injects it request-only. The main agent runs a
         // rolling window matching the config's `keep_last`, so summarized older turns
         // leave the model view.
-        let context_policy = match (&self.compact_config, &self.compact_runner) {
-            (Some(config), Some(runner)) => {
-                let keep_last = config.keep_last;
-                let plugin = CompactPlugin::new(config.clone()).with_runner(runner.clone());
+        let context_policy = match &self.compaction {
+            Some(compaction) => {
+                let keep_last = compaction.config.keep_last;
+                let plugin = CompactPlugin::new(compaction.config.clone())
+                    .with_runner(compaction.runner.clone());
                 runtime = runtime.with_plugin(Arc::new(plugin));
                 plugin_ids.push(awaken_ext_compact::COMPACT_PLUGIN_ID.to_string());
                 awaken_runtime_contract::resolved::ContextPolicy::KeepLast { keep_last }
             }
-            _ => awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+            None => awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
         };
         // Everything dynamically provisioned on this thread that the config must
         // advertise: the skill tools plus the discovered MCP tools.
