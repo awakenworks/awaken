@@ -1,0 +1,37 @@
+# awaken-memoryd — the memory-store SIDECAR image (ADR-0053). It runs alongside the
+# agent container in a Pod and projects a durable, path-addressed memory store into a
+# shared volume the agent reads as plain files. The ENTRYPOINT is `awaken-sandbox
+# memoryd`; it is env-driven by the k8s `pod_plan` (AWAKEN_MEMORY_STORE_ID /
+# AWAKEN_MOUNT_PATH / AWAKEN_MEMORY_MODE / AWAKEN_MEMORY_STORE_DIR).
+#
+# Two runtime modes, selected by AWAKEN_MEMORY_MODE:
+#   - fuse — a live write-through FUSE mount (needs /dev/fuse + SYS_ADMIN, which the pod
+#     grants ONLY to this minimal sidecar, never the agent). Needs fusermount3 on PATH.
+#   - copy (default) — materialize the store to files, harvest edits back on teardown.
+#     Portable: no /dev/fuse required, so it works on a locked-down node.
+#
+# Distinct from the `acp` image (deploy/images/sandbox/Dockerfile): no node/npm/ACP
+# CLIs — just the FUSE-capable binary. Build the binary WITH the memoryd feature:
+#   cargo build --release -p awaken-sandbox --features memoryd
+#   docker build -f deploy/images/sandbox/Dockerfile.memoryd \
+#     --build-arg BIN=target/release/awaken-sandbox -t ghcr.io/awaken/memoryd:<ver> .
+FROM debian:bookworm-slim
+
+# fuse3 provides fusermount3 (the FUSE-mount helper the write-through server calls);
+# tini reaps any child; ca-certificates for a store backend that dials out (pg).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates fuse3 tini \
+    && rm -rf /var/lib/apt/lists/*
+
+# The execution-plane binary (host-built, --features memoryd) as the sidecar entrypoint.
+ARG BIN=target/release/awaken-sandbox
+COPY ${BIN} /usr/local/bin/awaken-sandbox
+
+# The default durable backing dir (AWAKEN_MEMORY_STORE_DIR). Mount a PVC here for
+# cross-restart durability, or leave it pod-local (emptyDir) for an ephemeral store.
+RUN mkdir -p /var/lib/awaken/memory
+VOLUME ["/var/lib/awaken/memory"]
+
+# Runs as root: FUSE mode needs it (with the pod's SYS_ADMIN); copy mode is harmless in
+# this minimal, isolated sidecar. The mount path is a shared volume the pod provides.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/awaken-sandbox", "memoryd"]

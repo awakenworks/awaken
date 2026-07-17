@@ -168,6 +168,10 @@ pub struct K8sRuntime {
 }
 
 /// Default memoryd sidecar image (overridable via [`K8sRuntime::with_memoryd_image`]).
+/// The image is the execution-plane `awaken-sandbox` binary in its `memoryd` role
+/// (ENTRYPOINT `awaken-sandbox memoryd`, built with `--features memoryd`), packaged by
+/// `deploy/images/sandbox/Dockerfile.memoryd`. The sidecar sets no `command`, so the
+/// role reads the `AWAKEN_MEMORY_*` env this plan injects below.
 const DEFAULT_MEMORYD_IMAGE: &str = "ghcr.io/awaken/memoryd:latest";
 
 impl K8sRuntime {
