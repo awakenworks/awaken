@@ -13,39 +13,10 @@ impl SharedHost {
         // unset → ephemeral.
         let deployment = crate::deployment_config::DeploymentConfig::from_env();
         let store_dir = deployment.storage_dir.clone();
-        // The ADR-0038 memory_store family persists under the storage dir when set so
-        // a harvested write-back outlives the process; otherwise a per-process temp dir
-        // (unit tests / ephemeral use) keeps it in-run only.
-        let memory_store_root = match &store_dir {
-            Some(dir) => dir.join("memory_stores"),
-            // Ephemeral: a per-instance dir (pid + a process-local counter), so two
-            // hosts in one process (parallel unit tests) never share a memory store.
-            None => {
-                static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                std::env::temp_dir().join(format!("awaken-memstore-{}-{n}", std::process::id()))
-            }
-        };
-        let memory_stores: Arc<dyn awaken_memory_store::MemoryBlobStore> = Arc::new(
-            awaken_memory_store::FsMemoryBlobStore::open(&memory_store_root)
-                .expect("open durable memory-store root"),
-        );
-        // ADR-0053 path-addressed memory files persist alongside, under the same
-        // durability rule. Backed by the SQLite store so rename-replace and CAS are
-        // **crash-atomic** (one transaction) — the plain-file backend is only no-loss
-        // (a crash mid-rename can leave a transient duplicate source).
-        let memory_fs: Arc<dyn awaken_memory_store::MemoryFs> = Arc::new(match &store_dir {
-            Some(dir) => {
-                let db = dir.join("memory_fs.db");
-                awaken_memory_store::SqliteMemoryFs::open(
-                    db.to_str().expect("memory-fs db path is valid UTF-8"),
-                )
-                .expect("open durable memory-fs sqlite store")
-            }
-            // No durable dir → an ephemeral in-memory database (dies with the process).
-            None => awaken_memory_store::SqliteMemoryFs::open_in_memory()
-                .expect("open ephemeral memory-fs sqlite store"),
-        });
+        // The ADR-0038/0053 memory content stores follow one storage-dir durability
+        // rule, owned by `MemoryStores::open` (durable under the dir; ephemeral
+        // per-process otherwise). Identity is a separate concern — see `memory_registry`.
+        let memory_stores = crate::memory_stores::MemoryStores::open(store_dir.as_deref());
         Self {
             llm,
             model_ref: model_ref.into(),
@@ -54,10 +25,8 @@ impl SharedHost {
             provider: LocalProvider::new(sub_base("")),
             grader: Arc::new(KeywordGrader),
             client_tools: HashSet::new(),
-            skills: Vec::new(),
-            skill_store: None,
-            skill_cache: std::sync::Mutex::new(Vec::new()),
-            delegates: HashSet::new(),
+            skills: crate::skill_catalog::SkillCatalog::new(),
+            delegates: crate::delegate::Delegates::new(),
             // Subagents share the parent's sandbox by default (`默认共用`).
             subagent_reuse_sandbox: true,
             plugin_ids: Vec::new(),
@@ -74,11 +43,9 @@ impl SharedHost {
                 .map(PathBuf::from),
             upstream: None,
             deployment,
-            remote_agents: HashMap::new(),
             memory: None,
             memory_selector: None,
-            compact_config: None,
-            compact_runner: None,
+            compaction: None,
             config_service: None,
             thread_mcp: std::sync::Mutex::new(HashMap::new()),
             mcp_relay: tokio::sync::OnceCell::new(),
@@ -86,15 +53,13 @@ impl SharedHost {
             thread_egress: crate::sandbox_source::ThreadEgress::new(),
             file_store: Arc::new(InMemoryFileStore::new()),
             memory_stores,
-            memory_fs,
             // Default to an ephemeral in-memory identity registry; the composition root
             // overrides it with the durable admin backend via `with_memory_registry`.
             memory_registry: Arc::new(awaken_config_resolver::InMemoryMemoryStoreRegistry::new()),
             gate_override: None,
             dispatch_pool: std::sync::OnceLock::new(),
             completion: Arc::new(CompletionRegistry::default()),
-            remote_hand: None,
-            tool_executor_provider: None,
+            hand_placement: crate::hand_placement::HandPlacement::new(),
             capture_sink: None,
             admin_tools: Vec::new(),
             // Default α: never hand a raw MCP bearer to the CLI — a trusted-local
@@ -174,8 +139,8 @@ impl SharedHost {
 
     /// Install a resolved `CompactConfig` and wire the `compactor` sub-agent.
     fn enable_compaction(mut self, config: CompactConfig) -> Self {
-        self.compact_config = Some(config);
-        self.compact_runner = Some(build_compact_runner(self.llm.clone(), &self.model_ref));
+        let runner = build_compact_runner(self.llm.clone(), &self.model_ref);
+        self.compaction = Some(crate::compact::Compaction { config, runner });
         self
     }
 
@@ -255,7 +220,7 @@ impl SharedHost {
 
     /// Add local delegate agents callable via `agent_run`.
     pub fn with_delegates(mut self, delegates: HashSet<String>) -> Self {
-        self.delegates.extend(delegates);
+        self.delegates.add_local(delegates);
         self
     }
 
@@ -285,7 +250,7 @@ impl SharedHost {
     /// activated skill's instructions. The host stays out of skill
     /// authoring/collection — it only carries the offered set.
     pub fn with_skills(mut self, skills: Vec<SkillSpec>) -> Self {
-        self.skills.extend(skills);
+        self.skills.add_specs(skills);
         self
     }
 
@@ -298,7 +263,7 @@ impl SharedHost {
     pub fn with_skill_store(mut self, dir: impl Into<PathBuf>) -> Self {
         let store = awaken_skill_store::FsSkillStore::open(dir.into())
             .expect("open durable skill store root");
-        self.skill_store = Some(Arc::new(store));
+        self.skills.set_store(Arc::new(store));
         self
     }
 
@@ -309,7 +274,7 @@ impl SharedHost {
         mut self,
         store: Arc<dyn awaken_skill_store::SkillStore>,
     ) -> Self {
-        self.skill_store = Some(store);
+        self.skills.set_store(store);
         self
     }
 
@@ -434,7 +399,7 @@ impl SharedHost {
     /// (ADR-0044) — instead of the in-process registry. The brain still commits
     /// the hand's returned output. `None` (the default) keeps in-process execution.
     pub fn with_remote_hand(mut self, hand: Arc<dyn ToolExecutor>) -> Self {
-        self.remote_hand = Some(hand);
+        self.hand_placement.set_remote_hand(hand);
         self
     }
 
@@ -444,7 +409,7 @@ impl SharedHost {
     /// fall back to `remote_hand`/in-process. This is the seam a config-driven
     /// self-hosted brain–hand split — or a host's own richer policy — plugs into.
     pub fn with_tool_executor_provider(mut self, provider: Arc<dyn ToolExecutorProvider>) -> Self {
-        self.tool_executor_provider = Some(provider);
+        self.hand_placement.set_provider(provider);
         self
     }
 
@@ -454,8 +419,7 @@ impl SharedHost {
         transport: Arc<dyn Transport>,
     ) -> Self {
         let agent_id = agent_id.into();
-        self.delegates.insert(agent_id.clone());
-        self.remote_agents.insert(agent_id, transport);
+        self.delegates.add_remote(agent_id, transport);
         self
     }
 
@@ -472,21 +436,14 @@ impl SharedHost {
         if self.delegates.is_empty() {
             return None;
         }
-        // Native delegates are the roster ids that are not remotes.
-        let native: HashSet<String> = self
-            .delegates
-            .iter()
-            .filter(|id| !self.remote_agents.contains_key(*id))
-            .cloned()
-            .collect();
         Some(Arc::new(DelegationResolver::new(
             self.llm.clone(),
             self.model_ref.clone(),
             LocalProvider::new(sub_base("deleg")),
             sandbox,
             self.subagent_reuse_sandbox,
-            native,
-            self.remote_agents.clone(),
+            self.delegates.native_ids(),
+            self.delegates.remotes(),
         )))
     }
 

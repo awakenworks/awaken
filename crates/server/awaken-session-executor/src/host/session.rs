@@ -284,10 +284,13 @@ impl SharedHost {
         let mut skill_registry: Option<Arc<dyn SkillRegistry>> = None;
         // Refresh the delivered-catalog snapshot from the (async) store for this
         // session; `Some` (possibly empty) exactly when a durable store is wired.
-        self.reload_skill_cache().await;
-        let delivered = self.has_skill_store().then(|| self.skill_cache_snapshot());
+        self.skills.reload_cache().await;
+        let delivered = self
+            .skills
+            .has_store()
+            .then(|| self.skills.cache_snapshot());
         if let Some(wiring) = crate::skills::wire_skills(
-            &self.skills,
+            self.skills.specs(),
             delivered,
             env.clone(),
             self.llm.clone(),
@@ -325,15 +328,16 @@ impl SharedHost {
         // slice into a summary and injects it request-only. The main agent runs a
         // rolling window matching the config's `keep_last`, so summarized older turns
         // leave the model view.
-        let context_policy = match (&self.compact_config, &self.compact_runner) {
-            (Some(config), Some(runner)) => {
-                let keep_last = config.keep_last;
-                let plugin = CompactPlugin::new(config.clone()).with_runner(runner.clone());
+        let context_policy = match &self.compaction {
+            Some(compaction) => {
+                let keep_last = compaction.config.keep_last;
+                let plugin = CompactPlugin::new(compaction.config.clone())
+                    .with_runner(compaction.runner.clone());
                 runtime = runtime.with_plugin(Arc::new(plugin));
                 plugin_ids.push(awaken_ext_compact::COMPACT_PLUGIN_ID.to_string());
                 awaken_runtime_contract::resolved::ContextPolicy::KeepLast { keep_last }
             }
-            _ => awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+            None => awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
         };
         // Everything dynamically provisioned on this thread that the config must
         // advertise: the skill tools plus the discovered MCP tools.
@@ -343,7 +347,7 @@ impl SharedHost {
             server_config(
                 &self.model_route.model_ref(thread, &self.model_ref),
                 &self.client_tools,
-                &self.delegates,
+                self.delegates.ids_set(),
                 &plugin_ids,
                 &self.plugin_config,
                 &dynamic_descriptors,
@@ -435,8 +439,7 @@ impl SharedHost {
             config,
             commit,
             stream_checkpoint,
-            remote_hand: self.remote_hand.clone(),
-            tool_executor_provider: self.tool_executor_provider.clone(),
+            hand_placement: self.hand_placement.clone(),
             capture_sink: self.capture_sink.clone(),
             thread_id,
             env,

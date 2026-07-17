@@ -32,6 +32,78 @@ const MAX_TASK_POLLS: usize = 600;
 /// Delay between task polls while a remote task is still `working`.
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
 
+/// The host's delegate agents (local + A2A-remote), behind one type owning their
+/// shared invariant: `remotes` (agents fulfilled over A2A) is a *subset* of `ids`
+/// (every advertised delegate). [`Self::add_remote`] maintains it by registering into
+/// both; [`Self::native_ids`] derives the local delegates as `ids − remotes`. Keeping
+/// the pair split let a caller register a remote transport without also advertising
+/// the delegate, silently breaking the `multiagent` roster.
+///
+/// NOTE (protocol leak, tracked separately): `remotes` holds
+/// [`awaken_protocol_a2a`]'s `Transport` directly — a wire type on host state.
+/// Replacing it with a neutral remote-agent port is a later step, not this pass.
+#[derive(Default)]
+pub(crate) struct Delegates {
+    /// All delegate agent ids (advertised as the agent's `multiagent` roster).
+    ids: HashSet<String>,
+    /// The subset fulfilled over A2A (agent id → transport) instead of a local
+    /// sub-run. Invariant: every key is also in `ids` (see [`Self::add_remote`]).
+    remotes: HashMap<String, Arc<dyn Transport>>,
+}
+
+impl Delegates {
+    /// An empty roster.
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add local delegate agents (fulfilled by an in-process sub-run).
+    pub(crate) fn add_local(&mut self, ids: HashSet<String>) {
+        self.ids.extend(ids);
+    }
+
+    /// Register a remote (A2A) delegate: advertised in the roster AND routed to its
+    /// transport. Maintains the `remotes ⊆ ids` invariant by inserting into both.
+    pub(crate) fn add_remote(&mut self, agent_id: String, transport: Arc<dyn Transport>) {
+        self.ids.insert(agent_id.clone());
+        self.remotes.insert(agent_id, transport);
+    }
+
+    /// Whether the roster is empty (no delegates configured at all).
+    pub(crate) fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+
+    /// All delegate ids (the `multiagent` advertisement).
+    pub(crate) fn ids(&self) -> Vec<String> {
+        self.ids.iter().cloned().collect()
+    }
+
+    /// The advertised id set, for callers that pass it by reference (config build).
+    pub(crate) fn ids_set(&self) -> &HashSet<String> {
+        &self.ids
+    }
+
+    /// The transport for a remote delegate, or `None` if `agent_id` is local/unknown.
+    pub(crate) fn remote_transport(&self, agent_id: &str) -> Option<&Arc<dyn Transport>> {
+        self.remotes.get(agent_id)
+    }
+
+    /// The native (in-process) delegate ids: the roster minus the remotes.
+    pub(crate) fn native_ids(&self) -> HashSet<String> {
+        self.ids
+            .iter()
+            .filter(|id| !self.remotes.contains_key(*id))
+            .cloned()
+            .collect()
+    }
+
+    /// A clone of the remote transport map, for injection into the delegation resolver.
+    pub(crate) fn remotes(&self) -> HashMap<String, Arc<dyn Transport>> {
+        self.remotes.clone()
+    }
+}
+
 /// The `(agent_id, input)` a delegate `agent_run` call carries.
 fn delegate_args(arguments: &Value) -> (String, String) {
     let field = |key: &str| {
@@ -256,7 +328,7 @@ impl SharedHost {
     /// Fetch a remote delegate's A2A agent card (outbound discovery). Fails if the
     /// agent is not a registered remote.
     pub async fn remote_agent_card(&self, agent_id: &str) -> Result<AgentCard, HostError> {
-        let transport = self.remote_agents.get(agent_id).ok_or_else(|| {
+        let transport = self.delegates.remote_transport(agent_id).ok_or_else(|| {
             HostError::bad_request(format!("agent {agent_id:?} is not a remote agent"))
         })?;
         a2a::agent_card(transport.as_ref())

@@ -29,6 +29,16 @@ use crate::judge::HostSubagentRunner;
 // The config pieces the host wires (registering the default compactor agent).
 pub use awaken_ext_compact::{DEFAULT_COMPACT_INSTRUCTIONS, default_compact_agent};
 
+/// A host's enabled compaction: the resolved config plus the `compactor` sub-agent
+/// runner that applies it. Sealed as one type so the pair is present-or-absent
+/// atomically — `SharedHost` holds a single `Option<Compaction>`, replacing the two
+/// separate `Option`s whose tuple-match had to fold three impossible mixes
+/// (`config` without `runner`, and the reverse) into one catch-all arm.
+pub(crate) struct Compaction {
+    pub(crate) config: awaken_ext_compact::CompactConfig,
+    pub(crate) runner: Arc<dyn SubagentRunner>,
+}
+
 /// A [`SubagentRunner`] whose catalog holds the `compactor` agent — the host side
 /// of compaction, shared with the goal judge via the neutral aux-run port
 /// (ADR-0047 D5). The compaction plugin builds the seed (older slice + summarize
