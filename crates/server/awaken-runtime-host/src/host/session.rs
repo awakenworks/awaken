@@ -346,7 +346,7 @@ impl SharedHost {
             server_config(
                 &self.model_route.model_ref(thread, &self.model_ref),
                 &self.client_tools,
-                &self.delegates,
+                self.delegates.ids_set(),
                 &plugin_ids,
                 &self.plugin_config,
                 &dynamic_descriptors,

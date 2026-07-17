@@ -444,7 +444,7 @@ impl SharedHost {
 
     /// The delegate agent ids (advertised as the agent's `multiagent` roster).
     pub fn delegate_ids(&self) -> Vec<String> {
-        self.delegates.iter().cloned().collect()
+        self.delegates.ids()
     }
 }
 

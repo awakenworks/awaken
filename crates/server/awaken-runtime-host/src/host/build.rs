@@ -26,7 +26,7 @@ impl SharedHost {
             grader: Arc::new(KeywordGrader),
             client_tools: HashSet::new(),
             skills: crate::skill_catalog::SkillCatalog::new(),
-            delegates: HashSet::new(),
+            delegates: crate::delegate::Delegates::new(),
             // Subagents share the parent's sandbox by default (`默认共用`).
             subagent_reuse_sandbox: true,
             plugin_ids: Vec::new(),
@@ -43,7 +43,6 @@ impl SharedHost {
                 .map(PathBuf::from),
             upstream: None,
             deployment,
-            remote_agents: HashMap::new(),
             memory: None,
             memory_selector: None,
             compact_config: None,
@@ -223,7 +222,7 @@ impl SharedHost {
 
     /// Add local delegate agents callable via `agent_run`.
     pub fn with_delegates(mut self, delegates: HashSet<String>) -> Self {
-        self.delegates.extend(delegates);
+        self.delegates.add_local(delegates);
         self
     }
 
@@ -422,8 +421,7 @@ impl SharedHost {
         transport: Arc<dyn Transport>,
     ) -> Self {
         let agent_id = agent_id.into();
-        self.delegates.insert(agent_id.clone());
-        self.remote_agents.insert(agent_id, transport);
+        self.delegates.add_remote(agent_id, transport);
         self
     }
 
@@ -440,21 +438,14 @@ impl SharedHost {
         if self.delegates.is_empty() {
             return None;
         }
-        // Native delegates are the roster ids that are not remotes.
-        let native: HashSet<String> = self
-            .delegates
-            .iter()
-            .filter(|id| !self.remote_agents.contains_key(*id))
-            .cloned()
-            .collect();
         Some(Arc::new(DelegationResolver::new(
             self.llm.clone(),
             self.model_ref.clone(),
             LocalProvider::new(sub_base("deleg")),
             sandbox,
             self.subagent_reuse_sandbox,
-            native,
-            self.remote_agents.clone(),
+            self.delegates.native_ids(),
+            self.delegates.remotes(),
         )))
     }
 

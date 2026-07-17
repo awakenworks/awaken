@@ -129,7 +129,9 @@ pub struct SharedHost {
     /// `/v1/skills` catalog, and its sync-read cache — grouped behind one type that
     /// owns the cache↔store coherence invariant. See [`crate::skill_catalog`].
     pub(crate) skills: crate::skill_catalog::SkillCatalog,
-    pub(crate) delegates: HashSet<String>,
+    /// The delegate agent roster (local + A2A-remote) behind one type owning the
+    /// `remotes ⊆ advertised` invariant. See [`crate::delegate::Delegates`].
+    pub(crate) delegates: crate::delegate::Delegates,
     /// Whether a native subagent (delegation / skill fork) reuses the parent agent's
     /// sandbox (`true`, the default — `默认共用`) or runs in a fresh, isolated one.
     /// The workspace-sharing knob for subagents; out-of-band housekeeping sub-runs
@@ -159,9 +161,6 @@ pub struct SharedHost {
     /// worker. Point it at a **shared** location for cross-machine recovery; leave
     /// `None` on a single machine (the per-thread config home is already stable).
     pub(crate) session_blob_root: Option<PathBuf>,
-    /// Delegate agents fulfilled over A2A (agent id → transport) instead of a local
-    /// sub-run. `run_delegate` routes to these first.
-    pub(crate) remote_agents: HashMap<String, Arc<dyn Transport>>,
     /// Out-of-band memory extraction, when enabled with [`with_memory`]. After a
     /// turn reaches a natural end it fires a background `memory-extractor` sub-run.
     memory: Option<Arc<MemoryExtraction>>,
