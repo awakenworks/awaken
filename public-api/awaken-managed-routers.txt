@@ -1,0 +1,9 @@
+pub mod awaken_managed_routers
+pub struct awaken_managed_routers::ModelEntry
+pub awaken_managed_routers::ModelEntry::context_window: core::option::Option<u32>
+pub awaken_managed_routers::ModelEntry::display_name: alloc::string::String
+pub awaken_managed_routers::ModelEntry::id: alloc::string::String
+pub awaken_managed_routers::ModelEntry::max_output_tokens: core::option::Option<u32>
+pub fn awaken_managed_routers::default_models() -> alloc::vec::Vec<awaken_managed_routers::ModelEntry>
+pub fn awaken_managed_routers::files_router(alloc::sync::Arc<awaken_runtime_host::host::SharedHost>) -> axum::routing::Router
+pub fn awaken_managed_routers::models_router(alloc::sync::Arc<alloc::vec::Vec<awaken_managed_routers::ModelEntry>>) -> axum::routing::Router

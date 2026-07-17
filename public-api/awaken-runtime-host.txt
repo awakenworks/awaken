@@ -7,6 +7,7 @@ pub use awaken_runtime_host::ConfigServiceReconciler
 pub use awaken_runtime_host::HttpDispatchQueue
 pub use awaken_runtime_host::HttpTransport
 pub use awaken_runtime_host::ModelResolver
+pub use awaken_runtime_host::PostgresEnvRegistry
 pub use awaken_runtime_host::PostgresManagedSessionRepository
 pub use awaken_runtime_host::PostgresWorkQueue
 pub use awaken_runtime_host::PublishError
@@ -16,6 +17,7 @@ pub use awaken_runtime_host::Response
 pub use awaken_runtime_host::ScopedToolCatalog
 pub use awaken_runtime_host::SkillContext
 pub use awaken_runtime_host::SkillSpec
+pub use awaken_runtime_host::SqliteEnvRegistry
 pub use awaken_runtime_host::SqliteManagedSessionRepository
 pub use awaken_runtime_host::SqliteWorkQueue
 pub use awaken_runtime_host::StaticToolCatalog
@@ -143,28 +145,11 @@ pub fn awaken_runtime_host::ManagedHost::rotate_resource_token<'life0, 'life1, '
 pub fn awaken_runtime_host::ManagedHost::run<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session::StepOutcome, awaken_session_contract::session::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_host::ManagedHost::run_streaming<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session::StepOutcome, awaken_session_contract::session::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_host::ManagedHost::session_usage<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_session_contract::session::SessionUsage> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub struct awaken_runtime_host::ModelEntry
-pub awaken_runtime_host::ModelEntry::context_window: core::option::Option<u32>
-pub awaken_runtime_host::ModelEntry::display_name: alloc::string::String
-pub awaken_runtime_host::ModelEntry::id: alloc::string::String
-pub awaken_runtime_host::ModelEntry::max_output_tokens: core::option::Option<u32>
 pub struct awaken_runtime_host::PiiRedactor
 impl awaken_runtime_host::PiiRedactor
 pub fn awaken_runtime_host::PiiRedactor::new() -> Self
 impl awaken_runtime_contract::capture::ContentRedactor for awaken_runtime_host::PiiRedactor
 pub fn awaken_runtime_host::PiiRedactor::redact<'a>(&self, awaken_runtime_contract::capture::ContentKind, &'a str) -> alloc::borrow::Cow<'a, str>
-pub struct awaken_runtime_host::PostgresEnvRegistry
-impl awaken_runtime_host::PostgresEnvRegistry
-pub async fn awaken_runtime_host::PostgresEnvRegistry::connect(&str) -> core::result::Result<Self, alloc::string::String>
-pub async fn awaken_runtime_host::PostgresEnvRegistry::with_pool(sqlx_postgres::PgPool) -> core::result::Result<Self, alloc::string::String>
-impl awaken_protocol_managed::env_registry::EnvRegistry for awaken_runtime_host::PostgresEnvRegistry
-pub fn awaken_runtime_host::PostgresEnvRegistry::archive<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_protocol_managed::env_registry::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_runtime_host::PostgresEnvRegistry::create<'life0, 'async_trait>(&'life0 self, alloc::string::String, alloc::string::String, alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_protocol_managed::env_registry::EnvItem> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_runtime_host::PostgresEnvRegistry::delete<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = bool> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_runtime_host::PostgresEnvRegistry::exists<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = bool> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_runtime_host::PostgresEnvRegistry::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_protocol_managed::env_registry::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_runtime_host::PostgresEnvRegistry::list_active<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<awaken_protocol_managed::env_registry::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_runtime_host::PostgresEnvRegistry::update<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_protocol_managed::env_registry::EnvUpdate) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_protocol_managed::env_registry::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_runtime_host::PreparedMcpRefresh
 pub awaken_runtime_host::PreparedMcpRefresh::access_token_ref: awaken_credential_vault::SecretRef
 pub awaken_runtime_host::PreparedMcpRefresh::client_id: alloc::string::String
@@ -276,18 +261,6 @@ impl awaken_runtime_host::SharedHost
 pub async fn awaken_runtime_host::SharedHost::live_inbox(&self, &str) -> core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
 impl awaken_runtime_host::SharedHost
 pub async fn awaken_runtime_host::SharedHost::remote_agent_card(&self, &str) -> core::result::Result<awaken_protocol_a2a::types::AgentCard, awaken_runtime_host::host::types::HostError>
-pub struct awaken_runtime_host::SqliteEnvRegistry
-impl awaken_runtime_host::SqliteEnvRegistry
-pub fn awaken_runtime_host::SqliteEnvRegistry::open(&str) -> core::result::Result<Self, alloc::string::String>
-pub fn awaken_runtime_host::SqliteEnvRegistry::open_in_memory() -> core::result::Result<Self, alloc::string::String>
-impl awaken_protocol_managed::env_registry::EnvRegistry for awaken_runtime_host::SqliteEnvRegistry
-pub fn awaken_runtime_host::SqliteEnvRegistry::archive<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_protocol_managed::env_registry::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_runtime_host::SqliteEnvRegistry::create<'life0, 'async_trait>(&'life0 self, alloc::string::String, alloc::string::String, alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_protocol_managed::env_registry::EnvItem> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_runtime_host::SqliteEnvRegistry::delete<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = bool> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_runtime_host::SqliteEnvRegistry::exists<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = bool> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_runtime_host::SqliteEnvRegistry::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_protocol_managed::env_registry::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_runtime_host::SqliteEnvRegistry::list_active<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<awaken_protocol_managed::env_registry::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_runtime_host::SqliteEnvRegistry::update<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_protocol_managed::env_registry::EnvUpdate) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_protocol_managed::env_registry::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_runtime_host::ThreadEgress(_)
 impl awaken_runtime_host::ThreadEgress
 pub fn awaken_runtime_host::ThreadEgress::denies(&self, &str) -> bool
@@ -312,18 +285,15 @@ pub fn awaken_runtime_host::block_text(&[awaken_agent_contract::agent::content::
 pub async fn awaken_runtime_host::build_acp_channel_source(awaken_runtime_host::SandboxTier, core::option::Option<&str>, awaken_runtime_host::LaunchSource, awaken_runtime_host::ThreadEgress, awaken_runtime_host::ThreadResources, std::path::PathBuf) -> core::result::Result<alloc::sync::Arc<dyn awaken_run_executor_acp::AgentChannelSource>, alloc::string::String>
 pub fn awaken_runtime_host::commit_ingest_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> axum::routing::Router
 pub fn awaken_runtime_host::consent_router(alloc::sync::Arc<dyn awaken_data_subject::DataSubjectRepo>) -> axum::routing::Router
-pub fn awaken_runtime_host::default_models() -> alloc::vec::Vec<awaken_runtime_host::ModelEntry>
 pub fn awaken_runtime_host::dispatch_transport_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> axum::routing::Router
 pub fn awaken_runtime_host::durable_ops_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> axum::routing::Router
 pub fn awaken_runtime_host::ensure_durable_backend() -> core::result::Result<(), alloc::string::String>
 pub fn awaken_runtime_host::erasure_router(alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::DataSubjectResolver>) -> axum::routing::Router
-pub fn awaken_runtime_host::files_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> axum::routing::Router
 pub fn awaken_runtime_host::init_shared_dispatch_store(alloc::sync::Arc<awaken_run_ingress::any::AnyDispatchStore>)
 pub async fn awaken_runtime_host::init_shared_postgres_commit(&str) -> core::result::Result<(), alloc::string::String>
 pub async fn awaken_runtime_host::init_shared_postgres_dispatch(&str) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_runtime_host::install_capture_sink(alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>)
 pub fn awaken_runtime_host::memory_stores_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> axum::routing::Router
-pub fn awaken_runtime_host::models_router(alloc::sync::Arc<alloc::vec::Vec<awaken_runtime_host::ModelEntry>>) -> axum::routing::Router
 pub fn awaken_runtime_host::platform_plugin_capabilities() -> alloc::vec::Vec<awaken_runtime_contract::capability::PluginCapability>
 pub async fn awaken_runtime_host::resolve_sandbox_tier(awaken_runtime_host::SandboxTier, &std::path::Path) -> core::result::Result<awaken_runtime_host::SandboxTier, alloc::string::String>
 pub fn awaken_runtime_host::skills_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> axum::routing::Router

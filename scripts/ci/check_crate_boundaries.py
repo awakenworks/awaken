@@ -1073,6 +1073,14 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # Extracted managed-agents SERVICE layer: the protocol-neutral SharedHost +
     # the two port adapters (ManagedHost / ProtocolHost) + every host module.
     # server-local composes it; nothing below the agents bucket depends on it.
+    # The per-plane HTTP router adapters (files/models/memory-stores/skills/data-subject):
+    # a driving adapter over the host's public API, extracted from awaken-runtime-host so
+    # the host stays the substrate and the wire surface stays thin (Step 3b).
+    "awaken-managed-routers": {
+        "awaken-runtime-host",
+        "axum",
+        "serde_json",
+    },
     "awaken-runtime-host": {
         "awaken-agent-contract",
         "awaken-runtime-contract",
@@ -1198,6 +1206,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-runtime",
         "awaken-runtime-contract",
         "awaken-runtime-host",
+        "awaken-managed-routers",
         "awaken-server",
         "awaken-tenancy",
         "awaken-tool-relay",
@@ -1218,6 +1227,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-server": {
         "awaken-scenario-host",
         "awaken-runtime-host",
+        "awaken-managed-routers",
         # ADR-0052: the management assistant's descriptors seed the scope-keyed tool
         # catalog, and its executables/ports are wired at assembly.
         "awaken-admin-assistant",

@@ -13,7 +13,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::json;
 
-use crate::host::SharedHost;
+use awaken_runtime_host::SharedHost;
 
 /// Mount the Files API over the host's blob store.
 pub fn files_router(host: Arc<SharedHost>) -> Router {

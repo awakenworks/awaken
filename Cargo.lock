@@ -771,6 +771,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-managed-routers"
+version = "1.0.0-dev"
+dependencies = [
+ "awaken-runtime-host",
+ "axum",
+ "serde_json",
+]
+
+[[package]]
 name = "awaken-mcp-wire"
 version = "0.1.0"
 dependencies = [
@@ -1284,6 +1293,7 @@ dependencies = [
  "awaken-iam-host",
  "awaken-iam-preset",
  "awaken-iam-server",
+ "awaken-managed-routers",
  "awaken-memory-store",
  "awaken-model-catalog",
  "awaken-observability",
@@ -1350,6 +1360,7 @@ dependencies = [
  "awaken-iam-host",
  "awaken-iam-preset",
  "awaken-iam-server",
+ "awaken-managed-routers",
  "awaken-memory-store",
  "awaken-model-catalog",
  "awaken-observability",

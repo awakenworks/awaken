@@ -1,0 +1,15 @@
+[package]
+name = "awaken-managed-routers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# The host substrate these HTTP adapters drive: they call only its public API
+# (`SharedHost` file methods, or nothing at all) — thin driving adapters, not core.
+awaken-runtime-host = { workspace = true }
+axum = { version = "0.8", features = ["multipart"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true

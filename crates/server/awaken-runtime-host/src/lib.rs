@@ -26,7 +26,6 @@ mod deployment_config;
 mod dispatch_backend;
 mod dispatch_transport;
 mod durable_ops;
-mod files;
 mod hand_placement;
 mod host;
 mod hub;
@@ -38,7 +37,6 @@ mod memory;
 mod memory_store_api;
 mod memory_stores;
 mod model_route;
-mod models;
 mod provisioning;
 mod redact;
 mod run_exec;
@@ -88,11 +86,13 @@ pub use crate::host::{HostResume, SharedHost};
 // per-thread egress handle a composition root wires it with.
 pub use crate::data_subject_api::{consent_router, erasure_router, install_capture_sink};
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
+pub use crate::memory_store_api::memory_stores_router;
 pub use crate::redact::PiiRedactor;
 pub use crate::sandbox_source::{
     ContainerChannelSource, LaunchSource, SandboxChannelSource, ThreadEgress, ThreadResources,
     build_acp_channel_source, resolve_sandbox_tier,
 };
+pub use crate::skills_api::skills_router;
 // The config data plane (ADR-0036/slice A): the service + its router + the
 // advertised-tools helper the composition root builds a config host from.
 pub use crate::acp_provision::EnvLaunchResolver;
@@ -119,13 +119,9 @@ pub use crate::dispatch_transport::dispatch_transport_router;
 // The worker HTTP dispatch client now lives in awaken-run-ingress; re-exported so
 // composition roots keep using `awaken_runtime_host::{HttpDispatchQueue, worker_dispatch_store}`.
 pub use crate::durable_ops::durable_ops_router;
-pub use crate::files::files_router;
-pub use crate::memory_store_api::memory_stores_router;
-pub use crate::models::{ModelEntry, default_models, models_router};
 pub use awaken_env_store::{PostgresEnvRegistry, SqliteEnvRegistry};
 // The durable session-repository backends now live in `awaken-session-store` (a
 // stores/ leaf); re-exported so composition roots keep their import paths.
-pub use crate::skills_api::skills_router;
 pub use awaken_run_ingress::{HttpDispatchQueue, worker_dispatch_store};
 pub use awaken_session_store::{PostgresManagedSessionRepository, SqliteManagedSessionRepository};
 // The durable WorkQueue backends now live in `awaken-work-store` (a stores/ leaf);

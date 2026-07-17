@@ -12,6 +12,7 @@ path = "src/main.rs"
 # The extracted service layer: SharedHost / ManagedHost / ProtocolHost and all
 # host modules live here; this bin only composes them into router modes.
 awaken-runtime-host = { workspace = true }
+awaken-managed-routers = { workspace = true }
 awaken-admin-assistant = { workspace = true }
 awaken-tenancy = { workspace = true }
 # Cross-cutting telemetry: the tracing subscriber + OTLP/AWAKEN_TRACE_FILE span
