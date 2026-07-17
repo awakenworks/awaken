@@ -100,6 +100,7 @@ awaken-store-sqlite = { path = "crates/stores/awaken-store-sqlite" }
 awaken-store-postgres = { path = "crates/stores/awaken-store-postgres" }
 awaken-work-store = { path = "crates/stores/awaken-work-store" }
 awaken-session-store = { path = "crates/stores/awaken-session-store" }
+awaken-env-store = { path = "crates/stores/awaken-env-store" }
 awaken-config-store = { path = "crates/control/awaken-config-store" }
 awaken-config-service = { path = "crates/control/awaken-config-service" }
 awaken-provisioning-contract = { path = "crates/contract/awaken-provisioning-contract" }
@@ -115,6 +116,7 @@ awaken-runtime-examples = { path = "crates/devtools/awaken-runtime-examples" }
 awaken-dispatch-contract = { path = "crates/contract/awaken-dispatch-contract" }
 awaken-dispatch = { path = "crates/server/awaken-dispatch" }
 awaken-session-executor = { path = "crates/server/awaken-session-executor" }
+awaken-managed-routers = { path = "crates/server/awaken-managed-routers" }
 awaken-admin-assistant = { path = "crates/control/awaken-admin-assistant" }
 awaken-server = { path = "crates/server/awaken-server" }
 awaken-scenario-host = { path = "crates/devtools/awaken-scenario-host" }

@@ -12,6 +12,7 @@
 //! until they are flipped to depend on this crate directly.
 
 mod agent_config;
+pub mod env_registry;
 mod lifecycle;
 mod mcp_binding;
 mod mcp_probe;

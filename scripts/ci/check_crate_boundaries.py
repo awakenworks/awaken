@@ -634,6 +634,20 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "tokio",
     },
+    # Durable EnvRegistry backend (the self-hosted environment registry): sqlite +
+    # postgres at parity, implementing the session contract's env-registry port.
+    # Extracted from awaken-session-executor so the host stays lean (Step 3b).
+    "awaken-env-store": {
+        "awaken-session-contract",
+        "awaken-scoped-migration",
+        "awaken-scoped-migration-sqlite",
+        "async-trait",
+        "rusqlite",
+        "sqlx",
+        "serde_json",
+        "tokio",
+        "tempfile",
+    },
     # Durable ManagedSessionRepository backend (the managed session aggregate): sqlite +
     # postgres at parity, implementing the session contract's repository port. Extracted
     # from awaken-session-executor so the host stays lean (Step 3b).
@@ -1059,6 +1073,14 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # Extracted managed-agents SERVICE layer: the protocol-neutral SharedHost +
     # the two port adapters (ManagedHost / ProtocolHost) + every host module.
     # server-local composes it; nothing below the agents bucket depends on it.
+    # The per-plane HTTP router adapters (files/models/memory-stores/skills/data-subject):
+    # a driving adapter over the host's public API, extracted from awaken-session-executor so
+    # the host stays the substrate and the wire surface stays thin (Step 3b).
+    "awaken-managed-routers": {
+        "awaken-session-executor",
+        "axum",
+        "serde_json",
+    },
     "awaken-session-executor": {
         "awaken-agent-contract",
         "awaken-runtime-contract",
@@ -1102,6 +1124,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-store-postgres",
         "awaken-work-store",
         "awaken-session-store",
+        "awaken-env-store",
         "awaken-config-store",
         # The config-authoring plane, extracted to a shared crate; the host re-exports
         # it (config service + routers + resolver + tool catalog) for the composition
@@ -1183,6 +1206,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-runtime",
         "awaken-runtime-contract",
         "awaken-session-executor",
+        "awaken-managed-routers",
         "awaken-server",
         "awaken-tenancy",
         "awaken-tool-relay",
@@ -1203,6 +1227,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-server": {
         "awaken-scenario-host",
         "awaken-session-executor",
+        "awaken-managed-routers",
         # ADR-0052: the management assistant's descriptors seed the scope-keyed tool
         # catalog, and its executables/ports are wired at assembly.
         "awaken-admin-assistant",
