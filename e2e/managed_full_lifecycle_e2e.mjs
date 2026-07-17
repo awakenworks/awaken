@@ -159,10 +159,13 @@ async function main() {
       // vault-materialized bearer, and reports the sum.
       await send(client, session.id, 'add 2 3');
       let events = await listEvents(client, session.id);
-      const toolUse = events.find((e) => e.type === 'agent.tool_use');
-      assert.ok(toolUse, `an agent.tool_use event (types: ${events.map((e) => e.type)})`);
+      // An MCP tool (`mcp__server__tool`) projects as the DISTINCT `agent.mcp_tool_use`
+      // / `agent.mcp_tool_result` events, not the built-in `agent.tool_use` — the wire
+      // distinguishes a host-executed MCP call from a built-in one by the `mcp__` name.
+      const toolUse = events.find((e) => e.type === 'agent.mcp_tool_use');
+      assert.ok(toolUse, `an agent.mcp_tool_use event (types: ${events.map((e) => e.type)})`);
       assert.equal(toolUse.name, 'mcp__calc__add');
-      const toolResult = events.find((e) => e.type === 'agent.tool_result');
+      const toolResult = events.find((e) => e.type === 'agent.mcp_tool_result');
       assert.equal(toolResult.content[0].text, '5');
       assert.ok(agentMessages(events).some((m) => m.includes('result: 5')), 'final message reports result: 5');
       pass('run turn 1: add 2 3 -> mcp__calc__add -> tool_result 5 -> "result: 5"');
