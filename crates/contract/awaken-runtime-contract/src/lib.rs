@@ -32,8 +32,8 @@ pub use capture::{CaptureDecision, ContentCapture, ContentKind, ContentRedactor,
 pub use catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 pub use control::LiveRunControl;
 pub use data_subject::{
-    CaptureSink, ContentEraser, DataSubjectId, DataSubjectResolver, ErasureReceipt, NullResolver,
-    Purpose,
+    CaptureSink, ContentEraser, DataSubjectId, DataSubjectResolver, ErasureError, ErasureReceipt,
+    NullResolver, Purpose,
 };
 pub use execution::{Cancellation, ExecutorCapabilities, RunExecutor, Wait};
 pub use live_inbox::{LiveInbox, LiveInboxMessage, LiveInboxMessageId};
