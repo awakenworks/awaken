@@ -18,11 +18,13 @@ use crate::ext::AwakenModelSelection;
 use crate::preview::PreviewSink;
 use crate::project::{self, project_messages, project_step};
 use crate::routes::vaults::VaultState;
-use crate::session_repo::{InMemorySessionRepository, ManagedSessionRepository, PersistedSession};
 use crate::types::{
     ConfirmResult, Event, EventReceipt, InboundEvent, ListEventsResponse, ModelConfig,
     ModelOverride, OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent,
     SessionCreateParams, SessionError, SessionStats, StopReason, StreamFrame, Usage,
+};
+use awaken_session_contract::{
+    InMemorySessionRepository, ManagedSessionRepository, PersistedSession,
 };
 
 /// The seeded owner scope a bare/self-hosted session is created under when the
