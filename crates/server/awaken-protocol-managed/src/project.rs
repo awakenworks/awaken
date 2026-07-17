@@ -13,7 +13,7 @@ use awaken_agent_contract::event::{
     Fact, ToolDisposition, Transcoder, fold_messages as fold, terminal_waiting,
 };
 
-use crate::state::{AgentCapabilities, CustomTool, OutcomeIteration};
+use crate::state::{AgentCapabilities, CustomTool, OutcomeIteration, Terminus};
 use crate::types::{OutboundKind, StopReason};
 
 /// Reserved MCP tool-name prefix — a custom tool may not claim it.
@@ -330,7 +330,7 @@ pub fn project_messages(
 /// pending tool's id populates `requires_action.event_ids`.
 pub fn project_step(
     messages: &[awaken_agent_contract::agent::message::Message],
-    stop: StopReason,
+    stop: Terminus,
     pending: Option<(&str, bool)>,
 ) -> Vec<ProjectedEvent> {
     let mut events = fold(messages, pending);
@@ -338,13 +338,14 @@ pub fn project_step(
     ManagedEncoder::default().transcode_facts(&events)
 }
 
-/// The neutral terminal event for a Managed `stop_reason`. `RequiresAction`'s
-/// event ids are refilled from the pending tool.
-fn terminal_event(stop: StopReason, pending: Option<(&str, bool)>) -> Fact {
+/// The neutral terminal fact for a step's [`Terminus`]. `Parked`'s event ids are
+/// refilled from the pending tool; the encoder then re-derives the wire
+/// `stop_reason` from this fact, so the wire shape is unchanged.
+fn terminal_event(stop: Terminus, pending: Option<(&str, bool)>) -> Fact {
     match stop {
-        StopReason::RequiresAction { .. } => terminal_waiting(pending.map(|p| p.0)),
-        StopReason::RetriesExhausted => Fact::RunFinished { exhausted: true },
-        StopReason::EndTurn => Fact::RunFinished { exhausted: false },
+        Terminus::Parked => terminal_waiting(pending.map(|p| p.0)),
+        Terminus::Exhausted => Fact::RunFinished { exhausted: true },
+        Terminus::End => Fact::RunFinished { exhausted: false },
     }
 }
 

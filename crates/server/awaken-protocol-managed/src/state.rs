@@ -57,7 +57,7 @@ pub(crate) use resource::{parse_session_resource, resource_dto};
 pub use types::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, McpServerBinding, OutcomeIteration, OutcomeReport, Pending, RunError,
-    RunErrorKind, SessionInit, SessionRuntime, SessionUsage, StepFailure, StepOutcome,
+    RunErrorKind, SessionInit, SessionRuntime, SessionUsage, StepFailure, StepOutcome, Terminus,
 };
 
 struct SessionRecord {

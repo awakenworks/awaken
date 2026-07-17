@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
-use awaken_protocol_managed::types::StopReason;
+use awaken_protocol_managed::Terminus;
 use awaken_protocol_managed::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, ManagedState, OutcomeIteration,
     OutcomeReport, Pending, RunError, RunErrorKind, SessionRuntime, StepOutcome, router,
@@ -76,7 +76,7 @@ impl SessionRuntime for EchoFake {
                 Role::Assistant,
                 format!("echo: {user_text}"),
             )],
-            stop: StopReason::EndTurn,
+            stop: Terminus::End,
             pending: None,
             compacted: false,
             rescheduled: false,
@@ -464,9 +464,7 @@ impl SessionRuntime for ParkingFake {
                     input: serde_json::json!({ "path": "x.txt", "content": "hi" }),
                 }],
             }],
-            stop: StopReason::RequiresAction {
-                event_ids: Vec::new(),
-            },
+            stop: Terminus::Parked,
             pending: Some(Pending {
                 tool_use_id: "call-1".into(),
                 name: "write".into(),
@@ -497,7 +495,7 @@ impl SessionRuntime for ParkingFake {
                 },
                 Message::text(Id("a2".into()), Role::Assistant, "done"),
             ],
-            stop: StopReason::EndTurn,
+            stop: Terminus::End,
             pending: None,
             compacted: false,
             rescheduled: false,
@@ -764,9 +762,7 @@ impl SessionRuntime for CustomToolFake {
                     input: serde_json::json!({ "question": "6x7" }),
                 }],
             }],
-            stop: StopReason::RequiresAction {
-                event_ids: Vec::new(),
-            },
+            stop: Terminus::Parked,
             pending: Some(Pending {
                 tool_use_id: "cc1".into(),
                 name: "submit_answer".into(),
@@ -800,7 +796,7 @@ impl SessionRuntime for CustomToolFake {
                 },
                 Message::text(Id("a2".into()), Role::Assistant, format!("got: {content}")),
             ],
-            stop: StopReason::EndTurn,
+            stop: Terminus::End,
             pending: None,
             compacted: false,
             rescheduled: false,
@@ -1102,7 +1098,7 @@ impl SessionRuntime for InterruptRedirectFake {
                 Role::Assistant,
                 format!("on it: {text}"),
             )],
-            stop: StopReason::EndTurn,
+            stop: Terminus::End,
             pending: None,
             compacted: false,
             rescheduled: false,

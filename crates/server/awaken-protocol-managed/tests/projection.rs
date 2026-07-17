@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
-use awaken_protocol_managed::types::StopReason;
+use awaken_protocol_managed::Terminus;
 use awaken_protocol_managed::{
     Decision, ManagedState, OutcomeReport, RunError, SessionRuntime, SessionUsage, StepFailure,
     StepOutcome, router,
@@ -182,7 +182,7 @@ async fn a_terminal_run_fault_projects_session_error_before_idle() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
         StepOutcome {
             messages: vec![assistant_text("a", "partial work")],
-            stop: StopReason::EndTurn,
+            stop: Terminus::End,
             pending: None,
             compacted: false,
             rescheduled: false,
@@ -237,7 +237,7 @@ async fn a_classified_fault_projects_the_matching_sdk_error_variant() {
         let app = router(Arc::new(ManagedState::new(ScriptFake::new(move || {
             StepOutcome {
                 messages: vec![assistant_text("a", "partial")],
-                stop: StopReason::EndTurn,
+                stop: Terminus::End,
                 pending: None,
                 compacted: false,
                 rescheduled: false,
@@ -273,7 +273,7 @@ async fn a_rescheduled_turn_projects_the_rescheduled_status() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
         StepOutcome {
             messages: vec![assistant_text("a", "after a retry")],
-            stop: StopReason::EndTurn,
+            stop: Terminus::End,
             pending: None,
             compacted: false,
             rescheduled: true,
@@ -304,7 +304,7 @@ async fn a_compacted_turn_projects_the_compaction_marker() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
         StepOutcome {
             messages: vec![assistant_text("a", "after compaction")],
-            stop: StopReason::EndTurn,
+            stop: Terminus::End,
             pending: None,
             compacted: true,
             rescheduled: false,
@@ -349,7 +349,7 @@ async fn session_usage_reflects_the_runtime_tally() {
     let app = router(Arc::new(ManagedState::new(
         ScriptFake::new(|| StepOutcome {
             messages: vec![assistant_text("a", "hi")],
-            stop: StopReason::EndTurn,
+            stop: Terminus::End,
             pending: None,
             compacted: false,
             rescheduled: false,
@@ -394,7 +394,7 @@ async fn an_all_empty_text_assistant_message_is_dropped() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
         StepOutcome {
             messages: vec![assistant_text("a", "")],
-            stop: StopReason::EndTurn,
+            stop: Terminus::End,
             pending: None,
             compacted: false,
             rescheduled: false,
@@ -446,7 +446,7 @@ async fn an_mcp_tool_call_projects_mcp_events() {
                     }],
                 ),
             ],
-            stop: StopReason::EndTurn,
+            stop: Terminus::End,
             pending: None,
             compacted: false,
             rescheduled: false,
@@ -493,7 +493,7 @@ async fn a_retries_exhausted_turn_idles_with_that_stop_reason() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
         StepOutcome {
             messages: vec![assistant_text("a", "gave up")],
-            stop: StopReason::RetriesExhausted,
+            stop: Terminus::Exhausted,
             pending: None,
             compacted: false,
             rescheduled: false,
@@ -545,7 +545,7 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
                     }],
                 ),
             ],
-            stop: StopReason::EndTurn,
+            stop: Terminus::End,
             pending: None,
             compacted: false,
             rescheduled: false,
@@ -622,7 +622,7 @@ async fn updating_a_session_commits_a_session_updated_event() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
         StepOutcome {
             messages: vec![assistant_text("a", "hi")],
-            stop: StopReason::EndTurn,
+            stop: Terminus::End,
             pending: None,
             compacted: false,
             rescheduled: false,
@@ -659,7 +659,7 @@ async fn archiving_commits_a_terminal_event_and_fences_writes() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
         StepOutcome {
             messages: vec![assistant_text("a", "hi")],
-            stop: StopReason::EndTurn,
+            stop: Terminus::End,
             pending: None,
             compacted: false,
             rescheduled: false,

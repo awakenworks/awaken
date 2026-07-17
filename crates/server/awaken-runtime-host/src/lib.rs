@@ -65,7 +65,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Phase};
-use awaken_protocol_managed::types::StopReason;
+use awaken_protocol_managed::Terminus;
 use awaken_protocol_managed::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, OutcomeIteration, OutcomeReport, Pending, RunError, SessionRuntime,
@@ -175,16 +175,14 @@ fn to_run_error(err: HostError) -> RunError {
 
 /// Map a neutral terminal phase to the Managed idle `stop_reason`. `RequiresAction`
 /// carries no event ids here; the projection refills them from the pending tool.
-fn phase_to_stop(phase: &Phase) -> StopReason {
+fn phase_to_terminus(phase: &Phase) -> Terminus {
     match phase {
-        Phase::Waiting => StopReason::RequiresAction {
-            event_ids: Vec::new(),
-        },
+        Phase::Waiting => Terminus::Parked,
         // A step ceiling or a terminal fault both mean the run gave up rather than
-        // ending naturally — `retries_exhausted` (the fault also projects a
-        // `session.error`; the idle carries the exhausted stop reason).
-        Phase::Ended(EndCause::MaxSteps | EndCause::Error(_)) => StopReason::RetriesExhausted,
-        _ => StopReason::EndTurn,
+        // ending naturally — `Exhausted` (the fault also projects a `session.error`;
+        // the idle carries the exhausted stop reason).
+        Phase::Ended(EndCause::MaxSteps | EndCause::Error(_)) => Terminus::Exhausted,
+        _ => Terminus::End,
     }
 }
 
@@ -208,7 +206,7 @@ fn to_step_outcome(result: RunResult) -> StepOutcome {
         _ => None,
     };
     StepOutcome {
-        stop: phase_to_stop(&result.phase),
+        stop: phase_to_terminus(&result.phase),
         messages: result.new_messages,
         pending: to_pending(result.pending),
         compacted: result.compacted,
