@@ -15,6 +15,8 @@
 #                                       |                  | deny_egress confines (net UP vs DOWN)
 #   G5 cgroup enforcement               | real docker      | mem-cap -> OOM 137 ; uncapped -> 0 (boundary)
 #   G2 SPOF adopt                       | real docker      | peer re-adopts live handle ; gone -> fail closed
+#   G6 warm pool (cold-start + reuse)    | real docker      | pre-warm -> hand out over wire ; mount bypasses ;
+#                                        | + rust unit      | pool_key shape-match/boundary (mount -> None)
 #   G1 k8s pod tier                     | real k3d         | pod lifecycle ; agent-over-wire port-forward ;
 #                                       |                  | ConfigMap volume ; blob-source file ; binary data
 #   G7 memoryd FUSE write-through       | /dev/fuse host   | read/write/rename/persist-across-remount ;
@@ -53,9 +55,15 @@ fi
 step "G1/G5/G2/G3 container tier against a real Docker daemon"
 if docker info >/dev/null 2>&1; then
   docker image inspect busybox:latest >/dev/null 2>&1 || docker pull busybox:latest >/dev/null
-  for t in docker_it docker_e2e pairwise_docker; do
+  for t in docker_it docker_e2e pairwise_docker pool_docker hand_docker; do
     run "docker:$t" cargo test -q -p awaken-sandbox-container --features docker --test "$t"
   done
+  # The awaken-sandbox acp bridge as a real container ENTRYPOINT (the production image
+  # shape: ENTRYPOINT=bridge, Cmd=CLI argv).
+  run "docker:acp-bridge-smoke" bash deploy/images/sandbox/smoke.sh
+  # C5: the real hand runs a real tool in a --network none container over the unix
+  # rendezvous, driven by a host brain speaking the hand wire.
+  run "docker:hand-in-container" bash deploy/images/sandbox/hand-smoke.sh
 else
   skip "no reachable Docker daemon"
 fi
@@ -93,6 +101,19 @@ if [ -e /dev/fuse ] && { command -v fusermount >/dev/null || command -v fusermou
   run "sandbox-local memory_mount" cargo test -q -p awaken-sandbox-local --test memory_mount
 else
   skip "/dev/fuse or fusermount unavailable (copy fallback path is the alternative)"
+fi
+
+# ── Optional: line-coverage of the pure-Rust sandbox-change surface (COVERAGE=1) ─
+# The container/k8s/FUSE layers are integration-tested against real substrates
+# (measured by their own runs); this reports the lib-testable dispose surface.
+if [ "${COVERAGE:-0}" = 1 ] && command -v cargo-llvm-cov >/dev/null; then
+  step "line coverage — dispose surface (awaken-protocol-managed + awaken-session-executor)"
+  CARGO_TARGET_DIR="${COV_DIR:-/tmp/awaken-sbx-cov}" \
+    cargo llvm-cov --lib -p awaken-protocol-managed -p awaken-session-executor \
+      --summary-only 2>/dev/null | tail -1
+  echo "  (uncovered in the change surface: state/sessions.rs child-thread teardown"
+  echo "   loop body — no sub-agent child threads in deterministic unit tests; the"
+  echo "   {id}:thread:{n} id scheme is validated by the events projection.)"
 fi
 
 printf '\n=== SUMMARY: %d passed, %d skipped, %d failed ===\n' "$PASS" "$SKIP" "$FAIL"

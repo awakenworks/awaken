@@ -63,3 +63,34 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
     // Teardown deletes the Pod.
     rt.remove(&id).await.expect("delete the Pod");
 }
+
+/// C6: a `pids`-limited spec must FAIL CLOSED on the k8s tier (k8s has no per-Pod pids
+/// field), rather than be placed with the cap silently dropped. Verified against the
+/// real apiserver: create returns an error and creates no Pod.
+#[tokio::test]
+async fn create_fails_closed_on_a_pids_limit_k8s_cannot_enforce() {
+    let addr = "127.0.0.1:8080".parse().unwrap();
+    let Ok(rt) = K8sRuntime::connect("default", addr).await else {
+        eprintln!("skipping: no kube client");
+        return;
+    };
+    if rt.ping().await.is_err() {
+        eprintln!("skipping: kube apiserver unreachable");
+        return;
+    }
+    let mut p = plan(&["sleep", "5"]);
+    p.limits = pc::ResourceLimits {
+        pids: Some(64),
+        ..Default::default()
+    };
+    let err = rt
+        .create("pids-reject", &p)
+        .await
+        .expect_err("a pids-limited spec must fail closed on k8s, not silently drop the cap");
+    assert!(
+        format!("{err}").contains("pids"),
+        "the error names the unenforceable limit: {err}"
+    );
+    // Fail-closed BEFORE the Pod: nothing was created to clean up.
+    assert!(rt.inspect("pids-reject").await.is_err());
+}

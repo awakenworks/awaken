@@ -766,6 +766,45 @@ fn container_image(image: Option<&str>) -> Result<String, String> {
         .ok_or_else(|| "a container sandbox tier requires AWAKEN_CONTAINER_IMAGE".to_string())
 }
 
+/// The warm-pool size from `AWAKEN_SANDBOX_WARM_POOL` (default 0 = disabled). A
+/// deployment opts into pre-provisioned reusable container capacity (cutting
+/// cold-start latency for mount-less agent sessions) by setting it > 0.
+#[cfg(any(
+    feature = "container-docker",
+    feature = "container-podman",
+    feature = "container-k8s"
+))]
+fn warm_pool_size() -> usize {
+    std::env::var("AWAKEN_SANDBOX_WARM_POOL")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+}
+
+/// Route a concrete [`ContainerProvider`] through a [`WarmContainerPool`] when a warm
+/// size is configured; otherwise pass it straight through. Either way the result is
+/// an [`AgentContainerProvider`], so the container source is unchanged. The pool fills
+/// lazily (replenishes after the first session of a shape), so no capacity is
+/// provisioned until a shape is actually used.
+#[cfg(any(
+    feature = "container-docker",
+    feature = "container-podman",
+    feature = "container-k8s"
+))]
+fn warm_wrap<R: awaken_sandbox_container::ContainerRuntime + 'static>(
+    provider: awaken_sandbox_container::ContainerProvider<R>,
+) -> Arc<dyn AgentContainerProvider> {
+    let size = warm_pool_size();
+    if size > 0 {
+        Arc::new(awaken_sandbox_container::WarmContainerPool::new(
+            Arc::new(provider),
+            size,
+        ))
+    } else {
+        Arc::new(provider)
+    }
+}
+
 /// Wrap a worker-configured [`AgentContainerProvider`] into a [`ContainerChannelSource`].
 #[cfg(any(
     feature = "container-docker",
@@ -800,7 +839,7 @@ fn build_docker_source(
         container_image(image)?,
     );
     Ok(container_source(
-        Arc::new(provider),
+        warm_wrap(provider),
         source,
         egress,
         resources,
@@ -830,7 +869,7 @@ fn build_podman_source(
         container_image(image)?,
     );
     Ok(container_source(
-        Arc::new(provider),
+        warm_wrap(provider),
         source,
         egress,
         resources,
@@ -872,7 +911,7 @@ async fn build_k8s_source(
         container_image(image)?,
     );
     Ok(container_source(
-        Arc::new(provider),
+        warm_wrap(provider),
         source,
         egress,
         resources,

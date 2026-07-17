@@ -1,0 +1,7 @@
+# Minimal image to SMOKE-TEST the awaken-sandbox acp bridge as a real container
+# entrypoint (no ACP CLIs — the fake CLI is the container Cmd). ubuntu:24.04 matches
+# the host glibc so the host-built binary runs. Not a production image; see Dockerfile.
+FROM ubuntu:24.04
+ARG BIN=target/release/awaken-sandbox
+COPY ${BIN} /usr/local/bin/awaken-sandbox
+ENTRYPOINT ["/usr/local/bin/awaken-sandbox", "acp", "--listen", "0.0.0.0:8080"]
