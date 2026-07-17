@@ -466,6 +466,17 @@ impl SessionRuntime for ManagedHost {
         self.host.has_durable_thread(thread)
     }
 
+    async fn end_session(&self, thread: &str) -> Result<(), RunError> {
+        // Terminal edge (managed session delete/archive): flush in-sandbox memory
+        // edits and run-authored skills back to durable truth while the sandbox is
+        // still live, then evict the cached context and dispose the sandbox (shred
+        // secrets, reap the workspace). Mirrors the evict-rebuild harvest, but this
+        // edge REAPS the workspace rather than reusing it — the session is over.
+        self.host.harvest_thread_memory(thread).await;
+        self.host.harvest_thread_skills(thread).await;
+        self.host.end_session(thread).await.map_err(to_run_error)
+    }
+
     async fn run(
         &self,
         agent: &str,

@@ -1578,3 +1578,67 @@ async fn supersede_run_without_durable_ingress_fails_closed() {
         err.message
     );
 }
+
+/// A terminal session end (managed session delete/archive) disposes the thread's
+/// sandbox — the ONLY place it is reaped. Proven end-to-end through the
+/// `SessionRuntime` port (`ManagedHost::end_session`): the cached ctx is evicted
+/// AND the live sandbox's workspace dir is actually reaped (its `status` flips
+/// `Ready` → `Terminated`), unlike the evict-to-rebuild edges (attach/detach/
+/// rebind) which keep the per-thread workspace so the next turn reuses it.
+#[tokio::test]
+async fn end_session_disposes_the_threads_sandbox() {
+    use awaken_protocol_managed::SessionRuntime;
+    use awaken_provisioning_contract::{Sandbox, SandboxStatus};
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let managed = crate::ManagedHost::new(host.clone());
+
+    // A first turn builds + caches the thread's sandbox.
+    host.run(
+        None,
+        "t-end",
+        vec![Message::text(MessageId("hi".into()), Role::User, "hi")],
+    )
+    .await
+    .expect("first turn");
+    // Hold the live sandbox handle before teardown so we can observe its disposal
+    // even after the ctx is evicted from the registry.
+    let env = host
+        .sessions
+        .lock()
+        .await
+        .get("t-end")
+        .expect("the first turn caches the thread's sandbox ctx")
+        .env
+        .clone();
+    assert_eq!(
+        Sandbox::status(&*env).await.expect("status"),
+        SandboxStatus::Ready,
+        "the sandbox workspace exists while the session is live"
+    );
+
+    // End the session at the terminal edge.
+    managed.end_session("t-end").await.expect("end_session");
+
+    // The cached ctx is evicted ...
+    assert!(
+        !host.sessions.lock().await.contains_key("t-end"),
+        "end_session evicts the cached ctx"
+    );
+    // ... and the sandbox is ACTUALLY disposed: its workspace dir was reaped, so a
+    // subsequent status reports Terminated (proving dispose ran, not just an evict).
+    assert_eq!(
+        Sandbox::status(&*env).await.expect("status"),
+        SandboxStatus::Terminated,
+        "end_session disposes the sandbox (workspace reaped), unlike an evict-rebuild"
+    );
+
+    // Idempotent: ending an already-ended or never-created session is a clean no-op.
+    managed
+        .end_session("t-end")
+        .await
+        .expect("end_session is idempotent");
+    managed
+        .end_session("never-existed")
+        .await
+        .expect("end_session is a no-op for an unknown thread");
+}
