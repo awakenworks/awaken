@@ -55,11 +55,15 @@ async function scrape() {
   return res.text();
 }
 
-// Parse a single `<name> <value>` sample out of Prometheus text.
+// Parse a single sample out of Prometheus text. The OTel exporter appends scope
+// labels (`name{otel_scope_name="awaken-brain"} <value>`), so match the metric name
+// with optional `{...}` and read the value after the final space.
 function gauge(text, name) {
-  const line = text.split('\n').find((l) => l.startsWith(`${name} `));
+  const line = text
+    .split('\n')
+    .find((l) => l.startsWith(`${name} `) || l.startsWith(`${name}{`));
   assert.ok(line, `metric ${name} not present in /metrics:\n${text}`);
-  const v = Number(line.slice(name.length + 1).trim());
+  const v = Number(line.slice(line.lastIndexOf(' ') + 1).trim());
   assert.ok(Number.isFinite(v), `metric ${name} not a number: ${line}`);
   return { line, v };
 }

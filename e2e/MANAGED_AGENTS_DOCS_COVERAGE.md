@@ -136,25 +136,28 @@ KIMI — it targets the real Anthropic **Managed Agents** API (`/v1/sessions`), 
 does not expose (KIMI is a plain Anthropic-dialect `/messages` endpoint; the smoke 404s);
 it needs a genuine Anthropic Managed key.
 
-### Finding: `agent.thinking` is dropped even when the provider emits reasoning
+### ✅ Fixed: `agent.thinking` now surfaces from provider reasoning
 
-Real-LLM testing **disproves** the prior deferral premise ("providers emit no
-ReasoningDelta"): KIMI's raw `/messages` returns `thinking` content blocks, yet awaken's
-managed session surfaces **no** `agent.thinking` event (the answer is still correct). Root
-cause, verified in source:
+Real-LLM testing disproved the prior deferral premise ("providers emit no reasoning"):
+KIMI's raw `/messages` returns `thinking` blocks, and awaken now surfaces them as the
+`agent.thinking` marker. Implemented end to end (commit `2d16905ce`):
 
-1. `awaken-provider-genai/src/lib.rs::map_assistant_output` keeps only `ContentPart::Text`
-   and `ContentPart::ToolCall` — `_ => None` drops any reasoning part.
-2. The request never sets genai's `ChatOptions.capture_reasoning_content = true`.
-3. `awaken-runtime-contract` has no Thinking/Reasoning `ContentBlock` variant, so there is
-   nowhere in the neutral vocabulary to carry reasoning.
+1. `awaken-provider-genai`: enable genai's `capture_reasoning_content`; accumulate
+   `ReasoningChunk` + `StreamEnd.captured_reasoning_content`; fold it into a leading
+   `ContentBlock::Thinking` (reasoning is never replayed to the provider as input).
+2. `awaken-agent-contract`: add `ContentBlock::Thinking` (ignored by `extract_text`) and a
+   contentless `Fact::AssistantThinking`; the fold emits the marker when a `Thinking` block
+   is present; `classify` treats it as message-tier truth.
+3. `awaken-protocol-managed`: transcode `Fact::AssistantThinking` → `OutboundKind::AgentThinking {}`
+   — the SDK's `BetaManagedAgentsAgentThinkingEvent` is `{id, processed_at, type}` with **no
+   content**, so the reasoning text stays off the answer wire. AI-SDK / AG-UI drop the marker
+   (not in their vocabulary).
 
-This is a real gap but a **multi-layer feature**, not a bug-fix: enabling
-`capture_reasoning_content` + mapping the reasoning part + adding a contract Thinking block
-+ engine Fact projection + the (already-present placeholder) `agent.thinking` `OutboundKind`
-emission + a golden rebless. It touches a base contract and the conformance golden gate, so
-it is scoped as a focused follow-up rather than rushed. `agent.thinking` remains correctly a
-▲ (implemented-as-type, not emitted) — now with a provider that proves it can be sourced.
+Validated live: `managed_real_thinking_e2e` (KIMI) asserts the contentless marker precedes
+the answer and no reasoning text leaks. **No regression**: echo mode produces no reasoning →
+no marker → the serde golden and all deterministic suites are unchanged. Blast radius was
+small (base-enum additions rippled to only a handful of `_`-less matches). This moves
+`agent.thinking` from ▲ to ✅.
 
 ## Coverage tracking
 
@@ -162,13 +165,18 @@ it is scoped as a focused follow-up rather than rushed. `agent.thinking` remains
   serde golden vs the installed SDK. Green.
 - **Behavioral coverage**: the ~170 `*_e2e.mjs` suites, +3 this pass (104 in the default
   `test` script; the management surface in `test:extended`). **Cumulative run of the default
-  suite (each suite spawned independently): 100 pass / 4 fail / 104.** The 3 new suites pass.
-  The 4 failures are pre-existing in subsystems untouched by this work and unrelated to the
-  docs-coverage or layout changes: `managed_git_repo_e2e` + `managed_full_chain_e2e` (the
-  ADR-0038 host-side clone / push-back / harvest path) and `durable_worker_metrics_e2e` +
-  `brain_drain_e2e` (missing `/metrics` gauges). They appear only in the full `test` script,
-  not in any CI subset (`test:management`/`extended`/`protocols`/`xservice`), so they have
-  been ungated + red independent of this pass.
+  suite (each suite spawned independently): 104 pass / 0 fail / 104** — the whole deterministic
+  suite is green. The 4 formerly-failing suites were fixed (they were real gaps, not
+  environmental):
+  - `managed_git_repo_e2e` + `managed_full_chain_e2e` — ADR-0038's `push_repo_at` pushes only
+    what the agent *committed*, but the fake-upstream scripts wrote the repo file without a
+    commit → nothing to push. Fixed: the scripted agent now runs a `bash` commit in the jail
+    before harvest.
+  - `durable_worker_metrics_e2e` + `brain_drain_e2e` — `awaken-scenario-host` never registered
+    the `awaken_brain_active_streams` gauge (parity gap vs the real `awaken` binary), the
+    `awaken_brain_draining` gauge was never implemented (drain state was `/readyz`-only), and
+    the test parser didn't handle OTel's `{otel_scope_name=...}` labels. Fixed: register both
+    gauges in the shared `register_active_streams_gauge`; tolerant Prometheus parsing.
 - **Rust line/region coverage attributable to the e2e**: `bash e2e/coverage.sh` (instruments
   `awaken-server`/`awaken` via `cargo llvm-cov`, drives the full suite, reports *overall* and
   *e2e-surface* figures). Run on demand — it does a dedicated instrumented build.

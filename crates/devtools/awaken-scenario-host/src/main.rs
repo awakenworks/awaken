@@ -107,7 +107,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Brain admin surface (ADR-0022 D7): the connection-count metric that KEDA
     // autoscales on, plus /admin/drain + /readyz for graceful, stream-preserving
     // scale-in. Wraps the served router so the in-flight counter sees every request.
-    let app = awaken_cli::with_brain_admin(app, awaken_cli::DrainController::new());
+    let ctrl = awaken_cli::DrainController::new();
+    // Register the connection-load gauge on the global OTel meter so `/metrics`
+    // exposes `awaken_brain_active_streams` (the KEDA autoscale signal), matching the
+    // production `awaken` binary. Held for the process lifetime so the callback stays
+    // live — without this the drain/metrics e2e see the gauge missing.
+    let _active_streams_gauge = awaken_cli::register_active_streams_gauge(ctrl.clone());
+    let app = awaken_cli::with_brain_admin(app, ctrl);
     // Root every request span in the ingress middleware (extracts the inbound
     // `traceparent`); the whole direct request→inference path nests under it.
     let app = app.layer(axum::middleware::from_fn(awaken_observability::trace_http));
