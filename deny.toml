@@ -83,6 +83,9 @@ wrappers = [
     "awaken-webhook-managed",
     # Stage A: the test-only scenario host carries the e2e mocks + fixtures.
     "awaken-scenario-host",
+    # The neutral session-runtime ports: agent-domain value objects (RedactedString
+    # etc.) appear in the port signatures. A contract/ leaf above the base contract.
+    "awaken-session-contract",
 ]
 reason = "base contract; nothing may pull it upward (no downward dep of its own)"
 
