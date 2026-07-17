@@ -208,7 +208,7 @@ async fn postgres_list_published_warm_load_same_agent_reloads_the_full_set() {
     store.put_publication_scoped(&a, &v3).await.expect("v3");
 
     let listed = store.list_published_scoped(&a).await.expect("list");
-    // Deterministic: every published row of the agent is reloaded (set parity with sqlite).
+    // Every published row of the agent is reloaded (set parity with sqlite).
     let got: std::collections::BTreeSet<String> =
         listed.iter().map(|p| p.fingerprint.clone()).collect();
     let want: std::collections::BTreeSet<String> = [
@@ -220,11 +220,20 @@ async fn postgres_list_published_warm_load_same_agent_reloads_the_full_set() {
     .collect();
     assert_eq!(got, want, "pg must reload every published row of the agent");
 
-    // KNOWN BUG (adjudicate): list_published_scoped pg tie-break non-determinism vs sqlite rowid
-    // Postgres `ORDER BY created_at ASC` has no secondary key, so rows sharing a `created_at`
-    // (same-instant inserts) come back in an UNDEFINED relative order. The "latest publication
-    // per agent" that a warm-load derives is therefore NOT deterministic on pg the way sqlite's
-    // `rowid ASC` makes it. We assert only the order-insensitive set here, characterizing (not
-    // fixing) the parity hole; a fix would add a monotonic tie-break (e.g. a serial column) to
-    // the pg ORDER BY so warm-load's latest-per-agent matches sqlite.
+    // Deterministic tie-break: the monotonic `seq` identity column (migration V0005)
+    // gives Postgres a total insertion order — `ORDER BY created_at ASC, seq ASC` —
+    // even when same-instant inserts share a `created_at`. So the list comes back in
+    // the exact insertion order (v1, v2, v3), the Postgres analogue of SQLite's
+    // `rowid ASC`, making the warm-load's "latest publication per agent" (the last
+    // element) deterministic and matching across backends.
+    let ordered: Vec<String> = listed.iter().map(|p| p.fingerprint.clone()).collect();
+    assert_eq!(
+        ordered,
+        vec![
+            v1.fingerprint.clone(),
+            v2.fingerprint.clone(),
+            v3.fingerprint.clone(),
+        ],
+        "pg must reload publications in deterministic insertion order (tie-break by seq)"
+    );
 }

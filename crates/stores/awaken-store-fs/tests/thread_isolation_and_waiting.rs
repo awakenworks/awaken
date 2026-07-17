@@ -1,12 +1,13 @@
-//! Two properties the shared conformance suite does not run against the fs store:
-//! multi-thread isolation (which the fs store does NOT hold — a characterized
-//! divergence) and waiting-ticket durability across a reopen (which it does).
+//! Two durability properties the shared conformance suite (which uses a single,
+//! live store) does not exercise against the fs store: multi-thread isolation
+//! ACROSS a drop + reopen, and waiting-ticket durability across a reopen.
 //!
-//! The fs backend reuses the single-thread in-memory reference as its read model
-//! (`awaken-store-inmem`), so two threads committed to one store are flattened onto
-//! the LAST committed thread — a real divergence from the thread-keyed SQLite /
-//! Postgres backends. The first test pins the ACTUAL (buggy) behavior so a fix that
-//! isolates threads will make it fail loudly and force this file to be updated.
+//! The fs backend reuses the thread-keyed in-memory reference as its read model
+//! (`awaken-store-inmem`) and rebuilds it from the append-only log on open, so two
+//! threads committed to one store stay isolated — and that isolation is durable: a
+//! fresh instance over the same log replays each thread's own transcript. (The live,
+//! single-instance isolation invariant is covered by the shared
+//! `two_threads_in_one_store_are_isolated` conformance case in `conformance.rs`.)
 
 use awaken_agent_contract::agent::message::{Id as MsgId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
@@ -44,44 +45,50 @@ fn ended(thread: &str, run: &str, text: &str) -> ThreadCommit {
     }
 }
 
-// KNOWN BUG (adjudicate): the fs store does NOT isolate threads. It reuses the
-// single-thread in-memory reference as its read model, which keeps one `thread_id`
-// and one flat message vector, returning a thread's transcript only when that
-// thread was the LAST committed. So committing thread B after thread A makes
-// thread A's transcript unreadable (lost) and leaks A's message into B's read
-// (union). The thread-keyed SQLite / Postgres backends isolate correctly (they run
-// the shared `two_threads_in_one_store_are_isolated` conformance case); the fs and
-// in-memory backends are single-thread by construction. This test pins the current
-// behavior so the divergence is visible and a fix trips it.
+// Two threads committed to one store stay isolated even across a drop + reopen: the
+// append-only log records both threads' commits, and replay rebuilds the thread-keyed
+// read model, so each thread reads only its OWN transcript and latest run from a fresh
+// instance. (The live-instance isolation invariant is the shared conformance case; this
+// pins that durability adds nothing that would re-flatten the threads on replay.)
 #[tokio::test]
-async fn two_threads_in_one_store_are_flattened_not_isolated() {
-    let (store, dir) = fresh("flatten").await;
+async fn two_threads_stay_isolated_across_reopen() {
+    let dir = std::env::temp_dir().join("awaken_store_fs_iso_reopen");
+    let _ = std::fs::remove_dir_all(&dir);
     let ta = ThreadId("t-a".to_string());
     let tb = ThreadId("t-b".to_string());
 
-    store.commit(ended("t-a", "r-a", "alpha")).await.expect("A");
-    store.commit(ended("t-b", "r-b", "beta")).await.expect("B");
+    {
+        let store = FsCommitCoordinator::open(&dir).await.expect("open");
+        store.commit(ended("t-a", "r-a", "alpha")).await.expect("A");
+        store.commit(ended("t-b", "r-b", "beta")).await.expect("B");
+        // store dropped — the in-memory read model is gone; only the log remains
+    }
 
-    // Thread A's transcript is LOST after thread B commits (flattening to the last
-    // thread), rather than isolated as its own single message.
-    assert!(
-        store.committed_messages(&ta).is_empty(),
-        "KNOWN BUG: thread A's transcript is lost, not isolated"
+    let reopened = FsCommitCoordinator::open(&dir).await.expect("reopen");
+
+    // Each thread reads exactly its own message — no loss, no leak — after replay.
+    let a = reopened.committed_messages(&ta);
+    assert_eq!(
+        a.len(),
+        1,
+        "thread A reads only its own message after reopen"
     );
-    // Thread B's read LEAKS thread A's message (the flat vector is returned whole).
-    let b = store.committed_messages(&tb);
+    assert_eq!(a[0].text_content(), "alpha");
+    let b = reopened.committed_messages(&tb);
     assert_eq!(
         b.len(),
-        2,
-        "KNOWN BUG: thread B leaks thread A's message (both alpha+beta)"
+        1,
+        "thread B reads only its own message after reopen"
     );
-    // latest_run for thread A is likewise unreadable (the single latest slot holds B).
-    assert!(
-        store.latest_run(&ta).is_none(),
-        "KNOWN BUG: thread A's latest run is shadowed by thread B"
+    assert_eq!(b[0].text_content(), "beta");
+
+    // Each thread's latest run is its own, not shadowed by the other.
+    assert_eq!(
+        reopened.latest_run(&ta).map(|r| r.id),
+        Some(RunId("r-a".to_string()))
     );
     assert_eq!(
-        store.latest_run(&tb).map(|r| r.id),
+        reopened.latest_run(&tb).map(|r| r.id),
         Some(RunId("r-b".to_string()))
     );
 

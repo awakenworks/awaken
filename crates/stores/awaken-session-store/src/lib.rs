@@ -67,6 +67,12 @@ fn mcp_str(session: &PersistedSession) -> String {
     serde_json::to_string(&session.mcp_servers).expect("session mcp servers serialize")
 }
 
+/// Decode a persisted row's JSON payload columns. A corrupt column (truncated
+/// write, manual edit, schema drift) surfaces as `Err` rather than silently
+/// folding to an empty `metadata`/`mcp_servers` — that fail-open masked data loss
+/// on read. Callers within this module treat it like any other unreadable row
+/// (the module's `.expect` convention for read failures), so a corrupt row fails
+/// loudly instead of returning a hollow session.
 fn decode(
     session_id: String,
     agent_id: String,
@@ -75,16 +81,16 @@ fn decode(
     metadata_json: &str,
     environment_id: String,
     mcp_json: &str,
-) -> PersistedSession {
-    PersistedSession {
+) -> Result<PersistedSession, serde_json::Error> {
+    Ok(PersistedSession {
         session_id,
         agent_id,
         model,
         title,
-        metadata: serde_json::from_str(metadata_json).unwrap_or_default(),
+        metadata: serde_json::from_str(metadata_json)?,
         environment_id,
-        mcp_servers: serde_json::from_str(mcp_json).unwrap_or_default(),
-    }
+        mcp_servers: serde_json::from_str(mcp_json)?,
+    })
 }
 
 /// SQLite persistence for [`PersistedSession`]. One row per session, keyed by id.
@@ -149,26 +155,37 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
 
     async fn get(&self, session_id: &str) -> Option<PersistedSession> {
         let conn = self.conn.lock().expect("session store mutex poisoned");
-        conn.query_row(
-            "SELECT agent_id, model, title, metadata_json, environment_id, mcp_json
-             FROM managed_session WHERE session_id = ?1",
-            params![session_id],
-            |row| {
-                let metadata_json: String = row.get(3)?;
-                let mcp_json: String = row.get(5)?;
-                Ok(decode(
-                    session_id.to_string(),
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    &metadata_json,
-                    row.get(4)?,
-                    &mcp_json,
-                ))
-            },
+        let raw = conn
+            .query_row(
+                "SELECT agent_id, model, title, metadata_json, environment_id, mcp_json
+                 FROM managed_session WHERE session_id = ?1",
+                params![session_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .expect("read managed session")?;
+        let (agent_id, model, title, metadata_json, environment_id, mcp_json) = raw;
+        Some(
+            decode(
+                session_id.to_string(),
+                agent_id,
+                model,
+                title,
+                &metadata_json,
+                environment_id,
+                &mcp_json,
+            )
+            .expect("decode managed session"),
         )
-        .optional()
-        .expect("read managed session")
     }
 
     async fn set_owner(&self, session_id: &str, scope: &str) {
@@ -256,15 +273,18 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         .expect("read managed session")?;
         let metadata_json: String = row.get("metadata_json");
         let mcp_json: String = row.get("mcp_json");
-        Some(decode(
-            session_id.to_string(),
-            row.get("agent_id"),
-            row.get("model"),
-            row.get("title"),
-            &metadata_json,
-            row.get("environment_id"),
-            &mcp_json,
-        ))
+        Some(
+            decode(
+                session_id.to_string(),
+                row.get("agent_id"),
+                row.get("model"),
+                row.get("title"),
+                &metadata_json,
+                row.get("environment_id"),
+                &mcp_json,
+            )
+            .expect("decode managed session"),
+        )
     }
 
     async fn set_owner(&self, session_id: &str, scope: &str) {
@@ -364,15 +384,15 @@ mod tests {
         assert_eq!(reopened.owner("sesn_missing").await, None);
     }
 
-    /// KNOWN BUG (adjudicate): `decode` reads `metadata_json`/`mcp_json` with
-    /// `serde_json::from_str(...).unwrap_or_default()`, so a row whose JSON columns are
-    /// corrupt (truncated write, manual edit, a schema drift) decodes SILENTLY to an
-    /// empty `metadata`/`mcp_servers` instead of surfacing an error — a fail-open that
-    /// masks data loss on read. This characterizes the current swallowing behavior; a
-    /// fix would return a decode error (or the `get` port would become fallible) and
-    /// this test would flip to assert that.
+    /// A row whose JSON payload columns are corrupt (truncated write, manual edit,
+    /// schema drift) must surface the decode error rather than silently folding to
+    /// an empty `metadata`/`mcp_servers` — the old fail-open masked data loss on
+    /// read. `decode` is now fallible and `get` propagates it via the module's
+    /// `.expect` read-failure convention (the trait's `Option`-returning `get`
+    /// cannot carry an error), so a corrupt row fails loudly like any unreadable row.
     #[tokio::test]
-    async fn corrupt_json_columns_decode_to_defaults_instead_of_erroring() {
+    #[should_panic(expected = "decode managed session")]
+    async fn corrupt_json_columns_error_instead_of_decoding_to_defaults() {
         let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
         repo.save(sample("sesn_1")).await;
         // Corrupt both JSON payload columns out-of-band (an on-disk corruption / drift).
@@ -385,20 +405,9 @@ mod tests {
             )
             .unwrap();
         }
-        // The corrupt row still decodes — to empty collections, not an error.
-        let got = repo.get("sesn_1").await.expect("row still returned");
-        assert!(
-            got.metadata.is_empty(),
-            "corrupt metadata_json silently decodes to an empty map (fail-open)"
-        );
-        assert!(
-            got.mcp_servers.is_empty(),
-            "corrupt mcp_json silently decodes to an empty vec (fail-open)"
-        );
-        // The intact, non-JSON columns are unaffected — proving the loss is scoped to
-        // the swallowed JSON payloads, not a wholesale read failure.
-        assert_eq!(got.agent_id, "coder");
-        assert_eq!(got.model, "kimi-k2");
+        // Reading the corrupt row now fails loudly (decode error surfaced) instead of
+        // returning a hollow session with empty collections.
+        let _ = repo.get("sesn_1").await;
     }
 
     /// Live Postgres round-trip, isolated in its own schema. Skips when no Postgres

@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{Id as RunId, Phase, Record as RunRecord};
+use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::WaitingTicket;
 use awaken_agent_contract::audit::record::Record as EventRecord;
@@ -52,6 +53,9 @@ pub enum StoreError {
 struct Projection {
     sequence: u64,
     messages: Vec<(ThreadId, Message)>,
+    /// Committed state commands per thread, in commit order (for `committed_state`).
+    /// A resumed run rebuilds its materialized state from these durable rows.
+    state: Vec<(ThreadId, StateCommand)>,
     run_records: HashMap<RunId, RunRecord>,
     /// The latest committed run per thread, in commit order (for `latest_run`).
     latest_by_thread: HashMap<ThreadId, RunRecord>,
@@ -118,6 +122,23 @@ impl SqliteCommitCoordinator {
                     .iter()
                     .filter(|(tid, _)| tid == thread_id)
                     .map(|(_, m)| m.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Committed state commands for a thread, in commit order — served from the
+    /// durable `state_command` rows the projection rebuilt on open, so a resumed
+    /// run replays its accumulated state (and usage/compaction accounting) from
+    /// durable truth (G1/G13).
+    pub fn committed_state(&self, thread_id: &ThreadId) -> Vec<StateCommand> {
+        self.projection
+            .lock()
+            .map(|p| {
+                p.state
+                    .iter()
+                    .filter(|(tid, _)| tid == thread_id)
+                    .map(|(_, c)| c.clone())
                     .collect()
             })
             .unwrap_or_default()
@@ -239,6 +260,9 @@ impl CommitCoordinator for SqliteCommitCoordinator {
         for message in commit.messages {
             projection.messages.push((thread_id.clone(), message));
         }
+        for command in commit.state {
+            projection.state.push((thread_id.clone(), command));
+        }
         for (offset, draft) in commit.events.into_iter().enumerate() {
             projection.events.push(EventRecord {
                 sequence: next * 1_000 + offset as u64,
@@ -284,6 +308,10 @@ impl ThreadReader for SqliteCommitCoordinator {
 
     fn waiting_ticket(&self, run_id: &RunId) -> Option<WaitingTicket> {
         self.waiting_for(run_id)
+    }
+
+    fn committed_state(&self, thread_id: &ThreadId) -> Vec<StateCommand> {
+        SqliteCommitCoordinator::committed_state(self, thread_id)
     }
 }
 
@@ -447,6 +475,21 @@ fn hydrate(conn: &Connection) -> Result<Projection, rusqlite::Error> {
         let (thread_id, data) = row?;
         if let Ok(message) = serde_json::from_str::<Message>(&data) {
             projection.messages.push((ThreadId(thread_id), message));
+        }
+    }
+
+    // Rebuild the committed state-command log per thread, in commit order, so a
+    // resumed run replays its accumulated state from durable truth (G1/G13).
+    let mut stmt = conn.prepare(&format!(
+        "SELECT thread_id, data FROM {NS}_state_command ORDER BY id"
+    ))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (thread_id, data) = row?;
+        if let Ok(command) = serde_json::from_str::<StateCommand>(&data) {
+            projection.state.push((ThreadId(thread_id), command));
         }
     }
 

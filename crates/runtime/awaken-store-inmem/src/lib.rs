@@ -41,10 +41,49 @@ pub struct CommittedThread {
 #[derive(Debug, Default)]
 struct CommitState {
     sequence: u64,
-    thread: CommittedThread,
+    /// Per-thread committed truth, keyed by thread id, so two threads committed to
+    /// one store stay isolated on the read ports (a thread reads only its own
+    /// transcript/state/runs, and never leaks into another's). A single-thread store
+    /// holds exactly one entry, so its behavior is byte-for-byte what it was before
+    /// thread-keying.
+    threads: HashMap<ThreadId, CommittedThread>,
+    /// Threads in first-commit order, so the flattened [`Self::flatten`] view
+    /// (`committed()`) concatenates them deterministically.
+    order: Vec<ThreadId>,
     /// Active waiting tickets keyed by run; present only while a run is parked,
     /// so a resume against a terminal/resumed run finds nothing (fail closed).
     waiting: HashMap<RunId, WaitingTicket>,
+}
+
+impl CommitState {
+    /// The per-thread committed truth for `thread_id`, or an empty view when the
+    /// thread has no commits.
+    fn thread(&self, thread_id: &ThreadId) -> CommittedThread {
+        self.threads.get(thread_id).cloned().unwrap_or_default()
+    }
+
+    /// A single flattened view across every thread, in first-commit order — the
+    /// backward-compatible shape [`MemoryCommitCoordinator::committed`] exposes. For
+    /// a single-thread store this equals the one thread's truth; the flat
+    /// `latest_run`/`thread_id` follow the last thread to receive a commit, matching
+    /// the pre-thread-keyed reference. Multi-thread consumers read the isolated
+    /// ports instead, never this union.
+    fn flatten(&self) -> CommittedThread {
+        let mut flat = CommittedThread::default();
+        for thread_id in &self.order {
+            if let Some(thread) = self.threads.get(thread_id) {
+                flat.thread_id = Some(thread_id.clone());
+                flat.messages.extend(thread.messages.iter().cloned());
+                flat.run_facts.extend(thread.run_facts.iter().cloned());
+                flat.state.extend(thread.state.iter().cloned());
+                flat.events.extend(thread.events.iter().cloned());
+                if thread.latest_run.is_some() {
+                    flat.latest_run = thread.latest_run.clone();
+                }
+            }
+        }
+        flat
+    }
 }
 
 /// In-memory atomic commit boundary. Each `commit` appends messages, facts, and
@@ -59,11 +98,14 @@ impl MemoryCommitCoordinator {
         Self::default()
     }
 
-    /// Snapshot of committed truth, for replay/projection assertions.
+    /// Snapshot of committed truth, for replay/projection assertions. A flattened
+    /// view across every thread (in first-commit order); for a single-thread store
+    /// — the common case for this reference and its fs consumer — it is exactly that
+    /// thread's truth. Isolated per-thread reads go through the read ports.
     pub fn committed(&self) -> CommittedThread {
         self.state
             .lock()
-            .map(|state| state.thread.clone())
+            .map(|state| state.flatten())
             .unwrap_or_default()
     }
 
@@ -106,12 +148,19 @@ impl CommitCoordinator for MemoryCommitCoordinator {
         // an already-terminal run is fenced. This keeps the transcript exactly-once
         // even though the external tool side effect may still have run twice (an
         // at-least-once effect inherent to lease-based recovery, not fixable here).
+        // The fence scans the run's OWN thread (a run belongs to exactly one
+        // thread), so a post-terminal duplicate is fenced regardless of what other
+        // threads committed in between — and threads never fence each other.
         if state
-            .thread
-            .run_facts
-            .iter()
-            .rev()
-            .find(|fact| fact.run_id == run_id)
+            .threads
+            .get(&commit.thread_id)
+            .and_then(|thread| {
+                thread
+                    .run_facts
+                    .iter()
+                    .rev()
+                    .find(|fact| fact.run_id == run_id)
+            })
             .is_some_and(|fact| matches!(fact.phase, Phase::Ended(_)))
         {
             return Err(Error::Rejected(format!(
@@ -132,8 +181,12 @@ impl CommitCoordinator for MemoryCommitCoordinator {
             }
         }
 
-        let thread = &mut state.thread;
-        thread.thread_id = Some(commit.thread_id.clone());
+        let thread_id = commit.thread_id.clone();
+        if !state.threads.contains_key(&thread_id) {
+            state.order.push(thread_id.clone());
+        }
+        let thread = state.threads.entry(thread_id.clone()).or_default();
+        thread.thread_id = Some(thread_id.clone());
         thread.messages.extend(commit.messages);
         thread.state.extend(commit.state);
         for (offset, draft) in commit.events.into_iter().enumerate() {
@@ -147,7 +200,7 @@ impl CommitCoordinator for MemoryCommitCoordinator {
         thread.run_facts.push(commit.run_fact);
         thread.latest_run = Some(RunRecord {
             id: run_id,
-            thread_id: commit.thread_id,
+            thread_id,
             phase,
         });
 
@@ -170,11 +223,10 @@ impl RunStore for MemoryCommitCoordinator {
 /// the transcript and the active waiting ticket, never the live sink (G1/G13).
 impl ThreadReader for MemoryCommitCoordinator {
     fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
-        let committed = self.committed();
-        match committed.thread_id {
-            Some(id) if &id == thread_id => committed.messages,
-            _ => Vec::new(),
-        }
+        self.state
+            .lock()
+            .map(|state| state.thread(thread_id).messages)
+            .unwrap_or_default()
     }
 
     fn waiting_ticket(&self, run_id: &RunId) -> Option<WaitingTicket> {
@@ -185,11 +237,10 @@ impl ThreadReader for MemoryCommitCoordinator {
         &self,
         thread_id: &ThreadId,
     ) -> Vec<awaken_agent_contract::agent::state::Command> {
-        let committed = self.committed();
-        match committed.thread_id {
-            Some(id) if &id == thread_id => committed.state,
-            _ => Vec::new(),
-        }
+        self.state
+            .lock()
+            .map(|state| state.thread(thread_id).state)
+            .unwrap_or_default()
     }
 }
 
@@ -198,38 +249,66 @@ impl ThreadReader for MemoryCommitCoordinator {
 /// facts, so a fresh reader over the same state resumes correctly (ADR-0039 D4).
 impl CheckpointReader for MemoryCommitCoordinator {
     fn run(&self, id: &RunId) -> Option<RunRecord> {
-        let committed = self.committed();
-        let thread_id = committed.thread_id.clone()?;
-        committed
-            .run_facts
-            .iter()
-            .rev()
-            .find(|fact| &fact.run_id == id)
-            .map(|fact| RunRecord {
-                id: fact.run_id.clone(),
-                thread_id: thread_id.clone(),
-                phase: fact.phase.clone(),
-            })
+        let state = self.state.lock().ok()?;
+        // A run lives in exactly one thread; find the most recent fact for it,
+        // scanning each thread's own fact log so a run in thread B is never
+        // shadowed by thread A's.
+        for thread_id in &state.order {
+            if let Some(thread) = state.threads.get(thread_id) {
+                if let Some(fact) = thread
+                    .run_facts
+                    .iter()
+                    .rev()
+                    .find(|fact| &fact.run_id == id)
+                {
+                    return Some(RunRecord {
+                        id: fact.run_id.clone(),
+                        thread_id: thread_id.clone(),
+                        phase: fact.phase.clone(),
+                    });
+                }
+            }
+        }
+        None
     }
 
     fn latest_run(&self, thread_id: &ThreadId) -> Option<RunRecord> {
-        self.committed()
-            .latest_run
-            .filter(|record| &record.thread_id == thread_id)
+        self.state.lock().ok().and_then(|state| {
+            state
+                .threads
+                .get(thread_id)
+                .and_then(|t| t.latest_run.clone())
+        })
     }
 
     fn list_events(&self, scope: &EventScope, from: Option<u64>, limit: usize) -> Vec<EventRecord> {
-        let committed = self.committed();
         let after = from.unwrap_or(0);
-        let thread_id = committed.thread_id.clone();
-        committed
-            .events
+        let state = match self.state.lock() {
+            Ok(state) => state,
+            Err(_) => return Vec::new(),
+        };
+        let mut events: Vec<EventRecord> = match scope {
+            EventScope::Run(run_id) => state
+                .order
+                .iter()
+                .filter_map(|tid| state.threads.get(tid))
+                .flat_map(|thread| thread.events.iter())
+                .filter(|event| &event.run_id == run_id)
+                .cloned()
+                .collect(),
+            EventScope::Thread(tid) => state
+                .threads
+                .get(tid)
+                .map(|thread| thread.events.clone())
+                .unwrap_or_default(),
+        };
+        // Committed events carry a globally monotonic sequence; sort so a run whose
+        // events span threads (never, in practice) or a thread scope still reads in
+        // commit order.
+        events.sort_by_key(|event| event.sequence);
+        events
             .into_iter()
             .filter(|event| event.sequence > after)
-            .filter(|event| match scope {
-                EventScope::Run(run_id) => &event.run_id == run_id,
-                EventScope::Thread(tid) => thread_id.as_ref() == Some(tid),
-            })
             .take(limit)
             .collect()
     }

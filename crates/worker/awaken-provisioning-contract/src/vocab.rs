@@ -3,7 +3,7 @@
 //! All serializable (they cross the config→worker edge as data). Paths are
 //! sandbox-absolute or logical references — never host paths (G3).
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 // ── Mounts ──────────────────────────────────────────────────────────────────
@@ -34,19 +34,16 @@ pub enum MountLifetime {
 /// host directory bind is a provider-specific concern expressed via
 /// [`super::EnvironmentKind`], not carried here (G3). `Other` keeps the wire
 /// forward-compatible so a distributed provider can add kinds without a break.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MountSource {
     /// An immutable blob from the file store (ADR-0038 `File`).
     File {
         file_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         content_hash: Option<String>,
     },
     /// A provisioned resource file.
     Resource {
         resource_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         content_hash: Option<String>,
     },
     /// A persistent memory store, mounted for read/write (typically via FUSE).
@@ -64,7 +61,6 @@ pub enum MountSource {
         /// neither keeps it warm nor reclaims it.
         host_path: String,
         /// The caller's reuse key, opaque to awaken (never interpreted here).
-        #[serde(default, skip_serializing_if = "String::is_empty")]
         key: String,
     },
     /// A file-materialized credential (ADR-0041 amendment). The provider writes the
@@ -74,7 +70,6 @@ pub enum MountSource {
     /// auth file). Only the broker `reference` crosses the seam — never the bytes (G3).
     Secret {
         reference: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         content_hash: Option<String>,
     },
     /// **Inline ephemeral content** (ADR-0057): small, **non-secret**, per-run *derived*
@@ -93,8 +88,165 @@ pub enum MountSource {
     /// property is intrinsic — it is neither `Secret` (writeback) nor `MemoryStore`
     /// (harvested), so no realizer copies it back.
     Inline { contents: String },
-    /// Forward-compat escape: an unknown source a newer provider understands.
+    /// Forward-compat escape: an unknown source a newer provider understands. Any wire
+    /// object whose `kind` is not one of the known tags (including a missing `kind`)
+    /// deserializes here, carrying the FULL object verbatim — so an older worker accepts
+    /// a newer provider's added kind without a break. It re-serializes as the captured
+    /// object unchanged (identity), preserving its own `kind` discriminant with no
+    /// duplicate-field hazard.
     Other(Value),
+}
+
+/// The known, closed set of mount-source kinds, deriving the internally-tagged wire
+/// form. [`MountSource`] delegates its (de)serialization here for the known variants and
+/// routes anything else to [`MountSource::Other`] as a verbatim [`Value`] — the two
+/// halves of the forward-compatible escape.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum KnownMountSource {
+    File {
+        file_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content_hash: Option<String>,
+    },
+    Resource {
+        resource_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content_hash: Option<String>,
+    },
+    MemoryStore {
+        store_id: String,
+    },
+    CacheVolume {
+        host_path: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        key: String,
+    },
+    Secret {
+        reference: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content_hash: Option<String>,
+    },
+    Inline {
+        contents: String,
+    },
+}
+
+/// The snake_case `kind` tags that route to a known variant; any other (or a missing
+/// `kind`) is forward-compat [`MountSource::Other`].
+const KNOWN_MOUNT_KINDS: &[&str] = &[
+    "file",
+    "resource",
+    "memory_store",
+    "cache_volume",
+    "secret",
+    "inline",
+];
+
+impl From<KnownMountSource> for MountSource {
+    fn from(k: KnownMountSource) -> Self {
+        match k {
+            KnownMountSource::File {
+                file_id,
+                content_hash,
+            } => MountSource::File {
+                file_id,
+                content_hash,
+            },
+            KnownMountSource::Resource {
+                resource_id,
+                content_hash,
+            } => MountSource::Resource {
+                resource_id,
+                content_hash,
+            },
+            KnownMountSource::MemoryStore { store_id } => MountSource::MemoryStore { store_id },
+            KnownMountSource::CacheVolume { host_path, key } => {
+                MountSource::CacheVolume { host_path, key }
+            }
+            KnownMountSource::Secret {
+                reference,
+                content_hash,
+            } => MountSource::Secret {
+                reference,
+                content_hash,
+            },
+            KnownMountSource::Inline { contents } => MountSource::Inline { contents },
+        }
+    }
+}
+
+impl MountSource {
+    /// The known-variant mirror for serialization, or `None` for [`MountSource::Other`]
+    /// (which serializes as its captured [`Value`] verbatim).
+    fn as_known(&self) -> Option<KnownMountSource> {
+        Some(match self {
+            MountSource::File {
+                file_id,
+                content_hash,
+            } => KnownMountSource::File {
+                file_id: file_id.clone(),
+                content_hash: content_hash.clone(),
+            },
+            MountSource::Resource {
+                resource_id,
+                content_hash,
+            } => KnownMountSource::Resource {
+                resource_id: resource_id.clone(),
+                content_hash: content_hash.clone(),
+            },
+            MountSource::MemoryStore { store_id } => KnownMountSource::MemoryStore {
+                store_id: store_id.clone(),
+            },
+            MountSource::CacheVolume { host_path, key } => KnownMountSource::CacheVolume {
+                host_path: host_path.clone(),
+                key: key.clone(),
+            },
+            MountSource::Secret {
+                reference,
+                content_hash,
+            } => KnownMountSource::Secret {
+                reference: reference.clone(),
+                content_hash: content_hash.clone(),
+            },
+            MountSource::Inline { contents } => KnownMountSource::Inline {
+                contents: contents.clone(),
+            },
+            MountSource::Other(_) => return None,
+        })
+    }
+}
+
+impl Serialize for MountSource {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            // Forward-compat escape: emit the captured object verbatim (identity), so a
+            // future provider's own `kind` rides the wire once, never duplicated.
+            MountSource::Other(value) => value.serialize(serializer),
+            known => known
+                .as_known()
+                .expect("non-Other variant has a known mirror")
+                .serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for MountSource {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        let is_known = value
+            .get("kind")
+            .and_then(Value::as_str)
+            .is_some_and(|k| KNOWN_MOUNT_KINDS.contains(&k));
+        if is_known {
+            serde_json::from_value::<KnownMountSource>(value)
+                .map(MountSource::from)
+                .map_err(serde::de::Error::custom)
+        } else {
+            // An unknown (or absent) kind is a newer provider's source — capture it whole.
+            Ok(MountSource::Other(value))
+        }
+    }
 }
 
 /// A requested mount: source + where it appears + access + lifetime.
@@ -495,52 +647,53 @@ mod tests {
     }
 
     #[test]
-    fn an_explicit_other_kind_round_trips_when_its_value_has_no_kind_key() {
-        // `Other(Value)` catches the LITERAL `{"kind":"other", ...}` and reparses equal,
-        // as long as the wrapped object carries no `kind` key of its own (see the
-        // forward-compat characterization below for why that caveat matters).
-        let src = MountSource::Other(serde_json::json!({ "future_field": 42 }));
+    fn an_other_value_captures_and_re_emits_its_object_verbatim() {
+        // `Other(Value)` captures a future provider's object WHOLE and re-emits it
+        // verbatim (identity serialization) — including the object's own `kind`, with no
+        // injected `"kind":"other"` wrapper and no duplicate-field hazard.
+        let inner = serde_json::json!({ "kind": "future", "future_field": 42 });
+        let src = MountSource::Other(inner.clone());
         let wire = serde_json::to_string(&src).unwrap();
-        assert_eq!(wire, r#"{"kind":"other","future_field":42}"#);
+        // Identity: the wire IS the captured object (key order is serde_json's own), with
+        // no injected `"kind":"other"` wrapper.
+        assert_eq!(serde_json::from_str::<Value>(&wire).unwrap(), inner);
+        assert!(
+            !wire.contains("\"other\""),
+            "no injected other wrapper: {wire}"
+        );
         assert_eq!(serde_json::from_str::<MountSource>(&wire).unwrap(), src);
     }
 
     #[test]
-    fn an_unknown_mount_kind_is_rejected_not_routed_to_other() {
-        // KNOWN BUG (adjudicate): `MountSource::Other` is documented as a "forward-compat
-        // escape … an unknown source a newer provider understands" that lets a provider
-        // "add kinds without a break". It does NOT: serde's internally-tagged enum only
-        // routes the LITERAL tag `"other"` to `Other`; any genuinely unknown `kind`
-        // fails deserialization with `unknown variant`. So an OLDER worker cannot in fact
-        // accept a NEWER provider's added kind — the wire is not forward-compatible.
-        // Pinning current behavior: an unknown kind is an error, never `Other`.
-        let err = serde_json::from_str::<MountSource>(r#"{"kind":"brand_new_kind","x":1}"#)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            err.contains("unknown variant") && err.contains("brand_new_kind"),
-            "unknown kinds error rather than routing to Other: {err}"
+    fn an_unknown_mount_kind_routes_to_other() {
+        // Forward-compat: `MountSource::Other` is the escape a newer provider's added
+        // kind lands in, so an OLDER worker accepts it without a break. A genuinely
+        // unknown `kind` deserializes to `Other`, capturing the whole object, and
+        // round-trips back to the same wire — not an `unknown variant` error.
+        let wire = r#"{"kind":"brand_new_kind","x":1}"#;
+        let src = serde_json::from_str::<MountSource>(wire).unwrap();
+        assert_eq!(
+            src,
+            MountSource::Other(serde_json::json!({ "kind": "brand_new_kind", "x": 1 })),
+            "an unknown kind routes to Other, capturing the whole object"
+        );
+        assert_eq!(
+            serde_json::to_string(&src).unwrap(),
+            wire,
+            "and re-serializes back to the same wire"
         );
     }
 
     #[test]
-    fn an_other_value_carrying_its_own_kind_key_fails_to_round_trip() {
-        // KNOWN BUG (adjudicate): even the intended use of `Other` — wrapping a future
-        // provider's object that (naturally) carries its own `kind` discriminant — does
-        // NOT round-trip. The internally-tagged serializer prepends `"kind":"other"`, so
-        // an inner `kind` produces a DUPLICATE `kind` field on the wire, and re-parsing
-        // fails with `duplicate field kind`. `Other` therefore only survives a round-trip
-        // for objects that happen to omit `kind` — a hole in the forward-compat escape.
+    fn an_other_value_carrying_its_own_kind_key_round_trips() {
+        // The intended use of `Other` — wrapping a future provider's object that carries
+        // its own `kind` discriminant — round-trips cleanly. The captured object is
+        // re-emitted verbatim, so its inner `kind` is the ONLY `kind` on the wire (no
+        // duplicate), and re-parsing yields the identical `Other`.
         let src = MountSource::Other(serde_json::json!({ "kind": "future", "n": 7 }));
         let wire = serde_json::to_string(&src).unwrap();
-        assert_eq!(wire, r#"{"kind":"other","kind":"future","n":7}"#);
-        let err = serde_json::from_str::<MountSource>(&wire)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            err.contains("duplicate field"),
-            "duplicate kind on the wire: {err}"
-        );
+        assert_eq!(wire, r#"{"kind":"future","n":7}"#);
+        assert_eq!(serde_json::from_str::<MountSource>(&wire).unwrap(), src);
     }
 
     #[test]

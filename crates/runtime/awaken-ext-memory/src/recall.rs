@@ -92,12 +92,15 @@ pub fn render(entries: &[crate::localfs::Entry], bounds: &RecallBounds) -> Optio
     let mut shown = 0usize;
     for entry in entries.iter().take(bounds.max_entries.max(1)) {
         let piece = truncate(&entry.content, bounds.per_entry_chars);
-        // +2 for the joining blank line; stop before exceeding the total cap, but
-        // always keep at least one memory so recall is never empty when non-empty.
-        if !rendered.is_empty() && used + piece.len() + 2 > bounds.total_chars {
+        // Measure the block budget in CHARS, matching `truncate`'s per-entry cap and
+        // the `total_chars` name/docs — not UTF-8 bytes, which over-count multibyte
+        // text. +2 for the joining blank line; stop before exceeding the total cap,
+        // but always keep at least one memory so recall is never empty when non-empty.
+        let piece_chars = piece.chars().count();
+        if !rendered.is_empty() && used + piece_chars + 2 > bounds.total_chars {
             break;
         }
-        used += piece.len() + 2;
+        used += piece_chars + 2;
         rendered.push(piece);
         shown += 1;
     }
@@ -297,7 +300,8 @@ mod tests {
         assert!(out.is_none());
     }
 
-    // --- byte-vs-char cap: `render` measures the total cap in BYTES ---
+    // --- char cap: `render` measures the total cap in CHARS, matching the
+    //     `total_chars` name/docs and `truncate`'s per-entry char cap. ---
 
     /// Build an in-memory entry directly (no filesystem, no mtime) so ordering is
     /// deterministic and the exact content bytes are under test control.
@@ -310,17 +314,15 @@ mod tests {
     }
 
     #[test]
-    fn total_cap_counts_bytes_not_chars_for_multibyte_content() {
-        // KNOWN BUG (adjudicate): `RecallBounds::total_chars` is documented and named
-        // as a *character* budget, but `render` accumulates `piece.len()` — the UTF-8
-        // *byte* length — against it. `truncate` (per-entry) counts chars, so the two
-        // caps disagree on multibyte text. This test pins the CURRENT (byte) behavior.
+    fn total_cap_counts_chars_not_bytes_for_multibyte_content() {
+        // `RecallBounds::total_chars` is a *character* budget, so `render` measures
+        // the block in chars (like `truncate`'s per-entry cap), NOT UTF-8 bytes.
         //
         // Two entries of 10 chars each. "あ" is 3 bytes → 30 bytes / 10 chars per entry.
         // total_chars = 25.
-        //   * A true char budget: 10 + 10 = 20 chars <= 25 → both kept.
-        //   * The current byte budget: newest uses 30+2=32 bytes; the older would push
-        //     to 64 > 25 → dropped.
+        //   * The char budget (correct): 10 + 2 + 10 = 22 chars <= 25 → both kept.
+        //   * A byte budget (the old bug): newest uses 32 bytes; the older would push
+        //     past 25 → wrongly dropped.
         let entries = [entry(&"あ".repeat(10)), entry(&"い".repeat(10))];
         let bounds = RecallBounds {
             per_entry_chars: 0,
@@ -328,16 +330,15 @@ mod tests {
             ..RecallBounds::default()
         };
         let block = render(&entries, &bounds).unwrap();
-        // Current behavior: only the newest survives; the older is dropped and noted,
-        // even though 20 characters comfortably fit a 25-*character* cap.
+        // Both fit the 25-*character* budget, so both are kept and nothing is omitted.
         assert!(block.contains(&"あ".repeat(10)), "newest kept: {block}");
         assert!(
-            !block.contains(&"い".repeat(10)),
-            "older dropped by the byte-measured cap: {block}"
+            block.contains(&"い".repeat(10)),
+            "older kept under the char-measured cap: {block}"
         );
         assert!(
-            block.contains("+1 older memories not shown"),
-            "the byte cap treats 20 chars as over a 25-char budget: {block}"
+            !block.contains("older memories not shown"),
+            "20 chars + join fit a 25-char budget, so nothing is omitted: {block}"
         );
     }
 

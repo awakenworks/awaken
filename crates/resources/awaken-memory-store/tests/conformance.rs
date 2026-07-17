@@ -521,16 +521,15 @@ mod postgres {
         memfs_not_found(&fs).await;
     }
 
-    /// KNOWN BUG (adjudicate): `PgMemoryFs::create` reads existence with an unlocked
-    /// `SELECT 1` and mints its ordinal with `SELECT MAX(ordinal)+1` — neither `FOR
-    /// UPDATE` — so two concurrent same-path creates both pass the existence check and
-    /// race the `INSERT`. The primary key `(store_id, path)` catches the second, but it
-    /// surfaces as a RAW `MemErr::Storage` (a postgres unique-violation) rather than the
-    /// domain `MemErr::PathConflict` the serialized in-process backends return. A locked
-    /// create (advisory lock or `INSERT … ON CONFLICT`) would map it to `PathConflict`.
-    /// This pins the current, divergent shape.
+    /// `PgMemoryFs::create` reads existence with an unlocked `SELECT 1` and mints its
+    /// ordinal with `SELECT MAX(ordinal)+1` — neither `FOR UPDATE` — so two concurrent
+    /// same-path creates both pass the existence check and race the `INSERT`. The primary
+    /// key `(store_id, path)` serializes them; the loser's unique-violation is translated
+    /// to the DOMAIN `MemErr::PathConflict` the serialized in-process backends return, not
+    /// leaked as a raw `MemErr::Storage`. This pins that the wire-visible outcome of a
+    /// same-path race is the same domain error across every backend.
     #[tokio::test]
-    async fn postgres_concurrent_same_path_create_surfaces_raw_storage_not_path_conflict() {
+    async fn postgres_concurrent_same_path_create_surfaces_path_conflict_not_raw_storage() {
         let Some(pool) = schema_pool("t_memoryfs_race").await else {
             return;
         };
@@ -554,11 +553,12 @@ mod postgres {
         }
         assert_eq!(oks, 1, "exactly one same-path create commits");
         assert_eq!(errs.len(), 1, "the other loses the PK race");
-        // KNOWN BUG (adjudicate): raw Storage (unique-violation), not PathConflict.
+        // The losing create's unique-violation is mapped to the domain PathConflict,
+        // not leaked as a raw Storage error — parity with the in-process backends.
         assert!(
-            matches!(errs[0], MemErr::Storage(_)),
-            "the losing create surfaces a raw Storage error (a leaked unique-violation), \
-             not the domain PathConflict — got {:?}",
+            matches!(errs[0], MemErr::PathConflict(ref p) if p == "/race.md"),
+            "the losing create surfaces the domain PathConflict, not a raw Storage \
+             error — got {:?}",
             errs[0]
         );
     }

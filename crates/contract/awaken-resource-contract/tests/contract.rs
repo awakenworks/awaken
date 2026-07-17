@@ -16,7 +16,8 @@
 //! | R4| `MemErr::TooLarge`                      | message interpolates `MAX_MEMORY_BYTES`       |
 //! | R5| `MemErr::Conflict { current }`          | message embeds `current.path`                 |
 //! | R6| each error variant                      | stable `Display` prefix (adapter-facing)      |
-//! | R7| `MemoryEntry` field set / value round-trip | pinned (Clone/Eq); no serde derive (gap)   |
+//! | R7| `MemoryEntry` field set / value round-trip | pinned (Clone/Eq)                          |
+//! | R7b| `MemoryEntry` serde round-trip         | wire mirrors a content-less `Memory`          |
 //! | R8| `MAX_PATH_BYTES`                        | bare constant, no contract predicate (gap)    |
 
 use awaken_resource_contract::{
@@ -180,15 +181,12 @@ fn memory_entry_value_round_trips_and_pins_field_shape() {
     );
 }
 
-// KNOWN GAP (adjudicate): `MemoryEntry` has NO `Serialize`/`Deserialize` derive,
-// unlike `Memory` (lib.rs). The module doc says listings are serialized "onto the
-// managed/HTTP surfaces", yet the port cannot itself serialize a directory listing:
-// a `Vec<MemoryEntry>` from `MemoryFs::list` must be re-projected through `Memory`
-// or a bespoke adapter DTO before it can cross a wire. This test characterizes the
-// present contract — value semantics only — and does NOT add the missing derive.
+// R7b: `MemoryEntry` derives `Serialize`/`Deserialize`, like `Memory` (lib.rs), so a
+// `Vec<MemoryEntry>` from `MemoryFs::list` crosses the managed/HTTP surfaces directly
+// (no re-projection through `Memory` or a bespoke adapter DTO). Its wire shape mirrors
+// a content-less `Memory`: the same field names, no `content`. Pin that round-trip.
 #[test]
-fn memory_entry_is_value_only_no_wire_contract() {
-    // Constructible + usable as a plain value type; that is the whole port surface.
+fn memory_entry_round_trips_over_the_wire_mirroring_memory() {
     let e = MemoryEntry {
         id: "mem_2".into(),
         path: "/x".into(),
@@ -197,11 +195,27 @@ fn memory_entry_is_value_only_no_wire_contract() {
         version: 3,
         updated_unix_nanos: 2,
     };
-    // Debug is the only cross-cutting rendering the type derives (no serde). Pin that
-    // it renders the struct name so tooling relying on it does not silently drift.
+    let wire = serde_json::to_string(&e).unwrap();
+    // The wire carries every identity/version/size field under the same names `Memory`
+    // uses, and no `content` (a listing entry is content-less).
+    for field in [
+        "\"id\":\"mem_2\"",
+        "\"path\":\"/x\"",
+        "\"content_sha256\":\"d\"",
+        "\"content_size\":0",
+        "\"version\":3",
+        "\"updated_unix_nanos\":2",
+    ] {
+        assert!(wire.contains(field), "wire must carry {field}: {wire}");
+    }
     assert!(
-        format!("{e:?}").starts_with("MemoryEntry"),
-        "MemoryEntry must render via derived Debug: {e:?}"
+        !wire.contains("content\":"),
+        "a listing entry carries no content: {wire}"
+    );
+    assert_eq!(
+        serde_json::from_str::<MemoryEntry>(&wire).unwrap(),
+        e,
+        "MemoryEntry round-trips over the wire"
     );
 }
 

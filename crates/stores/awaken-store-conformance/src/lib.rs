@@ -277,13 +277,10 @@ pub async fn concurrent_appends_are_dense_and_distinct<S: Coordinator + Checkpoi
 
 /// Multi-thread isolation: two threads committed to ONE store do not leak
 /// transcripts — each thread reads only its own messages, and its own run is its
-/// latest. This is the property a thread-keyed backend (SQLite/Postgres) must hold
-/// and the reason a fleet can host many sessions in one database.
-///
-/// NOTE: the in-memory reference (and the filesystem store, which reuses it as its
-/// read model) deliberately flatten to a single thread, so they do NOT run this
-/// case — they characterize the flattening as a known divergence in their own
-/// crates instead.
+/// latest. This is the property every backend must hold and the reason a fleet can
+/// host many sessions in one store. All backends key committed truth by thread (the
+/// in-memory reference, and thus the filesystem store that reuses it as its read
+/// model, are thread-keyed too), so every backend runs this case.
 pub async fn two_threads_in_one_store_are_isolated<S: Coordinator + CheckpointReader>(store: &S) {
     let ta = ThreadId("conf-iso-a".to_string());
     let tb = ThreadId("conf-iso-b".to_string());
@@ -355,9 +352,9 @@ pub async fn empty_store_reads_are_absent<S: Coordinator + CheckpointReader>(sto
 ///
 /// NOTE: this exercises the `committed_state` read port; a backend that stores the
 /// state-command rows durably but leaves `committed_state` as the trait default
-/// (empty) will FAIL — that is the divergence this case exists to catch. It is
-/// therefore only wired to backends that project the port; the SQLite/Postgres
-/// backends characterize their current (empty) behavior in their own crates.
+/// (empty) would FAIL — that is the divergence this case exists to catch. Every
+/// backend now projects the port (inmem/fs from their read model, SQLite/Postgres
+/// from the durable `state_command` rows), so all of them run this case.
 pub async fn committed_state_replays<S: Coordinator + CheckpointReader>(store: &S) {
     let thread = ThreadId("conf-state".to_string());
     let run = RunId("conf-state-r".to_string());

@@ -19,6 +19,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{Id as RunId, Phase, Record as RunRecord};
+use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::WaitingTicket;
 use awaken_agent_contract::audit::record::Record as EventRecord;
@@ -91,6 +92,9 @@ pub enum StoreError {
 struct Projection {
     sequence: u64,
     messages: Vec<(ThreadId, Message)>,
+    /// Committed state commands per thread, in commit order (for `committed_state`).
+    /// A resumed run rebuilds its materialized state from these durable rows.
+    state: Vec<(ThreadId, StateCommand)>,
     run_records: HashMap<RunId, RunRecord>,
     /// The latest committed run per thread, in commit order (for `latest_run`).
     latest_by_thread: HashMap<ThreadId, RunRecord>,
@@ -204,6 +208,23 @@ impl PostgresCommitCoordinator {
             .lock()
             .ok()
             .and_then(|p| p.waiting.get(run_id).cloned())
+    }
+
+    /// Committed state commands for a thread, in commit order — served from the
+    /// durable `state_command` rows the projection rebuilt on connect, so a resumed
+    /// run replays its accumulated state (and usage/compaction accounting) from
+    /// durable truth (G1/G13).
+    pub fn committed_state(&self, thread_id: &ThreadId) -> Vec<StateCommand> {
+        self.projection
+            .lock()
+            .map(|p| {
+                p.state
+                    .iter()
+                    .filter(|(tid, _)| tid == thread_id)
+                    .map(|(_, c)| c.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -372,6 +393,9 @@ impl CommitCoordinator for PostgresCommitCoordinator {
         for message in commit.messages {
             projection.messages.push((thread_id.clone(), message));
         }
+        for command in commit.state {
+            projection.state.push((thread_id.clone(), command));
+        }
         projection.events.extend(committed_events);
         let record = RunRecord {
             id: run_id.clone(),
@@ -410,6 +434,10 @@ impl ThreadReader for PostgresCommitCoordinator {
 
     fn waiting_ticket(&self, run_id: &RunId) -> Option<WaitingTicket> {
         self.waiting_for(run_id)
+    }
+
+    fn committed_state(&self, thread_id: &ThreadId) -> Vec<StateCommand> {
+        PostgresCommitCoordinator::committed_state(self, thread_id)
     }
 }
 
@@ -481,6 +509,19 @@ async fn hydrate(pool: &PgPool) -> Result<Projection, sqlx::Error> {
         let thread_id: String = row.try_get("thread_id")?;
         let Json(message): Json<Message> = row.try_get("data")?;
         projection.messages.push((ThreadId(thread_id), message));
+    }
+
+    // Rebuild the committed state-command log per thread, in commit order, so a
+    // resumed run replays its accumulated state from durable truth (G1/G13).
+    let state_rows = sqlx::query(&format!(
+        "SELECT thread_id, data FROM {NS}_state_command ORDER BY id"
+    ))
+    .fetch_all(pool)
+    .await?;
+    for row in state_rows {
+        let thread_id: String = row.try_get("thread_id")?;
+        let Json(command): Json<StateCommand> = row.try_get("data")?;
+        projection.state.push((ThreadId(thread_id), command));
     }
 
     // Fold the commit log in order so the latest fact per run wins (G32).

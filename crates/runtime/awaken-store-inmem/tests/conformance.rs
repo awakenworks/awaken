@@ -46,8 +46,13 @@ async fn committed_state_replays() {
     awaken_store_conformance::committed_state_replays(&MemoryCommitCoordinator::new()).await;
 }
 
-// The multi-thread isolation case (`two_threads_in_one_store_are_isolated`) is
-// intentionally NOT run here: the in-memory reference flattens to a single thread
-// (one `thread_id`/message vector), so it cannot isolate two threads in one store.
-// That flattening is the documented single-thread contract of this reference; the
-// filesystem store inherits it and characterizes the divergence explicitly.
+// The in-memory reference keys committed truth by thread, so two threads committed to
+// one store stay isolated (each reads only its own transcript/state/latest run) — it
+// runs the shared multi-thread isolation case, as the SQLite / Postgres backends do.
+// The filesystem store, which reuses this reference as its read model, inherits the
+// isolation.
+#[tokio::test]
+async fn two_threads_in_one_store_are_isolated() {
+    awaken_store_conformance::two_threads_in_one_store_are_isolated(&MemoryCommitCoordinator::new())
+        .await;
+}
