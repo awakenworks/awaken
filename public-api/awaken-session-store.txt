@@ -1,4 +1,14 @@
 pub mod awaken_session_store
+pub struct awaken_session_store::InMemoryScopedSessionStore
+impl awaken_session_store::InMemoryScopedSessionStore
+pub fn awaken_session_store::InMemoryScopedSessionStore::new() -> Self
+impl awaken_session_contract::session_repo::ScopedSessionStore for awaken_session_store::InMemoryScopedSessionStore
+pub fn awaken_session_store::InMemoryScopedSessionStore::get_scoped<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_session_contract::session_repo::PersistedSession>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_session_store::InMemoryScopedSessionStore::save_scoped<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, awaken_session_contract::session_repo::PersistedSession) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub struct awaken_session_store::InMemorySessionRepository
+impl awaken_session_contract::session_repo::ManagedSessionRepository for awaken_session_store::InMemorySessionRepository
+pub fn awaken_session_store::InMemorySessionRepository::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_session_contract::session_repo::PersistedSession>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_session_store::InMemorySessionRepository::save<'life0, 'async_trait>(&'life0 self, awaken_session_contract::session_repo::PersistedSession) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_session_store::PostgresManagedSessionRepository
 impl awaken_session_store::PostgresManagedSessionRepository
 pub async fn awaken_session_store::PostgresManagedSessionRepository::connect(&str) -> core::result::Result<Self, alloc::string::String>

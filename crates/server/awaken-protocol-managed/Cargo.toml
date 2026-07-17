@@ -10,11 +10,12 @@ awaken-agent-contract.workspace = true
 # owns the wire DTOs + the neutral→wire encoder and re-exports each moved port via a
 # shim so consumers stay unchanged until flipped to the contract directly.
 awaken-session-contract.workspace = true
-# The in-memory reference WorkQueue + EnvRegistry backends the environments Default
-# wires (the ports + value objects stay inward in session-contract; the backends live
-# beside the durable sqlite/postgres siblings).
+# The in-memory reference WorkQueue + EnvRegistry + session-repository backends the
+# Managed Default wires (the ports + value objects stay inward in session-contract; the
+# backends live beside the durable sqlite/postgres siblings).
 awaken-work-store.workspace = true
 awaken-env-store.workspace = true
+awaken-session-store.workspace = true
 # Tenancy as an edge aspect (ADR-0051): the opaque `ScopeId` the `ScopedRepo`
 # decorator binds so session persistence is tenant-isolable while the core stays
 # tenancy-agnostic (the engine never reads a scope).

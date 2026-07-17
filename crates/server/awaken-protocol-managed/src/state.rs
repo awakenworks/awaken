@@ -23,9 +23,8 @@ use crate::types::{
     ModelOverride, OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent,
     SessionCreateParams, SessionError, SessionStats, StopReason, StreamFrame, Usage,
 };
-use awaken_session_contract::{
-    InMemorySessionRepository, ManagedSessionRepository, PersistedSession,
-};
+use awaken_session_contract::{ManagedSessionRepository, PersistedSession};
+use awaken_session_store::InMemorySessionRepository;
 
 /// The seeded owner scope a bare/self-hosted session is created under when the
 /// edge resolved no workspace (ADR-0051 / ADR-0048 D2 "seeded, not absent"). It
