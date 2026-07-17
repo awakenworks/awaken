@@ -135,13 +135,16 @@ impl CaptureSink for InMemoryCapturedContentStore {
 
 #[async_trait]
 impl ContentEraser for InMemoryCapturedContentStore {
-    async fn erase_subject(&self, subject: &DataSubjectId) -> usize {
+    async fn erase_subject(
+        &self,
+        subject: &DataSubjectId,
+    ) -> Result<usize, awaken_runtime_contract::ErasureError> {
         let mut v = self.inner.lock().unwrap();
         let before = v.len();
         // Restricted (Art. 18) records survive erasure — kept for the legal
-        // purpose until released.
+        // purpose until released. In-memory removal cannot fail.
         v.retain(|r| &r.subject != subject || r.restricted);
-        before - v.len()
+        Ok(before - v.len())
     }
 }
 
@@ -178,7 +181,10 @@ mod tests {
         )
         .await;
         assert_eq!(s.len(), 1, "sink wrote one record");
-        assert_eq!(s.erase_subject(&DataSubjectId("a".into())).await, 1);
+        assert_eq!(
+            s.erase_subject(&DataSubjectId("a".into())).await.unwrap(),
+            1
+        );
         assert!(s.is_empty());
     }
 
@@ -186,11 +192,16 @@ mod tests {
     async fn erase_removes_exactly_the_subjects_records() {
         let s = store();
         assert_eq!(s.len(), 3);
-        let removed = s.erase_subject(&DataSubjectId("a".into())).await;
+        let removed = s.erase_subject(&DataSubjectId("a".into())).await.unwrap();
         assert_eq!(removed, 2, "both of subject a's records removed");
         assert_eq!(s.len(), 1, "subject b's record remains");
         // Erasing an unknown subject removes nothing.
-        assert_eq!(s.erase_subject(&DataSubjectId("ghost".into())).await, 0);
+        assert_eq!(
+            s.erase_subject(&DataSubjectId("ghost".into()))
+                .await
+                .unwrap(),
+            0
+        );
     }
 
     #[tokio::test]
@@ -211,13 +222,19 @@ mod tests {
         assert_eq!(s.restrict(&DataSubjectId("a".into())), 2);
 
         // Erasure and TTL both skip restricted records.
-        assert_eq!(s.erase_subject(&DataSubjectId("a".into())).await, 0);
+        assert_eq!(
+            s.erase_subject(&DataSubjectId("a".into())).await.unwrap(),
+            0
+        );
         assert_eq!(s.sweep_expired(1, 10_000), 0);
         assert_eq!(s.len(), 2, "restricted records survive both");
 
         // Once released, erasure removes them.
         assert_eq!(s.release(&DataSubjectId("a".into())), 2);
-        assert_eq!(s.erase_subject(&DataSubjectId("a".into())).await, 2);
+        assert_eq!(
+            s.erase_subject(&DataSubjectId("a".into())).await.unwrap(),
+            2
+        );
         assert!(s.is_empty());
     }
 

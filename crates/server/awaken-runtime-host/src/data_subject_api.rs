@@ -48,8 +48,15 @@ pub fn erasure_router(resolver: Arc<dyn DataSubjectResolver>) -> Router {
 async fn erase(
     State(resolver): State<Arc<dyn DataSubjectResolver>>,
     Path(id): Path<String>,
-) -> Json<ErasureReceipt> {
-    Json(resolver.erase(&DataSubjectId(id)).await)
+) -> Result<Json<ErasureReceipt>, StatusCode> {
+    // Fail-closed: a backend erasure/accountability failure is a 500, never a
+    // success receipt — the caller must not be told the data was erased when it
+    // was not (GDPR Art. 17).
+    resolver
+        .erase(&DataSubjectId(id))
+        .await
+        .map(Json)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 /// The `POST` body granting consent for one purpose (ADR-0050): the controller's
@@ -308,17 +315,22 @@ mod tests {
         async fn consent_ceiling(&self, _s: &DataSubjectId, _p: Purpose) -> ContentCapture {
             ContentCapture::Structured
         }
-        async fn erase(&self, _s: &DataSubjectId) -> ErasureReceipt {
-            ErasureReceipt {
+        async fn erase(
+            &self,
+            _s: &DataSubjectId,
+        ) -> Result<ErasureReceipt, awaken_runtime_contract::ErasureError> {
+            Ok(ErasureReceipt {
                 records_removed: self.removed,
-            }
+            })
         }
     }
 
     #[tokio::test]
     async fn erase_returns_the_resolver_receipt() {
         let resolver: Arc<dyn DataSubjectResolver> = Arc::new(StubResolver { removed: 3 });
-        let Json(receipt) = erase(State(resolver), Path("dsub_1".to_string())).await;
+        let Json(receipt) = erase(State(resolver), Path("dsub_1".to_string()))
+            .await
+            .expect("erase succeeds");
         assert_eq!(receipt.records_removed, 3);
     }
 

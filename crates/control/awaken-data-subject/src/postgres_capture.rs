@@ -137,8 +137,12 @@ impl CaptureSink for PgCapturedContentStore {
 
 #[async_trait]
 impl ContentEraser for PgCapturedContentStore {
-    async fn erase_subject(&self, subject: &DataSubjectId) -> usize {
-        // Restricted (Art. 18) rows survive erasure until released.
+    async fn erase_subject(
+        &self,
+        subject: &DataSubjectId,
+    ) -> Result<usize, awaken_runtime_contract::ErasureError> {
+        // Restricted (Art. 18) rows survive erasure until released. A DELETE that
+        // errors is surfaced (fail-closed) rather than swallowed to a `0` count.
         sqlx::query(&format!(
             "DELETE FROM {NS}_captured WHERE subject = $1 AND restricted = 0"
         ))
@@ -146,6 +150,6 @@ impl ContentEraser for PgCapturedContentStore {
         .execute(&self.pool)
         .await
         .map(|r| r.rows_affected() as usize)
-        .unwrap_or(0)
+        .map_err(|e| awaken_runtime_contract::ErasureError(e.to_string()))
     }
 }

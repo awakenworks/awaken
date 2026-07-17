@@ -282,20 +282,30 @@ impl awaken_runtime_contract::DataSubjectResolver for RepoDataSubjectResolver {
         }
     }
 
-    async fn erase(&self, subject: &DataSubjectId) -> ErasureReceipt {
+    async fn erase(
+        &self,
+        subject: &DataSubjectId,
+    ) -> Result<ErasureReceipt, awaken_runtime_contract::ErasureError> {
         // Fan the erasure out across every registered content store, summing the
-        // records removed.
+        // records removed. A content-store DELETE that fails is surfaced (fail
+        // closed) BEFORE the accountability stamp — an unerased subject must never
+        // be stamped as erased, and the caller must not receive a success receipt.
         let mut records_removed = 0;
         for eraser in &self.erasers {
-            records_removed += eraser.erase_subject(subject).await;
+            records_removed += eraser.erase_subject(subject).await?;
         }
         // Retain the subject record as accountability proof (Art. 5(2)/7(1)):
-        // withdraw its consents + stamp `erased_at`, rather than deleting it.
+        // withdraw its consents + stamp `erased_at`, rather than deleting it. A
+        // present subject whose accountability write fails surfaces as an error
+        // (an unrecorded erasure is a compliance gap); an absent subject record is
+        // simply nothing to stamp.
         if let Ok(mut s) = self.repo.get(subject).await {
             s.mark_erased(now_millis());
-            let _ = self.repo.put(s).await;
+            self.repo.put(s).await.map_err(|e| {
+                awaken_runtime_contract::ErasureError(format!("accountability write failed: {e}"))
+            })?;
         }
-        ErasureReceipt { records_removed }
+        Ok(ErasureReceipt { records_removed })
     }
 }
 
@@ -611,7 +621,7 @@ mod tests {
 
         let resolver = RepoDataSubjectResolver::new(repo.clone());
         let id = DataSubjectId("dsub_1".into());
-        let receipt = resolver.erase(&id).await;
+        let receipt = resolver.erase(&id).await.unwrap();
         assert_eq!(receipt.records_removed, 0, "no erasers → nothing removed");
 
         let after = repo.get(&id).await.expect("subject retained");
@@ -629,8 +639,11 @@ mod tests {
         struct FakeEraser(usize);
         #[async_trait]
         impl ContentEraser for FakeEraser {
-            async fn erase_subject(&self, _s: &DataSubjectId) -> usize {
-                self.0
+            async fn erase_subject(
+                &self,
+                _s: &DataSubjectId,
+            ) -> Result<usize, awaken_runtime_contract::ErasureError> {
+                Ok(self.0)
             }
         }
 
@@ -638,7 +651,10 @@ mod tests {
         let resolver =
             RepoDataSubjectResolver::new(repo).with_eraser(std::sync::Arc::new(FakeEraser(6)));
         // Subject was never put(); erasers still remove its orphaned content.
-        let receipt = resolver.erase(&DataSubjectId("orphan".into())).await;
+        let receipt = resolver
+            .erase(&DataSubjectId("orphan".into()))
+            .await
+            .unwrap();
         assert_eq!(
             receipt.records_removed, 6,
             "content erased even with no record"
@@ -668,7 +684,7 @@ mod tests {
             ContentCapture::Structured
         );
         // Erase removes the record → resolves back to Structured.
-        resolver.erase(&id).await;
+        resolver.erase(&id).await.unwrap();
         assert_eq!(
             resolver
                 .consent_ceiling(&id, Purpose::TelemetryContent)
@@ -677,32 +693,27 @@ mod tests {
         );
     }
 
-    // KNOWN BUG (adjudicate): silent under-erasure — backend failure returns success receipt.
-    // GDPR Art. 17 erasure fans out to content erasers and writes an accountability
-    // stamp. But `ContentEraser::erase_subject` returns a bare `usize` (no Result),
-    // and `RepoDataSubjectResolver::erase` does `let _ = self.repo.put(s)` — swallowing
-    // the accountability write. So a *total backend failure* on both the content
-    // DELETE and the accountability PUT is indistinguishable from a clean "nothing to
-    // erase": the caller still gets a success `ErasureReceipt { records_removed: 0 }`,
-    // with no channel to learn the erasure never actually happened. This test PINS
-    // that current (buggy) fail-open behavior; it does not assert it is correct.
+    // FAIL-CLOSED: a backend erasure/accountability failure surfaces as an error, not
+    // a success receipt. GDPR Art. 17 erasure fans out to content erasers and writes an
+    // accountability stamp; `ContentEraser::erase_subject` and `erase` now return a
+    // `Result`, so a failing content DELETE and a failing accountability PUT each
+    // propagate — the caller can no longer mistake a total no-op for a real erasure.
     #[tokio::test]
-    async fn resolver_erase_silently_swallows_backend_failures() {
-        use awaken_runtime_contract::ContentEraser;
+    async fn resolver_erase_surfaces_backend_failures() {
+        use awaken_runtime_contract::{ContentEraser, ErasureError};
 
-        // A content backend whose DELETE errored. The `usize` signature has no channel
-        // to surface that, so the only value a failed backend can report is 0 — the
-        // same value a clean "nothing matched" reports.
+        // A content backend whose DELETE errored: it now reports the failure through
+        // the `Result` channel instead of collapsing to an ambiguous `0`.
         struct FailingEraser;
         #[async_trait]
         impl ContentEraser for FailingEraser {
-            async fn erase_subject(&self, _s: &DataSubjectId) -> usize {
-                0
+            async fn erase_subject(&self, _s: &DataSubjectId) -> Result<usize, ErasureError> {
+                Err(ErasureError("content DELETE failed".into()))
             }
         }
 
         // A repo whose accountability write (`put`) always fails. `get` succeeds so the
-        // resolver reaches the swallowed `let _ = self.repo.put(s)` branch.
+        // resolver reaches the accountability-write branch.
         struct FailingPutRepo;
         #[async_trait]
         impl DataSubjectRepo for FailingPutRepo {
@@ -720,18 +731,32 @@ mod tests {
             }
         }
 
-        let resolver = RepoDataSubjectResolver::new(std::sync::Arc::new(FailingPutRepo))
+        // (1) A failing content eraser surfaces before any accountability stamp — an
+        // unerased subject must never be reported as erased.
+        let with_failing_eraser = RepoDataSubjectResolver::new(std::sync::Arc::new(FailingPutRepo))
             .with_eraser(std::sync::Arc::new(FailingEraser));
+        let err = with_failing_eraser
+            .erase(&DataSubjectId("dsub_1".into()))
+            .await
+            .expect_err("a failing content DELETE must surface, not return a success receipt");
+        assert!(err.to_string().contains("content DELETE failed"));
 
-        // Both the content erase and the accountability write failed, yet the caller
-        // gets a plain success receipt — the failure was swallowed on both paths. The
-        // `ErasureReceipt` type itself carries only `records_removed` (no error/status),
-        // so a real erasure and a total no-op are wire-indistinguishable.
-        let receipt = resolver.erase(&DataSubjectId("dsub_1".into())).await;
-        assert_eq!(
-            receipt.records_removed, 0,
-            "backend failure is reported as a clean '0 removed' success receipt"
-        );
+        // (2) With content erasure clean but the accountability write failing, the
+        // failed audit stamp still surfaces as an error (no success receipt).
+        struct CleanEraser;
+        #[async_trait]
+        impl ContentEraser for CleanEraser {
+            async fn erase_subject(&self, _s: &DataSubjectId) -> Result<usize, ErasureError> {
+                Ok(0)
+            }
+        }
+        let with_failing_put = RepoDataSubjectResolver::new(std::sync::Arc::new(FailingPutRepo))
+            .with_eraser(std::sync::Arc::new(CleanEraser));
+        let err = with_failing_put
+            .erase(&DataSubjectId("dsub_1".into()))
+            .await
+            .expect_err("a failing accountability write must surface as an error");
+        assert!(err.to_string().contains("accountability write failed"));
     }
 
     #[tokio::test]
@@ -741,8 +766,11 @@ mod tests {
         struct FakeEraser(usize);
         #[async_trait]
         impl ContentEraser for FakeEraser {
-            async fn erase_subject(&self, _s: &DataSubjectId) -> usize {
-                self.0
+            async fn erase_subject(
+                &self,
+                _s: &DataSubjectId,
+            ) -> Result<usize, awaken_runtime_contract::ErasureError> {
+                Ok(self.0)
             }
         }
 
@@ -754,7 +782,10 @@ mod tests {
             .with_eraser(std::sync::Arc::new(FakeEraser(2)))
             .with_eraser(std::sync::Arc::new(FakeEraser(3)));
 
-        let receipt = resolver.erase(&DataSubjectId("dsub_1".into())).await;
+        let receipt = resolver
+            .erase(&DataSubjectId("dsub_1".into()))
+            .await
+            .unwrap();
         assert_eq!(receipt.records_removed, 5, "sums across content stores");
     }
 
@@ -768,8 +799,11 @@ mod tests {
         struct FakeEraser(usize);
         #[async_trait]
         impl ContentEraser for FakeEraser {
-            async fn erase_subject(&self, _s: &DataSubjectId) -> usize {
-                self.0
+            async fn erase_subject(
+                &self,
+                _s: &DataSubjectId,
+            ) -> Result<usize, awaken_runtime_contract::ErasureError> {
+                Ok(self.0)
             }
         }
 
@@ -783,7 +817,7 @@ mod tests {
             .with_eraser(std::sync::Arc::new(FakeEraser(3)));
         let id = DataSubjectId("dsub_1".into());
 
-        let receipt = resolver.erase(&id).await;
+        let receipt = resolver.erase(&id).await.unwrap();
         assert_eq!(receipt.records_removed, 7, "fan-out sum across erasers");
 
         // Subject record is retained (Art. 5(2)/7(1)) with an erased_at stamp and

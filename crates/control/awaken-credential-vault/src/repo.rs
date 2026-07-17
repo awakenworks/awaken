@@ -169,13 +169,27 @@ mod tests {
         assert_eq!(repo.list_pools("empty").await.unwrap().len(), 0);
     }
 
-    /// F11(d): `get` is keyed by source id **only** — it is *not* workspace-scoped.
-    /// A caller holding a source id from another workspace reads the row directly;
-    /// only `list` filters by workspace. This pins the *current* behavior: if a
-    /// consumer ever calls `get` with an id crossing a tenant boundary, no guard
-    /// here stops it. Flagged for adjudication — this test does not endorse it.
+    /// F11(d): `get` is a deliberate **unscoped by-id primitive** — keyed by source
+    /// id only, never by workspace (only `list`/`list_pools` filter by workspace).
+    /// Tenancy is NOT enforced on this low-level read; it is enforced one layer up,
+    /// at credential *resolution* (`awaken_config_resolver::resolve_credential`),
+    /// which is where both the binding's and the source's workspace are known: a
+    /// pool member whose source belongs to another workspace is skipped, and an
+    /// `Exact` binding on a cross-workspace source fails closed (`SourceMissing`).
+    ///
+    /// Audit of every `CredentialRepo::get` caller confirms none performs an
+    /// unfenced cross-workspace *secret materialization*:
+    /// - `awaken-runtime-host::PrefetchedSourceLookup::for_defs` (managed MCP)
+    ///   prefetches by id, then materializes only through the fenced resolver;
+    /// - the admin-config-api routes (`get_credential`, `archive_credential`,
+    ///   `put_mcp_server` existence-check) are IAM-gated by-id management ops that
+    ///   read a **secret-free** row / mutate status — they never materialize a
+    ///   secret; the sealed material stays behind `SecretStore`.
+    ///
+    /// So keeping `get` unscoped is correct: it is the shared read primitive, and
+    /// the tenant fence lives at the resolution seam. This test pins that primitive.
     #[tokio::test]
-    async fn get_is_not_workspace_scoped_and_reads_across_workspaces() {
+    async fn get_is_an_unscoped_by_id_primitive_fenced_at_resolution() {
         let store = InMemorySecretStore::new();
         let repo = InMemoryCredentialRepo::new();
         let owned = enter_credential(

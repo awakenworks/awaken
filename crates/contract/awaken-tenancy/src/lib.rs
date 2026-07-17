@@ -172,14 +172,20 @@ impl std::fmt::Display for ScopeRejection {
 /// authorized [`ScopeId`] (ADR-0051 D4).
 ///
 /// Rules, in one pass:
-/// 1. **Selection** is the scope named by a path/domain vehicle (the first such
-///    claim). The token claim is authority, never selection.
-/// 2. If a selection is present, it must be covered by the authority — the
-///    narrow-token fence (singleton authority ⇒ must equal) and the
-///    broad-principal check (⇒ must be a member) are the same test. Otherwise
-///    [`ScopeRejection::NotAuthorized`].
-/// 3. If no selection is present, the target is the authority's sole scope when
-///    it is a singleton, else [`ScopeRejection::SelectionRequired`].
+/// 1. **Selections** are the scopes named by path/domain vehicles (the token claim
+///    is authority, never selection). *Every* selector is examined — not just the
+///    first: a vehicle never widens authority, so a later, disagreeing selector
+///    cannot be silently ignored.
+/// 2. **Fail closed on coverage:** if *any* selector names a scope the authority
+///    does not cover, the request is rejected [`ScopeRejection::NotAuthorized`],
+///    even when an earlier selector was authorized. The narrow-token fence
+///    (singleton authority ⇒ must equal) and the broad-principal check (⇒ must be
+///    a member) are the same `covers` test.
+/// 3. **Agreement:** the covered selectors must all name the *same* scope; a
+///    disagreement is ambiguous, so the request must name one workspace
+///    ([`ScopeRejection::SelectionRequired`]).
+/// 4. If no selector is present, the target is the authority's sole scope when it
+///    is a singleton, else [`ScopeRejection::SelectionRequired`].
 ///
 /// Authentication (establishing the [`Authority`]) and the [`ScopeId`] →
 /// `ScopeRef` translation happen outside this function; it is pure so the
@@ -191,22 +197,32 @@ pub fn resolve_scope(
     if authority.reachable.is_empty() {
         return Err(ScopeRejection::NoAuthority);
     }
-    // The first selecting vehicle wins; path and domain are equivalent selectors
-    // (a deployment mounts at most one for a given surface, and if both are
-    // present they must agree — both are checked against the same authority).
-    let selection = claims.iter().find_map(ScopeClaim::selection);
-    match selection {
-        Some(selected) => {
-            if authority.covers(&selected) {
-                Ok(selected)
-            } else {
-                Err(ScopeRejection::NotAuthorized { selected })
-            }
-        }
-        None => match authority.reachable.as_slice() {
+    // Collect EVERY selecting vehicle (path/domain); the token is authority, never a
+    // selection. First-wins would let a disagreeing, unauthorized second selector
+    // slip through unchecked (fail-open), so each selector is reconciled below.
+    let selections: Vec<ScopeId> = claims.iter().filter_map(ScopeClaim::selection).collect();
+    let Some((first, rest)) = selections.split_first() else {
+        // No selection: a singleton authority resolves to its sole scope; a broader
+        // one is ambiguous and must be named.
+        return match authority.reachable.as_slice() {
             [only] => Ok(only.clone()),
             _ => Err(ScopeRejection::SelectionRequired),
-        },
+        };
+    };
+    // Fail closed on ANY uncovered selector, even if an earlier one was authorized —
+    // an unauthorized selector is never masked by an authorized peer.
+    for selected in &selections {
+        if !authority.covers(selected) {
+            return Err(ScopeRejection::NotAuthorized {
+                selected: selected.clone(),
+            });
+        }
+    }
+    // All covered — they must also agree on one target; a disagreement is ambiguous.
+    if rest.iter().all(|s| s == first) {
+        Ok(first.clone())
+    } else {
+        Err(ScopeRejection::SelectionRequired)
     }
 }
 
@@ -337,8 +353,10 @@ mod tests {
     }
 
     #[test]
-    fn the_first_selecting_vehicle_wins_and_is_still_authorized() {
-        // path present and covered → resolves; a later domain claim doesn't override.
+    fn two_both_authorized_disagreeing_selectors_are_ambiguous() {
+        // path and domain are BOTH covered by the authority but name DIFFERENT
+        // scopes. First-wins would silently take the path; instead the disagreement
+        // is ambiguous and the request must name a single workspace.
         let auth = Authority::reaching([ws("ws_a"), ws("ws_b")]);
         let got = resolve_scope(
             &auth,
@@ -347,7 +365,22 @@ mod tests {
                 ScopeClaim::FromDomain("ws_b".into()),
             ],
         );
-        assert_eq!(got, Ok(ws("ws_a")));
+        assert_eq!(got, Err(ScopeRejection::SelectionRequired));
+    }
+
+    #[test]
+    fn agreeing_path_and_domain_resolve_to_their_shared_scope() {
+        // Both selectors name the same covered scope: they agree, so resolution
+        // succeeds to that scope (the happy path for a dual-vehicle surface).
+        let auth = Authority::reaching([ws("ws_a"), ws("ws_b")]);
+        let got = resolve_scope(
+            &auth,
+            &[
+                ScopeClaim::FromPath("ws_b".into()),
+                ScopeClaim::FromDomain("ws_b".into()),
+            ],
+        );
+        assert_eq!(got, Ok(ws("ws_b")));
     }
 
     #[test]
@@ -413,24 +446,16 @@ mod tests {
         assert_eq!(format!("{scope:?}"), r#"WorkspaceScope("wrkspc_acme")"#);
     }
 
-    // --- CHARACTERIZATION: "path + domain must agree" is NOT enforced ---------
+    // --- FAIL-CLOSED: every selector is checked; an unauthorized one is rejected --
 
-    // KNOWN BUG (adjudicate): resolve_scope silently takes first selector;
-    // disagreeing path/domain is NOT rejected despite the "must agree" doc.
-    //
-    // The doc comment on `resolve_scope` claims "if both are present they must
-    // agree — both are checked against the same authority". This test pins the
-    // ACTUAL behavior: only the FIRST selecting vehicle is examined. A second,
-    // disagreeing selector that names a scope the principal is NOT authorized for
-    // is silently ignored (never checked against the authority), so no
-    // `NotAuthorized` rejection is raised. This is a fail-open relative to the
-    // contract doc.
+    // A later, disagreeing selector that names an UNAUTHORIZED scope is rejected —
+    // it is never masked by an earlier authorized selector (fail closed).
     #[test]
-    fn disagreeing_path_and_domain_are_not_rejected_first_selector_wins() {
+    fn a_disagreeing_unauthorized_second_selector_is_rejected() {
         // Authority reaches ONLY ws_a. The path selects ws_a (authorized); the
-        // domain disagrees and selects ws_evil (NOT authorized). If path+domain
-        // were truly "both checked against the same authority", the disagreeing
-        // domain would trip NotAuthorized. It does not.
+        // domain disagrees and selects ws_evil (NOT authorized). Every selector is
+        // checked against the same authority, so the uncovered domain trips
+        // NotAuthorized rather than being silently ignored.
         let auth = Authority::bound(ws("ws_a"));
         let got = resolve_scope(
             &auth,
@@ -439,15 +464,19 @@ mod tests {
                 ScopeClaim::FromDomain("ws_evil".into()),
             ],
         );
-        // ACTUAL: first selector wins, disagreement silently accepted.
-        assert_eq!(got, Ok(ws("ws_a")));
+        assert_eq!(
+            got,
+            Err(ScopeRejection::NotAuthorized {
+                selected: ws("ws_evil")
+            }),
+            "an unauthorized second selector is rejected, not masked by the first"
+        );
     }
 
-    // KNOWN BUG (adjudicate): symmetric case — domain first, path disagrees.
+    // Symmetric case — domain first, path disagrees and is unauthorized: still
+    // rejected. Ordering does not decide the outcome; coverage does.
     #[test]
-    fn disagreeing_domain_and_path_take_domain_when_it_is_first() {
-        // Ordering, not agreement, decides the outcome: swap the vehicles and the
-        // domain's scope wins even though the later path disagrees.
+    fn a_disagreeing_unauthorized_selector_is_rejected_regardless_of_order() {
         let auth = Authority::bound(ws("ws_a"));
         let got = resolve_scope(
             &auth,
@@ -456,6 +485,11 @@ mod tests {
                 ScopeClaim::FromPath("ws_evil".into()),
             ],
         );
-        assert_eq!(got, Ok(ws("ws_a")));
+        assert_eq!(
+            got,
+            Err(ScopeRejection::NotAuthorized {
+                selected: ws("ws_evil")
+            })
+        );
     }
 }
