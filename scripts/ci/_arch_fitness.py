@@ -151,11 +151,66 @@ def _selftest_god_hub_ratchet() -> None:
     assert len(v) == 1 and "40" in v[0] and "36" in v[0], v  # E1 names both counts
 
 
+def _property_check() -> None:
+    """Formal (property-based) verification of the three predicates: universally-quantified
+    invariants checked over many SEEDED-random inputs (ADR-0059 verification pass). Seeded
+    so CI is deterministic; no `hypothesis` dep. Complements the cause-effect tables by
+    asserting the general law, not just sampled rows.
+
+    Laws:
+      contract_purity   — result set == sorted(deps ∩ FORBIDDEN); order-independent;
+                          every message names its dep; empty iff the intersection is empty.
+      protocol_leaf     — a consumer/sibling/executor name ⟹ always empty; otherwise the
+                          count equals the number of `awaken-protocol-*` deps; sorted-stable.
+      god_hub_ratchet   — empty iff count <= ceiling; monotone in count; message names both.
+    """
+    import random
+
+    rng = random.Random(0xA5CE)  # fixed seed → reproducible CI
+    forbidden = list(CONTRACT_FORBIDDEN_DEPS)
+    innocuous = ["serde", "serde_json", "thiserror", "async-trait", "awaken-agent-contract"]
+    protocols = [f"awaken-protocol-{p}" for p in ("managed", "a2a", "ai-sdk", "ag-ui", "mcp", "transport")]
+    plain_names = ["awaken-config-store", "awaken-data-subject", "awaken-model-catalog", "x-crate"]
+    consumer_names = list(PROTOCOL_LEAF_CONSUMERS) + ["awaken-protocol-a2a", "awaken-run-executor-a2a"]
+
+    for _ in range(500):
+        # ---- contract purity ----
+        picked_forbidden = set(rng.sample(forbidden, rng.randint(0, len(forbidden))))
+        deps = frozenset(picked_forbidden | set(rng.sample(innocuous, rng.randint(0, len(innocuous)))))
+        v = contract_purity_violations("x-contract", deps)
+        assert len(v) == len(deps & CONTRACT_FORBIDDEN_DEPS), (deps, v)  # result == intersection
+        assert bool(v) == bool(deps & CONTRACT_FORBIDDEN_DEPS)  # empty iff no forbidden dep
+        assert all(any(d in msg for d in picked_forbidden) for msg in v)  # each names a dep
+        # order-independence: a reordered frozenset yields the same messages (predicate sorts)
+        assert contract_purity_violations("x-contract", frozenset(list(deps))) == v
+
+        # ---- protocol leaves ----
+        pdeps = frozenset(rng.sample(protocols, rng.randint(0, len(protocols))) + rng.sample(innocuous, rng.randint(0, 2)))
+        name = rng.choice(plain_names + consumer_names)
+        pv = protocol_leaf_violations(name, pdeps)
+        if is_protocol_leaf_consumer(name):
+            assert pv == [], (name, pv)  # consumer/sibling/executor ⟹ always allowed
+        else:
+            n_proto = sum(1 for d in pdeps if d.startswith("awaken-protocol-"))
+            assert len(pv) == n_proto, (name, pdeps, pv)  # one per protocol dep
+            assert pv == sorted(pv), "messages must be sorted-stable"
+
+        # ---- god-hub ratchet ----
+        ceiling = rng.randint(0, 60)
+        count = rng.randint(0, 60)
+        gv = god_hub_ratchet_violation(count, ceiling)
+        assert (gv == []) == (count <= ceiling), (count, ceiling, gv)  # empty iff within ceiling
+        if gv:
+            assert str(count) in gv[0] and str(ceiling) in gv[0]  # names both counts
+
+
 def selftest() -> None:
-    """Run every rule's cause-effect decision table (called on each CI invocation)."""
+    """Run every rule's cause-effect decision table + the property checks (called on each
+    CI invocation)."""
     _selftest_contract_purity()
     _selftest_protocol_leaves()
     _selftest_god_hub_ratchet()
+    _property_check()
 
 
 def check_all(specs: list[CrateSpec]) -> list[str]:

@@ -136,6 +136,10 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", 
 tokio-util = "0.7"
 genai = "0.6.0-beta.17"
 axum = "0.8"
+# Property-based (lightweight formal) verification: dev-only. Encodes universally-
+# quantified invariants (tenant-isolation fence, lease-reclaim monotonicity, archive/
+# delete semantics) and checks them over generated inputs (ADR-0059 verification pass).
+proptest = "1"
 # rusqlite carries the native `links = "sqlite3"` crate libsqlite3-sys, of which a
 # binary graph may contain exactly one. Declared as a *range* (not a hard `^0.x`
 # pin) so an embedding graph — e.g. awaken-cloud, which resolves rusqlite 0.40 —

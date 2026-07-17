@@ -23,6 +23,8 @@ awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 # The sqlite backend tests open a temp on-disk database.
 tempfile = "3"
+# Property-based verification of the tenant-isolation fence (ADR-0059).
+proptest = { workspace = true }
 
 [lints]
 workspace = true
