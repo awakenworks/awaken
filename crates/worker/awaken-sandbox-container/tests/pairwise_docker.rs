@@ -389,3 +389,80 @@ async fn a_memory_cap_oom_kills_an_over_allocating_container() {
         "the same allocation without a cap completes (exit 0); got {uncapped:?}"
     );
 }
+
+/// A long-lived process-as-container (sleep) used to prove cross-provider adoption.
+fn sleeper_spec(scope: &str) -> pc::SandboxSpec {
+    pc::SandboxSpec {
+        scope: scope.into(),
+        isolation: pc::IsolationClass::Container,
+        mounts: Vec::new(),
+        env: Vec::new(),
+        network: pc::NetworkPolicy::None,
+        outputs_path: "/mnt/session/outputs".into(),
+        limits: Default::default(),
+        lease_ttl_secs: None,
+        extra: Some(serde_json::json!({ "command": ["sleep", "30"] })),
+    }
+}
+
+/// G2 / ADR-0056 SPOF elimination on a shared substrate, verified against a REAL
+/// daemon: a container OUTLIVES the provider (worker) that created it, so a PEER
+/// provider over the SAME daemon re-ADOPTS the same running container from its durable
+/// handle — no dispose, no re-create, so in-flight sandbox state survives a worker
+/// crash. The handle round-trips through JSON first (the opaque `Claimed.sandbox`
+/// form). A handle whose container is gone fails closed (adopt refuses a dead sandbox).
+#[tokio::test]
+async fn a_peer_provider_re_adopts_a_live_container_from_its_durable_handle() {
+    let Some((provider_a, rt)) = setup().await else {
+        return;
+    };
+    let _ = rt.remove("awaken-adopt-me").await;
+
+    // Worker A creates a long-lived container and persists its handle as the opaque
+    // durable string, then "crashes": the sandbox is dropped WITHOUT dispose, so the
+    // container keeps running on the shared substrate.
+    let handle: pc::SandboxHandle = {
+        let sandbox = provider_a
+            .create(&sleeper_spec("adopt-me"))
+            .await
+            .expect("worker A creates a real container");
+        let wire = serde_json::to_string(&sandbox.handle()).expect("handle serializes");
+        serde_json::from_str(&wire).expect("handle round-trips as the durable form")
+        // `sandbox` dropped here — worker A crashes; the container is NOT disposed.
+    };
+
+    // Worker B: a fresh provider over the SAME daemon re-adopts the SAME container.
+    // adopt's internal `inspect` succeeding is itself the proof the container survived.
+    let (provider_b, _rt_b) = setup().await.expect("peer provider");
+    let adopted = provider_b
+        .adopt(&handle)
+        .await
+        .expect("a peer re-adopts the crashed worker's still-live container");
+    assert_eq!(
+        adopted.id(),
+        handle.sandbox_id,
+        "the adopted sandbox is the SAME one (same id), not a fresh create"
+    );
+    // Its main process is still running (poll = None) — state survived the crash.
+    let proc = adopted
+        .spawn(pc::Command::new(["true"]))
+        .await
+        .expect("handle to the still-running main process");
+    assert!(
+        proc.poll().await.expect("poll").is_none(),
+        "the adopted container is still running (its state survived worker A's crash)"
+    );
+
+    // Teardown reaps it; a later adopt of the now-gone handle fails closed.
+    adopted
+        .dispose()
+        .await
+        .expect("dispose reaps the adopted container");
+    for _ in 0..30 {
+        if provider_b.adopt(&handle).await.is_err() {
+            return; // gone -> adopt fails closed, as required
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("adopting a disposed/gone container must fail closed, but it kept succeeding");
+}
