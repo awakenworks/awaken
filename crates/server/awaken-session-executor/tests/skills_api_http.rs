@@ -231,27 +231,23 @@ async fn legacy_json_create_delivers_with_a_durable_store() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// KNOWN BUG (adjudicate): the two `POST /v1/skills` create paths disagree on the
-// no-durable-store case. The legacy JSON path fails CLOSED (409, asserted above in
-// `legacy_json_create_fails_closed_without_a_durable_store`), but the SDK multipart
-// path ignores `store_put`'s `None` (`let _ = ...`) and returns 200 with only an
-// ephemeral in-memory registry entry. So on a store-less host an SDK skill upload
-// reports success while the skill is neither delivered on any thread nor persisted
-// across a restart — contradicting the module's "BOTH feed the durable catalog …
-// survives a restart" contract. This test CHARACTERIZES the current (fail-open)
-// behavior; it is not an endorsement.
+// Both `POST /v1/skills` create paths now agree on the no-durable-store case: they
+// FAIL CLOSED (409). The SDK multipart path checks `store_put`'s `None` just like
+// the legacy JSON path, so a store-less host never reports success for a skill it
+// neither delivered on a thread nor persisted across a restart — upholding the
+// module's "BOTH feed the durable catalog … survives a restart" contract.
 #[tokio::test]
-async fn sdk_multipart_create_fails_open_without_a_durable_store() {
+async fn sdk_multipart_create_fails_closed_without_a_durable_store() {
     let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test"));
     let router = skills_router(host);
-    // Multipart succeeds (200) even though nothing durable backs it…
+    // Multipart fails closed (409) when nothing durable backs it…
     let (status, created) = post_multipart(&router, "/v1/skills", SKILL_V1).await;
     assert_eq!(
         status,
-        StatusCode::OK,
-        "current behavior: SDK create reports success with no durable store: {created}"
+        StatusCode::CONFLICT,
+        "SDK create must fail closed with no durable store: {created}"
     );
-    // …in contrast to the legacy JSON path, which 409s on the very same host.
+    // …matching the legacy JSON path, which 409s on the very same host.
     let (json_status, _) = post_json(
         &router,
         "/v1/skills",

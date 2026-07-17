@@ -115,6 +115,7 @@ impl ManagedState {
             .unwrap_or_default()
             .to_string();
         let archived = child.clone();
+        let from = record.events.len();
         record.events.push(Event {
             id: self.next_event_id(),
             kind: OutboundKind::SessionThreadStatusTerminated {
@@ -123,6 +124,11 @@ impl ManagedState {
             },
             processed_at: Some(PROCESSED_AT.to_string()),
         });
+        // Publish the terminated event on the live SSE broadcast — like
+        // `append_step`/`append_outcome`/`delete_session` — so a client with an
+        // already-open stream sees the child-thread termination in real time
+        // instead of only on a reconnect/replay.
+        self.broadcast_committed_from(id, record, from);
         Ok(archived)
     }
 }

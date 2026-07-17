@@ -87,6 +87,14 @@ pub struct FieldCondition {
     pub value: String,
 }
 
+/// Escape a field value for emission inside a double-quoted literal so it round-trips
+/// through `parse_quoted_value` (which unescapes `\\` → `\` and `\"` → `"`). Backslash
+/// MUST be escaped before the quote, otherwise the backslash introduced for the quote
+/// would itself be doubled.
+fn escape_quoted_value(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 impl fmt::Display for FieldCondition {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (i, seg) in self.path.iter().enumerate() {
@@ -102,7 +110,7 @@ impl fmt::Display for FieldCondition {
                 }
             }
         }
-        write!(f, " {} \"{}\"", self.op, self.value)
+        write!(f, " {} \"{}\"", self.op, escape_quoted_value(&self.value))
     }
 }
 

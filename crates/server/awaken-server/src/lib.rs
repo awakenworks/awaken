@@ -265,13 +265,22 @@ pub fn executor_from_resolved(
     let adapter = genai_adapter(inference.adapter_kind).ok_or_else(|| {
         ResolvedExecutorError::UnsupportedAdapter(inference.adapter_kind.to_string())
     })?;
+    // Fail closed on an incomplete resolution: the management plane always resolves the
+    // execution triple's endpoint, so a `None` base URL means the inference never bound
+    // an endpoint — refuse rather than silently fall back to the genai default endpoint.
+    let base_url = inference
+        .base_url
+        .clone()
+        .ok_or(ResolvedExecutorError::MissingBaseUrl(
+            inference.adapter_kind,
+        ))?;
     let credential = inference
         .credential
         .as_ref()
         .ok_or(ResolvedExecutorError::MissingCredential)?;
     Ok(Arc::new(GenaiExecutor::from_resolved(
         adapter,
-        inference.base_url.clone(),
+        Some(base_url),
         credential.expose_secret(),
     )))
 }
@@ -344,38 +353,35 @@ mod executor_seam_tests {
         }
     }
 
-    // KNOWN BUG (adjudicate): wire or delete.
-    // `ResolvedExecutorError::MissingBaseUrl` (lib.rs) is never constructed. The only
-    // builder, `executor_from_resolved`, passes `inference.base_url` (an `Option`)
-    // straight into `GenaiExecutor::from_resolved` with no `None` check, so a resolved
-    // inference with `base_url: None` builds an executor (the genai default endpoint)
-    // rather than erroring — the variant is dead. This test CHARACTERIZES today's
-    // behavior; adjudicate whether a missing base URL should fail closed (construct the
-    // variant) or the variant should be deleted.
+    /// `MissingBaseUrl` is a reachable fail-closed arm: a resolved inference whose
+    /// `base_url` is `None` never bound an endpoint, so the seam refuses to build an
+    /// executor (rather than silently falling back to the genai default endpoint),
+    /// naming the adapter.
     #[test]
-    fn missing_base_url_variant_is_never_constructed_by_the_seam() {
-        // A supported adapter + a credential but NO base URL still builds an executor,
-        // proving `MissingBaseUrl` is unreachable through the composition seam.
+    fn missing_base_url_is_refused_by_the_seam() {
+        // A supported adapter + a credential but NO base URL fails closed.
         let inf = inference("anthropic", None, Some("sk-secret"));
-        assert!(
-            executor_from_resolved(&inf).is_ok(),
-            "base_url: None does NOT yield MissingBaseUrl — the variant is dead"
-        );
-        // The dead variant still compiles and renders its intended message.
-        let dead = ResolvedExecutorError::MissingBaseUrl("anthropic");
+        match executor_from_resolved(&inf).err() {
+            Some(ResolvedExecutorError::MissingBaseUrl(a)) => assert_eq!(a, "anthropic"),
+            other => panic!("expected MissingBaseUrl, got {other:?}"),
+        }
+        // The variant renders its intended message.
+        let err = ResolvedExecutorError::MissingBaseUrl("anthropic");
         assert_eq!(
-            dead.to_string(),
+            err.to_string(),
             "resolved inference has no base_url for adapter `anthropic`"
         );
     }
 
-    /// A supported adapter with a credential builds an executor (the happy path the
-    /// two fail-closed arms bracket), with or without a base URL.
+    /// A supported adapter with both a base URL and a credential builds an executor
+    /// (the happy path the three fail-closed arms bracket).
     #[test]
     fn executor_from_resolved_builds_for_a_supported_adapter_with_a_credential() {
         assert!(
             executor_from_resolved(&inference("openai", Some("https://gw/"), Some("k"))).is_ok()
         );
-        assert!(executor_from_resolved(&inference("gemini", None, Some("k"))).is_ok());
+        assert!(
+            executor_from_resolved(&inference("gemini", Some("https://gw/"), Some("k"))).is_ok()
+        );
     }
 }

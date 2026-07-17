@@ -23,7 +23,7 @@
 //! failure the challenge (including `WWW-Authenticate`) surfaces as a
 //! [`McpTransportError::ServerError`] prefixed with `auth challenge:`.
 
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::Duration;
 
@@ -64,6 +64,21 @@ struct HttpShared {
     session_id: Mutex<Option<String>>,
     sinks: Arc<NotificationSinks>,
     request_handler: Option<Arc<dyn ServerRequestHandler>>,
+    /// Connection health. Starts `true`; a connection-level transport failure
+    /// (refused / reset / DNS / timeout on `send`) latches it `false`, while a
+    /// server that ANSWERS — even with a protocol/server error status — restores
+    /// it `true`. Read by [`HttpTransport::is_alive`] so a dead server can be
+    /// reaped, unlike the previous always-alive default.
+    alive: AtomicBool,
+}
+
+impl HttpShared {
+    /// Record the outcome of a `send`: `Ok(_)` (a response arrived, any status)
+    /// keeps the connection alive; `Err(_)` (no response at all) latches it dead.
+    fn record_send<T, E>(&self, result: Result<T, E>) -> Result<T, E> {
+        self.alive.store(result.is_ok(), Ordering::SeqCst);
+        result
+    }
 }
 
 impl HttpShared {
@@ -165,9 +180,7 @@ impl HttpShared {
     /// they arrive, so a call's progress streams live.
     async fn request(self: &Arc<Self>, body: &Value, id: i64) -> Result<Value, McpTransportError> {
         let mut response = self
-            .post_builder(body)
-            .send()
-            .await
+            .record_send(self.post_builder(body).send().await)
             .map_err(|e| McpTransportError::TransportError(e.to_string()))?;
         // Auth failure: consult the host refresher once, retry with the fresh
         // credential; otherwise surface the challenge (incl. WWW-Authenticate).
@@ -177,9 +190,7 @@ impl HttpShared {
                 return Err(unauthorized_error(&challenge));
             }
             response = self
-                .post_builder(body)
-                .send()
-                .await
+                .record_send(self.post_builder(body).send().await)
                 .map_err(|e| McpTransportError::TransportError(e.to_string()))?;
             if is_auth_failure(response.status()) {
                 return Err(unauthorized_error(&challenge_from(&response)));
@@ -314,6 +325,7 @@ impl HttpTransportBuilder {
                 session_id: Mutex::new(None),
                 sinks: Arc::new(NotificationSinks::new()),
                 request_handler: handler,
+                alive: AtomicBool::new(true),
             }),
             next_id: AtomicI64::new(1),
             next_progress_token: AtomicI64::new(1),
@@ -584,6 +596,14 @@ impl McpToolTransport for HttpTransport {
 
     async fn read_resource(&self, uri: &str) -> Result<Value, McpTransportError> {
         self.request("resources/read", json!({ "uri": uri })).await
+    }
+
+    /// Report the tracked connection health rather than the always-true default:
+    /// once a request hits a connection-level transport failure the transport is
+    /// flagged dead so the manager can reap it (a server that merely answers with
+    /// an error status stays alive).
+    fn is_alive(&self) -> bool {
+        self.shared.alive.load(Ordering::SeqCst)
     }
 }
 
@@ -1056,7 +1076,7 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}\n\n";
     }
 
     #[tokio::test]
-    async fn http_transport_reports_alive_even_after_the_server_is_gone() {
+    async fn http_transport_reports_not_alive_after_the_server_is_gone() {
         // Bind then immediately drop the listener, so the address is dead.
         let addr = {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1064,17 +1084,41 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}\n\n";
         };
         let transport = HttpTransport::new(format!("http://{addr}"), Credential::None);
 
-        // A real call fails against the dead address...
+        // A freshly built transport is presumed alive until it observes a failure.
+        assert!(transport.is_alive(), "presumed alive before any request");
+
+        // A real call fails against the dead address (a connection-level transport
+        // failure — no response ever arrives)...
         assert!(
             transport.list_tools().await.is_err(),
             "the dead server is unreachable"
         );
-        // ...yet liveness still reports true: HttpTransport never overrides the
-        // McpToolTransport::is_alive default (true for stateless transports).
-        assert!(transport.is_alive());
+        // ...which latches the transport not-alive, so the manager's
+        // ServerStatus.alive flags it for reaping — parity with the process-backed
+        // stdio transport that reports its child's liveness.
+        assert!(
+            !transport.is_alive(),
+            "a connection-level failure marks the transport dead"
+        );
+    }
 
-        // KNOWN BUG (adjudicate): a dead HTTP server still reports alive, so the
-        // manager's ServerStatus.alive can never flag or reap it — unlike the
-        // process-backed stdio transport, which reports its child's liveness.
+    #[tokio::test]
+    async fn http_transport_stays_alive_after_a_server_error_response() {
+        // A server that ANSWERS — even with a non-2xx protocol/server error — is
+        // reachable, so the transport must stay alive (only a connection-level
+        // failure with no response marks it dead).
+        let error_500 =
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+                .to_string();
+        let (url, _server) = serve(vec![error_500]).await;
+        let transport = HttpTransport::new(url, Credential::None);
+        assert!(
+            transport.list_tools().await.is_err(),
+            "a 500 surfaces as an error"
+        );
+        assert!(
+            transport.is_alive(),
+            "a server that answers with an error status stays alive"
+        );
     }
 }

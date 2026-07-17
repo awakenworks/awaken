@@ -153,6 +153,14 @@ impl McpServer {
         &self.server_name
     }
 
+    /// The sanitized tool namespace (`mcp__{sanitized}__`) this server's tools are
+    /// projected under. Two distinct raw names can sanitize to the same namespace,
+    /// so the manager dedups on this — not just [`name`](Self::name) — to keep
+    /// tool-id routing unambiguous.
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
     /// Whether the underlying transport is still usable.
     pub fn is_alive(&self) -> bool {
         self.transport.is_alive()
@@ -391,9 +399,11 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_exposes_exactly_every_advertised_tool_with_no_gating() {
-        // The registry projection is 1:1 with the server's advertised tool list:
-        // every advertised tool becomes a dynamic tool, in order, with no
-        // allow-list or gating hook between `tools/list` and the projection.
+        // Documents the current projection contract: the registry projection is 1:1
+        // with the server's advertised tool list — every advertised tool becomes a
+        // dynamic tool, in order. There is deliberately NO tool allow-list at this
+        // layer (any per-agent tool gating is a policy concern applied above the
+        // projection, not here); this asserts that documented behavior, not a defect.
         let (_tx, rx) = broadcast::channel(4);
         let server = McpServer::start("srv", Arc::new(MultiToolTransport), rx)
             .await

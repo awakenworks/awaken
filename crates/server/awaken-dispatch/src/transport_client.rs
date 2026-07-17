@@ -3,9 +3,14 @@
 //! so a worker drives runs without ever opening the store.
 //!
 //! Only the worker verbs cross the wire — `enqueue`, `claim`, `renew_lease`,
-//! `renew_owned_leases`, `settle`. The operational verbs (reap, dead-letter, purge,
-//! supersede, cancel, list) and the `Inbox`/`Outbox` aggregates are server-local:
-//! the worker never runs them, so they fail closed rather than pretend. Wrap this in
+//! `renew_owned_leases`, `settle` (plus the `current_epoch` fence read). The
+//! operational verbs (reap, dead-letter, purge, supersede, cancel, requeue,
+//! parked-run, list-dispatches) and the `Inbox`/`Outbox` write + relay aggregates
+//! are server-local: the worker never runs them, so they fail closed (`Rejected`)
+//! rather than pretend a mutation the server didn't perform. The sole exception is
+//! `Inbox::list`, which the db-less worker's own drive calls (`worker.rs`) to drain
+//! a thread's unbound input — the pending is already in `Claimed.pending`, so an
+//! empty list is the correct answer, not a pretended one. Wrap this in
 //! `AnyDispatchStore::from_dispatch` to hand it to the pool.
 
 use async_trait::async_trait;
@@ -178,14 +183,18 @@ impl DispatchQueue for HttpDispatchQueue {
     }
 
     // --- server-local operational verbs: the SERVER owns dead-letter/recovery GC.
-    // A worker's pool may tick these from its maintenance loop; they are benign
-    // no-ops here (the server does the real work) so the pool's loops never fail. ---
+    // A database-less worker never legitimately drives them, so they FAIL CLOSED
+    // (Rejected) rather than pretend a mutation/read the server didn't perform — a
+    // silent `Ok` no-op here would let a remote worker believe it reaped/purged/
+    // relayed when it did nothing. The pool's maintenance loop ticks reap/purge/
+    // relay but discards their result (`let _ =` / `unwrap_or(0)`), so a rejection
+    // is swallowed there; anywhere the result is consumed, the fault surfaces. ---
 
     async fn reap(&self, _max_attempts: u64, _now_ms: u64) -> Result<usize, DispatchError> {
-        Ok(0)
+        Self::server_local("reap")
     }
     async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
-        Ok(Vec::new())
+        Self::server_local("dead_letters")
     }
     async fn requeue(&self, _run_id: &RunId) -> Result<bool, DispatchError> {
         Self::server_local("requeue")
@@ -194,19 +203,19 @@ impl DispatchQueue for HttpDispatchQueue {
         Self::server_local("cancel")
     }
     async fn parked_run(&self, _thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError> {
-        Ok(None)
+        Self::server_local("parked_run")
     }
     async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
-        Ok(0)
+        Self::server_local("purge_dead_letters")
     }
     async fn purge_dead_letters_before(&self, _cutoff_ms: u64) -> Result<usize, DispatchError> {
-        Ok(0)
+        Self::server_local("purge_dead_letters_before")
     }
     async fn superseded(&self) -> Result<Vec<RunId>, DispatchError> {
-        Ok(Vec::new())
+        Self::server_local("superseded")
     }
     async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError> {
-        Ok(Vec::new())
+        Self::server_local("list_dispatches")
     }
 }
 
@@ -215,8 +224,12 @@ impl Inbox for HttpDispatchQueue {
     async fn append(&self, _input: PendingInput) -> Result<bool, DispatchError> {
         Self::server_local("inbox.append")
     }
-    // The worker's pool reads the inbox during a drive; the run's pending input is
-    // already delivered in `Claimed.pending`, so an empty inbox is correct here.
+    // The one legitimate read no-op (NOT fail-closed): the worker's own drive calls
+    // `Inbox::list` to drain a thread's unbound input, but a db-less worker already
+    // receives its run's pending input in `Claimed.pending`, and the unbound-inbox
+    // drain is a server-local concern — so an empty list is the *correct* answer
+    // here, not a pretended one. Failing this closed would break every db-less
+    // drive (`worker.rs` consumes it with `?`).
     async fn list(&self, _thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError> {
         Ok(Vec::new())
     }
@@ -243,6 +256,6 @@ impl Outbox for HttpDispatchQueue {
         Self::server_local("outbox.stage")
     }
     async fn relay(&self) -> Result<usize, DispatchError> {
-        Ok(0)
+        Self::server_local("outbox.relay")
     }
 }
