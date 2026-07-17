@@ -22,6 +22,8 @@ serde_json = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
 tower = { version = "0.5", features = ["util"] }
+# Property-based (formal) verification of the crate's pure decision functions (ADR-0059).
+proptest = { workspace = true }
 
 [lints]
 workspace = true
