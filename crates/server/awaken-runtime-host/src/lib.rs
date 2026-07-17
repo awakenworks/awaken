@@ -44,7 +44,6 @@ mod provisioning;
 mod redact;
 mod run_exec;
 mod sandbox_source;
-mod session_store;
 mod skill_catalog;
 mod skills;
 mod skills_api;
@@ -125,9 +124,11 @@ pub use crate::env_store::{PostgresEnvRegistry, SqliteEnvRegistry};
 pub use crate::files::files_router;
 pub use crate::memory_store_api::memory_stores_router;
 pub use crate::models::{ModelEntry, default_models, models_router};
-pub use crate::session_store::{PostgresManagedSessionRepository, SqliteManagedSessionRepository};
+// The durable session-repository backends now live in `awaken-session-store` (a
+// stores/ leaf); re-exported so composition roots keep their import paths.
 pub use crate::skills_api::skills_router;
 pub use awaken_run_ingress::{HttpDispatchQueue, worker_dispatch_store};
+pub use awaken_session_store::{PostgresManagedSessionRepository, SqliteManagedSessionRepository};
 // The durable WorkQueue backends now live in `awaken-work-store` (a stores/ leaf);
 // re-exported so composition roots keep using `awaken_runtime_host::{Sqlite,Postgres}WorkQueue`.
 pub use awaken_work_store::{PostgresWorkQueue, SqliteWorkQueue};

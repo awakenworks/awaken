@@ -1142,6 +1142,7 @@ dependencies = [
  "awaken-sandbox-local",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
+ "awaken-session-store",
  "awaken-skill-store",
  "awaken-store-fs",
  "awaken-store-inmem",
@@ -1370,6 +1371,21 @@ dependencies = [
  "awaken-tenancy",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "awaken-session-store"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-scoped-migration",
+ "awaken-scoped-migration-sqlite",
+ "awaken-session-contract",
+ "rusqlite",
+ "serde_json",
+ "sqlx",
+ "tempfile",
  "tokio",
 ]
 

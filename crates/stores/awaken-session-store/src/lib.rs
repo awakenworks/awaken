@@ -15,8 +15,8 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use awaken_protocol_managed::{ManagedSessionRepository, PersistedSession};
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
+use awaken_session_contract::{ManagedSessionRepository, PersistedSession};
 use rusqlite::{Connection, OptionalExtension, params};
 use sqlx::Row;
 use sqlx::postgres::PgPool;
