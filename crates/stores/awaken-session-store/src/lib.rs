@@ -17,6 +17,12 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use awaken_session_contract::{ManagedSessionRepository, PersistedSession};
+
+// The in-memory reference backends (plain + scoped) live here beside the durable
+// siblings (issue A / Phase 1); the ports + PersistedSession value + the
+// ScopedSessionRepo decorator stay inward in `awaken-session-contract`.
+mod inmem;
+pub use inmem::{InMemoryScopedSessionStore, InMemorySessionRepository};
 use rusqlite::{Connection, OptionalExtension, params};
 use sqlx::Row;
 use sqlx::postgres::PgPool;
