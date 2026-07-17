@@ -13,11 +13,13 @@
 //!     `AWAKEN_MGMT_IAM=embedded`.
 //!   - **Worker** (`AWAKEN_UPSTREAM_URL`) — a database-less worker of a cell server:
 //!     claims runs and commits facts over HTTP, holds no store, serves no HTTP.
-//!   - **Hand** (`AWAKEN_HAND_*`) — a remote ACP executor endpoint.
+//!
+//! (The remote ACP/hand executor is now the separate `awaken-sandbox`
+//! execution-plane binary, not a role of this control-plane command.)
 //!
 //! The Serve role reuses the production management assembly from
-//! `awaken-server` (the single-machine composition root); the Worker / Hand
-//! roles reuse its role helpers. This subsumes the separate `awaken-server`
+//! `awaken-server` (the single-machine composition root); the Worker role
+//! reuses its role helper. This subsumes the separate `awaken-server`
 //! binary, which remains only as the e2e-scenario host.
 
 #[tokio::main]
@@ -41,10 +43,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     eprintln!("awaken config: {}", deployment.summary());
 
-    // The single role axis. Hand and Worker are execution endpoints that never serve
-    // HTTP; Serve is the default single-machine / coordinator command.
+    // The single role axis. Worker is an execution endpoint that never serves HTTP;
+    // Serve is the default single-machine / coordinator command. (The hand is now the
+    // separate `awaken-sandbox hand` execution-plane binary, not a server role.)
     match awaken_server::deployment_role() {
-        awaken_server::Role::Hand => return awaken_server::run_hand_role().await,
         awaken_server::Role::Worker => {
             let upstream = std::env::var("AWAKEN_UPSTREAM_URL").unwrap_or_default();
             // The PRODUCTION worker (Stage C): drains runs and resolves EACH run's

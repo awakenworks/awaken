@@ -1177,14 +1177,6 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-tenancy",
         # ADR-0050: the data-subject consent/erasure store backing the erasure endpoint.
         "awaken-data-subject",
-        # Remote-hand scenario mode (ADR-0044): route a run's tools to a hand task.
-        "awaken-tool-relay",
-        "awaken-connection-plan",
-        "awaken-ext-builtin-tools",
-        # Relay topology (ADR-0045): the NATS broker transport for brain↔hand.
-        "async-nats",
-        "bytes",
-        "futures",
         "awaken-observability",
         "awaken-authz-enforce",
         "awaken-run-executor-acp",

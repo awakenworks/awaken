@@ -10,8 +10,9 @@
 //! This crate is the DATA PLANE: the session surface + protocol adapters
 //! ([`mount`] / [`mount_with_managed`]), the resolved-inference executor seam
 //! ([`executor_from_resolved`]), the config-plane executor provider, the model
-//! resolver, the no-model fallback, workspace path addressing, and the Worker /
-//! Hand role helpers. Its sibling **authoring / authz plane** lives in
+//! resolver, the no-model fallback, workspace path addressing, and the Worker
+//! role helper (the hand is now the separate `awaken-sandbox` execution-plane
+//! binary). Its sibling **authoring / authz plane** lives in
 //! `awaken-control`; neither depends on the other, and `awaken-cli` is the
 //! composition root that weaves them into one management router. The service layer
 //! (the host, the two port adapters, the per-plane resource routers) lives in
@@ -20,14 +21,12 @@
 pub mod admin;
 pub mod config_executor;
 pub mod dynamic_placement;
-mod hand_server;
 pub mod model_resolver;
 pub mod no_model;
 pub mod placement;
 pub mod resource_owner;
 pub mod webhooks;
 pub mod workspace_path;
-pub use crate::hand_server::{run_hand_server, run_hand_server_nats};
 
 use std::sync::Arc;
 
@@ -72,18 +71,15 @@ pub enum Role {
     Serve,
     /// A database-less worker of a cell server (claims/commits over HTTP).
     Worker,
-    /// A remote ACP executor endpoint (the hand role, ADR-0044/0045).
-    Hand,
 }
 
-/// Pure role selection: an explicit `AWAKEN_ROLE` wins; otherwise infer from
-/// whether the historic hand / worker env is configured. Unit-tested without env.
-fn role_from(explicit: Option<&str>, hand_configured: bool, worker_configured: bool) -> Role {
+/// Pure role selection: an explicit `AWAKEN_ROLE` wins; otherwise infer from whether
+/// the historic worker env is configured. Unit-tested without env. (The hand is now a
+/// separate execution-plane binary — `awaken-sandbox hand` — not a server role.)
+fn role_from(explicit: Option<&str>, worker_configured: bool) -> Role {
     match explicit {
         Some("worker") => Role::Worker,
-        Some("hand") => Role::Hand,
         Some("serve") | Some("server") | Some("coordinator") | Some("all-in-one") => Role::Serve,
-        _ if hand_configured => Role::Hand,
         _ if worker_configured => Role::Worker,
         _ => Role::Serve,
     }
@@ -93,57 +89,7 @@ fn role_from(explicit: Option<&str>, hand_configured: bool, worker_configured: b
 pub fn deployment_role() -> Role {
     let set = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty()).is_some();
     let explicit = std::env::var("AWAKEN_ROLE").ok();
-    role_from(
-        explicit.as_deref(),
-        set("AWAKEN_HAND_NATS") || set("AWAKEN_HAND_DIAL") || set("AWAKEN_HAND_LISTEN"),
-        set("AWAKEN_UPSTREAM_URL"),
-    )
-}
-
-/// The hand's transport, selected from `AWAKEN_HAND_*`. One of three ADR-0044/0045
-/// topologies: a NATS relay (both sides behind NAT), a dial-out to a rendezvous
-/// (reverse), or a listen socket the brain dials (direct).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HandTransport {
-    /// `AWAKEN_HAND_NATS` — relay over a NATS subject (`AWAKEN_HAND_SUBJECT`, default
-    /// `awaken.hand.exec`).
-    Nats { url: String, subject: String },
-    /// `AWAKEN_HAND_DIAL` — the hand dials out to a rendezvous the brain also dials
-    /// (reverse topology, for a hand behind NAT).
-    Dial { addr: String },
-    /// `AWAKEN_HAND_LISTEN` — the hand listens; the brain dials it (direct topology).
-    Listen { addr: String },
-}
-
-/// Select the hand transport from an injected env `lookup` (empty values read as
-/// unset), so the precedence is pure and unit-testable without the process env. NATS
-/// wins over dial wins over listen when several are set; none set is a fail-closed
-/// error naming the three keys.
-pub fn hand_transport(
-    lookup: impl Fn(&str) -> Option<String>,
-) -> Result<HandTransport, &'static str> {
-    let get = |k: &str| lookup(k).filter(|v| !v.is_empty());
-    if let Some(url) = get("AWAKEN_HAND_NATS") {
-        let subject = get("AWAKEN_HAND_SUBJECT").unwrap_or_else(|| "awaken.hand.exec".to_string());
-        return Ok(HandTransport::Nats { url, subject });
-    }
-    if let Some(addr) = get("AWAKEN_HAND_DIAL") {
-        return Ok(HandTransport::Dial { addr });
-    }
-    if let Some(addr) = get("AWAKEN_HAND_LISTEN") {
-        return Ok(HandTransport::Listen { addr });
-    }
-    Err("AWAKEN_ROLE=hand requires one of AWAKEN_HAND_NATS / AWAKEN_HAND_DIAL / AWAKEN_HAND_LISTEN")
-}
-
-/// Run the hand role: a remote ACP executor endpoint over the transport selected by
-/// `AWAKEN_HAND_*` (NATS relay / dial-out / listen).
-pub async fn run_hand_role() -> Result<(), Box<dyn std::error::Error>> {
-    match hand_transport(|k| std::env::var(k).ok())? {
-        HandTransport::Nats { url, subject } => run_hand_server_nats(&url, &subject).await,
-        HandTransport::Dial { addr } => run_hand_server(&addr, true).await,
-        HandTransport::Listen { addr } => run_hand_server(&addr, false).await,
-    }
+    role_from(explicit.as_deref(), set("AWAKEN_UPSTREAM_URL"))
 }
 
 #[cfg(test)]
@@ -152,135 +98,23 @@ mod role_tests {
 
     #[test]
     fn explicit_role_wins() {
-        assert_eq!(role_from(Some("worker"), false, false), Role::Worker);
-        assert_eq!(role_from(Some("hand"), false, false), Role::Hand);
-        assert_eq!(role_from(Some("coordinator"), true, true), Role::Serve);
-        assert_eq!(role_from(Some("all-in-one"), true, true), Role::Serve);
+        assert_eq!(role_from(Some("worker"), false), Role::Worker);
+        assert_eq!(role_from(Some("coordinator"), true), Role::Serve);
+        assert_eq!(role_from(Some("all-in-one"), true), Role::Serve);
     }
 
     #[test]
     fn inference_from_historic_env_when_role_unset() {
-        // Hand env → Hand; upstream → Worker; neither → Serve (the default).
-        assert_eq!(role_from(None, true, false), Role::Hand);
-        assert_eq!(role_from(None, false, true), Role::Worker);
-        assert_eq!(role_from(None, false, false), Role::Serve);
-        // Hand takes precedence over worker when both are somehow set.
-        assert_eq!(role_from(None, true, true), Role::Hand);
+        // Upstream → Worker; neither → Serve (the default). The hand is no longer a
+        // server role — it is the `awaken-sandbox hand` execution-plane binary.
+        assert_eq!(role_from(None, true), Role::Worker);
+        assert_eq!(role_from(None, false), Role::Serve);
     }
 
     #[test]
     fn an_unknown_explicit_role_falls_back_to_inference() {
-        assert_eq!(role_from(Some("bogus"), false, true), Role::Worker);
-        assert_eq!(role_from(Some("bogus"), false, false), Role::Serve);
-    }
-}
-
-/// S11 — the hand's transport selection across the three ADR-0044/0045 topologies.
-/// Decision table over the `AWAKEN_HAND_*` keys: which transport is chosen, the
-/// precedence when several are set, the NATS subject default, and the fail-closed
-/// error when none is set. This covers the (topology × transport) pairs the k3d
-/// `topology_e2e.sh` exercises end to end, but as a pure, fast, deterministic unit.
-#[cfg(test)]
-mod hand_transport_tests {
-    use super::{HandTransport, hand_transport};
-
-    fn lookup(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
-        let map: std::collections::BTreeMap<String, String> = pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        move |k: &str| map.get(k).cloned()
-    }
-
-    #[test]
-    fn listen_selects_the_direct_topology() {
-        // direct: the hand listens, the brain dials it.
-        assert_eq!(
-            hand_transport(lookup(&[("AWAKEN_HAND_LISTEN", "0.0.0.0:9000")])).unwrap(),
-            HandTransport::Listen {
-                addr: "0.0.0.0:9000".into()
-            }
-        );
-    }
-
-    #[test]
-    fn dial_selects_the_reverse_topology() {
-        // reverse: the hand dials out to a rendezvous (it is behind NAT).
-        assert_eq!(
-            hand_transport(lookup(&[("AWAKEN_HAND_DIAL", "brain-rendezvous:9000")])).unwrap(),
-            HandTransport::Dial {
-                addr: "brain-rendezvous:9000".into()
-            }
-        );
-    }
-
-    #[test]
-    fn nats_selects_the_relay_topology_with_a_default_subject() {
-        // relay: both sides reach a NATS broker; the subject defaults when unset.
-        assert_eq!(
-            hand_transport(lookup(&[("AWAKEN_HAND_NATS", "nats://nats:4222")])).unwrap(),
-            HandTransport::Nats {
-                url: "nats://nats:4222".into(),
-                subject: "awaken.hand.exec".into(),
-            }
-        );
-    }
-
-    #[test]
-    fn nats_subject_is_overridable() {
-        assert_eq!(
-            hand_transport(lookup(&[
-                ("AWAKEN_HAND_NATS", "nats://nats:4222"),
-                ("AWAKEN_HAND_SUBJECT", "team.hand"),
-            ]))
-            .unwrap(),
-            HandTransport::Nats {
-                url: "nats://nats:4222".into(),
-                subject: "team.hand".into(),
-            }
-        );
-    }
-
-    #[test]
-    fn precedence_is_nats_then_dial_then_listen() {
-        // All three set: NATS wins.
-        let all = [
-            ("AWAKEN_HAND_NATS", "nats://n:4222"),
-            ("AWAKEN_HAND_DIAL", "r:9000"),
-            ("AWAKEN_HAND_LISTEN", "0.0.0.0:9000"),
-        ];
-        assert!(matches!(
-            hand_transport(lookup(&all)).unwrap(),
-            HandTransport::Nats { .. }
-        ));
-        // Dial wins over listen when NATS is absent.
-        assert!(matches!(
-            hand_transport(lookup(&all[1..])).unwrap(),
-            HandTransport::Dial { .. }
-        ));
-    }
-
-    #[test]
-    fn no_transport_is_a_fail_closed_error_naming_the_keys() {
-        let err = hand_transport(lookup(&[])).unwrap_err();
-        assert!(err.contains("AWAKEN_HAND_NATS"));
-        assert!(err.contains("AWAKEN_HAND_DIAL"));
-        assert!(err.contains("AWAKEN_HAND_LISTEN"));
-    }
-
-    #[test]
-    fn an_empty_value_reads_as_unset() {
-        // An empty AWAKEN_HAND_NATS must not select the NATS path over a real dial.
-        assert_eq!(
-            hand_transport(lookup(&[
-                ("AWAKEN_HAND_NATS", ""),
-                ("AWAKEN_HAND_DIAL", "r:9000"),
-            ]))
-            .unwrap(),
-            HandTransport::Dial {
-                addr: "r:9000".into()
-            }
-        );
+        assert_eq!(role_from(Some("bogus"), true), Role::Worker);
+        assert_eq!(role_from(Some("bogus"), false), Role::Serve);
     }
 }
 

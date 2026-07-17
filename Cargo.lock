@@ -1314,7 +1314,6 @@ dependencies = [
 name = "awaken-server"
 version = "1.0.0-dev"
 dependencies = [
- "async-nats",
  "async-trait",
  "awaken-admin-assistant",
  "awaken-admin-config-api",
@@ -1322,10 +1321,8 @@ dependencies = [
  "awaken-authz-enforce",
  "awaken-config-resolver",
  "awaken-config-store",
- "awaken-connection-plan",
  "awaken-credential-vault",
  "awaken-data-subject",
- "awaken-ext-builtin-tools",
  "awaken-ext-mcp",
  "awaken-iam-contract",
  "awaken-iam-core",
@@ -1347,13 +1344,10 @@ dependencies = [
  "awaken-runtime-host",
  "awaken-scenario-host",
  "awaken-tenancy",
- "awaken-tool-relay",
  "awaken-webhook",
  "awaken-webhook-managed",
  "axum",
  "base64 0.22.1",
- "bytes",
- "futures",
  "http-body-util",
  "rusqlite",
  "serde_json",
