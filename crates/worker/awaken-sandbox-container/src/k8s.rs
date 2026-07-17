@@ -133,6 +133,17 @@ fn pod_resources(limits: &pc::ResourceLimits) -> Option<ResourceRequirements> {
     })
 }
 
+/// The neutral limit k8s cannot enforce at the Pod-spec level, if the spec asks for it.
+/// k8s expresses CPU / memory / ephemeral-storage as Pod `resources.limits`, but a
+/// per-Pod `pids` cap is a node/kubelet setting (`--pod-max-pids`), NOT a Pod-spec
+/// field — so `pod_resources` cannot carry it. The container tier advertises
+/// `resource_limits = true` for every backend; on k8s a `pids`-limited spec must
+/// therefore FAIL CLOSED at create rather than be silently dropped (a fail-open on a
+/// fork-bomb guard), the same discipline as the neutral admission gate.
+fn unenforceable_k8s_limit(limits: &pc::ResourceLimits) -> Option<&'static str> {
+    limits.pids.map(|_| "pids")
+}
+
 /// A Kubernetes-backed [`ContainerRuntime`]. `agent_addr` is the Service endpoint the
 /// runtime dials for the [`AgentChannel`]; `owner` (optional) is the GC owner.
 pub struct K8sRuntime {
@@ -477,6 +488,16 @@ fn hardened_security_context() -> SecurityContext {
 #[async_trait]
 impl ContainerRuntime for K8sRuntime {
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
+        // Fail closed on a limit k8s cannot enforce at the Pod-spec level (pids), rather
+        // than silently placing the spec and dropping the cap — the tier advertises
+        // `resource_limits`, so honoring it means refusing what it cannot enforce.
+        if let Some(limit) = unenforceable_k8s_limit(&plan.limits) {
+            return Err(RuntimeError::Backend(format!(
+                "k8s cannot enforce a per-Pod `{limit}` limit (it is a node/kubelet \
+                 setting, not a Pod-spec field); refusing to place a `{limit}`-limited \
+                 spec on the k8s tier rather than silently dropping the cap"
+            )));
+        }
         // Realize inline-content mounts as ConfigMaps *before* the Pod: the Pod's volumes
         // reference them by name, and the kubelet blocks the Pod as `ContainerCreating`
         // until they exist. Ordered + named identically to `build_pod`'s projection.
@@ -670,6 +691,33 @@ mod tests {
                 ..Default::default()
             })
             .is_none()
+        );
+    }
+
+    #[test]
+    fn a_pids_limit_is_flagged_unenforceable_on_k8s_so_create_fails_closed() {
+        // pids is the one limit k8s cannot express at the Pod spec — flagged so `create`
+        // refuses it rather than silently dropping the cap (C6: no fail-open on a
+        // fork-bomb guard). CPU/memory/disk are enforceable, so they are NOT flagged.
+        assert_eq!(
+            unenforceable_k8s_limit(&pc::ResourceLimits {
+                pids: Some(64),
+                ..Default::default()
+            }),
+            Some("pids")
+        );
+        assert_eq!(
+            unenforceable_k8s_limit(&pc::ResourceLimits {
+                cpu_millis: Some(1000),
+                memory_bytes: Some(1 << 30),
+                disk_bytes: Some(1 << 20),
+                ..Default::default()
+            }),
+            None
+        );
+        assert_eq!(
+            unenforceable_k8s_limit(&pc::ResourceLimits::default()),
+            None
         );
     }
 
