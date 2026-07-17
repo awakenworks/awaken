@@ -266,7 +266,7 @@ mod cgroup_caps_tests {
 
     fn podman_plan() -> ContainerPlan {
         ContainerPlan {
-            image: "ghcr.io/awaken/agent:1".into(),
+            image: "ghcr.io/awaken/sandbox:1".into(),
             command: vec!["claude".into(), "--acp".into()],
             env: vec![("TZ".into(), "UTC".into())],
             binds: vec![BindPlan {
@@ -377,7 +377,7 @@ mod cgroup_caps_tests {
         let argv = podman_run_argv("r", &podman_plan(), &RootfsPlan::HostUserland);
         // HostUserland → the plan's image is the run target (no --rootfs).
         assert!(!argv.iter().any(|a| a == "--rootfs"));
-        assert!(argv.contains(&"ghcr.io/awaken/agent:1".to_string()));
+        assert!(argv.contains(&"ghcr.io/awaken/sandbox:1".to_string()));
     }
 
     #[test]

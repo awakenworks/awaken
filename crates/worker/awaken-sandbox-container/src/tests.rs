@@ -91,12 +91,12 @@ fn command_of_reads_the_agent_argv_or_defaults_empty() {
 #[test]
 fn container_plan_maps_command_image_env_binds_network_and_outputs() {
     let cmd = command_of(&spec("s1"));
-    let plan = container_plan(&spec("s1"), "ghcr.io/awaken/agent:latest", &cmd);
+    let plan = container_plan(&spec("s1"), "ghcr.io/awaken/sandbox:latest", &cmd);
     assert_eq!(
         plan.command,
         vec!["claude".to_string(), "--acp".to_string()]
     );
-    assert_eq!(plan.image, "ghcr.io/awaken/agent:latest");
+    assert_eq!(plan.image, "ghcr.io/awaken/sandbox:latest");
     // Only inline env is planned; the secret ref is resolved at the runtime edge.
     assert_eq!(plan.env, vec![("TZ".into(), "UTC".into())]);
     assert_eq!(plan.binds.len(), 2);
@@ -398,7 +398,7 @@ fn provider(runtime: Arc<FakeRuntime>) -> ContainerProvider<FakeRuntime> {
     // with a brokered proxy (as a real allowlist deployment would be), and it seeds the
     // bytes for `spec()`'s required File/Resource mounts (a required mount with no
     // resolvable bytes fails closed at create).
-    ContainerProvider::new(runtime, "ghcr.io/awaken/agent:latest")
+    ContainerProvider::new(runtime, "ghcr.io/awaken/sandbox:latest")
         .with_egress_proxy(EgressProxy {
             url: "http://gw.internal:8888".into(),
         })
@@ -603,7 +603,7 @@ async fn allowlist_without_a_proxy_fails_create_closed() {
     // A provider with no configured chokepoint cannot enforce an allowlist, so it
     // rejects the spec rather than silently opening egress.
     let rt = Arc::new(FakeRuntime::default());
-    let p = ContainerProvider::new(rt.clone(), "ghcr.io/awaken/agent:latest")
+    let p = ContainerProvider::new(rt.clone(), "ghcr.io/awaken/sandbox:latest")
         .with_blob("file-1", b"in-bytes".to_vec())
         .with_blob("res-9", b"work-bytes".to_vec());
     assert!(p.create(&spec("run-noproxy")).await.is_err());
@@ -617,7 +617,7 @@ async fn unrestricted_egress_injects_no_proxy_env() {
     let mut open = spec("run-open");
     open.network = pc::NetworkPolicy::Unrestricted;
     // No proxy needed for unrestricted egress; seed the spec's required mounts.
-    let p = ContainerProvider::new(rt.clone(), "ghcr.io/awaken/agent:latest")
+    let p = ContainerProvider::new(rt.clone(), "ghcr.io/awaken/sandbox:latest")
         .with_blob("file-1", b"in-bytes".to_vec())
         .with_blob("res-9", b"work-bytes".to_vec());
     p.create(&open).await.unwrap();
