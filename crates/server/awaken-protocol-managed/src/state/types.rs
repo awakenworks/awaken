@@ -154,7 +154,8 @@ pub struct McpServerBinding {
 
 /// A queued live-inbox message on the session's in-flight turn. `id` is the
 /// runtime's queue identity — targetable until the engine consumes the entry.
-#[derive(Debug, Clone, serde::Serialize)]
+/// Neutral: the adapter projects it onto the wire snapshot at the route.
+#[derive(Debug, Clone)]
 pub struct LiveInboxEntry {
     pub id: u64,
     pub content: Vec<ContentBlock>,
@@ -162,8 +163,9 @@ pub struct LiveInboxEntry {
 
 /// The session's live-inbox resource: the editable queue of messages addressed
 /// to the in-flight turn. `active: false` means no native turn is running (the
-/// queue shows empty; sends go through the normal event path instead).
-#[derive(Debug, Clone, serde::Serialize)]
+/// queue shows empty; sends go through the normal event path instead). Neutral —
+/// the wire shaping (`Json`) lives in the `ext::live_inbox` route.
+#[derive(Debug, Clone)]
 pub struct LiveInboxSnapshot {
     pub active: bool,
     pub version: u64,
