@@ -59,6 +59,15 @@ pub fn fold_messages(new_messages: &[Message], pending: Option<(&str, bool)>) ->
     for message in new_messages {
         match message.role {
             Role::Assistant => {
+                // Reasoning precedes the answer: a folded `Thinking` block projects
+                // as a contentless `AssistantThinking` marker before the message.
+                if message
+                    .content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::Thinking { .. }))
+                {
+                    out.push(Fact::AssistantThinking);
+                }
                 let text: Vec<ContentBlock> = message
                     .content
                     .iter()

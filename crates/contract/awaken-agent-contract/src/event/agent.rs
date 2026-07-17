@@ -56,11 +56,17 @@ pub enum AgentEvent {
 pub enum Fact {
     /// The run began (a run boundary).
     RunStarted,
-    /// An assistant message's content (text — and, once folded, thinking blocks).
+    /// An assistant message's content (text blocks only; reasoning is a separate
+    /// `AssistantThinking` marker).
     AssistantMessage {
         id: String,
         content: Vec<ContentBlock>,
     },
+    /// The turn produced extended-thinking (reasoning) content — a contentless
+    /// forward-progress marker, emitted before the answer. A protocol adapter
+    /// renders it as a contentless reasoning event; the reasoning text itself is
+    /// not on any answer-facing wire.
+    AssistantThinking,
     /// The assistant called a tool, with how it was dispatched.
     ToolCall {
         id: String,
