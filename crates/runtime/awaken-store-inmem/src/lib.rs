@@ -254,19 +254,18 @@ impl CheckpointReader for MemoryCommitCoordinator {
         // scanning each thread's own fact log so a run in thread B is never
         // shadowed by thread A's.
         for thread_id in &state.order {
-            if let Some(thread) = state.threads.get(thread_id) {
-                if let Some(fact) = thread
+            if let Some(thread) = state.threads.get(thread_id)
+                && let Some(fact) = thread
                     .run_facts
                     .iter()
                     .rev()
                     .find(|fact| &fact.run_id == id)
-                {
-                    return Some(RunRecord {
-                        id: fact.run_id.clone(),
-                        thread_id: thread_id.clone(),
-                        phase: fact.phase.clone(),
-                    });
-                }
+            {
+                return Some(RunRecord {
+                    id: fact.run_id.clone(),
+                    thread_id: thread_id.clone(),
+                    phase: fact.phase.clone(),
+                });
             }
         }
         None

@@ -400,10 +400,10 @@ async fn project_notification(
         // recognized banner fails the turn closed with the classified failure
         // (RateLimited → Error) instead of landing as an ordinary assistant
         // message. Any other text still projects normally below.
-        if let AgentEvent::Message { text } = &event {
-            if let Some(failure) = crate::streamed_hard_limit(text) {
-                return Err(AcpError::HardLimit(failure));
-            }
+        if let AgentEvent::Message { text } = &event
+            && let Some(failure) = crate::streamed_hard_limit(text)
+        {
+            return Err(AcpError::HardLimit(failure));
         }
         *seq += 1;
         sink.append(*seq, &event).await?;
