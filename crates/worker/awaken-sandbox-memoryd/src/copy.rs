@@ -209,6 +209,49 @@ mod tests {
     }
 
     #[test]
+    fn harvest_never_deletes_a_removed_file_diverging_from_fuse_unlink() {
+        // KNOWN BUG (adjudicate): the copy/harvest fallback folds files back with
+        // create + CAS-update ONLY — it never deletes. A file the agent removes inside
+        // the materialized copy dir is left ALIVE in the store after harvest, whereas the
+        // live FUSE path deletes it (`unlink` → `delete_by_path`). So the same agent
+        // action ("rm note.md") has DIFFERENT durable outcomes across the two realization
+        // tiers: on the no-FUSE tier (bwrap / CI / macOS) a deletion silently does not
+        // stick. Pinning the current copy-path behavior and contrasting it with the FUSE
+        // delete primitive the live tier uses.
+        let rt = rt();
+        let fs = Arc::new(InMemoryFs::new());
+        rt.block_on(fs.create("s", "/keep.md", "x")).unwrap();
+        rt.block_on(fs.create("s", "/gone.md", "y")).unwrap();
+        let dir = temp("del-parity");
+        rt.block_on(materialize(&*fs, "s", &dir)).unwrap();
+
+        // The agent removes gone.md from the copy dir; the turn ends → harvest.
+        std::fs::remove_file(dir.join("gone.md")).unwrap();
+        assert_eq!(
+            rt.block_on(harvest(&*fs, "s", &dir)).unwrap(),
+            0,
+            "harvest reports no create/update (it walks only files still present)"
+        );
+
+        // Divergence: the removed file is STILL in the store — harvest cannot delete…
+        assert!(
+            rt.block_on(fs.get_by_path("s", "/gone.md"))
+                .unwrap()
+                .is_some(),
+            "copy harvest leaves a deleted file alive in the store"
+        );
+        // …whereas the FUSE `unlink` primitive the live tier uses DOES remove it.
+        rt.block_on(fs.delete_by_path("s", "/gone.md")).unwrap();
+        assert!(
+            rt.block_on(fs.get_by_path("s", "/gone.md"))
+                .unwrap()
+                .is_none(),
+            "FUSE unlink (delete_by_path) removes it — the copy path does not"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn harvest_on_a_missing_root_is_empty() {
         let rt = rt();
         let fs = Arc::new(InMemoryFs::new());

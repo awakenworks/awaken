@@ -862,6 +862,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spawn_clears_the_host_env_so_a_sentinel_never_reaches_the_child() {
+        // G22, the highest-value missing security invariant: `spawn` uses `env_clear`,
+        // so an ambient host secret in THIS (parent) process must NOT be inherited by
+        // the launched child. Only the PATH/HOME allowlist and the projected launch env
+        // cross. Exercises the REAL spawn path (not the ScriptedSource shortcut).
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        // A host secret in the parent env. SAFETY (edition 2024): set on the test thread
+        // before the spawn reads the host env; the name is unique to this test and read
+        // only by the child's env dump below, then removed.
+        unsafe {
+            std::env::set_var("AWAKEN_HOST_SENTINEL_LEAK", "leaky-secret-should-not-cross");
+        }
+
+        // A shell agent that, on the prompt line, echoes back three probes: the host
+        // sentinel (must be EMPTY — cleared), whether PATH is set (must be — allowlisted
+        // so `npx`/`node`/binaries resolve), and a projected env value (must arrive).
+        let script = "read _prompt; \
+             printf 'SENTINEL=[%s] PATH_SET=[%s] PROJECTED=[%s]\\n' \
+             \"$AWAKEN_HOST_SENTINEL_LEAK\" \"${PATH:+yes}\" \"$MY_PROJECTED\"";
+        let launch = AcpLaunch::custom(
+            vec!["/bin/sh".to_string(), "-c".to_string(), script.to_string()],
+            vec![("MY_PROJECTED".to_string(), "projected-value".to_string())],
+        );
+
+        let session =
+            spawn(&launch, awaken_protocol_acp::Codec::Newline).expect("spawn the real child");
+        let mut channel = session.channel;
+        channel
+            .write_all(b"go\n")
+            .await
+            .expect("send the prompt line");
+        channel.flush().await.expect("flush");
+        let mut reader = BufReader::new(&mut channel);
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .await
+            .expect("read the child env dump");
+
+        // SAFETY: same-thread teardown, mirroring the set above.
+        unsafe {
+            std::env::remove_var("AWAKEN_HOST_SENTINEL_LEAK");
+        }
+
+        assert!(
+            line.contains("SENTINEL=[]"),
+            "the host sentinel leaked into the env_clear'd child: {line:?}"
+        );
+        assert!(
+            line.contains("PATH_SET=[yes]"),
+            "PATH must pass through the allowlist so the launcher resolves binaries: {line:?}"
+        );
+        assert!(
+            line.contains("PROJECTED=[projected-value]"),
+            "the projected launch env must reach the child: {line:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn drives_a_real_subprocess_acp_agent_end_to_end() {
         // A tiny ACP agent in shell: read the prompt line, emit a message + turn_end.
         let script = "read _prompt; \

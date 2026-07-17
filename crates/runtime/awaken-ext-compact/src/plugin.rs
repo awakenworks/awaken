@@ -295,6 +295,26 @@ mod tests {
         }
     }
 
+    fn msg(text: &str) -> Message {
+        Message::text(MessageId("m".into()), Role::User, text)
+    }
+
+    #[test]
+    fn estimate_tokens_is_content_length_over_four_floored() {
+        // ~4 chars/token via integer floor division of summed text length.
+        assert_eq!(estimate_tokens(&[]), 0, "no messages → 0 tokens");
+        assert_eq!(estimate_tokens(&[msg("")]), 0);
+        // Boundaries around a single 4-char token.
+        assert_eq!(estimate_tokens(&[msg("abc")]), 0, "3/4 floors to 0");
+        assert_eq!(estimate_tokens(&[msg("abcd")]), 1, "4/4 == 1");
+        assert_eq!(estimate_tokens(&[msg("abcde")]), 1, "5/4 floors to 1");
+        assert_eq!(estimate_tokens(&[msg("abcdefg")]), 1, "7/4 floors to 1");
+        assert_eq!(estimate_tokens(&[msg("abcdefgh")]), 2, "8/4 == 2");
+        // The estimate sums text across messages before dividing (6+6 = 12 → 3),
+        // not per-message flooring (which would give 1+1 = 2).
+        assert_eq!(estimate_tokens(&[msg("abcdef"), msg("ghijkl")]), 3);
+    }
+
     #[test]
     fn manifest_declares_the_hook_and_config_section() {
         let plugin = CompactPlugin::new(CompactConfig::default());

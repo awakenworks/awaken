@@ -141,6 +141,82 @@ async fn deployment_lifecycle_and_runs() {
     assert_eq!(page["data"].as_array().unwrap()[0]["id"], id);
 }
 
+/// The cron-schedule wire path (`cron.rs` reached through the deployments router):
+/// a create carrying a well-formed 5-field cron schedule is accepted and the
+/// schedule object (expression + timezone) is echoed back verbatim; a malformed
+/// expression, and a schedule missing its `expression`, are each fail-closed with a
+/// 400 `invalid_request_error` at write time (not silently stored). An update that
+/// swaps in a bad cron is rejected the same way and leaves the stored schedule intact.
+#[tokio::test]
+async fn schedule_cron_is_validated_and_echoed_at_the_wire() {
+    let app = app();
+
+    // A valid weekday-9am cron is accepted and echoed.
+    let (s, d) = call(
+        &app,
+        "POST",
+        "/v1/deployments",
+        Some(json!({
+            "agent": "agent_x",
+            "environment_id": "env_1",
+            "name": "nightly",
+            "schedule": { "type": "cron", "expression": "0 9 * * 1-5", "timezone": "UTC" }
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(d["schedule"]["expression"], "0 9 * * 1-5");
+    assert_eq!(d["schedule"]["timezone"], "UTC");
+    let id = d["id"].as_str().unwrap().to_string();
+
+    // A malformed cron is rejected at create time (fail-closed).
+    let (s, body) = call(
+        &app,
+        "POST",
+        "/v1/deployments",
+        Some(json!({
+            "agent": "agent_x",
+            "environment_id": "env_1",
+            "name": "bad",
+            "schedule": { "type": "cron", "expression": "0 99 * * *", "timezone": "UTC" }
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "hour out of range is rejected");
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+
+    // A schedule object without an `expression` is rejected.
+    let (s, _) = call(
+        &app,
+        "POST",
+        "/v1/deployments",
+        Some(json!({
+            "agent": "agent_x",
+            "environment_id": "env_1",
+            "name": "noexpr",
+            "schedule": { "type": "cron", "timezone": "UTC" }
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "a schedule needs an expression");
+
+    // Updating the good deployment with a malformed cron is rejected, and its stored
+    // schedule is unchanged.
+    let (s, _) = call(
+        &app,
+        "POST",
+        &format!("/v1/deployments/{id}"),
+        Some(json!({ "schedule": { "type": "cron", "expression": "not a cron", "timezone": "UTC" } })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (_, still) = call(&app, "GET", &format!("/v1/deployments/{id}"), None).await;
+    assert_eq!(
+        still["schedule"]["expression"], "0 9 * * 1-5",
+        "the rejected update did not corrupt the stored schedule"
+    );
+}
+
 #[tokio::test]
 async fn missing_required_fields_and_unknown_ids() {
     let app = app();

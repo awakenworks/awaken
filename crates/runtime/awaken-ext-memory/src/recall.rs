@@ -296,4 +296,71 @@ mod tests {
         let out = recall_relevant(&store, &bounds, &ReplyModel("NONE"), &model(), "q").await;
         assert!(out.is_none());
     }
+
+    // --- byte-vs-char cap: `render` measures the total cap in BYTES ---
+
+    /// Build an in-memory entry directly (no filesystem, no mtime) so ordering is
+    /// deterministic and the exact content bytes are under test control.
+    fn entry(content: &str) -> crate::localfs::Entry {
+        crate::localfs::Entry {
+            path: std::path::PathBuf::from("x.md"),
+            content: content.to_string(),
+            modified: std::time::SystemTime::UNIX_EPOCH,
+        }
+    }
+
+    #[test]
+    fn total_cap_counts_bytes_not_chars_for_multibyte_content() {
+        // KNOWN BUG (adjudicate): `RecallBounds::total_chars` is documented and named
+        // as a *character* budget, but `render` accumulates `piece.len()` — the UTF-8
+        // *byte* length — against it. `truncate` (per-entry) counts chars, so the two
+        // caps disagree on multibyte text. This test pins the CURRENT (byte) behavior.
+        //
+        // Two entries of 10 chars each. "あ" is 3 bytes → 30 bytes / 10 chars per entry.
+        // total_chars = 25.
+        //   * A true char budget: 10 + 10 = 20 chars <= 25 → both kept.
+        //   * The current byte budget: newest uses 30+2=32 bytes; the older would push
+        //     to 64 > 25 → dropped.
+        let entries = [entry(&"あ".repeat(10)), entry(&"い".repeat(10))];
+        let bounds = RecallBounds {
+            per_entry_chars: 0,
+            total_chars: 25,
+            ..RecallBounds::default()
+        };
+        let block = render(&entries, &bounds).unwrap();
+        // Current behavior: only the newest survives; the older is dropped and noted,
+        // even though 20 characters comfortably fit a 25-*character* cap.
+        assert!(block.contains(&"あ".repeat(10)), "newest kept: {block}");
+        assert!(
+            !block.contains(&"い".repeat(10)),
+            "older dropped by the byte-measured cap: {block}"
+        );
+        assert!(
+            block.contains("+1 older memories not shown"),
+            "the byte cap treats 20 chars as over a 25-char budget: {block}"
+        );
+    }
+
+    #[test]
+    fn ascii_control_keeps_both_at_the_same_char_counts() {
+        // The ASCII twin of the case above: identical 10+10 char counts, but here
+        // bytes == chars, so 20 <= 25 and BOTH entries are kept. The only difference
+        // from the multibyte case is byte width — isolating the byte-vs-char defect.
+        let entries = [entry(&"a".repeat(10)), entry(&"b".repeat(10))];
+        let bounds = RecallBounds {
+            per_entry_chars: 0,
+            total_chars: 25,
+            ..RecallBounds::default()
+        };
+        let block = render(&entries, &bounds).unwrap();
+        assert!(block.contains(&"a".repeat(10)), "newest kept: {block}");
+        assert!(
+            block.contains(&"b".repeat(10)),
+            "older kept under char==byte: {block}"
+        );
+        assert!(
+            !block.contains("older memories not shown"),
+            "nothing omitted: {block}"
+        );
+    }
 }

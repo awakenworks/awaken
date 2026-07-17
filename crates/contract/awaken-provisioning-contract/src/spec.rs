@@ -108,3 +108,86 @@ pub enum RootfsSource {
     Dir { path_template: String },
     Tarball { reference: String },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Round-trip `value` and assert its serialized form carries `tag` verbatim.
+    /// Pins the exact wire tag (the config→worker contract) alongside reparse-equality.
+    fn round_trips_with_tag<T>(value: &T, tag: &str)
+    where
+        T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug,
+    {
+        let wire = serde_json::to_string(value).unwrap();
+        assert!(wire.contains(tag), "missing tag {tag} in {wire}");
+        assert_eq!(&serde_json::from_str::<T>(&wire).unwrap(), value, "{wire}");
+    }
+
+    #[test]
+    fn every_environment_kind_round_trips_with_its_exact_kind_tag() {
+        // EnvironmentKind crosses config→worker as the declared environment shape; its
+        // `kind` discriminant is the contract both source repos converged on. Untested
+        // until now despite being the realizer's dispatch key — pin every tag verbatim.
+        round_trips_with_tag(&EnvironmentKind::Scope, "\"kind\":\"scope\"");
+        round_trips_with_tag(&EnvironmentKind::Sandbox, "\"kind\":\"sandbox\"");
+        round_trips_with_tag(
+            &EnvironmentKind::IsolatedRoot {
+                base: RootfsSource::Dir {
+                    path_template: "/rootfs/{scope}".into(),
+                },
+                writable_base: true,
+            },
+            "\"kind\":\"isolated_root\"",
+        );
+        round_trips_with_tag(
+            &EnvironmentKind::Image {
+                reference: "registry.io/img:1".into(),
+            },
+            "\"kind\":\"image\"",
+        );
+        round_trips_with_tag(
+            &EnvironmentKind::LocalDir {
+                path_template: "/home/{user}/work".into(),
+            },
+            "\"kind\":\"local_dir\"",
+        );
+    }
+
+    #[test]
+    fn isolated_root_nests_and_preserves_its_rootfs_source_and_flag() {
+        // The one composite kind: its `base` is a nested tagged `RootfsSource` and
+        // `writable_base` must survive the round-trip (it forces single-active use).
+        let kind = EnvironmentKind::IsolatedRoot {
+            base: RootfsSource::Tarball {
+                reference: "blob://base.tar".into(),
+            },
+            writable_base: false,
+        };
+        let wire = serde_json::to_string(&kind).unwrap();
+        assert!(wire.contains("\"source\":\"tarball\""), "{wire}");
+        assert!(wire.contains("\"writable_base\":false"), "{wire}");
+        assert_eq!(
+            serde_json::from_str::<EnvironmentKind>(&wire).unwrap(),
+            kind
+        );
+    }
+
+    #[test]
+    fn every_rootfs_source_round_trips_with_its_exact_source_tag() {
+        // RootfsSource is a *reference* (G3: never a resolved host path); its `source`
+        // tag is the discriminant the realizer maps to a base image/dir.
+        round_trips_with_tag(
+            &RootfsSource::Dir {
+                path_template: "/var/lib/rootfs/{scope}".into(),
+            },
+            "\"source\":\"dir\"",
+        );
+        round_trips_with_tag(
+            &RootfsSource::Tarball {
+                reference: "oci://base:latest".into(),
+            },
+            "\"source\":\"tarball\"",
+        );
+    }
+}

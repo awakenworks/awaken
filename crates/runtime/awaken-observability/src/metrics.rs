@@ -254,8 +254,16 @@ mod meter_tests {
     use super::*;
     use opentelemetry::global;
 
-    // Installing a Prometheus-only provider (no OTLP endpoint) makes an observable
-    // gauge on the global meter renderable as Prometheus text at scrape time.
+    // Installing a Prometheus-only provider (no OTLP endpoint) makes both an
+    // observable gauge on the global meter AND the `OtelMetricsRecorder`'s business
+    // instruments renderable as Prometheus text at scrape time.
+    //
+    // NOTE: this is deliberately ONE test, not two. `init_meters`/`render_prometheus`
+    // are process-global (`OnceLock` provider + `OnceLock` registry) and `global::meter`
+    // caches per-name; two meter tests running concurrently can race the global
+    // install (the `set_meter_provider` "last wins" can diverge from the `PROM_REGISTRY`
+    // "first wins"), scraping the wrong registry. Keeping a single meter test makes the
+    // assertion deterministic without any src change or a `serial_test` dev-dep.
     #[test]
     fn init_meters_installs_a_prometheus_scrape_of_the_global_meter() {
         // No endpoint → Prometheus reader only (no OTLP push). Idempotent install.
@@ -273,6 +281,55 @@ mod meter_tests {
                 .lines()
                 .any(|l| l.starts_with("awaken_meter_test_gauge") && l.trim_end().ends_with(" 7")),
             "the global meter's gauge is scrapeable: {scrape}"
+        );
+
+        // --- OtelMetricsRecorder real emission ---
+        // The recorder binds its instruments to the same global meter; recording
+        // through the real `MetricsRecorder` port must surface those instruments in
+        // the scrape — the same oracle the admin `/metrics` endpoint returns.
+        use awaken_runtime_contract::metrics::{InferenceMetric, MetricsRecorder};
+        use std::time::Duration;
+
+        let recorder = OtelMetricsRecorder::new();
+
+        recorder.record_inference(InferenceMetric {
+            model: "oracle-model",
+            outcome: "ok",
+            duration: Duration::from_millis(12),
+            input_tokens: Some(41),
+            output_tokens: Some(7),
+        });
+        recorder.record_tool("oracle-tool", "ok", Duration::from_millis(3));
+        recorder.record_dispatch_claimed();
+        recorder.record_dispatch_settled("done");
+        recorder.record_dispatch_drive(Duration::from_millis(9));
+
+        let scrape = render_prometheus();
+
+        // Every instrument the recorder feeds must show up in the scrape. Assert on
+        // the sanitized metric-name stems (opentelemetry-prometheus maps `.`→`_` and
+        // may add `_total`/unit suffixes), so the check is robust to suffix details.
+        for stem in [
+            "gen_ai_client_operation_count",
+            "gen_ai_client_operation_duration",
+            "gen_ai_client_input_tokens",
+            "gen_ai_client_output_tokens",
+            "awaken_tool_execution_count",
+            "awaken_tool_execution_duration",
+            "awaken_dispatch_runs_claimed",
+            "awaken_dispatch_runs_settled",
+            "awaken_dispatch_drive_duration",
+        ] {
+            assert!(
+                scrape.contains(stem),
+                "instrument `{stem}` must appear in the scrape:\n{scrape}"
+            );
+        }
+
+        // Structure-only labels are carried through (model id + outcome), never content.
+        assert!(
+            scrape.contains("oracle-model") && scrape.contains("oracle-tool"),
+            "the structure-only labels are present in the scrape:\n{scrape}"
         );
     }
 }

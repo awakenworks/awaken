@@ -198,4 +198,28 @@ mod tests {
         assert!(should_emit_progress(&mut gate, 0.1, Some("working")));
         assert!(should_emit_progress(&mut gate, 0.1001, None));
     }
+
+    #[test]
+    fn gate_emits_when_the_interval_elapsed_even_without_a_delta_or_message_change() {
+        // Isolate the interval-elapsed branch: a stale gate whose last emit was
+        // two intervals ago, with the SAME progress and SAME (absent) message. The
+        // delta and message branches are both false, so only interval_elapsed can
+        // carry the emission. (Constructed in the past via a synthetic Instant so
+        // the test needs no sleep.)
+        let mut gate = ProgressEmitGate {
+            last_emit_at: Some(Instant::now() - MCP_PROGRESS_MIN_INTERVAL * 2),
+            last_progress: Some(0.5),
+            last_message: None,
+        };
+        assert!(
+            should_emit_progress(&mut gate, 0.5, None),
+            "the elapsed interval alone permits re-emission",
+        );
+        // The gate advanced: its stored progress is unchanged but a fresh emit
+        // time was recorded, so an immediate identical call is now throttled.
+        assert!(
+            !should_emit_progress(&mut gate, 0.5, None),
+            "immediately after emitting, the same update is throttled again",
+        );
+    }
 }

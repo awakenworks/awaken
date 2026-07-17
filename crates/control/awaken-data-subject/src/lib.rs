@@ -677,6 +677,63 @@ mod tests {
         );
     }
 
+    // KNOWN BUG (adjudicate): silent under-erasure — backend failure returns success receipt.
+    // GDPR Art. 17 erasure fans out to content erasers and writes an accountability
+    // stamp. But `ContentEraser::erase_subject` returns a bare `usize` (no Result),
+    // and `RepoDataSubjectResolver::erase` does `let _ = self.repo.put(s)` — swallowing
+    // the accountability write. So a *total backend failure* on both the content
+    // DELETE and the accountability PUT is indistinguishable from a clean "nothing to
+    // erase": the caller still gets a success `ErasureReceipt { records_removed: 0 }`,
+    // with no channel to learn the erasure never actually happened. This test PINS
+    // that current (buggy) fail-open behavior; it does not assert it is correct.
+    #[tokio::test]
+    async fn resolver_erase_silently_swallows_backend_failures() {
+        use awaken_runtime_contract::ContentEraser;
+
+        // A content backend whose DELETE errored. The `usize` signature has no channel
+        // to surface that, so the only value a failed backend can report is 0 — the
+        // same value a clean "nothing matched" reports.
+        struct FailingEraser;
+        #[async_trait]
+        impl ContentEraser for FailingEraser {
+            async fn erase_subject(&self, _s: &DataSubjectId) -> usize {
+                0
+            }
+        }
+
+        // A repo whose accountability write (`put`) always fails. `get` succeeds so the
+        // resolver reaches the swallowed `let _ = self.repo.put(s)` branch.
+        struct FailingPutRepo;
+        #[async_trait]
+        impl DataSubjectRepo for FailingPutRepo {
+            async fn put(&self, _subject: DataSubject) -> Result<(), DataSubjectError> {
+                Err(DataSubjectError::Storage("disk full".into()))
+            }
+            async fn get(&self, id: &DataSubjectId) -> Result<DataSubject, DataSubjectError> {
+                Ok(DataSubject::new(id.clone(), "org_1", 0))
+            }
+            async fn list(&self, _org: &str) -> Result<Vec<DataSubject>, DataSubjectError> {
+                Ok(Vec::new())
+            }
+            async fn delete(&self, _id: &DataSubjectId) -> Result<(), DataSubjectError> {
+                Ok(())
+            }
+        }
+
+        let resolver = RepoDataSubjectResolver::new(std::sync::Arc::new(FailingPutRepo))
+            .with_eraser(std::sync::Arc::new(FailingEraser));
+
+        // Both the content erase and the accountability write failed, yet the caller
+        // gets a plain success receipt — the failure was swallowed on both paths. The
+        // `ErasureReceipt` type itself carries only `records_removed` (no error/status),
+        // so a real erasure and a total no-op are wire-indistinguishable.
+        let receipt = resolver.erase(&DataSubjectId("dsub_1".into())).await;
+        assert_eq!(
+            receipt.records_removed, 0,
+            "backend failure is reported as a clean '0 removed' success receipt"
+        );
+    }
+
     #[tokio::test]
     async fn erase_fans_out_and_sums_removed_counts() {
         use awaken_runtime_contract::ContentEraser;

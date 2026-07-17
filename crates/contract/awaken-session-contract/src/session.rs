@@ -457,3 +457,240 @@ pub struct SessionUsage {
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_agent_contract::agent::content::ContentBlock;
+    use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+    use awaken_agent_contract::stream::event::Event;
+    use awaken_agent_contract::stream::sink::{Error as SinkError, Sink};
+
+    /// A minimal double that overrides ONLY [`SessionRuntime::run`] (plus the trait's
+    /// other *required* methods, implemented minimally). Every fail-closed DEFAULT
+    /// method (`live_inbox_*`, `owns_thread`, `committed_messages`, `run_streaming`,
+    /// …) is left at the trait's default so the tests below exercise those defaults.
+    struct MinimalRuntime;
+
+    /// The distinctive outcome `run` returns — used to prove `run_streaming` delegates
+    /// to `run` identically (the default just ignores the sink).
+    fn sample_outcome() -> StepOutcome {
+        StepOutcome {
+            messages: vec![
+                Message::text(MessageId("m1".into()), Role::Assistant, "one"),
+                Message::text(MessageId("m2".into()), Role::Assistant, "two"),
+            ],
+            stop: Terminus::Parked,
+            pending: Some(Pending {
+                tool_use_id: "call-1".into(),
+                name: "search".into(),
+                input: serde_json::json!({"q": 1}),
+                client_executed: true,
+            }),
+            compacted: true,
+            rescheduled: true,
+            failure: Some(StepFailure {
+                code: "boom".into(),
+                message: "it failed".into(),
+            }),
+        }
+    }
+
+    #[async_trait]
+    impl SessionRuntime for MinimalRuntime {
+        async fn run(
+            &self,
+            _agent: &str,
+            _thread: &str,
+            _content: Vec<ContentBlock>,
+        ) -> Result<StepOutcome, RunError> {
+            Ok(sample_outcome())
+        }
+
+        async fn resume(
+            &self,
+            _thread: &str,
+            _tool_use_id: &str,
+            _decision: Decision,
+        ) -> Result<StepOutcome, RunError> {
+            unreachable!("not exercised by the default-method tests")
+        }
+
+        async fn resume_custom(
+            &self,
+            _thread: &str,
+            _tool_use_id: &str,
+            _content: &str,
+            _is_error: bool,
+        ) -> Result<StepOutcome, RunError> {
+            unreachable!("not exercised by the default-method tests")
+        }
+
+        async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+            Ok(())
+        }
+
+        async fn define_outcome(
+            &self,
+            _thread: &str,
+            _description: &str,
+            _rubric: &str,
+            _max_iterations: u32,
+        ) -> Result<OutcomeReport, RunError> {
+            unreachable!("not exercised by the default-method tests")
+        }
+
+        fn model(&self) -> String {
+            "test-model".into()
+        }
+    }
+
+    /// A sink that records nothing — the default `run_streaming` never touches it, so
+    /// its `send` is never called; it exists only to satisfy the `Arc<dyn Sink>` arg.
+    struct NoopSink;
+
+    #[async_trait]
+    impl Sink for NoopSink {
+        async fn send(&self, _event: Event) -> Result<(), SinkError> {
+            unreachable!("the default run_streaming ignores the sink")
+        }
+    }
+
+    // Item 1: the fail-closed DEFAULT live-inbox methods all reject with `Inactive`.
+    #[tokio::test]
+    async fn default_live_inbox_edits_fail_closed_inactive() {
+        let rt = MinimalRuntime;
+        assert_eq!(
+            rt.live_inbox_queue("t", vec![ContentBlock::text("hi")])
+                .await,
+            Err(LiveInboxError::Inactive),
+        );
+        assert_eq!(
+            rt.live_inbox_remove("t", 7).await,
+            Err(LiveInboxError::Inactive),
+        );
+        assert_eq!(
+            rt.live_inbox_replace("t", 7, vec![ContentBlock::text("x")])
+                .await,
+            Err(LiveInboxError::Inactive),
+        );
+        assert_eq!(
+            rt.live_inbox_reorder("t", vec![1, 2, 3]).await,
+            Err(LiveInboxError::Inactive),
+        );
+        // The read-side default reports an inactive queue.
+        let snap = rt.live_inbox_snapshot("t").await;
+        assert!(!snap.active);
+        assert!(snap.messages.is_empty());
+    }
+
+    // Item 1: the other fail-closed defaults — ownership false, committed empty.
+    #[tokio::test]
+    async fn default_probes_report_nothing() {
+        let rt = MinimalRuntime;
+        assert!(!rt.owns_thread("t").await, "an ephemeral host owns nothing");
+        assert!(
+            rt.committed_messages("t").await.is_empty(),
+            "no durable transcript by default"
+        );
+        assert_eq!(
+            rt.session_usage("t").await,
+            SessionUsage::default(),
+            "no usage reported by default"
+        );
+        // The lifecycle no-op defaults succeed without a host wiring them.
+        assert!(rt.prepare_session("t", init()).await.is_ok());
+        assert!(rt.rebind_model("t", "m").await.is_ok());
+        assert!(rt.end_session("t").await.is_ok());
+        assert!(rt.interrupt("t").await.is_ok());
+        // The default capability surface is empty.
+        let caps = rt.capabilities();
+        assert!(caps.builtin_tools.is_empty());
+        assert!(caps.custom_tools.is_empty());
+        assert!(caps.skills.is_empty());
+        assert!(caps.delegates.is_empty());
+    }
+
+    fn init() -> SessionInit {
+        SessionInit {
+            agent_id: "a".into(),
+            mcp_servers: Vec::new(),
+            resources: Vec::new(),
+            model: None,
+            runtime: None,
+            deny_egress: false,
+        }
+    }
+
+    // Item 1: `run_streaming`'s default delegates to `run` — the committed outcome is
+    // identical (the sink only mirrors in-flight events, which the default ignores).
+    #[tokio::test]
+    async fn run_streaming_default_delegates_identically_to_run() {
+        let rt = MinimalRuntime;
+        let direct = rt
+            .run("a", "t", vec![ContentBlock::text("go")])
+            .await
+            .unwrap();
+        let streamed = rt
+            .run_streaming("a", "t", vec![ContentBlock::text("go")], Arc::new(NoopSink))
+            .await
+            .unwrap();
+        // `StepOutcome` has no `PartialEq`; compare it field-by-field.
+        assert_eq!(streamed.messages.len(), direct.messages.len());
+        assert_eq!(streamed.messages, direct.messages);
+        assert_eq!(streamed.stop, direct.stop);
+        assert_eq!(
+            streamed.pending.as_ref().map(|p| &p.tool_use_id),
+            direct.pending.as_ref().map(|p| &p.tool_use_id),
+        );
+        assert_eq!(streamed.compacted, direct.compacted);
+        assert_eq!(streamed.rescheduled, direct.rescheduled);
+        assert_eq!(
+            streamed.failure.as_ref().map(|f| &f.code),
+            direct.failure.as_ref().map(|f| &f.code),
+        );
+    }
+
+    // Item 4: `LiveInboxError` Display messages are stable, distinct wire text.
+    #[test]
+    fn live_inbox_error_display_messages_are_pinned() {
+        assert_eq!(
+            LiveInboxError::Inactive.to_string(),
+            "no turn is in flight; send the message as a normal event",
+        );
+        assert_eq!(
+            LiveInboxError::UnknownMessage.to_string(),
+            "no queued message with that id",
+        );
+        assert_eq!(
+            LiveInboxError::StaleOrder.to_string(),
+            "proposed order does not match the current queue",
+        );
+    }
+
+    // Item 4: `RunError` Display + the `internal`/`bad_request` constructor→kind
+    // mapping. The kind is what the router turns into a 500 / 400 status (the status
+    // mapping itself lives in the wire adapter's route, not in this contract crate).
+    #[test]
+    fn run_error_display_and_kind_mapping() {
+        let internal = RunError::internal("provider blew up");
+        assert_eq!(internal.to_string(), "run failed: provider blew up");
+        assert_eq!(internal.kind, RunErrorKind::Internal);
+
+        let bad = RunError::bad_request("no such park");
+        assert_eq!(bad.to_string(), "run failed: no such park");
+        assert_eq!(bad.kind, RunErrorKind::BadRequest);
+
+        // The two kinds are distinct.
+        assert_ne!(internal.kind, bad.kind);
+    }
+
+    // Item 5: `LiveInboxSnapshot::inactive()` invariants.
+    #[test]
+    fn inactive_snapshot_is_empty_versionless_and_inactive() {
+        let snap = LiveInboxSnapshot::inactive();
+        assert!(!snap.active);
+        assert_eq!(snap.version, 0);
+        assert!(snap.messages.is_empty());
+    }
+}

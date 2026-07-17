@@ -329,6 +329,48 @@ mod tests {
     }
 
     #[test]
+    fn run_scoped_instances_reset_across_a_run_boundary_but_thread_scoped_persist() {
+        // Behavioral counterpart to the scope *declaration* above: a run boundary is
+        // modeled by replaying only the durable (thread-scoped) commands, since a
+        // run-scoped command belongs to the finished run and is not carried forward.
+        // Thread-scoped instance state must survive; run-scoped must reset to default.
+        let mut store = Store::new();
+        let transition = |machine: &str| FsmTransition {
+            machine: machine.into(),
+            key: "a.rs".into(),
+            to: "written".into(),
+        };
+        // The same logical transition recorded once under each scope.
+        let thread_cmd = ThreadInstances::commit(&store, transition("rbw")).unwrap();
+        store.apply(&thread_cmd);
+        let run_cmd = RunInstances::commit(&store, transition("lock")).unwrap();
+        store.apply(&run_cmd);
+
+        // Within the run both cells hold their value.
+        assert_eq!(
+            ThreadInstances::load_or_default(&store).current("rbw", "a.rs"),
+            Some("written")
+        );
+        assert_eq!(
+            RunInstances::load_or_default(&store).current("lock", "a.rs"),
+            Some("written")
+        );
+
+        // The next run replays only the thread-scoped command.
+        let next_run = Store::rebuild(&[thread_cmd]);
+        assert_eq!(
+            ThreadInstances::load_or_default(&next_run).current("rbw", "a.rs"),
+            Some("written"),
+            "thread-scoped instance state persists across runs on the same thread"
+        );
+        assert_eq!(
+            RunInstances::load_or_default(&next_run).current("lock", "a.rs"),
+            None,
+            "run-scoped instance state resets at the start of the next run"
+        );
+    }
+
+    #[test]
     fn metrics_count_total_and_per_machine() {
         let mut store = Store::new();
         for event in [

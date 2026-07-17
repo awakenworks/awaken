@@ -282,6 +282,62 @@ mod wire_tests {
         );
     }
 
+    // BYTE-COMPAT PIN: `ToolInputAvailable` is the authoritative committed tool
+    // call the `useChat` transport keys on. The exact camelCase field spellings —
+    // `toolCallId`, `toolName`, and especially `providerExecuted` (the flag that
+    // decides whether the client runs the tool or renders a server result) — are
+    // load-bearing. A snake_case regression (`provider_executed`, `tool_call_id`)
+    // would silently break every AI SDK client, so pin the literal wire shape.
+    #[test]
+    fn tool_input_available_wire_shape_pins_provider_executed() {
+        let ev = UIStreamEvent::ToolInputAvailable {
+            tool_call_id: "c1".into(),
+            tool_name: "read".into(),
+            input: json!({ "path": "x" }),
+            provider_executed: true,
+        };
+        assert_eq!(
+            serde_json::to_value(&ev).unwrap(),
+            json!({
+                "type": "tool-input-available",
+                "toolCallId": "c1",
+                "toolName": "read",
+                "input": { "path": "x" },
+                "providerExecuted": true,
+            })
+        );
+    }
+
+    // BYTE-COMPAT PIN: `ToolOutputAvailable` carries the tool result under the exact
+    // `tool-output-available` tag with camelCase `toolCallId` + `output`. A
+    // snake_case rename must fail this.
+    #[test]
+    fn tool_output_available_wire_shape() {
+        let ev = UIStreamEvent::ToolOutputAvailable {
+            tool_call_id: "c1".into(),
+            output: json!({ "ok": true }),
+        };
+        assert_eq!(
+            serde_json::to_value(&ev).unwrap(),
+            json!({ "type": "tool-output-available", "toolCallId": "c1", "output": { "ok": true } })
+        );
+    }
+
+    // BYTE-COMPAT PIN: the step-boundary frame serializes as `"finish-step"` (the
+    // kebab-case rename of the `FinishStep` variant), NOT `"finish"`. The AI SDK
+    // treats `finish-step` (end of one step in a multi-step turn) and `finish` (end
+    // of the whole message) as distinct chunks; collapsing them would truncate the
+    // stream. Pin both the positive tag and the negative (not `finish`).
+    #[test]
+    fn finish_step_serializes_as_finish_step_not_finish() {
+        let value = serde_json::to_value(UIStreamEvent::FinishStep).unwrap();
+        assert_eq!(value, json!({ "type": "finish-step" }));
+        assert_ne!(
+            value["type"], "finish",
+            "finish-step must not collapse to finish"
+        );
+    }
+
     #[test]
     fn tool_output_error_wire_shape() {
         let ev = UIStreamEvent::ToolOutputError {

@@ -1266,3 +1266,235 @@ async fn rt5_a_token_may_revoke_itself_then_subsequent_calls_401() {
     let (s, _) = call(&app, "GET", "/v1/config/catalog", Some(&cleartext), None).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
 }
+
+// -- privilege escalation: the cross-workspace deny (SEC) -----------------
+//
+// mg6 proves a *Global*-bound bootstrap admin MAY cross into another workspace
+// via the TokenAdmin delegation (its `apikey.*` grant is bound at Global, an
+// ancestor of every workspace). The mirror — the deny the whole delegation
+// exists to enforce — was unproven: a *workspace-bound* admin (role bound at
+// `Workspace{A}`) MUST NOT mint / list / revoke tokens for a *different*
+// workspace B, because its role binding does not cover B's scope. The guard
+// skips the header-equality fence for TokenAdmin routes (mg6), so the deny must
+// come from the handler's target-workspace authorization — this pins it.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mg13_workspace_bound_admin_cannot_mint_list_or_revoke_for_another_workspace() {
+    let (_dir, iam) = fresh_iam();
+    let ws_a = "wrkspc_a";
+    let ws_b = "wrkspc_b";
+    // A workspace_admin whose ONLY role binding is at `Workspace{ws_a}` (mint
+    // writes the binding at the token's workspace scope, never Global).
+    let admin_a = mint(&iam, "tok_wsadmin_a", ws_a, "workspace_admin");
+    // A victim token living in workspace B — the revoke target.
+    mint(&iam, "tok_victim_b", ws_b, "workspace_admin");
+    let app = guarded_app(iam);
+
+    // Positive control: the workspace-bound admin CAN mint inside its own
+    // workspace (so the deny below is a scope fence, not a broken credential).
+    let (s, ok) = call(
+        &app,
+        "POST",
+        "/v1/config/iam/tokens",
+        Some(&admin_a),
+        Some(json!({ "workspace_id": ws_a, "role": "workspace_user" })),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::CREATED,
+        "workspace admin mints in-workspace: {ok}"
+    );
+
+    // Deny (mint): a foreign target workspace → 403, NOT a silent cross-mint.
+    let (s, err) = call(
+        &app,
+        "POST",
+        "/v1/config/iam/tokens",
+        Some(&admin_a),
+        Some(json!({ "workspace_id": ws_b, "role": "workspace_user" })),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::FORBIDDEN,
+        "cross-workspace mint must 403: {err}"
+    );
+    assert_eq!(err["error"]["type"], json!("permission_error"));
+
+    // Deny (list): reading another workspace's token list → 403 (apikey.read at
+    // B is not covered by the A-scoped binding).
+    let (s, err) = call(
+        &app,
+        "GET",
+        &format!("/v1/config/iam/tokens?workspace_id={ws_b}"),
+        Some(&admin_a),
+        None,
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::FORBIDDEN,
+        "cross-workspace list must 403: {err}"
+    );
+
+    // Deny (revoke): revoking a token that lives in workspace B → 403 (the
+    // handler authorizes at the TOKEN'S workspace, which A does not cover).
+    let (s, err) = call(
+        &app,
+        "DELETE",
+        "/v1/config/iam/tokens/tok_victim_b",
+        Some(&admin_a),
+        None,
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::FORBIDDEN,
+        "cross-workspace revoke must 403: {err}"
+    );
+}
+
+// -- restart hydration (SEC) ---------------------------------------------
+//
+// The embedded IAM's live evaluator is populated only by hydrating durable
+// rows at boot. A restart must therefore re-admit a previously minted token AND
+// keep a previously revoked one denied — otherwise a revocation silently lapses
+// (fail-open) or a valid credential is lost (fail-closed) on every process
+// bounce.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn embedded_iam_rehydrates_minted_and_revoked_tokens_across_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let survivor;
+    let revoked;
+    {
+        let iam = embedded_iam(dir.path());
+        survivor = mint(&iam, "tok_survivor", BOOTSTRAP_WORKSPACE, "admin");
+        revoked = mint(&iam, "tok_revoked_restart", BOOTSTRAP_WORKSPACE, "admin");
+        iam.revoke_token("tok_revoked_restart").unwrap();
+    }
+
+    // Reopen over the SAME data dir: tokens already exist, so no re-bootstrap;
+    // the durable rows rehydrate into a fresh live evaluator.
+    let iam2 = embedded_iam(dir.path());
+    let app = guarded_app(iam2);
+
+    // The survivor still authenticates AND authorizes (admin reads the catalog).
+    let (s, body) = call(&app, "GET", "/v1/config/catalog", Some(&survivor), None).await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "survivor authenticates post-restart: {body}"
+    );
+
+    // The revoked token still denies post-restart (the revocation persisted).
+    let (s, err) = call(&app, "GET", "/v1/config/catalog", Some(&revoked), None).await;
+    assert_eq!(
+        s,
+        StatusCode::UNAUTHORIZED,
+        "revocation must survive a restart: {err}"
+    );
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("revoked"),
+        "{err}"
+    );
+}
+
+// -- legacy layout import + token_views tenant fence (SEC) ---------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn embedded_iam_imports_the_legacy_layout_mapping_star_to_global() {
+    // 1. Mint a real token in a throwaway iam to obtain a valid ApiToken row and
+    //    its one-time cleartext. The argon2 hash travels with the serialized row,
+    //    so re-importing the row lets the ORIGINAL cleartext authenticate.
+    let seed_dir = tempfile::tempdir().unwrap();
+    let cleartext;
+    let token_json;
+    let principal_json;
+    {
+        let seed = embedded_iam(seed_dir.path());
+        cleartext = mint(&seed, "tok_legacy", "wrkspc_legacy", "admin");
+        let token = seed.token_by_id("tok_legacy").expect("just minted");
+        token_json = serde_json::to_string(&token).unwrap();
+        principal_json = serde_json::to_string(&token.principal).unwrap();
+    }
+
+    // 2. Build a fresh dir carrying ONLY the pre-SqlStore singular tables, with
+    //    the binding workspace as the `*` Global sentinel.
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("iam.sqlite");
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE iam_api_token (id TEXT PRIMARY KEY, data TEXT NOT NULL);\n\
+             CREATE TABLE iam_role_binding (principal TEXT NOT NULL, role TEXT NOT NULL, \
+             workspace TEXT NOT NULL);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO iam_api_token (id, data) VALUES (?1, ?2)",
+            rusqlite::params!["tok_legacy", token_json],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO iam_role_binding (principal, role, workspace) VALUES (?1, 'admin', '*')",
+            rusqlite::params![principal_json],
+        )
+        .unwrap();
+    }
+
+    // 3. Boot the embedded IAM over that dir — it runs the one-time legacy import.
+    let iam = embedded_iam(dir.path());
+
+    // The imported token authenticates with its original cleartext (hash preserved).
+    let (principal, _ws) = iam
+        .authenticate(&cleartext)
+        .expect("legacy token hydrated and authenticates");
+
+    // The `*` binding imported as ScopeRef::Global (an ancestor of EVERY
+    // workspace), so the admin principal authorizes `apikey.write` at an
+    // UNRELATED workspace — a Workspace-scoped import would Deny there. This is
+    // the assertion that distinguishes the `*`→Global mapping from a literal
+    // `Workspace{"*"}` binding.
+    assert_eq!(
+        iam.authorize(
+            principal,
+            APIKEY_WRITE,
+            WorkspaceId("wrkspc_unrelated".into())
+        ),
+        AuthorizationDecision::Allow
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn token_views_are_filtered_to_the_named_workspace() {
+    // token_views backs the list route; the fence that keeps workspace A from
+    // enumerating workspace B's tokens lives here (the route just calls it).
+    let (_dir, iam) = fresh_iam();
+    mint(&iam, "tok_in_a", "wrkspc_a", "workspace_admin");
+    mint(&iam, "tok_in_b", "wrkspc_b", "workspace_admin");
+
+    let ids_a: Vec<String> = iam
+        .token_views("wrkspc_a")
+        .iter()
+        .map(|v| v["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(ids_a.contains(&"tok_in_a".to_string()), "{ids_a:?}");
+    assert!(
+        !ids_a.contains(&"tok_in_b".to_string()),
+        "workspace A's view must not disclose workspace B's token: {ids_a:?}"
+    );
+
+    // Symmetric: B's view excludes A's token (and never the bootstrap workspace's).
+    let ids_b: Vec<String> = iam
+        .token_views("wrkspc_b")
+        .iter()
+        .map(|v| v["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(ids_b.contains(&"tok_in_b".to_string()), "{ids_b:?}");
+    assert!(!ids_b.contains(&"tok_in_a".to_string()), "{ids_b:?}");
+}

@@ -23,6 +23,10 @@ awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-
 [dev-dependencies]
 tokio.workspace = true
 tempfile = "3"
+# Raw SQLite access for the reload-time corrupt-row tests: inject rows the
+# fail-closed write path can never produce (dangling refs, non-JSON `data`), then
+# assert `snapshot()` fails closed. Reuses the crate's own `sqlite`-feature pin.
+rusqlite = { workspace = true }
 # Wire-shape unit tests (serde round-trips of the catalog DTOs) — available even
 # without the `sqlite`/`postgres` features that pull `serde_json` as a lib dep.
 serde_json = { workspace = true }

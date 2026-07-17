@@ -1756,6 +1756,109 @@ mod tests {
     }
 
     #[test]
+    fn cross_host_write_invalidates_a_peer_mounts_cache_end_to_end() {
+        use crate::LocalInvalidator;
+        use crate::invalidate::{InvalidatingMemoryFs, Invalidator};
+        // The D5 coherence model end-to-end, WITHOUT the kernel FUSE path: model two
+        // hosts mounting one store over the in-process `InMemoryFs`. Host A writes through
+        // an `InvalidatingMemoryFs` (the real write side); host B keeps its own
+        // `ContentLruCache` fed by a listener draining the shared `LocalInvalidator`. A
+        // write on A must drop the path from B's cache so B's next read refetches the new
+        // content from the shared durable store — coherence with no shared mount.
+        let rt = setup_rt();
+        let durable = Arc::new(InMemoryFs::new());
+        let bus = Arc::new(LocalInvalidator::new(16));
+        let inval: Arc<dyn Invalidator> = bus.clone();
+        let fs_a = InvalidatingMemoryFs::new(durable.clone(), inval);
+
+        // Seed /note.md and let host B cache it (as if B had just read it).
+        let seed = rt.block_on(fs_a.create("s", "/note.md", "v1")).unwrap();
+        let cache_b = Arc::new(Mutex::new(ContentLruCache::new(8)));
+        cache_b.lock().unwrap().put(seed.clone());
+        assert_eq!(
+            cache_b
+                .lock()
+                .unwrap()
+                .get("/note.md")
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("v1"),
+            "B has cached the seed content"
+        );
+
+        // Host B's cross-host listener drains the shared bus into its cache. It
+        // subscribes AFTER the seed create, so it only sees the write below.
+        let stop = Arc::new(AtomicBool::new(false));
+        let listener = {
+            let (cache, stop, rx) = (cache_b.clone(), stop.clone(), bus.subscribe());
+            std::thread::spawn(move || run_invalidation_listener(cache, "s".into(), rx, stop))
+        };
+
+        // Host A updates /note.md → the write publishes an invalidation B must observe.
+        rt.block_on(fs_a.update("s", &seed.id, "v2", &seed.content_sha256))
+            .unwrap();
+
+        // B's cache drops the stale path (bounded poll on the real condition — the file's
+        // established idiom for the async listener, not a fixed ordering sleep).
+        let mut waited = Duration::ZERO;
+        while cache_b.lock().unwrap().get("/note.md").is_some() && waited < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(10));
+            waited += Duration::from_millis(10);
+        }
+        assert!(
+            cache_b.lock().unwrap().get("/note.md").is_none(),
+            "the peer mount dropped the written path from its cache"
+        );
+
+        // A refetch on B (now a cache miss) sees host A's new content from the shared store.
+        let refetched = rt
+            .block_on(durable.get_by_path("s", "/note.md"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            refetched.content.as_deref(),
+            Some("v2"),
+            "the refetch after invalidation sees A's write"
+        );
+
+        stop.store(true, Ordering::SeqCst);
+        listener.join().unwrap();
+    }
+
+    #[test]
+    fn unmount_drain_timeout_elapses_with_lingering_open_fds() {
+        // The bounded unmount drain: `unmount` waits up to `drain_timeout` for open fds to
+        // close, then warns and proceeds — it must never hang. Drive the timeout branch
+        // deterministically by injecting a lingering fd (open_fds pinned at 1, never
+        // drains) and a tiny timeout; no kernel session (`None`), so `join` is skipped.
+        let state = Arc::new(MountState::default());
+        state.open_fds.store(1, Ordering::SeqCst);
+        let handle = MemoryMountHandle {
+            session: None,
+            state: state.clone(),
+            drain_timeout: Duration::from_millis(30),
+            listener: None,
+        };
+        let start = Instant::now();
+        handle.unmount();
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(30),
+            "unmount waited out the full drain timeout: {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "but returned promptly after the timeout, never hung: {elapsed:?}"
+        );
+        assert_eq!(
+            state.open_fds.load(Ordering::SeqCst),
+            1,
+            "the lingering fd is left as-is (drain warns, it does not force-close)"
+        );
+    }
+
+    #[test]
     fn a_closed_bus_stops_the_listener_without_the_stop_flag() {
         use crate::LocalInvalidator;
         // Dropping the sender closes the bus; the listener observes `Closed` and exits

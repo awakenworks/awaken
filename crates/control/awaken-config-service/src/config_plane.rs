@@ -1458,4 +1458,118 @@ mod resource_prompt_tests {
         let (status, _body) = super::publish(State(plane), None, Path("ghost".to_string())).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
+
+    // ==== SEC: cross-scope isolation of the config registry ====
+    //
+    // The tool catalog fence is covered (`admin_tools_compile_only_in_the_reserved_scope`),
+    // but the config *registry* fence — that scope A's authored/published config
+    // is invisible and un-actionable from scope B — was unproven end-to-end
+    // through the scope edge. A hole here is a cross-tenant config disclosure.
+
+    /// A config plane (the scope edge) over a shared real store handle, returned
+    /// alongside the store so a test can read the durable rows directly.
+    fn plane_over(store: Arc<SqliteConfigStore>) -> ConfigPlane {
+        ConfigPlane::new(
+            Arc::new(ConfigService::new()),
+            store,
+            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+        )
+    }
+
+    #[tokio::test]
+    async fn config_registry_is_fenced_across_scopes() {
+        let plane = plane_over(Arc::new(SqliteConfigStore::open_in_memory().unwrap()));
+        let scope_a = ScopeId::from("wrkspc_a");
+        let scope_b = ScopeId::from("wrkspc_b");
+
+        // Author (and it exists) in scope A under an id another scope might reuse.
+        plane
+            .put(&scope_a, &agent_config("shared-id"))
+            .await
+            .unwrap();
+
+        // get from B → None (the handler renders this as a 404, never disclosing A).
+        assert!(
+            plane.get(&scope_b, "shared-id").await.unwrap().is_none(),
+            "scope B must not read scope A's config by id"
+        );
+        // absent from B's list.
+        assert!(
+            plane.list(&scope_b).await.unwrap().is_empty(),
+            "scope B's list must not include scope A's config"
+        );
+        // publish from B → NotStored: B has nothing by that id to compile.
+        let err = plane.publish(&scope_b, "shared-id").await.unwrap_err();
+        assert!(
+            matches!(err, PublishError::NotStored(_)),
+            "scope B must not publish scope A's config: {err:?}"
+        );
+
+        // The fence is directional: A still owns and sees its row.
+        assert!(plane.get(&scope_a, "shared-id").await.unwrap().is_some());
+        assert_eq!(plane.list(&scope_a).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn warm_install_rehydrates_the_latest_publication_per_agent() {
+        // The `installed` catalog is populated only at publish time and held in
+        // memory; a fresh process must warm-load it from the durable store or a
+        // published agent resolves to the seed model. Latest-publication-wins
+        // (rows arrive oldest-first; the last insert into the by-id map survives).
+        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let scope = ScopeId::from("wrkspc_warm");
+        let author = plane_over(store.clone());
+
+        // Publish v1, then re-author with new instructions and publish v2 (a
+        // distinct content address → a second published row for the same agent).
+        let mut v1 = agent_config("warm-agent");
+        v1.instructions = "version one".into();
+        author.put(&scope, &v1).await.unwrap();
+        author.publish(&scope, "warm-agent").await.unwrap();
+
+        let mut v2 = agent_config("warm-agent");
+        v2.instructions = "version two".into();
+        author.put(&scope, &v2).await.unwrap();
+        author.publish(&scope, "warm-agent").await.unwrap();
+
+        // A FRESH service (empty in-memory catalog) warm-loads from the store.
+        let cold = ConfigService::new();
+        let n = cold.warm_install(store.as_ref(), &scope).await;
+        assert_eq!(n, 2, "both published rows are read");
+        let installed = cold.installed("warm-agent").expect("agent hydrated");
+        assert_eq!(
+            installed.snapshot().resolved_spec.instructions,
+            "version two",
+            "the latest publication wins on rehydrate"
+        );
+
+        // A store whose list fails → 0 installed (fail-closed rehydrate seam).
+        let cold2 = ConfigService::new();
+        assert_eq!(cold2.warm_install(&FailingScopedRegistry, &scope).await, 0);
+    }
+
+    #[tokio::test]
+    async fn publish_is_idempotent_by_fingerprint() {
+        // Re-publishing an unchanged config is content-addressed: the same
+        // fingerprint both times, and exactly one durable published row
+        // (`ON CONFLICT(fingerprint) DO NOTHING`).
+        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let scope = ScopeId::from("wrkspc_idem");
+        let plane = plane_over(store.clone());
+        plane
+            .put(&scope, &agent_config("idem-agent"))
+            .await
+            .unwrap();
+
+        let first = plane.publish(&scope, "idem-agent").await.unwrap();
+        let second = plane.publish(&scope, "idem-agent").await.unwrap();
+        assert_eq!(
+            first.fingerprint, second.fingerprint,
+            "an unchanged config publishes to the same content address"
+        );
+
+        let published = store.list_published_scoped(&scope).await.unwrap();
+        assert_eq!(published.len(), 1, "idempotent by fingerprint: one row");
+        assert_eq!(published[0].fingerprint, first.fingerprint);
+    }
 }

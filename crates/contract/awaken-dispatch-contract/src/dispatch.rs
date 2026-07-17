@@ -725,4 +725,128 @@ mod tests {
                 .is_ok()
         );
     }
+
+    /// A `DispatchQueue` whose only wired read is `current_epoch`, returning a fixed
+    /// value, so the *default* `holds_current_epoch` fence logic can be exercised in
+    /// isolation. Every other method is out of scope and left `unimplemented!()`.
+    struct FixedEpochQueue(Option<u64>);
+
+    #[async_trait]
+    impl DispatchQueue for FixedEpochQueue {
+        async fn current_epoch(&self, _run_id: &RunId) -> Result<Option<u64>, DispatchError> {
+            Ok(self.0)
+        }
+        async fn enqueue_with(
+            &self,
+            _request: RunExecutionRequest,
+            _options: SubmitOptions,
+        ) -> Result<(), DispatchError> {
+            unimplemented!()
+        }
+        async fn claim(
+            &self,
+            _owner: &str,
+            _lease_ms: u64,
+            _now_ms: u64,
+        ) -> Result<Option<Claimed>, DispatchError> {
+            unimplemented!()
+        }
+        async fn renew_lease(
+            &self,
+            _run_id: &RunId,
+            _owner: &str,
+            _lease_ms: u64,
+            _now_ms: u64,
+        ) -> Result<bool, DispatchError> {
+            unimplemented!()
+        }
+        async fn renew_owned_leases(
+            &self,
+            _owner: &str,
+            _lease_ms: u64,
+            _now_ms: u64,
+        ) -> Result<usize, DispatchError> {
+            unimplemented!()
+        }
+        async fn settle(
+            &self,
+            _run_id: &RunId,
+            _epoch: u64,
+            _outcome: DispatchOutcome,
+            _consumed: &[String],
+        ) -> Result<SettleOutcome, DispatchError> {
+            unimplemented!()
+        }
+        async fn reap(&self, _max_attempts: u64, _now_ms: u64) -> Result<usize, DispatchError> {
+            unimplemented!()
+        }
+        async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
+            unimplemented!()
+        }
+        async fn requeue(&self, _run_id: &RunId) -> Result<bool, DispatchError> {
+            unimplemented!()
+        }
+        async fn cancel(&self, _run_id: &RunId) -> Result<Option<ThreadId>, DispatchError> {
+            unimplemented!()
+        }
+        async fn parked_run(&self, _thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError> {
+            unimplemented!()
+        }
+        async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
+            unimplemented!()
+        }
+        async fn purge_dead_letters_before(&self, _cutoff_ms: u64) -> Result<usize, DispatchError> {
+            unimplemented!()
+        }
+        async fn superseded(&self) -> Result<Vec<RunId>, DispatchError> {
+            unimplemented!()
+        }
+        async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError> {
+            unimplemented!()
+        }
+    }
+
+    /// The commit fence's default `holds_current_epoch` is a safety invariant that
+    /// lives entirely in this contract layer, yet it was never asserted directly.
+    /// Pin all three arms of the default:
+    ///
+    /// - A GONE row (`current_epoch == None`) is fail-OPEN → `true`. This is
+    ///   deliberate (documented on the trait): a run settles its own dispatch row as
+    ///   its final act, so fencing a gone row would reject the legitimate terminal
+    ///   commit. NOT a bug — the fence only ever *rejects* on an observed, strictly
+    ///   higher epoch, never on absence.
+    /// - Equal or higher held epoch → `true` (the caller still holds the fence).
+    /// - A strictly HIGHER current epoch → `false` (a peer reclaimed the lapsed
+    ///   lease; the slow-but-alive owner is fenced off).
+    #[tokio::test]
+    async fn holds_current_epoch_fails_open_on_a_gone_row_and_fences_only_a_higher_epoch() {
+        let run = RunId("run-1".into());
+
+        // Gone row: fail-open regardless of the epoch the caller holds.
+        let gone = FixedEpochQueue(None);
+        assert!(
+            gone.holds_current_epoch(&run, 0).await.unwrap(),
+            "a gone row lets a terminal commit through (fail-open by design)"
+        );
+        assert!(
+            gone.holds_current_epoch(&run, 99).await.unwrap(),
+            "fail-open holds for any caller epoch on a gone row"
+        );
+
+        // Live row at epoch 5: equal or higher held epoch still holds the fence.
+        let live = FixedEpochQueue(Some(5));
+        assert!(
+            live.holds_current_epoch(&run, 5).await.unwrap(),
+            "the current holder (equal epoch) still commits"
+        );
+        assert!(
+            live.holds_current_epoch(&run, 6).await.unwrap(),
+            "a caller at a higher epoch holds the fence"
+        );
+        // Strictly higher CURRENT epoch supersedes the caller → fenced off.
+        assert!(
+            !live.holds_current_epoch(&run, 4).await.unwrap(),
+            "a strictly-higher current epoch fences the stale owner"
+        );
+    }
 }

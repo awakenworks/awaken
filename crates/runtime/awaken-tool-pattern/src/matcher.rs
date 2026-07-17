@@ -976,4 +976,69 @@ mod tests {
             panic!("both should match");
         }
     }
+
+    // --- Specificity saturating boundaries -----------------------------------
+    //
+    // `field_count` is `conditions.len().min(255) as u8`, and `field_precision`
+    // is accumulated with `u8::saturating_add`. Both cap at 255. These pin the
+    // exact cap semantics at / below / over the boundary.
+
+    /// Build `Fields` with `n` identical conditions on `f` that all match
+    /// `{"f": "x"}` under the given operator.
+    fn n_fields(n: usize, op: MatchOp, value: &str) -> ToolCallPattern {
+        let conditions = (0..n)
+            .map(|_| FieldCondition {
+                path: vec![PathSegment::Field("f".into())],
+                op,
+                value: value.into(),
+            })
+            .collect();
+        ToolCallPattern {
+            tool: ToolMatcher::Exact("T".into()),
+            args: ArgMatcher::Fields(conditions),
+        }
+    }
+
+    fn matched_specificity(p: &ToolCallPattern, args: &Value) -> Specificity {
+        match pattern_matches(p, "T", args) {
+            MatchResult::Match { specificity } => specificity,
+            MatchResult::NoMatch => panic!("expected a match"),
+        }
+    }
+
+    #[test]
+    fn field_count_saturates_at_255() {
+        // Glob against value "*" matches any string -> all conditions pass.
+        let args = json!({"f": "x"});
+        // Below the cap: field_count reflects the real count.
+        assert_eq!(
+            matched_specificity(&n_fields(254, MatchOp::Glob, "*"), &args).field_count,
+            254
+        );
+        // Exactly at the cap.
+        assert_eq!(
+            matched_specificity(&n_fields(255, MatchOp::Glob, "*"), &args).field_count,
+            255
+        );
+        // Over the cap: `.min(255)` saturates.
+        assert_eq!(
+            matched_specificity(&n_fields(300, MatchOp::Glob, "*"), &args).field_count,
+            255
+        );
+    }
+
+    #[test]
+    fn field_precision_saturates_at_255() {
+        let args = json!({"f": "x"});
+        // Below the cap: precision is the true sum (Exact => 3 each).
+        let below = matched_specificity(&n_fields(3, MatchOp::Exact, "x"), &args);
+        assert_eq!(below.field_precision, 9);
+        assert_eq!(below.field_count, 3);
+        // Enough Exact conditions (3 each) overflow a u8; saturating_add caps
+        // the sum at 255 even though the field_count keeps climbing to its own
+        // 255 cap.
+        let over = matched_specificity(&n_fields(100, MatchOp::Exact, "x"), &args);
+        assert_eq!(over.field_precision, 255);
+        assert_eq!(over.field_count, 100);
+    }
 }

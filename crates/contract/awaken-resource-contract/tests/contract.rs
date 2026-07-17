@@ -16,10 +16,12 @@
 //! | R4| `MemErr::TooLarge`                      | message interpolates `MAX_MEMORY_BYTES`       |
 //! | R5| `MemErr::Conflict { current }`          | message embeds `current.path`                 |
 //! | R6| each error variant                      | stable `Display` prefix (adapter-facing)      |
+//! | R7| `MemoryEntry` field set / value round-trip | pinned (Clone/Eq); no serde derive (gap)   |
+//! | R8| `MAX_PATH_BYTES`                        | bare constant, no contract predicate (gap)    |
 
 use awaken_resource_contract::{
-    FileStoreError, MAX_MEMORY_BYTES, MAX_PATH_BYTES, MemErr, Memory, MemoryStoreError,
-    SkillStoreError,
+    FileStoreError, MAX_MEMORY_BYTES, MAX_PATH_BYTES, MemErr, Memory, MemoryEntry,
+    MemoryStoreError, SkillStoreError,
 };
 
 fn sample_memory(content: Option<&str>) -> Memory {
@@ -133,4 +135,102 @@ fn error_display_prefixes_are_stable() {
 fn hard_caps_are_pinned() {
     assert_eq!(MAX_MEMORY_BYTES, 102_400);
     assert_eq!(MAX_PATH_BYTES, 1024);
+}
+
+// R7: `MemoryEntry` is the value `MemoryFs::list` returns for a directory listing.
+// It carries the same identity/version/size fields as a content-less `Memory`. Its
+// observable contract is its public field set plus value semantics (Clone, Eq), so
+// a silent field add/rename/retype must break a test here — pin them.
+//
+// NOTE (see also the KNOWN GAP below): unlike `Memory`, `MemoryEntry` derives NO
+// serde traits, so — by design of this test suite's "no src changes" rule — it
+// cannot be pinned as a JSON wire shape the way `Memory` is above. Its round-trip
+// here is therefore by value (Clone), not over the wire.
+#[test]
+fn memory_entry_value_round_trips_and_pins_field_shape() {
+    let e = MemoryEntry {
+        id: "mem_1".into(),
+        path: "/notes/a.md".into(),
+        content_sha256: "abc123".into(),
+        content_size: 5,
+        version: 1,
+        updated_unix_nanos: 20,
+    };
+
+    // Clone is a lossless by-value round-trip; Eq is the equality contract adapters
+    // rely on when diffing two listings (mirror/migration).
+    let back = e.clone();
+    assert_eq!(back, e, "MemoryEntry must be Clone + Eq (value semantics)");
+
+    // Field-shape: pin every public field (name + type) so a schema drift trips here.
+    assert_eq!(e.id, "mem_1");
+    assert_eq!(e.path, "/notes/a.md");
+    assert_eq!(e.content_sha256, "abc123");
+    assert_eq!(e.content_size, 5u64);
+    assert_eq!(e.version, 1u64);
+    assert_eq!(e.updated_unix_nanos, 20u128);
+
+    // Inequality must be observable on a single differing field — guards against a
+    // future hand-rolled `PartialEq` that silently ignores one.
+    let mut other = e.clone();
+    other.content_sha256 = "different".into();
+    assert_ne!(
+        other, e,
+        "differing content_sha256 must make entries unequal"
+    );
+}
+
+// KNOWN GAP (adjudicate): `MemoryEntry` has NO `Serialize`/`Deserialize` derive,
+// unlike `Memory` (lib.rs). The module doc says listings are serialized "onto the
+// managed/HTTP surfaces", yet the port cannot itself serialize a directory listing:
+// a `Vec<MemoryEntry>` from `MemoryFs::list` must be re-projected through `Memory`
+// or a bespoke adapter DTO before it can cross a wire. This test characterizes the
+// present contract — value semantics only — and does NOT add the missing derive.
+#[test]
+fn memory_entry_is_value_only_no_wire_contract() {
+    // Constructible + usable as a plain value type; that is the whole port surface.
+    let e = MemoryEntry {
+        id: "mem_2".into(),
+        path: "/x".into(),
+        content_sha256: "d".into(),
+        content_size: 0,
+        version: 3,
+        updated_unix_nanos: 2,
+    };
+    // Debug is the only cross-cutting rendering the type derives (no serde). Pin that
+    // it renders the struct name so tooling relying on it does not silently drift.
+    assert!(
+        format!("{e:?}").starts_with("MemoryEntry"),
+        "MemoryEntry must render via derived Debug: {e:?}"
+    );
+}
+
+// R8: `MAX_PATH_BYTES` is a bare cap *constant*. Contrast `MAX_MEMORY_BYTES`, which
+// the contract surfaces through a first-class port error (`MemErr::TooLarge`) that
+// interpolates the cap — so every backend must reject over-cap content identically.
+// The path cap has NO such analogue: there is no `MemErr::PathTooLong`, and nothing
+// in the contract says an over-cap path maps to `MemErr::InvalidPath`. Enforcement
+// therefore lives only in the backends.
+//
+// KNOWN GAP (adjudicate): MAX_PATH_BYTES has no contract-level enforcement predicate;
+// enforcement lives in backends → drift risk. This test characterizes the current
+// surface (the constant is the only path-length contract the port exposes) and does
+// NOT add a predicate to src.
+#[test]
+fn max_path_bytes_has_no_contract_level_enforcement_predicate() {
+    // The cap is exposed only as a plain constant.
+    assert_eq!(MAX_PATH_BYTES, 1024);
+
+    // The only path-shaped error is the reason-free `InvalidPath(String)`, which the
+    // contract does NOT tie to the cap: building it from an over-cap path neither
+    // validates nor references `MAX_PATH_BYTES`. Pin the asymmetry vs. `TooLarge`
+    // (which DOES interpolate `MAX_MEMORY_BYTES`) so a future contract predicate is a
+    // visible, deliberate change here.
+    let over = MemErr::InvalidPath("x".repeat(MAX_PATH_BYTES + 1));
+    let shown = over.to_string();
+    assert!(shown.starts_with("invalid path: "));
+    assert!(
+        !shown.contains(&MAX_PATH_BYTES.to_string()),
+        "InvalidPath must NOT interpolate the path cap (no contract predicate): {shown}"
+    );
 }

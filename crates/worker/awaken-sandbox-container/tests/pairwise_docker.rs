@@ -19,7 +19,7 @@ use std::time::Duration;
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxProvider;
 use awaken_sandbox_container::docker::DockerRuntime;
-use awaken_sandbox_container::{ContainerProvider, ContainerRuntime};
+use awaken_sandbox_container::{ContainerProvider, ContainerRuntime, EgressProxy};
 
 const AGENT_PORT: u16 = 8080;
 
@@ -387,6 +387,61 @@ async fn a_memory_cap_oom_kills_an_over_allocating_container() {
         uncapped,
         Some(0),
         "the same allocation without a cap completes (exit 0); got {uncapped:?}"
+    );
+}
+
+/// Allowlist egress, verified against a REAL Docker daemon: unlike `None` (which the
+/// daemon severs — proven by `deny_egress_confines_a_real_container`), the container
+/// tier does NOT sever an `Allowlist` container's network at the daemon. It keeps the
+/// bridge so the container can reach the brokered proxy CHOKEPOINT, and enforcement is
+/// the proxy's job — so the enforceable, daemon-observable artifact is that the brokered
+/// `HTTPS_PROXY` env is actually injected into the running container (a raw agent that
+/// honors the proxy is then confined to the allowlist by the gateway). This proves the
+/// real bollard create applies the `egress_plan`'s proxy env end to end, and that an
+/// Allowlist without a configured proxy fails closed BEFORE any container is created.
+///
+/// NOTE (adjudication): "an Allowlist container is BLOCKED from a non-allowlisted host"
+/// is NOT a bare-daemon invariant on this tier — the allowlist lives at the proxy, so a
+/// true block test needs a real gateway deployed (out of this crate's scope). The
+/// daemon-level severing invariant is the `None` case, already covered.
+#[tokio::test]
+async fn allowlist_egress_injects_the_brokered_proxy_into_a_real_container() {
+    let Some((_, rt)) = setup().await else {
+        return;
+    };
+    let proxy_url = "http://127.0.0.1:1/"; // never dialed; the container only reads the env
+    let provider =
+        ContainerProvider::new(rt.clone(), "busybox:latest").with_egress_proxy(EgressProxy {
+            url: proxy_url.into(),
+        });
+    let spec = pc::SandboxSpec {
+        scope: "pw-allowlist-proxy".into(),
+        isolation: pc::IsolationClass::Container,
+        mounts: Vec::new(),
+        env: Vec::new(),
+        network: pc::NetworkPolicy::Allowlist {
+            hosts: vec!["api.anthropic.com".into()],
+        },
+        outputs_path: "/mnt/session/outputs".into(),
+        limits: Default::default(),
+        lease_ttl_secs: None,
+        extra: Some(serde_json::json!({
+            "command": ["sh", "-c", format!("[ \"$HTTPS_PROXY\" = \"{proxy_url}\" ]")],
+        })),
+    };
+    let exit = run_to_exit(&provider, &rt, "pw-allowlist-proxy", &spec).await;
+    assert_eq!(
+        exit,
+        Some(0),
+        "an Allowlist container must run with the brokered HTTPS_PROXY injected (got {exit:?})"
+    );
+
+    // Fail-closed: without a configured proxy the same Allowlist spec is refused before
+    // the daemon is touched (no silent full-egress container).
+    let no_proxy = ContainerProvider::new(rt.clone(), "busybox:latest");
+    assert!(
+        no_proxy.create(&spec).await.is_err(),
+        "an Allowlist without a broker must fail closed, never open egress silently"
     );
 }
 

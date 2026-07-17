@@ -133,4 +133,54 @@ mod tests {
         let mut parser = SseParser::new();
         assert_eq!(parser.push("data:\n\n"), vec![String::new()]);
     }
+
+    #[test]
+    fn parsing_is_independent_of_chunk_boundaries() {
+        // Property: the incremental parser must yield the same event sequence no
+        // matter where the byte stream is split. A fixed input mixing a comment,
+        // an `event:` field, CRLF, multi-`data` joining, a keep-alive blank line,
+        // and two events; fed split at EVERY offset. (No proptest dev-dep, so a
+        // manual all-offsets loop; the input is ASCII, so every offset is a valid
+        // char boundary.)
+        let input = ": keep-alive\nevent: message\r\ndata: {\"a\":1}\r\n\r\ndata: l1\ndata: l2\n\n\ndata: {\"b\":2}\n\n";
+
+        // The whole-input parse is the oracle.
+        let expected = SseParser::new().push(input);
+        assert_eq!(
+            expected,
+            vec![
+                "{\"a\":1}".to_string(),
+                "l1\nl2".to_string(),
+                "{\"b\":2}".to_string(),
+            ],
+            "sanity: the oracle parse yields the three expected events",
+        );
+
+        for split in 0..=input.len() {
+            let (head, tail) = input.split_at(split);
+            let mut parser = SseParser::new();
+            let mut events = parser.push(head);
+            events.extend(parser.push(tail));
+            assert_eq!(
+                events, expected,
+                "splitting at offset {split} changed the parse"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bare_cr_line_terminator_is_not_recognized() {
+        // Per the SSE spec a bare `\r` ends a line, but this parser scans only for
+        // `\n`. Characterize the CURRENT behavior: bare CRs neither terminate a
+        // line nor dispatch an event.
+        let mut parser = SseParser::new();
+        assert!(
+            parser.push("data: x\rdata: y\r\r").is_empty(),
+            "with no \\n, no line is ever completed",
+        );
+        // A real newline finally completes the (single, merged) line: only the
+        // TRAILING CRs are trimmed, so the mid-line bare CR stays in the payload
+        // and the second `data:` never became its own field.
+        assert_eq!(parser.push("\n\n"), vec!["x\rdata: y".to_string()]);
+    }
 }

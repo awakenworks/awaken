@@ -232,6 +232,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn distinct_stores_are_content_isolated_not_just_distinct_paths() {
+        use awaken_provisioning_contract::{MemoryMounter, MountAccess};
+        // Beyond the coordinator's "distinct stores → distinct mountpoints": a memory
+        // written to store `alpha` must be INVISIBLE through store `beta`, even though
+        // both realize over the same shared durable fs. `store_id` is a hard content
+        // boundary — a peer store cannot see, or materialize, another's bytes.
+        let durable = Arc::new(InMemoryFs::new());
+        durable
+            .create("alpha", "/secret.md", "alpha-only")
+            .await
+            .unwrap();
+        durable
+            .create("beta", "/note.md", "beta-only")
+            .await
+            .unwrap();
+        let mounter = MemoryStoreMounter::copy_only(durable.clone());
+        let dir_a = temp("iso-a");
+        let dir_b = temp("iso-b");
+
+        let ga = mounter
+            .mount("alpha", &dir_a, MountAccess::ReadOnly)
+            .await
+            .unwrap();
+        let gb = mounter
+            .mount("beta", &dir_b, MountAccess::ReadOnly)
+            .await
+            .unwrap();
+
+        // alpha's file materializes only under alpha's mount, never beta's (content
+        // invisibility, not merely a different mountpoint).
+        assert_eq!(
+            std::fs::read_to_string(dir_a.join("secret.md")).unwrap(),
+            "alpha-only"
+        );
+        assert!(
+            !dir_b.join("secret.md").exists(),
+            "alpha's content is invisible inside beta's mount"
+        );
+        assert!(
+            !dir_a.join("note.md").exists(),
+            "beta's content is invisible inside alpha's mount"
+        );
+        // The store read path is scoped too: neither store resolves the other's path.
+        assert!(
+            durable
+                .get_by_path("beta", "/secret.md")
+                .await
+                .unwrap()
+                .is_none(),
+            "beta cannot read alpha's memory"
+        );
+        assert!(
+            durable
+                .get_by_path("alpha", "/note.md")
+                .await
+                .unwrap()
+                .is_none(),
+            "alpha cannot read beta's memory"
+        );
+
+        ga.teardown().await;
+        gb.teardown().await;
+        std::fs::remove_dir_all(&dir_a).ok();
+        std::fs::remove_dir_all(&dir_b).ok();
+    }
+
+    #[tokio::test]
     async fn copy_only_mount_realizes_copy_and_harvests_through_the_public_api() {
         use awaken_provisioning_contract::{MemoryMounter, MountAccess};
         // `copy_only` forces the no-FUSE path regardless of /dev/fuse on this host, so
