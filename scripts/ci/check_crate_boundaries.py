@@ -36,6 +36,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # dev-only: guard middleware tests drive a minimal axum router.
         "tokio",
         "tower",
+        # dev-only: property-based (formal) verification (ADR-0059).
+        "proptest",
     },
     # Webhooks (ADR-0048 / S10): a protocol-neutral projection sink. Signing +
     # Signing, the event shape, and HTTP delivery only — storage-neutral. No dep on
@@ -103,7 +105,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # A foundation leaf: no backend, SQL driver, or filesystem, so an adapter reusing
     # these stores depends on the traits alone. The backends re-export it.
     # dev-only: serde_json drives the Memory wire-contract round-trip tests.
-    "awaken-resource-contract": {"async-trait", "thiserror", "serde", "serde_json"},
+    # proptest is dev-only (property-based verification of validate_path_len, ADR-0059).
+    "awaken-resource-contract": {"async-trait", "thiserror", "serde", "serde_json", "proptest"},
     # Cross-cutting telemetry infrastructure (NOT an `ext-*`): the process-global
     # tracing subscriber + OTLP / AWAKEN_TRACE_FILE span export + W3C traceparent
     # propagator + the axum ingress span middleware. A foundation leaf consumed by
@@ -130,6 +133,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # tower::ServiceExt::oneshot on a tokio runtime.
         "tokio",
         "tower",
+        # dev-only: property-based (formal) verification (ADR-0059).
+        "proptest",
     },
     # Host-side credential vocabulary (Credential / AuthChallenge /
     # CredentialRefresher) shared by the outbound wire clients (awaken-ext-mcp,
