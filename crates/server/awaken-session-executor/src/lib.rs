@@ -94,7 +94,7 @@ pub use crate::memory_store_api::memory_stores_router;
 pub use crate::redact::PiiRedactor;
 pub use crate::sandbox_source::{
     ContainerChannelSource, LaunchSource, SandboxChannelSource, ThreadEgress, ThreadResources,
-    build_acp_channel_source, resolve_sandbox_tier,
+    ThreadSandbox, build_acp_channel_source, resolve_sandbox_tier,
 };
 pub use crate::skills_api::skills_router;
 // The config data plane (ADR-0036/slice A): the service + its router + the
@@ -782,6 +782,18 @@ impl SessionRuntime for ManagedHost {
         // turn's sandbox runs `bash` under `bwrap --unshare-net` when egress is denied.
         if init.deny_egress {
             self.host.register_thread_egress(thread, true);
+        }
+        // Stage the session's environment sandbox overlay: parse the raw `config.sandbox`
+        // blob into a provisioning `SandboxOverride` HERE (the host owns the provisioning
+        // contract; the neutral `SessionInit` carries only the blob). Consumed by
+        // `sandbox_spec` (native jail) and the sandboxed ACP channel source, so a
+        // UI-authored sandbox shapes both. A malformed blob contributes nothing.
+        if let Some(over) = init
+            .sandbox
+            .as_ref()
+            .and_then(awaken_provisioning_contract::SandboxOverride::from_config_value)
+        {
+            self.host.register_thread_sandbox(thread, over);
         }
         // Stage the effective resource set (ADR-0038): the session's wire `resources[]`
         // PLUS the *agent's* bound resources when the binding store is shared. Both

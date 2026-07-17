@@ -96,7 +96,7 @@ impl SharedHost {
             .thread_egress
             .denies(thread)
             .then(|| serde_json::json!({ "deny_egress": true }));
-        pc::SandboxSpec {
+        let base = pc::SandboxSpec {
             scope: thread.to_string(),
             isolation: pc::IsolationClass::Workdir,
             mounts,
@@ -106,7 +106,11 @@ impl SharedHost {
             limits: pc::ResourceLimits::default(),
             lease_ttl_secs: None,
             extra,
-        }
+        };
+        // Overlay the session environment's `config.sandbox` (isolation/network/limits),
+        // so a UI-authored sandbox shapes the native bash-tool jail too — the SAME
+        // override the ACP channel source applies (shared `thread_sandbox` handle).
+        self.thread_sandbox.apply(thread, base)
     }
 
     /// A shared clone of the thread-resources registry (like [`Self::thread_egress`]),

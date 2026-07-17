@@ -32,7 +32,26 @@ impl CapabilityReader for FakeCaps {
             skills: vec!["greet".into()],
             mcp_servers: vec![],
             memory_stores: vec![],
+            runtimes: vec![
+                serde_json::json!({ "id": "acp:claude", "label": "Claude Code", "kind": "acp", "cli": "claude" }),
+            ],
+            sandbox: Some(
+                serde_json::json!({ "config_schema": { "type": "object" }, "presets": [] }),
+            ),
         }
+    }
+}
+
+/// Records the last environment authored, so a test can assert the tool persisted it.
+#[derive(Default)]
+struct FakeEnvAuthor {
+    last: std::sync::Mutex<Option<(String, serde_json::Value)>>,
+}
+#[async_trait]
+impl EnvironmentAuthor for FakeEnvAuthor {
+    async fn create(&self, name: &str, config: serde_json::Value) -> Result<String, String> {
+        *self.last.lock().unwrap() = Some((name.to_string(), config));
+        Ok("env_test_0".to_string())
     }
 }
 
@@ -178,7 +197,13 @@ impl Harness {
     fn with_validator(validator: Arc<dyn DraftValidator>) -> Self {
         let store = Arc::new(MemDraftStore::default());
         let audit = Arc::new(CapturingAudit::default());
-        let tools = admin_tools(Arc::new(FakeCaps), validator, store.clone(), audit.clone());
+        let tools = admin_tools(
+            Arc::new(FakeCaps),
+            validator,
+            store.clone(),
+            Arc::new(FakeEnvAuthor::default()),
+            audit.clone(),
+        );
         Self {
             tools,
             store,
@@ -207,7 +232,8 @@ fn descriptors_are_the_admin_tools_and_carry_no_publish_tool() {
             CREATE_DRAFT_TOOL,
             PATCH_TOOL,
             VALIDATE_TOOL,
-            EXPLAIN_TOOL
+            EXPLAIN_TOOL,
+            CREATE_ENV_TOOL
         ]
     );
     // There is deliberately no publish tool (D4): publication is a console action.
@@ -769,6 +795,50 @@ async fn every_tool_call_emits_an_audit_record() {
     assert!(events[1].summary.contains("draft agent `x`"));
 }
 
+#[tokio::test]
+async fn draft_environment_assembles_and_persists_the_config() {
+    let author = Arc::new(FakeEnvAuthor::default());
+    let tool = DraftEnvironment {
+        author: author.clone(),
+        store: Arc::new(MemDraftStore::default()),
+        audit: Arc::new(CapturingAudit::default()),
+    };
+    let out = tool
+        .invoke(ToolCall {
+            call_id: "c1".into(),
+            tool_id: CREATE_ENV_TOOL.into(),
+            arguments: serde_json::json!({
+                "name": "claude-box",
+                "runtime": "acp:claude",
+                "placement": "self_hosted",
+                "sandbox": { "isolation": "namespace", "network": { "mode": "none" } }
+            }),
+        })
+        .await
+        .unwrap();
+    assert!(!out.is_error, "created ok: {out:?}");
+    let (name, config) = author.last.lock().unwrap().clone().expect("authored");
+    assert_eq!(name, "claude-box");
+    assert_eq!(config["type"], "self_hosted");
+    assert_eq!(config["runtime"], "acp:claude");
+    assert_eq!(config["sandbox"]["network"]["mode"], "none");
+    // The native `awaken` runtime is the default → omitted from the config.
+    let out2 = tool
+        .invoke(ToolCall {
+            call_id: "c2".into(),
+            tool_id: CREATE_ENV_TOOL.into(),
+            arguments: serde_json::json!({ "name": "native", "runtime": "awaken" }),
+        })
+        .await
+        .unwrap();
+    assert!(!out2.is_error);
+    let (_, config2) = author.last.lock().unwrap().clone().unwrap();
+    assert!(
+        config2.get("runtime").is_none(),
+        "native runtime is omitted"
+    );
+}
+
 #[test]
 fn seed_config_is_an_ordinary_auto_bound_config_naming_the_admin_tools() {
     let cfg = admin_assistant_config();
@@ -781,7 +851,8 @@ fn seed_config_is_an_ordinary_auto_bound_config_naming_the_admin_tools() {
             CREATE_DRAFT_TOOL,
             PATCH_TOOL,
             VALIDATE_TOOL,
-            EXPLAIN_TOOL
+            EXPLAIN_TOOL,
+            CREATE_ENV_TOOL
         ]
     );
     assert!(cfg.instructions.contains("management assistant"));
@@ -1007,6 +1078,7 @@ fn tools_over_store(store: Arc<dyn DraftStore>) -> (Vec<Arc<dyn RawTool>>, Arc<C
         Arc::new(FakeCaps),
         Arc::new(FakeValidator),
         store,
+        Arc::new(FakeEnvAuthor::default()),
         audit.clone(),
     );
     (tools, audit)

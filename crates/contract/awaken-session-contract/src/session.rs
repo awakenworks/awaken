@@ -197,6 +197,12 @@ pub struct SessionInit {
     /// networking policy (a non-`unrestricted` policy → `true`). The host runs the
     /// `bash` tool under a `bwrap --unshare-net` namespace. `false` = host network.
     pub deny_egress: bool,
+    /// The session environment's raw `config.sandbox` blob (isolation/network/limits),
+    /// opaque here — the host parses it into a provisioning `SandboxOverride` and applies
+    /// it onto the synthesized sandbox spec for both the native jail and the ACP CLI.
+    /// `None` = host default spec. Kept as a `Value` so this leaf stays free of the
+    /// provisioning contract; `deny_egress` remains for the coarse bwrap on/off.
+    pub sandbox: Option<serde_json::Value>,
 }
 
 /// One session MCP server, bound at creation: the wire name/url plus the vault
@@ -678,6 +684,7 @@ mod tests {
             model: None,
             runtime: None,
             deny_egress: false,
+            sandbox: None,
         }
     }
 

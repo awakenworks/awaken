@@ -71,6 +71,32 @@ impl EnvironmentState {
             .is_some_and(|rec| crate::env_registry::env_network_policy(&rec.config).is_restricted())
     }
 
+    /// The environment's raw `config.sandbox` blob (isolation/network/limits), staged
+    /// verbatim onto the session so the HOST parses it into a provisioning
+    /// `SandboxOverride`. `None` = no sandbox declared (host default spec). Richer than
+    /// [`Self::deny_egress`] (a bool): this carries the full policy + limits. Kept as a
+    /// `Value` so this crate need not name the provisioning contract for the passthrough.
+    pub async fn sandbox_config(&self, env_id: &str) -> Option<serde_json::Value> {
+        self.envs
+            .get(env_id)
+            .await
+            .and_then(|rec| rec.config.get("sandbox").cloned())
+    }
+
+    /// Create an environment named `name` with the opaque `config` blob
+    /// (`{type, runtime?, sandbox?}`) and seed its healthcheck work item — the same
+    /// effect as `POST /v1/environments`, exposed so an in-process author (the admin
+    /// assistant's `admin_draft_environment`) persists through the SAME registry path.
+    /// Returns the new environment id.
+    pub async fn author(&self, name: &str, config: serde_json::Value) -> String {
+        let item = self
+            .envs
+            .create(name.to_string(), String::new(), Default::default(), config)
+            .await;
+        self.work.enqueue_healthcheck(&item.id).await;
+        item.id
+    }
+
     /// Whether `env_id` is a self-hosted environment. Sessions assigned to one are
     /// dispatched through the work queue for an external worker to run.
     pub async fn is_self_hosted(&self, env_id: &str) -> bool {

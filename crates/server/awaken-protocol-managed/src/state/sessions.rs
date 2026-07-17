@@ -139,9 +139,12 @@ impl ManagedState {
             .environment_id
             .clone()
             .unwrap_or_else(|| "env_local".to_string());
-        let deny_egress = match self.environments.as_ref() {
-            Some(e) => e.deny_egress(&environment_id).await,
-            None => false,
+        let (deny_egress, sandbox) = match self.environments.as_ref() {
+            Some(e) => (
+                e.deny_egress(&environment_id).await,
+                e.sandbox_config(&environment_id).await,
+            ),
+            None => (false, None),
         };
         let owner_scope = workspace_id
             .clone()
@@ -157,6 +160,7 @@ impl ManagedState {
                     model: selected_model.as_ref().map(|m| m.id.clone()),
                     runtime: req.awaken_runtime().map(str::to_string),
                     deny_egress,
+                    sandbox,
                 },
             )
             .await
