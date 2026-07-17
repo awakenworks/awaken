@@ -20,7 +20,8 @@ async function main() {
     pass('the Brain reports ready before draining');
 
     let m = await (await fetch(`${BASE}/metrics`)).text();
-    if (!/awaken_brain_active_streams \d+/.test(m) || !m.includes('awaken_brain_draining 0')) {
+    // OTel appends scope labels: `name{otel_scope_name="awaken-brain"} <value>`.
+    if (!/awaken_brain_active_streams(\{[^}]*\})? \d+/.test(m) || !/awaken_brain_draining(\{[^}]*\})? 0/.test(m)) {
       throw new Error(`/metrics missing gauges: ${m}`);
     }
     pass('the connection-count metric is exposed for autoscaling (draining=0)');
@@ -33,7 +34,7 @@ async function main() {
     pass('POST /admin/drain flips /readyz to 503 for graceful scale-in');
 
     m = await (await fetch(`${BASE}/metrics`)).text();
-    if (!m.includes('awaken_brain_draining 1')) throw new Error(`draining gauge not set: ${m}`);
+    if (!/awaken_brain_draining(\{[^}]*\})? 1/.test(m)) throw new Error(`draining gauge not set: ${m}`);
     pass('the draining gauge reflects the drain state');
   } finally {
     await stopServer(server);

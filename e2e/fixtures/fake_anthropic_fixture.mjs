@@ -153,6 +153,10 @@ export const BEHAVIORS = {
     switch (toolResults(parsed).length) {
       case 0: return tool('r', 'read', { path: 'workspace/repo/README.md' });
       case 1: return tool('w', 'write', { path: 'workspace/repo/NEW.txt', content: 'AGENT_REPO_MARKER_3390' });
+      // The agent authors its OWN commit in the jail (ADR-0038: the host only pushes
+      // what the agent committed — `push_repo_at` ships `@{u}..HEAD`). Inline identity
+      // so a fresh host-side clone needs no prior git config.
+      case 2: return tool('c', 'bash', { command: "cd workspace/repo && git add -A && git -c user.email=agent@awaken -c user.name=agent commit -m 'agent: add NEW.txt'" });
       default: return text('repo turn done');
     }
   },
@@ -226,6 +230,8 @@ export const BEHAVIORS = {
       case 3: return tool('wr', 'write', { path: 'workspace/repo/CHAIN.txt', content: 'REPO_FULLCHAIN_8830' });
       // Produce an output artifact (harvested into the blob store, listed by /v1/files).
       case 4: return tool('wa', 'write', { path: 'outputs/result.txt', content: 'ARTIFACT_FULLCHAIN_9142' });
+      // Commit the repo edit in the jail so the host push-back has something to ship.
+      case 5: return tool('wc', 'bash', { command: "cd workspace/repo && git add -A && git -c user.email=agent@awaken -c user.name=agent commit -m 'agent: add CHAIN.txt'" });
       default: return text('done: used skill greet, wrote memory + repo + artifact');
     }
   },

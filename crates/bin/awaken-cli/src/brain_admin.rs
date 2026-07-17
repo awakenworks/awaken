@@ -82,9 +82,10 @@ async fn readyz(State(ctrl): State<Arc<DrainController>>) -> impl IntoResponse {
 }
 
 /// The Brain's Prometheus scrape: the whole process's OTel metrics — the
-/// `awaken_brain_active_streams` connection-load gauge (registered on the global
-/// meter at startup) plus the business `gen_ai.*`/`awaken.*` metrics. Whether the
-/// Brain is draining is the `/readyz` 503, not a metric.
+/// `awaken_brain_active_streams` connection-load gauge and the `awaken_brain_draining`
+/// scale-in gauge (both registered on the global meter at startup) plus the business
+/// `gen_ai.*`/`awaken.*` metrics. The `/readyz` 503 is the routing signal the k8s
+/// Service acts on; the `draining` gauge is the same state for autoscalers/dashboards.
 async fn metrics() -> impl IntoResponse {
     (StatusCode::OK, awaken_observability::render_prometheus())
 }
@@ -109,19 +110,34 @@ pub fn brain_admin_router(ctrl: Arc<DrainController>) -> Router {
         .with_state(ctrl)
 }
 
-/// Register the `awaken_brain_active_streams` connection-load gauge on the global
-/// OTel meter, reading `ctrl` at scrape time (the `/metrics` autoscaling signal).
+/// Register the Brain's autoscaling gauges on the global OTel meter, reading `ctrl`
+/// at scrape time: `awaken_brain_active_streams` (connection load) and
+/// `awaken_brain_draining` (1 while draining, so an autoscaler/dashboard sees the
+/// scale-in state — complementary to the `/readyz` 503 the k8s Service routes on).
 /// Call once at the composition root, AFTER `awaken_observability::init`, and keep the
-/// returned handle for the process lifetime so the observable callback stays live.
+/// returned handles for the process lifetime so the observable callbacks stay live.
 #[must_use]
 pub fn register_active_streams_gauge(
     ctrl: Arc<DrainController>,
-) -> opentelemetry::metrics::ObservableGauge<u64> {
-    opentelemetry::global::meter("awaken-brain")
-        .u64_observable_gauge("awaken_brain_active_streams")
-        .with_description("In-flight requests (dominated by long-lived streams).")
-        .with_callback(move |obs| obs.observe(ctrl.active_streams() as u64, &[]))
-        .build()
+) -> (
+    opentelemetry::metrics::ObservableGauge<u64>,
+    opentelemetry::metrics::ObservableGauge<u64>,
+) {
+    let meter = opentelemetry::global::meter("awaken-brain");
+    let active = {
+        let ctrl = ctrl.clone();
+        meter
+            .u64_observable_gauge("awaken_brain_active_streams")
+            .with_description("In-flight requests (dominated by long-lived streams).")
+            .with_callback(move |obs| obs.observe(ctrl.active_streams() as u64, &[]))
+            .build()
+    };
+    let draining = meter
+        .u64_observable_gauge("awaken_brain_draining")
+        .with_description("1 while the Brain is draining for graceful scale-in, else 0.")
+        .with_callback(move |obs| obs.observe(u64::from(ctrl.is_draining()), &[]))
+        .build();
+    (active, draining)
 }
 
 /// Layer the Brain admin surface onto a single router (one-port deployment): the
