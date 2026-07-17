@@ -58,7 +58,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # SessionLifecycleSink to the neutral dispatcher + subscription CRUD + the
     # guard→WorkspaceScope map. Open crates only, so the standalone shares it.
     "awaken-webhook-managed": {
-        "awaken-protocol-managed",
+        "awaken-session-contract",
+        "awaken-tenancy",
         "awaken-authz-enforce",
         "awaken-webhook",
         # dev-only: the e2e stands up a real axum receiver (tower util + body reading).

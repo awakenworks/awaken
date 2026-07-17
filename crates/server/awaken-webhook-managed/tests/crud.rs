@@ -10,7 +10,8 @@ use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
 use awaken_config_resolver::{WebhookEndpointDef, WebhookStore};
 use awaken_credential_vault::{CredentialError, SecretRef, SecretStore};
-use awaken_protocol_managed::{SessionLifecycleSink, WorkspaceScope};
+use awaken_session_contract::SessionLifecycleSink;
+use awaken_tenancy::WorkspaceScope;
 use awaken_webhook::{ResolvedSubscription, SubscriptionSource, WebhookDispatcher, WebhookSender};
 use awaken_webhook_managed::{
     ConfigPlaneSubscriptionSource, WebhookLifecycleSink, webhook_config_router,
