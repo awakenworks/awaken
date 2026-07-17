@@ -1017,6 +1017,7 @@ dependencies = [
  "awaken-protocol-a2a",
  "awaken-runtime-contract",
  "axum",
+ "serde_json",
  "tokio",
 ]
 
@@ -1162,7 +1163,6 @@ dependencies = [
  "awaken-managed-routers",
  "awaken-memory-store",
  "awaken-observability",
- "awaken-protocol-a2a",
  "awaken-protocol-managed",
  "awaken-protocol-transport",
  "awaken-provisioning-contract",
@@ -1310,6 +1310,7 @@ dependencies = [
  "awaken-protocol-managed",
  "awaken-protocol-transport",
  "awaken-provider-genai",
+ "awaken-run-executor-a2a",
  "awaken-run-executor-acp",
  "awaken-runtime",
  "awaken-runtime-contract",
@@ -1377,6 +1378,7 @@ dependencies = [
  "awaken-protocol-managed",
  "awaken-protocol-transport",
  "awaken-provider-genai",
+ "awaken-run-executor-a2a",
  "awaken-run-executor-acp",
  "awaken-runtime",
  "awaken-runtime-contract",

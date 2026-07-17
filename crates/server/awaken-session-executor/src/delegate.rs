@@ -2,11 +2,11 @@
 //!
 //! This is the composition-root adapter of the kernel's [`AgentResolver`] port.
 //! The kernel routes the delegation tool to it; here, native (in-process sub-run)
-//! and remote (A2A) agents are *peer* implementations chosen by `agent_id`. The
-//! A2A *wire* (routes, message shape, task polling) lives in the
-//! [`awaken_protocol_a2a::client`] bounded context; this module owns only the
-//! *delegation semantics* — dispatch, the poll loop with cancellation, and mapping
-//! a task's state to an [`AgentStep`].
+//! and remote agents are *peer* implementations chosen by `agent_id`. A remote agent
+//! is reached through the neutral [`RemoteDelegate`] port, so the wire (message shape,
+//! task polling, discovery card) lives entirely in the adapter that implements it
+//! (e.g. `awaken-run-executor-a2a`); this module owns only the *dispatch* — routing an
+//! `agent_id` to its native sub-run or its remote delegate — and names no protocol.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -14,41 +14,35 @@ use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
 use awaken_ext_builtin_tools::AGENT_RUN;
-use awaken_protocol_a2a::client::{self as a2a, Transport};
-use awaken_protocol_a2a::{AgentCard, Task, TaskState};
 use awaken_runtime_contract::CancellationToken;
-use awaken_runtime_contract::agent_resolver::{AgentError, AgentRequest, AgentResolver, AgentStep};
-use awaken_runtime_contract::llm::{LlmExecutor, ThreadUsage};
+use awaken_runtime_contract::agent_resolver::{
+    AgentError, AgentRequest, AgentResolver, AgentStep, RemoteDelegate,
+};
+use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_sandbox_local::{LocalProvider, LocalSandbox};
 
 use crate::subagent::SubrunSandbox;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::host::{BASE_SEQ, HostError, SharedHost};
-
-/// Bound on task polling before giving up, so a stuck remote cannot hang a
-/// delegation forever.
-const MAX_TASK_POLLS: usize = 600;
-/// Delay between task polls while a remote task is still `working`.
-const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// The host's delegate agents (local + A2A-remote), behind one type owning their
 /// shared invariant: `remotes` (agents fulfilled over A2A) is a *subset* of `ids`
 /// (every advertised delegate). [`Self::add_remote`] maintains it by registering into
 /// both; [`Self::native_ids`] derives the local delegates as `ids − remotes`. Keeping
-/// the pair split let a caller register a remote transport without also advertising
+/// the pair split let a caller register a remote delegate without also advertising
 /// the delegate, silently breaking the `multiagent` roster.
 ///
-/// NOTE (protocol leak, tracked separately): `remotes` holds
-/// [`awaken_protocol_a2a`]'s `Transport` directly — a wire type on host state.
-/// Replacing it with a neutral remote-agent port is a later step, not this pass.
+/// `remotes` holds the neutral [`RemoteDelegate`] port, not a wire type: the A2A
+/// transport + poll loop live in the adapter that implements it (Phase 2), so host
+/// state names no protocol.
 #[derive(Default)]
 pub(crate) struct Delegates {
     /// All delegate agent ids (advertised as the agent's `multiagent` roster).
     ids: HashSet<String>,
-    /// The subset fulfilled over A2A (agent id → transport) instead of a local
-    /// sub-run. Invariant: every key is also in `ids` (see [`Self::add_remote`]).
-    remotes: HashMap<String, Arc<dyn Transport>>,
+    /// The subset fulfilled by a remote peer (agent id → the neutral delegate port)
+    /// instead of a local sub-run. Invariant: every key is also in `ids`.
+    remotes: HashMap<String, Arc<dyn RemoteDelegate>>,
 }
 
 impl Delegates {
@@ -62,11 +56,11 @@ impl Delegates {
         self.ids.extend(ids);
     }
 
-    /// Register a remote (A2A) delegate: advertised in the roster AND routed to its
-    /// transport. Maintains the `remotes ⊆ ids` invariant by inserting into both.
-    pub(crate) fn add_remote(&mut self, agent_id: String, transport: Arc<dyn Transport>) {
+    /// Register a remote delegate: advertised in the roster AND routed to its neutral
+    /// [`RemoteDelegate`] port. Maintains the `remotes ⊆ ids` invariant via both.
+    pub(crate) fn add_remote(&mut self, agent_id: String, delegate: Arc<dyn RemoteDelegate>) {
         self.ids.insert(agent_id.clone());
-        self.remotes.insert(agent_id, transport);
+        self.remotes.insert(agent_id, delegate);
     }
 
     /// Whether the roster is empty (no delegates configured at all).
@@ -84,8 +78,8 @@ impl Delegates {
         &self.ids
     }
 
-    /// The transport for a remote delegate, or `None` if `agent_id` is local/unknown.
-    pub(crate) fn remote_transport(&self, agent_id: &str) -> Option<&Arc<dyn Transport>> {
+    /// The remote-delegate port for `agent_id`, or `None` if it is local/unknown.
+    pub(crate) fn remote(&self, agent_id: &str) -> Option<&Arc<dyn RemoteDelegate>> {
         self.remotes.get(agent_id)
     }
 
@@ -98,8 +92,8 @@ impl Delegates {
             .collect()
     }
 
-    /// A clone of the remote transport map, for injection into the delegation resolver.
-    pub(crate) fn remotes(&self) -> HashMap<String, Arc<dyn Transport>> {
+    /// A clone of the remote-delegate map, for injection into the delegation resolver.
+    pub(crate) fn remotes(&self) -> HashMap<String, Arc<dyn RemoteDelegate>> {
         self.remotes.clone()
     }
 }
@@ -116,95 +110,6 @@ fn delegate_args(arguments: &Value) -> (String, String) {
     (field("agent_id"), field("input"))
 }
 
-/// The reply text of a completed task: the status message plus any artifact text
-/// the remote produced (A2A `TextAndArtifacts`).
-fn completed_reply(task: &Task) -> String {
-    let mut reply = task
-        .status
-        .message
-        .as_ref()
-        .map(|message| message.text())
-        .unwrap_or_default();
-    for artifact in &task.artifacts {
-        let text = artifact.text();
-        if !text.is_empty() {
-            if !reply.is_empty() {
-                reply.push('\n');
-            }
-            reply.push_str(&text);
-        }
-    }
-    reply
-}
-
-/// Map a non-working task to a delegation step: completed → done; input/auth
-/// required → parked (the parent parks for the user, resumed via the handle);
-/// failed → error.
-fn step_from_task(agent_id: &str, task: Task) -> Result<AgentStep, AgentError> {
-    match task.status.state {
-        // A remote (A2A) delegate runs on another host: its token spend is not
-        // observable over the A2A wire, so no usage rolls into the parent tally.
-        TaskState::Completed => Ok(AgentStep::Done {
-            text: completed_reply(&task),
-            usage: ThreadUsage::default(),
-        }),
-        TaskState::InputRequired | TaskState::AuthRequired => Ok(AgentStep::Parked {
-            handle: json!({ "agent_id": agent_id, "task_id": task.id }),
-        }),
-        TaskState::Failed => Err(AgentError::new("remote A2A agent failed")),
-        TaskState::Canceled => Err(AgentError::new("remote A2A task was canceled")),
-        TaskState::Working => Err(AgentError::new(
-            "remote A2A task did not reach a terminal state in time",
-        )),
-    }
-}
-
-/// Run one remote-agent turn: `message:send`, poll `working` to a terminal state
-/// (bounded, cancellation-aware; a parent interrupt cancels the remote task), then
-/// map the task to a step.
-async fn remote_run(
-    transport: &dyn Transport,
-    agent_id: &str,
-    input: &str,
-    cancellation: Option<&CancellationToken>,
-) -> Result<AgentStep, AgentError> {
-    let context_id = format!("deleg-{agent_id}");
-    let message_id = format!("m-{}", BASE_SEQ.fetch_add(1, Ordering::SeqCst));
-    let mut task = a2a::send_message(transport, Some(agent_id), &context_id, &message_id, input)
-        .await
-        .map_err(|e| AgentError::new(e.to_string()))?;
-
-    let mut polls = 0usize;
-    while matches!(task.status.state, TaskState::Working) {
-        if cancellation.is_some_and(CancellationToken::is_cancelled) {
-            a2a::cancel_task(transport, &task.id).await;
-            return Err(AgentError::new("remote A2A delegation was cancelled"));
-        }
-        if polls >= MAX_TASK_POLLS {
-            break;
-        }
-        polls += 1;
-        task = a2a::get_task(transport, &task.id)
-            .await
-            .map_err(|e| AgentError::new(e.to_string()))?;
-        if matches!(task.status.state, TaskState::Working) {
-            match cancellation {
-                Some(token) => {
-                    tokio::select! {
-                        _ = tokio::time::sleep(POLL_INTERVAL) => {}
-                        _ = token.cancelled() => {
-                            a2a::cancel_task(transport, &task.id).await;
-                            return Err(AgentError::new("remote A2A delegation was cancelled"));
-                        }
-                    }
-                }
-                None => tokio::time::sleep(POLL_INTERVAL).await,
-            }
-        }
-    }
-    step_from_task(agent_id, task)
-}
-
 /// Runs delegates behind `agent_run`: local agents as fresh rooted sub-runs, and
 /// A2A agents as remote turns — peers chosen by `agent_id`.
 pub(crate) struct DelegationResolver {
@@ -219,8 +124,8 @@ pub(crate) struct DelegationResolver {
     reuse_sandbox: bool,
     /// Local (native) delegate ids.
     roster: HashSet<String>,
-    /// Remote (A2A) delegate ids → transport.
-    remotes: HashMap<String, Arc<dyn Transport>>,
+    /// Remote delegate ids → the neutral [`RemoteDelegate`] port.
+    remotes: HashMap<String, Arc<dyn RemoteDelegate>>,
 }
 
 impl DelegationResolver {
@@ -231,7 +136,7 @@ impl DelegationResolver {
         sandbox: Arc<LocalSandbox>,
         reuse_sandbox: bool,
         roster: HashSet<String>,
-        remotes: HashMap<String, Arc<dyn Transport>>,
+        remotes: HashMap<String, Arc<dyn RemoteDelegate>>,
     ) -> Self {
         Self {
             llm,
@@ -286,14 +191,10 @@ impl AgentResolver for DelegationResolver {
 
     async fn run(&self, request: AgentRequest) -> Result<AgentStep, AgentError> {
         let (agent_id, input) = delegate_args(&request.arguments);
-        if let Some(transport) = self.remotes.get(&agent_id) {
-            return remote_run(
-                transport.as_ref(),
-                &agent_id,
-                &input,
-                request.cancellation.as_ref(),
-            )
-            .await;
+        if let Some(remote) = self.remotes.get(&agent_id) {
+            return remote
+                .run(&agent_id, &input, request.cancellation.as_ref())
+                .await;
         }
         if !self.roster.contains(&agent_id) {
             return Err(AgentError::new(format!(
@@ -316,22 +217,24 @@ impl AgentResolver for DelegationResolver {
             .get("agent_id")
             .and_then(Value::as_str)
             .ok_or_else(|| AgentError::new("delegation handle is missing agent_id"))?;
-        let transport = self
+        let remote = self
             .remotes
             .get(agent_id)
             .ok_or_else(|| AgentError::new(format!("agent {agent_id:?} is not a remote agent")))?;
-        remote_run(transport.as_ref(), agent_id, input, cancellation).await
+        remote.run(agent_id, input, cancellation).await
     }
 }
 
 impl SharedHost {
-    /// Fetch a remote delegate's A2A agent card (outbound discovery). Fails if the
-    /// agent is not a registered remote.
-    pub async fn remote_agent_card(&self, agent_id: &str) -> Result<AgentCard, HostError> {
-        let transport = self.delegates.remote_transport(agent_id).ok_or_else(|| {
+    /// Fetch a remote delegate's discovery card (outbound discovery) as neutral JSON.
+    /// Fails if the agent is not a registered remote. The wire card shape lives in the
+    /// adapter behind the [`RemoteDelegate`] port; the host only echoes the value.
+    pub async fn remote_agent_card(&self, agent_id: &str) -> Result<Value, HostError> {
+        let remote = self.delegates.remote(agent_id).ok_or_else(|| {
             HostError::bad_request(format!("agent {agent_id:?} is not a remote agent"))
         })?;
-        a2a::agent_card(transport.as_ref())
+        remote
+            .card(agent_id)
             .await
             .map_err(|e| HostError::internal(e.to_string()))
     }

@@ -71,3 +71,26 @@ pub trait AgentResolver: Send + Sync {
         cancellation: Option<&CancellationToken>,
     ) -> Result<AgentStep, AgentError>;
 }
+
+/// A registered remote delegate — an agent that runs on another host, reached over a
+/// protocol adapter (A2A today). The [`AgentResolver`] holds one per remote `agent_id`
+/// and drives it exactly like a native sub-run, but the wire lives entirely in the
+/// adapter that implements this port: the host names no protocol type, only this seam.
+#[async_trait]
+pub trait RemoteDelegate: Send + Sync {
+    /// Run one turn on the remote agent — deliver `input` and drive it to a terminal
+    /// or parked [`AgentStep`]. `cancellation` interrupts the remote turn (a parent
+    /// interrupt cancels the delegate). Serves both the initial run and a resume — a
+    /// resume is just another turn on the same context.
+    async fn run(
+        &self,
+        agent_id: &str,
+        input: &str,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<AgentStep, AgentError>;
+
+    /// The remote agent's discovery card as neutral JSON (outbound discovery). The
+    /// adapter fetches it over its wire and serializes it; the host echoes the value
+    /// without ever naming the wire card shape.
+    async fn card(&self, agent_id: &str) -> Result<Value, AgentError>;
+}

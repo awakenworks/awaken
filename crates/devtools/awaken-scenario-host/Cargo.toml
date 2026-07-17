@@ -25,6 +25,9 @@ awaken-protocol-managed = { workspace = true }
 awaken-protocol-ai-sdk = { workspace = true }
 awaken-protocol-ag-ui = { workspace = true }
 awaken-protocol-a2a = { workspace = true }
+# The A2A remote-delegate adapter (RemoteDelegate port impl) the delegate-remote
+# scenario injects into the host; re-exports HttpTransport to build it.
+awaken-run-executor-a2a = { workspace = true }
 awaken-protocol-transport = { workspace = true }
 awaken-config-store = { workspace = true }
 # Remote hand (ADR-0044): the `remote-hand` scenario mode routes a run's tools to
