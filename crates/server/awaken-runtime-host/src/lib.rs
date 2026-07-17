@@ -853,7 +853,9 @@ impl SessionRuntime for ManagedHost {
                             token_endpoint_auth: r.token_endpoint_auth.clone(),
                             scope: r.scope.clone(),
                             resource: r.resource.clone(),
-                            refresh_token_ref: r.refresh_token_ref.clone(),
+                            refresh_token_ref: awaken_credential_vault::SecretRef(
+                                r.refresh_token_ref.clone(),
+                            ),
                             access_token_ref: access_token_ref.clone(),
                             secrets: mcp.secrets.clone(),
                         }),

@@ -234,7 +234,8 @@ impl CredentialRefresher for VaultRefresher {
         let client_secret = match &r.token_endpoint_auth {
             TokenEndpointAuthBinding::ClientSecretBasic { secret_ref }
             | TokenEndpointAuthBinding::ClientSecretPost { secret_ref } => {
-                Some(r.secrets.get(secret_ref).await.ok()?)
+                // The port carries the ref as a neutral string; re-type at the lookup.
+                Some(r.secrets.get(&SecretRef(secret_ref.clone())).await.ok()?)
             }
             TokenEndpointAuthBinding::None => None,
         };

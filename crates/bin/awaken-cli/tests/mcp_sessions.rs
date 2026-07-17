@@ -827,7 +827,7 @@ async fn vault_refresher_fails_closed_when_the_client_secret_is_missing() {
         token_endpoint: format!("{url}token"),
         client_id: "cli-1".to_string(),
         token_endpoint_auth: TokenEndpointAuthBinding::ClientSecretBasic {
-            secret_ref: SecretRef("sec:client:missing".to_string()),
+            secret_ref: "sec:client:missing".to_string(),
         },
         scope: None,
         resource: None,

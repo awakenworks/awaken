@@ -280,7 +280,7 @@ async fn create_carries_the_refresh_binding_of_a_refreshable_credential() {
     assert_eq!(refresh.resource, None);
     let source_id = h.vaults.credential_source_id(&vault_id, &cred_id).unwrap();
     assert_eq!(
-        refresh.refresh_token_ref.0,
+        refresh.refresh_token_ref,
         format!("sec:refresh:{}", source_id.0)
     );
 }
