@@ -509,6 +509,9 @@ pub fn podman_run_argv(name: &str, plan: &ContainerPlan, rootfs: &RootfsPlan) ->
         .map(String::from)
         .collect();
 
+    // The discovery label the cross-restart reaper (`crate::reaper`) filters on.
+    a.extend(["--label".into(), format!("{REAPER_LABEL}=1")]);
+
     // Harden the untrusted agent: a read-only rootfs, with the writable app paths
     // (outputs + scratch `/tmp`) provided as tmpfs. Declared mounts stay writable via
     // their own `-v` binds below.
@@ -1031,6 +1034,35 @@ pub trait ContainerRuntime: Send + Sync {
     ) -> Result<Vec<u8>, RuntimeError>;
     async fn touch_lease(&self, container_id: &str) -> Result<(), RuntimeError>;
     async fn remove(&self, container_id: &str) -> Result<(), RuntimeError>;
+    /// Discover the awaken-managed containers this runtime currently holds, with the
+    /// two signals the cross-restart reaper judges by ([`crate::reaper`]): whether the
+    /// agent (the container's main process) is still running, and the container's age.
+    /// The default returns none — a runtime with **native GC** (k8s `ownerReferences`)
+    /// needs no custom reaper, so it opts out here; the docker/podman adapters (no
+    /// native TTL) implement it so leaked containers of a *crashed* worker are swept.
+    async fn list_managed(&self) -> Result<Vec<ManagedContainer>, RuntimeError> {
+        Ok(Vec::new())
+    }
+}
+
+/// The label every awaken-created container/pod carries, so the cross-restart reaper
+/// ([`crate::reaper`]) can discover the ones a crashed worker left behind (docker/podman
+/// filter on it; k8s uses it alongside native `ownerReferences` GC).
+pub(crate) const REAPER_LABEL: &str = "awaken.sandbox";
+
+/// One awaken-managed container the reaper can judge: its id plus the two liveness
+/// signals it decides on. `age_secs` is computed by the runtime against its own clock,
+/// so the reaper's decision ([`crate::reaper::should_reap`]) stays a pure value test.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedContainer {
+    /// The runtime's container id (what [`ContainerRuntime::remove`] takes).
+    pub id: String,
+    /// Whether the agent process (the container's main command) is still running. A
+    /// stopped container is finished work — its agent exited (brain done or gone).
+    pub running: bool,
+    /// Seconds since the container was created (the runtime's clock), the age cap for
+    /// a still-running but abandoned container (a hung agent, a leaked warm instance).
+    pub age_secs: u64,
 }
 
 fn err(e: RuntimeError) -> pc::SandboxError {
@@ -1433,6 +1465,13 @@ pub mod podman;
 pub mod pool;
 #[cfg(feature = "connection")]
 pub use pool::{WarmContainerPool, pool_key};
+
+/// The cross-restart container reaper (docker/podman leaked-container GC; k8s uses
+/// native `ownerReferences` GC). Gated on `connection` for the background loop's timer.
+#[cfg(feature = "connection")]
+pub mod reaper;
+#[cfg(feature = "connection")]
+pub use reaper::{ReapReason, SandboxReaper, should_reap};
 
 #[cfg(test)]
 mod tests;

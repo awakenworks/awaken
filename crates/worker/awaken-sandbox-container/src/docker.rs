@@ -15,13 +15,15 @@ use awaken_provisioning_contract as pc;
 use bollard::Docker;
 use bollard::container::{
     Config, CreateContainerOptions, DownloadFromContainerOptions, KillContainerOptions,
-    RemoveContainerOptions, StartContainerOptions, WaitContainerOptions,
+    ListContainersOptions, RemoveContainerOptions, StartContainerOptions, WaitContainerOptions,
 };
 use bollard::models::{HostConfig, PortBinding};
 use futures_util::StreamExt;
 
 use crate::net::TcpAgentTransport;
-use crate::{ContainerPlan, ContainerRuntime, ContainerState, RuntimeError};
+use crate::{
+    ContainerPlan, ContainerRuntime, ContainerState, ManagedContainer, REAPER_LABEL, RuntimeError,
+};
 
 fn backend(e: impl std::fmt::Display) -> RuntimeError {
     RuntimeError::Backend(e.to_string())
@@ -319,6 +321,10 @@ impl ContainerRuntime for DockerRuntime {
         let env: Vec<String> = plan.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
         let mut exposed_ports = HashMap::new();
         exposed_ports.insert(self.port_key(), HashMap::new());
+        // The discovery label the cross-restart reaper (`crate::reaper`) filters on, so
+        // a container this worker leaks on a crash is found + swept by a later process.
+        let mut labels = HashMap::new();
+        labels.insert(REAPER_LABEL.to_string(), "1".to_string());
         let config = Config {
             image: Some(plan.image.clone()),
             // Process-as-container: the agent argv IS the container command.
@@ -326,6 +332,7 @@ impl ContainerRuntime for DockerRuntime {
             env: Some(env),
             exposed_ports: Some(exposed_ports),
             host_config: Some(self.host_config(plan)),
+            labels: Some(labels),
             ..Default::default()
         };
         let created = self
@@ -454,5 +461,43 @@ impl ContainerRuntime for DockerRuntime {
             )
             .await
             .map_err(backend)
+    }
+
+    async fn list_managed(&self) -> Result<Vec<ManagedContainer>, RuntimeError> {
+        // Discover every awaken-labeled container (running or stopped) so the reaper can
+        // judge each. `all: true` includes exited ones — those are the finished-work
+        // garbage. `created` is unix seconds; age = now - created against the host clock.
+        let mut filters = HashMap::new();
+        filters.insert("label".to_string(), vec![format!("{REAPER_LABEL}=1")]);
+        let list = self
+            .docker
+            .list_containers(Some(ListContainersOptions {
+                all: true,
+                filters,
+                ..Default::default()
+            }))
+            .await
+            .map_err(backend)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        Ok(list
+            .into_iter()
+            .filter_map(|c| {
+                let id = c.id?;
+                // Docker reports state as a lowercase string ("running", "exited", …).
+                let running = c.state.as_deref() == Some("running");
+                let age_secs = c
+                    .created
+                    .map(|created| now.saturating_sub(created.max(0) as u64))
+                    .unwrap_or(0);
+                Some(ManagedContainer {
+                    id,
+                    running,
+                    age_secs,
+                })
+            })
+            .collect())
     }
 }

@@ -17,7 +17,10 @@ use awaken_provisioning_contract as pc;
 use tokio::process::Command as OsCommand;
 
 use crate::net::TcpAgentTransport;
-use crate::{ContainerPlan, ContainerRuntime, ContainerState, RuntimeError, podman_run_argv};
+use crate::{
+    ContainerPlan, ContainerRuntime, ContainerState, ManagedContainer, REAPER_LABEL, RuntimeError,
+    podman_run_argv,
+};
 
 fn backend(e: impl std::fmt::Display) -> RuntimeError {
     RuntimeError::Backend(e.to_string())
@@ -270,6 +273,53 @@ impl ContainerRuntime for PodmanRuntime {
         self.run(&["rm".into(), "-f".into(), container_id.into()])
             .await
             .map(|_| ())
+    }
+
+    async fn list_managed(&self) -> Result<Vec<ManagedContainer>, RuntimeError> {
+        // Discover every awaken-labeled container (running or stopped) for the reaper.
+        // `-a` includes exited ones (finished work); JSON is the stable machine format.
+        let json = self
+            .run(&[
+                "ps".into(),
+                "-a".into(),
+                "--filter".into(),
+                format!("label={REAPER_LABEL}=1"),
+                "--format".into(),
+                "json".into(),
+            ])
+            .await?;
+        if json.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_str(&json).map_err(|e| RuntimeError::Backend(e.to_string()))?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| {
+                // Podman ps json: `Id` (string), `State` (string e.g. "running"/"exited"),
+                // `Created` (unix seconds). Field names are stable across podman 3/4/5.
+                let id = r.get("Id")?.as_str()?.to_string();
+                let running = r
+                    .get("State")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.eq_ignore_ascii_case("running"))
+                    .unwrap_or(false);
+                let age_secs = r
+                    .get("Created")
+                    .and_then(serde_json::Value::as_i64)
+                    .map(|created| now.saturating_sub(created.max(0) as u64))
+                    .unwrap_or(0);
+                Some(ManagedContainer {
+                    id,
+                    running,
+                    age_secs,
+                })
+            })
+            .collect())
     }
 }
 
