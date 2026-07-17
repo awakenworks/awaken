@@ -1327,6 +1327,11 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tower",
         "serde_json",
     },
+    # The EXECUTION-plane binary (the sandbox side): the ACP stdio<->TCP bridge, and
+    # (later slices) the hand tool-executor + memoryd sidecar. A leaf that names no
+    # awaken domain crate — it runs INSIDE the sandbox, opposite the control plane, so
+    # it must not import control/runtime crates. tokio-only for now.
+    "awaken-sandbox": {"tokio"},
     # The PRODUCTION database-less worker (Stage C): a peer of the control / data
     # planes. It composes the neutral host (runtime-host) with the data plane's
     # ConfigExecutorProvider + NoModelConfiguredExecutor (awaken-server) over the

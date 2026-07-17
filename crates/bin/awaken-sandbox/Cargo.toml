@@ -1,0 +1,33 @@
+[package]
+name = "awaken-sandbox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "awaken_sandbox"
+path = "src/lib.rs"
+
+# The EXECUTION-plane binary (the sandbox side, opposite the control plane `awaken`).
+# One binary, roles chosen by the first arg:
+#   - acp     : a stdio<->TCP bridge that spawns the process-as-container ACP CLI and
+#               bridges its stdio to a dialed socket (the image ENTRYPOINT; the CLI argv
+#               arrives as the container Cmd = `command_of(spec)`).
+#   - hand    : the neutral tool-execution endpoint (ADR-0044/0045) — added later.
+#   - memoryd : the memory FUSE/copy sidecar — added later.
+[[bin]]
+name = "awaken-sandbox"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true, features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "io-util",
+    "process",
+    "signal",
+] }
+
+[lints]
+workspace = true
