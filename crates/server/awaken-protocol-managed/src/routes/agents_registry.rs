@@ -70,23 +70,10 @@ impl Record {
     }
 }
 
-/// The config-plane projection of an agent: the runtime-authoritative fields the
-/// managed wire shows. A neutral view so `/v1/agents` presents an agent authored on
-/// the config plane (`/v1/config/agents`) as a *projection* of that single truth
-/// rather than a second copy — the "retreat to projection" direction (ADR-0043).
-pub struct AgentConfigView {
-    pub model: Option<String>,
-    pub system: Option<String>,
-    pub tool_ids: Vec<String>,
-}
-
-/// A source of config-plane agent projections. A **port**: the host implements it
-/// over its `ConfigService` (the managed crate cannot depend on the host), so the
-/// managed adapter reads the neutral config truth without naming it.
-pub trait AgentConfigSource: Send + Sync {
-    /// The config-plane view of `agent_id`, if it is published there.
-    fn agent_view(&self, agent_id: &str) -> Option<AgentConfigView>;
-}
+// The agent-config port + its neutral view now live in `awaken-session-contract`
+// (a contract/ leaf), re-exported here so existing `awaken_protocol_managed::…` paths
+// keep resolving until consumers flip to the contract directly.
+pub use awaken_session_contract::{AgentConfigSource, AgentConfigView};
 
 /// The agent-registry state.
 #[derive(Default)]

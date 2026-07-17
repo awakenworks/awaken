@@ -81,6 +81,12 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # names no iam/store/wire — the `ScopeId → ScopeRef` ACL lives in the PDP
     # adapter, never here.
     "awaken-tenancy": {"serde"},
+    # The neutral session-runtime ports + signature vocabulary (session runtime, work
+    # queue, MCP probe, agent-config source, session repo), extracted from the Managed
+    # wire adapter so the host + other implementors depend on a contract/ leaf, not on
+    # a protocol adapter. Dependencies point inward — agent-domain vocab + async-trait
+    # only; names no wire, store, or plane. Ports move here incrementally.
+    "awaken-session-contract": set(),
     # Resources-plane ports (FileStore / MemoryBlobStore / MemoryFs / SkillStore) +
     # the value/error types in their signatures — mirrors awaken-provisioning-contract.
     # A foundation leaf: no backend, SQL driver, or filesystem, so an adapter reusing
@@ -673,6 +679,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # it constructs no runtime. It is a product adapter, not a neutral crate.
     "awaken-protocol-managed": {
         "awaken-agent-contract",
+        # The neutral session-runtime ports + vocab extracted to a contract/ leaf; this
+        # adapter defines the wire DTOs + encoder over them and re-exports each moved
+        # port via a shim until consumers flip to the contract directly.
+        "awaken-session-contract",
         # Live SSE previews stream agent.message deltas over an SSE body;
         # form_urlencoded parses the managed wire's cursor/query params.
         "async-stream",

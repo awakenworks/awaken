@@ -1,0 +1,7 @@
+pub mod awaken_session_contract
+pub struct awaken_session_contract::AgentConfigView
+pub awaken_session_contract::AgentConfigView::model: core::option::Option<alloc::string::String>
+pub awaken_session_contract::AgentConfigView::system: core::option::Option<alloc::string::String>
+pub awaken_session_contract::AgentConfigView::tool_ids: alloc::vec::Vec<alloc::string::String>
+pub trait awaken_session_contract::AgentConfigSource: core::marker::Send + core::marker::Sync
+pub fn awaken_session_contract::AgentConfigSource::agent_view(&self, &str) -> core::option::Option<awaken_session_contract::AgentConfigView>

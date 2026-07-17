@@ -899,6 +899,7 @@ dependencies = [
  "awaken-managed-bridge",
  "awaken-model-catalog",
  "awaken-provisioning-contract",
+ "awaken-session-contract",
  "awaken-tenancy",
  "axum",
  "form_urlencoded",
@@ -1347,6 +1348,10 @@ dependencies = [
  "tokio",
  "tower",
 ]
+
+[[package]]
+name = "awaken-session-contract"
+version = "1.0.0-dev"
 
 [[package]]
 name = "awaken-skill-store"
