@@ -67,9 +67,14 @@ function waitForPort(port, timeoutMs = 30_000) {
 }
 
 // Run the binary to completion (expecting it to exit on its own), capturing stderr.
-function runToExit(bin, env, timeoutMs = 20_000) {
+// `unset` names env vars to DELETE from the inherited environment — an empty string is
+// NOT the same as unset (the binary reads some vars via `std::env::var`, which sees "" as
+// present), so a negative test that needs a var genuinely absent must delete it.
+function runToExit(bin, env, { timeoutMs = 20_000, unset = [] } = {}) {
+  const merged = { ...process.env, ...env };
+  for (const key of unset) delete merged[key];
   return new Promise((resolve) => {
-    const child = spawn(bin, { env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(bin, { env: merged, stdio: ['ignore', 'pipe', 'pipe'] });
     let stderr = '';
     child.stdout.on('data', (c) => (stderr += c.toString()));
     child.stderr.on('data', (c) => (stderr += c.toString()));
@@ -111,6 +116,42 @@ async function main() {
     `the refusal explains the missing queue: ${coord.stderr}`,
   );
   pass('the config gate refuses a coordinator with no shared queue');
+
+  // N5: a 'durable' ingress on the default in-memory SQLite queue (no AWAKEN_STORAGE_DIR,
+  // no Postgres dispatch backend) would silently drop every queued/crashed/dead-lettered/
+  // scheduled run on restart → the serve role refuses to boot (no-data-loss guard).
+  const durableVolatile = await runToExit(
+    bin,
+    { AWAKEN_ROLE: 'serve', AWAKEN_INGRESS: 'durable' },
+    // deliberately NO persistent queue: no storage dir, no postgres dispatch backend.
+    { unset: ['AWAKEN_STORAGE_DIR', 'AWAKEN_DISPATCH_BACKEND', 'AWAKEN_DATABASE_URL', 'AWAKEN_MGMT_DIR'] },
+  );
+  assert.notEqual(
+    durableVolatile.code,
+    0,
+    'a durable ingress on a volatile queue must refuse to boot',
+  );
+  assert.ok(
+    durableVolatile.stderr.includes('persistent dispatch queue'),
+    `the refusal explains the volatile-queue hazard: ${durableVolatile.stderr}`,
+  );
+  pass('the config gate refuses a durable ingress on a volatile (in-memory) queue');
+
+  // N4: AWAKEN_MGMT_IAM=embedded persists bearer tokens under <MGMT_DIR>/iam.sqlite; an
+  // in-memory token directory would evaporate on restart (every admin locked out or, worse,
+  // re-bootstrapped). Selecting embedded IAM without AWAKEN_MGMT_DIR fails closed at store
+  // assembly rather than silently running an ephemeral IAM.
+  const iamNoDir = await runToExit(
+    bin,
+    { AWAKEN_ROLE: 'serve', AWAKEN_MGMT_IAM: 'embedded' },
+    { unset: ['AWAKEN_MGMT_DIR', 'AWAKEN_DEPLOYMENT_DATA_DIR'] },
+  );
+  assert.notEqual(iamNoDir.code, 0, 'embedded IAM without a data dir must refuse to boot');
+  assert.ok(
+    iamNoDir.stderr.includes('AWAKEN_MGMT_IAM=embedded requires AWAKEN_MGMT_DIR'),
+    `the refusal names the missing dir: ${iamNoDir.stderr}`,
+  );
+  pass('the config gate refuses embedded IAM with no data dir (would run an ephemeral token store)');
 
   // ── 2. Legacy env names still read, with a deprecation warning ───────────
   // A worker with the LEGACY upstream name boots past the gate (valid config) but
