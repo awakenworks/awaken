@@ -357,13 +357,24 @@ impl ContainerRuntime for DockerRuntime {
         &self,
         container_id: &str,
     ) -> Result<Box<dyn AgentChannel>, RuntimeError> {
-        // The agent is the container's main process; reach its stdio over the
-        // published port (awaken-next dials, it does not `docker exec`).
-        let addr = self.agent_addr(container_id).await?;
-        TcpAgentTransport::new(addr)
-            .open_channel()
-            .await
-            .map_err(backend)
+        // The agent is the container's main process; reach its stdio over the published
+        // port (awaken-next dials, it does not `docker exec`). The agent needs a moment
+        // to bind its port after the container starts, so retry the port lookup + dial
+        // with a short backoff: the FIRST turn on a COLD container must not race the
+        // bind (a warm/reused container connects on the first attempt). Bounded (~6s)
+        // so a genuinely dead agent still fails closed.
+        let mut last: Option<RuntimeError> = None;
+        for _ in 0..40 {
+            match self.agent_addr(container_id).await {
+                Ok(addr) => match TcpAgentTransport::new(addr).open_channel().await {
+                    Ok(channel) => return Ok(channel),
+                    Err(e) => last = Some(backend(e)),
+                },
+                Err(e) => last = Some(e),
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+        Err(last.unwrap_or_else(|| backend("agent channel never became reachable")))
     }
 
     async fn inspect(&self, container_id: &str) -> Result<ContainerState, RuntimeError> {

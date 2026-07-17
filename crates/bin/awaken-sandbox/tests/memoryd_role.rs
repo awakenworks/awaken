@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use awaken_memory_store::{MemoryFs, SqliteMemoryFs};
-use awaken_sandbox::memoryd::serve_copy;
+use awaken_sandbox::memoryd::{MemorydConfig, serve, serve_copy};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn copy_cycle_materializes_then_harvests_agent_edits() {
@@ -68,6 +68,65 @@ async fn copy_cycle_materializes_then_harvests_agent_edits() {
         Some("fresh"),
         "a file the agent created became a new memory"
     );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Drive the full `serve` entrypoint (not just `serve_copy`): it opens the store-owned
+/// sqlite db, creates the backing + mount dirs, selects the copy realization (no FUSE
+/// requested), and round-trips. Covers `serve` + the store-open + dir-creation path the
+/// container e2e exercises against the real binary, but here without a daemon.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn serve_entrypoint_selects_copy_and_round_trips() {
+    let dir = std::env::temp_dir().join(format!("awaken-memoryd-serve-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let store_dir = dir.join("store");
+    let mount = dir.join("mnt");
+    std::fs::create_dir_all(&store_dir).expect("store dir");
+    let db = store_dir.join("memory.db");
+    // Seed the store db that `serve` will open (a separate connection, then dropped).
+    {
+        let fs = SqliteMemoryFs::open(db.to_str().unwrap()).expect("seed open");
+        fs.create("s", "/seed.md", "seeded").await.expect("seed");
+    }
+
+    let cfg = MemorydConfig {
+        store_id: "s".into(),
+        mount_path: mount.clone(),
+        store_dir: store_dir.clone(),
+        want_fuse: false,
+    };
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let editor = async {
+        let seed = mount.join("seed.md");
+        for _ in 0..200 {
+            if seed.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            seed.exists(),
+            "serve materialized the seeded store to the mount"
+        );
+        assert_eq!(std::fs::read_to_string(&seed).unwrap().trim(), "seeded");
+        std::fs::write(mount.join("fresh.md"), "created").expect("agent write");
+        let _ = tx.send(());
+    };
+    let server = serve(&cfg, async {
+        let _ = rx.await;
+    });
+    let (res, ()) = tokio::join!(server, editor);
+    res.expect("serve completes cleanly");
+
+    // The agent's new file was harvested into the durable store.
+    let fs = SqliteMemoryFs::open(db.to_str().unwrap()).expect("assert open");
+    let harvested = fs
+        .get_by_path("s", "/fresh.md")
+        .await
+        .expect("get fresh")
+        .expect("fresh harvested");
+    assert_eq!(harvested.content.as_deref(), Some("created"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

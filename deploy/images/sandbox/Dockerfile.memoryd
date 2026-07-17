@@ -15,7 +15,11 @@
 #   cargo build --release -p awaken-sandbox --features memoryd
 #   docker build -f deploy/images/sandbox/Dockerfile.memoryd \
 #     --build-arg BIN=target/release/awaken-sandbox -t ghcr.io/awaken/memoryd:<ver> .
-FROM debian:bookworm-slim
+#
+# Base is trixie (glibc 2.41), not bookworm (2.36): the host-built binary links the
+# builder's glibc, so the runtime base must be >= it or the binary fails to start with
+# a `GLIBC_x.y not found` loader error (build once, run anywhere the base glibc covers).
+FROM debian:trixie-slim
 
 # fuse3 provides fusermount3 (the FUSE-mount helper the write-through server calls);
 # tini reaps any child; ca-certificates for a store backend that dials out (pg).
