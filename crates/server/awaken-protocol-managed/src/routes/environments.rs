@@ -26,7 +26,9 @@ use crate::types::environment::{
     WorkHeartbeat, WorkQueueStats, WorkUpdateParams,
 };
 use crate::types::{ErrorResponse, Page, PageQuery, paginate};
-use crate::work_queue::{InMemoryWorkQueue, OBJECT_AT, WorkQueue};
+use awaken_work_store::InMemoryWorkQueue;
+
+use crate::work_queue::{OBJECT_AT, WorkQueue};
 
 /// The self-hosted environment registry + work queue, both behind ports so a
 /// durable backend (sqlite/postgres) serves standalone and distributed deployments
