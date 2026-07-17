@@ -333,6 +333,18 @@ pub trait SessionRuntime: Send + Sync {
     /// Buffer a system message; it is prepended to the next turn's input.
     async fn add_system(&self, thread: &str, text: &str) -> Result<(), RunError>;
 
+    /// End `thread`'s session at a terminal edge (session delete/archive): dispose
+    /// its sandbox at the OS boundary — flush memory/skills back to durable truth
+    /// while it is still live, then shred any materialized secrets and reap the
+    /// workspace — and drop the cached context. Distinct from the evict-to-rebuild
+    /// edges ([`attach_resource`](Self::attach_resource) etc.), which deliberately
+    /// keep the per-thread workspace so the next turn reuses it. Idempotent: a
+    /// thread with no live session is a no-op. The default is a no-op, so a host
+    /// without sandbox lifecycle is unaffected.
+    async fn end_session(&self, _thread: &str) -> Result<(), RunError> {
+        Ok(())
+    }
+
     /// Interrupt the run in flight on `thread` (a `user.interrupt`): cancel it so
     /// an in-progress outcome ends `interrupted`. A no-op when nothing is running.
     async fn interrupt(&self, _thread: &str) -> Result<(), RunError> {

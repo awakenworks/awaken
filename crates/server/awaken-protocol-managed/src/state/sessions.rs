@@ -472,7 +472,7 @@ impl ManagedState {
         // Broadcast + drop under the lock, then release it before the async sink
         // (a std `MutexGuard` must not be held across `.await`). The owner index is
         // left intact by the removal, so it is still resolvable for the fact below.
-        {
+        let child_threads = {
             let deleted_id = self.next_event_id();
             let mut sessions = self.sessions.lock().unwrap();
             let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
@@ -483,8 +483,15 @@ impl ManagedState {
                 processed_at: Some(PROCESSED_AT.to_string()),
             });
             self.broadcast_committed_from(id, record, from);
+            let children = record.child_threads.clone();
             sessions.remove(id);
-        }
+            children
+        };
+        // Terminal edge: dispose the session's sandbox(es) at the host — the main
+        // thread is the session id, and each spawned child agent thread gets its own.
+        // Best-effort teardown: the session IS deleted from the client's view
+        // regardless, so a dispose failure must not resurrect a deleted session.
+        self.end_session_sandboxes(id, &child_threads).await;
         // Project the deletion as a lifecycle fact so a webhook subscriber is
         // notified, mirroring create's `session.status_idled` and archive's
         // `session.status_terminated`. The owner is resolved from the persisted
@@ -497,6 +504,30 @@ impl ManagedState {
         Ok(())
     }
 
+    /// Dispose the host sandbox(es) for a session being torn down at a terminal
+    /// edge: the main thread (the session id) plus each spawned child agent thread
+    /// (`{id}:thread:{n}`, the stable id `send_events` mints, sessions.rs child
+    /// projection). Best-effort — the terminal transition has already committed, so
+    /// a dispose failure is logged, never propagated (it must not resurrect the
+    /// session). `SessionRuntime::end_session` is a no-op for a thread that never
+    /// materialized a sandbox, so deriving child ids is safe.
+    async fn end_session_sandboxes(&self, id: &str, child_threads: &[serde_json::Value]) {
+        let mut threads: Vec<String> = vec![id.to_string()];
+        for n in 0..child_threads.len() {
+            threads.push(format!("{id}:thread:{n}"));
+        }
+        for thread in threads {
+            if let Err(err) = self.runtime.end_session(&thread).await {
+                tracing::warn!(
+                    session = id,
+                    thread = %thread,
+                    error = ?err,
+                    "session teardown: sandbox dispose failed (best-effort)"
+                );
+            }
+        }
+    }
+
     /// `POST /v1/sessions/{id}/archive` — terminate the session: stamp
     /// `archived_at`, move `status` to `terminated`, and commit a
     /// `session.status_terminated` event so a streaming/listing client observes the
@@ -506,7 +537,7 @@ impl ManagedState {
         // Mutate under the lock, then release it before any await (the sink is async,
         // and a std `MutexGuard` must not be held across `.await`). `newly_terminated`
         // gates the projection so a re-archive (idempotent) fans out no second event.
-        let (session, newly_terminated) = {
+        let (session, newly_terminated, child_threads) = {
             let terminated_id = self.next_event_id();
             let mut sessions = self.sessions.lock().unwrap();
             let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
@@ -520,8 +551,14 @@ impl ManagedState {
                     processed_at: Some(PROCESSED_AT.to_string()),
                 });
             }
-            (record.session.clone(), newly)
+            (record.session.clone(), newly, record.child_threads.clone())
         };
+        // Archive is terminal (no further turns run on this session), so reap its
+        // sandbox — but only on the transition, so a re-archive (idempotent) does
+        // not re-dispose. The record survives as a tombstone; only the sandbox goes.
+        if newly_terminated {
+            self.end_session_sandboxes(id, &child_threads).await;
+        }
         // Project the terminal transition as a lifecycle fact, mirroring create's
         // `session.status_idled`. The owning workspace is resolved from the session's
         // persisted owner (the archive edge carries only the id) so a subscription in

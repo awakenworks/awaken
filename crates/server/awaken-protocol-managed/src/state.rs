@@ -351,6 +351,109 @@ mod tests {
         }
     }
 
+    /// A runtime that records every `end_session` thread it is asked to tear down,
+    /// so a test can prove the terminal edges (delete/archive) reach the host's
+    /// sandbox disposal rather than leaking it. Every driving method is unused.
+    #[derive(Clone, Default)]
+    struct EndSessionRecorder {
+        ended: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl SessionRuntime for EndSessionRecorder {
+        async fn run(
+            &self,
+            _agent: &str,
+            _thread: &str,
+            _content: Vec<ContentBlock>,
+        ) -> Result<StepOutcome, RunError> {
+            unreachable!()
+        }
+        async fn resume(
+            &self,
+            _thread: &str,
+            _tool_use_id: &str,
+            _decision: Decision,
+        ) -> Result<StepOutcome, RunError> {
+            unreachable!()
+        }
+        async fn resume_custom(
+            &self,
+            _thread: &str,
+            _tool_use_id: &str,
+            _content: &str,
+            _is_error: bool,
+        ) -> Result<StepOutcome, RunError> {
+            unreachable!()
+        }
+        async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+            Ok(())
+        }
+        async fn define_outcome(
+            &self,
+            _thread: &str,
+            _description: &str,
+            _rubric: &str,
+            _max_iterations: u32,
+        ) -> Result<OutcomeReport, RunError> {
+            unreachable!()
+        }
+        async fn end_session(&self, thread: &str) -> Result<(), RunError> {
+            self.ended.lock().unwrap().push(thread.to_string());
+            Ok(())
+        }
+        fn model(&self) -> String {
+            "host-default-model".to_string()
+        }
+    }
+
+    /// `DELETE /v1/sessions/{id}` reaches the host's terminal sandbox disposal
+    /// (`end_session`) for the session's main thread — the wiring that stops a
+    /// deleted session's sandbox from leaking.
+    #[tokio::test]
+    async fn delete_session_disposes_the_host_sandbox() {
+        let rt = EndSessionRecorder::default();
+        let ended = rt.ended.clone();
+        let state = ManagedState::new(rt);
+        let id = state
+            .create_session(bare_create_params(), None)
+            .await
+            .expect("create")
+            .id;
+        state.delete_session(&id).await.expect("delete");
+        assert_eq!(
+            *ended.lock().unwrap(),
+            vec![id],
+            "delete tears down the session's sandbox via end_session"
+        );
+    }
+
+    /// `POST /v1/sessions/{id}/archive` reaps the sandbox on the terminal
+    /// transition only — a re-archive (idempotent) does not re-dispose.
+    #[tokio::test]
+    async fn archive_session_disposes_on_the_terminal_transition_only() {
+        let rt = EndSessionRecorder::default();
+        let ended = rt.ended.clone();
+        let state = ManagedState::new(rt);
+        let id = state
+            .create_session(bare_create_params(), None)
+            .await
+            .expect("create")
+            .id;
+        state.archive_session(&id).await.expect("archive");
+        assert_eq!(
+            *ended.lock().unwrap(),
+            vec![id.clone()],
+            "archive reaps the sandbox on the terminal transition"
+        );
+        state.archive_session(&id).await.expect("re-archive");
+        assert_eq!(
+            *ended.lock().unwrap(),
+            vec![id],
+            "a re-archive (idempotent) does not re-dispose"
+        );
+    }
+
     fn sample_persisted(id: &str) -> PersistedSession {
         let mut metadata = BTreeMap::new();
         metadata.insert("team".to_string(), "research".to_string());

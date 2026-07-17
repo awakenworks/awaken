@@ -461,4 +461,25 @@ impl SharedHost {
         }
         Ok(ctx)
     }
+
+    /// End a session's sandbox lifecycle at a terminal edge (managed session
+    /// delete/archive): evict the cached context and dispose the sandbox at the OS
+    /// boundary (shred materialized secrets, reap the per-thread workspace dir).
+    /// Idempotent — a thread with no live session is a no-op.
+    ///
+    /// This is the ONLY place a session's sandbox is reaped. The evict-to-rebuild
+    /// edges (`rebind_model`/`attach_resource`/`detach_resource`/`rotate_resource_token`)
+    /// remove the cached context WITHOUT disposing, so the next turn's `ctx_for`
+    /// rebuilds over the same `base/<thread>` workspace (ADR-0038 continuity); a
+    /// terminal end must instead reap it, so any in-sandbox memory/skill edits are
+    /// harvested by the caller BEFORE this runs.
+    pub(crate) async fn end_session(&self, thread: &str) -> Result<(), HostError> {
+        let ctx = self.sessions.lock().await.remove(thread);
+        if let Some(ctx) = ctx {
+            awaken_provisioning_contract::Sandbox::dispose(&*ctx.env)
+                .await
+                .map_err(|e| HostError::internal(e.to_string()))?;
+        }
+        Ok(())
+    }
 }
