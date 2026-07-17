@@ -30,8 +30,8 @@ pub async fn awaken_config_service::ConfigService::warm_install(&self, &dyn awak
 pub fn awaken_config_service::ConfigService::with_model_resolver(self, alloc::sync::Arc<dyn awaken_config_service::ModelResolver>) -> Self
 pub fn awaken_config_service::ConfigService::with_resources(self, alloc::sync::Arc<dyn awaken_config_resolver::stores::ResourceStore>) -> Self
 pub struct awaken_config_service::ConfigServiceAgentSource(pub alloc::sync::Arc<awaken_config_service::ConfigService>)
-impl awaken_protocol_managed::routes::agents_registry::AgentConfigSource for awaken_config_service::ConfigServiceAgentSource
-pub fn awaken_config_service::ConfigServiceAgentSource::agent_view(&self, &str) -> core::option::Option<awaken_protocol_managed::routes::agents_registry::AgentConfigView>
+impl awaken_session_contract::agent_config::AgentConfigSource for awaken_config_service::ConfigServiceAgentSource
+pub fn awaken_config_service::ConfigServiceAgentSource::agent_view(&self, &str) -> core::option::Option<awaken_session_contract::agent_config::AgentConfigView>
 pub struct awaken_config_service::ConfigServiceReconciler
 impl awaken_config_service::ConfigServiceReconciler
 pub fn awaken_config_service::ConfigServiceReconciler::new(awaken_config_service::ConfigPlane, impl core::convert::Into<awaken_tenancy::ScopeId>, alloc::vec::Vec<alloc::string::String>) -> Self

@@ -1,0 +1,18 @@
+[package]
+name = "awaken-session-contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Agent-domain vocabulary in the port signatures (e.g. `RedactedString` on the MCP
+# probe). A contract/ leaf itself — dependencies point inward.
+awaken-agent-contract.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+# The work-queue port's in-memory impl is exercised by `#[tokio::test]`s.
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true
