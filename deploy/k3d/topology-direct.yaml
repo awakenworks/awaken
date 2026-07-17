@@ -34,10 +34,8 @@ spec:
         - name: hand
           image: awaken-topology:latest
           imagePullPolicy: Never
-          env:
-            # Hand role: bind the executor channel on all interfaces so the brain
-            # pod can reach it via the `hand` Service.
-            - { name: AWAKEN_HAND_LISTEN, value: "0.0.0.0:9000" }
+          # Execution-plane hand: LISTEN so the brain dials it via the `hand` Service.
+          command: ["/usr/local/bin/awaken-sandbox", "hand", "--listen", "0.0.0.0:9000"]
           ports:
             - containerPort: 9000
           readinessProbe:
