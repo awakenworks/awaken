@@ -83,7 +83,6 @@ spec:
         - name: hand
           image: awaken-topology:latest
           imagePullPolicy: Never
-          env:
-            # Reverse: dial the brain's rendezvous Service (retrying while it comes
-            # up) and serve the executor channel over that outbound connection.
-            - { name: AWAKEN_HAND_DIAL, value: "brain-rendezvous:9000" }
+          # Reverse: the execution-plane hand DIALS OUT to the brain's rendezvous
+          # (retrying while it comes up) and serves over that outbound connection.
+          command: ["/usr/local/bin/awaken-sandbox", "hand", "--dial", "brain-rendezvous:9000"]

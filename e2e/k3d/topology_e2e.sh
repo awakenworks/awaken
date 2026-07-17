@@ -31,7 +31,7 @@ cleanup() {
   [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null || true
   log "teardown: deleting k3d cluster $CLUSTER"
   k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || true
-  rm -f "$DEPLOY_DIR/awaken-server"
+  rm -f "$DEPLOY_DIR/awaken-server" "$DEPLOY_DIR/awaken-sandbox"
 }
 trap cleanup EXIT
 
@@ -100,17 +100,25 @@ run_topology() {
   fi
 }
 
-log "1/5 build the server binary on the host (rustc 1.96)"
-RUSTUP_TOOLCHAIN=1.96.0 cargo build -q -p awaken-scenario-host --bin awaken-scenario-host
-BIN=$(RUSTUP_TOOLCHAIN=1.96.0 cargo build -p awaken-scenario-host --bin awaken-scenario-host --message-format=json 2>/dev/null \
-  | python3 -c "import sys,json
+log "1/5 build the brain (scenario-host) + hand (awaken-sandbox --features hand) binaries (rustc 1.96)"
+resolve_executable() { # resolve_executable <pkg> <bin-target-name> [extra cargo args...]
+  local pkg="$1" bin="$2"
+  shift 2
+  RUSTUP_TOOLCHAIN=1.96.0 cargo build -q -p "$pkg" --bin "$bin" "$@"
+  RUSTUP_TOOLCHAIN=1.96.0 cargo build -p "$pkg" --bin "$bin" "$@" --message-format=json 2>/dev/null \
+    | BN="$bin" python3 -c "import sys,json,os
+bn=os.environ['BN']
 for l in sys.stdin:
  try:
   m=json.loads(l)
-  if m.get('executable') and m.get('target',{}).get('name')=='awaken-server': print(m['executable'])
- except Exception: pass" | tail -1)
-[ -n "$BIN" ] || { echo 'could not resolve binary'; exit 1; }
-cp "$BIN" "$DEPLOY_DIR/awaken-server"
+  if m.get('executable') and m.get('target',{}).get('name')==bn: print(m['executable'])
+ except Exception: pass" | tail -1
+}
+BRAIN_BIN=$(resolve_executable awaken-scenario-host awaken-scenario-host)
+HAND_BIN=$(resolve_executable awaken-sandbox awaken-sandbox --features hand)
+[ -n "$BRAIN_BIN" ] && [ -n "$HAND_BIN" ] || { echo 'could not resolve binaries'; exit 1; }
+cp "$BRAIN_BIN" "$DEPLOY_DIR/awaken-server"
+cp "$HAND_BIN" "$DEPLOY_DIR/awaken-sandbox"
 
 log "2/5 build the topology image (copy-in, no in-container rust build)"
 docker build --load -q -t "$IMAGE" -f "$DEPLOY_DIR/Dockerfile" "$DEPLOY_DIR" >/dev/null
