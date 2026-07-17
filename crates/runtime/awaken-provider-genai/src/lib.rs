@@ -202,7 +202,10 @@ impl LlmExecutor for GenaiExecutor {
         let options = ChatOptions::default()
             .with_capture_content(true)
             .with_capture_tool_calls(true)
-            .with_capture_usage(true);
+            .with_capture_usage(true)
+            // Capture the model's reasoning so a thinking-capable provider's
+            // extended-thinking folds into a `Thinking` block (→ `agent.thinking`).
+            .with_capture_reasoning_content(true);
 
         let stream_response = tokio::time::timeout(
             self.timeout,
@@ -217,6 +220,9 @@ impl LlmExecutor for GenaiExecutor {
         let mut captured: Option<MessageContent> = None;
         let mut usage: Option<TokenUsage> = None;
         let mut stop_reason: Option<StopReason> = None;
+        // Accumulated reasoning (streamed chunks); the End event's captured value
+        // is preferred when present.
+        let mut reasoning = String::new();
         // Fallback assembly, used only if the provider delivers no captured turn.
         let mut text = String::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
@@ -267,11 +273,20 @@ impl LlmExecutor for GenaiExecutor {
                         None => tool_calls.push(call),
                     }
                 }
+                // Live reasoning: accumulate; the completed form becomes a folded
+                // `Thinking` block. Not forwarded as a text delta (reasoning is not
+                // answer content).
+                ChatStreamEvent::ReasoningChunk(chunk) => {
+                    reasoning.push_str(&chunk.content);
+                }
                 // Committed turn: genai's parsed, ordered content and usage.
                 ChatStreamEvent::End(end) => {
                     stop_reason = end.captured_stop_reason.as_ref().and_then(map_stop_reason);
                     captured = end.captured_content;
                     usage = end.captured_usage.as_ref().map(map_usage);
+                    if let Some(r) = end.captured_reasoning_content {
+                        reasoning = r;
+                    }
                 }
                 _ => {}
             }
@@ -280,7 +295,7 @@ impl LlmExecutor for GenaiExecutor {
         // Prefer genai's captured turn (parsed tool arguments, same shape as
         // `infer`); fall back to the chunk-assembled blocks only if no End
         // content arrived (e.g. a stream that ends without a captured block).
-        let output = match captured {
+        let mut output = match captured {
             Some(content) => map_assistant_output(&content),
             None => {
                 let mut blocks: Vec<ContentBlock> = Vec::new();
@@ -297,6 +312,12 @@ impl LlmExecutor for GenaiExecutor {
                 AssistantOutput::from_blocks(blocks)
             }
         };
+        // Fold the turn's reasoning into a leading `Thinking` block: it precedes the
+        // answer, is ignored by `extract_text`, and the Managed wire projects its
+        // presence as a contentless `agent.thinking` marker.
+        if !reasoning.trim().is_empty() {
+            output.blocks.insert(0, ContentBlock::thinking(reasoning));
+        }
         Ok(ChatResponse {
             output,
             usage,
@@ -478,7 +499,14 @@ pub async fn probe_credential(
 pub fn to_genai_request(request: &ChatRequest) -> GenaiChatRequest {
     let mut messages: Vec<ChatMessage> = Vec::with_capacity(request.messages.len());
     for message in &request.messages {
-        let parts: Vec<ContentPart> = message.content.iter().map(to_genai_part).collect();
+        // Reasoning is output-only: a folded `Thinking` block is never replayed to
+        // the provider as input (the answer text carries the turn's meaning).
+        let parts: Vec<ContentPart> = message
+            .content
+            .iter()
+            .filter(|b| !matches!(b, ContentBlock::Thinking { .. }))
+            .map(to_genai_part)
+            .collect();
         let genai_message = match message.role {
             Role::System => ChatMessage::system(parts),
             Role::Assistant => ChatMessage::assistant(parts),
@@ -527,6 +555,9 @@ fn to_genai_part(block: &ContentBlock) -> ContentPart {
             tool_use_id.clone(),
             extract_text(content),
         )),
+        // Filtered out before this map (reasoning is not replayed); mapped
+        // defensively to its text so the match stays exhaustive.
+        ContentBlock::Thinking { text } => ContentPart::Text(text.clone()),
     }
 }
 

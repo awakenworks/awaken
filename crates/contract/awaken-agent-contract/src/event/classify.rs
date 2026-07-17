@@ -64,13 +64,14 @@ pub fn classify(event: &AgentEvent) -> Routing {
             },
             // Content whole-units: canonical message truth, not audit; the live
             // prefix already carried them as increments, so not re-broadcast.
-            Fact::AssistantMessage { .. } | Fact::ToolCall { .. } | Fact::ToolResult { .. } => {
-                Routing {
-                    tier: Tier::Fact,
-                    live: false,
-                    audit: false,
-                }
-            }
+            Fact::AssistantMessage { .. }
+            | Fact::AssistantThinking
+            | Fact::ToolCall { .. }
+            | Fact::ToolResult { .. } => Routing {
+                tier: Tier::Fact,
+                live: false,
+                audit: false,
+            },
             // Lifecycle facts: audited (phase/park/continuation), not live.
             Fact::Waiting { .. }
             | Fact::Continuation { .. }

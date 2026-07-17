@@ -217,6 +217,11 @@ impl Transcoder for ManagedEncoder {
     fn fact(&mut self, event: &Fact) -> Vec<ProjectedEvent> {
         match event {
             Fact::RunStarted => Vec::new(),
+            // The turn reasoned: a contentless forward-progress marker, before the
+            // answer (`BetaManagedAgentsAgentThinkingEvent` carries no content).
+            Fact::AssistantThinking => {
+                vec![ProjectedEvent::minted(OutboundKind::AgentThinking {})]
+            }
             Fact::AssistantMessage { content, .. } => {
                 vec![ProjectedEvent::minted(OutboundKind::AgentMessage {
                     content: content.clone(),
