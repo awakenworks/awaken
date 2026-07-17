@@ -11,6 +11,8 @@
 //! tools (read/write/edit/glob/grep/bash); [`serve_hand`] drives it until the peer hangs
 //! up. FAT role (tools + executor + transport) — behind the `hand` feature.
 
+use std::os::unix::fs::PermissionsExt;
+
 use awaken_connection_plan::{ConnectionPlan, bind_tcp, bind_unix};
 use awaken_ext_builtin_tools::executable_hand_tools;
 use awaken_tool_relay::{HandSession, serve_hand};
@@ -39,6 +41,15 @@ pub async fn serve(bind: HandBind) -> Result<(), String> {
         HandBind::Unix(path) => {
             let listener = bind_unix(&ConnectionPlan::unix_listen(&path))
                 .map_err(|e| format!("hand bind unix://{path}: {e}"))?;
+            // The brain (host side) may run as a different uid than this in-container
+            // hand, and a unix `connect()` needs write permission on the socket. Make
+            // the socket world-connectable — access is gated by the PRIVATE rendezvous
+            // DIRECTORY the composition bind-mounts (0700), not by the socket, the
+            // standard unix-rendezvous posture.
+            if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o777))
+            {
+                eprintln!("awaken-sandbox hand: chmod {path}: {e} (brain may not connect)");
+            }
             eprintln!("awaken-sandbox hand: serving the executor channel on unix://{path}");
             loop {
                 let channel = listener

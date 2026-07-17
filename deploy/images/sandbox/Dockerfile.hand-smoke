@@ -1,0 +1,8 @@
+# Minimal image to SMOKE-TEST the awaken-sandbox `hand` role in a real --network none
+# container. ubuntu (glibc matches the host build) provides the `sh` the bash tool
+# spawns. The binary must be built `--features hand`. Not a production image.
+FROM ubuntu:24.04
+ARG BIN=deploy/images/sandbox/.awaken-sandbox-hand.bin
+COPY ${BIN} /usr/local/bin/awaken-sandbox
+# The hand serves the executor channel on a unix socket in the /rv bind-mount rendezvous.
+ENTRYPOINT ["/usr/local/bin/awaken-sandbox", "hand", "--unix", "/rv/hand.sock"]

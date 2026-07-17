@@ -61,6 +61,9 @@ if docker info >/dev/null 2>&1; then
   # The awaken-sandbox acp bridge as a real container ENTRYPOINT (the production image
   # shape: ENTRYPOINT=bridge, Cmd=CLI argv).
   run "docker:acp-bridge-smoke" bash deploy/images/sandbox/smoke.sh
+  # C5: the real hand runs a real tool in a --network none container over the unix
+  # rendezvous, driven by a host brain speaking the hand wire.
+  run "docker:hand-in-container" bash deploy/images/sandbox/hand-smoke.sh
 else
   skip "no reachable Docker daemon"
 fi
