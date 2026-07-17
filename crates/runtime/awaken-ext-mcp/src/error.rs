@@ -10,6 +10,15 @@ pub enum McpError {
     #[error("duplicate server name: {0}")]
     DuplicateServerName(String),
 
+    #[error(
+        "server name '{name}' sanitizes to namespace '{namespace}', already claimed by server '{existing}'"
+    )]
+    NamespaceCollision {
+        name: String,
+        namespace: String,
+        existing: String,
+    },
+
     #[error("unknown mcp server: {0}")]
     UnknownServer(String),
 
@@ -64,6 +73,19 @@ mod tests {
     fn duplicate_server_name_display() {
         let err = McpError::DuplicateServerName("my-server".to_string());
         assert_eq!(err.to_string(), "duplicate server name: my-server");
+    }
+
+    #[test]
+    fn namespace_collision_display() {
+        let err = McpError::NamespaceCollision {
+            name: "a.b".to_string(),
+            namespace: "mcp__a_b__".to_string(),
+            existing: "a-b".to_string(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "server name 'a.b' sanitizes to namespace 'mcp__a_b__', already claimed by server 'a-b'"
+        );
     }
 
     #[test]

@@ -99,8 +99,6 @@ pub enum GoalOutcome {
     MaxIterationsReached,
     /// The grader could not judge, or the rubric does not fit the task.
     Failed,
-    /// The run was interrupted (e.g. cancelled) before the outcome concluded.
-    Interrupted,
 }
 
 impl GoalOutcome {
@@ -111,7 +109,6 @@ impl GoalOutcome {
             GoalOutcome::NeedsRevision => "needs_revision",
             GoalOutcome::MaxIterationsReached => "max_iterations_reached",
             GoalOutcome::Failed => "failed",
-            GoalOutcome::Interrupted => "interrupted",
         }
     }
 

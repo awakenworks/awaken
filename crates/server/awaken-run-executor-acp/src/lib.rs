@@ -416,7 +416,19 @@ impl AcpRunExecutor {
 
         loop {
             let mut appender = CollectingAppender::default();
-            let (_tx, mut injections) = tokio::sync::mpsc::channel::<Injection>(1);
+            // ADR-0052 owner control channel. Retain the sender and forward a run
+            // cancellation into it as an `Injection::Interrupt`, so the supervisor
+            // reaps the turn through the same interrupt path a protocol interrupt
+            // uses (a dropped sender would close the channel and permanently disable
+            // the supervisor's interrupt arm). The `cancel` future below still races
+            // the turn directly; both resolve the cancellation to `Cancelled`.
+            let (tx, mut injections) = tokio::sync::mpsc::channel::<Injection>(1);
+            let interrupt_forwarder = context.cancellation.clone().map(|token| {
+                tokio::spawn(async move {
+                    token.cancelled().await;
+                    let _ = tx.send(Injection::Interrupt).await;
+                })
+            });
             let cancel = async {
                 match &context.cancellation {
                     Some(token) => token.cancelled().await,
@@ -443,6 +455,11 @@ impl AcpRunExecutor {
                 launch_sink,
             )
             .await;
+            // The turn is over — stop the cancellation→interrupt forwarder so it does
+            // not outlive this turn's injection channel.
+            if let Some(handle) = interrupt_forwarder {
+                handle.abort();
+            }
             // Keep the negotiated session id for the next relaunched turn, and fold
             // this turn's token usage into the run total.
             acp_session_id = config.session_id.take();
@@ -546,9 +563,14 @@ impl AcpRunExecutor {
 
 /// Classify a bridge/supervisor [`AcpError`] into a neutral [`AcpFailure`]. A
 /// truncated stream or an IO drop mid-turn is the backend cutting the turn
-/// (Prompt stage); a malformed frame is a permanent adapter fault.
+/// (Prompt stage); a malformed frame is a permanent adapter fault. A streamed
+/// HARD-quota banner already carries its classified failure (RateLimited) — keep
+/// it rather than re-deriving a weaker class from the flattened message string.
 fn classify_from_acp_error(err: &AcpError) -> AcpFailure {
-    classify_error(Stage::Prompt, &RawAcpError::message(err.to_string()))
+    match err {
+        AcpError::HardLimit(failure) => failure.clone(),
+        _ => classify_error(Stage::Prompt, &RawAcpError::message(err.to_string())),
+    }
 }
 
 /// Commit a terminal failure that occurred before/instead of a turn (open fault):

@@ -190,8 +190,22 @@ async fn create_skill(
             return err(StatusCode::BAD_REQUEST, "skill upload has no SKILL.md file");
         };
         let version = build_version(&state, &content);
-        // Deliver under the skill's name so the runtime offers it on threads.
-        let _ = state.host.skills.store_put(&version.name, &content).await;
+        // Deliver under the skill's name so the runtime offers it on threads. Fail
+        // closed (409) when no durable store is wired — exactly like the legacy JSON
+        // path below — rather than returning 200 with only an ephemeral registry
+        // entry (a skill that was neither delivered nor persisted).
+        if state
+            .host
+            .skills
+            .store_put(&version.name, &content)
+            .await
+            .is_none()
+        {
+            return err(
+                StatusCode::CONFLICT,
+                "this server has no durable skill store",
+            );
+        }
         // Register (and return) the tagged catalog id — the same id advertisement
         // derives from the name — so the official worker downloads what it was told.
         let id = awaken_skill_store::catalog_id(&version.name);
