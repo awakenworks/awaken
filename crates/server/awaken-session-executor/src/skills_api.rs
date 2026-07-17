@@ -191,7 +191,7 @@ async fn create_skill(
         };
         let version = build_version(&state, &content);
         // Deliver under the skill's name so the runtime offers it on threads.
-        let _ = state.host.skill_store_put(&version.name, &content).await;
+        let _ = state.host.skills.store_put(&version.name, &content).await;
         // Register (and return) the tagged catalog id — the same id advertisement
         // derives from the name — so the official worker downloads what it was told.
         let id = awaken_skill_store::catalog_id(&version.name);
@@ -220,7 +220,7 @@ async fn create_skill(
             "skill needs a string `id` and `content`",
         );
     };
-    match state.host.skill_store_put(id, content).await {
+    match state.host.skills.store_put(id, content).await {
         Some(stored_id) => {
             let version = build_version(&state, content);
             state.registry.lock().unwrap().insert(
@@ -257,7 +257,7 @@ async fn list_skills(State(state): State<Arc<SkillsApi>>) -> impl IntoResponse {
             registry.keys().cloned().collect(),
         )
     };
-    for stem in state.host.skill_store_list().await {
+    for stem in state.host.skills.store_list().await {
         let cid = awaken_skill_store::catalog_id(&stem);
         // Skip if already surfaced by the registry under either its catalog id (SDK
         // path) or its raw stem (legacy `{id, content}` path). Otherwise list under
@@ -331,7 +331,7 @@ async fn create_version(
     };
     let version = build_version(&state, &content);
     // Deliver the new version's content under the skill's name.
-    let _ = state.host.skill_store_put(&version.name, &content).await;
+    let _ = state.host.skills.store_put(&version.name, &content).await;
     let projected = version.project(&id);
     let mut registry = state.registry.lock().unwrap();
     registry.get_mut(&id).unwrap().versions.push(version);
@@ -375,7 +375,7 @@ async fn resolve_record(state: &SkillsApi, id: &str) -> Option<SkillRecord> {
     if let Some(r) = state.registry.lock().unwrap().get(id).cloned() {
         return Some(r);
     }
-    let (_stem, content) = state.host.skill_by_catalog_id(id)?;
+    let (_stem, content) = state.host.skills.by_catalog_id(id)?;
     Some(SkillRecord {
         display_title: None,
         versions: vec![build_version(state, &content)],
@@ -478,11 +478,12 @@ mod tests {
             SharedHost::new(std::sync::Arc::new(NoLlm), "test").with_skill_store(dir.join("store")),
         );
         // Deliver straight to the durable catalog — no registry entry.
-        host.skill_store_put(
-            "Greeter",
-            "---\nname: Greeter\ndescription: hi\n---\nsay hello",
-        )
-        .await;
+        host.skills
+            .store_put(
+                "Greeter",
+                "---\nname: Greeter\ndescription: hi\n---\nsay hello",
+            )
+            .await;
         let router = skills_router(host);
         let cid = awaken_skill_store::catalog_id("Greeter");
 

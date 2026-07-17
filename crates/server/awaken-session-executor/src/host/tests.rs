@@ -685,6 +685,7 @@ async fn prepare_session_mounts_the_agents_bound_memory_store() {
     // Seed a memory store with a known secret, and bind it to agent `a` at /mnt/memory.
     let store_id = host.create_memory_store().await;
     host.memory_stores
+        .blob()
         .put(
             crate::provisioning::HOST_MEMORY_WORKSPACE,
             &store_id,
@@ -989,6 +990,7 @@ async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let store_id = host.create_memory_store().await;
     host.memory_stores
+        .blob()
         .put(
             crate::provisioning::HOST_MEMORY_WORKSPACE,
             &store_id,
@@ -1057,6 +1059,7 @@ async fn a_wire_resource_overrides_the_agent_binding_at_the_same_path() {
     let s1 = host.create_memory_store().await; // agent-bound
     let s2 = host.create_memory_store().await; // wire override
     host.memory_stores
+        .blob()
         .put(
             crate::provisioning::HOST_MEMORY_WORKSPACE,
             &s1,
@@ -1065,6 +1068,7 @@ async fn a_wire_resource_overrides_the_agent_binding_at_the_same_path() {
         .await
         .unwrap();
     host.memory_stores
+        .blob()
         .put(
             crate::provisioning::HOST_MEMORY_WORKSPACE,
             &s2,
@@ -1179,6 +1183,7 @@ async fn an_agents_bound_resource_mounts_with_the_store_but_not_on_a_db_less_wor
     async fn bind(host: &Arc<SharedHost>) -> Arc<dyn ResourceStore> {
         let store_id = host.create_memory_store().await;
         host.memory_stores
+            .blob()
             .put(
                 crate::provisioning::HOST_MEMORY_WORKSPACE,
                 &store_id,

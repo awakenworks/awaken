@@ -50,7 +50,6 @@ use awaken_store_fs::{FsCommitCoordinator, FsStreamCheckpointStore};
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
 use awaken_ext_compact::{CompactConfig, CompactPlugin};
-use awaken_runtime_contract::subagent_runner::SubagentRunner;
 
 use crate::agent_catalog::AgentCatalog;
 use crate::background::BackgroundRuns;
@@ -125,22 +124,13 @@ pub struct SharedHost {
     pub(crate) provider: LocalProvider,
     grader: Arc<dyn Grader>,
     pub(crate) client_tools: HashSet<String>,
-    /// Skills offered on every thread (ADR-0036). The whole set is fronted by the
-    /// single `Skill` tool; the model activates one by id to load its instructions.
-    pub(crate) skills: Vec<SkillSpec>,
-    /// An optional durable delivered-skill catalog (resources plane). When set, its
-    /// `SKILL.md`s are offered alongside the static `skills` and survive a restart, so
-    /// a catalog configured through `/v1/skills` outlives the process. The host reads
-    /// the bytes and feeds them to the extension's `SkillSource`, so the runtime stays
-    /// store-unaware.
-    pub(crate) skill_store: Option<Arc<dyn awaken_skill_store::SkillStore>>,
-    /// In-memory snapshot of the delivered catalog `(id, content)`, read
-    /// *synchronously* by the capability advertisement (`skill_ids`) and the
-    /// run-loop `SkillSource` scan — refreshed from the async `skill_store` on a
-    /// write and at each session's setup (`reload_skill_cache`). This is how a
-    /// network-DB (async) catalog serves the host's sync read paths.
-    pub(crate) skill_cache: std::sync::Mutex<Vec<(String, String)>>,
-    pub(crate) delegates: HashSet<String>,
+    /// The skill offering (ADR-0036): the static configured set, the optional durable
+    /// `/v1/skills` catalog, and its sync-read cache — grouped behind one type that
+    /// owns the cache↔store coherence invariant. See [`crate::skill_catalog`].
+    pub(crate) skills: crate::skill_catalog::SkillCatalog,
+    /// The delegate agent roster (local + A2A-remote) behind one type owning the
+    /// `remotes ⊆ advertised` invariant. See [`crate::delegate::Delegates`].
+    pub(crate) delegates: crate::delegate::Delegates,
     /// Whether a native subagent (delegation / skill fork) reuses the parent agent's
     /// sandbox (`true`, the default — `默认共用`) or runs in a fresh, isolated one.
     /// The workspace-sharing knob for subagents; out-of-band housekeeping sub-runs
@@ -170,21 +160,18 @@ pub struct SharedHost {
     /// worker. Point it at a **shared** location for cross-machine recovery; leave
     /// `None` on a single machine (the per-thread config home is already stable).
     pub(crate) session_blob_root: Option<PathBuf>,
-    /// Delegate agents fulfilled over A2A (agent id → transport) instead of a local
-    /// sub-run. `run_delegate` routes to these first.
-    pub(crate) remote_agents: HashMap<String, Arc<dyn Transport>>,
     /// Out-of-band memory extraction, when enabled with [`with_memory`]. After a
     /// turn reaches a natural end it fires a background `memory-extractor` sub-run.
     memory: Option<Arc<MemoryExtraction>>,
     /// The relevance selector for recall (a `memory-selector` sub-agent), wired
     /// into the memory recall plugin when memory is enabled.
     memory_selector: Option<Arc<dyn awaken_ext_memory::RecallSelector>>,
-    /// Context compaction, when enabled with [`with_compaction`]. The config is
-    /// installed on the `compact` plugin (a `BeforeInference` hook); the summarizer
-    /// is a `compactor` sub-agent the plugin calls to fold the older slice. The main
-    /// agent runs a matching `KeepLast` window so those raw turns leave the model view.
-    compact_config: Option<CompactConfig>,
-    compact_runner: Option<Arc<dyn SubagentRunner>>,
+    /// Context compaction, when enabled with [`with_compaction`]: the resolved config
+    /// plus the `compactor` sub-agent runner, sealed as one [`crate::compact::Compaction`]
+    /// so the pair is present-or-absent atomically. The config drives the `compact`
+    /// plugin (a `BeforeInference` hook) and a matching `KeepLast` window so summarized
+    /// older turns leave the model view.
+    compaction: Option<crate::compact::Compaction>,
     /// The config data plane, when the server exposes `/v1/config/*`. A thread's
     /// runtime config is the installed (published) config for its agent, if any,
     /// else the built-in default (slice A).
@@ -213,25 +200,17 @@ pub struct SharedHost {
     /// Content-addressed blob store backing the Files API, file-resource mounts, and
     /// collected artifacts. In-memory by default (one server process).
     pub(crate) file_store: Arc<dyn FileStore>,
-    /// Mutable, id-keyed memory stores (ADR-0038 MemoryStore family): unlike the
-    /// content-addressed `file_store`, a memory store keeps a stable id whose bytes a
-    /// session mounts read-write and the host harvests back after a turn. Backed by
-    /// the durable [`awaken_memory_store::MemoryBlobStore`] — under the storage dir it
-    /// survives a restart, so memory written in one process is visible to the next; an
-    /// ephemeral per-process dir when the host has no storage dir (unit tests).
-    pub(crate) memory_stores: Arc<dyn awaken_memory_store::MemoryBlobStore>,
-    /// Durable, **path-addressed** memory files (ADR-0053): a store holds many
-    /// memories, each at a path with a `content_sha256` + monotonic version, updated
-    /// under compare-and-swap. Backs the `/memories` HTTP endpoints as the durable
-    /// source of truth (survives a restart under the storage dir) and is the seam the
-    /// write-through FUSE mount projects.
-    pub(crate) memory_fs: Arc<dyn awaken_memory_store::MemoryFs>,
+    /// The memory resource plane's *content* backends (ADR-0038/0053): the id-keyed
+    /// read-write blob store + the path-addressed CAS `/memories` store, both governed
+    /// by one storage-dir durability rule and grouped behind one type that owns that
+    /// construction invariant. See [`crate::memory_stores`].
+    pub(crate) memory_stores: crate::memory_stores::MemoryStores,
     /// The control-plane registry of memory-store **identity** (id/name/description/
-    /// metadata/archived), ADR-0038. Mirrors the `McpStore` pattern: injected by the
-    /// composition root with the durable admin backend so a store's identity survives a
-    /// restart and the admin assistant can enumerate stores. Defaults to a
-    /// process-lifetime in-memory registry (ephemeral) so tests / scenario hosts keep
-    /// working. Store *content* stays in `memory_stores` / `memory_fs`, not here.
+    /// metadata/archived), ADR-0038. A different bounded context from the content
+    /// stores above: it lives beside its siblings (`McpStore`, `WebhookStore`) in
+    /// `awaken-config-resolver` and is injected by the composition root with the durable
+    /// admin backend so a store's identity survives a restart and the admin assistant
+    /// can enumerate stores. Defaults to a process-lifetime in-memory registry.
     pub(crate) memory_registry: Arc<dyn awaken_config_resolver::MemoryStoreRegistry>,
     /// An optional tool gate that replaces the default authorization gate on every
     /// thread's runtime. Used to exercise scheduled actions (ADR-0020, slice E): a
@@ -248,16 +227,11 @@ pub struct SharedHost {
     /// (event-driven completion), so the durable foreground path never pays a poll
     /// interval. Injected into the pool as its `CompletionSink`.
     pub(crate) completion: Arc<CompletionRegistry>,
-    /// When set (ADR-0044), every run's tool calls are routed through this remote
-    /// hand instead of the in-process registry. The host owns no placement policy:
-    /// a caller connects a hand and injects the executor via [`with_remote_hand`].
-    /// `None` is the in-process default (`LocalToolExecutor`), untouched.
-    pub(crate) remote_hand: Option<Arc<dyn ToolExecutor>>,
-    /// Hand placement (ADR-0046): the per-run provider that selects a run's
-    /// `ToolExecutor`. `None` (default) leaves `remote_hand`/in-process behavior
-    /// unchanged; when set, a run the provider places (returns `Some`) takes
-    /// precedence over the session-wide `remote_hand`.
-    pub(crate) tool_executor_provider: Option<Arc<dyn ToolExecutorProvider>>,
+    /// Where this host's runs execute tool calls (ADR-0044/0046): the session-wide
+    /// remote hand + the per-run placement provider, sealed behind one type owning
+    /// their precedence (provider placement overrides the hand). Cloned into each
+    /// `SessionCtx`. See [`crate::hand_placement`].
+    pub(crate) hand_placement: crate::hand_placement::HandPlacement,
     /// Subject-tagged captured-content sink (ADR-0050): when set, a run whose
     /// capture level permits content writes it here (attributed to the
     /// `AWAKEN_CONTENT_SUBJECT` on the open surface). `None` = spans only.
