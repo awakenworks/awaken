@@ -268,20 +268,23 @@ async fn deny_egress_blocks_a_host_loopback_listener_deterministically() {
     drop(listener);
 }
 
-/// CHARACTERIZATION — the Workdir bash jail is *lexical*, not enforced. `jail_args`
-/// only prefixes `cd '<root>' && <cmd>`; it does not rebase the paths inside a bash
-/// command, so the command can `cd /` (or `cd ..`) and operate entirely outside the
-/// sandbox root. This documents the current behavior; the path-tools (`read`/`write`/…)
-/// ARE jailed (proven above) — only `bash` is escapable, because it runs an opaque shell.
+/// CONTRACT (by design) — the Workdir tier's bash `cwd` is a *lexical convenience*, not
+/// a security boundary. `jail_args` prefixes `cd '<root>' && <cmd>` to set the working
+/// directory; it deliberately does NOT rebase paths inside an opaque shell command, so a
+/// `cd /` / `cd ..` reaches host paths above the root. That is intentional: the crate doc
+/// states a launched process is "**not** OS-confined (a lexical jail cannot confine an
+/// opaque agent)", which is exactly why `prepare_environment` REFUSES a `Namespace` /
+/// `Container` (opaque-agent) workload on this tier and routes it to the OS-enforced
+/// Bwrap / container tier. The Workdir tier is for trusted, single-machine execution (CI,
+/// dev, the runtime's own in-process tools), where the path-tools (`read`/`write`/…) are
+/// still jailed (proven above) but a trusted `bash` is the documented ceiling. The
+/// namespace tier — not this lexical `cwd` — is the enforcement boundary.
 ///
-// KNOWN BUG (adjudicate): the Workdir tier's `deny_egress = false` bash tool does not
-// confine the command to the root — a `cd /` / `cd ..` reaches host paths above the
-// jail. This is why an OPAQUE agent is refused on the Workdir tier and must use the
-// Namespace/Container tier (OS-enforced); a trusted single-machine `bash` is the
-// documented ceiling here. Enforcing it would require running every Workdir bash under
-// a namespace (as the `deny_egress = true` path already does via `bwrap`).
+/// This test asserts that DOCUMENTED contract: bash escapes the lexical `cwd` (so no one
+/// mistakes it for a sandbox), while an opaque agent is confined only by the namespace
+/// tier.
 #[tokio::test]
-async fn workdir_bash_cd_escapes_the_lexical_jail() {
+async fn workdir_bash_cwd_is_a_lexical_convenience_not_a_security_boundary() {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path();
     // A secret ABOVE the sandbox root, on the host — never inside any jail.
@@ -303,12 +306,15 @@ async fn workdir_bash_cd_escapes_the_lexical_jail() {
     assert_eq!(
         pwd.content.trim(),
         "/",
-        "cd / escapes the lexical Workdir jail (KNOWN BUG): {}",
+        "cd / escapes the lexical Workdir cwd (by design — it is a convenience, not a \
+         boundary; the namespace tier is the enforcement seam): {}",
         pwd.content
     );
 
-    // Worse: a relative climb reads a host file ABOVE the root — a real boundary escape
-    // the path-tools' fail-closed `..` rejection does NOT cover for bash.
+    // A relative climb likewise reads a host file ABOVE the root — the lexical `cwd` does
+    // not (and by contract need not) confine an opaque shell the way the path-tools'
+    // fail-closed `..` rejection confines `read`/`write`. Confinement of an opaque agent
+    // is the namespace tier's job, which is why this tier refuses one.
     let leak = invoke(
         &tools,
         "bash",
@@ -318,7 +324,8 @@ async fn workdir_bash_cd_escapes_the_lexical_jail() {
     .unwrap();
     assert!(
         leak.content.contains("ABOVE-ROOT-SECRET"),
-        "bash `cd ..`/relative path reads above the root (KNOWN BUG): {}",
+        "bash relative path reads above the root (by design — a trusted, non-confining \
+         tier): {}",
         leak.content
     );
 

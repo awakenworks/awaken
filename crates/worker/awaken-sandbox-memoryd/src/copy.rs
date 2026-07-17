@@ -49,18 +49,26 @@ pub async fn materialize(fs: &dyn MemoryFs, store: &str, root: &Path) -> Result<
 }
 
 /// Walk `root` and fold each file back into `store`: create a new memory, CAS-update
-/// a changed one against its live sha, and skip an unchanged one. Returns the number
-/// of memories created or updated. A file whose path the store rejects (non-UTF-8
-/// name, `..`) is skipped rather than failing the whole harvest.
+/// a changed one against its live sha, skip an unchanged one, and DELETE a memory whose
+/// file the agent removed from the copy dir. Returns the number of memories created,
+/// updated, or deleted. A file whose path the store rejects (non-UTF-8 name, `..`) is
+/// skipped rather than failing the whole harvest.
+///
+/// The deletion pass gives the no-FUSE copy tier the same durable outcome as the live
+/// FUSE tier's `unlink` → `delete_by_path`: a memory materialized out to the copy dir
+/// but no longer present there is deleted from the store, so "rm note.md" sticks on
+/// both realization tiers.
 pub async fn harvest(fs: &dyn MemoryFs, store: &str, root: &Path) -> Result<usize, FuseError> {
     let mut files = Vec::new();
     collect_files(root, root, &mut files);
+    let present: std::collections::HashSet<&str> =
+        files.iter().map(|(path, _)| path.as_str()).collect();
     let mut changed = 0;
-    for (path, host_path) in files {
-        let Ok(content) = std::fs::read_to_string(&host_path) else {
+    for (path, host_path) in &files {
+        let Ok(content) = std::fs::read_to_string(host_path) else {
             continue; // non-UTF-8 memory bytes are not our model — skip
         };
-        match fs.get_by_path(store, &path).await? {
+        match fs.get_by_path(store, path).await? {
             Some(current) => {
                 if current.content.as_deref() != Some(content.as_str()) {
                     // CAS against the live head; a single-agent harvest never races.
@@ -71,10 +79,18 @@ pub async fn harvest(fs: &dyn MemoryFs, store: &str, root: &Path) -> Result<usiz
             }
             None => {
                 // A path the store rejects (e.g. an odd filename) is skipped.
-                if fs.create(store, &path, &content).await.is_ok() {
+                if fs.create(store, path, &content).await.is_ok() {
                     changed += 1;
                 }
             }
+        }
+    }
+    // Deletion pass: a memory the agent removed from the materialized copy dir is
+    // deleted from the store, matching the FUSE `unlink` primitive the live tier uses.
+    for entry in fs.list(store, "/").await? {
+        if !present.contains(entry.path.as_str()) {
+            fs.delete_by_path(store, &entry.path).await?;
+            changed += 1;
         }
     }
     Ok(changed)
@@ -209,15 +225,11 @@ mod tests {
     }
 
     #[test]
-    fn harvest_never_deletes_a_removed_file_diverging_from_fuse_unlink() {
-        // KNOWN BUG (adjudicate): the copy/harvest fallback folds files back with
-        // create + CAS-update ONLY — it never deletes. A file the agent removes inside
-        // the materialized copy dir is left ALIVE in the store after harvest, whereas the
-        // live FUSE path deletes it (`unlink` → `delete_by_path`). So the same agent
-        // action ("rm note.md") has DIFFERENT durable outcomes across the two realization
-        // tiers: on the no-FUSE tier (bwrap / CI / macOS) a deletion silently does not
-        // stick. Pinning the current copy-path behavior and contrasting it with the FUSE
-        // delete primitive the live tier uses.
+    fn harvest_deletes_a_removed_file_matching_fuse_unlink() {
+        // The copy/harvest fallback deletes a memory whose file the agent removed from
+        // the materialized copy dir, giving the same durable outcome as the live FUSE
+        // path (`unlink` → `delete_by_path`). So "rm note.md" sticks identically across
+        // both realization tiers (FUSE and the no-FUSE bwrap / CI / macOS copy tier).
         let rt = rt();
         let fs = Arc::new(InMemoryFs::new());
         rt.block_on(fs.create("s", "/keep.md", "x")).unwrap();
@@ -229,24 +241,23 @@ mod tests {
         std::fs::remove_file(dir.join("gone.md")).unwrap();
         assert_eq!(
             rt.block_on(harvest(&*fs, "s", &dir)).unwrap(),
-            0,
-            "harvest reports no create/update (it walks only files still present)"
+            1,
+            "harvest folds the removed file back as one deletion"
         );
 
-        // Divergence: the removed file is STILL in the store — harvest cannot delete…
-        assert!(
-            rt.block_on(fs.get_by_path("s", "/gone.md"))
-                .unwrap()
-                .is_some(),
-            "copy harvest leaves a deleted file alive in the store"
-        );
-        // …whereas the FUSE `unlink` primitive the live tier uses DOES remove it.
-        rt.block_on(fs.delete_by_path("s", "/gone.md")).unwrap();
+        // Parity with FUSE unlink: the removed file is gone from the store…
         assert!(
             rt.block_on(fs.get_by_path("s", "/gone.md"))
                 .unwrap()
                 .is_none(),
-            "FUSE unlink (delete_by_path) removes it — the copy path does not"
+            "copy harvest deletes a removed file, matching FUSE unlink"
+        );
+        // …and an untouched memory is left intact.
+        assert!(
+            rt.block_on(fs.get_by_path("s", "/keep.md"))
+                .unwrap()
+                .is_some(),
+            "an unremoved memory survives the harvest"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

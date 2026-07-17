@@ -479,17 +479,15 @@ mod sqlite {
         );
     }
 
-    /// KNOWN BUG (adjudicate): `resolve_offering`'s first-match is NOT identical
-    /// across backends for the SAME writes. The in-memory repo lists offerings in
-    /// Vec-push (insertion) order; the durable backends reload them ORDER BY
-    /// `(model_id, protocol_endpoint_id)`. Inserting two offerings for one
-    /// model+dialect in non-sorted order (`ep-z` then `ep-a`) therefore resolves to a
-    /// DIFFERENT endpoint per backend — the durable sqlite/postgres pair agree with
-    /// each other (both sorted), but the in-mem repo diverges. Only the sqlite==pg
-    /// guarantee is documented in src; the in-mem↔durable disagreement is unenforced.
-    /// This test PINS the current divergent behavior; a future convergence flips it.
+    /// `resolve_offering`'s first-match is now IDENTICAL across backends for the
+    /// same writes. The in-memory repo keeps offerings in `(model_id,
+    /// protocol_endpoint_id)` order — the same order the durable backends reload
+    /// them (`ORDER BY model_id, protocol_endpoint_id`). Inserting two offerings for
+    /// one model+dialect in non-sorted order (`ep-z` then `ep-a`) therefore resolves
+    /// to the SAME endpoint on every backend (the sorted-first `ep-a`), closing the
+    /// in-mem↔durable divergence that used to make first-match order-dependent.
     #[tokio::test]
-    async fn first_match_diverges_between_in_memory_and_durable_backend() {
+    async fn first_match_agrees_between_in_memory_and_durable_backend() {
         async fn setup(repo: &dyn CatalogRepo) {
             repo.put_provider(provider("anthropic")).await.unwrap();
             repo.put_endpoint(endpoint("ep-a", "anthropic", ApiDialect::AnthropicMessages))
@@ -530,11 +528,11 @@ mod sqlite {
             .0
             .clone();
 
-        assert_eq!(mem_first, "ep-z", "in-memory resolves to insertion-first");
+        assert_eq!(mem_first, "ep-a", "in-memory now resolves to sorted-first");
         assert_eq!(sql_first, "ep-a", "durable resolves to sorted-first");
-        assert_ne!(
+        assert_eq!(
             mem_first, sql_first,
-            "KNOWN BUG: backends disagree on resolve_offering first-match"
+            "backends now agree on resolve_offering first-match"
         );
     }
 
