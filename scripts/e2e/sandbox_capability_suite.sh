@@ -95,5 +95,18 @@ else
   skip "/dev/fuse or fusermount unavailable (copy fallback path is the alternative)"
 fi
 
+# ── Optional: line-coverage of the pure-Rust sandbox-change surface (COVERAGE=1) ─
+# The container/k8s/FUSE layers are integration-tested against real substrates
+# (measured by their own runs); this reports the lib-testable dispose surface.
+if [ "${COVERAGE:-0}" = 1 ] && command -v cargo-llvm-cov >/dev/null; then
+  step "line coverage — dispose surface (awaken-protocol-managed + awaken-runtime-host)"
+  CARGO_TARGET_DIR="${COV_DIR:-/tmp/awaken-sbx-cov}" \
+    cargo llvm-cov --lib -p awaken-protocol-managed -p awaken-runtime-host \
+      --summary-only 2>/dev/null | tail -1
+  echo "  (uncovered in the change surface: state/sessions.rs child-thread teardown"
+  echo "   loop body — no sub-agent child threads in deterministic unit tests; the"
+  echo "   {id}:thread:{n} id scheme is validated by the events projection.)"
+fi
+
 printf '\n=== SUMMARY: %d passed, %d skipped, %d failed ===\n' "$PASS" "$SKIP" "$FAIL"
 [ "$FAIL" -eq 0 ]
