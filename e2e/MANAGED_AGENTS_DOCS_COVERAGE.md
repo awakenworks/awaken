@@ -115,6 +115,47 @@ The goal's cleanup clause ("is the uncovered code redundant/duplicate — if so,
   `awaken-work-store`, `awaken-session-store`, `awaken-session-contract`, and
   `awaken-managed-routers` are now their own leaves.
 
+## Real-LLM validation (live KIMI)
+
+The `real` server mode backs the managed session with a live model (`GenaiExecutor`,
+`ANTHROPIC_API_KEY/BASE_URL/MODEL`). Validated against the KIMI Anthropic-dialect
+endpoint (`https://api.kimi.com/coding/v1/`, `kimi-k2-0711-preview`):
+
+| Doc behavior | Suite | Result |
+|---|---|---|
+| Session drives a real model return (`user.message` → `agent.message` → idle) | `managed_real_e2e` | ✅ |
+| AI-SDK adapter over a real model | `ai_sdk_real_e2e` | ✅ |
+| config → resolve → run with a real model | `managed_resolved_real_e2e` | ✅ |
+| Live credential validation | `management_validate_e2e` | ✅ |
+| Real file read + artifact write/retrieve + memory write-back cross-session | `managed_resources_e2e` | ✅ |
+| **Built-in tool loop with a real model** (`agent.tool_use{bash}` → `requires_action` → `user.tool_confirmation` → sandbox exec → `agent.tool_result` → answer → `end_turn`) | `managed_real_tool_loop_e2e` (new) | ✅ |
+| **Multi-turn context carryover** across a persistent session (real recall of turn-1 facts) | `managed_real_multiturn_e2e` (new) | ✅ |
+
+Registered in `package.json` `test:real`. The `when-online` smoke is **not** applicable to
+KIMI — it targets the real Anthropic **Managed Agents** API (`/v1/sessions`), which KIMI
+does not expose (KIMI is a plain Anthropic-dialect `/messages` endpoint; the smoke 404s);
+it needs a genuine Anthropic Managed key.
+
+### Finding: `agent.thinking` is dropped even when the provider emits reasoning
+
+Real-LLM testing **disproves** the prior deferral premise ("providers emit no
+ReasoningDelta"): KIMI's raw `/messages` returns `thinking` content blocks, yet awaken's
+managed session surfaces **no** `agent.thinking` event (the answer is still correct). Root
+cause, verified in source:
+
+1. `awaken-provider-genai/src/lib.rs::map_assistant_output` keeps only `ContentPart::Text`
+   and `ContentPart::ToolCall` — `_ => None` drops any reasoning part.
+2. The request never sets genai's `ChatOptions.capture_reasoning_content = true`.
+3. `awaken-runtime-contract` has no Thinking/Reasoning `ContentBlock` variant, so there is
+   nowhere in the neutral vocabulary to carry reasoning.
+
+This is a real gap but a **multi-layer feature**, not a bug-fix: enabling
+`capture_reasoning_content` + mapping the reasoning part + adding a contract Thinking block
++ engine Fact projection + the (already-present placeholder) `agent.thinking` `OutboundKind`
+emission + a golden rebless. It touches a base contract and the conformance golden gate, so
+it is scoped as a focused follow-up rather than rushed. `agent.thinking` remains correctly a
+▲ (implemented-as-type, not emitted) — now with a provider that proves it can be sourced.
+
 ## Coverage tracking
 
 - **Structural conformance**: `npm run test:conformance` — event catalog + `MANAGED_BETA` +
