@@ -60,10 +60,9 @@ spec:
         - name: hand
           image: awaken-topology:latest
           imagePullPolicy: Never
-          env:
-            # Hand over NATS: dial the broker (retrying until it's up) and serve
-            # the executor channel on the shared subject.
-            - { name: AWAKEN_HAND_NATS, value: "nats://nats:4222" }
+          # Hand over NATS: the execution-plane hand dials the broker (retrying until
+          # it's up) and serves the executor channel on the shared subject.
+          command: ["/usr/local/bin/awaken-sandbox", "hand", "--nats", "nats://nats:4222"]
 ---
 apiVersion: v1
 kind: Service
