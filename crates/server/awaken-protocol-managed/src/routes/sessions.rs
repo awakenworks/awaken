@@ -210,8 +210,11 @@ pub(crate) fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse
 /// a cross-cutting aspect: the core session never stores tenancy, but the edge
 /// hands the resolved workspace to `create_session` so an edge projection
 /// (webhooks/usage) can stamp it. Absent when the edge resolved no workspace.
-#[derive(Debug, Clone)]
-pub struct WorkspaceScope(pub String);
+///
+/// Re-exported from [`awaken_tenancy`] — its orthogonal home (tenancy is an edge
+/// aspect, ADR-0051, decoupled from the session-runtime contract) — so existing
+/// `crate::…::WorkspaceScope` paths keep working.
+pub use awaken_tenancy::WorkspaceScope;
 
 /// The Managed Agents beta this wire surface requires to start a session (mirrors
 /// `awaken_managed_bridge::MANAGED_BETA`).
