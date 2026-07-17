@@ -325,3 +325,67 @@ async fn file_bind_is_readable_and_read_only_is_enforced_in_a_real_container() {
     // The host file is untouched by the confined write attempt.
     assert_eq!(std::fs::read(&host_file).unwrap(), b"seed-bytes");
 }
+
+/// G5: a memory cap the adapter set (`CgroupCaps::from_limits` -> bollard
+/// `HostConfig.memory` + swap pinned to it) is ENFORCED BY THE KERNEL, not merely
+/// planned. `dd` is the container's main process (process-as-container), so a cgroup
+/// OOM-kill surfaces as its exit code (137 = 128+SIGKILL). Writing 32 MiB to tmpfs
+/// `/dev/shm` (a memory cgroup accounts tmpfs pages) blows a 16 MiB cap but fits the
+/// default 64 MiB shm, so the SAME write under no cap completes (exit 0). The
+/// difference is the cgroup, not the workload — this is what a dropped/ignored limit
+/// (fail-open) would miss, the memory analogue of the egress `deny_egress` probe.
+#[tokio::test]
+async fn a_memory_cap_oom_kills_an_over_allocating_container() {
+    let Some((provider, rt)) = setup().await else {
+        return;
+    };
+
+    let hog = |scope: &str, limits: pc::ResourceLimits| pc::SandboxSpec {
+        scope: scope.into(),
+        isolation: pc::IsolationClass::Container,
+        mounts: Vec::new(),
+        env: Vec::new(),
+        network: pc::NetworkPolicy::None,
+        outputs_path: "/mnt/session/outputs".into(),
+        limits,
+        lease_ttl_secs: None,
+        extra: Some(serde_json::json!({
+            "command": ["dd", "if=/dev/zero", "of=/dev/shm/x", "bs=1M", "count=32"],
+        })),
+    };
+
+    // Capped at 16 MiB: the 32 MiB allocation blows the cgroup -> OOM-kill (137).
+    let capped = run_to_exit(
+        &provider,
+        &rt,
+        "mem-capped",
+        &hog(
+            "mem-capped",
+            pc::ResourceLimits {
+                memory_bytes: Some(16 * 1024 * 1024),
+                ..Default::default()
+            },
+        ),
+    )
+    .await;
+    assert_eq!(
+        capped,
+        Some(137),
+        "a memory-capped over-allocator is OOM-killed (exit 137); got {capped:?}"
+    );
+
+    // Uncapped: the identical allocation completes (exit 0) — proving the kill above
+    // was the cgroup, not the workload.
+    let uncapped = run_to_exit(
+        &provider,
+        &rt,
+        "mem-uncapped",
+        &hog("mem-uncapped", pc::ResourceLimits::default()),
+    )
+    .await;
+    assert_eq!(
+        uncapped,
+        Some(0),
+        "the same allocation without a cap completes (exit 0); got {uncapped:?}"
+    );
+}
