@@ -21,7 +21,7 @@ pub struct PermissionContext {
     pub arguments: serde_json::Value,
 }
 
-/// Typed authorization decision. `Ask` parks the call for a human/out-of-band
+/// Typed authorization decision. `Ask` awaits the call for a human/out-of-band
 /// approval correlated by `ticket_id`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PermissionDecision {
@@ -48,7 +48,7 @@ pub enum GateOutcome {
     SetResult(ToolOutput),
     /// Suspend the run pending an out-of-band decision (ticket correlation).
     Suspend { ticket_id: String },
-    /// Defer this call as a committed `ScheduledAction` (ADR-0020): the run parks
+    /// Defer this call as a committed `ScheduledAction` (ADR-0020): the run awaits
     /// and the action is performed later (in-process or by recovery), not decided
     /// by a human. `correlation_id` keys the committed request and its resume.
     /// `action_kind`, when set, names a plugin-owned scheduled-action kind that

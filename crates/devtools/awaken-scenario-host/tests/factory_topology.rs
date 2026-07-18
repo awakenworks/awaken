@@ -11,7 +11,7 @@
 //!
 //! The seam exercised is the AI SDK adapter (`POST /v1/ai-sdk/chat`), which every
 //! `mount`-based factory exposes and which drives one real turn against the host's
-//! model — so the assistant text (or the tool the turn parks on) is the observable
+//! model — so the assistant text (or the tool the turn awaits on) is the observable
 //! that proves the factory wired the intended model/host.
 
 use awaken_scenario_host::{
@@ -107,12 +107,12 @@ async fn vision_factory_wires_the_media_reporting_model() {
 async fn custom_factory_exposes_the_client_executed_submit_answer_tool() {
     // The custom-tool factory declares `submit_answer` as a client-executed tool and
     // drives the `CustomToolModel`, which calls it on the first turn. The turn must
-    // therefore PARK on a `submit_answer` tool call (surfaced authoritatively), not
+    // therefore AWAIT on a `submit_answer` tool call (surfaced authoritatively), not
     // answer with text — proving `with_client_tools` reached the run.
     let frames = drive_turn(build_custom_router(), "solve it").await;
     assert!(
         tool_names(&frames).iter().any(|n| n == "submit_answer"),
-        "the turn parked on the client-executed submit_answer tool: {frames:?}"
+        "the turn awaiting on the client-executed submit_answer tool: {frames:?}"
     );
 }
 

@@ -1,12 +1,12 @@
 // Durable cross-restart recovery across a real process restart, via the official
-// Anthropic TS SDK. A mutating tool parks for approval; its waiting ticket +
+// Anthropic TS SDK. A mutating tool awaits for approval; its waiting ticket +
 // transcript commit to a per-thread durable store under AWAKEN_STORAGE_DIR (SQLite
 // by default, the filesystem append-log with AWAKEN_STORE=fs). We KILL the server
 // process and start a fresh one over the same storage directory, then approve on
 // the SAME session with a freshly connected client. The rebuilt process has no
 // in-memory session state, so the managed adapter rehydrates the session from
 // committed truth (ADR-0039 lazy session rehydration) and the host recovers the
-// parked run from the store — the run resumes and completes end-to-end. This
+// awaiting run from the store — the run resumes and completes end-to-end. This
 // exercises the durable commit + hydrate + fact-authority read path through HTTP.
 //
 // Run: (from e2e/)  node managed_restart_e2e.mjs   (add AWAKEN_STORE=fs for fs)
@@ -46,7 +46,7 @@ async function main() {
   fs.rmSync(STORE_DIR, { recursive: true, force: true });
   fs.mkdirSync(STORE_DIR, { recursive: true });
 
-  // ---- server A: start a run that parks on a tool confirmation ----
+  // ---- server A: start a run that awaits on a tool confirmation ----
   const upstream = await startUpstream('probe');
   const a = spawnServer('real', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, ...realServerEnv('probe', upstream) });
   await waitForPort(PORT);
@@ -63,15 +63,15 @@ async function main() {
 
   const events = await listEvents(session.id);
   const toolUse = events.find((e) => e.type === 'agent.tool_use');
-  assert.ok(toolUse, 'run parked on a tool_use before restart');
+  assert.ok(toolUse, 'run awaiting on a tool_use before restart');
   assert.equal(
     events.find((e) => e.type === 'session.status_idle').stop_reason.type,
     'requires_action',
-    'parked awaiting confirmation',
+    'awaiting awaiting confirmation',
   );
   const dbsBefore = durableFiles(STORE_DIR);
-  assert.ok(dbsBefore.length >= 1, 'the parked run committed to a durable per-thread store');
-  pass(`run parked; durable store on disk: ${dbsBefore.map((f) => f.replace(`${STORE_DIR}/`, '')).join(', ')}`);
+  assert.ok(dbsBefore.length >= 1, 'the awaiting run committed to a durable per-thread store');
+  pass(`run awaiting; durable store on disk: ${dbsBefore.map((f) => f.replace(`${STORE_DIR}/`, '')).join(', ')}`);
 
   // ---- kill A, start a fresh server B over the SAME storage directory ----
   await stopServer(a.server);
@@ -87,7 +87,7 @@ async function main() {
   pass('committed truth persisted on disk across a real process restart');
 
   // Approve on the fresh process: the adapter rehydrates the session from durable
-  // truth (ADR-0039) and the host recovers the parked run from the SQLite file, so
+  // truth (ADR-0039) and the host recovers the awaiting run from the SQLite file, so
   // the run resumes and completes end-to-end — no in-memory session state needed.
   try {
     await client.beta.sessions.events.send(session.id, {
@@ -96,13 +96,13 @@ async function main() {
     });
     const events = await listEvents(session.id);
     const lastIdle = [...events].reverse().find((e) => e.type === 'session.status_idle');
-    assert.equal(lastIdle.stop_reason.type, 'end_turn', 'parked run resumed and completed after restart');
+    assert.equal(lastIdle.stop_reason.type, 'end_turn', 'awaiting run resumed and completed after restart');
     const results = events.filter((e) => e.type === 'agent.tool_result');
     assert.ok(
       JSON.stringify(results.at(-1)?.content ?? '').includes('SURVIVE-RESTART'),
       'read-back reflects the pre-restart write — durable state resumed on a fresh process',
     );
-    pass('parked run resumed from durable truth on a fresh process and completed');
+    pass('awaiting run resumed from durable truth on a fresh process and completed');
     console.log('E2E PASS: durable cross-restart recovery via TS SDK.');
   } finally {
     await stopServer(b.server);

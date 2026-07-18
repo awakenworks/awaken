@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime::Runtime;
@@ -125,11 +125,11 @@ async fn a_fresh_turn_continues_the_thread_with_a_reader() {
     let ctx = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_reader(reader.clone());
-    let phase = runtime
+    let state = runtime
         .execute(turn("t1", "My name is Sam."), ctx)
         .await
         .unwrap();
-    assert!(matches!(phase, Phase::Ended(_)));
+    assert!(matches!(state, RunState::Ended(_)));
 
     // Turn 2: a fresh run on the same thread; the runtime loads turn 1 from the
     // committed history, so the model sees both user turns.

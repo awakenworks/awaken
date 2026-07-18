@@ -7,30 +7,27 @@
 //! after `commit()` returns `Ok`; no partial state observable during in-flight
 //! or failed commits.
 
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::awaiting::{AwaitReason, ResumeTicket};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::agent::waiting::{WaitingReason, WaitingTicket};
-use awaken_agent_contract::thread::commit::RunFact;
+use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 
-fn ended(run: &str) -> RunFact {
-    RunFact {
-        run_id: RunId(run.to_string()),
-        phase: Phase::Ended(EndCause::NaturalEnd),
-    }
+fn ended(run: &str) -> RunDisposition {
+    RunDisposition::ended(RunId(run.to_string()), EndCause::NaturalEnd)
 }
 
-fn ticket(run: &str, thread: &str) -> WaitingTicket {
-    WaitingTicket {
+fn ticket(run: &str, thread: &str) -> ResumeTicket {
+    ResumeTicket {
         correlation_id: "corr-1".to_string(),
         run_id: RunId(run.to_string()),
         thread_id: ThreadId(thread.to_string()),
         snapshot_id: "snap-1".to_string(),
         catalog_fingerprint: "fp-1".to_string(),
-        reason: WaitingReason::ToolPermission,
+        reason: AwaitReason::ToolPermission,
         call_id: Some("call-1".to_string()),
         pending_tool: None,
         deadline_ms: None,
@@ -61,17 +58,16 @@ async fn g13_projection_visible_only_after_commit_returns_ok() {
     store
         .commit(ThreadCommit {
             thread_id: ThreadId("thread-1".to_string()),
-            run_fact: ended("run-1"),
+            run: ended("run-1"),
             messages: vec![],
             state: vec![],
             events: vec![],
-            waiting: None,
         })
         .await
         .expect("commit ok");
 
     let record = store.get(&run).expect("projection visible after commit");
-    assert_eq!(record.phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(record.state, RunState::Ended(EndCause::NaturalEnd));
 }
 
 // G13: a rejected commit writes nothing — the projection stays empty after a
@@ -85,11 +81,10 @@ async fn g13_failed_commit_leaves_no_partial_state() {
     let err = store
         .commit(ThreadCommit {
             thread_id: ThreadId(String::new()),
-            run_fact: ended("run-1"),
+            run: ended("run-1"),
             messages: vec![],
             state: vec![],
             events: vec![],
-            waiting: None,
         })
         .await;
     assert!(err.is_err(), "invalid plan must be rejected");
@@ -111,11 +106,10 @@ async fn g13_failed_commit_leaves_no_partial_state() {
 fn g1_validate_rejects_empty_thread_id() {
     let commit = ThreadCommit {
         thread_id: ThreadId(String::new()),
-        run_fact: ended("run-1"),
+        run: ended("run-1"),
         messages: vec![],
         state: vec![],
         events: vec![],
-        waiting: None,
     };
     assert!(
         commit.validate().is_err(),
@@ -128,14 +122,10 @@ fn g1_validate_rejects_empty_thread_id() {
 fn g1_validate_rejects_empty_run_id() {
     let commit = ThreadCommit {
         thread_id: ThreadId("thread-1".to_string()),
-        run_fact: RunFact {
-            run_id: RunId(String::new()),
-            phase: Phase::Ended(EndCause::NaturalEnd),
-        },
+        run: RunDisposition::ended(RunId(String::new()), EndCause::NaturalEnd),
         messages: vec![],
         state: vec![],
         events: vec![],
-        waiting: None,
     };
     assert!(
         commit.validate().is_err(),
@@ -143,44 +133,37 @@ fn g1_validate_rejects_empty_run_id() {
     );
 }
 
-// G1: `ThreadCommit::validate` rejects a waiting ticket whose `run_id` does
-// not match the commit's own `run_id` — a mismatched ticket would park the
+// G1: `ThreadCommit::validate` rejects an awaiting ticket whose `run_id` does
+// not match the commit's own `run_id` — a mismatched ticket would await the
 // wrong run or leave an orphaned ticket.
 #[test]
-fn g1_validate_rejects_mismatched_waiting_ticket_run_id() {
-    let commit = ThreadCommit {
-        thread_id: ThreadId("thread-1".to_string()),
-        run_fact: RunFact {
-            run_id: RunId("run-1".to_string()),
-            phase: Phase::Waiting,
-        },
-        messages: vec![],
-        state: vec![],
-        events: vec![],
-        waiting: Some(ticket("run-2", "thread-1")),
-    };
+fn g1_validate_rejects_mismatched_resume_ticket_run_id() {
+    let wire = serde_json::json!({
+        "thread_id": "thread-1",
+        "run_fact": { "run_id": "run-1", "phase": "Awaiting" },
+        "messages": [],
+        "state": [],
+        "events": [],
+        "waiting": ticket("run-2", "thread-1"),
+    });
     assert!(
-        commit.validate().is_err(),
-        "mismatched waiting ticket run_id must fail validation"
+        serde_json::from_value::<ThreadCommit>(wire).is_err(),
+        "legacy input with a mismatched ticket must fail deserialization"
     );
 }
 
-// G1: a well-formed commit plan with a consistent waiting ticket passes validate.
+// G1: a well-formed commit plan with a consistent awaiting ticket passes validate.
 #[test]
-fn g1_validate_accepts_consistent_waiting_ticket() {
+fn g1_validate_accepts_consistent_resume_ticket() {
     let commit = ThreadCommit {
         thread_id: ThreadId("thread-1".to_string()),
-        run_fact: RunFact {
-            run_id: RunId("run-1".to_string()),
-            phase: Phase::Waiting,
-        },
+        run: RunDisposition::awaiting(ticket("run-1", "thread-1")),
         messages: vec![],
         state: vec![],
         events: vec![],
-        waiting: Some(ticket("run-1", "thread-1")),
     };
     assert!(
         commit.validate().is_ok(),
-        "consistent waiting ticket must pass validation"
+        "consistent awaiting ticket must pass validation"
     );
 }

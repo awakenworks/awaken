@@ -14,7 +14,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Failure, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Failure, RunState};
+use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_protocol_a2a::client::send_message;
 use awaken_protocol_a2a::{Task, TaskState};
 use awaken_runtime_contract::activation::RunActivation;
@@ -87,10 +88,10 @@ fn task_reply(task: &Task) -> String {
     task.history.last().map(|m| m.text()).unwrap_or_default()
 }
 
-/// The run's terminus derived from the returned task's lifecycle state. Do not
+/// The run's end derived from the returned task's lifecycle state. Do not
 /// collapse every returned task to a natural end: a `failed` remote task is an
 /// execution fault and a `canceled` one is a cancellation, while a still-`working`
-/// or `*-required` task is non-terminal and this executor neither polls nor parks
+/// or `*-required` task is non-terminal and this executor neither polls nor awaits
 /// (`Wait::None`), so its outcome is unknown and must never be projected as success
 /// (G26).
 fn end_cause_of(state: &TaskState) -> EndCause {
@@ -111,7 +112,7 @@ fn end_cause_of(state: &TaskState) -> EndCause {
 impl RunExecutor for A2aRunExecutor {
     fn capabilities(&self) -> ExecutorCapabilities {
         // A single request/await against the remote endpoint: no in-flight abort
-        // and no park-and-resume are wired, so both axes are fail-closed off.
+        // and no await-and-resume are wired, so both axes are fail-closed off.
         ExecutorCapabilities {
             cancellation: Cancellation::None,
             wait: Wait::None,
@@ -122,7 +123,7 @@ impl RunExecutor for A2aRunExecutor {
         &self,
         activation: RunActivation,
         context: RuntimeRunContext,
-    ) -> Result<Phase> {
+    ) -> Result<RunState> {
         let backend =
             Backend::from_ref(&activation.snapshot.resolved_spec.model_binding.backend_ref);
         let Some(endpoint) = backend.remote_endpoint() else {
@@ -135,7 +136,7 @@ impl RunExecutor for A2aRunExecutor {
                     Role::Assistant,
                     "backend is not an A2A endpoint".to_string(),
                 )],
-                Phase::Ended(EndCause::Error(Failure::Inference {
+                RunState::Ended(EndCause::Error(Failure::Inference {
                     code: "a2a_config".to_string(),
                     message: "backend is not a2a".to_string(),
                 })),
@@ -162,8 +163,8 @@ impl RunExecutor for A2aRunExecutor {
                     Role::Assistant,
                     task_reply(&task),
                 )];
-                let phase = Phase::Ended(end_cause_of(&task.status.state));
-                finish(&context, &activation, messages, phase).await
+                let state = RunState::Ended(end_cause_of(&task.status.state));
+                finish(&context, &activation, messages, state).await
             }
             Err(err) => {
                 let messages = vec![Message::text(
@@ -175,7 +176,7 @@ impl RunExecutor for A2aRunExecutor {
                     &context,
                     &activation,
                     messages,
-                    Phase::Ended(EndCause::Error(Failure::Inference {
+                    RunState::Ended(EndCause::Error(Failure::Inference {
                         code: "a2a_error".to_string(),
                         message: err.to_string(),
                     })),
@@ -186,27 +187,34 @@ impl RunExecutor for A2aRunExecutor {
     }
 }
 
-/// Commit the turn's messages + terminal phase through the one boundary (G13).
+/// Commit the turn's messages + terminal state through the one boundary (G13).
 async fn finish(
     context: &RuntimeRunContext,
     activation: &RunActivation,
     messages: Vec<Message>,
-    phase: Phase,
-) -> Result<Phase> {
+    state: RunState,
+) -> Result<RunState> {
     if let Some(coordinator) = &context.commit {
+        let disposition = match state.clone() {
+            RunState::Ended(cause) => RunDisposition::ended(activation.run_id.clone(), cause),
+            RunState::Running => RunDisposition::running(activation.run_id.clone()),
+            RunState::Awaiting => {
+                return Err(Error::Commit(
+                    "A2A executor cannot await without a resume ticket".to_string(),
+                ));
+            }
+        };
         awaken_agent_contract::thread::commit::commit_run(
             coordinator.as_ref(),
             &activation.thread_id,
-            &activation.run_id,
+            disposition,
             messages,
-            phase.clone(),
-            None,
             Vec::new(),
         )
         .await
         .map_err(|e| Error::Commit(e.to_string()))?;
     }
-    Ok(phase)
+    Ok(state)
 }
 
 #[cfg(test)]
@@ -399,7 +407,7 @@ mod tests {
         // The production executor dials it over the real `HttpTransport` (ureq).
         let exec = A2aRunExecutor::over_http();
         let rec = Arc::new(Rec::default());
-        let phase = exec
+        let state = exec
             .execute(
                 activation(&format!("a2a:http://{addr}")),
                 RuntimeRunContext::new().with_commit(rec.clone()),
@@ -407,14 +415,14 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+        assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
         let commits = rec.0.lock().unwrap();
         assert_eq!(commits[0].messages[0].text_content(), "real remote reply");
     }
 
     #[test]
     fn advertises_no_in_flight_control() {
-        // A single request/await backend: neither cancellation nor park-and-resume
+        // A single request/await backend: neither cancellation nor await-and-resume
         // is wired, so the host must not offer them for an A2A run (ADR-0055).
         let caps = A2aRunExecutor::over_http().capabilities();
         assert_eq!(caps.cancellation, Cancellation::None);
@@ -444,7 +452,7 @@ mod tests {
     async fn a_non_remote_backend_fails_closed() {
         // Reached without a remote endpoint is a wiring fault → fail closed, no dial.
         let rec = Arc::new(Rec::default());
-        let phase = A2aRunExecutor::over_http()
+        let state = A2aRunExecutor::over_http()
             .execute(
                 activation("native"),
                 RuntimeRunContext::new().with_commit(rec.clone()),
@@ -452,8 +460,8 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            phase,
-            Phase::Ended(EndCause::Error(Failure::Inference { ref code, .. })) if code == "a2a_config"
+            state,
+            RunState::Ended(EndCause::Error(Failure::Inference { ref code, .. })) if code == "a2a_config"
         ));
         assert_eq!(
             rec.0.lock().unwrap()[0].messages[0].text_content(),
@@ -483,14 +491,14 @@ mod tests {
         )
         .await;
         let rec = Arc::new(Rec::default());
-        let phase = A2aRunExecutor::over_http()
+        let state = A2aRunExecutor::over_http()
             .execute(
                 activation(&backend),
                 RuntimeRunContext::new().with_commit(rec.clone()),
             )
             .await
             .unwrap();
-        assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+        assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
         assert_eq!(
             rec.0.lock().unwrap()[0].messages[0].text_content(),
             "artifact body"
@@ -504,14 +512,14 @@ mod tests {
         )
         .await;
         let rec = Arc::new(Rec::default());
-        let phase = A2aRunExecutor::over_http()
+        let state = A2aRunExecutor::over_http()
             .execute(
                 activation(&backend),
                 RuntimeRunContext::new().with_commit(rec.clone()),
             )
             .await
             .unwrap();
-        assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+        assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
         assert_eq!(
             rec.0.lock().unwrap()[0].messages[0].text_content(),
             "last history"
@@ -526,7 +534,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         drop(listener);
         let rec = Arc::new(Rec::default());
-        let phase = A2aRunExecutor::over_http()
+        let state = A2aRunExecutor::over_http()
             .execute(
                 activation(&format!("a2a:http://{addr}")),
                 RuntimeRunContext::new().with_commit(rec.clone()),
@@ -534,8 +542,8 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            phase,
-            Phase::Ended(EndCause::Error(Failure::Inference { ref code, .. })) if code == "a2a_error"
+            state,
+            RunState::Ended(EndCause::Error(Failure::Inference { ref code, .. })) if code == "a2a_error"
         ));
         assert!(
             rec.0.lock().unwrap()[0].messages[0]
@@ -616,7 +624,7 @@ mod tests {
     async fn an_http_500_ends_with_a2a_error() {
         let backend = serve_status(500, "upstream boom").await;
         let rec = Arc::new(Rec::default());
-        let phase = A2aRunExecutor::over_http()
+        let state = A2aRunExecutor::over_http()
             .execute(
                 activation(&backend),
                 RuntimeRunContext::new().with_commit(rec.clone()),
@@ -624,8 +632,8 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            phase,
-            Phase::Ended(EndCause::Error(Failure::Inference { ref code, .. })) if code == "a2a_error"
+            state,
+            RunState::Ended(EndCause::Error(Failure::Inference { ref code, .. })) if code == "a2a_error"
         ));
     }
 
@@ -635,7 +643,7 @@ mod tests {
     async fn a_malformed_2xx_body_ends_with_a2a_error() {
         let backend = serve("this is not a2a json at all").await;
         let rec = Arc::new(Rec::default());
-        let phase = A2aRunExecutor::over_http()
+        let state = A2aRunExecutor::over_http()
             .execute(
                 activation(&backend),
                 RuntimeRunContext::new().with_commit(rec.clone()),
@@ -643,13 +651,13 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            phase,
-            Phase::Ended(EndCause::Error(Failure::Inference { ref code, .. })) if code == "a2a_error"
+            state,
+            RunState::Ended(EndCause::Error(Failure::Inference { ref code, .. })) if code == "a2a_error"
         ));
     }
 
     /// With no commit coordinator on the context, `execute` still returns the
-    /// terminal phase (the commit boundary is a no-op, not a failure).
+    /// terminal state (the commit boundary is a no-op, not a failure).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_missing_commit_coordinator_still_returns_the_terminal_phase() {
         let backend = serve(
@@ -657,11 +665,11 @@ mod tests {
         )
         .await;
         // RuntimeRunContext::new() carries no commit coordinator.
-        let phase = A2aRunExecutor::over_http()
+        let state = A2aRunExecutor::over_http()
             .execute(activation(&backend), RuntimeRunContext::new())
             .await
             .unwrap();
-        assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+        assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     }
 
     /// A remote task returned in the `failed` state is an execution fault, not a
@@ -674,7 +682,7 @@ mod tests {
         )
         .await;
         let rec = Arc::new(Rec::default());
-        let phase = A2aRunExecutor::over_http()
+        let state = A2aRunExecutor::over_http()
             .execute(
                 activation(&backend),
                 RuntimeRunContext::new().with_commit(rec.clone()),
@@ -682,8 +690,8 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            phase,
-            Phase::Ended(EndCause::Error(Failure::Inference { ref code, .. }))
+            state,
+            RunState::Ended(EndCause::Error(Failure::Inference { ref code, .. }))
                 if code == "a2a_task_failed"
         ));
         assert_eq!(
@@ -699,40 +707,40 @@ mod tests {
         let backend =
             serve(r#"{"task":{"id":"t","contextId":"c","status":{"state":"canceled"}}}"#).await;
         let rec = Arc::new(Rec::default());
-        let phase = A2aRunExecutor::over_http()
+        let state = A2aRunExecutor::over_http()
             .execute(
                 activation(&backend),
                 RuntimeRunContext::new().with_commit(rec.clone()),
             )
             .await
             .unwrap();
-        assert_eq!(phase, Phase::Ended(EndCause::Cancelled));
+        assert_eq!(state, RunState::Ended(EndCause::Cancelled));
     }
 
     /// A still-`working` remote task is non-terminal; this executor neither polls
-    /// nor parks (`Wait::None`), so the outcome is `Indeterminate` — never projected
+    /// nor awaits (`Wait::None`), so the outcome is `Indeterminate` — never projected
     /// as a successful natural end (G26).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_still_working_remote_task_is_indeterminate_not_success() {
         let backend =
             serve(r#"{"task":{"id":"t","contextId":"c","status":{"state":"working"}}}"#).await;
         let rec = Arc::new(Rec::default());
-        let phase = A2aRunExecutor::over_http()
+        let state = A2aRunExecutor::over_http()
             .execute(
                 activation(&backend),
                 RuntimeRunContext::new().with_commit(rec.clone()),
             )
             .await
             .unwrap();
-        assert_eq!(phase, Phase::Ended(EndCause::Indeterminate));
+        assert_eq!(state, RunState::Ended(EndCause::Indeterminate));
     }
 
-    /// A remote task parked in `input-required` is `Indeterminate` (proved in the
+    /// A remote task awaiting in `input-required` is `Indeterminate` (proved in the
     /// pure `end_cause_of` unit) — but the executor must ALSO commit the agent's
     /// partial message through the same boundary as the terminal states, so a reader
     /// sees the "I need more input" prompt. The pure unit never touches the commit
     /// path; drive the real HTTP server + commit coordinator to prove the partial
-    /// reply is durably committed alongside the Indeterminate phase.
+    /// reply is durably committed alongside the Indeterminate state.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_input_required_task_commits_the_partial_message() {
         let backend = serve(
@@ -740,14 +748,14 @@ mod tests {
         )
         .await;
         let rec = Arc::new(Rec::default());
-        let phase = A2aRunExecutor::over_http()
+        let state = A2aRunExecutor::over_http()
             .execute(
                 activation(&backend),
                 RuntimeRunContext::new().with_commit(rec.clone()),
             )
             .await
             .unwrap();
-        assert_eq!(phase, Phase::Ended(EndCause::Indeterminate));
+        assert_eq!(state, RunState::Ended(EndCause::Indeterminate));
         let commits = rec.0.lock().unwrap();
         assert_eq!(
             commits[0].messages[0].text_content(),
@@ -756,8 +764,8 @@ mod tests {
         );
     }
 
-    /// The `auth-required` twin: an Indeterminate park whose partial message is still
-    /// committed. Closes the same gap for the auth-park state.
+    /// The `auth-required` twin: an Indeterminate await whose partial message is still
+    /// committed. Closes the same gap for the auth-await state.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_auth_required_task_commits_the_partial_message() {
         let backend = serve(
@@ -765,14 +773,14 @@ mod tests {
         )
         .await;
         let rec = Arc::new(Rec::default());
-        let phase = A2aRunExecutor::over_http()
+        let state = A2aRunExecutor::over_http()
             .execute(
                 activation(&backend),
                 RuntimeRunContext::new().with_commit(rec.clone()),
             )
             .await
             .unwrap();
-        assert_eq!(phase, Phase::Ended(EndCause::Indeterminate));
+        assert_eq!(state, RunState::Ended(EndCause::Indeterminate));
         let commits = rec.0.lock().unwrap();
         assert_eq!(
             commits[0].messages[0].text_content(),

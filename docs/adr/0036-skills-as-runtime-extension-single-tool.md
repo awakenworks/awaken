@@ -99,7 +99,7 @@ The pinned, fingerprinted surface is the **executable configuration** (the
 `Skill` / `list_skills` tool schemas, model binding, instructions) — never the
 skill catalog or bodies. A skill activation is a committed tool-result fact
 ([ADR-0006]); replay re-reads that fact, it does not re-resolve the catalog.
-`WaitingTicket.catalog_fingerprint` validates only the executable config, which is
+`ResumeTicket.catalog_fingerprint` validates only the executable config, which is
 skill-set-independent, so a run resumes even if the skill set changed. Keeping the
 catalog out of the `Skill` descriptor (D2) is what makes this hold.
 

@@ -212,11 +212,11 @@ async fn bare_runtime_assembles_memory_and_skills_from_public_parts() {
 
     let commit = std::sync::Arc::new(MemoryCommitCoordinator::new());
     let ctx = RuntimeRunContext::new().with_commit(commit.clone());
-    let phase = runtime
+    let state = runtime
         .run(&combo_config(true), "Set things up.", ctx)
         .await
         .expect("run");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
     // ① Recall reached the model as request-only context (G13): the seeded
     // memory is in what the model saw, but never in the committed thread.
@@ -304,11 +304,11 @@ async fn memory_plugin_is_inert_without_its_plugin_id() {
 
     let ctx =
         RuntimeRunContext::new().with_commit(std::sync::Arc::new(MemoryCommitCoordinator::new()));
-    let phase = runtime
+    let state = runtime
         .run(&combo_config(false), "Set things up.", ctx)
         .await
         .expect("run");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
     let seen = llm.seen.lock().unwrap();
     assert!(

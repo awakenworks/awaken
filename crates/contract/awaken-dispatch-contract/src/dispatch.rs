@@ -37,7 +37,7 @@ pub struct PendingInput {
     pub message_id: String,
     pub run_id: RunId,
     pub thread_id: ThreadId,
-    /// The waiting-ticket correlation this input answers. Consumption is keyed to
+    /// The awaiting-ticket correlation this input answers. Consumption is keyed to
     /// it: the worker delivers an input only while the committed ticket still
     /// carries the same correlation, so a resume that already committed (and
     /// advanced or cleared the ticket) is never re-applied (ADR-0010).
@@ -47,7 +47,7 @@ pub struct PendingInput {
     /// the daemon's poll fires it when the clock reaches it (ADR-0014).
     #[serde(default)]
     pub available_at_ms: Option<u64>,
-    /// What this input delivers back into the parked run on resume.
+    /// What this input delivers back into the awaiting run on resume.
     pub result: ResumeResult,
 }
 
@@ -77,7 +77,7 @@ pub struct Claimed {
     pub request: RunExecutionRequest,
     pub lease: Lease,
     /// The run's undelivered pending input. The worker decides execute-vs-resume
-    /// from committed truth (the waiting ticket), not from this field, and tells
+    /// from committed truth (the awaiting ticket), not from this field, and tells
     /// `settle` which inputs it consumed.
     pub pending: Vec<PendingInput>,
     /// The sandbox this run is bound to for its lifetime (B-P3, ADR-0021 §6), as an
@@ -92,10 +92,11 @@ pub struct Claimed {
 /// How a claimed attempt resolved. Settled atomically with releasing the lease.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DispatchOutcome {
-    /// The run reached a terminus; the dispatch is finished and removed.
+    /// The run ended; the dispatch is finished and removed.
     Done,
-    /// The run parked on a waiting ticket; keep the dispatch for a later wake.
-    Parked,
+    /// The run awaits external input; keep the dispatch for a later wake.
+    #[serde(alias = "Parked")]
+    Awaiting,
 }
 
 /// Whether a [`settle`](DispatchQueue::settle) was applied or fenced off as stale.
@@ -118,28 +119,28 @@ impl SettleOutcome {
     }
 }
 
-/// The lifecycle status of a dispatch, for the operational query surface.
+/// The lifecycle state of a dispatch, for the operational query surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DispatchStatus {
+pub enum DispatchState {
     /// Fresh, not yet claimed.
     Pending,
     /// Claimed and executing under a lease.
-    Running,
-    /// Parked on a committed waiting ticket.
-    Parked,
+    Leased,
+    /// Awaiting on a committed resume ticket.
+    Awaiting,
     /// Dead-lettered past its crash-retry budget (ADR-0015).
     DeadLetter,
     /// Superseded by a newer submission on its thread (ADR-0022).
     Superseded,
 }
 
-impl DispatchStatus {
+impl DispatchState {
     /// Map the stored status text (the SQL backends' `status` column) to the
     /// public status. An unknown value maps to `Pending` (never observed).
     pub fn from_db(s: &str) -> Self {
         match s {
-            "running" => Self::Running,
-            "parked" => Self::Parked,
+            "running" => Self::Leased,
+            "awaiting" => Self::Awaiting,
             "dead_letter" => Self::DeadLetter,
             "superseded" => Self::Superseded,
             _ => Self::Pending,
@@ -154,7 +155,7 @@ impl DispatchStatus {
 pub struct DispatchSummary {
     pub run_id: RunId,
     pub thread_id: ThreadId,
-    pub status: DispatchStatus,
+    pub state: DispatchState,
     /// Consecutive crash-recoveries without a settle.
     pub attempt_count: u64,
 }
@@ -169,7 +170,7 @@ pub struct SubmitOptions {
     /// enqueue carrying it is a no-op — dedup beyond the run id (e.g. for an
     /// at-least-once producer). Cleared once the run finishes.
     pub dedupe_key: Option<String>,
-    /// Supersede the thread's prior pending/parked work: the newest submission
+    /// Supersede the thread's prior pending/awaiting work: the newest submission
     /// wins, taking the highest epoch; the stale dispatches are marked superseded
     /// and never claimed again (ADR-0022).
     pub supersede: bool,
@@ -194,7 +195,7 @@ pub trait DispatchQueue: Send + Sync {
     ) -> Result<(), DispatchError>;
 
     /// Claim one runnable dispatch for `owner`, single owner per run: a fresh
-    /// `pending` run, a parked run with pending input (a wake), or a running
+    /// `pending` run, an awaiting run with pending input (a wake), or a running
     /// dispatch whose lease expired (recovery). Returns `None` when nothing is
     /// runnable, and the run's current pending input in the returned [`Claimed`].
     async fn claim(
@@ -242,13 +243,13 @@ pub trait DispatchQueue: Send + Sync {
     /// row's current epoch; if the run was re-claimed under a higher epoch (a
     /// reclaimer took the lapsed lease), the settle is rejected as
     /// [`SettleOutcome::Fenced`] and NOTHING is changed — a stale owner can never
-    /// clobber the current owner's in-flight dispatch (reset its lease, re-park it,
+    /// clobber the current owner's in-flight dispatch (reset its lease, re-await it,
     /// or delete it out from under an active drive).
     ///
-    /// When applied: `Done` removes the dispatch and all its pending input; `Parked`
-    /// returns it to the waiting state and drops only the `consumed` pending (by
+    /// When applied: `Done` removes the dispatch and all its pending input; `Awaiting`
+    /// returns it to the awaiting state and drops only the `consumed` pending (by
     /// `message_id`), leaving input that arrived mid-attempt for the next wake.
-    /// `Parked` also resets the crash-retry budget — a run that reaches a checkpoint
+    /// `Awaiting` also resets the crash-retry budget — a run that reaches a checkpoint
     /// refreshes its attempts.
     async fn settle(
         &self,
@@ -295,7 +296,7 @@ pub trait DispatchQueue: Send + Sync {
     /// max_attempts`). A dead-lettered dispatch is no longer claimed, so a poison
     /// run cannot be reclaimed forever. Returns how many were dead-lettered
     /// (ADR-0015). The crash-retry count increments only on recovery re-claims, so
-    /// a normal park/wake never spends the budget.
+    /// a normal await/wake never spends the budget.
     async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError>;
 
     /// Bind `run_id` to the sandbox it was placed on (B-P3, ADR-0021 §6). The
@@ -314,17 +315,17 @@ pub trait DispatchQueue: Send + Sync {
     /// if a dead-lettered run with that id was requeued.
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError>;
 
-    /// Durably cancel a *not-running* dispatch (pending or parked): remove it and
+    /// Durably cancel a *not-running* dispatch (pending or awaiting): remove it and
     /// its pending input so it never runs or resumes. Returns the run's thread id
     /// when cancelled (the host then commits a terminal `Cancelled` fact), or
     /// `None` if the run is currently running (use live cancel), already
     /// dead-lettered, or unknown.
     async fn cancel(&self, run_id: &RunId) -> Result<Option<ThreadId>, DispatchError>;
 
-    /// The run currently parked on a thread, if any. A thread is the stable
+    /// The run currently awaiting on a thread, if any. A thread is the stable
     /// addressable unit (a run is one ephemeral execution); this resolves a
-    /// thread-addressed delivery to the run waiting on it.
-    async fn parked_run(&self, thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError>;
+    /// thread-addressed delivery to the run awaiting on it.
+    async fn awaiting_run(&self, thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError>;
 
     /// Remove every dead-lettered dispatch (and its pending input) — operator GC.
     /// Returns how many were purged.
@@ -472,21 +473,20 @@ mod tests {
     /// back to `Pending` rather than panicking or mis-rendering the monitor.
     #[test]
     fn dispatch_status_from_db_maps_known_values_and_falls_back() {
-        assert_eq!(DispatchStatus::from_db("running"), DispatchStatus::Running);
-        assert_eq!(DispatchStatus::from_db("parked"), DispatchStatus::Parked);
+        assert_eq!(DispatchState::from_db("running"), DispatchState::Leased);
         assert_eq!(
-            DispatchStatus::from_db("dead_letter"),
-            DispatchStatus::DeadLetter
+            DispatchState::from_db("dead_letter"),
+            DispatchState::DeadLetter
         );
         assert_eq!(
-            DispatchStatus::from_db("superseded"),
-            DispatchStatus::Superseded
+            DispatchState::from_db("superseded"),
+            DispatchState::Superseded
         );
         // "pending" is explicit; an unknown token and the empty string both fall back.
-        assert_eq!(DispatchStatus::from_db("pending"), DispatchStatus::Pending);
-        assert_eq!(DispatchStatus::from_db("Running"), DispatchStatus::Pending); // case-sensitive
-        assert_eq!(DispatchStatus::from_db("bogus"), DispatchStatus::Pending);
-        assert_eq!(DispatchStatus::from_db(""), DispatchStatus::Pending);
+        assert_eq!(DispatchState::from_db("pending"), DispatchState::Pending);
+        assert_eq!(DispatchState::from_db("Running"), DispatchState::Pending); // case-sensitive
+        assert_eq!(DispatchState::from_db("bogus"), DispatchState::Pending);
+        assert_eq!(DispatchState::from_db(""), DispatchState::Pending);
     }
 
     /// The neutral submit default every existing caller inherits: ordinary priority,
@@ -556,7 +556,7 @@ mod tests {
         let legacy: Lease = serde_json::from_value(v).expect("legacy lease loads");
         assert_eq!(legacy.epoch, 0);
 
-        for outcome in [DispatchOutcome::Done, DispatchOutcome::Parked] {
+        for outcome in [DispatchOutcome::Done, DispatchOutcome::Awaiting] {
             let back: DispatchOutcome =
                 serde_json::from_str(&serde_json::to_string(&outcome).expect("serializes"))
                     .expect("deserializes");
@@ -687,7 +687,10 @@ mod tests {
         async fn cancel(&self, _run_id: &RunId) -> Result<Option<ThreadId>, DispatchError> {
             unimplemented!()
         }
-        async fn parked_run(&self, _thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError> {
+        async fn awaiting_run(
+            &self,
+            _thread_id: &ThreadId,
+        ) -> Result<Option<RunId>, DispatchError> {
             unimplemented!()
         }
         async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
@@ -789,7 +792,10 @@ mod tests {
         async fn cancel(&self, _run_id: &RunId) -> Result<Option<ThreadId>, DispatchError> {
             unimplemented!()
         }
-        async fn parked_run(&self, _thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError> {
+        async fn awaiting_run(
+            &self,
+            _thread_id: &ThreadId,
+        ) -> Result<Option<RunId>, DispatchError> {
             unimplemented!()
         }
         async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {

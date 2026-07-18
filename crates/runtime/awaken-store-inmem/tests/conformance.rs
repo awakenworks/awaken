@@ -23,8 +23,8 @@ async fn terminal_run_is_fenced() {
 }
 
 #[tokio::test]
-async fn waiting_ticket_parks_then_clears() {
-    awaken_store_conformance::waiting_ticket_parks_then_clears(&MemoryCommitCoordinator::new())
+async fn resume_ticket_awaits_then_clears() {
+    awaken_store_conformance::resume_ticket_awaits_then_clears(&MemoryCommitCoordinator::new())
         .await;
 }
 

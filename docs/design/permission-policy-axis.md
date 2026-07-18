@@ -70,7 +70,7 @@ Forbidden inputs are:
 | `PermissionPolicy` | policy | allow/deny/ask/set-result decision | operator overlay, explicit grants, runtime context | descriptor visibility, backend selection | selection or health becomes authorization | G9, G21; no-hidden-grant tests |
 | `PermissionDecision` | value object | typed decision and reason | policy output | execution transport, public error schema | denied or pending work is ambiguous | G21, G26; decision mapping tests |
 | `ToolGateHook` | runtime hook | final invocation gate for a tool call | permission decision, tool call, runtime context | descriptor resolution, direct commit | tool executes without explicit permission path | G9, G21; no-bypass tests |
-| `DecisionTicket` | value object | resumable ask/approval correlation (one waiting reason of the shared wait/resume capability) | pending `RunWaitingState`, shared `ResumeValidator` | public session state, config writes | approval resumes the wrong call | G5, G21; resume correlation tests |
+| `DecisionTicket` | value object | resumable ask/approval correlation (one await reason of the shared wait/resume capability) | pending `ResumeTicket`, shared `ResumeValidator` | public session state, config writes | approval resumes the wrong call | G5, G21; resume correlation tests |
 | `AuditDraft` | staged fact/effect | reviewable record of protected decision | permission context and decision | durable write outside commit | authorization cannot be explained later | G1, G21; audit commit tests |
 
 ## First Vertical Slice

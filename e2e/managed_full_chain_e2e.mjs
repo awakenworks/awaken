@@ -53,7 +53,7 @@ const listEvents = async (c, sid) => {
   return evs;
 };
 
-// Release every gated (`ask`) tool call not yet approved — each `write` parks for a
+// Release every gated (`ask`) tool call not yet approved — each `write` awaits for a
 // confirmation, so approving lets the run advance and the harvest fire.
 async function approveGated(c, sid, evs, approved) {
   for (const e of evs) {
@@ -116,7 +116,7 @@ async function main() {
       betas: BETAS,
     });
 
-    // Drive the park→approve→harvest loop until the turn ends and everything landed.
+    // Drive the await→approve→harvest loop until the turn ends and everything landed.
     const approved = new Set();
     let evs = [];
     let files = null;

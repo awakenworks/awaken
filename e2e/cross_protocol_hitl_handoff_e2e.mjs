@@ -1,15 +1,15 @@
-// Cross-protocol HITL hand-off e2e (scenario #1): a turn PARKS on a tool approval
+// Cross-protocol HITL hand-off e2e (scenario #1): a turn AWAITS on a tool approval
 // on ONE wire and is APPROVED + resumed to completion on ANOTHER — same thread id,
-// same `SharedHost`, same parked `WaitingTicket`. The approval decision (`Resume`)
+// same `SharedHost`, same awaiting `ResumeTicket`. The approval decision (`Resume`)
 // is protocol-neutral, so a client can switch doors mid-turn.
 //
 // Chain:
 //   AI-SDK  : POST /v1/ai-sdk/threads/T/runs -> ProtocolHost::run_streaming ->
 //             SharedHost -> Runtime (probe: mutating `write`) -> PermissionGate
-//             -> Suspend -> commit WaitingTicket{ToolPermission}  (parked)
+//             -> Suspend -> commit ResumeTicket{ToolPermission}  (awaiting)
 //   AG-UI   : POST /v1/ag-ui/agents/assistant (threadId T, role:"tool" result, no
 //             user msg) -> resume_step -> rt.pending(T) -> to_resume(Confirm{allow})
-//             -> ProtocolHost::resume -> SAME parked run drives to `done`
+//             -> ProtocolHost::resume -> SAME awaiting run drives to `done`
 //   AI-SDK  : GET /v1/ai-sdk/threads/T/messages -> the completed transcript
 //
 // Deterministic (probe stub model, no API key). Run: (from e2e/) node cross_protocol_hitl_handoff_e2e.mjs
@@ -47,7 +47,7 @@ async function main() {
   await withServer('probe', PORT, async (base) => {
     const thread = `xhitl-${randomBytes(4).toString('hex')}`;
 
-    // --- Turn 1 on AI-SDK: the mutating write parks for approval ------------
+    // --- Turn 1 on AI-SDK: the mutating write awaits for approval ------------
     const r1 = await fetch(`${base}/v1/ai-sdk/threads/${thread}/runs`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -58,12 +58,12 @@ async function main() {
     });
     assert.equal(r1.status, 200, 'ai-sdk turn accepted');
     const s1 = await drain(r1);
-    // The parked tool surfaces with a toolCallId (state input-available on the tail).
-    const parked = s1.events.find((e) => e.toolCallId && (e.state === 'input-available' || e.type?.startsWith('tool-input')));
-    assert.ok(parked, `ai-sdk turn parked on a tool (events: ${s1.events.map((e) => e.type).join(',')})`);
-    const toolCallId = parked.toolCallId;
-    assert.ok(!s1.text.includes('done'), 'run did NOT complete on the AI-SDK wire (it parked)');
-    pass(`turn parked on AI-SDK awaiting approval (toolCallId=${toolCallId})`);
+    // The awaiting tool surfaces with a toolCallId (state input-available on the tail).
+    const awaiting = s1.events.find((e) => e.toolCallId && (e.state === 'input-available' || e.type?.startsWith('tool-input')));
+    assert.ok(awaiting, `ai-sdk turn awaiting on a tool (events: ${s1.events.map((e) => e.type).join(',')})`);
+    const toolCallId = awaiting.toolCallId;
+    assert.ok(!s1.text.includes('done'), 'run did NOT complete on the AI-SDK wire (it awaiting)');
+    pass(`turn awaiting on AI-SDK awaiting approval (toolCallId=${toolCallId})`);
 
     // Sanity: the runtime reports a pending decision for this thread.
     // (Observed indirectly — the resume below fails closed if there is none.)
@@ -86,7 +86,7 @@ async function main() {
     });
     assert.equal(r2.status, 200, `ag-ui resume accepted (${r2.status})`);
     const s2 = await drain(r2);
-    pass('AG-UI accepted the resume for the AI-SDK-parked run');
+    pass('AG-UI accepted the resume for the AI-SDK-awaiting run');
 
     // --- The run completed: `done` is now in the committed transcript ------
     const hist = await fetch(`${base}/v1/ai-sdk/threads/${thread}/messages`);
@@ -95,12 +95,12 @@ async function main() {
     const raw = JSON.stringify(body.items);
     assert.ok(
       raw.includes('done'),
-      `the AI-SDK-parked run reached completion after the AG-UI approval: ${raw.slice(0, 500)}`,
+      `the AI-SDK-awaiting run reached completion after the AG-UI approval: ${raw.slice(0, 500)}`,
     );
-    pass('cross-protocol HITL: parked on AI-SDK, approved on AG-UI, resumed to completion (one thread)');
+    pass('cross-protocol HITL: awaiting on AI-SDK, approved on AG-UI, resumed to completion (one thread)');
   });
 
-  console.log('E2E PASS: cross-protocol HITL hand-off (AI-SDK park -> AG-UI approve -> resume).');
+  console.log('E2E PASS: cross-protocol HITL hand-off (AI-SDK await -> AG-UI approve -> resume).');
 }
 
 main().catch((err) => {

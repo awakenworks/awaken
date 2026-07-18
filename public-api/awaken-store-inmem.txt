@@ -11,7 +11,7 @@ impl awaken_store_inmem::MemoryCommitCoordinator
 pub fn awaken_store_inmem::MemoryCommitCoordinator::commit_count(&self) -> u64
 pub fn awaken_store_inmem::MemoryCommitCoordinator::committed(&self) -> awaken_store_inmem::CommittedThread
 pub fn awaken_store_inmem::MemoryCommitCoordinator::new() -> Self
-pub fn awaken_store_inmem::MemoryCommitCoordinator::waiting_for(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::waiting::WaitingTicket>
+pub fn awaken_store_inmem::MemoryCommitCoordinator::resume_ticket_for(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::awaiting::ResumeTicket>
 impl awaken_agent_contract::thread::commit::coordinator::Coordinator for awaken_store_inmem::MemoryCommitCoordinator
 pub fn awaken_store_inmem::MemoryCommitCoordinator::commit<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::thread::commit::staged::ThreadCommit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 impl awaken_agent_contract::thread::read::checkpoint::CheckpointReader for awaken_store_inmem::MemoryCommitCoordinator
@@ -23,7 +23,7 @@ pub fn awaken_store_inmem::MemoryCommitCoordinator::get(&self, &awaken_agent_con
 impl awaken_agent_contract::thread::read::thread_reader::ThreadReader for awaken_store_inmem::MemoryCommitCoordinator
 pub fn awaken_store_inmem::MemoryCommitCoordinator::committed_messages(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub fn awaken_store_inmem::MemoryCommitCoordinator::committed_state(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
-pub fn awaken_store_inmem::MemoryCommitCoordinator::waiting_ticket(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::waiting::WaitingTicket>
+pub fn awaken_store_inmem::MemoryCommitCoordinator::resume_ticket(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::awaiting::ResumeTicket>
 pub struct awaken_store_inmem::MemoryStreamCheckpointStore
 impl awaken_store_inmem::MemoryStreamCheckpointStore
 pub fn awaken_store_inmem::MemoryStreamCheckpointStore::new() -> Self
@@ -37,5 +37,5 @@ pub fn awaken_store_inmem::MemoryStreamSink::events(&self) -> alloc::vec::Vec<aw
 pub fn awaken_store_inmem::MemoryStreamSink::new() -> Self
 impl awaken_agent_contract::stream::sink::Sink for awaken_store_inmem::MemoryStreamSink
 pub fn awaken_store_inmem::MemoryStreamSink::send<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::stream::event::Event) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::sink::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_store_inmem::replay_latest_phase(&awaken_store_inmem::CommittedThread, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::Phase>
+pub fn awaken_store_inmem::replay_latest_state(&awaken_store_inmem::CommittedThread, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::RunState>
 pub fn awaken_store_inmem::replay_state(&awaken_store_inmem::CommittedThread) -> awaken_agent_contract::agent::state::Store

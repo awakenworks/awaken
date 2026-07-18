@@ -13,5 +13,5 @@ pub use agent::{AgentEvent, Delta, Fact, ToolDisposition};
 pub use classify::{Routing, Tier, classify};
 pub use fold::{
     HistorySink, ToolUseRef, Transcoder, fold_history, fold_messages, fold_step, terminal,
-    terminal_waiting,
+    terminal_awaiting,
 };

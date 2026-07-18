@@ -7,7 +7,7 @@
 ## Context
 
 `RunIngressCapabilities.scheduled_wake` was false: the durable queue stored no
-timer, so a parked run could only be woken by an immediately-deliverable input.
+timer, so an aawaiting run could only be woken by an immediately-deliverable input.
 The run-ingress design and the reference both call for delayed/scheduled
 delivery (`available_at` in the reference).
 
@@ -43,10 +43,10 @@ wake. No separate scheduling path is needed.
 
 ## Consequences
 
-- A parked run can be woken on a durable schedule; the daemon fires a delayed
+- A aawaiting run can be woken on a durable schedule; the daemon fires a delayed
   delivery when its clock reaches the time, proven deterministically with a
   `ManualClock`.
-- This is *delayed delivery of input* — the run-ingress waiting-ticket mechanism
+- This is *delayed delivery of input* — the run-ingress resume-ticket mechanism
   (ADR-0003 mechanism #2) plus a due-time gate. It is **not** `ScheduledAction`
   (ADR-0003 mechanism #1): a `ScheduledAction` is a committed in-run request to
   perform deferred work, recovered from committed state for consistency, not a

@@ -8,3 +8,4 @@ pub mod staged;
 
 pub use run::commit_run;
 pub use run_fact::RunFact;
+pub use staged::RunDisposition;

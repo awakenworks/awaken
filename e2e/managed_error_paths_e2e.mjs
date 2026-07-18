@@ -4,8 +4,8 @@
 // must enforce. All deterministic (probe mode). Ported scenarios:
 //   - events to an unknown session            -> 404 not_found
 //   - retrieve an unknown session             -> 404 not_found
-//   - tool_confirmation with a WRONG tool_use_id on a parked run -> fail closed (4xx)
-//   - tool_confirmation when nothing is parked -> fail closed (4xx)
+//   - tool_confirmation with a WRONG tool_use_id on an awaiting run -> fail closed (4xx)
+//   - tool_confirmation when nothing is awaiting -> fail closed (4xx)
 //   - custom_tool_result with no matching ticket -> fail closed (4xx)
 //
 // Run: (from e2e/)  node managed_error_paths_e2e.mjs
@@ -67,8 +67,8 @@ async function main() {
       pass('retrieve an unknown session -> 404 not_found');
     }
 
-    // 3. tool_confirmation with a WRONG tool_use_id on a genuinely parked run: the
-    //    run parked on tool X; confirming a different id must fail closed, not
+    // 3. tool_confirmation with a WRONG tool_use_id on a genuinely awaiting run: the
+    //    run awaiting on tool X; confirming a different id must fail closed, not
     //    resolve the real pending tool.
     {
       const session = await client.beta.sessions.create({
@@ -77,11 +77,11 @@ async function main() {
         betas: BETAS,
       });
       await client.beta.sessions.events.send(session.id, {
-        events: [{ type: 'user.message', content: [{ type: 'text', text: 'PARK-ME' }] }],
+        events: [{ type: 'user.message', content: [{ type: 'text', text: 'AWAIT-ME' }] }],
         betas: BETAS,
       });
-      const parked = (await listEvents(client, session.id)).find((e) => e.type === 'agent.tool_use');
-      assert.ok(parked, 'the run parked on a tool_use');
+      const awaiting = (await listEvents(client, session.id)).find((e) => e.type === 'agent.tool_use');
+      assert.ok(awaiting, 'the run awaiting on a tool_use');
       const status = await statusOf(
         client.beta.sessions.events.send(session.id, {
           events: [
@@ -95,7 +95,7 @@ async function main() {
       pass(`tool_confirmation with a wrong tool_use_id -> fail closed (${status})`);
     }
 
-    // 4. tool_confirmation when NOTHING is parked (fresh session, no turn).
+    // 4. tool_confirmation when NOTHING is awaiting (fresh session, no turn).
     {
       const session = await client.beta.sessions.create({
         agent: 'assistant',
@@ -109,10 +109,10 @@ async function main() {
           ],
           betas: BETAS,
         }),
-        'confirm with nothing parked',
+        'confirm with nothing awaiting',
       );
       assert.ok(isClientError(status), `confirmation with no pending tool fails closed (got ${status})`);
-      pass(`tool_confirmation with nothing parked -> fail closed (${status})`);
+      pass(`tool_confirmation with nothing awaiting -> fail closed (${status})`);
     }
 
     // 5. custom_tool_result with no matching outstanding ticket -> fail closed.

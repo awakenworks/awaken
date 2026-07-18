@@ -9,7 +9,7 @@
 
 use serde_json::{Value, json};
 
-use awaken_agent_contract::agent::run::{EndCause, Failure, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Failure, RunState};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
@@ -148,24 +148,24 @@ fn run_activation_writes_model_ref_override_only_when_set() {
 
 // --- Item 3: exhaustive enum-tag snapshot for the boundary enums -----------
 
-/// The G20 executor-result enums (`Phase`/`EndCause`/`Failure`) and the resolved
+/// The G20 executor-result enums (`RunState`/`EndCause`/`Failure`) and the resolved
 /// `ContextPolicy` cross planes as serialized data. This pins EVERY variant's tag so
 /// a rename — or a variant swapping between unit/newtype/struct encoding — trips a
 /// red test. Externally tagged (serde default) except `ContextPolicy` (internally
 /// tagged on `kind`).
 #[test]
 fn boundary_enum_tags_are_exhaustively_pinned() {
-    // Phase: two unit variants + one newtype variant carrying an EndCause.
+    // RunState: two unit variants + one newtype variant carrying an EndCause.
     assert_eq!(
-        serde_json::to_value(Phase::Running).unwrap(),
+        serde_json::to_value(RunState::Running).unwrap(),
         json!("Running")
     );
     assert_eq!(
-        serde_json::to_value(Phase::Waiting).unwrap(),
-        json!("Waiting")
+        serde_json::to_value(RunState::Awaiting).unwrap(),
+        json!("Awaiting")
     );
     assert_eq!(
-        serde_json::to_value(Phase::Ended(EndCause::NaturalEnd)).unwrap(),
+        serde_json::to_value(RunState::Ended(EndCause::NaturalEnd)).unwrap(),
         json!({ "Ended": "NaturalEnd" })
     );
 

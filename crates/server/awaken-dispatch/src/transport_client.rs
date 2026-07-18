@@ -5,7 +5,7 @@
 //! Only the worker verbs cross the wire — `enqueue`, `claim`, `renew_lease`,
 //! `renew_owned_leases`, `settle` (plus the `current_epoch` fence read). The
 //! operational verbs (reap, dead-letter, purge, supersede, cancel, requeue,
-//! parked-run, list-dispatches) and the `Inbox`/`Outbox` write + relay aggregates
+//! awaiting-run, list-dispatches) and the `Inbox`/`Outbox` write + relay aggregates
 //! are server-local: the worker never runs them, so they fail closed (`Rejected`)
 //! rather than pretend a mutation the server didn't perform. The sole exception is
 //! `Inbox::list`, which the db-less worker's own drive calls (`worker.rs`) to drain
@@ -202,8 +202,8 @@ impl DispatchQueue for HttpDispatchQueue {
     async fn cancel(&self, _run_id: &RunId) -> Result<Option<ThreadId>, DispatchError> {
         Self::server_local("cancel")
     }
-    async fn parked_run(&self, _thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError> {
-        Self::server_local("parked_run")
+    async fn awaiting_run(&self, _thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError> {
+        Self::server_local("awaiting_run")
     }
     async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
         Self::server_local("purge_dead_letters")

@@ -43,7 +43,8 @@ fn agui_events(outcome: &StepOutcome) -> Vec<AgUiEvent> {
 
 /// The managed `OutboundKind`s for a committed step. Managed drops `RunStarted`
 /// and has no single `encode_step(outcome)` (its `project_step` takes a
-/// `Terminus`, which cannot express `Failed`), so drive the transcoder over the
+/// session projection (which derives failures from `EndCause::Error`), so drive
+/// the transcoder over the
 /// same neutral facts the other wires fold from `outcome`.
 fn managed_events(outcome: &StepOutcome) -> Vec<OutboundKind> {
     let pending = outcome
@@ -162,7 +163,7 @@ fn a_natural_finish_is_a_clean_terminal_on_every_wire() {
 }
 
 #[test]
-fn parking_on_a_tool_is_action_required_on_every_wire() {
+fn awaiting_on_a_tool_is_action_required_on_every_wire() {
     let outcome = StepOutcome {
         new_messages: vec![assistant_tool(
             "a1",
@@ -170,7 +171,7 @@ fn parking_on_a_tool_is_action_required_on_every_wire() {
             "submit_answer",
             serde_json::json!({}),
         )],
-        terminal: Terminal::Waiting {
+        terminal: Terminal::Awaiting {
             pending: Some(Pending {
                 tool_use_id: "c1".into(),
                 name: "submit_answer".into(),
@@ -181,12 +182,12 @@ fn parking_on_a_tool_is_action_required_on_every_wire() {
     };
     let (reason, _) = ai_terminal(&ai_events(&outcome));
     assert_eq!(reason.as_deref(), Some("tool-calls"));
-    // AG-UI has no dedicated interrupt frame; a park closes with RUN_FINISHED.
+    // AG-UI has no dedicated interrupt frame; an await closes with RUN_FINISHED.
     assert_eq!(agui_terminal(&agui_events(&outcome)), "finished");
     assert_eq!(a2a_state(&outcome), TaskState::InputRequired);
     match managed_stop(&managed_events(&outcome)) {
         StopReason::RequiresAction { event_ids } => assert_eq!(event_ids, vec!["c1".to_string()]),
-        other => panic!("managed parks on RequiresAction, got {other:?}"),
+        other => panic!("managed awaits on RequiresAction, got {other:?}"),
     }
 }
 
@@ -216,7 +217,7 @@ fn a_failure_surfaces_as_an_error_wherever_the_wire_can_and_never_as_success() {
 
 #[test]
 fn budget_exhaustion_is_a_finish_for_streaming_wires_but_failed_for_a2a() {
-    // The one intended cross-wire divergence: exhaustion is a *clean* terminus on
+    // The one intended cross-wire divergence: exhaustion is a *clean* end on
     // the streaming wires (no "exhausted" finish reason exists), a distinct
     // `RetriesExhausted` on managed, and — because A2A has only completed/failed —
     // a `failed` task. Pins all four so a refactor can't quietly realign them.

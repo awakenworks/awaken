@@ -26,7 +26,7 @@
 //     (per_thread_min == per_thread_max == SOAK_WAVES); no thread has zero while
 //     others have many.
 //   - Stability / no leak: the dispatch backlog drained to zero (no Pending /
-//     Running / Parked / DeadLetter / Superseded rows left) and the process never
+//     Running / Awaiting / DeadLetter / Superseded rows left) and the process never
 //     crashed across the soak.
 //
 // Run: node e2e/durable_soak_fairness_e2e.mjs

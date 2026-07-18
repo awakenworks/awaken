@@ -41,7 +41,7 @@ truth aggregate (thread transcript, run, state, committed events) has exactly:
   `commit(ThreadCommit) -> CommitRecord`.
 - **`CheckpointReader`** — the single after-commit read repository. It subsumes
   today's `ThreadReader` and `RunStore`: `committed_messages`, `committed_state`,
-  `run`, `latest_run`, `waiting_ticket`, and `list_events(scope, cursor)`.
+  `run`, `latest_run`, `resume_ticket`, and `list_events(scope, cursor)`.
 - **`StreamSink`** — best-effort live delivery (unchanged; G10).
 
 The dispatch aggregate keeps its existing cohesive composite —

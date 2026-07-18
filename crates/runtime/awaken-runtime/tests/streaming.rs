@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_runtime::Runtime;
@@ -113,7 +113,7 @@ async fn run(chunks: Vec<&'static str>) -> (MemoryCommitCoordinator, MemoryStrea
         model_ref_override: None,
     };
     let outcome = runtime.execute(activation, context).await.expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     (
         Arc::try_unwrap(commit).unwrap_or_default(),
         Arc::try_unwrap(sink).unwrap_or_default(),

@@ -1,6 +1,6 @@
 //! A deterministic stand-in model for offline tests: it drives a fixed
 //! read → edit → reply sequence on one file, so the smoke test proves the agent
-//! actually reads and edits code (and that the edit parks for approval) without a
+//! actually reads and edits code (and that the edit awaits for approval) without a
 //! network or an API key.
 
 use std::sync::atomic::{AtomicUsize, Ordering};

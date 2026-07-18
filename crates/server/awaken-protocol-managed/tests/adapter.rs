@@ -1,11 +1,11 @@
 //! Adapter integration tests with fake runtimes: the happy path, and the HITL
-//! park -> `requires_action` -> `user.tool_confirmation` -> resume round-trip.
+//! await -> `requires_action` -> `user.tool_confirmation` -> resume round-trip.
 
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
-use awaken_protocol_managed::Terminus;
+use awaken_agent_contract::agent::run::EndCause;
 use awaken_protocol_managed::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, ManagedState, OutcomeIteration,
     OutcomeReport, Pending, RunError, RunErrorKind, SessionRuntime, StepOutcome, router,
@@ -58,6 +58,10 @@ async fn create(app: &Router) -> String {
     s["id"].as_str().unwrap().to_string()
 }
 
+fn ended(messages: Vec<Message>) -> StepOutcome {
+    StepOutcome::ended(messages, EndCause::NaturalEnd, false, false)
+}
+
 /// The happy path: one assistant text reply, no tools.
 struct EchoFake;
 
@@ -70,18 +74,11 @@ impl SessionRuntime for EchoFake {
         content: Vec<ContentBlock>,
     ) -> Result<StepOutcome, RunError> {
         let user_text = Message::new(Id("u".into()), Role::User, content).text_content();
-        Ok(StepOutcome {
-            messages: vec![Message::text(
-                Id("a".into()),
-                Role::Assistant,
-                format!("echo: {user_text}"),
-            )],
-            stop: Terminus::End,
-            pending: None,
-            compacted: false,
-            rescheduled: false,
-            failure: None,
-        })
+        Ok(ended(vec![Message::text(
+            Id("a".into()),
+            Role::Assistant,
+            format!("echo: {user_text}"),
+        )]))
     }
     async fn resume(
         &self,
@@ -89,7 +86,7 @@ impl SessionRuntime for EchoFake {
         _tool_use_id: &str,
         _decision: Decision,
     ) -> Result<StepOutcome, RunError> {
-        Err(RunError::internal("no parked run"))
+        Err(RunError::internal("no awaiting run"))
     }
     async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
         Ok(())
@@ -442,20 +439,20 @@ async fn session_capability_objects_match_wire_contract() {
     assert_eq!(s["resources"], serde_json::json!([]));
 }
 
-/// A runtime that parks on a tool needing approval, then completes on resume.
-struct ParkingFake;
+/// A runtime that awaits on a tool needing approval, then completes on resume.
+struct AwaitingFake;
 
 #[async_trait::async_trait]
-impl SessionRuntime for ParkingFake {
+impl SessionRuntime for AwaitingFake {
     async fn run(
         &self,
         _agent: &str,
         _thread: &str,
         _content: Vec<ContentBlock>,
     ) -> Result<StepOutcome, RunError> {
-        // The assistant asked to run a tool; the run parked before executing it.
-        Ok(StepOutcome {
-            messages: vec![Message {
+        // The assistant asked to run a tool; the run awaiting before executing it.
+        Ok(StepOutcome::awaiting(
+            vec![Message {
                 id: Id("a1".into()),
                 role: Role::Assistant,
                 content: vec![ContentBlock::ToolUse {
@@ -464,17 +461,15 @@ impl SessionRuntime for ParkingFake {
                     input: serde_json::json!({ "path": "x.txt", "content": "hi" }),
                 }],
             }],
-            stop: Terminus::Parked,
-            pending: Some(Pending {
+            Some(Pending {
                 tool_use_id: "call-1".into(),
                 name: "write".into(),
                 input: serde_json::json!({ "path": "x.txt" }),
                 client_executed: false,
             }),
-            compacted: false,
-            rescheduled: false,
-            failure: None,
-        })
+            false,
+            false,
+        ))
     }
     async fn resume(
         &self,
@@ -483,24 +478,17 @@ impl SessionRuntime for ParkingFake {
         decision: Decision,
     ) -> Result<StepOutcome, RunError> {
         assert!(decision.allow);
-        Ok(StepOutcome {
-            messages: vec![
-                Message {
-                    id: Id("t1".into()),
-                    role: Role::Tool,
-                    content: vec![ContentBlock::ToolResult {
-                        tool_use_id: "call-1".into(),
-                        content: vec![ContentBlock::text("wrote x.txt")],
-                    }],
-                },
-                Message::text(Id("a2".into()), Role::Assistant, "done"),
-            ],
-            stop: Terminus::End,
-            pending: None,
-            compacted: false,
-            rescheduled: false,
-            failure: None,
-        })
+        Ok(ended(vec![
+            Message {
+                id: Id("t1".into()),
+                role: Role::Tool,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call-1".into(),
+                    content: vec![ContentBlock::text("wrote x.txt")],
+                }],
+            },
+            Message::text(Id("a2".into()), Role::Assistant, "done"),
+        ]))
     }
     async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
         Ok(())
@@ -664,11 +652,11 @@ async fn session_records_outcome_evaluations() {
 }
 
 #[tokio::test]
-async fn hitl_park_confirm_resume() {
-    let app = router(Arc::new(ManagedState::new(ParkingFake)));
+async fn hitl_await_confirm_resume() {
+    let app = router(Arc::new(ManagedState::new(AwaitingFake)));
     let id = create(&app).await;
 
-    // 1. A message -> the run parks with requires_action.
+    // 1. A message -> the run awaits with requires_action.
     json_call(
         &app,
         "POST",
@@ -740,7 +728,7 @@ async fn hitl_park_confirm_resume() {
     assert_eq!(last_idle["stop_reason"]["type"], "end_turn");
 }
 
-/// A runtime that parks on a *client-executed* tool, then completes on the
+/// A runtime that awaits on a *client-executed* tool, then completes on the
 /// client's result.
 struct CustomToolFake;
 
@@ -752,8 +740,8 @@ impl SessionRuntime for CustomToolFake {
         _t: &str,
         _c: Vec<ContentBlock>,
     ) -> Result<StepOutcome, RunError> {
-        Ok(StepOutcome {
-            messages: vec![Message {
+        Ok(StepOutcome::awaiting(
+            vec![Message {
                 id: Id("a1".into()),
                 role: Role::Assistant,
                 content: vec![ContentBlock::ToolUse {
@@ -762,17 +750,15 @@ impl SessionRuntime for CustomToolFake {
                     input: serde_json::json!({ "question": "6x7" }),
                 }],
             }],
-            stop: Terminus::Parked,
-            pending: Some(Pending {
+            Some(Pending {
                 tool_use_id: "cc1".into(),
                 name: "submit_answer".into(),
                 input: serde_json::json!({ "question": "6x7" }),
                 client_executed: true,
             }),
-            compacted: false,
-            rescheduled: false,
-            failure: None,
-        })
+            false,
+            false,
+        ))
     }
     async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("expected custom result"))
@@ -784,24 +770,17 @@ impl SessionRuntime for CustomToolFake {
         content: &str,
         _e: bool,
     ) -> Result<StepOutcome, RunError> {
-        Ok(StepOutcome {
-            messages: vec![
-                Message {
-                    id: Id("tr".into()),
-                    role: Role::Tool,
-                    content: vec![ContentBlock::ToolResult {
-                        tool_use_id: "cc1".into(),
-                        content: vec![ContentBlock::text(content)],
-                    }],
-                },
-                Message::text(Id("a2".into()), Role::Assistant, format!("got: {content}")),
-            ],
-            stop: Terminus::End,
-            pending: None,
-            compacted: false,
-            rescheduled: false,
-            failure: None,
-        })
+        Ok(ended(vec![
+            Message {
+                id: Id("tr".into()),
+                role: Role::Tool,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "cc1".into(),
+                    content: vec![ContentBlock::text(content)],
+                }],
+            },
+            Message::text(Id("a2".into()), Role::Assistant, format!("got: {content}")),
+        ]))
     }
     async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
         Ok(())
@@ -821,11 +800,11 @@ impl SessionRuntime for CustomToolFake {
 }
 
 #[tokio::test]
-async fn custom_tool_use_park_and_result() {
+async fn custom_tool_use_await_and_result() {
     let app = router(Arc::new(ManagedState::new(CustomToolFake)));
     let id = create(&app).await;
 
-    // A message -> the client tool parks as agent.custom_tool_use.
+    // A message -> the client tool awaits as agent.custom_tool_use.
     json_call(
         &app,
         "POST",
@@ -934,18 +913,18 @@ async fn accept_only_events_are_acknowledged() {
     );
 }
 
-/// A generic `user.tool_result` (keyed by `tool_use_id`) resumes a parked run just
+/// A generic `user.tool_result` (keyed by `tool_use_id`) resumes an awaiting run just
 /// like `user.custom_tool_result` — both inbound arms land in `resume_custom`
 /// (events.rs). The receipt-only test above proves acknowledgement; this proves the
 /// generic arm actually drives the resume to completion. `CustomToolFake` is reused
-/// unchanged because it parks a client tool and completes in `resume_custom`.
+/// unchanged because it awaits a client tool and completes in `resume_custom`.
 #[tokio::test]
-async fn generic_tool_result_resumes_a_parked_run() {
+async fn generic_tool_result_resumes_an_awaiting_run() {
     let app = router(Arc::new(ManagedState::new(CustomToolFake)));
     let id = create(&app).await;
 
-    // A message parks the client tool (asserted by the custom-tool test); here we
-    // only need the park so the generic result has a run to resume.
+    // A message awaits the client tool (asserted by the custom-tool test); here we
+    // only need the await so the generic result has a run to resume.
     json_call(
         &app,
         "POST",
@@ -1092,18 +1071,11 @@ impl SessionRuntime for InterruptRedirectFake {
     ) -> Result<StepOutcome, RunError> {
         let text = Message::new(Id("u".into()), Role::User, content).text_content();
         self.order.lock().unwrap().push(format!("run:{text}"));
-        Ok(StepOutcome {
-            messages: vec![Message::text(
-                Id("a".into()),
-                Role::Assistant,
-                format!("on it: {text}"),
-            )],
-            stop: Terminus::End,
-            pending: None,
-            compacted: false,
-            rescheduled: false,
-            failure: None,
-        })
+        Ok(ended(vec![Message::text(
+            Id("a".into()),
+            Role::Assistant,
+            format!("on it: {text}"),
+        )]))
     }
     async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))

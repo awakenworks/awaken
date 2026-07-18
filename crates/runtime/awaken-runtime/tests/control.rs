@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunIngress, Runtime};
@@ -128,10 +128,10 @@ async fn pre_cancelled_run_commits_a_terminal_cancelled_outcome() {
         .with_cancellation(token);
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::Cancelled));
+    assert_eq!(outcome, RunState::Ended(EndCause::Cancelled));
     assert_eq!(
-        commit.committed().latest_run.unwrap().phase,
-        Phase::Ended(EndCause::Cancelled)
+        commit.committed().latest_run.unwrap().state,
+        RunState::Ended(EndCause::Cancelled)
     );
 }
 
@@ -161,11 +161,11 @@ async fn live_cancel_steers_an_in_flight_run() {
     release.notify_one();
 
     let outcome = handle.await.expect("join").expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::Cancelled));
+    assert_eq!(outcome, RunState::Ended(EndCause::Cancelled));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn live_pause_parks_an_in_flight_run_at_the_next_boundary() {
+async fn live_pause_awaits_an_in_flight_run_at_the_next_boundary() {
     use awaken_runtime_contract::pause::PauseSignal;
 
     let started = Arc::new(Notify::new());
@@ -181,7 +181,7 @@ async fn live_pause_parks_an_in_flight_run_at_the_next_boundary() {
     let handle = tokio::spawn(async move { runtime_for_run.execute(activation(), context).await });
 
     // Once the first inference is in-flight (so the run is registered), pause it via
-    // live control; it parks at the boundary after the step completes.
+    // live control; it awaits at the boundary after the step completes.
     started.notified().await;
     runtime
         .deliver(LiveCommand::Pause {
@@ -191,7 +191,7 @@ async fn live_pause_parks_an_in_flight_run_at_the_next_boundary() {
     release.notify_one();
 
     let outcome = handle.await.expect("join").expect("runs");
-    assert_eq!(outcome, Phase::Waiting, "a paused run parks, not ends");
+    assert_eq!(outcome, RunState::Awaiting, "a paused run awaits, not ends");
 }
 
 /// Signals when inference starts, then never returns — a provider that hangs.
@@ -239,7 +239,7 @@ async fn live_cancel_aborts_a_hung_inference() {
         .expect("cancel aborts the hung inference")
         .expect("join")
         .expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::Cancelled));
+    assert_eq!(outcome, RunState::Ended(EndCause::Cancelled));
 }
 
 #[test]
@@ -288,7 +288,7 @@ async fn direct_ingress_runs_inline_and_rejects_durable() {
         .submit(activation(), RuntimeRunContext::new())
         .await
         .expect("inline run");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 
     // Durable submission fails closed on direct ingress (G5).
     assert!(matches!(
@@ -333,5 +333,5 @@ async fn wake_on_an_active_run_is_accepted() {
     );
     release.notify_one();
     let outcome = handle.await.expect("join").expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 }

@@ -1,14 +1,14 @@
 //! Resume command and the shared `ResumeValidator`.
 //!
-//! A parked run resumes only through a `ResumeCommand` that the runtime validates
-//! against the committed `WaitingTicket`: correlation, run/thread, executable
+//! A awaiting run resumes only through a `ResumeCommand` that the runtime validates
+//! against the committed `ResumeTicket`: correlation, run/thread, executable
 //! snapshot, catalog fingerprint, and deadline must all match, or the resume
 //! fails closed (G5/G28). The clock is supplied by the caller so the runtime
 //! core stays deterministic and replayable.
 
+use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::agent::waiting::WaitingTicket;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -16,10 +16,10 @@ use crate::resolved::CatalogFingerprint;
 use crate::snapshot::ExecutableAgentSnapshotId;
 use crate::tool::ToolOutput;
 
-/// What a resume delivers back into the parked run.
+/// What a resume delivers back into the awaiting run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ResumeResult {
-    /// A tool result for the call the run was waiting on.
+    /// A tool result for the call the run was awaiting on.
     ToolResult(ToolOutput),
     /// A permission decision: allow runs the tool, deny feeds a blocked result.
     Decision { allow: bool, note: Option<String> },
@@ -49,7 +49,7 @@ pub struct ResumeCommand {
     pub correlation_id: String,
     pub run_id: RunId,
     pub thread_id: ThreadId,
-    /// The parked run's executable snapshot identity — the same newtype the
+    /// The awaiting run's executable snapshot identity — the same newtype the
     /// snapshot and resolution paths carry, so the resume's identity check is
     /// type-safe (a fingerprint can never be passed where a snapshot id is meant).
     pub snapshot_id: ExecutableAgentSnapshotId,
@@ -64,7 +64,7 @@ impl ResumeCommand {
     /// from the ticket, so the caller supplies only the answer (`result`) and the
     /// clock (`now_ms`). Both the in-process driver and the durable worker use
     /// this — the ticket is the single source of the resume's identity.
-    pub fn from_ticket(ticket: &WaitingTicket, result: ResumeResult, now_ms: u64) -> Self {
+    pub fn from_ticket(ticket: &ResumeTicket, result: ResumeResult, now_ms: u64) -> Self {
         Self {
             correlation_id: ticket.correlation_id.clone(),
             run_id: ticket.run_id.clone(),
@@ -81,7 +81,7 @@ impl ResumeCommand {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ResumeError {
-    #[error("run is not waiting (no active ticket)")]
+    #[error("run is not awaiting (no active ticket)")]
     NotWaiting,
     #[error("resume correlation does not match the ticket")]
     CorrelationMismatch,
@@ -99,7 +99,7 @@ pub enum ResumeError {
 
 /// Validate a resume against the committed ticket. Every identity must match and
 /// the deadline (if any) must not have passed, or the resume fails closed.
-pub fn validate_resume(ticket: &WaitingTicket, command: &ResumeCommand) -> Result<(), ResumeError> {
+pub fn validate_resume(ticket: &ResumeTicket, command: &ResumeCommand) -> Result<(), ResumeError> {
     if ticket.correlation_id != command.correlation_id {
         return Err(ResumeError::CorrelationMismatch);
     }
@@ -128,16 +128,16 @@ pub fn validate_resume(ticket: &WaitingTicket, command: &ResumeCommand) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_agent_contract::agent::waiting::WaitingReason;
+    use awaken_agent_contract::agent::awaiting::AwaitReason;
 
-    fn ticket() -> WaitingTicket {
-        WaitingTicket {
+    fn ticket() -> ResumeTicket {
+        ResumeTicket {
             correlation_id: "c1".to_string(),
             run_id: RunId("run-1".to_string()),
             thread_id: ThreadId("thread-1".to_string()),
             snapshot_id: "snap-1".to_string(),
             catalog_fingerprint: "fp-1".to_string(),
-            reason: WaitingReason::ToolPermission,
+            reason: AwaitReason::ToolPermission,
             call_id: Some("call-1".to_string()),
             pending_tool: None,
             deadline_ms: Some(100),

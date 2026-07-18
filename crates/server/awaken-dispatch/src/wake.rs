@@ -29,7 +29,7 @@ pub trait WakeSignal: Send + Sync {
 }
 
 /// Single-process wake signal over a shared `tokio` notify. A hint published when
-/// no one is waiting is held for the next `wait` (one permit), so an in-process
+/// no one is awaiting is held for the next `wait` (one permit), so an in-process
 /// nudge is never lost.
 #[derive(Clone, Default)]
 pub struct LocalWakeSignal {

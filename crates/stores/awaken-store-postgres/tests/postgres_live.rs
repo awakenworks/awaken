@@ -8,15 +8,15 @@
 
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::awaiting::{AwaitReason, ResumeTicket};
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::{Command as StateCommand, MergePolicy, Scope};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::agent::waiting::{WaitingReason, WaitingTicket};
 use awaken_agent_contract::audit::draft::Draft;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
-use awaken_agent_contract::thread::commit::RunFact;
+use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error as CommitError};
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::run_store::RunStore;
@@ -81,35 +81,26 @@ fn message(id: &str, text: &str) -> Message {
     }
 }
 
-fn ended(run: &str) -> RunFact {
-    RunFact {
-        run_id: RunId(run.to_string()),
-        phase: Phase::Ended(EndCause::NaturalEnd),
-    }
+fn ended(run: &str) -> RunDisposition {
+    RunDisposition::ended(RunId(run.to_string()), EndCause::NaturalEnd)
 }
 
-fn running(run: &str) -> RunFact {
-    RunFact {
-        run_id: RunId(run.to_string()),
-        phase: Phase::Running,
-    }
+fn running(run: &str) -> RunDisposition {
+    RunDisposition::running(RunId(run.to_string()))
 }
 
-fn waiting_fact(run: &str) -> RunFact {
-    RunFact {
-        run_id: RunId(run.to_string()),
-        phase: Phase::Waiting,
-    }
+fn awaiting_disposition(run: &str) -> RunDisposition {
+    RunDisposition::awaiting(ticket(run, "thread-1"))
 }
 
-fn ticket(run: &str, thread: &str) -> WaitingTicket {
-    WaitingTicket {
+fn ticket(run: &str, thread: &str) -> ResumeTicket {
+    ResumeTicket {
         correlation_id: "corr-1".to_string(),
         run_id: RunId(run.to_string()),
         thread_id: ThreadId(thread.to_string()),
         snapshot_id: "snap-1".to_string(),
         catalog_fingerprint: "fp-1".to_string(),
-        reason: WaitingReason::ToolPermission,
+        reason: AwaitReason::ToolPermission,
         call_id: Some("call-1".to_string()),
         pending_tool: None,
         deadline_ms: None,
@@ -167,11 +158,11 @@ async fn conformance_terminal_run_is_fenced() {
 }
 
 #[tokio::test]
-async fn conformance_waiting_ticket_parks_then_clears() {
+async fn conformance_resume_ticket_awaits_then_clears() {
     let Some(store) = conformance_store("t_c_wait").await else {
         return;
     };
-    awaken_store_conformance::waiting_ticket_parks_then_clears(&store).await;
+    awaken_store_conformance::resume_ticket_awaits_then_clears(&store).await;
 }
 
 #[tokio::test]
@@ -243,11 +234,10 @@ async fn reconnect_replays_committed_state() {
         store
             .commit(ThreadCommit {
                 thread_id: thread.clone(),
-                run_fact: running("r-state"),
+                run: running("r-state"),
                 messages: vec![],
                 state: commands.clone(),
                 events: vec![],
-                waiting: None,
             })
             .await
             .expect("commit state");
@@ -284,7 +274,7 @@ async fn commit_persists_facts_messages_and_serves_reads() {
     let thread = ThreadId("thread-1".to_string());
     let commit = ThreadCommit {
         thread_id: thread.clone(),
-        run_fact: ended("run-1"),
+        run: ended("run-1"),
         messages: vec![message("m1", "hello"), message("m2", "world")],
         state: vec![StateCommand::set(
             Scope::Run,
@@ -293,10 +283,9 @@ async fn commit_persists_facts_messages_and_serves_reads() {
             serde_json::json!("v"),
         )],
         events: vec![Draft {
-            kind: EventKind::RunPhaseChanged,
+            kind: EventKind::RunStateChanged,
             payload: serde_json::json!({"n": 1}),
         }],
-        waiting: None,
     };
 
     let record = coordinator.commit(commit).await.expect("commit");
@@ -304,7 +293,7 @@ async fn commit_persists_facts_messages_and_serves_reads() {
     assert_eq!(coordinator.commit_count(), 1);
 
     let run = RunStore::get(&coordinator, &RunId("run-1".to_string())).expect("run record");
-    assert_eq!(run.phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(run.state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(run.thread_id, thread);
 
     let messages = ThreadReader::committed_messages(&coordinator, &thread);
@@ -342,11 +331,10 @@ async fn fence_increments_monotonically() {
         let record = coordinator
             .commit(ThreadCommit {
                 thread_id: ThreadId("thread-1".to_string()),
-                run_fact: ended(&format!("run-{expected}")),
+                run: ended(&format!("run-{expected}")),
                 messages: vec![],
                 state: vec![],
                 events: vec![],
-                waiting: None,
             })
             .await
             .expect("commit");
@@ -371,13 +359,12 @@ async fn post_terminal_commit_is_fenced_durably() {
     let thread = ThreadId("thread-1".to_string());
     let run = RunId("run-1".to_string());
 
-    let commit = |fact: RunFact, msg_id: &str, text: &str| ThreadCommit {
+    let commit = |fact: RunDisposition, msg_id: &str, text: &str| ThreadCommit {
         thread_id: thread.clone(),
-        run_fact: fact,
+        run: fact,
         messages: vec![message(msg_id, text)],
         state: vec![],
         events: vec![],
-        waiting: None,
     };
 
     // A mid-flight Running step, then the terminal Ended commit — both land.
@@ -409,8 +396,8 @@ async fn post_terminal_commit_is_fenced_durably() {
         "the rejected commit did not advance the fence"
     );
     assert_eq!(
-        RunStore::get(&coordinator, &run).map(|record| record.phase),
-        Some(Phase::Ended(EndCause::NaturalEnd)),
+        RunStore::get(&coordinator, &run).map(|record| record.state),
+        Some(RunState::Ended(EndCause::NaturalEnd)),
         "the run stays terminal"
     );
     let commit_rows: i64 =
@@ -428,7 +415,7 @@ async fn post_terminal_commit_is_fenced_durably() {
 }
 
 #[tokio::test]
-async fn waiting_ticket_parks_then_clears() {
+async fn resume_ticket_awaits_then_clears() {
     let Some(pool) = schema_pool("t_waiting").await else {
         return;
     };
@@ -440,29 +427,27 @@ async fn waiting_ticket_parks_then_clears() {
     coordinator
         .commit(ThreadCommit {
             thread_id: ThreadId("thread-1".to_string()),
-            run_fact: waiting_fact("run-1"),
+            run: awaiting_disposition("run-1"),
             messages: vec![],
             state: vec![],
             events: vec![],
-            waiting: Some(ticket("run-1", "thread-1")),
         })
         .await
-        .expect("park");
-    assert!(ThreadReader::waiting_ticket(&coordinator, &run).is_some());
+        .expect("await");
+    assert!(ThreadReader::resume_ticket(&coordinator, &run).is_some());
 
     coordinator
         .commit(ThreadCommit {
             thread_id: ThreadId("thread-1".to_string()),
-            run_fact: ended("run-1"),
+            run: ended("run-1"),
             messages: vec![],
             state: vec![],
             events: vec![],
-            waiting: None,
         })
         .await
         .expect("resume to terminal");
     assert!(
-        ThreadReader::waiting_ticket(&coordinator, &run).is_none(),
+        ThreadReader::resume_ticket(&coordinator, &run).is_none(),
         "a terminal run clears its ticket (fail closed)"
     );
 }
@@ -480,11 +465,10 @@ async fn connect_applies_migrations_and_serves_a_commit() {
     coordinator
         .commit(ThreadCommit {
             thread_id: ThreadId("thread-1".to_string()),
-            run_fact: ended("run-1"),
+            run: ended("run-1"),
             messages: vec![],
             state: vec![],
             events: vec![],
-            waiting: None,
         })
         .await
         .expect("commit");
@@ -509,11 +493,10 @@ async fn commit_maps_a_storage_failure_to_a_rejection() {
     let err = coordinator
         .commit(ThreadCommit {
             thread_id: ThreadId("thread-1".to_string()),
-            run_fact: ended("run-1"),
+            run: ended("run-1"),
             messages: vec![],
             state: vec![],
             events: vec![],
-            waiting: None,
         })
         .await
         .expect_err("insert fails");
@@ -536,11 +519,10 @@ async fn projection_rehydrates_from_postgres_after_reconnect() {
         coordinator
             .commit(ThreadCommit {
                 thread_id: ThreadId("thread-1".to_string()),
-                run_fact: waiting_fact("run-1"),
+                run: awaiting_disposition("run-1"),
                 messages: vec![message("m1", "persisted")],
                 state: vec![],
                 events: vec![],
-                waiting: Some(ticket("run-1", "thread-1")),
             })
             .await
             .expect("commit");
@@ -563,7 +545,7 @@ async fn projection_rehydrates_from_postgres_after_reconnect() {
         "run record rehydrated"
     );
     assert!(
-        ThreadReader::waiting_ticket(&restarted, &RunId("run-1".to_string())).is_some(),
+        ThreadReader::resume_ticket(&restarted, &RunId("run-1".to_string())).is_some(),
         "active ticket rehydrated"
     );
 }
@@ -605,11 +587,10 @@ async fn concurrent_commits_get_distinct_sequences_no_pk_collision() {
             coord
                 .commit(ThreadCommit {
                     thread_id: ThreadId(format!("thread-{i}")),
-                    run_fact: ended(&format!("run-{i}")),
+                    run: ended(&format!("run-{i}")),
                     messages: vec![message(&format!("m{i}"), "x")],
                     state: Vec::new(),
                     events: Vec::new(),
-                    waiting: None,
                 })
                 .await
         }));

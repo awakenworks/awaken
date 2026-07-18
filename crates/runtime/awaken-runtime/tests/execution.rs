@@ -5,11 +5,11 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink, replay_latest_phase};
+use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink, replay_latest_state};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
@@ -107,7 +107,7 @@ async fn one_model_step_commits_facts_and_streams_progress() {
         .execute(activation("catalog-a"), context)
         .await
         .expect("run executes");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 
     // Committed truth: the input commits at the first step boundary (under a
     // Running fact), the assistant reply with the terminal fact. The user
@@ -122,10 +122,10 @@ async fn one_model_step_commits_facts_and_streams_progress() {
 
     // Replay reads committed facts, not the live stream.
     assert_eq!(
-        replay_latest_phase(&committed, &RunId("run-1".to_string())),
-        Some(Phase::Ended(EndCause::NaturalEnd))
+        replay_latest_state(&committed, &RunId("run-1".to_string())),
+        Some(RunState::Ended(EndCause::NaturalEnd))
     );
-    // Two phase events: the transition into Running, then the terminal.
+    // Two state events: the transition into Running, then the terminal.
     assert_eq!(committed.events.len(), 2);
 
     // Live stream order is RunStarted -> OutputText -> RunFinished.
@@ -179,5 +179,5 @@ async fn run_without_commit_coordinator_still_completes() {
         .execute(activation("catalog-a"), RuntimeRunContext::new())
         .await
         .expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 }

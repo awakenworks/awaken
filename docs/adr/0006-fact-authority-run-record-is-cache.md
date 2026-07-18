@@ -6,7 +6,7 @@
 
 ## Context
 
-Each commit appends a run-projection fact (the run's `Phase`, ADR-0005) to the
+Each commit appends a run-projection fact (the run's `RunState`, ADR-0005) to the
 thread's append-only fact log, and also updates a convenience `RunRecord` read by
 the run-store port. Two reads of "where does the run stand" therefore exist: the
 latest committed fact, and the cached record. If the record were treated as an
@@ -21,9 +21,9 @@ This ADR fixes which one is the truth, before a second coordinator backend
 
 ### D1: The committed fact log is the read authority
 
-A run's authoritative current phase is the latest run-projection fact in the
+A run's authoritative current state is the latest run-projection fact in the
 thread's fact log. Replay and projection reconstruct run state from the log, not
-from any cached record. The log is append-only and ordered; an earlier `Waiting`
+from any cached record. The log is append-only and ordered; an earlier `Awaiting`
 fact and a later `Ended` fact both remain, and the latest one wins.
 
 ### D2: The run record is a derived cache, not a second authority
@@ -63,4 +63,4 @@ implementation rather than discovered per backend.
   `RunRecord`, and append-fence role catalog.
 - [INVARIANTS.md](../INVARIANTS.md) — G1/G13 (commit boundary) and the fact-log
   authority guardrail.
-- ADR-0005 — single stored authority inside the run (`Phase`/`EndCause`).
+- ADR-0005 — single stored authority inside the run (`RunState`/`EndCause`).

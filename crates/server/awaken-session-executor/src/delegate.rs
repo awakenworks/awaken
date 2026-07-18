@@ -211,7 +211,7 @@ impl AgentResolver for DelegationResolver {
         input: &str,
         cancellation: Option<&CancellationToken>,
     ) -> Result<AgentStep, AgentError> {
-        // The handle names the remote agent whose task parked for input; deliver
+        // The handle names the remote agent whose task awaiting for input; deliver
         // the user's input as a follow-up turn on the same context.
         let agent_id = handle
             .get("agent_id")

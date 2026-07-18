@@ -1,9 +1,9 @@
 //! Full durable-ingress end to end on Postgres: the dispatch queue and the
 //! commit boundary both persist, sharing one database (distinct scoped bundles).
 //!
-//! Proves the crown-jewel loop — a durable submit parks, the dispatch row
+//! Proves the crown-jewel loop — a durable submit awaits, the dispatch row
 //! survives a restart, and a delivered decision wakes and resumes the run to a
-//! committed terminal phase — against real storage. Skips when no Postgres is
+//! committed terminal state — against real storage. Skips when no Postgres is
 //! reachable.
 
 mod harness;
@@ -11,7 +11,7 @@ mod harness;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
@@ -82,7 +82,7 @@ fn pending(message_id: &str, correlation: &str, allow: bool) -> PendingInput {
 }
 
 #[tokio::test]
-async fn durable_submit_parks_then_delivered_decision_resumes_on_postgres() {
+async fn durable_submit_awaits_then_delivered_decision_resumes_on_postgres() {
     let Some(pool) = harness::schema_pool("t_e2e").await else {
         return;
     };
@@ -100,12 +100,12 @@ async fn durable_submit_parks_then_delivered_decision_resumes_on_postgres() {
     );
     let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
 
-    // Durable submit parks on the gate; the tool has not run.
-    let phase = ingress
+    // Durable submit awaits on the gate; the tool has not run.
+    let state = ingress
         .submit_background(activation("run-1"))
         .await
         .expect("submit");
-    assert_eq!(phase, Phase::Waiting);
+    assert_eq!(state, RunState::Awaiting);
     assert_eq!(ran.load(Ordering::SeqCst), 0);
 
     // A delivered allow decision wakes and resumes the run to completion.
@@ -126,12 +126,12 @@ async fn durable_submit_parks_then_delivered_decision_resumes_on_postgres() {
         )
         .await
         .expect("resume");
-    assert_eq!(resumed, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(resumed, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(Ordering::SeqCst), 1);
 
     // Committed truth is terminal.
     let record = RunStore::get(&*commit, &RunId("run-1".to_string())).expect("run record");
-    assert_eq!(record.phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(record.state, RunState::Ended(EndCause::NaturalEnd));
 }
 
 #[tokio::test]
@@ -220,7 +220,7 @@ async fn postgres_append_is_idempotent_and_stale_input_is_dropped() {
             .submit_background(activation("run-1"))
             .await
             .unwrap(),
-        Phase::Waiting
+        RunState::Awaiting
     );
 
     // A duplicate append is a no-op on Postgres too (stale correlation, so it
@@ -239,22 +239,22 @@ async fn postgres_append_is_idempotent_and_stale_input_is_dropped() {
     );
 
     // Stale input (wrong correlation) is dropped without resuming the run.
-    let phase = ingress
+    let state = ingress
         .deliver_resume(pending("stale", "old-ticket", true), 0)
         .await
         .expect("stale delivery");
-    assert_eq!(phase, Phase::Waiting);
+    assert_eq!(state, RunState::Awaiting);
     assert_eq!(ran.load(Ordering::SeqCst), 0, "stale input did not resume");
 
     // The correctly-correlated input (the earlier "dup") now resumes the run.
-    let phase = ingress
+    let state = ingress
         .deliver_resume(pending("good", TICKET, true), 0)
         .await
         .expect("good delivery");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(Ordering::SeqCst), 1);
     let record = RunStore::get(&*commit, &RunId("run-1".to_string())).expect("record");
-    assert_eq!(record.phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(record.state, RunState::Ended(EndCause::NaturalEnd));
 }
 
 #[tokio::test]
@@ -433,14 +433,14 @@ async fn concurrent_recovery_yields_one_winner_on_postgres() {
 }
 
 #[tokio::test]
-async fn parked_settle_fences_stale_epoch_on_postgres() {
-    let Some(pool) = harness::schema_pool("t_pg_fence_park").await else {
+async fn awaiting_settle_fences_stale_epoch_on_postgres() {
+    let Some(pool) = harness::schema_pool("t_pg_fence_await").await else {
         return;
     };
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_parked_settle_fences_stale_epoch(&store).await;
+    harness::assert_awaiting_settle_fences_stale_epoch(&store).await;
 }
 
 #[tokio::test]
@@ -522,7 +522,7 @@ async fn postgres_mid_flight_reclaim_keeps_the_committed_log_exactly_once() {
         .expect("enqueue");
 
     // Owner A drives in the background; it blocks inside the tool after committing the
-    // run's first `Running` fact (mid-step, no waiting ticket).
+    // run's first `Running` fact (mid-step, no awaiting ticket).
     let worker_a = Arc::new(
         DispatchWorker::new(runtime.clone(), store.clone(), commit.clone(), "owner-a")
             .with_lease_ms(LEASE),
@@ -543,8 +543,8 @@ async fn postgres_mid_flight_reclaim_keeps_the_committed_log_exactly_once() {
 
     let record = RunStore::get(&*commit, &run).expect("A committed a record");
     assert_eq!(
-        record.phase,
-        Phase::Running,
+        record.state,
+        RunState::Running,
         "A committed a mid-flight Running"
     );
 
@@ -555,7 +555,7 @@ async fn postgres_mid_flight_reclaim_keeps_the_committed_log_exactly_once() {
     let processed = worker_b.tick(LEASE + 1).await.expect("B drives");
     assert_eq!(
         processed,
-        Some((run.clone(), Phase::Ended(EndCause::NaturalEnd))),
+        Some((run.clone(), RunState::Ended(EndCause::NaturalEnd))),
         "B reclaimed the still-running run and drove it to completion"
     );
 
@@ -591,8 +591,8 @@ async fn postgres_mid_flight_reclaim_keeps_the_committed_log_exactly_once() {
     );
     let record = RunStore::get(&*commit, &run).expect("terminal record");
     assert_eq!(
-        record.phase,
-        Phase::Ended(EndCause::NaturalEnd),
+        record.state,
+        RunState::Ended(EndCause::NaturalEnd),
         "the run has a single terminal record"
     );
 }

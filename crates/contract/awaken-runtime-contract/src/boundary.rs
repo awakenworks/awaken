@@ -1,7 +1,7 @@
 //! The safe loop boundary as a shared kernel policy (ADR-0054).
 //!
 //! A *safe boundary* is the point in an execution loop where the current turn
-//! produced no tool calls and the run may continue, park, or end without
+//! produced no tool calls and the run may continue, await, or end without
 //! breaking the commit-at-boundary invariant. Historically only the native
 //! engine reached it (and only there did live-inbox steer take effect). This
 //! module makes the boundary decision a policy every executor shares — the
@@ -10,11 +10,11 @@
 //!
 //! The decision is over neutral [`Message`]s and a neutral [`LiveInbox`]; it names
 //! no protocol or backend. It *consumes* the inbox (a deterministic boundary
-//! effect) but never commits or parks — each executor owns its commit mechanism.
+//! effect) but never commits or awaits — each executor owns its commit mechanism.
 
+use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message};
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_agent_contract::agent::waiting::WaitingReason;
 
 use crate::runtime_context::RuntimeRunContext;
 
@@ -24,10 +24,10 @@ use crate::runtime_context::RuntimeRunContext;
 pub enum BoundaryOutcome {
     /// Fold these (already re-identified) messages into the next turn and continue.
     Continue { fold: Vec<Message> },
-    /// Commit these messages, then park durably with this reason (no next turn).
-    Park {
+    /// Commit these messages, then await durably for this reason (no next turn).
+    Await {
         fold: Vec<Message>,
-        reason: WaitingReason,
+        reason: AwaitReason,
     },
     /// No queued input, no pause — the caller consults its run-end guard.
     Idle,
@@ -73,8 +73,8 @@ fn drain_and_reidentify(
 
 /// Decide the boundary action. Priority: **pause preempts queued input preempts
 /// idle.** The inbox is always drained first (so no queued input is lost); on a
-/// pause the drained messages ride out with `Park { fold, .. }` to be committed
-/// before parking, so a steer message in flight when an operator pauses is not
+/// pause the drained messages ride out with `Await { fold, .. }` to be committed
+/// before awaiting, so a steer message in flight when an operator pauses is not
 /// dropped.
 pub fn evaluate_boundary(
     ctx: &RuntimeRunContext,
@@ -83,9 +83,9 @@ pub fn evaluate_boundary(
 ) -> BoundaryOutcome {
     let fold = drain_and_reidentify(ctx, run_id, transcript);
     if ctx.is_pause_requested() {
-        return BoundaryOutcome::Park {
+        return BoundaryOutcome::Await {
             fold,
-            reason: WaitingReason::ManualPause,
+            reason: AwaitReason::ManualPause,
         };
     }
     if !fold.is_empty() {
@@ -159,27 +159,27 @@ mod tests {
             .with_live_inbox(inbox)
             .with_pause(pause);
         match evaluate_boundary(&ctx, &run(), &[]) {
-            BoundaryOutcome::Park { fold, reason } => {
-                assert_eq!(reason, WaitingReason::ManualPause);
+            BoundaryOutcome::Await { fold, reason } => {
+                assert_eq!(reason, AwaitReason::ManualPause);
                 // The in-flight steer is not lost: it rides out to be committed.
                 assert_eq!(fold.len(), 1);
                 assert_eq!(fold[0].id.0, "r1-inbox-0");
             }
-            other => panic!("expected Park, got {other:?}"),
+            other => panic!("expected Await, got {other:?}"),
         }
     }
 
     #[test]
-    fn pause_with_empty_inbox_parks_with_no_fold() {
+    fn pause_with_empty_inbox_awaits_with_no_fold() {
         let pause = PauseSignal::new();
         pause.request();
         let ctx = RuntimeRunContext::new().with_pause(pause);
         match evaluate_boundary(&ctx, &run(), &[]) {
-            BoundaryOutcome::Park { fold, reason } => {
+            BoundaryOutcome::Await { fold, reason } => {
                 assert!(fold.is_empty());
-                assert_eq!(reason, WaitingReason::ManualPause);
+                assert_eq!(reason, AwaitReason::ManualPause);
             }
-            other => panic!("expected Park, got {other:?}"),
+            other => panic!("expected Await, got {other:?}"),
         }
     }
 }

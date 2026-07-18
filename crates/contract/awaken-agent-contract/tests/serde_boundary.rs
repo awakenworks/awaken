@@ -21,23 +21,23 @@ fn commit_boundary_values_are_plain_serializable_data() {
     assert_boundary::<staged::CommitRecord>();
 }
 
-// Phase is durable truth: every variant must survive a serde round trip, and
+// RunState is durable truth: every variant must survive a serde round trip, and
 // the mid-flight `Running` shape is pinned so step commits stay readable.
 #[test]
-fn phase_variants_round_trip_and_running_wire_shape_is_stable() {
-    use awaken_agent_contract::agent::run::{EndCause, Phase};
+fn state_variants_round_trip_and_running_wire_shape_is_stable() {
+    use awaken_agent_contract::agent::run::{EndCause, RunState};
 
-    for phase in [
-        Phase::Running,
-        Phase::Waiting,
-        Phase::Ended(EndCause::NaturalEnd),
+    for state in [
+        RunState::Running,
+        RunState::Awaiting,
+        RunState::Ended(EndCause::NaturalEnd),
     ] {
-        let json = serde_json::to_string(&phase).expect("serialize");
-        let back: Phase = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(phase, back);
+        let json = serde_json::to_string(&state).expect("serialize");
+        let back: RunState = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(state, back);
     }
     assert_eq!(
-        serde_json::to_string(&Phase::Running).expect("serialize"),
+        serde_json::to_string(&RunState::Running).expect("serialize"),
         "\"Running\""
     );
 }

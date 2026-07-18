@@ -2,7 +2,7 @@ pub mod awaken_sandbox
 pub mod awaken_sandbox::bridge
 pub struct awaken_sandbox::bridge::AcpBridge
 impl awaken_sandbox::bridge::AcpBridge
-pub async fn awaken_sandbox::bridge::AcpBridge::bind(&str) -> std::io::error::Result<(Self, core::net::socket_addr::SocketAddr)>
-pub async fn awaken_sandbox::bridge::AcpBridge::run(self, &[alloc::string::String]) -> std::io::error::Result<i32>
+pub async fn awaken_sandbox::bridge::AcpBridge::bind(&str) -> core::io::error::Result<(Self, core::net::socket_addr::SocketAddr)>
+pub async fn awaken_sandbox::bridge::AcpBridge::run(self, &[alloc::string::String]) -> core::io::error::Result<i32>
 pub const awaken_sandbox::bridge::DEFAULT_LISTEN: &str
 pub fn awaken_sandbox::bridge::parse_acp_args(&[alloc::string::String]) -> core::result::Result<(alloc::string::String, alloc::vec::Vec<alloc::string::String>), alloc::string::String>

@@ -1,5 +1,31 @@
 pub mod awaken_agent_contract
 pub mod awaken_agent_contract::agent
+pub mod awaken_agent_contract::agent::awaiting
+pub enum awaken_agent_contract::agent::awaiting::AwaitReason
+pub awaken_agent_contract::agent::awaiting::AwaitReason::BackgroundTasks
+pub awaken_agent_contract::agent::awaiting::AwaitReason::Delegation
+pub awaken_agent_contract::agent::awaiting::AwaitReason::ExternalEvent
+pub awaken_agent_contract::agent::awaiting::AwaitReason::ManualPause
+pub awaken_agent_contract::agent::awaiting::AwaitReason::RateLimit
+pub awaken_agent_contract::agent::awaiting::AwaitReason::ScheduledAction
+pub awaken_agent_contract::agent::awaiting::AwaitReason::ToolPermission
+pub awaken_agent_contract::agent::awaiting::AwaitReason::UserInput
+impl awaken_agent_contract::agent::awaiting::AwaitReason
+pub fn awaken_agent_contract::agent::awaiting::AwaitReason::as_stream_str(&self) -> &'static str
+pub struct awaken_agent_contract::agent::awaiting::PendingTool
+pub awaken_agent_contract::agent::awaiting::PendingTool::arguments: serde_json::value::Value
+pub awaken_agent_contract::agent::awaiting::PendingTool::resume_handle: core::option::Option<serde_json::value::Value>
+pub awaken_agent_contract::agent::awaiting::PendingTool::tool_id: alloc::string::String
+pub struct awaken_agent_contract::agent::awaiting::ResumeTicket
+pub awaken_agent_contract::agent::awaiting::ResumeTicket::call_id: core::option::Option<alloc::string::String>
+pub awaken_agent_contract::agent::awaiting::ResumeTicket::catalog_fingerprint: alloc::string::String
+pub awaken_agent_contract::agent::awaiting::ResumeTicket::correlation_id: alloc::string::String
+pub awaken_agent_contract::agent::awaiting::ResumeTicket::deadline_ms: core::option::Option<u64>
+pub awaken_agent_contract::agent::awaiting::ResumeTicket::pending_tool: core::option::Option<awaken_agent_contract::agent::awaiting::PendingTool>
+pub awaken_agent_contract::agent::awaiting::ResumeTicket::reason: awaken_agent_contract::agent::awaiting::AwaitReason
+pub awaken_agent_contract::agent::awaiting::ResumeTicket::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_agent_contract::agent::awaiting::ResumeTicket::snapshot_id: alloc::string::String
+pub awaken_agent_contract::agent::awaiting::ResumeTicket::thread_id: awaken_agent_contract::agent::thread::Id
 pub mod awaken_agent_contract::agent::content
 pub enum awaken_agent_contract::agent::content::ContentBlock
 pub awaken_agent_contract::agent::content::ContentBlock::Image
@@ -70,14 +96,17 @@ pub awaken_agent_contract::agent::run::Failure::StateConflict
 impl awaken_agent_contract::agent::run::Failure
 pub fn awaken_agent_contract::agent::run::Failure::code(&self) -> &str
 pub fn awaken_agent_contract::agent::run::Failure::message(&self) -> alloc::string::String
-pub enum awaken_agent_contract::agent::run::Phase
-pub awaken_agent_contract::agent::run::Phase::Ended(awaken_agent_contract::agent::run::EndCause)
-pub awaken_agent_contract::agent::run::Phase::Running
-pub awaken_agent_contract::agent::run::Phase::Waiting
+pub enum awaken_agent_contract::agent::run::RunState
+pub awaken_agent_contract::agent::run::RunState::Awaiting
+pub awaken_agent_contract::agent::run::RunState::Ended(awaken_agent_contract::agent::run::EndCause)
+pub awaken_agent_contract::agent::run::RunState::Running
+impl awaken_agent_contract::agent::run::RunState
+pub fn awaken_agent_contract::agent::run::RunState::is_terminal(&self) -> bool
+pub fn awaken_agent_contract::agent::run::RunState::permits(&self, &Self) -> bool
 pub struct awaken_agent_contract::agent::run::Id(pub alloc::string::String)
 pub struct awaken_agent_contract::agent::run::Record
 pub awaken_agent_contract::agent::run::Record::id: awaken_agent_contract::agent::run::Id
-pub awaken_agent_contract::agent::run::Record::phase: awaken_agent_contract::agent::run::Phase
+pub awaken_agent_contract::agent::run::Record::state: awaken_agent_contract::agent::run::RunState
 pub awaken_agent_contract::agent::run::Record::thread_id: awaken_agent_contract::agent::thread::Id
 pub mod awaken_agent_contract::agent::state
 pub enum awaken_agent_contract::agent::state::Action
@@ -142,32 +171,6 @@ pub struct awaken_agent_contract::agent::thread::Id(pub alloc::string::String)
 pub struct awaken_agent_contract::agent::thread::Record
 pub awaken_agent_contract::agent::thread::Record::id: awaken_agent_contract::agent::thread::Id
 pub awaken_agent_contract::agent::thread::Record::latest_run_id: core::option::Option<awaken_agent_contract::agent::run::Id>
-pub mod awaken_agent_contract::agent::waiting
-pub enum awaken_agent_contract::agent::waiting::WaitingReason
-pub awaken_agent_contract::agent::waiting::WaitingReason::BackgroundTasks
-pub awaken_agent_contract::agent::waiting::WaitingReason::Delegation
-pub awaken_agent_contract::agent::waiting::WaitingReason::ExternalEvent
-pub awaken_agent_contract::agent::waiting::WaitingReason::ManualPause
-pub awaken_agent_contract::agent::waiting::WaitingReason::RateLimit
-pub awaken_agent_contract::agent::waiting::WaitingReason::ScheduledAction
-pub awaken_agent_contract::agent::waiting::WaitingReason::ToolPermission
-pub awaken_agent_contract::agent::waiting::WaitingReason::UserInput
-impl awaken_agent_contract::agent::waiting::WaitingReason
-pub fn awaken_agent_contract::agent::waiting::WaitingReason::as_stream_str(&self) -> &'static str
-pub struct awaken_agent_contract::agent::waiting::PendingTool
-pub awaken_agent_contract::agent::waiting::PendingTool::arguments: serde_json::value::Value
-pub awaken_agent_contract::agent::waiting::PendingTool::resume_handle: core::option::Option<serde_json::value::Value>
-pub awaken_agent_contract::agent::waiting::PendingTool::tool_id: alloc::string::String
-pub struct awaken_agent_contract::agent::waiting::WaitingTicket
-pub awaken_agent_contract::agent::waiting::WaitingTicket::call_id: core::option::Option<alloc::string::String>
-pub awaken_agent_contract::agent::waiting::WaitingTicket::catalog_fingerprint: alloc::string::String
-pub awaken_agent_contract::agent::waiting::WaitingTicket::correlation_id: alloc::string::String
-pub awaken_agent_contract::agent::waiting::WaitingTicket::deadline_ms: core::option::Option<u64>
-pub awaken_agent_contract::agent::waiting::WaitingTicket::pending_tool: core::option::Option<awaken_agent_contract::agent::waiting::PendingTool>
-pub awaken_agent_contract::agent::waiting::WaitingTicket::reason: awaken_agent_contract::agent::waiting::WaitingReason
-pub awaken_agent_contract::agent::waiting::WaitingTicket::run_id: awaken_agent_contract::agent::run::Id
-pub awaken_agent_contract::agent::waiting::WaitingTicket::snapshot_id: alloc::string::String
-pub awaken_agent_contract::agent::waiting::WaitingTicket::thread_id: awaken_agent_contract::agent::thread::Id
 pub mod awaken_agent_contract::audit
 pub mod awaken_agent_contract::audit::draft
 pub struct awaken_agent_contract::audit::draft::Draft
@@ -179,9 +182,9 @@ pub mod awaken_agent_contract::audit::kind
 pub enum awaken_agent_contract::audit::kind::Kind
 pub awaken_agent_contract::audit::kind::Kind::Continuation
 pub awaken_agent_contract::audit::kind::Kind::PermissionDecided
-pub awaken_agent_contract::audit::kind::Kind::RunPhaseChanged
+pub awaken_agent_contract::audit::kind::Kind::RunAwaiting
 pub awaken_agent_contract::audit::kind::Kind::RunResumed
-pub awaken_agent_contract::audit::kind::Kind::RunWaiting
+pub awaken_agent_contract::audit::kind::Kind::RunStateChanged
 pub awaken_agent_contract::audit::kind::Kind::StateChanged
 pub mod awaken_agent_contract::audit::record
 pub struct awaken_agent_contract::audit::record::Record
@@ -197,10 +200,10 @@ pub awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided
 pub awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided::call_id: alloc::string::String
 pub awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided::decision: alloc::string::String
 pub awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided::tool_id: alloc::string::String
-pub awaken_agent_contract::audit::run_event::RunEvent::RunPhaseChanged
-pub awaken_agent_contract::audit::run_event::RunEvent::RunPhaseChanged::phase: awaken_agent_contract::agent::run::Phase
-pub awaken_agent_contract::audit::run_event::RunEvent::RunWaiting
-pub awaken_agent_contract::audit::run_event::RunEvent::RunWaiting::run_id: alloc::string::String
+pub awaken_agent_contract::audit::run_event::RunEvent::RunAwaiting
+pub awaken_agent_contract::audit::run_event::RunEvent::RunAwaiting::run_id: alloc::string::String
+pub awaken_agent_contract::audit::run_event::RunEvent::RunStateChanged
+pub awaken_agent_contract::audit::run_event::RunEvent::RunStateChanged::state: awaken_agent_contract::agent::run::RunState
 pub awaken_agent_contract::audit::run_event::RunEvent::StateChanged
 pub awaken_agent_contract::audit::run_event::RunEvent::StateChanged::commands: usize
 impl core::convert::From<awaken_agent_contract::audit::run_event::RunEvent> for awaken_agent_contract::audit::draft::Draft
@@ -227,6 +230,8 @@ pub awaken_agent_contract::event::agent::Fact::AssistantMessage
 pub awaken_agent_contract::event::agent::Fact::AssistantMessage::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_agent_contract::event::agent::Fact::AssistantMessage::id: alloc::string::String
 pub awaken_agent_contract::event::agent::Fact::AssistantThinking
+pub awaken_agent_contract::event::agent::Fact::Awaiting
+pub awaken_agent_contract::event::agent::Fact::Awaiting::pending_tool_use_id: core::option::Option<alloc::string::String>
 pub awaken_agent_contract::event::agent::Fact::Continuation
 pub awaken_agent_contract::event::agent::Fact::Continuation::detail: serde_json::value::Value
 pub awaken_agent_contract::event::agent::Fact::Continuation::steered: bool
@@ -245,8 +250,6 @@ pub awaken_agent_contract::event::agent::Fact::ToolResult
 pub awaken_agent_contract::event::agent::Fact::ToolResult::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_agent_contract::event::agent::Fact::ToolResult::id: alloc::string::String
 pub awaken_agent_contract::event::agent::Fact::ToolResult::is_error: bool
-pub awaken_agent_contract::event::agent::Fact::Waiting
-pub awaken_agent_contract::event::agent::Fact::Waiting::pending_tool_use_id: core::option::Option<alloc::string::String>
 pub enum awaken_agent_contract::event::agent::ToolDisposition
 pub awaken_agent_contract::event::agent::ToolDisposition::Executed
 pub awaken_agent_contract::event::agent::ToolDisposition::PendingBuiltin
@@ -277,9 +280,9 @@ pub fn awaken_agent_contract::event::fold::Transcoder::transcode(&mut self, &awa
 pub fn awaken_agent_contract::event::fold::Transcoder::transcode_facts(&mut self, &[awaken_agent_contract::event::agent::Fact]) -> alloc::vec::Vec<Self::Output>
 pub fn awaken_agent_contract::event::fold::fold_history(&[awaken_agent_contract::agent::message::Message], &mut impl awaken_agent_contract::event::fold::HistorySink)
 pub fn awaken_agent_contract::event::fold::fold_messages(&[awaken_agent_contract::agent::message::Message], core::option::Option<(&str, bool)>) -> alloc::vec::Vec<awaken_agent_contract::event::agent::Fact>
-pub fn awaken_agent_contract::event::fold::fold_step(&[awaken_agent_contract::agent::message::Message], &awaken_agent_contract::agent::run::Phase, core::option::Option<(&str, bool)>) -> alloc::vec::Vec<awaken_agent_contract::event::agent::Fact>
-pub fn awaken_agent_contract::event::fold::terminal(&awaken_agent_contract::agent::run::Phase, core::option::Option<(&str, bool)>) -> awaken_agent_contract::event::agent::Fact
-pub fn awaken_agent_contract::event::fold::terminal_waiting(core::option::Option<&str>) -> awaken_agent_contract::event::agent::Fact
+pub fn awaken_agent_contract::event::fold::fold_step(&[awaken_agent_contract::agent::message::Message], &awaken_agent_contract::agent::run::RunState, core::option::Option<(&str, bool)>) -> alloc::vec::Vec<awaken_agent_contract::event::agent::Fact>
+pub fn awaken_agent_contract::event::fold::terminal(&awaken_agent_contract::agent::run::RunState, core::option::Option<(&str, bool)>) -> awaken_agent_contract::event::agent::Fact
+pub fn awaken_agent_contract::event::fold::terminal_awaiting(core::option::Option<&str>) -> awaken_agent_contract::event::agent::Fact
 pub enum awaken_agent_contract::event::AgentEvent
 pub awaken_agent_contract::event::AgentEvent::Delta(awaken_agent_contract::event::agent::Delta)
 pub awaken_agent_contract::event::AgentEvent::Fact(awaken_agent_contract::event::agent::Fact)
@@ -300,6 +303,8 @@ pub awaken_agent_contract::event::Fact::AssistantMessage
 pub awaken_agent_contract::event::Fact::AssistantMessage::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_agent_contract::event::Fact::AssistantMessage::id: alloc::string::String
 pub awaken_agent_contract::event::Fact::AssistantThinking
+pub awaken_agent_contract::event::Fact::Awaiting
+pub awaken_agent_contract::event::Fact::Awaiting::pending_tool_use_id: core::option::Option<alloc::string::String>
 pub awaken_agent_contract::event::Fact::Continuation
 pub awaken_agent_contract::event::Fact::Continuation::detail: serde_json::value::Value
 pub awaken_agent_contract::event::Fact::Continuation::steered: bool
@@ -318,8 +323,6 @@ pub awaken_agent_contract::event::Fact::ToolResult
 pub awaken_agent_contract::event::Fact::ToolResult::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_agent_contract::event::Fact::ToolResult::id: alloc::string::String
 pub awaken_agent_contract::event::Fact::ToolResult::is_error: bool
-pub awaken_agent_contract::event::Fact::Waiting
-pub awaken_agent_contract::event::Fact::Waiting::pending_tool_use_id: core::option::Option<alloc::string::String>
 pub enum awaken_agent_contract::event::Tier
 pub awaken_agent_contract::event::Tier::Delta
 pub awaken_agent_contract::event::Tier::Fact
@@ -348,9 +351,9 @@ pub fn awaken_agent_contract::event::Transcoder::transcode_facts(&mut self, &[aw
 pub fn awaken_agent_contract::event::classify(&awaken_agent_contract::event::agent::AgentEvent) -> awaken_agent_contract::event::classify::Routing
 pub fn awaken_agent_contract::event::fold_history(&[awaken_agent_contract::agent::message::Message], &mut impl awaken_agent_contract::event::fold::HistorySink)
 pub fn awaken_agent_contract::event::fold_messages(&[awaken_agent_contract::agent::message::Message], core::option::Option<(&str, bool)>) -> alloc::vec::Vec<awaken_agent_contract::event::agent::Fact>
-pub fn awaken_agent_contract::event::fold_step(&[awaken_agent_contract::agent::message::Message], &awaken_agent_contract::agent::run::Phase, core::option::Option<(&str, bool)>) -> alloc::vec::Vec<awaken_agent_contract::event::agent::Fact>
-pub fn awaken_agent_contract::event::terminal(&awaken_agent_contract::agent::run::Phase, core::option::Option<(&str, bool)>) -> awaken_agent_contract::event::agent::Fact
-pub fn awaken_agent_contract::event::terminal_waiting(core::option::Option<&str>) -> awaken_agent_contract::event::agent::Fact
+pub fn awaken_agent_contract::event::fold_step(&[awaken_agent_contract::agent::message::Message], &awaken_agent_contract::agent::run::RunState, core::option::Option<(&str, bool)>) -> alloc::vec::Vec<awaken_agent_contract::event::agent::Fact>
+pub fn awaken_agent_contract::event::terminal(&awaken_agent_contract::agent::run::RunState, core::option::Option<(&str, bool)>) -> awaken_agent_contract::event::agent::Fact
+pub fn awaken_agent_contract::event::terminal_awaiting(core::option::Option<&str>) -> awaken_agent_contract::event::agent::Fact
 pub mod awaken_agent_contract::model_spec
 pub enum awaken_agent_contract::model_spec::Modality
 pub awaken_agent_contract::model_spec::Modality::Audio
@@ -440,31 +443,66 @@ pub awaken_agent_contract::thread::commit::coordinator::Error::Rejected(alloc::s
 pub trait awaken_agent_contract::thread::commit::coordinator::Coordinator: core::marker::Send + core::marker::Sync
 pub fn awaken_agent_contract::thread::commit::coordinator::Coordinator::commit<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::thread::commit::staged::ThreadCommit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub mod awaken_agent_contract::thread::commit::run
-pub async fn awaken_agent_contract::thread::commit::run::commit_run(&dyn awaken_agent_contract::thread::commit::coordinator::Coordinator, &awaken_agent_contract::agent::thread::Id, &awaken_agent_contract::agent::run::Id, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, awaken_agent_contract::agent::run::Phase, core::option::Option<awaken_agent_contract::agent::waiting::WaitingTicket>, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>) -> core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>
+pub async fn awaken_agent_contract::thread::commit::run::commit_run(&dyn awaken_agent_contract::thread::commit::coordinator::Coordinator, &awaken_agent_contract::agent::thread::Id, awaken_agent_contract::thread::commit::staged::RunDisposition, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>) -> core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>
 pub mod awaken_agent_contract::thread::commit::run_fact
 pub struct awaken_agent_contract::thread::commit::run_fact::RunFact
-pub awaken_agent_contract::thread::commit::run_fact::RunFact::phase: awaken_agent_contract::agent::run::Phase
 pub awaken_agent_contract::thread::commit::run_fact::RunFact::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_agent_contract::thread::commit::run_fact::RunFact::state: awaken_agent_contract::agent::run::RunState
 pub mod awaken_agent_contract::thread::commit::staged
+pub enum awaken_agent_contract::thread::commit::staged::RunDisposition
+pub awaken_agent_contract::thread::commit::staged::RunDisposition::Awaiting(awaken_agent_contract::agent::awaiting::ResumeTicket)
+pub awaken_agent_contract::thread::commit::staged::RunDisposition::Ended
+pub awaken_agent_contract::thread::commit::staged::RunDisposition::Ended::cause: awaken_agent_contract::agent::run::EndCause
+pub awaken_agent_contract::thread::commit::staged::RunDisposition::Ended::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_agent_contract::thread::commit::staged::RunDisposition::Running
+pub awaken_agent_contract::thread::commit::staged::RunDisposition::Running::run_id: awaken_agent_contract::agent::run::Id
+impl awaken_agent_contract::thread::commit::staged::RunDisposition
+pub fn awaken_agent_contract::thread::commit::staged::RunDisposition::awaiting(awaken_agent_contract::agent::awaiting::ResumeTicket) -> Self
+pub fn awaken_agent_contract::thread::commit::staged::RunDisposition::ended(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::EndCause) -> Self
+pub fn awaken_agent_contract::thread::commit::staged::RunDisposition::resume_ticket(&self) -> core::option::Option<&awaken_agent_contract::agent::awaiting::ResumeTicket>
+pub fn awaken_agent_contract::thread::commit::staged::RunDisposition::run_id(&self) -> &awaken_agent_contract::agent::run::Id
+pub fn awaken_agent_contract::thread::commit::staged::RunDisposition::running(awaken_agent_contract::agent::run::Id) -> Self
+pub fn awaken_agent_contract::thread::commit::staged::RunDisposition::state(&self) -> awaken_agent_contract::agent::run::RunState
 pub struct awaken_agent_contract::thread::commit::staged::CommitRecord
 pub awaken_agent_contract::thread::commit::staged::CommitRecord::sequence: u64
 pub struct awaken_agent_contract::thread::commit::staged::ThreadCommit
 pub awaken_agent_contract::thread::commit::staged::ThreadCommit::events: alloc::vec::Vec<awaken_agent_contract::audit::draft::Draft>
 pub awaken_agent_contract::thread::commit::staged::ThreadCommit::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
-pub awaken_agent_contract::thread::commit::staged::ThreadCommit::run_fact: awaken_agent_contract::thread::commit::run_fact::RunFact
+pub awaken_agent_contract::thread::commit::staged::ThreadCommit::run: awaken_agent_contract::thread::commit::staged::RunDisposition
 pub awaken_agent_contract::thread::commit::staged::ThreadCommit::state: alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
 pub awaken_agent_contract::thread::commit::staged::ThreadCommit::thread_id: awaken_agent_contract::agent::thread::Id
-pub awaken_agent_contract::thread::commit::staged::ThreadCommit::waiting: core::option::Option<awaken_agent_contract::agent::waiting::WaitingTicket>
 impl awaken_agent_contract::thread::commit::staged::ThreadCommit
-pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::assemble(awaken_agent_contract::agent::thread::Id, awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::Phase, bool, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>, core::option::Option<awaken_agent_contract::agent::waiting::WaitingTicket>, alloc::vec::Vec<awaken_agent_contract::audit::draft::Draft>) -> Self
+pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::assemble(awaken_agent_contract::agent::thread::Id, awaken_agent_contract::thread::commit::staged::RunDisposition, bool, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>, alloc::vec::Vec<awaken_agent_contract::audit::draft::Draft>) -> Self
+pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::resume_ticket(&self) -> core::option::Option<&awaken_agent_contract::agent::awaiting::ResumeTicket>
+pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::run_fact(&self) -> awaken_agent_contract::thread::commit::run_fact::RunFact
+pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::run_id(&self) -> &awaken_agent_contract::agent::run::Id
+pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::run_state(&self) -> awaken_agent_contract::agent::run::RunState
 pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::validate(&self) -> core::result::Result<(), awaken_agent_contract::thread::commit::staged::ValidationError>
+impl serde_core::ser::Serialize for awaken_agent_contract::thread::commit::staged::ThreadCommit
+pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::thread::commit::staged::ThreadCommit
+pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 pub struct awaken_agent_contract::thread::commit::staged::ValidationError(_)
 impl core::fmt::Display for awaken_agent_contract::thread::commit::staged::ValidationError
 pub fn awaken_agent_contract::thread::commit::staged::ValidationError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum awaken_agent_contract::thread::commit::RunDisposition
+pub awaken_agent_contract::thread::commit::RunDisposition::Awaiting(awaken_agent_contract::agent::awaiting::ResumeTicket)
+pub awaken_agent_contract::thread::commit::RunDisposition::Ended
+pub awaken_agent_contract::thread::commit::RunDisposition::Ended::cause: awaken_agent_contract::agent::run::EndCause
+pub awaken_agent_contract::thread::commit::RunDisposition::Ended::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_agent_contract::thread::commit::RunDisposition::Running
+pub awaken_agent_contract::thread::commit::RunDisposition::Running::run_id: awaken_agent_contract::agent::run::Id
+impl awaken_agent_contract::thread::commit::staged::RunDisposition
+pub fn awaken_agent_contract::thread::commit::staged::RunDisposition::awaiting(awaken_agent_contract::agent::awaiting::ResumeTicket) -> Self
+pub fn awaken_agent_contract::thread::commit::staged::RunDisposition::ended(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::EndCause) -> Self
+pub fn awaken_agent_contract::thread::commit::staged::RunDisposition::resume_ticket(&self) -> core::option::Option<&awaken_agent_contract::agent::awaiting::ResumeTicket>
+pub fn awaken_agent_contract::thread::commit::staged::RunDisposition::run_id(&self) -> &awaken_agent_contract::agent::run::Id
+pub fn awaken_agent_contract::thread::commit::staged::RunDisposition::running(awaken_agent_contract::agent::run::Id) -> Self
+pub fn awaken_agent_contract::thread::commit::staged::RunDisposition::state(&self) -> awaken_agent_contract::agent::run::RunState
 pub struct awaken_agent_contract::thread::commit::RunFact
-pub awaken_agent_contract::thread::commit::RunFact::phase: awaken_agent_contract::agent::run::Phase
 pub awaken_agent_contract::thread::commit::RunFact::run_id: awaken_agent_contract::agent::run::Id
-pub async fn awaken_agent_contract::thread::commit::commit_run(&dyn awaken_agent_contract::thread::commit::coordinator::Coordinator, &awaken_agent_contract::agent::thread::Id, &awaken_agent_contract::agent::run::Id, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, awaken_agent_contract::agent::run::Phase, core::option::Option<awaken_agent_contract::agent::waiting::WaitingTicket>, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>) -> core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>
+pub awaken_agent_contract::thread::commit::RunFact::state: awaken_agent_contract::agent::run::RunState
+pub async fn awaken_agent_contract::thread::commit::commit_run(&dyn awaken_agent_contract::thread::commit::coordinator::Coordinator, &awaken_agent_contract::agent::thread::Id, awaken_agent_contract::thread::commit::staged::RunDisposition, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>) -> core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>
 pub mod awaken_agent_contract::thread::read
 pub mod awaken_agent_contract::thread::read::checkpoint
 pub enum awaken_agent_contract::thread::read::checkpoint::EventScope
@@ -481,7 +519,7 @@ pub mod awaken_agent_contract::thread::read::thread_reader
 pub trait awaken_agent_contract::thread::read::thread_reader::ThreadReader: core::marker::Send + core::marker::Sync
 pub fn awaken_agent_contract::thread::read::thread_reader::ThreadReader::committed_messages(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub fn awaken_agent_contract::thread::read::thread_reader::ThreadReader::committed_state(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
-pub fn awaken_agent_contract::thread::read::thread_reader::ThreadReader::waiting_ticket(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::waiting::WaitingTicket>
+pub fn awaken_agent_contract::thread::read::thread_reader::ThreadReader::resume_ticket(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::awaiting::ResumeTicket>
 pub enum awaken_agent_contract::AgentEvent
 pub awaken_agent_contract::AgentEvent::Delta(awaken_agent_contract::event::agent::Delta)
 pub awaken_agent_contract::AgentEvent::Fact(awaken_agent_contract::event::agent::Fact)
@@ -529,12 +567,12 @@ pub fn awaken_agent_contract::secret::RedactedString::fmt(&self, &mut core::fmt:
 impl core::ops::drop::Drop for awaken_agent_contract::secret::RedactedString
 pub fn awaken_agent_contract::secret::RedactedString::drop(&mut self)
 pub struct awaken_agent_contract::RunFact
-pub awaken_agent_contract::RunFact::phase: awaken_agent_contract::agent::run::Phase
 pub awaken_agent_contract::RunFact::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_agent_contract::RunFact::state: awaken_agent_contract::agent::run::RunState
 pub struct awaken_agent_contract::RunId(pub alloc::string::String)
 pub struct awaken_agent_contract::RunRecord
 pub awaken_agent_contract::RunRecord::id: awaken_agent_contract::agent::run::Id
-pub awaken_agent_contract::RunRecord::phase: awaken_agent_contract::agent::run::Phase
+pub awaken_agent_contract::RunRecord::state: awaken_agent_contract::agent::run::RunState
 pub awaken_agent_contract::RunRecord::thread_id: awaken_agent_contract::agent::thread::Id
 pub struct awaken_agent_contract::StateKey(pub alloc::string::String)
 pub struct awaken_agent_contract::StreamEvent
@@ -543,13 +581,20 @@ pub awaken_agent_contract::StreamEvent::run_id: awaken_agent_contract::agent::ru
 pub struct awaken_agent_contract::ThreadCommit
 pub awaken_agent_contract::ThreadCommit::events: alloc::vec::Vec<awaken_agent_contract::audit::draft::Draft>
 pub awaken_agent_contract::ThreadCommit::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
-pub awaken_agent_contract::ThreadCommit::run_fact: awaken_agent_contract::thread::commit::run_fact::RunFact
+pub awaken_agent_contract::ThreadCommit::run: awaken_agent_contract::thread::commit::staged::RunDisposition
 pub awaken_agent_contract::ThreadCommit::state: alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
 pub awaken_agent_contract::ThreadCommit::thread_id: awaken_agent_contract::agent::thread::Id
-pub awaken_agent_contract::ThreadCommit::waiting: core::option::Option<awaken_agent_contract::agent::waiting::WaitingTicket>
 impl awaken_agent_contract::thread::commit::staged::ThreadCommit
-pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::assemble(awaken_agent_contract::agent::thread::Id, awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::Phase, bool, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>, core::option::Option<awaken_agent_contract::agent::waiting::WaitingTicket>, alloc::vec::Vec<awaken_agent_contract::audit::draft::Draft>) -> Self
+pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::assemble(awaken_agent_contract::agent::thread::Id, awaken_agent_contract::thread::commit::staged::RunDisposition, bool, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>, alloc::vec::Vec<awaken_agent_contract::audit::draft::Draft>) -> Self
+pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::resume_ticket(&self) -> core::option::Option<&awaken_agent_contract::agent::awaiting::ResumeTicket>
+pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::run_fact(&self) -> awaken_agent_contract::thread::commit::run_fact::RunFact
+pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::run_id(&self) -> &awaken_agent_contract::agent::run::Id
+pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::run_state(&self) -> awaken_agent_contract::agent::run::RunState
 pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::validate(&self) -> core::result::Result<(), awaken_agent_contract::thread::commit::staged::ValidationError>
+impl serde_core::ser::Serialize for awaken_agent_contract::thread::commit::staged::ThreadCommit
+pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::thread::commit::staged::ThreadCommit
+pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 pub struct awaken_agent_contract::ThreadId(pub alloc::string::String)
 pub trait awaken_agent_contract::CheckpointReader: awaken_agent_contract::thread::read::thread_reader::ThreadReader
 pub fn awaken_agent_contract::CheckpointReader::latest_run(&self, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>

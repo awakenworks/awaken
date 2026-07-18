@@ -2,9 +2,9 @@
 // operations surface.
 //
 // A run is background-submitted and the daemon drains it; the probe model's write
-// tool parks, so the run sits queued/parked in the dispatch store. We then cancel
+// tool awaits, so the run sits queued/awaiting in the dispatch store. We then cancel
 // it by id through the live-control seam: the runtime live channel has no in-flight
-// run, so it falls through to a DURABLE cancel of the queued/parked dispatch and
+// run, so it falls through to a DURABLE cancel of the queued/awaiting dispatch and
 // commits a terminal `Cancelled` fact. We also assert the seam is FAIL-CLOSED: an
 // unknown run id cannot be cancelled, and a wake with no live subscriber is a hard
 // error (G5) — durable-only operations never silently succeed.
@@ -51,9 +51,9 @@ async function main() {
     const sub = await post(`/v1/durable/threads/${T}/submit_background`, { text: 'CANCEL-ME' });
     assert.equal(sub.status, 200, 'background submit accepted');
     const runId = sub.body.run_id;
-    pass(`run ${runId} background-submitted; daemon parks it on the write tool`);
+    pass(`run ${runId} background-submitted; daemon awaits it on the write tool`);
 
-    // The queue snapshot shows the run once it is enqueued/parked (ADR-0025).
+    // The queue snapshot shows the run once it is enqueued/awaiting (ADR-0025).
     let snapshotted = false;
     for (let i = 0; i < 100; i++) {
       const snap = await (await fetch(`${BASE}/v1/durable/threads/${T}/dispatches`)).json();
@@ -66,7 +66,7 @@ async function main() {
     assert.ok(snapshotted, 'the dispatch queue snapshot lists the run (list_dispatches)');
     pass('dispatch queue snapshot surfaces the run and its status (ADR-0025)');
 
-    // Give the daemon a moment to claim + park the run, then cancel it by id.
+    // Give the daemon a moment to claim + await the run, then cancel it by id.
     let cancelled = false;
     for (let i = 0; i < 100; i++) {
       const res = await post(`/v1/durable/threads/${T}/cancel`, { run_id: runId });
@@ -76,8 +76,8 @@ async function main() {
       }
       await sleep(50);
     }
-    assert.ok(cancelled, 'the queued/parked run was cancelled via the durable live-control seam');
-    pass('durable cancel of a queued/parked run committed a terminal Cancelled fact (ADR-0018)');
+    assert.ok(cancelled, 'the queued/awaiting run was cancelled via the durable live-control seam');
+    pass('durable cancel of a queued/awaiting run committed a terminal Cancelled fact (ADR-0018)');
 
     // It stays cancelled: no `done` reply ever appears (a cancelled run never
     // resumes to completion).

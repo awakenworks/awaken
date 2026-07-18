@@ -133,7 +133,7 @@ Carriage and projection are symmetric to the outcome-eval precedent:
 
 - `TurnOutcome` (`state.rs:46`) gains `compacted: bool` (neutral).
 - `SessionRuntime::run_turn`'s host impl reads that marker back from durable
-  thread state at the **terminal** step only (`finish_step`), so a parked→resumed
+  thread state at the **terminal** step only (`finish_step`), so an awaiting→resumed
   turn — which shares one `run_id` — surfaces it exactly once.
 - `append_turn` (`state.rs:1208`) pushes an `OutboundKind::ThreadContextCompacted {}`
   **before** the turn's message events (compaction runs `BeforeInference`), then

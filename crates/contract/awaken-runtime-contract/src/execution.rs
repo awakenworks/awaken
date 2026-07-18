@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use awaken_agent_contract::agent::run::Phase;
+use awaken_agent_contract::agent::run::RunState;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -29,17 +29,17 @@ pub enum Cancellation {
     RemoteAbort,
 }
 
-/// What an executor can pause a run to wait for (park-and-resume). Kept minimal —
+/// What an executor can pause a run to wait for (await-and-resume). Kept minimal —
 /// only what the host branches on today.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wait {
-    /// The executor never parks waiting for out-of-band input.
+    /// The executor never awaits awaiting for out-of-band input.
     None,
-    /// It can park for input (a decision or a steered message).
+    /// It can await for input (a decision or a steered message).
     Input,
-    /// It can park for authorization.
+    /// It can await for authorization.
     Auth,
-    /// It can park for input or authorization.
+    /// It can await for input or authorization.
     Both,
 }
 
@@ -54,7 +54,7 @@ pub struct ExecutorCapabilities {
 
 impl ExecutorCapabilities {
     /// The native in-process loop: cooperative-token cancellation and durable
-    /// park-and-resume for input or authorization.
+    /// await-and-resume for input or authorization.
     pub const NATIVE: Self = Self {
         cancellation: Cancellation::CooperativeToken,
         wait: Wait::Both,
@@ -67,7 +67,7 @@ pub trait RunExecutor: Send + Sync {
         &self,
         activation: crate::activation::RunActivation,
         context: crate::runtime_context::RuntimeRunContext,
-    ) -> Result<Phase>;
+    ) -> Result<RunState>;
 
     /// The in-flight-control surface this executor supports. Defaults to the
     /// native-engine model; a backend over an opaque remote/CLI turn overrides it.
@@ -88,7 +88,7 @@ mod tests {
             &self,
             _activation: crate::activation::RunActivation,
             _context: crate::runtime_context::RuntimeRunContext,
-        ) -> Result<Phase> {
+        ) -> Result<RunState> {
             unreachable!("capabilities-only test")
         }
     }

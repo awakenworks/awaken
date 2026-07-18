@@ -1,17 +1,17 @@
-//! ScheduledAction (ADR-0020): a gate `Schedule` parks the run on a committed
+//! ScheduledAction (ADR-0020): a gate `Schedule` awaits the run on a committed
 //! ScheduledAction ticket; `perform_scheduled_action` runs the deferred action
-//! and commits the resumed outcome; a result for a run not parked on a scheduled
+//! and commits the resumed outcome; a result for a run not awaiting on a scheduled
 //! action fails closed; and cancel makes a late perform fail closed
 //! (RS-SCH-001/004, RS-CTRL-001).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::agent::waiting::WaitingReason;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
@@ -199,16 +199,16 @@ async fn scheduled_action_commits_then_perform_runs_it() {
     let runtime = runtime(ran.clone(), Arc::new(ScheduleGate));
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
-    // The run defers the call: it parks on a committed ScheduledAction ticket.
-    let phase = runtime
+    // The run defers the call: it awaits on a committed ScheduledAction ticket.
+    let state = runtime
         .execute(activation(), context(&commit))
         .await
         .expect("runs");
-    assert_eq!(phase, Phase::Waiting);
+    assert_eq!(state, RunState::Awaiting);
     let ticket = commit
-        .waiting_for(&RunId("run-1".to_string()))
+        .resume_ticket_for(&RunId("run-1".to_string()))
         .expect("a scheduled action is committed");
-    assert_eq!(ticket.reason, WaitingReason::ScheduledAction);
+    assert_eq!(ticket.reason, AwaitReason::ScheduledAction);
     assert_eq!(
         ran.load(Ordering::SeqCst),
         0,
@@ -216,7 +216,7 @@ async fn scheduled_action_commits_then_perform_runs_it() {
     );
 
     // Performing the committed action runs it and the run completes.
-    let phase = runtime
+    let state = runtime
         .perform_scheduled_action(
             &RunId("run-1".to_string()),
             commit.as_ref(),
@@ -225,14 +225,16 @@ async fn scheduled_action_commits_then_perform_runs_it() {
         )
         .await
         .expect("perform");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(
         ran.load(Ordering::SeqCst),
         1,
         "the deferred action ran once"
     );
     assert!(
-        commit.waiting_for(&RunId("run-1".to_string())).is_none(),
+        commit
+            .resume_ticket_for(&RunId("run-1".to_string()))
+            .is_none(),
         "the ticket is cleared once performed"
     );
 }
@@ -248,7 +250,7 @@ async fn performing_a_scheduled_action_twice_is_idempotent() {
     runtime
         .execute(activation(), context(&commit))
         .await
-        .expect("parks on a scheduled action");
+        .expect("awaits on a scheduled action");
     runtime
         .perform_scheduled_action(
             &RunId("run-1".to_string()),
@@ -270,7 +272,7 @@ async fn performing_a_scheduled_action_twice_is_idempotent() {
         )
         .await
         .expect_err("duplicate perform rejected");
-    assert!(err.to_string().contains("not waiting"));
+    assert!(err.to_string().contains("not awaiting"));
     assert_eq!(ran.load(Ordering::SeqCst), 1, "the action ran exactly once");
 }
 
@@ -282,29 +284,33 @@ async fn scheduling_an_unselected_plugin_action_kind_fails_closed() {
     let runtime = runtime(ran.clone(), Arc::new(UnknownKindGate));
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
-    let phase = runtime
+    let state = runtime
         .execute(activation(), context(&commit))
         .await
         .expect("runs to a terminal");
     assert_eq!(
-        phase,
-        Phase::Ended(EndCause::Error(
+        state,
+        RunState::Ended(EndCause::Error(
             awaken_agent_contract::agent::run::Failure::CapabilityBound
         ))
     );
     // No ticket is committed and the action never runs.
-    assert!(commit.waiting_for(&RunId("run-1".to_string())).is_none());
+    assert!(
+        commit
+            .resume_ticket_for(&RunId("run-1".to_string()))
+            .is_none()
+    );
     assert_eq!(ran.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
 async fn perform_on_a_non_scheduled_run_fails_closed() {
-    // RS-SCH-004: a result for a run not parked on a scheduled action is rejected.
+    // RS-SCH-004: a result for a run not awaiting on a scheduled action is rejected.
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(ran, Arc::new(SuspendGate));
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
-    // No such run: not waiting.
+    // No such run: not awaiting.
     let err = runtime
         .perform_scheduled_action(
             &RunId("ghost".to_string()),
@@ -314,13 +320,13 @@ async fn perform_on_a_non_scheduled_run_fails_closed() {
         )
         .await
         .expect_err("no run");
-    assert!(err.to_string().contains("not waiting"));
+    assert!(err.to_string().contains("not awaiting"));
 
-    // A run parked on a tool-permission ticket is not a scheduled action.
+    // A run awaiting on a tool-permission ticket is not a scheduled action.
     runtime
         .execute(activation(), context(&commit))
         .await
-        .expect("parks on permission");
+        .expect("awaits on permission");
     let err = runtime
         .perform_scheduled_action(
             &RunId("run-1".to_string()),
@@ -330,7 +336,10 @@ async fn perform_on_a_non_scheduled_run_fails_closed() {
         )
         .await
         .expect_err("not a scheduled action");
-    assert!(err.to_string().contains("not parked on a scheduled action"));
+    assert!(
+        err.to_string()
+            .contains("not awaiting on a scheduled action")
+    );
 }
 
 #[tokio::test]
@@ -341,16 +350,20 @@ async fn an_uncommitted_scheduled_action_is_not_wakeable() {
     let runtime = runtime(ran.clone(), Arc::new(ScheduleGate));
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
-    // Execute with no commit boundary: the run reaches a parked phase, but the
+    // Execute with no commit boundary: the run reaches an awaiting state, but the
     // candidate ticket is never persisted.
-    let phase = runtime
+    let state = runtime
         .execute(activation(), RuntimeRunContext::new())
         .await
         .expect("runs");
-    assert_eq!(phase, Phase::Waiting);
+    assert_eq!(state, RunState::Awaiting);
 
     // No committed ScheduledAction exists, so there is nothing to perform.
-    assert!(commit.waiting_for(&RunId("run-1".to_string())).is_none());
+    assert!(
+        commit
+            .resume_ticket_for(&RunId("run-1".to_string()))
+            .is_none()
+    );
     let err = runtime
         .perform_scheduled_action(
             &RunId("run-1".to_string()),
@@ -360,7 +373,7 @@ async fn an_uncommitted_scheduled_action_is_not_wakeable() {
         )
         .await
         .expect_err("uncommitted candidate is not wakeable");
-    assert!(err.to_string().contains("not waiting"));
+    assert!(err.to_string().contains("not awaiting"));
     assert_eq!(ran.load(Ordering::SeqCst), 0);
 }
 
@@ -376,7 +389,7 @@ async fn a_resume_with_a_wrong_fingerprint_for_a_scheduled_action_is_rejected() 
     runtime
         .execute(activation(), context(&commit))
         .await
-        .expect("parks on a scheduled action");
+        .expect("awaits on a scheduled action");
 
     let stale = ResumeCommand {
         correlation_id: "sched-1".to_string(),
@@ -399,7 +412,9 @@ async fn a_resume_with_a_wrong_fingerprint_for_a_scheduled_action_is_rejected() 
     assert!(!err.to_string().is_empty());
     assert_eq!(ran.load(Ordering::SeqCst), 0, "the action did not run");
     assert!(
-        commit.waiting_for(&RunId("run-1".to_string())).is_some(),
+        commit
+            .resume_ticket_for(&RunId("run-1".to_string()))
+            .is_some(),
         "the committed ticket is unchanged"
     );
 }
@@ -415,10 +430,10 @@ async fn a_stop_policy_makes_a_late_scheduled_result_fail_closed() {
     runtime
         .execute(activation(), context(&commit))
         .await
-        .expect("parks on a scheduled action");
+        .expect("awaits on a scheduled action");
 
     // The host stop policy commits a terminal Stopped(reason).
-    let phase = runtime
+    let state = runtime
         .stop_run(
             RunId("run-1".to_string()),
             ThreadId("thread-1".to_string()),
@@ -428,8 +443,8 @@ async fn a_stop_policy_makes_a_late_scheduled_result_fail_closed() {
         .await
         .expect("stop");
     assert_eq!(
-        phase,
-        Phase::Ended(EndCause::Stopped("budget exhausted".to_string()))
+        state,
+        RunState::Ended(EndCause::Stopped("budget exhausted".to_string()))
     );
 
     // A late scheduled perform is rejected; the action never runs.
@@ -442,7 +457,7 @@ async fn a_stop_policy_makes_a_late_scheduled_result_fail_closed() {
         )
         .await
         .expect_err("late perform rejected");
-    assert!(err.to_string().contains("not waiting"));
+    assert!(err.to_string().contains("not awaiting"));
     assert_eq!(ran.load(Ordering::SeqCst), 0);
 }
 
@@ -456,10 +471,10 @@ async fn cancel_makes_a_late_scheduled_perform_fail_closed() {
     runtime
         .execute(activation(), context(&commit))
         .await
-        .expect("parks on a scheduled action");
+        .expect("awaits on a scheduled action");
 
     // Cancel commits a terminal Cancelled and clears the ticket.
-    let phase = runtime
+    let state = runtime
         .cancel_run(
             RunId("run-1".to_string()),
             ThreadId("thread-1".to_string()),
@@ -467,7 +482,7 @@ async fn cancel_makes_a_late_scheduled_perform_fail_closed() {
         )
         .await
         .expect("cancel");
-    assert_eq!(phase, Phase::Ended(EndCause::Cancelled));
+    assert_eq!(state, RunState::Ended(EndCause::Cancelled));
 
     // A late perform is rejected without running the action or mutating facts.
     let err = runtime
@@ -479,6 +494,6 @@ async fn cancel_makes_a_late_scheduled_perform_fail_closed() {
         )
         .await
         .expect_err("late perform rejected");
-    assert!(err.to_string().contains("not waiting"));
+    assert!(err.to_string().contains("not awaiting"));
     assert_eq!(ran.load(Ordering::SeqCst), 0);
 }

@@ -8,7 +8,7 @@ new abstractions:
   `RunnableConfig` (what the model sees), their executables are registered on the
   `Runtime` (what runs). Ids match by construction.
 - **Permission** (ADR-0030): `read`/`glob`/`grep` are allowed; `write`/`edit`/
-  `bash` are *asked* — each mutation parks the run on a `WaitingTicket`, and the
+  `bash` are *asked* — each mutation leaves the run `Awaiting` with a `ResumeTicket`, and the
   caller approves (`y`) or denies it before it runs.
 - **Config**: `RunnableConfig::builder("coder")…` — built by hand, no config store.
 - **Turns**: `CodingSession::turn` drives one run and resumes it through each

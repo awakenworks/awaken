@@ -3,7 +3,7 @@
 //! running attempt, consumed only at safe loop boundaries.
 //!
 //! A run's inputs are otherwise fixed at activation and reopened only by
-//! resume after a park. The live inbox is the third input surface — "inject
+//! resume after an await. The live inbox is the third input surface — "inject
 //! while running" — for senders that outlive a single call site:
 //!
 //! - the engine drains it at natural-end/step boundaries and folds the
@@ -18,7 +18,7 @@
 //!
 //! Everything here is process-local and best-effort: entries still queued when
 //! the attempt closes are returned to the closer to route or drop, and the
-//! durable pending-input path stays the at-least-once channel for parked runs.
+//! durable pending-input path stays the at-least-once channel for awaiting runs.
 //!
 //! `LiveInbox` stays in the contract as a field of `RuntimeRunContext`
 //! (`runtime_context::RuntimeRunContext`) — the parameter object of the

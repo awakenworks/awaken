@@ -90,7 +90,7 @@ async fn unknown_method_is_method_not_found() {
 
 #[tokio::test]
 async fn tasks_get_reads_back_the_task_state() {
-    // `task-{thread}` recovers the context; a no-op runtime has no parked run, so
+    // `task-{thread}` recovers the context; a no-op runtime has no awaiting run, so
     // the task reads back as completed on that context.
     let r = rpc(json!({ "jsonrpc": "2.0", "id": 5, "method": "tasks/get", "params": { "id": "task-ctxA" } })).await;
     assert_eq!(r["id"], 5);
@@ -164,8 +164,8 @@ async fn tasks_cancel_without_an_id_is_invalid_params() {
 }
 
 #[tokio::test]
-async fn tasks_cancel_on_a_task_with_nothing_parked_is_not_falsely_canceled() {
-    // A cancel targeting a context with no parked run must report the task's
+async fn tasks_cancel_on_a_task_with_nothing_awaiting_is_not_falsely_canceled() {
+    // A cancel targeting a context with no awaiting run must report the task's
     // real state (a no-op runtime reads back `completed`), NOT `canceled` — the
     // client must not be told it canceled work that was never in flight.
     let r = rpc(

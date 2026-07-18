@@ -2,10 +2,10 @@
 // via the durable operations surface plus the standing dispatch daemon.
 //
 // A run is background-submitted and the daemon drains it; the probe model's write
-// tool parks for confirmation, so the run sits `parked` in the durable queue. We
+// tool awaits for confirmation, so the run sits `awaiting` in the durable queue. We
 // then POST /v1/durable/threads/:t/deliver: this STAGES a decision into the
 // durable OUTBOX (not a direct resume). The daemon relays the staged delivery from
-// the outbox to the parked run's pending input and wakes it — the run resumes,
+// the outbox to the awaiting run's pending input and wakes it — the run resumes,
 // reads back, and completes. This exercises the outbox stage → relay → wake path.
 //
 // Run: (from e2e/)  node managed_crossthread_e2e.mjs
@@ -44,12 +44,12 @@ async function main() {
   try {
     const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
 
-    // Background-submit: the daemon drains it and the probe's write tool parks.
+    // Background-submit: the daemon drains it and the probe's write tool awaits.
     const sub = await post(`/v1/durable/threads/${session.id}/submit_background`, { text: 'XTHREAD' });
     assert.equal(sub.status, 200, 'background submit accepted');
-    pass('run background-submitted; daemon will drain it to a parked tool');
+    pass('run background-submitted; daemon will drain it to an awaiting tool');
 
-    // Stage a cross-thread decision into the outbox once the run has parked. The
+    // Stage a cross-thread decision into the outbox once the run has awaiting. The
     // daemon relays it from the outbox and wakes the run.
     let staged = false;
     for (let i = 0; i < 100; i++) {
@@ -60,7 +60,7 @@ async function main() {
       }
       await sleep(50);
     }
-    assert.ok(staged, 'a decision was staged into the outbox for the parked run');
+    assert.ok(staged, 'a decision was staged into the outbox for the awaiting run');
     pass('decision staged into the durable outbox (ADR-0017)');
 
     // The daemon relays the staged delivery and the run resumes to completion.
@@ -74,7 +74,7 @@ async function main() {
       await sleep(50);
     }
     assert.ok(done, 'the daemon relayed the outbox delivery and the run resumed to completion');
-    pass('outbox delivery relayed → parked run woken and completed (ADR-0017)');
+    pass('outbox delivery relayed → awaiting run woken and completed (ADR-0017)');
 
     console.log('E2E PASS: durable outbox cross-thread delivery relayed by the daemon (ADR-0017).');
   } finally {

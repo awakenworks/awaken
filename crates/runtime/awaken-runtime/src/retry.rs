@@ -2,7 +2,7 @@
 //!
 //! Exponential backoff with equal jitter, a longer base for provider overload,
 //! and the server's `Retry-After` hint honored when it is longer than the
-//! computed backoff — capped so a misconfigured or hostile header cannot park
+//! computed backoff — capped so a misconfigured or hostile header cannot await
 //! the loop indefinitely. Permanent errors never reach this policy: the caller
 //! checks `Error::is_retryable()` first.
 

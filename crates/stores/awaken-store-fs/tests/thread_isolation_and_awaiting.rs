@@ -1,6 +1,6 @@
 //! Two durability properties the shared conformance suite (which uses a single,
 //! live store) does not exercise against the fs store: multi-thread isolation
-//! ACROSS a drop + reopen, and waiting-ticket durability across a reopen.
+//! ACROSS a drop + reopen, and awaiting-ticket durability across a reopen.
 //!
 //! The fs backend reuses the thread-keyed in-memory reference as its read model
 //! (`awaken-store-inmem`) and rebuilds it from the append-only log on open, so two
@@ -9,11 +9,11 @@
 //! single-instance isolation invariant is covered by the shared
 //! `two_threads_in_one_store_are_isolated` conformance case in `conformance.rs`.)
 
+use awaken_agent_contract::agent::awaiting::{AwaitReason, ResumeTicket};
 use awaken_agent_contract::agent::message::{Id as MsgId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::agent::waiting::{WaitingReason, WaitingTicket};
-use awaken_agent_contract::thread::commit::RunFact;
+use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::CheckpointReader;
@@ -23,10 +23,7 @@ use awaken_store_fs::FsCommitCoordinator;
 fn ended(thread: &str, run: &str, text: &str) -> ThreadCommit {
     ThreadCommit {
         thread_id: ThreadId(thread.to_string()),
-        run_fact: RunFact {
-            run_id: RunId(run.to_string()),
-            phase: Phase::Ended(EndCause::NaturalEnd),
-        },
+        run: RunDisposition::ended(RunId(run.to_string()), EndCause::NaturalEnd),
         messages: vec![Message::text(
             MsgId(format!("m-{text}")),
             Role::Assistant,
@@ -34,7 +31,6 @@ fn ended(thread: &str, run: &str, text: &str) -> ThreadCommit {
         )],
         state: Vec::new(),
         events: Vec::new(),
-        waiting: None,
     }
 }
 
@@ -88,25 +84,25 @@ async fn two_threads_stay_isolated_across_reopen() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-fn ticket(thread: &str, run: &str) -> WaitingTicket {
-    WaitingTicket {
+fn ticket(thread: &str, run: &str) -> ResumeTicket {
+    ResumeTicket {
         correlation_id: "corr-1".to_string(),
         run_id: RunId(run.to_string()),
         thread_id: ThreadId(thread.to_string()),
         snapshot_id: "snap-1".to_string(),
         catalog_fingerprint: "fp-1".to_string(),
-        reason: WaitingReason::ToolPermission,
+        reason: AwaitReason::ToolPermission,
         call_id: Some("call-1".to_string()),
         pending_tool: None,
         deadline_ms: None,
     }
 }
 
-// The fs conformance run only ever commits `waiting: None`; this pins that a parked
-// `Waiting` ticket is durable — it survives a drop + reopen because the append-only
-// log records the parking commit and replay re-parks it (ADR-0039 D4 / G5).
+// The fs conformance run only ever commits `awaiting: None`; this pins that an awaiting
+// `Awaiting` ticket is durable — it survives a drop + reopen because the append-only
+// log records the awaiting commit and replay re-awaits it (ADR-0039 D4 / G5).
 #[tokio::test]
-async fn waiting_ticket_is_durable_across_reopen() {
+async fn resume_ticket_is_durable_across_reopen() {
     let dir = std::env::temp_dir().join("awaken_store_fs_wait_durable");
     let _ = std::fs::remove_dir_all(&dir);
     let run = RunId("r1".to_string());
@@ -116,35 +112,31 @@ async fn waiting_ticket_is_durable_across_reopen() {
         store
             .commit(ThreadCommit {
                 thread_id: ThreadId("t1".to_string()),
-                run_fact: RunFact {
-                    run_id: run.clone(),
-                    phase: Phase::Waiting,
-                },
+                run: RunDisposition::awaiting(ticket("t1", "r1")),
                 messages: vec![Message::text(
                     MsgId("m1".to_string()),
                     Role::Assistant,
-                    "parked",
+                    "awaiting",
                 )],
                 state: Vec::new(),
                 events: Vec::new(),
-                waiting: Some(ticket("t1", "r1")),
             })
             .await
-            .expect("park");
+            .expect("await");
         assert!(
-            store.waiting_ticket(&run).is_some(),
-            "parked before restart"
+            store.resume_ticket(&run).is_some(),
+            "awaiting before restart"
         );
         // store dropped — the in-memory read model is gone; only the log remains
     }
 
     let reopened = FsCommitCoordinator::open(&dir).await.expect("reopen");
     assert!(
-        reopened.waiting_ticket(&run).is_some(),
-        "the active waiting ticket rehydrated from the durable log"
+        reopened.resume_ticket(&run).is_some(),
+        "the active awaiting ticket rehydrated from the durable log"
     );
     assert_eq!(
-        reopened.waiting_ticket(&run).map(|t| t.correlation_id),
+        reopened.resume_ticket(&run).map(|t| t.correlation_id),
         Some("corr-1".to_string()),
         "the rehydrated ticket carries its correlation"
     );
@@ -153,19 +145,15 @@ async fn waiting_ticket_is_durable_across_reopen() {
     reopened
         .commit(ThreadCommit {
             thread_id: ThreadId("t1".to_string()),
-            run_fact: RunFact {
-                run_id: run.clone(),
-                phase: Phase::Ended(EndCause::NaturalEnd),
-            },
+            run: RunDisposition::ended(run.clone(), EndCause::NaturalEnd),
             messages: Vec::new(),
             state: Vec::new(),
             events: Vec::new(),
-            waiting: None,
         })
         .await
         .expect("resume to terminal");
     assert!(
-        reopened.waiting_ticket(&run).is_none(),
+        reopened.resume_ticket(&run).is_none(),
         "a terminal run clears its ticket (fail closed)"
     );
 

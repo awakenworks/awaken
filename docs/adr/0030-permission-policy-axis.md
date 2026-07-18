@@ -26,19 +26,19 @@ It asks an injected `Arc<dyn PermissionPolicy>` and maps the decision to a
 |---|---|---|
 | `Allow` | `Allow` | execute the tool |
 | `Deny { reason }` | `Block { reason }` | feed a typed denied result to the model |
-| `Ask { ticket_id }` | `Suspend { ticket_id }` | park on a decision ticket |
+| `Ask { ticket_id }` | `Suspend { ticket_id }` | await on a decision ticket |
 
 The gate is the single authorization choke point; a tool never executes without a
 decision passing through it (G21, no-bypass).
 
-### D2: A DecisionTicket is a WaitingTicket, reused
+### D2: A DecisionTicket is a ResumeTicket, reused
 
-An `ask` parks on a `WaitingTicket` with `reason = ToolPermission` (ADR-0016's
+An `ask` awaits on a `ResumeTicket` with `reason = ToolPermission` (ADR-0016's
 machinery) — the design's *DecisionTicket* is that ticket, not a new type. The
 operator's later allow/deny arrives as a `ResumeResult::Decision`, validated
 against the committed ticket by the shared `ResumeValidator`; `allow` runs the
 committed pending tool, `deny` does not. The ask→approve→resume loop is the
-existing wait/resume capability, one waiting reason among several.
+existing wait/resume capability, one await reason among several.
 
 ### D3: Three decisions, not five — set_result and require_scope fold in
 
@@ -50,7 +50,7 @@ decisions are not separate control flow:
   control-flow variant.
 - **require_scope** (a credential grant is needed) is an `ask` whose ticket waits
   for a grant rather than a yes/no, or a `deny` for fail-fast — the same
-  park/resume, a different reason. No new variant.
+  await/resume, a different reason. No new variant.
 
 Keeping the enum minimal avoids redundant authorization paths.
 
@@ -66,7 +66,7 @@ call and no audit.
 
 - Authorization is real and uniform: every protected tool call passes a
   policy-backed gate, and the decision is committed for review.
-- The ask path reuses the waiting-ticket/resume machinery unchanged.
+- The ask path reuses the resume-ticket/resume machinery unchanged.
 - The decision enum is three-valued; richer needs map onto the gate's SetResult or
   the ask ticket, not new variants.
 - The concrete rule policy (Claude-Code-style patterns and modes) lives in
@@ -77,4 +77,4 @@ call and no audit.
 
 - [INVARIANTS.md](../INVARIANTS.md) — G1, G5, G9, G21, G26.
 - [permission-policy-axis.md](../design/permission-policy-axis.md) — the axis spec.
-- ADR-0016 — the waiting-ticket/resume a DecisionTicket reuses.
+- ADR-0016 — the resume-ticket/resume a DecisionTicket reuses.

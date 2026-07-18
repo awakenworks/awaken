@@ -42,7 +42,7 @@ async function send(client, sid, text) {
   });
 }
 
-// Send a user.message, tolerating a thread that is parked awaiting a tool decision:
+// Send a user.message, tolerating a thread that is awaiting awaiting a tool decision:
 // the server rejects a fresh message while gated, so approve any pending calls and
 // retry until it lands (or give up after a bounded number of tries).
 async function sendSafe(client, sid, text, approved) {
@@ -60,7 +60,7 @@ async function sendSafe(client, sid, text, approved) {
 }
 
 // Approve every gated (`evaluated_permission === 'ask'`) tool call not yet approved.
-// `write` is not auto-allowed (only read/glob/grep are), so writes park for a
+// `write` is not auto-allowed (only read/glob/grep are), so writes await for a
 // confirmation — this releases them.
 async function approveGated(client, sid, evs, approved) {
   for (const e of evs) {
@@ -90,7 +90,7 @@ async function driveUntil(client, sid, text, check, { nudges = 2, rounds = 16, n
   const approved = new Set();
   for (let attempt = 0; attempt <= nudges; attempt++) {
     // A nudge is a fresh user.message; `sendSafe` approves any pending gated call and
-    // retries so a parked thread ("awaiting a tool decision") still accepts it.
+    // retries so an awaiting thread ("awaiting a tool decision") still accepts it.
     if (await check(await listEvents(client, sid))) return { approved, ok: true };
     await sendSafe(client, sid, attempt === 0 ? text : nudgeText ?? text, approved);
     for (let i = 0; i < rounds; i++) {
@@ -161,7 +161,7 @@ async function main() {
         },
         { nudgeText: `You must call the write tool to create outputs/result.txt containing ${ARTIFACT}.` },
       );
-      assert.ok(artWrite.approved.size > 0, 'the write tool should have parked for a confirmation');
+      assert.ok(artWrite.approved.size > 0, 'the write tool should have awaiting for a confirmation');
       pass(`approved ${artWrite.approved.size} gated tool call(s) via user.tool_confirmation`);
       assert.ok(artWrite.ok && artifact, 'session artifact should be harvested + listed');
       pass(`artifact listed via files.list(scope_id): ${artifact.filename} (${artifact.id.slice(0, 12)})`);
@@ -205,7 +205,7 @@ async function main() {
         },
         { nudgeText: `Use the write tool to save the exact text ${MEMTOKEN} into your persistent memory file.` },
       );
-      assert.ok(memWrite.approved.size > 0, 'the memory write should have parked for a confirmation');
+      assert.ok(memWrite.approved.size > 0, 'the memory write should have awaiting for a confirmation');
       assert.ok(memWrite.ok, `memory store must hold the harvested note; got ${JSON.stringify(memContent.slice(0, 120))}`);
       pass(`model wrote to memory; host harvested it into the store: ${MEMTOKEN}`);
 

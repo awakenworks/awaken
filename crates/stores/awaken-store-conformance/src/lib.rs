@@ -6,25 +6,27 @@
 //! from their own test crate, each with a freshly constructed store, so the suite
 //! stays backend-agnostic and the media (inmem/fs/postgres/sqlite) cannot diverge.
 
+use awaken_agent_contract::agent::awaiting::{AwaitReason, ResumeTicket};
 use awaken_agent_contract::agent::message::{Id as MsgId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::{Command as StateCommand, MergePolicy, Scope};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::agent::waiting::{WaitingReason, WaitingTicket};
 use awaken_agent_contract::audit::draft::Draft;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
-use awaken_agent_contract::thread::commit::RunFact;
+use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
 
-fn checkpoint(thread: &ThreadId, run: &RunId, text: &str, phase: Phase) -> ThreadCommit {
+fn checkpoint(thread: &ThreadId, run: &RunId, text: &str, state: RunState) -> ThreadCommit {
+    let disposition = match state {
+        RunState::Running => RunDisposition::running(run.clone()),
+        RunState::Ended(cause) => RunDisposition::ended(run.clone(), cause),
+        RunState::Awaiting => panic!("awaiting checkpoints must be constructed with a ticket"),
+    };
     ThreadCommit {
         thread_id: thread.clone(),
-        run_fact: RunFact {
-            run_id: run.clone(),
-            phase,
-        },
+        run: disposition,
         messages: vec![Message::text(
             MsgId(format!("m-{text}")),
             Role::Assistant,
@@ -32,50 +34,45 @@ fn checkpoint(thread: &ThreadId, run: &RunId, text: &str, phase: Phase) -> Threa
         )],
         state: Vec::new(),
         events: vec![Draft {
-            kind: EventKind::RunPhaseChanged,
+            kind: EventKind::RunStateChanged,
             payload: serde_json::json!({ "text": text }),
         }],
-        waiting: None,
     }
 }
 
 fn ended_checkpoint(thread: &ThreadId, run: &RunId, text: &str) -> ThreadCommit {
-    checkpoint(thread, run, text, Phase::Ended(EndCause::NaturalEnd))
+    checkpoint(thread, run, text, RunState::Ended(EndCause::NaturalEnd))
 }
 
 fn running_checkpoint(thread: &ThreadId, run: &RunId, text: &str) -> ThreadCommit {
-    checkpoint(thread, run, text, Phase::Running)
+    checkpoint(thread, run, text, RunState::Running)
 }
 
-/// A waiting ticket correlated to `thread`/`run` — the shape `ThreadCommit::validate`
-/// accepts (matching run/thread ids), so parking never orphans a ticket.
-fn ticket(thread: &ThreadId, run: &RunId) -> WaitingTicket {
-    WaitingTicket {
+/// A awaiting ticket correlated to `thread`/`run` — the shape `ThreadCommit::validate`
+/// accepts (matching run/thread ids), so awaiting never orphans a ticket.
+fn ticket(thread: &ThreadId, run: &RunId) -> ResumeTicket {
+    ResumeTicket {
         correlation_id: "conf-corr".to_string(),
         run_id: run.clone(),
         thread_id: thread.clone(),
         snapshot_id: "conf-snap".to_string(),
         catalog_fingerprint: "conf-fp".to_string(),
-        reason: WaitingReason::ToolPermission,
+        reason: AwaitReason::ToolPermission,
         call_id: Some("conf-call".to_string()),
         pending_tool: None,
         deadline_ms: None,
     }
 }
 
-/// A `Waiting` checkpoint that parks the run with a correlated ticket, committed
-/// atomically with the phase transition.
-fn waiting_checkpoint(thread: &ThreadId, run: &RunId) -> ThreadCommit {
+/// A `Awaiting` checkpoint that awaits the run with a correlated ticket, committed
+/// atomically with the state transition.
+fn awaiting_checkpoint(thread: &ThreadId, run: &RunId) -> ThreadCommit {
     ThreadCommit {
         thread_id: thread.clone(),
-        run_fact: RunFact {
-            run_id: run.clone(),
-            phase: Phase::Waiting,
-        },
+        run: RunDisposition::awaiting(ticket(thread, run)),
         messages: Vec::new(),
         state: Vec::new(),
         events: Vec::new(),
-        waiting: Some(ticket(thread, run)),
     }
 }
 
@@ -84,14 +81,10 @@ fn waiting_checkpoint(thread: &ThreadId, run: &RunId) -> ThreadCommit {
 fn state_checkpoint(thread: &ThreadId, run: &RunId, state: Vec<StateCommand>) -> ThreadCommit {
     ThreadCommit {
         thread_id: thread.clone(),
-        run_fact: RunFact {
-            run_id: run.clone(),
-            phase: Phase::Running,
-        },
+        run: RunDisposition::running(run.clone()),
         messages: Vec::new(),
         state,
         events: Vec::new(),
-        waiting: None,
     }
 }
 
@@ -107,8 +100,8 @@ pub async fn commit_then_read<S: Coordinator + CheckpointReader>(store: &S) {
 
     assert_eq!(store.committed_messages(&thread).len(), 1, "transcript");
     assert_eq!(
-        store.run(&run).map(|record| record.phase),
-        Some(Phase::Ended(EndCause::NaturalEnd)),
+        store.run(&run).map(|record| record.state),
+        Some(RunState::Ended(EndCause::NaturalEnd)),
         "run record",
     );
     assert_eq!(
@@ -153,7 +146,7 @@ pub async fn events_ordered_and_paged<S: Coordinator + CheckpointReader>(store: 
     assert_eq!(rest[0].sequence, all[1].sequence, "cursor is exclusive");
 }
 
-/// Terminal-is-final (exactly-once committed log): once a run's committed phase
+/// Terminal-is-final (exactly-once committed log): once a run's committed state
 /// is terminal, any later commit for that same run is rejected and changes
 /// nothing — the transcript stays exactly-once even under a stale owner's
 /// duplicate post-terminal commit. Every backend enforces this identically
@@ -175,16 +168,16 @@ pub async fn terminal_run_is_fenced<S: Coordinator + CheckpointReader>(store: &S
     assert!(fenced.is_err(), "post-terminal commit is rejected");
 
     // The rejection left no partial state: exactly the one committed message, and
-    // the run's phase is still the original terminal fact.
+    // the run's state is still the original terminal fact.
     assert_eq!(
         store.committed_messages(&thread).len(),
         1,
         "no duplicate transcript after a fenced commit"
     );
     assert_eq!(
-        store.run(&run).map(|record| record.phase),
-        Some(Phase::Ended(EndCause::NaturalEnd)),
-        "phase unchanged by the fenced commit"
+        store.run(&run).map(|record| record.state),
+        Some(RunState::Ended(EndCause::NaturalEnd)),
+        "state unchanged by the fenced commit"
     );
 }
 
@@ -214,23 +207,23 @@ pub async fn commits_accumulate<S: Coordinator + CheckpointReader>(store: &S) {
     );
 }
 
-/// Waiting-ticket lifecycle: a `Waiting` checkpoint with a correlated ticket parks
-/// the run (the ticket becomes readable), and the next non-waiting commit
+/// Awaiting-ticket lifecycle: a `Awaiting` checkpoint with a correlated ticket awaits
+/// the run (the ticket becomes readable), and the next non-awaiting commit
 /// (resume/terminal) clears it so a stale resume against an old correlation finds
-/// nothing and fails closed (G5). Every backend parks/clears the ticket atomically
+/// nothing and fails closed (G5). Every backend awaits/clears the ticket atomically
 /// with the checkpoint, so a backend that leaked a cleared ticket — or dropped a
 /// live one — diverges here.
-pub async fn waiting_ticket_parks_then_clears<S: Coordinator + CheckpointReader>(store: &S) {
+pub async fn resume_ticket_awaits_then_clears<S: Coordinator + CheckpointReader>(store: &S) {
     let thread = ThreadId("conf-wait".to_string());
     let run = RunId("conf-wait-r".to_string());
 
     store
-        .commit(waiting_checkpoint(&thread, &run))
+        .commit(awaiting_checkpoint(&thread, &run))
         .await
-        .expect("park");
+        .expect("await");
     assert!(
-        store.waiting_ticket(&run).is_some(),
-        "a parked run exposes its ticket"
+        store.resume_ticket(&run).is_some(),
+        "an awaiting run exposes its ticket"
     );
 
     // Resume to a terminal fact clears the ticket.
@@ -239,7 +232,7 @@ pub async fn waiting_ticket_parks_then_clears<S: Coordinator + CheckpointReader>
         .await
         .expect("resume to terminal");
     assert!(
-        store.waiting_ticket(&run).is_none(),
+        store.resume_ticket(&run).is_none(),
         "a terminal run clears its ticket (fail closed)"
     );
 }
@@ -312,7 +305,7 @@ pub async fn two_threads_in_one_store_are_isolated<S: Coordinator + CheckpointRe
 }
 
 /// Empty-store reads: before any commit, every read port is absent — no messages,
-/// no run record, no latest run, no events (by run or thread scope), no waiting
+/// no run record, no latest run, no events (by run or thread scope), no awaiting
 /// ticket, no committed state. A backend that pre-materialized a partial or
 /// default row would diverge here (G13).
 pub async fn empty_store_reads_are_absent<S: Coordinator + CheckpointReader>(store: &S) {
@@ -337,7 +330,7 @@ pub async fn empty_store_reads_are_absent<S: Coordinator + CheckpointReader>(sto
             .is_empty(),
         "no thread-scoped events"
     );
-    assert!(store.waiting_ticket(&run).is_none(), "no waiting ticket");
+    assert!(store.resume_ticket(&run).is_none(), "no awaiting ticket");
     assert!(
         store.committed_state(&thread).is_empty(),
         "no committed state"

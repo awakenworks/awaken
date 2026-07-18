@@ -208,7 +208,7 @@ pub fn build_error_router() -> Router {
 /// A router that mounts `/v1/environments` and shares its state with the session
 /// surface, so a session created on a **self-hosted** environment is dispatched as a
 /// `session` work item. The self-hosted worker e2e polls the queue, claims that
-/// work, then drives the session — whose agent parks on a client-executed
+/// work, then drives the session — whose agent awaits on a client-executed
 /// `submit_answer` tool — by **running the tool and posting the result back**, the
 /// way a self-hosted worker executes the session's tool calls. Heartbeats the lease
 /// and stops the work on completion. `AWAKEN_MODEL_MODE=worker`.

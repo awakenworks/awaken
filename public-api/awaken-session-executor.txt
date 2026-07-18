@@ -62,7 +62,7 @@ pub awaken_session_executor::ThreadEvent::AgentLaunch::detail: core::option::Opt
 pub awaken_session_executor::ThreadEvent::AgentLaunch::stage: alloc::string::String
 pub awaken_session_executor::ThreadEvent::Committed(alloc::vec::Vec<awaken_agent_contract::agent::message::Message>)
 pub awaken_session_executor::ThreadEvent::StepEnded
-pub awaken_session_executor::ThreadEvent::StepEnded::waiting: bool
+pub awaken_session_executor::ThreadEvent::StepEnded::awaiting: bool
 pub enum awaken_session_executor::Wake
 pub awaken_session_executor::Wake::Nats
 pub awaken_session_executor::Wake::None
@@ -198,7 +198,7 @@ pub async fn awaken_session_executor::SharedHost::committed_messages(&self, &str
 pub async fn awaken_session_executor::SharedHost::define_outcome(&self, &str, &str, &str, u32) -> core::result::Result<awaken_session_executor::host::types::HostOutcomeReport, awaken_session_executor::host::types::HostError>
 pub fn awaken_session_executor::SharedHost::has_durable_thread(&self, &str) -> bool
 pub async fn awaken_session_executor::SharedHost::interrupt(&self, &str) -> core::result::Result<(), awaken_session_executor::host::types::HostError>
-pub async fn awaken_session_executor::SharedHost::is_parked(&self, &str) -> bool
+pub async fn awaken_session_executor::SharedHost::is_awaiting(&self, &str) -> bool
 pub async fn awaken_session_executor::SharedHost::pending_tool(&self, &str) -> core::option::Option<awaken_session_executor::host::types::PendingTool>
 pub async fn awaken_session_executor::SharedHost::resume(&self, &str, &str, awaken_session_executor::HostResume) -> core::result::Result<awaken_session_executor::host::types::RunResult, awaken_session_executor::host::types::HostError>
 pub async fn awaken_session_executor::SharedHost::run(&self, core::option::Option<&str>, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::result::Result<awaken_session_executor::host::types::RunResult, awaken_session_executor::host::types::HostError>

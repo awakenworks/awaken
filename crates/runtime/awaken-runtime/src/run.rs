@@ -8,11 +8,11 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::agent::waiting::WaitingTicket;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::catalog::RuntimeCatalogInstaller;
 use awaken_runtime_contract::execution::{Error, RunExecutor};
@@ -23,29 +23,29 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use crate::Runtime;
 
 impl Runtime {
-    /// Run `config` once on a fresh thread, returning the resulting phase.
+    /// Run `config` once on a fresh thread, returning the resulting state.
     ///
     /// This is the single-shot entry: it installs the config and executes once. If
-    /// the run parks on a tool approval it returns `Phase::Waiting` — use
+    /// the run awaits on a tool approval it returns `RunState::Awaiting` — use
     /// [`Runtime::run_to_completion`] to answer approvals and drive to a terminal
-    /// phase, or for multi-run (a stable thread).
+    /// state, or for multi-run (a stable thread).
     pub async fn run(
         &self,
         config: &RunnableConfig,
         input: impl Into<RunInput>,
         context: RuntimeRunContext,
-    ) -> Result<Phase, Error> {
+    ) -> Result<RunState, Error> {
         let (_run_id, activation) = self.prepare(config, next_id("thread"), input)?;
         self.execute(activation, context).await
     }
 
-    /// Run `config` once on `thread`, driving it to a terminal phase and
-    /// asking `decide` for the answer each time it parks on a tool approval.
+    /// Run `config` once on `thread`, driving it to a terminal state and
+    /// asking `decide` for the answer each time it awaits on a tool approval.
     ///
-    /// This owns the `execute → (park → decide → resume)* → end` loop, so callers
+    /// This owns the `execute → (await → decide → resume)* → end` loop, so callers
     /// never build activations, generate ids, or assemble resume commands. `decide`
     /// is the in-process twin of the durable queue's out-of-band decision delivery:
-    /// it sees the [`WaitingTicket`] (what is asked) and returns a [`ResumeResult`]
+    /// it sees the [`ResumeTicket`] (what is asked) and returns a [`ResumeResult`]
     /// (the answer). Pass a stable `thread` across runs for a multi-run
     /// conversation. The context must carry a history reader to resume.
     pub async fn run_to_completion<F>(
@@ -55,47 +55,47 @@ impl Runtime {
         input: impl Into<RunInput>,
         context: RuntimeRunContext,
         mut decide: F,
-    ) -> Result<Phase, Error>
+    ) -> Result<RunState, Error>
     where
-        F: FnMut(&WaitingTicket) -> ResumeResult,
+        F: FnMut(&ResumeTicket) -> ResumeResult,
     {
         let (run_id, activation) = self.prepare(config, thread.into(), input)?;
-        let mut phase = self.execute(activation, context.clone()).await?;
-        while phase == Phase::Waiting {
+        let mut state = self.execute(activation, context.clone()).await?;
+        while state == RunState::Awaiting {
             let reader = context.reader.as_deref().ok_or_else(|| {
-                Error::Execution("resuming a parked run needs a history reader".to_string())
+                Error::Execution("resuming an awaiting run needs a history reader".to_string())
             })?;
             let ticket = reader
-                .waiting_ticket(&run_id)
-                .ok_or_else(|| Error::Execution("waiting run has no ticket".to_string()))?;
+                .resume_ticket(&run_id)
+                .ok_or_else(|| Error::Execution("awaiting run has no ticket".to_string()))?;
             let command = ResumeCommand::from_ticket(&ticket, decide(&ticket), 0);
-            phase = self.resume(command, reader, context.clone()).await?;
+            state = self.resume(command, reader, context.clone()).await?;
         }
-        Ok(phase)
+        Ok(state)
     }
 
     /// Start one run of `config` on `thread` and drive it to its first pause or end,
-    /// returning the run id and phase. Unlike [`Runtime::run_to_completion`], it
-    /// does not answer a park: it returns `Phase::Waiting` so a durable caller
-    /// (HITL, an out-of-band client) can read the [`WaitingTicket`] and later
-    /// [`Runtime::resume`] the run by id. This is the public durable-park twin of
-    /// `run_to_completion` (ADR-0033); the caller owns the park→resume loop.
+    /// returning the run id and state. Unlike [`Runtime::run_to_completion`], it
+    /// does not answer an await: it returns `RunState::Awaiting` so a durable caller
+    /// (HITL, an out-of-band client) can read the [`ResumeTicket`] and later
+    /// [`Runtime::resume`] the run by id. This is the public durable-await twin of
+    /// `run_to_completion` (ADR-0033); the caller owns the await→resume loop.
     pub async fn start_run(
         &self,
         config: &RunnableConfig,
         thread: impl Into<String>,
         input: impl Into<RunInput>,
         context: RuntimeRunContext,
-    ) -> Result<(RunId, Phase), Error> {
+    ) -> Result<(RunId, RunState), Error> {
         let (run_id, activation) = self.prepare(config, thread.into(), input)?;
-        let phase = self.execute(activation, context).await?;
-        Ok((run_id, phase))
+        let state = self.execute(activation, context).await?;
+        Ok((run_id, state))
     }
 
     /// Idempotently install a config's catalog and register its snapshot, so a run
-    /// parked under this config can be resumed without a prior `start_run` — e.g.
+    /// awaiting under this config can be resumed without a prior `start_run` — e.g.
     /// after a restart, when a session is rebuilt from a durable store and the
-    /// waiting ticket's snapshot must resolve. Safe to call repeatedly.
+    /// awaiting ticket's snapshot must resolve. Safe to call repeatedly.
     pub fn install_for_resume(&self, config: &RunnableConfig) -> Result<(), Error> {
         self.install_catalog(config.install().clone())
             .map_err(|err| Error::Execution(err.to_string()))?;

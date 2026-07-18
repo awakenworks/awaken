@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::StateKey;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_ext_state_machine::{
@@ -173,11 +173,11 @@ async fn deny_then_corrected_read_write_reaches_terminal() {
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
-    let phase = runtime.execute(activation(), context).await.expect("runs");
+    let state = runtime.execute(activation(), context).await.expect("runs");
 
     // The run reached its natural end (the instance is terminal, so the
     // continuation guard did not steer).
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
     // The denied write's reason is committed and model-visible.
     let committed = commit.committed();
@@ -223,8 +223,8 @@ async fn warn_message_reaches_the_next_model_turn() {
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
-    let phase = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    let state = runtime.execute(activation(), context).await.expect("runs");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
     let committed = commit.committed();
     // The warn call was allowed (the write executed) and a warning reached the
@@ -276,8 +276,8 @@ async fn continuation_nudge_keeps_running_until_terminal() {
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
-    let phase = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    let state = runtime.execute(activation(), context).await.expect("runs");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
     let committed = commit.committed();
     // The guard steered the premature end with the interpolated summary.
@@ -331,14 +331,14 @@ async fn config_section_drives_the_machine_set() {
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
-    let phase = runtime
+    let state = runtime
         .execute(
             activation_configured(section("state_machine", READ_BEFORE_WRITE)),
             context,
         )
         .await
         .expect("runs");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
     let committed = commit.committed();
     assert!(
@@ -369,8 +369,8 @@ async fn no_section_leaves_calls_unconstrained() {
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
-    let phase = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    let state = runtime.execute(activation(), context).await.expect("runs");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert!(
         !commit
             .committed()
@@ -396,13 +396,13 @@ async fn malformed_section_fails_the_run_closed() {
     );
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
-    let phase = runtime
+    let state = runtime
         .execute(activation_configured(bad), context)
         .await
         .expect("runs");
     assert_eq!(
-        phase,
-        Phase::Ended(EndCause::Error(Failure::CapabilityBound)),
+        state,
+        RunState::Ended(EndCause::Error(Failure::CapabilityBound)),
         "a malformed plugin config fails the run closed"
     );
 }
@@ -495,8 +495,8 @@ async fn warn_emit_is_in_the_models_next_request() {
     install(&runtime);
 
     let context = RuntimeRunContext::new().with_commit(Arc::new(MemoryCommitCoordinator::new()));
-    let phase = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    let state = runtime.execute(activation(), context).await.expect("runs");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
     // Turn 0 (before the tool call) must NOT contain the emit; turn 1 (right after
     // the Write) MUST — proving it was injected between the two model calls.
@@ -529,8 +529,8 @@ async fn success_transition_emit_is_in_the_models_next_request() {
     install(&runtime);
 
     let context = RuntimeRunContext::new().with_commit(Arc::new(MemoryCommitCoordinator::new()));
-    let phase = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    let state = runtime.execute(activation(), context).await.expect("runs");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
     let emit = "saved a.rs; read it to verify";
     assert!(
@@ -544,20 +544,20 @@ async fn success_transition_emit_is_in_the_models_next_request() {
     );
 }
 
-/// A gate that parks the `Park` tool pending an out-of-band decision, and allows
-/// everything else — so a real tool runs (and the FSM emits) before the park.
-struct ParkTheParkTool;
+/// A gate that awaits the `Await` tool pending an out-of-band decision, and allows
+/// everything else — so a real tool runs (and the FSM emits) before the await.
+struct AwaitTheAwaitTool;
 
 #[async_trait::async_trait]
-impl ToolGateHook for ParkTheParkTool {
+impl ToolGateHook for AwaitTheAwaitTool {
     async fn gate(
         &self,
         ctx: &PermissionContext,
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> GateOutcome {
-        if ctx.tool_id == "Park" {
+        if ctx.tool_id == "Await" {
             GateOutcome::Suspend {
-                ticket_id: "park-ticket".to_string(),
+                ticket_id: "await-ticket".to_string(),
             }
         } else {
             GateOutcome::Allow
@@ -565,9 +565,9 @@ impl ToolGateHook for ParkTheParkTool {
     }
 }
 
-fn park_resume_command() -> ResumeCommand {
+fn await_resume_command() -> ResumeCommand {
     ResumeCommand {
-        correlation_id: "park-ticket".to_string(),
+        correlation_id: "await-ticket".to_string(),
         run_id: RunId("run-1".to_string()),
         thread_id: ThreadId("thread-1".to_string()),
         snapshot_id: awaken_runtime_contract::ExecutableAgentSnapshotId("snapshot-1".to_string()),
@@ -578,13 +578,13 @@ fn park_resume_command() -> ResumeCommand {
 }
 
 #[tokio::test]
-async fn emit_survives_a_park_and_is_in_the_resumed_request() {
-    // Turn 0 `Write` executes and the FSM emits guidance; turn 1 parks on a gated
-    // `Park` tool. After resume, the emit (committed on turn 0, before the park)
+async fn emit_survives_a_await_and_is_in_the_resumed_request() {
+    // Turn 0 `Write` executes and the FSM emits guidance; turn 1 awaits on a gated
+    // `Await` tool. After resume, the emit (committed on turn 0, before the await)
     // must still be in the message list the model is shown on the resumed turn.
     let llm = Arc::new(RecordingLlm::new(vec![
         AssistantOutput::from_tool_calls(vec![tool_call("c1", "Write", "a.rs")]),
-        AssistantOutput::from_tool_calls(vec![tool_call("c2", "Park", "a.rs")]),
+        AssistantOutput::from_tool_calls(vec![tool_call("c2", "Await", "a.rs")]),
     ]));
     let plugin =
         StateMachinePlugin::from_config(StateMachineConfig::from_json_str(EMIT_ON_WRITE).unwrap())
@@ -592,8 +592,8 @@ async fn emit_survives_a_park_and_is_in_the_resumed_request() {
     let runtime = Runtime::new()
         .with_llm(llm.clone())
         .with_tool(Arc::new(OkTool("Write")))
-        .with_tool(Arc::new(OkTool("Park")))
-        .with_gate(Arc::new(ParkTheParkTool))
+        .with_tool(Arc::new(OkTool("Await")))
+        .with_gate(Arc::new(AwaitTheAwaitTool))
         .with_plugin(Arc::new(plugin));
     install(&runtime);
     // Resume rebuilds the run from the snapshot registry, so register it.
@@ -601,23 +601,27 @@ async fn emit_survives_a_park_and_is_in_the_resumed_request() {
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
-    let parked = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(parked, Phase::Waiting, "the Park tool parks the run");
+    let awaiting = runtime.execute(activation(), context).await.expect("runs");
+    assert_eq!(
+        awaiting,
+        RunState::Awaiting,
+        "the Await tool awaits the run"
+    );
 
-    // Resume: the parked tool runs and the loop continues to a fresh inference.
+    // Resume: the awaiting tool runs and the loop continues to a fresh inference.
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let ended = runtime
-        .resume(park_resume_command(), commit.as_ref(), context)
+        .resume(await_resume_command(), commit.as_ref(), context)
         .await
         .expect("resume runs");
-    assert_eq!(ended, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(ended, RunState::Ended(EndCause::NaturalEnd));
 
     // The resumed inference (index 2 across the whole run) still carries the emit
-    // committed on turn 0 — proof it survived the park boundary.
+    // committed on turn 0 — proof it survived the await boundary.
     let emit = "saved a.rs; read it to verify";
     let resumed = llm.request_texts(2);
     assert!(
         resumed.iter().any(|t| t == emit),
-        "the emit must survive the park and appear in the resumed request: {resumed:?}"
+        "the emit must survive the await and appear in the resumed request: {resumed:?}"
     );
 }

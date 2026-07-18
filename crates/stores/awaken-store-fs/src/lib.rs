@@ -17,11 +17,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord};
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::agent::waiting::WaitingTicket;
 use awaken_agent_contract::audit::record::Record as EventRecord;
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error};
@@ -92,14 +92,14 @@ impl Coordinator for FsCommitCoordinator {
         // rejection paths inner enforces are (1) plan validation and (2) the
         // terminal fence; we mirror both, in the same order, before writing.
 
-        // (1) Plan validation: empty ids / a cross-run|thread waiting ticket are
+        // (1) Plan validation: empty ids / a cross-run|thread awaiting ticket are
         // rejected up front, exactly as the inner model does.
         commit
             .validate()
             .map_err(|err| Error::Rejected(err.to_string()))?;
 
         // (2) Terminal-is-final (exactly-once committed LOG under a stale reclaim):
-        // reject a post-terminal commit for a run whose committed phase is already
+        // reject a post-terminal commit for a run whose committed state is already
         // `Ended`. (See awaken-store-inmem for the full rationale on why a stale
         // owner's duplicate commit must be fenced.) This uses the per-run fact
         // lookup (`CheckpointReader::run`), not the latest-run cache
@@ -115,17 +115,12 @@ impl Coordinator for FsCommitCoordinator {
         // holds across processes sharing a log directory.
         if self
             .inner
-            .run(&commit.run_fact.run_id)
-            .is_some_and(|record| {
-                matches!(
-                    record.phase,
-                    awaken_agent_contract::agent::run::Phase::Ended(_)
-                )
-            })
+            .run(commit.run_id())
+            .is_some_and(|record| !record.state.permits(&commit.run_state()))
         {
             return Err(Error::Rejected(format!(
                 "run {} is already terminal; refusing post-terminal commit",
-                commit.run_fact.run_id.0
+                commit.run_id().0
             )));
         }
         // Durable first: append + fsync the record before it is acknowledged, so a
@@ -153,8 +148,8 @@ impl ThreadReader for FsCommitCoordinator {
         self.inner.committed_messages(thread_id)
     }
 
-    fn waiting_ticket(&self, run_id: &RunId) -> Option<WaitingTicket> {
-        self.inner.waiting_ticket(run_id)
+    fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket> {
+        self.inner.resume_ticket(run_id)
     }
 
     fn committed_state(&self, thread_id: &ThreadId) -> Vec<StateCommand> {
