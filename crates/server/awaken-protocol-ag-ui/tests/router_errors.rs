@@ -1,5 +1,5 @@
 //! Fail-closed resume over the real AG-UI router: a tool result delivered when no
-//! run is parked must produce a RUN_ERROR, not a silent success.
+//! run is awaiting must produce a RUN_ERROR, not a silent success.
 
 use std::sync::Arc;
 
@@ -12,10 +12,10 @@ use axum::http::Request;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-struct NoParkRuntime;
+struct NoAwaitingRuntime;
 
 #[async_trait::async_trait]
-impl ProtocolRuntime for NoParkRuntime {
+impl ProtocolRuntime for NoAwaitingRuntime {
     async fn run(
         &self,
         _thread: &str,
@@ -34,10 +34,10 @@ impl ProtocolRuntime for NoParkRuntime {
         _tool_use_id: &str,
         _resume: Resume,
     ) -> Result<StepOutcome, DriverError> {
-        unreachable!("no run is parked, so resume must never be reached")
+        unreachable!("no run is awaiting, so resume must never be reached")
     }
 
-    // No run is ever parked.
+    // No run is ever awaiting.
     async fn pending(&self, _thread: &str) -> Option<Pending> {
         None
     }
@@ -52,7 +52,7 @@ impl ProtocolRuntime for NoParkRuntime {
 }
 
 async fn frames(body: Value) -> Vec<Value> {
-    let app = awaken_protocol_ag_ui::router::router(Arc::new(NoParkRuntime));
+    let app = awaken_protocol_ag_ui::router::router(Arc::new(NoAwaitingRuntime));
     let response = app
         .oneshot(
             Request::builder()
@@ -73,8 +73,8 @@ async fn frames(body: Value) -> Vec<Value> {
 }
 
 #[tokio::test]
-async fn a_tool_result_with_no_parked_run_fails_closed_with_run_error() {
-    // A resume-only input (only a tool result, no new user turn) with nothing parked.
+async fn a_tool_result_with_no_awaiting_run_fails_closed_with_run_error() {
+    // A resume-only input (only a tool result, no new user turn) with nothing awaiting.
     let frames = frames(json!({
         "threadId": "t1",
         "runId": "r1",
@@ -95,11 +95,11 @@ async fn a_tool_result_with_no_parked_run_fails_closed_with_run_error() {
     );
 }
 
-/// A runtime parked on the built-in tool `c1`; resume drives it to completion.
-struct ParkedRuntime;
+/// A runtime awaiting on the built-in tool `c1`; resume drives it to completion.
+struct AwaitingRuntime;
 
 #[async_trait::async_trait]
-impl ProtocolRuntime for ParkedRuntime {
+impl ProtocolRuntime for AwaitingRuntime {
     async fn run(
         &self,
         _thread: &str,
@@ -141,8 +141,8 @@ impl ProtocolRuntime for ParkedRuntime {
 }
 
 #[tokio::test]
-async fn a_matching_tool_result_resumes_a_parked_run_to_completion() {
-    let app = awaken_protocol_ag_ui::router::router(Arc::new(ParkedRuntime));
+async fn a_matching_tool_result_resumes_an_awaiting_run_to_completion() {
+    let app = awaken_protocol_ag_ui::router::router(Arc::new(AwaitingRuntime));
     let body = json!({
         "threadId": "t1",
         "runId": "r1",
@@ -173,7 +173,7 @@ async fn a_matching_tool_result_resumes_a_parked_run_to_completion() {
 
 #[tokio::test]
 async fn the_scoped_agent_route_streams_a_fresh_turn() {
-    let app = awaken_protocol_ag_ui::router::router(Arc::new(NoParkRuntime));
+    let app = awaken_protocol_ag_ui::router::router(Arc::new(NoAwaitingRuntime));
     let body = json!({ "threadId": "t1", "runId": "r1", "messages": [{ "role": "user", "content": "go" }] });
     let response = app
         .oneshot(
@@ -199,7 +199,7 @@ async fn the_scoped_agent_route_streams_a_fresh_turn() {
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// A runtime parked on a built-in tool that records whether it was resumed denied.
+/// A runtime awaiting on a built-in tool that records whether it was resumed denied.
 struct DenyRecordingRuntime {
     denied: Arc<AtomicBool>,
 }
@@ -245,7 +245,7 @@ impl ProtocolRuntime for DenyRecordingRuntime {
 }
 
 #[tokio::test]
-async fn an_error_flagged_tool_result_denies_a_parked_builtin_tool() {
+async fn an_error_flagged_tool_result_denies_an_awaiting_builtin_tool() {
     let denied = Arc::new(AtomicBool::new(false));
     let app = awaken_protocol_ag_ui::router::router(Arc::new(DenyRecordingRuntime {
         denied: denied.clone(),
@@ -269,7 +269,7 @@ async fn an_error_flagged_tool_result_denies_a_parked_builtin_tool() {
     let _ = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     assert!(
         denied.load(Ordering::SeqCst),
-        "an error-flagged tool result must deny the parked built-in tool (allow:false)"
+        "an error-flagged tool result must deny the awaiting built-in tool (allow:false)"
     );
 }
 
@@ -354,7 +354,7 @@ async fn an_oversized_body_is_refused_in_stream() {
     // the run does not complete.
     let big = "x".repeat(3 * 1024 * 1024);
     let body = format!(r#"{{"threadId":"t1","messages":[{{"role":"user","content":"{big}"}}]}}"#);
-    let types = ag_ui_frame_types(Arc::new(NoParkRuntime), body).await;
+    let types = ag_ui_frame_types(Arc::new(NoAwaitingRuntime), body).await;
     assert!(types.contains(&"RUN_ERROR".to_string()), "{types:?}");
     assert!(!types.contains(&"RUN_FINISHED".to_string()), "{types:?}");
 }

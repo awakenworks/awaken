@@ -10,11 +10,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
-use awaken_agent_contract::event::{Fact, terminal_waiting};
+use awaken_agent_contract::event::{Fact, terminal_awaiting};
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use serde_json::Value;
 
-/// A tool a run parked on.
+/// A tool a run awaiting on.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pending {
     pub tool_use_id: String,
@@ -37,8 +37,8 @@ pub struct StepFailure {
 }
 
 /// How a step ended — the single terminal-state authority. A step reaches exactly
-/// one of these, and the parked tool (if any) lives *inside* [`Terminal::Waiting`],
-/// so both "waiting *and* failed" and "a pending tool on a finished run" are
+/// one of these, and the awaiting tool (if any) lives *inside* [`Terminal::Awaiting`],
+/// so both "awaiting *and* failed" and "a pending tool on a finished run" are
 /// unrepresentable.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum Terminal {
@@ -47,9 +47,9 @@ pub enum Terminal {
     Finished,
     /// The run stopped by exhausting its step budget.
     Exhausted,
-    /// The run parked awaiting a decision / client result. `pending` names the tool
-    /// it parked on, or `None` when it awaits non-tool input (e.g. a user message).
-    Waiting { pending: Option<Pending> },
+    /// The run awaits a decision / client result. `pending` names the tool,
+    /// or is `None` when it awaits non-tool input (e.g. a user message).
+    Awaiting { pending: Option<Pending> },
     /// The run ended in a terminal fault (`EndCause::Error`). Adapters render it as
     /// their error frame (AI-SDK `error`, AG-UI `RUN_ERROR`, A2A a `failed` Task)
     /// rather than a silent, empty finish.
@@ -68,19 +68,19 @@ pub struct StepOutcome {
 }
 
 impl StepOutcome {
-    /// The tool the run parked on, if it parked on one. `Some` only when
-    /// `terminal` is [`Terminal::Waiting`] with a tool — the type makes a pending
+    /// The tool the run awaiting on, if it is awaiting on one. `Some` only when
+    /// `terminal` is [`Terminal::Awaiting`] with a tool — the type makes a pending
     /// tool on any other ending impossible. Also drives the last tool call's
     /// disposition in the message projection.
     pub fn pending(&self) -> Option<&Pending> {
         match &self.terminal {
-            Terminal::Waiting { pending } => pending.as_ref(),
+            Terminal::Awaiting { pending } => pending.as_ref(),
             _ => None,
         }
     }
 
     /// The neutral terminal event this step closes with — the single owner of the
-    /// failed / parked / finished distinction. Event-stream adapters (AI-SDK,
+    /// failed / awaiting / finished distinction. Event-stream adapters (AI-SDK,
     /// AG-UI) transcode it; the request/response A2A adapter maps the same states
     /// onto a `Task` state directly.
     pub fn terminal_event(&self) -> Fact {
@@ -89,8 +89,8 @@ impl StepOutcome {
                 code: failure.code.clone(),
                 message: failure.message.clone(),
             },
-            Terminal::Waiting { pending } => {
-                terminal_waiting(pending.as_ref().map(|p| p.tool_use_id.as_str()))
+            Terminal::Awaiting { pending } => {
+                terminal_awaiting(pending.as_ref().map(|p| p.tool_use_id.as_str()))
             }
             Terminal::Exhausted => Fact::RunFinished { exhausted: true },
             Terminal::Finished => Fact::RunFinished { exhausted: false },
@@ -120,7 +120,7 @@ pub enum DriverError {
 #[async_trait]
 pub trait ProtocolRuntime: Send + Sync {
     /// Run `thread` once with the (already converted) new `messages`,
-    /// optionally naming the agent. Runs to the first park or the natural end.
+    /// optionally naming the agent. Runs to the first await or the natural end.
     async fn run(
         &self,
         thread: &str,
@@ -145,7 +145,7 @@ pub trait ProtocolRuntime: Send + Sync {
         self.run(thread, agent, messages).await
     }
 
-    /// Resume the run parked on `thread`, answering `tool_use_id` with `resume`.
+    /// Resume the run awaiting on `thread`, answering `tool_use_id` with `resume`.
     /// Fails closed unless `tool_use_id` names the pending tool and the resume
     /// variant matches its binding.
     async fn resume(
@@ -168,7 +168,7 @@ pub trait ProtocolRuntime: Send + Sync {
         Ok(())
     }
 
-    /// The tool a run on `thread` is parked on, if any.
+    /// The tool a run on `thread` is awaiting on, if any.
     async fn pending(&self, thread: &str) -> Option<Pending>;
 
     /// All committed messages on `thread` (history), oldest first.
@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn exhausted_projects_to_run_finished_exhausted() {
-        // The budget-exhausted terminus is still a *finish*, flagged exhausted — not
+        // The budget-exhausted end is still a *finish*, flagged exhausted — not
         // a failure. Adapters must not render it as an error frame.
         assert_eq!(
             outcome(Terminal::Exhausted).terminal_event(),
@@ -335,42 +335,42 @@ mod tests {
     }
 
     #[test]
-    fn waiting_on_a_tool_names_it_in_the_terminal_event() {
-        let ev = outcome(Terminal::Waiting {
+    fn awaiting_on_a_tool_names_it_in_the_terminal_event() {
+        let ev = outcome(Terminal::Awaiting {
             pending: Some(a_pending()),
         })
         .terminal_event();
         assert_eq!(
             ev,
-            Fact::Waiting {
+            Fact::Awaiting {
                 pending_tool_use_id: Some("call-7".into()),
             }
         );
     }
 
     #[test]
-    fn waiting_without_a_tool_carries_no_tool_id() {
-        let ev = outcome(Terminal::Waiting { pending: None }).terminal_event();
+    fn awaiting_without_a_tool_carries_no_tool_id() {
+        let ev = outcome(Terminal::Awaiting { pending: None }).terminal_event();
         assert_eq!(
             ev,
-            Fact::Waiting {
+            Fact::Awaiting {
                 pending_tool_use_id: None,
             }
         );
     }
 
     #[test]
-    fn pending_is_some_only_when_waiting_on_a_tool() {
+    fn pending_is_some_only_when_awaiting_on_a_tool() {
         assert_eq!(
-            outcome(Terminal::Waiting {
+            outcome(Terminal::Awaiting {
                 pending: Some(a_pending()),
             })
             .pending(),
             Some(&a_pending())
         );
-        // Waiting on non-tool input, and every non-waiting terminal, has no pending.
+        // Awaiting on non-tool input, and every non-awaiting terminal, has no pending.
         assert!(
-            outcome(Terminal::Waiting { pending: None })
+            outcome(Terminal::Awaiting { pending: None })
                 .pending()
                 .is_none()
         );

@@ -120,16 +120,16 @@
 - **F12** 同一 host 全前门并挂(allinone_frontdoors)
 
 ### 3.2 HITL(人在环审批)
-- **F13** 工具触发审批 → HITL-PARK `requires_action` + `event_ids`
+- **F13** 工具触发审批 → HITL-AWAIT `requires_action` + `event_ids`
 - **F14** 批准 → HITL-EFFECT:sentinel 写入(读回含)
 - **F15** 拒绝 → HITL-EFFECT:写被阻,run 仍 `end_turn`(读回不含)
 - **F16** a2a HITL 不对称:批准走文本,拒绝只经 `tasks/cancel`
 - **F17** ai-sdk HITL deny
-- **F18** durable worker HITL deny:park 跨进程存活,worker 驱动到终态
+- **F18** durable worker HITL deny:await 跨进程存活,worker 驱动到终态
 
 ### 3.3 中断 / 取消
 - **F19** 跨协议取消:一 wire 起,a2a `tasks/cancel` → `canceled`
-- **F20** durable worker 取消排队/park 的 run → 终态 Cancelled
+- **F20** durable worker 取消排队/await 的 run → 终态 Cancelled
 - **F21** 会话 dispose / terminated(reap 沙箱一次)
 - **F22** idle 后竞态取消(post-idle race)
 - **F23** ACP 中途 interrupt(reap Term→Kill)
@@ -145,12 +145,12 @@
 - **F31** 多协议并发
 
 ### 3.5 持久 / 重启 / 恢复 / 抢占 / 调度 / 死信
-- **F32** 重启存活:kill+重启同 dir → 历史在、park 恢复到 end_turn
-- **F33** durable 跨协议恢复:AI-SDK park → AG-UI 批准 → worker 驱动 done(读回 ≥3)
+- **F32** 重启存活:kill+重启同 dir → 历史在、await 恢复到 end_turn
+- **F33** durable 跨协议恢复:AI-SDK await → AG-UI 批准 → worker 驱动 done(读回 ≥3)
 - **F34** pg 提交存活:历史在 PG 非本地文件(换本地 dir 仍在)
 - **F35** pg wake 跨节点自主驱动
 - **F36** 抢占:新 run 使 stale run→Superseded(无双提交)
-- **F37** 调度动作:park→到期唤醒执行
+- **F37** 调度动作:await→到期唤醒执行
 - **F38** 死信:达 max_attempts → DeadLetter,可 requeue
 - **F39** durable 终态故障:fault 作事件提交,会话仍可用
 - **F40** durable 池后台驱动(submit_background→queued→轮询回复)
@@ -240,13 +240,13 @@
 | E4 EVENT-SEQ | `events.map(e=>e.type)` deepEqual `[running,agent.message,idle]` + content 精确 |
 | E5 STOP-REASON | `idle.stop_reason.type ∈ {end_turn, requires_action}`;requires_action 含 tool_use id |
 | E6 SSE-STREAM | 排 `data:` 帧:text-delta / TEXT_MESSAGE_CONTENT / RUN_STARTED;重组文本 |
-| E7 HITL-PARK | `agent.tool_use` + `evaluated_permission==='ask'` |
+| E7 HITL-AWAIT | `agent.tool_use` + `evaluated_permission==='ask'` |
 | E8 HITL-EFFECT | 读回含/不含 SENTINEL(allow 写入 / deny 阻断,run 仍 end_turn) |
 | E9 SESSION-ERROR | `session.error` 作事件提交(非 HTTP 错),`retry_status.exhausted`,会话仍可用 |
 | E10 DURABLE-DISK | `.db`(sqlite)/`.ndjson`(fs)存在;重启前后 `deepEqual` |
-| E11 RESTART-SURVIVE | kill+重启同 dir/PG → 历史/park/config/token 仍在;park 恢复到 end_turn |
+| E11 RESTART-SURVIVE | kill+重启同 dir/PG → 历史/await/config/token 仍在;await 恢复到 end_turn |
 | E12 XPROTO-CONTINUITY | 一 wire 提交的轮在另一 wire history 可见;item 数增长 |
-| E13 XPROTO-RESUME | park 一 wire、批准另一 wire、worker 驱 done(读回计数 ≥3) |
+| E13 XPROTO-RESUME | await 一 wire、批准另一 wire、worker 驱 done(读回计数 ≥3) |
 | E14 CANCEL-TERMINAL | a2a `tasks/cancel`→`canceled`;message/send→`completed`;note 计数判别 |
 | E15 SUPERSEDE-DROP | `/superseded` 含 staleRunId;dispatch `Superseded`;无双提交 |
 | E16 BG-DRIVEN | `submit_background`→`{run_id,queued:true}`;轮询 `/messages` 得 Assistant 回复 |
@@ -319,7 +319,7 @@ MCP:           F77/F79 → E4(工具注入) ; F78 → 工具列表 version bump
 | **F6 ai-sdk / F7 ag-ui / F8 a2a / F9 acp / F10 mcp** | ● | ✓ | ✓ | ✓ | ✓ | — | — | — | — | — | — | — | — | — |
 | **F11 流式工具输入** | ● | ✓ | — | — | — | — | — | — | — | — | — | — | — | — |
 | **F12 全前门并挂** | ● | — | — | — | — | — | — | — | — | — | — | — | — | — |
-| **F13 HITL park** | ● | ✓ | — | ✓ | ✓ | — | — | ✓ | — | — | — | — | — | — |
+| **F13 HITL await** | ● | ✓ | — | ✓ | ✓ | — | — | ✓ | — | — | — | — | — | — |
 | **F14/F15 批准/拒绝效果** | ● | ✓ | — | ✓ | — | — | — | — | — | — | — | — | — | — |
 | **F16 a2a HITL 不对称** | ● | — | — | — | — | — | — | — | — | — | — | — | — | — |
 | **F18 durable worker HITL deny** | — | — | — | ● | ✓ | — | — | ✓ | — | — | — | — | — | — |
@@ -390,8 +390,8 @@ MCP:           F77/F79 → E4(工具注入) ; F78 → 工具列表 version bump
 | F13 工具触发审批 | 1 | 1 | 1 | 1 |
 | F14 批准 | 0 | 1 | 0 | 0 |
 | F15 拒绝 | 0 | 0 | 1 | 0 |
-| F18 durable worker(park 跨进程) | 0 | 0 | 0 | 1 |
-| **E7 HITL-PARK(requires_action)** | 1 | 1 | 1 | 1 |
+| F18 durable worker(await 跨进程) | 0 | 0 | 0 | 1 |
+| **E7 HITL-AWAIT(requires_action)** | 1 | 1 | 1 | 1 |
 | **E8 读回含 SENTINEL** | - | 1 | 0 | - |
 | **E5 end_turn(拒绝后仍收尾)** | - | 1 | 1 | 1 |
 | **E13 跨进程 resume→done** | 0 | 0 | 0 | 1 |
@@ -502,4 +502,4 @@ MCP:           F77/F79 → E4(工具注入) ; F78 → 工具列表 version bump
 - **F35/F34/F41 pg 分布式**、**S5–S9 postgres 场景**:需 `AWAKEN_DATABASE_URL` 活 Postgres,现有 `durable_pg_*`/`durable_soak_*` + `deploy/k3d/*postgres*.yaml` 覆盖,pg 限的存储/派工单测在无 DSN 时静默早返回(非跳过声明,已在 M10/M11 文档标注)。
 
 **未发现 fail-open 代码 bug**:所有安全敏感 fail-closed 分支在代码中均存在,仅部分欠测;唯一结构性欠测(M6 `RequireApproval` 因无注入 seam 不可达)已通过抽出 `collapse_session_decision` 纯函数修复并钉住。
-7. **与单模块设计的关系**:本份的 F→E 边在跨越模块;每条 F 内部的分支细节(为何 park、为何 fail-closed)由 `cause-effect-graph-test-design.md` 的 112 因/110 果单测护住。两层合起来 = 单元判定表(内部正确)+ e2e 矩阵(集成 × 部署正确)。
+7. **与单模块设计的关系**:本份的 F→E 边在跨越模块;每条 F 内部的分支细节(为何 await、为何 fail-closed)由 `cause-effect-graph-test-design.md` 的 112 因/110 果单测护住。两层合起来 = 单元判定表(内部正确)+ e2e 矩阵(集成 × 部署正确)。

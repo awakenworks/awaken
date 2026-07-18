@@ -3,13 +3,13 @@
 //! An operator asks an in-flight run to pause via `LiveCommand::Pause`; the
 //! runtime sets this shared flag on the active attempt's [`RuntimeRunContext`].
 //! The engine observes it **only at safe loop boundaries** (never mid-step), so a
-//! pause is always a clean commit-then-park, never a torn state. Modelled on
+//! pause is always a clean commit-then-await, never a torn state. Modelled on
 //! `tokio_util::CancellationToken`: a cheap clonable handle over a shared flag.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// A shared flag requesting a park at the next safe boundary. Cloning shares the
+/// A shared flag requesting an await at the next safe boundary. Cloning shares the
 /// same underlying flag, so the runtime's command side and the engine's boundary
 /// side observe one signal.
 #[derive(Clone, Default)]
@@ -20,7 +20,7 @@ impl PauseSignal {
         Self::default()
     }
 
-    /// Request a pause; the next safe boundary parks the run.
+    /// Request a pause; the next safe boundary awaits the run.
     pub fn request(&self) {
         self.0.store(true, Ordering::SeqCst);
     }

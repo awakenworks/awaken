@@ -2,14 +2,14 @@
 // Anthropic TS SDK.
 //
 // The `schedule` server's tool gate defers every tool call as a committed
-// `ScheduledAction` instead of running it inline or parking for a human. Under
+// `ScheduledAction` instead of running it inline or awaiting for a human. Under
 // AWAKEN_INGRESS=durable the dispatch worker's scheduled-action loop performs each
 // deferred call out of band, so a run that would otherwise require a confirmation
-// (see managed_hitl / managed_restart, which PARK on the same probe tools) here
+// (see managed_hitl / managed_restart, which AWAIT on the same probe tools) here
 // completes autonomously: write → read → done, no `requires_action`.
 //
 // This is a durable-only capability: a direct ingress has no worker to perform the
-// scheduled action, so the run would stay parked.
+// scheduled action, so the run would stay awaiting.
 //
 // Run: (from e2e/)  node managed_scheduled_e2e.mjs
 

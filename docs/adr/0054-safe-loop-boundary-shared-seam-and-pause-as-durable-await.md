@@ -1,9 +1,9 @@
-# ADR-0054: The Safe Loop Boundary is a Shared Kernel Seam — Live-Inbox Drain and Operator Pause Reach Every Executor, and Pause is a Durable Park
+# ADR-0054: The Safe Loop Boundary is a Shared Kernel Seam — Live-Inbox Drain and Operator Pause Reach Every Executor, and Pause is a Durable Await
 
 - Status: Proposed
 - Date: 2026-07-13
 - Builds on: [ADR-0040](0040-server-durable-ingress-integration.md) (durable
-  dispatch / lease-recovery: park = persisted, resumable); the live-inbox
+  dispatch / lease-recovery: await = persisted, resumable); the live-inbox
   "drain-at-boundary → commit" discipline (`awaken-runtime-contract::live_inbox`);
   the ACP `RunExecutor` / `Supervisor` turn model (`awaken-run-executor-acp`,
   `awaken-protocol-acp`).
@@ -16,7 +16,7 @@ asymmetry has one root cause.
 **The safe loop boundary is a native-engine-only concept.** The native engine
 folds queued live input into the next turn at a *safe boundary* — the point in
 its loop where the current turn produced no tool calls and the run may either
-continue, park, or end without violating the commit-at-boundary invariant. There,
+continue, await, or end without violating the commit-at-boundary invariant. There,
 and only there, it drains the run's `LiveInbox`, re-identifies each message with
 the `{run_id}-inbox-{n}` id discipline, commits it into the transcript, and loops
 (`awaken-runtime/src/engine/mod.rs`: boundary at the `calls.is_empty()` branch,
@@ -53,7 +53,7 @@ anti-pattern the durable-dispatch fencing work exists to prevent.
 
 Both problems act at the **same place** (the safe boundary), and the ACP path is
 blind to that place. This ADR makes the boundary a first-class shared seam, routes
-both paths through it, and models pause in the *existing* park vocabulary rather
+both paths through it, and models pause in the *existing* await vocabulary rather
 than as a new live state.
 
 ## Decision
@@ -67,7 +67,7 @@ on. It owns one decision function:
 ```rust
 pub enum BoundaryOutcome {
     Continue { fold: Vec<Message> },              // fold these into the next turn
-    Park { fold: Vec<Message>, reason: WaitingReason }, // commit these, then park
+    Await { fold: Vec<Message>, reason: AwaitReason }, // commit these, then await
     Idle,                                         // no input, no pause → run-end guard
 }
 
@@ -78,12 +78,12 @@ pub fn evaluate_boundary(
 
 Priority: **pause preempts queued input preempts idle.** The inbox is *always*
 drained first (so no queued input is lost), and on a pause the drained messages
-ride out with `Park { fold, .. }` to be committed before parking. The
+ride out with `Await { fold, .. }` to be committed before awaiting. The
 re-identification helper (`{run_id}-inbox-{n}`) moves here from
 `engine/mod.rs::drain_live_inbox`, so the discipline is defined **once**.
 
 `evaluate_boundary` decides *and consumes the inbox*; it does **not** commit or
-park — those are the caller's, because each executor has its own commit mechanism.
+await — those are the caller's, because each executor has its own commit mechanism.
 This side effect is the boundary's defined, deterministic semantic, documented as
 such (it is not a pure query).
 
@@ -99,12 +99,12 @@ no protocol type crosses into the worker.
 
 - **Native engine**: the `calls.is_empty()` branch calls `evaluate_boundary` and
   handles the three arms. `Continue` is behaviour-identical to today's
-  drain→commit→continue; `Park(ManualPause)` is new; `Idle` falls through to the
+  drain→commit→continue; `Await(ManualPause)` is new; `Idle` falls through to the
   existing run-end guard. No behaviour change on the existing inbox path.
 - **ACP executor**: `execute` gains a **turn-boundary loop**. After a turn
   commits, it calls `evaluate_boundary`; on `Continue` it commits the fold, makes
   it the next turn's prompt, and **relaunches the CLI** (ACP already relaunches
-  per turn); on `Park` it commits and parks; on `Idle` it ends. This is the
+  per turn); on `Await` it commits and awaits; on `Idle` it ends. This is the
   native `continue` loop, expressed for an opaque backend. Steer now works for
   external CLIs **by construction**, not by remembering to wire it twice.
 
@@ -112,55 +112,55 @@ The `Supervisor::Injection` channel is **not** used for steer: `Injection` is
 mid-turn control (cancel); steer is "the next turn's input", which belongs at the
 executor boundary, not inside a turn against an opaque CLI.
 
-### D3: Pause is a durable park at the next safe boundary — never an in-flight freeze
+### D3: Pause is a durable await at the next safe boundary — never an in-flight freeze
 
 Add `LiveCommand::Pause{run_id}` (breaks two exhaustive `match`es on `LiveCommand`
 in `runtime.rs` — add the arm). Delivered to an **active** run, it sets a
 `PauseSignal` on the context (modelled on the existing `cancellation`
 `CancellationToken` seam; a new `Option` field on `RuntimeRunContext` via a
 `.with_pause` builder — non-breaking). At the next safe boundary,
-`evaluate_boundary` returns `Park { reason: WaitingReason::ManualPause }`; the
-executor commits, writes a `ManualPause` park ticket, **releases the lease**, and
+`evaluate_boundary` returns `Await { reason: AwaitReason::ManualPause }`; the
+executor commits, writes a `ManualPause` await ticket, **releases the lease**, and
 exits the loop. Fail-closed: delivered to a run that is not active → `NoSubscriber`.
 
-**Reuse, don't invent.** `WaitingReason::ManualPause` **already exists** (a
-reserved, currently-unused variant in `agent/waiting.rs`) — pause was pre-modelled
-in the park vocabulary; we wire it, we do not add a variant. The `WaitingTicket`
+**Reuse, don't invent.** `AwaitReason::ManualPause` **already exists** (a
+reserved, currently-unused variant in `agent/awaiting.rs`) — pause was pre-modelled
+in the await vocabulary; we wire it, we do not add a variant. The `ResumeTicket`
 data model already fits a pause: `pending_tool` and `call_id` are both `Option`,
 so a ticket with `reason: ManualPause, pending_tool: None` is valid.
 
-**ACP must gain parking (new capability, not a conflict).** `AcpRunExecutor::execute`
-today only ever returns `Phase::Ended`; it has no waiting-ticket machinery (that
-lives in the native engine). For an ACP run to honour `Park`, the executor needs a
-no-tool `WaitingTicket` constructor and a `Phase::Waiting` return — the data model
+**ACP must gain awaiting (new capability, not a conflict).** `AcpRunExecutor::execute`
+today only ever returns `RunState::Ended`; it has no resume-ticket machinery (that
+lives in the native engine). For an ACP run to honour `Await`, the executor needs a
+no-tool `ResumeTicket` constructor and a `RunState::Awaiting` return — the data model
 supports it, but the code path is new.
 
 There is **no suspended-but-alive state.** The in-flight loop, at a boundary, only
-ever *commit-parks* or *commit-continues*. Because the runtime commits at every
-boundary, a durable park loses nothing that matters; a frozen-in-memory run would
+ever *commit-awaits* or *commit-continues*. Because the runtime commits at every
+boundary, a durable await loses nothing that matters; a frozen-in-memory run would
 only add lease-holding fragility.
 
-### D4: Resume acts on a parked run, through the durable-ingress port
+### D4: Resume acts on an aawaiting run, through the durable-ingress port
 
-A paused run is **parked** (not in the active registry), so Resume is a **durable
-re-admission**, not a live signal: it re-enqueues the parked run and the dispatch
+A paused run is **awaiting** (not in the active registry), so Resume is a **durable
+re-admission**, not a live signal: it re-enqueues the aawaiting run and the dispatch
 worker re-drives it (for ACP this is a fresh CLI launch continuing from committed
 truth). **This is genuinely new machinery — `LiveCommand::Wake` cannot serve it.**
 `Wake` is live-only (`live_control.rs`: `NotActive → NoSubscriber`), so it targets
-an *active* run to nudge its boundary; a parked `ManualPause` run has no live
+an *active* run to nudge its boundary; an awaiting `ManualPause` run has no live
 subscriber and would `NoSubscriber`. Resume therefore re-enqueues through the
-durable ingress; a `ManualPause` park is one the worker does **not** auto-claim
-(no pending input, no lease expiry), so it stays parked until an explicit Resume.
+durable ingress; a `ManualPause` await is one the worker does **not** auto-claim
+(no pending input, no lease expiry), so it stays awaiting until an explicit Resume.
 The operator-facing surface
 still exposes a symmetric `pause` / `resume` verb pair; `LiveRunControlService`
-**routes by aggregate state** — `Running` → signal, `Parked(ManualPause)` → durable
+**routes by aggregate state** — `Running` → signal, `Awaiting(ManualPause)` → durable
 re-drive, otherwise fail-closed — the same live-vs-durable routing it already does
 for cancel.
 
 ### D5: Neutrality
 
-Everything here is mechanical: the boundary folds input, parks, or continues; a
-`WaitingReason::ManualPause` is a park cause, not a governance verb. No product or
+Everything here is mechanical: the boundary folds input, awaits, or continues; a
+`AwaitReason::ManualPause` is an await cause, not a governance verb. No product or
 policy semantics enter the seam. The ACP CLI stays opaque — steer is injected only
 as the next prompt and its content is never interpreted (anti-corruption).
 
@@ -171,7 +171,7 @@ as the next prompt and its content is never interpreted (anti-corruption).
   the one boundary seam over a neutral inbox. The fix is broader than "ACP": it
   closes the durable path's silent inbox drop, which affected native runs too.
 - **Operators get pause / resume** without a new live run state: the Run aggregate
-  stays `{Running, Parked, Ended}`; pause is a `Running → Parked` transition at a
+  stays `{Running, Awaiting, Ended}`; pause is a `Running → Awaiting` transition at a
   boundary, preserving the commit-at-boundary and lease/fencing invariants.
 - **One definition of the boundary discipline** (drain + re-identify + decide),
   shared — a change to the invariant changes one place.
@@ -179,9 +179,9 @@ as the next prompt and its content is never interpreted (anti-corruption).
   the two verbs act on different aggregate states. This can surprise a caller
   expecting two symmetric `LiveCommand`s; mitigated by the one operator-facing verb
   pair with state-aware routing, and documented here.
-- **ACP persistent-session mode**: a pause→park→resume relaunches the CLI, losing
+- **ACP persistent-session mode**: a pause→await→resume relaunches the CLI, losing
   any in-CLI ephemeral state (committed truth is intact). This is the inherent
-  at-least-once / park-recovery residual, consistent with the rest of the runtime.
+  at-least-once / await-recovery residual, consistent with the rest of the runtime.
 - `evaluate_boundary` is a decide-and-consume function, not a pure query — a small,
   documented tension with intent-revealing purity, accepted for cohesion.
 
@@ -195,16 +195,16 @@ as the next prompt and its content is never interpreted (anti-corruption).
   boundary concern.
 - **Pause as an in-flight freeze (suspended-but-alive).** Rejected: introduces a
   fourth live state, holds the lease indefinitely, and fights the fencing model;
-  yields no benefit over a durable park given commit-at-boundary.
+  yields no benefit over a durable await given commit-at-boundary.
 - **Symmetric `LiveCommand::Pause` + `LiveCommand::Resume` both on the active
-  registry.** Rejected: a parked (paused) run is not active, so `Resume` on the
+  registry.** Rejected: an awaiting (paused) run is not active, so `Resume` on the
   active registry would require keeping it alive — the rejected freeze.
 
 ## Migration (slices, each independently green, no stubs)
 
 1. **Kernel seam** — `boundary.rs` (`BoundaryOutcome`, `evaluate_boundary`), move
    the re-identify helper in, add `PauseSignal` + `ctx.pause` builder. (No
-   `WaitingReason` change — `ManualPause` already exists.) Kernel unit tests:
+   `AwaitReason` change — `ManualPause` already exists.) Kernel unit tests:
    three-arm decision, drain-first priority, pause preemption.
 2. **Durable-context wiring (prerequisite, fixes native-durable steer too)** —
    `request.rs::runtime_context` wires the host `LiveInbox` slot into
@@ -215,7 +215,7 @@ as the next prompt and its content is never interpreted (anti-corruption).
 4. **U1 — ACP boundary loop** — `execute` loops over turns through the seam. New
    e2e: an External message offered to an ACP-fake run is delivered on the next
    turn; `acp_*` suites do not regress. (This is the operator-blocking slice.)
-5. **U2 — Pause / Resume** — `LiveCommand::Pause` arm + `park(ManualPause)` + lease
-   release; the ACP no-tool `WaitingTicket` constructor + `Phase::Waiting`; durable
+5. **U2 — Pause / Resume** — `LiveCommand::Pause` arm + `await(ManualPause)` + lease
+   release; the ACP no-tool `ResumeTicket` constructor + `RunState::Awaiting`; durable
    `resume` re-enqueue; fail-closed `NoSubscriber`; k3d: pause then resume on
    another node.

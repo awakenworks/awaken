@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_agent_contract::agent::run::{Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
 use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
@@ -22,10 +22,14 @@ use crate::runtime::Runtime;
 #[async_trait]
 pub trait RunIngress: Send + Sync {
     /// Execute a run with caller-provided live wiring.
-    async fn submit(&self, activation: RunActivation, context: RuntimeRunContext) -> Result<Phase>;
+    async fn submit(
+        &self,
+        activation: RunActivation,
+        context: RuntimeRunContext,
+    ) -> Result<RunState>;
 
     /// Durable, fire-and-forget submission. Direct ingress fails closed (G5).
-    async fn submit_background(&self, activation: RunActivation) -> Result<Phase>;
+    async fn submit_background(&self, activation: RunActivation) -> Result<RunState>;
 
     /// Cancel an in-flight run by id.
     fn cancel(&self, run_id: &RunId) -> std::result::Result<(), ControlError>;
@@ -45,11 +49,15 @@ impl DirectRunIngress {
 
 #[async_trait]
 impl RunIngress for DirectRunIngress {
-    async fn submit(&self, activation: RunActivation, context: RuntimeRunContext) -> Result<Phase> {
+    async fn submit(
+        &self,
+        activation: RunActivation,
+        context: RuntimeRunContext,
+    ) -> Result<RunState> {
         self.runtime.execute(activation, context).await
     }
 
-    async fn submit_background(&self, _activation: RunActivation) -> Result<Phase> {
+    async fn submit_background(&self, _activation: RunActivation) -> Result<RunState> {
         Err(Error::Execution(
             "direct ingress does not support durable background submission".to_string(),
         ))

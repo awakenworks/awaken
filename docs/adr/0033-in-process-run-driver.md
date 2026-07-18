@@ -6,13 +6,13 @@
 
 ## Context
 
-The runtime exposes two execution primitives — `execute` (one run to a park or
-end) and `resume` (wake a parked run) — plus `run`, a single-shot sugar over
+The runtime exposes two execution primitives — `execute` (one run to an await or
+end) and `resume` (wake an aawaiting run) — plus `run`, a single-shot sugar over
 `execute`. That was enough for the happy path, but any agent that **gates tools**
-(ADR-0030: `Ask` parks the run on a `WaitingTicket`) fell off a cliff: `run`
-returned `Phase::Waiting` and stopped, without even the run id needed to resume.
+(ADR-0030: `Ask` awaits the run on a `ResumeTicket`) fell off a cliff: `run`
+returned `RunState::Awaiting` and stopped, without even the run id needed to resume.
 Callers were forced back to the primitives and hand-wrote the whole
-`execute → (park → decide → resume)* → end` loop — generating ids, building
+`execute → (await → decide → resume)* → end` loop — generating ids, building
 activations, registering the snapshot for by-id resume, and assembling
 `ResumeCommand`s field-by-field.
 
@@ -23,11 +23,11 @@ leaked out of the execution domain into every application.
 
 ## Decision
 
-### D1: A parked run is a question; a resume is its answer
+### D1: A aawaiting run is a question; a resume is its answer
 
 The three types have one job each and do not overlap:
 
-- `WaitingTicket` — *what* the run is waiting for, plus the resume's identity
+- `ResumeTicket` — *what* the run is waiting for, plus the resume's identity
   (correlation, run/thread, snapshot, fingerprint). Committed by the runtime.
 - `ResumeResult` — the *answer* (allow/deny, an input, a tool result). The caller
   supplies it; the ticket never contains it.
@@ -41,7 +41,7 @@ in-process driver use it — one source of the resume's identity, no re-assembly
 ### D2: `run_to_completion` owns the resume loop; the decision is a port
 
 `Runtime::run_to_completion(config, thread, input, ctx, decide)` drives a run to a
-terminal phase, calling `decide(&ticket) -> ResumeResult` each time it parks. It
+terminal state, calling `decide(&ticket) -> ResumeResult` each time it awaits. It
 installs the catalog and registers the snapshot (so resume resolves it by id),
 generates the ids, and runs the loop. Callers never touch activations, ids, or
 resume commands.
@@ -73,5 +73,5 @@ snapshots) is the one real path.
 ## References
 
 - [INVARIANTS.md](../INVARIANTS.md) — G5/G28 (resume validation), G6.
-- ADR-0030 — the permission axis whose `Ask` parks the run this drives.
+- ADR-0030 — the permission axis whose `Ask` awaits the run this drives.
 - ADR-0010 — resume; this drives its loop in-process.

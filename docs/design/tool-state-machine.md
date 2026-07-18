@@ -28,7 +28,7 @@ Three capabilities the extension requires are not yet reachable from a plugin:
    (`ToolGateHook`) but no symmetric post-execution seam that receives the
    `(ToolCall, ToolOutput)` pair. The four phase-hook points (`StepStart`,
    `BeforeInference`, `AfterInference`, `StepEnd`) carry no tool identity, and
-   `StepEnd` is skipped on the step that parks or ends.
+   `StepEnd` is skipped on the step that awaits or ends.
 3. **Composing more than one gate.** The loop consults a single host gate; a
    plugin cannot contribute an additional, state-aware constraint.
 
@@ -267,10 +267,10 @@ them durable and queryable.
 ### Atomicity
 
 Every run end funnels through one commit boundary that writes one `ThreadCommit
-{ run_fact(Phase), messages, state, events, waiting }` (G1/G31). A tool result and
+{ run: RunDisposition, messages, state, events }` (G1/G31). A tool result and
 the transition, metrics, and reminder it produced land in the *same* commit — all
 or nothing. When a call suspends for approval, the machine's state at that point
-commits atomically with the `WaitingTicket` and `Phase::Waiting`.
+commits atomically with the `ResumeTicket` and `RunState::Awaiting`.
 
 ### Transactionality
 
@@ -285,8 +285,8 @@ with the decision by construction.
 
 - Committed state replays via `Store::rebuild`; seam ① re-hydrates it into a
   restarted run, scope-filtered.
-- A parked run is recovered by durable ingress (lease reclaim) and resumed
-  through a committed `WaitingTicket`; `validate_resume` requires every identity
+- A aawaiting run is recovered by durable ingress (lease reclaim) and resumed
+  through a committed `ResumeTicket`; `validate_resume` requires every identity
   to match, including `snapshot_id` and `catalog_fingerprint`, so a resume against
   a changed machine definition fails closed.
 - Work not yet committed (a crash between tool execution and the finish commit)
@@ -296,12 +296,12 @@ with the decision by construction.
 
 ### Failure modes
 
-| Crash point | State | Phase | Recovery |
+| Crash point | State | Run state | Recovery |
 |---|---|---|---|
 | Before tool executes | unchanged | uncommitted | re-run the step |
 | After tool, before finish | staged, uncommitted | uncommitted | discard; re-run; transition idempotent |
 | During finish commit | atomic (all or nothing) | atomic | success → replay; failure → treat as uncommitted |
-| Parked for approval, committed | durable | `Waiting` + ticket | recover → resume → re-hydrate |
+| Awaiting for approval, committed | durable | `Awaiting` + ticket | recover → resume → re-hydrate |
 | Terminal, committed | durable | `Ended` | recovery reads the fact; never re-runs |
 
 ## Configuration (DSL)
@@ -347,7 +347,7 @@ continuation:
 - **Persistence** — write a transition, restart the process, and confirm a gate
   reads the state back after seam ① re-hydration.
 - **Atomicity** — inject a finish failure and confirm the transition, reminder,
-  metrics, tool result, and `Phase` are all present or all absent.
+  metrics, tool result, and `RunState` are all present or all absent.
 - **Transactionality** — multiple machines writing the same scoped key in one
   step commit without conflict (Disjoint + fold); a genuine conflict yields
   `StateConflict` with no state committed.
@@ -365,4 +365,4 @@ continuation:
 G1/G13 (commit is the single durable write; state replays from commands),
 G9/G21 (permission is the only authorization; gates and reminders never grant),
 G30 (every contributed id is within the declared `CapabilityBound`),
-G31/G32 (one `Phase` authority written once; replay reads the fact log).
+G31/G32 (one `RunState` authority written once; replay reads the fact log).

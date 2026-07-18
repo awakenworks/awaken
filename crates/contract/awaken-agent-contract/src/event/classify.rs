@@ -56,7 +56,7 @@ pub fn classify(event: &AgentEvent) -> Routing {
             },
         },
         AgentEvent::Fact(c) => match c {
-            // The run boundary opens the live stream *and* is an audited phase fact.
+            // The run boundary opens the live stream *and* is an audited state fact.
             Fact::RunStarted => Routing {
                 tier: Tier::Fact,
                 live: true,
@@ -72,8 +72,8 @@ pub fn classify(event: &AgentEvent) -> Routing {
                 live: false,
                 audit: false,
             },
-            // Lifecycle facts: audited (phase/park/continuation), not live.
-            Fact::Waiting { .. }
+            // Lifecycle facts: audited (state/await/continuation), not live.
+            Fact::Awaiting { .. }
             | Fact::Continuation { .. }
             | Fact::RunFinished { .. }
             | Fact::RunFailed { .. } => Routing {
@@ -119,7 +119,7 @@ mod tests {
                 content: vec![],
                 is_error: false,
             }),
-            AgentEvent::Fact(Fact::Waiting {
+            AgentEvent::Fact(Fact::Awaiting {
                 pending_tool_use_id: None,
             }),
             AgentEvent::Fact(Fact::Continuation {
@@ -146,8 +146,8 @@ mod tests {
     }
 
     // INVARIANT (Axis 6): the live stream is best-effort and carries no
-    // authoritative terminus. So every `Delta` is live and never audited, and no
-    // `Fact` lifecycle terminus is ever broadcast live.
+    // authoritative end. So every `Delta` is live and never audited, and no
+    // `Fact` lifecycle end is ever broadcast live.
     #[test]
     fn live_tier_is_broadcast_and_never_audited() {
         for e in every_variant() {

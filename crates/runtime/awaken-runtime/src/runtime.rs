@@ -61,14 +61,14 @@ pub struct Runtime {
     gate: Option<Arc<dyn ToolGateHook>>,
     /// The delegation resolver, if any. The engine routes the tool whose id is
     /// `resolver.tool_id()` to this port instead of the tool registry, so a
-    /// delegate call runs (or parks) as a first-class kernel concern.
+    /// delegate call runs (or awaits) as a first-class kernel concern.
     resolver: Option<Arc<dyn AgentResolver>>,
     /// Installed plugin factories; the active subset for a run is chosen by the
     /// resolved spec's `plugin_ids` and merged under capability bounds (G30).
     plugins: Vec<Arc<dyn Plugin>>,
     /// Cancellation tokens for in-flight runs, so live control can steer them.
     active_runs: Mutex<HashMap<RunId, CancellationToken>>,
-    /// Pause signals for in-flight runs, so live control can park them at the next
+    /// Pause signals for in-flight runs, so live control can await them at the next
     /// safe boundary (ADR-0054). Mirrors `active_runs`, keyed the same way.
     active_pauses: Mutex<HashMap<RunId, PauseSignal>>,
     /// How retryable inference failures are retried (attempts and backoff).
@@ -304,7 +304,7 @@ impl Runtime {
         self.active_runs.lock().remove(run_id);
     }
 
-    /// Track an in-flight run's pause signal so `LiveRunControl` can park it.
+    /// Track an in-flight run's pause signal so `LiveRunControl` can await it.
     /// Called at the start of execution when the context carries a signal.
     pub(crate) fn register_pause(&self, run_id: &RunId, pause: PauseSignal) {
         self.active_pauses.lock().insert(run_id.clone(), pause);
@@ -368,35 +368,39 @@ impl Runtime {
         let _ = self.install_catalog(RuntimeCatalogInstall::from_snapshot(snapshot));
     }
 
-    /// Resume a parked run from a validated `ResumeCommand`. The reader supplies
-    /// the committed transcript and the active waiting ticket; the resume fails
+    /// Resume an awaiting run from a validated `ResumeCommand`. The reader supplies
+    /// the committed transcript and the active awaiting ticket; the resume fails
     /// closed unless every identity in the ticket matches (G5/G28).
     pub async fn resume(
         &self,
         command: awaken_runtime_contract::resume::ResumeCommand,
         reader: &dyn ThreadReader,
         context: awaken_runtime_contract::runtime_context::RuntimeRunContext,
-    ) -> Result<awaken_agent_contract::agent::run::Phase, awaken_runtime_contract::execution::Error>
-    {
+    ) -> Result<
+        awaken_agent_contract::agent::run::RunState,
+        awaken_runtime_contract::execution::Error,
+    > {
         crate::engine::resume_run(self, command, reader, context).await
     }
 
-    /// Cancel a not-running run (queued or parked) by committing a terminal
-    /// `Cancelled` fact, clearing any waiting ticket. An in-flight run is
+    /// Cancel a not-running run (queued or awaiting) by committing a terminal
+    /// `Cancelled` fact, clearing any awaiting ticket. An in-flight run is
     /// cancelled through `LiveRunControl` instead.
     pub async fn cancel_run(
         &self,
         run_id: RunId,
         thread_id: awaken_agent_contract::agent::thread::Id,
         context: awaken_runtime_contract::runtime_context::RuntimeRunContext,
-    ) -> Result<awaken_agent_contract::agent::run::Phase, awaken_runtime_contract::execution::Error>
-    {
+    ) -> Result<
+        awaken_agent_contract::agent::run::RunState,
+        awaken_runtime_contract::execution::Error,
+    > {
         crate::engine::cancel_run(run_id, thread_id, context).await
     }
 
     /// Stop a not-running run with a terminal `Stopped(reason)` fact — a host stop
     /// policy (budget, step ceiling) making the run terminal and clearing its
-    /// waiting ticket, so a later resume or scheduled result fails closed
+    /// awaiting ticket, so a later resume or scheduled result fails closed
     /// (ADR-0026).
     pub async fn stop_run(
         &self,
@@ -404,22 +408,26 @@ impl Runtime {
         thread_id: awaken_agent_contract::agent::thread::Id,
         reason: String,
         context: awaken_runtime_contract::runtime_context::RuntimeRunContext,
-    ) -> Result<awaken_agent_contract::agent::run::Phase, awaken_runtime_contract::execution::Error>
-    {
+    ) -> Result<
+        awaken_agent_contract::agent::run::RunState,
+        awaken_runtime_contract::execution::Error,
+    > {
         crate::engine::stop_run(run_id, thread_id, reason, context).await
     }
 
     /// Perform a committed `ScheduledAction` (ADR-0020): run the deferred action
-    /// the parked run committed and commit the resumed outcome. Fails closed if
-    /// the run is not parked on a `ScheduledAction` ticket.
+    /// the awaiting run committed and commit the resumed outcome. Fails closed if
+    /// the run is not awaiting on a `ScheduledAction` ticket.
     pub async fn perform_scheduled_action(
         &self,
         run_id: &RunId,
         reader: &dyn ThreadReader,
         context: awaken_runtime_contract::runtime_context::RuntimeRunContext,
         now_ms: u64,
-    ) -> Result<awaken_agent_contract::agent::run::Phase, awaken_runtime_contract::execution::Error>
-    {
+    ) -> Result<
+        awaken_agent_contract::agent::run::RunState,
+        awaken_runtime_contract::execution::Error,
+    > {
         crate::engine::perform_scheduled_action(self, run_id, reader, context, now_ms).await
     }
 
@@ -509,7 +517,7 @@ impl LiveRunControl for Runtime {
                 Ok(())
             }
             // Pause is cooperative: signal the pause; the loop observes it at the
-            // next safe boundary and commits a durable `ManualPause` park (ADR-0054).
+            // next safe boundary and commits a durable `ManualPause` await (ADR-0054).
             LiveCommand::Pause { run_id } => {
                 let active = self.active_pauses.lock();
                 active
@@ -520,7 +528,7 @@ impl LiveRunControl for Runtime {
             }
             // Wake is a live nudge for an in-flight run: verify a live subscriber
             // (the run is registered active) accepts it, then it is a no-op — durable
-            // resume of a PARKED run goes through `Runtime::resume` with a validated
+            // resume of a AWAITING run goes through `Runtime::resume` with a validated
             // `ResumeCommand`, not this live channel. Fail closed when no live run
             // accepts it (G5: a wake with no subscriber is a hard error, not a silent
             // success), so the durable live-control seam surfaces `NoSubscriber`

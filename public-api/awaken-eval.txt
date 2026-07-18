@@ -11,8 +11,8 @@ pub fn awaken_eval::replay::Evaluator::with_judge(self, alloc::sync::Arc<dyn awa
 pub async fn awaken_eval::replay::run_case(&awaken_eval::Case) -> awaken_eval::CaseScore
 pub async fn awaken_eval::replay::run_dataset(&awaken_eval::Dataset) -> awaken_eval::Report
 pub mod awaken_eval::store
-pub fn awaken_eval::store::load_dataset(&std::path::Path) -> std::io::error::Result<awaken_eval::Dataset>
-pub fn awaken_eval::store::save_dataset(&std::path::Path, &awaken_eval::Dataset) -> std::io::error::Result<()>
+pub fn awaken_eval::store::load_dataset(&std::path::Path) -> core::io::error::Result<awaken_eval::Dataset>
+pub fn awaken_eval::store::save_dataset(&std::path::Path, &awaken_eval::Dataset) -> core::io::error::Result<()>
 pub enum awaken_eval::Expectation
 pub awaken_eval::Expectation::JudgeScore
 pub awaken_eval::Expectation::JudgeScore::min_score: u8

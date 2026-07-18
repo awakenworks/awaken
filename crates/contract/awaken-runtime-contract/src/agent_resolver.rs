@@ -29,10 +29,10 @@ pub enum AgentStep {
     /// running total so a session's usage counts delegated work — empty for a
     /// remote delegate or a deterministic model that reported none.
     Done { text: String, usage: ThreadUsage },
-    /// The delegate parked needing more input; `handle` is opaque, durable state
-    /// used to resume it (e.g. a remote task id). The parent parks until the
+    /// The delegate awaits more input; `handle` is opaque, durable state
+    /// used to resume it (e.g. a remote task id). The parent awaits until the
     /// delegation is resumed with new input.
-    Parked { handle: Value },
+    Awaiting { handle: Value },
 }
 
 /// A delegation failure (the delegate could not be run).
@@ -47,7 +47,7 @@ impl AgentError {
 }
 
 /// Runs sub-agents behind the delegation tool. Native and remote agents are peers,
-/// selected by `agent_id`. The kernel owns *when* a delegation runs, parks, or
+/// selected by `agent_id`. The kernel owns *when* a delegation runs, awaits, or
 /// resumes; this port owns *how* the chosen agent is run.
 #[async_trait]
 pub trait AgentResolver: Send + Sync {
@@ -62,7 +62,7 @@ pub trait AgentResolver: Send + Sync {
     /// the delegate arg shape.
     async fn run(&self, request: AgentRequest) -> Result<AgentStep, AgentError>;
 
-    /// Resume a parked delegation (from a prior [`AgentStep::Parked`] `handle`) with
+    /// Resume an awaiting delegation (from a prior [`AgentStep::Awaiting`] `handle`) with
     /// new user `input`.
     async fn resume(
         &self,
@@ -79,7 +79,7 @@ pub trait AgentResolver: Send + Sync {
 #[async_trait]
 pub trait RemoteDelegate: Send + Sync {
     /// Run one turn on the remote agent — deliver `input` and drive it to a terminal
-    /// or parked [`AgentStep`]. `cancellation` interrupts the remote turn (a parent
+    /// or awaiting [`AgentStep`]. `cancellation` interrupts the remote turn (a parent
     /// interrupt cancels the delegate). Serves both the initial run and a resume — a
     /// resume is just another turn on the same context.
     async fn run(

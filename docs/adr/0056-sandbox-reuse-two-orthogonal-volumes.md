@@ -12,7 +12,7 @@
   registry (ADR-0044/0045/0046); the two existing mount kinds — content-hashed
   read-only `ResourceMount` and harvested read-write memory mount (ADR-0038).
 - Reference: the operational shape of an isolation-instance pool is validated by
-  DeerFlow's AIO warm-container pool (deterministic id, release-parks, idle reaper,
+  DeerFlow's AIO warm-container pool (deterministic id, release-awaits, idle reaper,
   orphan reconciliation, readiness-probe-before-adopt) — a reference architecture,
   not a code dependency.
 
@@ -39,7 +39,7 @@ The two reuses have well-understood reference shapes:
   state**. This is application/product-domain machinery (it assumes "a code
   project worth keeping warm"), so it lives in the product plane, not the runtime.
 - **DeerFlow** implements the operational shape of an isolation-instance pool for
-  Docker/k3s containers: deterministic id `sha256(user:thread)`, release-parks /
+  Docker/k3s containers: deterministic id `sha256(user:thread)`, release-awaits /
   destroy-stops, an idle reaper, cross-process discovery, orphan reconciliation,
   and readiness-probe-before-adopt (dead entries dropped; a failed health check
   is treated as *unknown*, not dead).
@@ -62,7 +62,7 @@ vocabulary this ADR adopts repo-wide.
 | Concept | Volume-vocabulary name | What is reused | Lifecycle | Owner |
 |---|---|---|---|---|
 | Warm directory (checkout, build cache, `node_modules`) | **Cache Volume** | persistent bytes on disk | outlives many runs | **application / product plane** |
-| OS-isolated spawn environment (`pc::Sandbox`) | **Sandbox instance** (pooled only when expensive) | an isolation boundary | per run, or parked warm for Container tier | **awaken worker plane** |
+| OS-isolated spawn environment (`pc::Sandbox`) | **Sandbox instance** (pooled only when expensive) | an isolation boundary | per run, or awaiting warm for Container tier | **awaken worker plane** |
 | Execution endpoint that runs tools/spawns | **Hand** (`HandRegistry`, ≈ today's `WorkerRegistry`) | a stateless executor + its capabilities | fleet-lived | awaken worker/server plane |
 
 The composition at run time is a mount, not an inheritance:
@@ -148,7 +148,7 @@ isolation is awaken's declared job (the provisioning-contract header). A
   already-tested pure functions.
 - **Pools only when creation is expensive.** Workdir and Namespace tiers create
   in milliseconds and are **not pooled** — they are created per run and disposed.
-  Only the **Container tier** gets a warm pool (release-parks / dispose-stops),
+  Only the **Container tier** gets a warm pool (release-awaits / dispose-stops),
   mirroring DeerFlow's AIO container pool. This keeps the pool where it earns its
   cost and nowhere else.
 - **Adopts operational hardening from DeerFlow**: deterministic instance id,

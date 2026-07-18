@@ -26,7 +26,7 @@ defaults to 0 and `dedupe_key` to none.
 The fresh band claims the highest-priority pending run first (ties stay FIFO by
 enqueue order). Recovery (expired lease) and wake (pending input due) keep their
 own ordering — failure and readiness, not caller priority — because reordering
-them would starve crashed or waiting runs.
+them would starve crashed or awaiting runs.
 
 ### D3: Dedupe is a live-key no-op
 

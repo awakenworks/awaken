@@ -54,7 +54,7 @@ the other's invariants.
 The worker decides execute-versus-resume from committed facts — the waiting
 ticket and the `RunRecord` read back through the same commit handle the runtime
 writes through (G6 same-source wiring) — not from a status duplicated in the
-queue. A reclaimed run that already committed a terminal phase is settled without
+queue. A reclaimed run that already committed a terminal state is settled without
 re-running. So the dispatch row carries delivery state only; run truth stays in
 the fact log (G1/G13/G32), and recovery cannot double-execute a finished run.
 

@@ -127,7 +127,7 @@ with the tool call and output carried on `PhaseContext`. The four hook families
 collapse to two roles by the "does the kernel branch on the return?" test:
 **Reactors** (`PhaseHook`, all points including `AfterTool`) stage a `Reaction`;
 **Deciders** (`ToolGate`, `RunEndGuard`) return a verdict the kernel branches on.
-`ScheduledAction` (ADR-0020: durable park/resume) remains a **Decider** (gate)
+`ScheduledAction` (ADR-0020: durable await/resume) remains a **Decider** (gate)
 output and does not enter `Reaction`.
 
 ### 5. External inbound messages stay off state (unchanged).

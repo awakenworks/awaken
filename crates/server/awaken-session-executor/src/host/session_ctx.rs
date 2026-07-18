@@ -8,7 +8,7 @@ use super::*;
 /// system messages buffered for the next turn.
 #[derive(Default)]
 pub(crate) struct SessionState {
-    pub(crate) parked: Option<RunId>,
+    pub(crate) awaiting_run: Option<RunId>,
     pub(crate) pending_system: Vec<String>,
     /// How many committed `Continuation` (outcome) rounds have already been
     /// projected, so a second `define_outcome` on the thread reports only its own.
@@ -20,7 +20,7 @@ pub(crate) struct SessionState {
     /// The distinct compaction-fold count at the current turn's start. A fold
     /// during the turn grows it; the terminal step compares against this baseline
     /// to surface the `agent.thread_context_compacted` marker once (spanning a
-    /// parked→resumed turn, which shares this baseline).
+    /// awaiting→resumed turn, which shares this baseline).
     pub(crate) compactions_before: usize,
 }
 

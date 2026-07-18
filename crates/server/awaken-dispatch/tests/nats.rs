@@ -28,7 +28,7 @@ async fn nats_wake_signal_notifies_a_waiter() {
         .await
         .expect("second connection");
 
-    // Start waiting first (so the subscription is established), then publish a
+    // Start awaiting first (so the subscription is established), then publish a
     // hint from another node; the waiter must be woken.
     let wait = tokio::spawn(async move { waiter.wait().await });
     tokio::time::sleep(Duration::from_millis(200)).await;

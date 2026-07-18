@@ -1,8 +1,8 @@
 //! Level 0 — durable pause/resume across a restart.
 //!
-//! A run parks on a client-executed tool and its `SharedHost` is dropped
+//! A run awaits on a client-executed tool and its `SharedHost` is dropped
 //! (simulating a process exit). A brand-new host built over the *same* store
-//! directory recovers the parked position from committed truth and resumes the
+//! directory recovers the awaiting position from committed truth and resumes the
 //! run to completion — proving the pause survives a restart when the commit
 //! boundary is durable (SQLite), not in-memory.
 
@@ -37,26 +37,26 @@ fn host_over(dir: &std::path::Path) -> SharedHost {
 }
 
 #[tokio::test]
-async fn parked_run_survives_a_restart_and_resumes_from_the_durable_store() {
+async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
     let dir = std::env::temp_dir().join(format!("awaken-durable-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let thread = "durable-1";
 
-    // 1. First "process": run a turn that parks on the client tool, then drop the
-    //    host — the run's history and waiting ticket are now only in the store.
+    // 1. First "process": run a turn that awaits on the client tool, then drop the
+    //    host — the run's history and awaiting ticket are now only in the store.
     let pending_id = {
         let host = host_over(&dir);
         host.run(None, thread, vec![user("u1", "hi")])
             .await
             .unwrap();
         assert!(
-            host.is_parked(thread).await,
-            "the run should park on the client-executed tool"
+            host.is_awaiting(thread).await,
+            "the run should await on the client-executed tool"
         );
         let pending = host
             .pending_tool(thread)
             .await
-            .expect("a parked run exposes its pending tool");
+            .expect("an awaiting run exposes its pending tool");
         assert_eq!(pending.name, "submit_answer");
         assert!(pending.client_executed);
         assert!(
@@ -66,11 +66,11 @@ async fn parked_run_survives_a_restart_and_resumes_from_the_durable_store() {
         pending.tool_use_id
     };
 
-    // 2. A brand-new host over the SAME store directory recovers the parked run.
+    // 2. A brand-new host over the SAME store directory recovers the awaiting run.
     let host = host_over(&dir);
     assert!(
-        host.is_parked(thread).await,
-        "the rebuilt host recovers the parked run from the durable store"
+        host.is_awaiting(thread).await,
+        "the rebuilt host recovers the awaiting run from the durable store"
     );
     assert!(
         !host.committed_messages(thread).await.is_empty(),
@@ -107,7 +107,7 @@ async fn parked_run_survives_a_restart_and_resumes_from_the_durable_store() {
 /// The in-memory host (no store dir) does NOT recover across a rebuild: a new host
 /// starts clean. This pins the durability contract to the store, not the type.
 #[tokio::test]
-async fn in_memory_host_does_not_recover_a_parked_run_across_a_rebuild() {
+async fn in_memory_host_does_not_recover_an_awaiting_run_across_a_rebuild() {
     let thread = "ephemeral-1";
     let client_tools = HashSet::from(["submit_answer".to_string()]);
 
@@ -117,12 +117,12 @@ async fn in_memory_host_does_not_recover_a_parked_run_across_a_rebuild() {
         host.run(None, thread, vec![user("u1", "hi")])
             .await
             .unwrap();
-        assert!(host.is_parked(thread).await);
+        assert!(host.is_awaiting(thread).await);
     }
 
     let host = SharedHost::new(Arc::new(CustomToolModel), "custom").with_client_tools(client_tools);
     assert!(
-        !host.is_parked(thread).await,
-        "an in-memory host starts clean; the parked run does not survive"
+        !host.is_awaiting(thread).await,
+        "an in-memory host starts clean; the awaiting run does not survive"
     );
 }

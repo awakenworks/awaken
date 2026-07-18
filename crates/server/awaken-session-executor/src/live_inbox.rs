@@ -52,7 +52,7 @@ impl SessionCtx {
 
     /// The live inbox an offer queues into. A durable session steers through the
     /// persistent per-session inbox its worker drains at boundaries (ADR-0054 P2) —
-    /// always present, so steer reaches a queued/parked/in-flight worker run. A
+    /// always present, so steer reaches a queued/awaiting/in-flight worker run. A
     /// direct session uses the in-flight attempt's slot: `None` when no native turn
     /// is running.
     pub(crate) fn live_inbox(&self) -> Option<LiveInbox> {

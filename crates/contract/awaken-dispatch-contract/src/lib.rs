@@ -11,7 +11,7 @@ pub mod dispatch;
 pub mod request;
 
 pub use dispatch::{
-    CasOutcome, Claimed, Dispatch, DispatchError, DispatchOutcome, DispatchQueue, DispatchStatus,
+    CasOutcome, Claimed, Dispatch, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
     DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, SettleOutcome,
     SubmitOptions,
 };

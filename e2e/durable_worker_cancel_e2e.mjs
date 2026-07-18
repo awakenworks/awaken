@@ -1,7 +1,7 @@
 // Cancel a durable run mid-flight, over the durable operations surface.
 //
-// Under AWAKEN_INGRESS=durable a background-submitted run (probe model) parks on a
-// tool awaiting approval — it sits `Parked` in the thread's dispatch queue, never
+// Under AWAKEN_INGRESS=durable a background-submitted run (probe model) awaits on a
+// tool awaiting approval — it sits `Awaiting` in the thread's dispatch queue, never
 // yet resumed by the worker. We cancel it by run id via
 // POST /v1/durable/threads/:thread/cancel: the dispatch is removed and a terminal
 // `Cancelled` fact is committed. We then assert the run does NOT later resume and
@@ -46,38 +46,38 @@ async function main() {
   });
   await waitForPort(PORT);
   try {
-    // A background run parks on the write tool — the probe model asks for approval,
-    // so submit_background returns after the run parked (never resumed).
+    // A background run awaits on the write tool — the probe model asks for approval,
+    // so submit_background returns after the run awaiting (never resumed).
     const submit = await post(`/v1/durable/threads/${THREAD}/submit_background`, { text: MARK });
     assert.equal(submit.status, 200, 'submit_background accepted');
     const runId = submit.body.run_id;
     assert.ok(runId && submit.body.queued === true, `queued a durable run (${runId})`);
-    pass(`durable run submitted and parked (${runId})`);
+    pass(`durable run submitted and awaiting (${runId})`);
 
-    // The pool drives it in the background; with the probe model it parks on the
-    // write tool awaiting approval. Poll until it is `Parked` in the queue.
+    // The pool drives it in the background; with the probe model it awaits on the
+    // write tool awaiting approval. Poll until it is `Awaiting` in the queue.
     let row = null;
     for (let i = 0; i < 200; i++) {
       row = (await get(`/v1/durable/threads/${THREAD}/dispatches`)).body.dispatches.find((d) => d.run_id === runId);
-      if (row && row.status === 'Parked') break;
+      if (row && row.status === 'Awaiting') break;
       await sleep(50);
     }
     assert.ok(row, 'the submitted run has a dispatch row');
-    assert.equal(row.status, 'Parked', 'the run is Parked in the durable queue (awaiting approval)');
-    pass('run is Parked mid-flight in the dispatch queue');
+    assert.equal(row.status, 'Awaiting', 'the run is Awaiting in the durable queue (awaiting approval)');
+    pass('run is Awaiting mid-flight in the dispatch queue');
 
     // Committed truth so far — the (never-approved) tool effect is absent.
     const beforeCancel = (await get(`/v1/durable/threads/${THREAD}/messages`)).body.messages;
     assert.ok(
       !JSON.stringify(beforeCancel).includes('done'),
-      'no terminal reply committed before cancel (run is still parked)',
+      'no terminal reply committed before cancel (run is still awaiting)',
     );
 
-    // Cancel the parked run by id.
+    // Cancel the awaiting run by id.
     const cancel = await post(`/v1/durable/threads/${THREAD}/cancel`, { run_id: runId });
     assert.equal(cancel.status, 200, 'cancel accepted');
     assert.equal(cancel.body.cancelled, true, 'cancel reported the run cancelled');
-    pass('cancelled the parked durable run by id');
+    pass('cancelled the awaiting durable run by id');
 
     // The dispatch row is gone — the run is no longer claimable/runnable.
     const afterRows = (await get(`/v1/durable/threads/${THREAD}/dispatches`)).body.dispatches;

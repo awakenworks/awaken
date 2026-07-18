@@ -1,5 +1,5 @@
 //! Kernel-level guard for the delegation port: the runtime executes the delegation
-//! tool via an injected [`AgentResolver`] (not the tool registry), and parks/resumes
+//! tool via an injected [`AgentResolver`] (not the tool registry), and awaits/resumes
 //! it — no host orchestration. Proves delegation is a runtime concern.
 
 use std::sync::Arc;
@@ -84,7 +84,7 @@ impl AgentResolver for DoneResolver {
         _input: &str,
         _cancellation: Option<&awaken_runtime_contract::CancellationToken>,
     ) -> Result<AgentStep, AgentError> {
-        unreachable!("DoneResolver never parks")
+        unreachable!("DoneResolver never awaits")
     }
 }
 
@@ -119,20 +119,20 @@ impl AgentResolver for UsageResolver {
         _input: &str,
         _cancellation: Option<&awaken_runtime_contract::CancellationToken>,
     ) -> Result<AgentStep, AgentError> {
-        unreachable!("UsageResolver never parks")
+        unreachable!("UsageResolver never awaits")
     }
 }
 
-/// A resolver that parks once (needing input), then finishes on resume.
-struct ParkingResolver;
+/// A resolver that awaits once (needing input), then finishes on resume.
+struct AwaitingResolver;
 
 #[async_trait::async_trait]
-impl AgentResolver for ParkingResolver {
+impl AgentResolver for AwaitingResolver {
     fn tool_id(&self) -> &str {
         "agent_run"
     }
     async fn run(&self, _request: AgentRequest) -> Result<AgentStep, AgentError> {
-        Ok(AgentStep::Parked {
+        Ok(AgentStep::Awaiting {
             handle: serde_json::json!({ "task": "t-1" }),
         })
     }
@@ -183,11 +183,11 @@ async fn the_kernel_runs_agent_run_through_the_resolver() {
         .with_commit(commit.clone())
         .with_reader(commit.clone());
 
-    let phase = runtime
+    let state = runtime
         .run(&config(), "delegate please", ctx)
         .await
         .expect("run");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
     // The resolver ran the delegate (no tool named `agent_run` is registered) and
     // its reply reached the coordinator.
@@ -213,11 +213,11 @@ async fn a_delegates_usage_folds_into_the_parent_thread_tally() {
         .with_commit(commit.clone())
         .with_reader(commit.clone());
 
-    let phase = runtime
+    let state = runtime
         .run(&config(), "delegate please", ctx)
         .await
         .expect("run");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
     // The coordinator model reports no usage, so the parent thread's committed
     // tally is exactly the delegate's spend — proving it rolled up rather than
@@ -250,25 +250,25 @@ async fn a_delegates_usage_folds_into_the_parent_thread_tally() {
 }
 
 #[tokio::test]
-async fn a_parked_delegation_resumes_through_the_resolver() {
+async fn an_awaiting_delegation_resumes_through_the_resolver() {
     let runtime = Runtime::new()
         .with_llm(Arc::new(CoordinatorLlm))
         .with_gate(Arc::new(allow_all()))
-        .with_resolver(Arc::new(ParkingResolver));
+        .with_resolver(Arc::new(AwaitingResolver));
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ctx = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_reader(commit.clone());
 
-    // The delegate parks: the run waits, holding the durable handle in its ticket.
-    let (run_id, phase) = runtime
+    // The delegate awaits: the run waits, holding the durable handle in its ticket.
+    let (run_id, state) = runtime
         .start_run(&config(), "delegate please", "delegate please", ctx)
         .await
         .expect("start");
-    assert_eq!(phase, Phase::Waiting, "the parked delegation waits");
+    assert_eq!(state, RunState::Awaiting, "the awaiting delegation waits");
     let ticket = commit
-        .waiting_ticket(&run_id)
+        .resume_ticket(&run_id)
         .expect("a delegation ticket is committed");
 
     // Resume with the user's input; the resolver finishes and the run completes.
@@ -276,11 +276,11 @@ async fn a_parked_delegation_resumes_through_the_resolver() {
         .with_commit(commit.clone())
         .with_reader(commit.clone());
     let command = ResumeCommand::from_ticket(&ticket, ResumeResult::Input("the detail".into()), 0);
-    let phase = runtime
+    let state = runtime
         .resume(command, &*commit, resume_ctx)
         .await
         .expect("resume");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
     assert!(
         commit.committed().messages.iter().any(|m| m

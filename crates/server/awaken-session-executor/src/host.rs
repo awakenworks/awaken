@@ -4,10 +4,10 @@
 //! owns one sandboxed runtime + commit coordinator per **thread id**, and exposes
 //! neutral operations — `run`, `resume`, `committed_messages` — over that
 //! shared state. Because both adapters key by the same thread id and mutate the
-//! same coordinator and parked-run position, a turn started through one protocol
+//! same coordinator and awaiting-run position, a turn started through one protocol
 //! can be observed or resumed through the other on the *same thread*.
 //!
-//! It names no protocol vocabulary: outcomes are the neutral [`Phase`] plus an
+//! It names no protocol vocabulary: outcomes are the neutral [`RunState`] plus an
 //! optional [`PendingTool`]; each adapter maps those onto its own wire shape.
 
 use std::collections::{HashMap, HashSet};
@@ -15,10 +15,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use awaken_agent_contract::agent::awaiting::{AwaitReason, ResumeTicket};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::agent::waiting::{WaitingReason, WaitingTicket};
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
@@ -142,7 +142,7 @@ pub struct SharedHost {
     pub(crate) sessions: tokio::sync::Mutex<HashMap<String, Arc<SessionCtx>>>,
     pub(crate) hub: Arc<ThreadEventHub>,
     /// When set, each thread commits to a durable SQLite database at
-    /// `store_dir/<thread>.db`, so a parked run survives a process restart. When
+    /// `store_dir/<thread>.db`, so an awaiting run survives a process restart. When
     /// `None`, sessions use an in-memory coordinator (ephemeral).
     pub(crate) store_dir: Option<PathBuf>,
     /// The cell server this host is a database-less **worker** of, if any. When set,

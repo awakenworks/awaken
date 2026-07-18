@@ -10,11 +10,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::message::Message;
-use awaken_agent_contract::agent::run::{Id as RunId, Phase, Record as RunRecord};
+use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunState};
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::agent::waiting::WaitingTicket;
 use awaken_agent_contract::audit::record::Record as EventRecord;
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_agent_contract::stream::event::Event as StreamEvent;
@@ -50,9 +50,9 @@ struct CommitState {
     /// Threads in first-commit order, so the flattened [`Self::flatten`] view
     /// (`committed()`) concatenates them deterministically.
     order: Vec<ThreadId>,
-    /// Active waiting tickets keyed by run; present only while a run is parked,
+    /// Active awaiting tickets keyed by run; present only while a run is awaiting,
     /// so a resume against a terminal/resumed run finds nothing (fail closed).
-    waiting: HashMap<RunId, WaitingTicket>,
+    resume_tickets: HashMap<RunId, ResumeTicket>,
 }
 
 impl CommitState {
@@ -114,12 +114,12 @@ impl MemoryCommitCoordinator {
         self.state.lock().map(|state| state.sequence).unwrap_or(0)
     }
 
-    /// The active waiting ticket for a run, if it is currently parked.
-    pub fn waiting_for(&self, run_id: &RunId) -> Option<WaitingTicket> {
+    /// The active awaiting ticket for a run, if it is currently awaiting.
+    pub fn resume_ticket_for(&self, run_id: &RunId) -> Option<ResumeTicket> {
         self.state
             .lock()
             .ok()
-            .and_then(|state| state.waiting.get(run_id).cloned())
+            .and_then(|state| state.resume_tickets.get(run_id).cloned())
     }
 }
 
@@ -135,11 +135,13 @@ impl CommitCoordinator for MemoryCommitCoordinator {
             .map_err(|_| Error::Rejected("commit store poisoned".to_string()))?;
 
         let next = state.sequence + 1;
-        let run_id = commit.run_fact.run_id.clone();
-        let phase = commit.run_fact.phase.clone();
+        let run_id = commit.run_id().clone();
+        let run_state = commit.run_state();
+        let run_fact = commit.run_fact();
+        let resume_ticket = commit.resume_ticket().cloned();
 
         // Terminal-is-final (exactly-once committed LOG under a stale reclaim):
-        // once a run's committed phase is terminal, reject any later commit for
+        // once a run's committed state is terminal, reject any later commit for
         // that run. A stale owner — slow-but-alive, its lease lapsed mid-flight and
         // superseded by a reclaimer that already drove the run to `Ended` — would
         // otherwise re-execute from the activation and append duplicate assistant
@@ -161,7 +163,7 @@ impl CommitCoordinator for MemoryCommitCoordinator {
                     .rev()
                     .find(|fact| fact.run_id == run_id)
             })
-            .is_some_and(|fact| matches!(fact.phase, Phase::Ended(_)))
+            .is_some_and(|fact| !fact.state.permits(&run_state))
         {
             return Err(Error::Rejected(format!(
                 "run {} is already terminal; refusing post-terminal commit",
@@ -169,15 +171,15 @@ impl CommitCoordinator for MemoryCommitCoordinator {
             )));
         }
 
-        // Park or clear the waiting ticket atomically with the checkpoint: a
-        // `Some` ticket parks the run; any ended phase clears it so a
+        // Await or clear the awaiting ticket atomically with the checkpoint: a
+        // `Some` ticket awaits the run; any ended state clears it so a
         // resumed/terminal run can no longer be resumed (G5).
-        match (&commit.waiting, &phase) {
-            (Some(ticket), Phase::Waiting) => {
-                state.waiting.insert(run_id.clone(), ticket.clone());
+        match (&resume_ticket, &run_state) {
+            (Some(ticket), RunState::Awaiting) => {
+                state.resume_tickets.insert(run_id.clone(), ticket.clone());
             }
             _ => {
-                state.waiting.remove(&run_id);
+                state.resume_tickets.remove(&run_id);
             }
         }
 
@@ -197,11 +199,11 @@ impl CommitCoordinator for MemoryCommitCoordinator {
                 payload: draft.payload,
             });
         }
-        thread.run_facts.push(commit.run_fact);
+        thread.run_facts.push(run_fact);
         thread.latest_run = Some(RunRecord {
             id: run_id,
             thread_id,
-            phase,
+            state: run_state,
         });
 
         state.sequence = next;
@@ -220,7 +222,7 @@ impl RunStore for MemoryCommitCoordinator {
 }
 
 /// Committed thread truth is readable for resume through the contract read port:
-/// the transcript and the active waiting ticket, never the live sink (G1/G13).
+/// the transcript and the active awaiting ticket, never the live sink (G1/G13).
 impl ThreadReader for MemoryCommitCoordinator {
     fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
         self.state
@@ -229,8 +231,8 @@ impl ThreadReader for MemoryCommitCoordinator {
             .unwrap_or_default()
     }
 
-    fn waiting_ticket(&self, run_id: &RunId) -> Option<WaitingTicket> {
-        self.waiting_for(run_id)
+    fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket> {
+        self.resume_ticket_for(run_id)
     }
 
     fn committed_state(
@@ -264,7 +266,7 @@ impl CheckpointReader for MemoryCommitCoordinator {
                 return Some(RunRecord {
                     id: fact.run_id.clone(),
                     thread_id: thread_id.clone(),
-                    phase: fact.phase.clone(),
+                    state: fact.state.clone(),
                 });
             }
         }
@@ -347,15 +349,15 @@ pub fn replay_state(committed: &CommittedThread) -> awaken_agent_contract::agent
     awaken_agent_contract::agent::state::Store::rebuild(&committed.state)
 }
 
-/// Reconstruct the latest run [`Phase`] from committed facts (not live events),
+/// Reconstruct the latest run [`RunState`] from committed facts (not live events),
 /// proving replay reads durable truth (G1).
-pub fn replay_latest_phase(committed: &CommittedThread, run_id: &RunId) -> Option<Phase> {
+pub fn replay_latest_state(committed: &CommittedThread, run_id: &RunId) -> Option<RunState> {
     committed
         .run_facts
         .iter()
         .rev()
         .find(|fact| &fact.run_id == run_id)
-        .map(|fact| fact.phase.clone())
+        .map(|fact| fact.state.clone())
 }
 
 /// In-memory [`StreamCheckpointStore`]: a `run_id`-keyed map of interrupted-stream

@@ -160,7 +160,7 @@ pub(crate) fn builtin_hand_tools() -> Vec<(String, bool)> {
 }
 
 /// A client-executed tool descriptor: model-visible, but no `RawTool` is
-/// registered, so a call parks (gate `ask`) and the *client* supplies the result.
+/// registered, so a call awaits (gate `ask`) and the *client* supplies the result.
 pub(crate) fn client_tool_descriptor(id: &str) -> ToolDescriptor {
     ToolDescriptor::pinned(
         "client",

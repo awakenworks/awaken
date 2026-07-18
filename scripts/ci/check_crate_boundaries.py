@@ -1518,7 +1518,7 @@ BUILTIN_TOOL_IDS = {
 
 FORBIDDEN_NEUTRAL_TYPE_NAMES = {
     "TypedTool": "use Tool for the preferred typed API and RawTool for the low-level adapter",
-    "BackgroundTask": "use ScheduledAction, RunWaitingState, or durable run dispatch by authority",
+    "BackgroundTask": "use ScheduledAction, ResumeTicket, or durable run dispatch by authority",
     # Removed roles: the executing side implements ToolExecutor and runs the tool
     # in-process (ADR-0007); where a tool runs is not a separate runtime role.
     "ToolExecutionLocus": "removed role; ToolExecutor is the sole neutral tool port",

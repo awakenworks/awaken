@@ -4,7 +4,7 @@
 //! it owns active-run steering and nothing else. It never starts runs, publishes
 //! config, or owns a second commit mechanism. Cancellation tries the runtime live
 //! channel first (for in-flight runs), then the dispatch store for queued or
-//! parked runs. Wake is live-only and fail-closed: if no live subscriber accepts
+//! awaiting runs. Wake is live-only and fail-closed: if no live subscriber accepts
 //! the command, [`Error::NoSubscriber`] is returned rather than silently
 //! succeeding — callers on direct ingress that receive this error must treat the
 //! operation as undelivered (G5: durable-only operations fail closed on direct
@@ -56,7 +56,7 @@ impl<S: Dispatch + 'static> LiveRunControlService<S> {
     ///
     /// Resolution order:
     /// 1. Live cancel via the runtime active-run registry (in-flight runs).
-    /// 2. Durable cancel via the dispatch store (queued or parked runs),
+    /// 2. Durable cancel via the dispatch store (queued or awaiting runs),
     ///    followed by committing a terminal `Cancelled` fact.
     ///
     /// Returns [`Error::NotFound`] when no matching run exists in either path.
@@ -69,7 +69,7 @@ impl<S: Dispatch + 'static> LiveRunControlService<S> {
             Err(ControlError::NotActive) => {}
             Err(e) => return Err(Error::Dispatch(e.to_string())),
         }
-        // Not live-active — try a durable cancel for queued or parked dispatches.
+        // Not live-active — try a durable cancel for queued or awaiting dispatches.
         let thread_id = self
             .worker
             .store()

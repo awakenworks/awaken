@@ -275,8 +275,8 @@ it. The durable `StoredPublication` and the publication lifecycle
 **Driving a run (ADR-0033).** The runtime consumes a `RunnableConfig` through two
 in-process entries over the `execute`/`resume` primitives: `run` (single-shot) and
 `run_to_completion(config, thread, input, ctx, decide)`, which owns the
-`execute → (park → decide → resume)* → end` loop. A parked run is a question
-(`WaitingTicket`); the answer is a `ResumeResult`, supplied in-process by the
+`execute → (await → decide → resume)* → end` loop. A aawaiting run is a question
+(`ResumeTicket`); the answer is a `ResumeResult`, supplied in-process by the
 `decide` closure or across a boundary by the durable dispatch queue — the same
 protocol, two drivers.
 

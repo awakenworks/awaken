@@ -127,9 +127,9 @@ async fn interrupt_ends_an_in_flight_run_as_cancelled() {
 
     let result = task.await.expect("join").expect("run");
     assert!(
-        matches!(result.phase, Phase::Ended(EndCause::Cancelled)),
+        matches!(result.state, RunState::Ended(EndCause::Cancelled)),
         "an interrupted in-flight turn ends Cancelled, not run to completion: {:?}",
-        result.phase
+        result.state
     );
 }
 
@@ -219,7 +219,7 @@ async fn compaction_summary_reaches_the_same_long_turn() {
 
     // Turn 1: only the single user message → below threshold, no summary injected.
     let r1 = host.run(None, "t-c", user("u1")).await.expect("turn 1");
-    assert!(matches!(r1.phase, Phase::Ended(_)));
+    assert!(matches!(r1.state, RunState::Ended(_)));
     let reply1 = r1
         .new_messages
         .iter()
@@ -342,7 +342,7 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
     );
 }
 
-/// The main agent parks on a `write` (Ask-gated) then finishes on resume; the
+/// The main agent awaits on a `write` (Ask-gated) then finishes on resume; the
 /// extractor saves a memory. Proves resume-ended turns trigger the aux agents.
 struct ResumeMemModel;
 
@@ -405,7 +405,7 @@ async fn resume_ended_turn_triggers_memory_extraction() {
     let mem_dir = std::env::temp_dir().join(format!("awaken-resume-mem-{stamp}"));
     let host = SharedHost::new(Arc::new(ResumeMemModel), "stub").with_memory(&mem_dir);
 
-    // Turn 1 parks on the Ask-gated `write`.
+    // Turn 1 awaits on the Ask-gated `write`.
     let r1 = host
         .run(
             None,
@@ -415,8 +415,8 @@ async fn resume_ended_turn_triggers_memory_extraction() {
         .await
         .expect("turn 1");
     assert!(
-        matches!(r1.phase, Phase::Waiting),
-        "turn should park on write"
+        matches!(r1.state, RunState::Awaiting),
+        "turn should await on write"
     );
     let pending = r1.pending.expect("a pending tool");
 
@@ -433,7 +433,7 @@ async fn resume_ended_turn_triggers_memory_extraction() {
         .await
         .expect("resume");
     assert!(
-        matches!(r2.phase, Phase::Ended(_)),
+        matches!(r2.state, RunState::Ended(_)),
         "resume should end the turn"
     );
 
@@ -528,7 +528,10 @@ async fn turn_end_fires_background_memory_extraction() {
         "I really like rust",
     )];
     let result = host.run(None, "t-mem", input).await.expect("run turn");
-    assert!(matches!(result.phase, Phase::Ended(_)), "turn should end");
+    assert!(
+        matches!(result.state, RunState::Ended(_)),
+        "turn should end"
+    );
 
     let drained = host.drain_memory(std::time::Duration::from_secs(10)).await;
     assert!(drained, "memory extraction should drain");
@@ -1270,17 +1273,17 @@ async fn ctx_for_installs_a_catalog_so_any_node_can_resolve_a_claimed_run() {
 // run/resume fail-closed boundaries (ADR-0048 gap review)
 //
 // These guard the double-run / wrong-tool / forged-approval seams: a caller must
-// not be able to start a second turn on a parked thread, resume a run that never
-// parked, answer the wrong pending tool, or cross the built-in↔client-executed
+// not be able to start a second turn on an awaiting thread, resume a run that never
+// awaiting, answer the wrong pending tool, or cross the built-in↔client-executed
 // binding when resuming. All of them must fail *closed* with a BadRequest and
 // leave the run untouched.
 // ---------------------------------------------------------------------------
 
-/// Parks on the Ask-gated built-in `write` until it sees a tool result, then ends.
-struct ParkOnWriteModel;
+/// Awaits on the Ask-gated built-in `write` until it sees a tool result, then ends.
+struct AwaitOnWriteModel;
 
 #[async_trait::async_trait]
-impl LlmExecutor for ParkOnWriteModel {
+impl LlmExecutor for AwaitOnWriteModel {
     async fn infer(
         &self,
         request: ChatRequest,
@@ -1348,34 +1351,37 @@ fn user(text: &str) -> Vec<Message> {
     vec![Message::text(MessageId("u1".into()), Role::User, text)]
 }
 
-/// A thread parked on a tool decision must reject a fresh `run`: starting a second
-/// turn over a parked run would double-execute the parked turn's side effects. The
-/// guard fails closed with BadRequest and does not touch the park.
+/// A thread awaiting on a tool decision must reject a fresh `run`: starting a second
+/// turn over an awaiting run would double-execute the awaiting turn's side effects. The
+/// guard fails closed with BadRequest and does not touch the await.
 #[tokio::test]
-async fn run_on_a_parked_thread_fails_closed() {
-    let host = SharedHost::new(Arc::new(ParkOnWriteModel), "stub");
+async fn run_on_an_awaiting_thread_fails_closed() {
+    let host = SharedHost::new(Arc::new(AwaitOnWriteModel), "stub");
     let r1 = host
-        .run(None, "t-parked", user("hi"))
+        .run(None, "t-awaiting", user("hi"))
         .await
         .expect("turn 1");
-    assert!(matches!(r1.phase, Phase::Waiting), "turn parks on write");
+    assert!(
+        matches!(r1.state, RunState::Awaiting),
+        "turn awaits on write"
+    );
 
     let err = host
-        .run(None, "t-parked", user("again"))
+        .run(None, "t-awaiting", user("again"))
         .await
         .err()
-        .expect("a second run on a parked thread must fail");
+        .expect("a second run on an awaiting thread must fail");
     assert_eq!(err.kind, HostErrorKind::BadRequest);
     assert!(
         err.message.contains("awaiting a tool decision"),
-        "message names the park: {}",
+        "message names the await: {}",
         err.message
     );
 
-    // The park still resumes cleanly afterwards — the rejected run was a no-op.
+    // The await still resumes cleanly afterwards — the rejected run was a no-op.
     let r2 = host
         .resume(
-            "t-parked",
+            "t-awaiting",
             "w1",
             HostResume::Confirm {
                 allow: true,
@@ -1383,15 +1389,15 @@ async fn run_on_a_parked_thread_fails_closed() {
             },
         )
         .await
-        .expect("resume the untouched park");
-    assert!(matches!(r2.phase, Phase::Ended(_)));
+        .expect("resume the untouched await");
+    assert!(matches!(r2.state, RunState::Ended(_)));
 }
 
-/// Resuming a thread that has no parked run is a caller error, not a panic: there
+/// Resuming a thread that has no awaiting run is a caller error, not a panic: there
 /// is no run to answer, so it fails closed with BadRequest.
 #[tokio::test]
-async fn resume_with_no_parked_run_fails_closed() {
-    let host = SharedHost::new(Arc::new(ParkOnWriteModel), "stub");
+async fn resume_with_no_awaiting_run_fails_closed() {
+    let host = SharedHost::new(Arc::new(AwaitOnWriteModel), "stub");
     let err = host
         .resume(
             "t-idle",
@@ -1403,26 +1409,26 @@ async fn resume_with_no_parked_run_fails_closed() {
         )
         .await
         .err()
-        .expect("resume with nothing parked must fail");
+        .expect("resume with nothing awaiting must fail");
     assert_eq!(err.kind, HostErrorKind::BadRequest);
     assert!(
-        err.message.contains("no parked run"),
-        "message names the missing park: {}",
+        err.message.contains("no awaiting run"),
+        "message names the missing await: {}",
         err.message
     );
 }
 
 /// A resume whose `tool_use_id` does not name the pending tool must be rejected —
 /// otherwise a caller could resume the wrong tool. Fails closed with BadRequest and
-/// the real park survives.
+/// the real await survives.
 #[tokio::test]
 async fn resume_with_a_wrong_tool_use_id_fails_closed() {
-    let host = SharedHost::new(Arc::new(ParkOnWriteModel), "stub");
+    let host = SharedHost::new(Arc::new(AwaitOnWriteModel), "stub");
     let r1 = host
         .run(None, "t-wrongid", user("hi"))
         .await
         .expect("turn 1");
-    assert!(matches!(r1.phase, Phase::Waiting));
+    assert!(matches!(r1.state, RunState::Awaiting));
 
     let err = host
         .resume(
@@ -1443,7 +1449,7 @@ async fn resume_with_a_wrong_tool_use_id_fails_closed() {
         err.message
     );
 
-    // The genuine id still resumes — the mismatch did not consume the park.
+    // The genuine id still resumes — the mismatch did not consume the await.
     let r2 = host
         .resume(
             "t-wrongid",
@@ -1455,7 +1461,7 @@ async fn resume_with_a_wrong_tool_use_id_fails_closed() {
         )
         .await
         .expect("the real id resumes");
-    assert!(matches!(r2.phase, Phase::Ended(_)));
+    assert!(matches!(r2.state, RunState::Ended(_)));
 }
 
 /// The built-in↔client binding is enforced on resume: a client-tool *result* may
@@ -1463,9 +1469,9 @@ async fn resume_with_a_wrong_tool_use_id_fails_closed() {
 /// forge an approval by delivering a fabricated result instead of a decision.
 #[tokio::test]
 async fn client_result_cannot_answer_a_builtin_tool() {
-    let host = SharedHost::new(Arc::new(ParkOnWriteModel), "stub");
+    let host = SharedHost::new(Arc::new(AwaitOnWriteModel), "stub");
     let r1 = host.run(None, "t-bind1", user("hi")).await.expect("turn 1");
-    let pending = r1.pending.expect("parked on the built-in write");
+    let pending = r1.pending.expect("awaiting on the built-in write");
     assert!(!pending.client_executed, "write is a built-in tool");
 
     let err = host
@@ -1495,7 +1501,7 @@ async fn confirm_cannot_answer_a_client_tool() {
     let host = SharedHost::new(Arc::new(ClientLookupModel), "stub")
         .with_client_tools(HashSet::from(["lookup".to_string()]));
     let r1 = host.run(None, "t-bind2", user("hi")).await.expect("turn 1");
-    let pending = r1.pending.expect("parked on the client tool");
+    let pending = r1.pending.expect("awaiting on the client tool");
     assert!(pending.client_executed, "lookup is client-executed");
 
     let err = host
@@ -1529,7 +1535,7 @@ async fn client_result_delivers_a_client_tool_result_and_ends_the_turn() {
         .run(None, "t-client", user("hi"))
         .await
         .expect("turn 1");
-    let pending = r1.pending.expect("parked on the client tool");
+    let pending = r1.pending.expect("awaiting on the client tool");
 
     let r2 = host
         .resume(
@@ -1542,7 +1548,7 @@ async fn client_result_delivers_a_client_tool_result_and_ends_the_turn() {
         )
         .await
         .expect("client result resumes");
-    assert!(matches!(r2.phase, Phase::Ended(_)), "the turn ends");
+    assert!(matches!(r2.state, RunState::Ended(_)), "the turn ends");
     let reply = r2
         .new_messages
         .iter()
@@ -1560,11 +1566,11 @@ async fn client_result_delivers_a_client_tool_result_and_ends_the_turn() {
 /// must fail closed rather than silently behave like a plain run.
 #[tokio::test]
 async fn supersede_run_without_durable_ingress_fails_closed() {
-    let host = SharedHost::new(Arc::new(ParkOnWriteModel), "stub");
-    // Park first so the supersede path is not short-circuited by the parked guard
-    // (supersede is allowed on a parked thread; the durable check is what must fire).
+    let host = SharedHost::new(Arc::new(AwaitOnWriteModel), "stub");
+    // Await first so the supersede path is not short-circuited by the awaiting guard
+    // (supersede is allowed on an awaiting thread; the durable check is what must fire).
     let r1 = host.run(None, "t-sup", user("hi")).await.expect("turn 1");
-    assert!(matches!(r1.phase, Phase::Waiting));
+    assert!(matches!(r1.state, RunState::Awaiting));
 
     let err = host
         .supersede_run(None, "t-sup", user("newest wins"))

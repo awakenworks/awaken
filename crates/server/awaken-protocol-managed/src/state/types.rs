@@ -7,5 +7,5 @@
 pub use awaken_session_contract::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, McpServerBinding, OutcomeIteration, OutcomeReport, Pending, RunError,
-    RunErrorKind, SessionInit, SessionRuntime, SessionUsage, StepFailure, StepOutcome, Terminus,
+    RunErrorKind, SessionInit, SessionRuntime, SessionUsage, StepOutcome,
 };

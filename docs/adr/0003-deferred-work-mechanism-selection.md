@@ -20,7 +20,7 @@ mechanism, it picks among the existing ones.
 | Mechanism | Use when | Owning design doc (this corpus) |
 |---|---|---|
 | `ScheduledAction` | defer work to a later phase **within the same run**; in-process | [runtime-behavior.md](../design/runtime-behavior.md) (scheduled and background work) |
-| run waiting ticket / resume decision | **suspend the run awaiting an external decision/result** (HITL, client tool, scheduled) | [runtime-behavior.md](../design/runtime-behavior.md) |
+| run resume ticket / resume decision | **suspend the run awaiting an external decision/result** (HITL, client tool, scheduled) | [runtime-behavior.md](../design/runtime-behavior.md) |
 | durable run dispatch | hand work to a **durable cross-process queue** (retry, crash recovery) | [run-ingress-message-delivery.md](../design/run-ingress-message-delivery.md) |
 
 ### D2: Shared rules across all three
@@ -39,7 +39,7 @@ runtime/server records owned by the chosen mechanism:
 | Mechanism | Recovery evidence |
 |---|---|
 | `ScheduledAction` | committed request, correlation/idempotency key, run/thread binding, snapshot/catalog fingerprint, deadline |
-| run waiting ticket / resume decision | committed `RunWaitingState`, resume ticket, pending call/decision id, descriptor fingerprint, deadline |
+| run resume ticket / resume decision | committed `ResumeTicket`, resume ticket, pending call/decision id, descriptor fingerprint, deadline |
 | durable run dispatch | durable pending input, dispatch lease/claim state, outbox entries, committed facts/events |
 
 Cancel and stop make the current run terminal. A late result for an old

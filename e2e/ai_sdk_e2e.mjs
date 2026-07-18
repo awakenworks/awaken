@@ -67,7 +67,7 @@ async function main() {
     pass('ai-sdk streaming tool call (tool-input-available)');
   });
 
-  // --- HITL: a tool needing approval parks; `Chat.addToolResult` submits the
+  // --- HITL: a tool needing approval awaits; `Chat.addToolResult` submits the
   // decision and (via sendAutomaticallyWhen) auto-resends, completing the run ---
   await withRealServer('probe', 38143, async (base) => {
     const chat = newChat(base, 'sdk-hitl', {
@@ -75,7 +75,7 @@ async function main() {
     });
     await chat.sendMessage({ text: 'remember this note' });
     const toolPart = (chat.lastMessage?.parts ?? []).find((p) => p.toolCallId);
-    assert.ok(toolPart, `expected a parked tool part: ${JSON.stringify(chat.lastMessage?.parts)}`);
+    assert.ok(toolPart, `expected an awaiting tool part: ${JSON.stringify(chat.lastMessage?.parts)}`);
     assert.equal(toolPart.state, 'input-available', 'the tool should await a decision');
 
     await chat.addToolResult({
@@ -85,7 +85,7 @@ async function main() {
     });
     await settle(chat);
     assert.ok(replyText(chat).includes('done'), `expected completion after approval: ${replyText(chat)}`);
-    pass('ai-sdk HITL approval (park -> addToolResult -> complete)');
+    pass('ai-sdk HITL approval (await -> addToolResult -> complete)');
   });
 
   console.log(

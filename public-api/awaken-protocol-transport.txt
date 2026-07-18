@@ -16,11 +16,11 @@ pub awaken_protocol_transport::Resume::Confirm
 pub awaken_protocol_transport::Resume::Confirm::allow: bool
 pub awaken_protocol_transport::Resume::Confirm::note: core::option::Option<alloc::string::String>
 pub enum awaken_protocol_transport::Terminal
+pub awaken_protocol_transport::Terminal::Awaiting
+pub awaken_protocol_transport::Terminal::Awaiting::pending: core::option::Option<awaken_protocol_transport::Pending>
 pub awaken_protocol_transport::Terminal::Exhausted
 pub awaken_protocol_transport::Terminal::Failed(awaken_protocol_transport::StepFailure)
 pub awaken_protocol_transport::Terminal::Finished
-pub awaken_protocol_transport::Terminal::Waiting
-pub awaken_protocol_transport::Terminal::Waiting::pending: core::option::Option<awaken_protocol_transport::Pending>
 pub struct awaken_protocol_transport::ChannelStreamSink
 impl awaken_protocol_transport::ChannelStreamSink
 pub fn awaken_protocol_transport::ChannelStreamSink::new(tokio::sync::mpsc::unbounded::UnboundedSender<awaken_agent_contract::event::agent::AgentEvent>) -> Self

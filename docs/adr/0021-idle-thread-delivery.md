@@ -6,8 +6,8 @@
 
 ## Context
 
-`send_message` (ADR-0017) delivers to the run currently parked on a thread. A
-message to a thread with **no** parked run fails closed: there is no ticket to
+`send_message` (ADR-0017) delivers to the run currently awaiting on a thread. A
+message to a thread with **no** aawaiting run fails closed: there is no ticket to
 answer. But inter-agent messaging is asynchronous — agent A may message thread B
 when B has no run in flight. The message must not be lost, and it must reach B's
 next run as *new input* (not a resume of a ticket that does not exist).
@@ -21,7 +21,7 @@ message to an idle thread is the same durable `PendingInput` with an **empty
 `run_id` and `correlation_id`** — *unbound*: pending whose run is not yet
 determined. It is addressed only by `thread_id`. It rides the same outbox →
 relay → pending path as a bound delivery (ADR-0013), so there is one delivery
-mechanism, not two; `send_message` stages a bound input when a run is parked and
+mechanism, not two; `send_message` stages a bound input when a run is awaiting and
 an unbound input when none is.
 
 ### D2: The next run on the thread binds and consumes it
@@ -63,4 +63,4 @@ config seam it needs — remains a named, deferred extension.
 - [INVARIANTS.md](../INVARIANTS.md) — G5 (ingress delivery semantics).
 - ADR-0010 — correlation-keyed pending input and read-then-remove.
 - ADR-0013 — the outbox/relay path the delivery reuses.
-- ADR-0017 — `send_message` to a parked run, which this completes for idle threads.
+- ADR-0017 — `send_message` to an aawaiting run, which this completes for idle threads.

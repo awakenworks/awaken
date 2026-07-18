@@ -1,6 +1,6 @@
 //! A2A `tasks/get` and `tasks/cancel` over the real router with a runtime that is
-//! parked on a built-in tool. `tasks/cancel` is A2A's protocol-native "deny": it
-//! unblocks the parked tool with `allow: false` and reports the task `canceled`.
+//! awaiting on a built-in tool. `tasks/cancel` is A2A's protocol-native "deny": it
+//! unblocks the awaiting tool with `allow: false` and reports the task `canceled`.
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -18,14 +18,14 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-/// A runtime perpetually parked on a built-in tool `c1`, recording whether it was
+/// A runtime perpetually awaiting on a built-in tool `c1`, recording whether it was
 /// resumed with a denial.
-struct ParkedRuntime {
+struct AwaitingRuntime {
     denied: Arc<AtomicBool>,
 }
 
 #[async_trait]
-impl ProtocolRuntime for ParkedRuntime {
+impl ProtocolRuntime for AwaitingRuntime {
     async fn run(
         &self,
         _thread: &str,
@@ -34,7 +34,7 @@ impl ProtocolRuntime for ParkedRuntime {
     ) -> Result<StepOutcome, DriverError> {
         Ok(StepOutcome {
             new_messages: Vec::new(),
-            terminal: Terminal::Waiting {
+            terminal: Terminal::Awaiting {
                 pending: Some(pending()),
             },
         })
@@ -78,7 +78,7 @@ fn pending() -> Pending {
 }
 
 async fn rpc(denied: Arc<AtomicBool>, body: Value) -> Value {
-    let app = router(Arc::new(ParkedRuntime { denied }));
+    let app = router(Arc::new(AwaitingRuntime { denied }));
     let resp = app
         .oneshot(
             Request::builder()
@@ -95,7 +95,7 @@ async fn rpc(denied: Arc<AtomicBool>, body: Value) -> Value {
 }
 
 #[tokio::test]
-async fn tasks_get_on_a_parked_run_reads_input_required() {
+async fn tasks_get_on_an_awaiting_run_reads_input_required() {
     let r = rpc(
         Arc::new(AtomicBool::new(false)),
         json!({ "jsonrpc": "2.0", "id": 1, "method": "tasks/get", "params": { "id": "task-ctx" } }),
@@ -105,9 +105,9 @@ async fn tasks_get_on_a_parked_run_reads_input_required() {
 }
 
 #[tokio::test]
-async fn message_send_on_a_parked_context_resumes_it_rather_than_starting_a_fresh_turn() {
-    // The context is parked, so the send takes the resume branch (pending →
-    // resume, which completes) rather than starting a fresh (still-parked) turn.
+async fn message_send_on_an_awaiting_context_resumes_it_rather_than_starting_a_fresh_turn() {
+    // The context is awaiting, so the send takes the resume branch (pending →
+    // resume, which completes) rather than starting a fresh (still-awaiting) turn.
     let r = rpc(
         Arc::new(AtomicBool::new(false)),
         json!({
@@ -121,7 +121,7 @@ async fn message_send_on_a_parked_context_resumes_it_rather_than_starting_a_fres
     assert_eq!(r["result"]["status"]["state"], "completed", "{r}");
 }
 
-/// A runtime parked on a *client-executed* tool `c2`, recording the content of the
+/// A runtime awaiting on a *client-executed* tool `c2`, recording the content of the
 /// `ClientResult` it is resumed with (the router's non-approval resume path).
 struct ClientToolRuntime {
     delivered: Arc<Mutex<Option<String>>>,
@@ -135,7 +135,7 @@ impl ProtocolRuntime for ClientToolRuntime {
         _agent: Option<String>,
         _messages: Vec<Message>,
     ) -> Result<StepOutcome, DriverError> {
-        unreachable!("the context is already parked, so send takes the resume branch")
+        unreachable!("the context is already awaiting, so send takes the resume branch")
     }
 
     async fn resume(
@@ -176,7 +176,7 @@ impl ProtocolRuntime for ClientToolRuntime {
 
 #[tokio::test]
 async fn message_send_delivers_the_text_as_the_client_tool_result_on_resume() {
-    // A message on a context parked on a client-executed tool is delivered as that
+    // A message on a context awaiting on a client-executed tool is delivered as that
     // tool's result (not read as an approval): the router's `ClientResult` branch.
     let delivered = Arc::new(Mutex::new(None));
     let app = router(Arc::new(ClientToolRuntime {
@@ -208,7 +208,7 @@ async fn message_send_delivers_the_text_as_the_client_tool_result_on_resume() {
 }
 
 #[tokio::test]
-async fn tasks_cancel_denies_the_parked_tool_and_reports_canceled() {
+async fn tasks_cancel_denies_the_awaiting_tool_and_reports_canceled() {
     let denied = Arc::new(AtomicBool::new(false));
     let r = rpc(
         denied.clone(),
@@ -218,6 +218,6 @@ async fn tasks_cancel_denies_the_parked_tool_and_reports_canceled() {
     assert_eq!(r["result"]["status"]["state"], "canceled", "{r}");
     assert!(
         denied.load(Ordering::SeqCst),
-        "cancel must deny the parked tool (resume with allow:false)"
+        "cancel must deny the awaiting tool (resume with allow:false)"
     );
 }

@@ -94,7 +94,7 @@ async fn the_finish_frame_carries_total_usage() {
     assert_eq!(usage["totalTokens"], 30, "{finish}");
 }
 
-/// A runtime parked on a client tool, so a decision-only (resume) request drives
+/// A runtime awaiting on a client tool, so a decision-only (resume) request drives
 /// the router's `resume_step` branch. `usage()` reports the whole thread's tally.
 struct ResumeUsageRuntime;
 
@@ -115,7 +115,7 @@ impl ProtocolRuntime for ResumeUsageRuntime {
         _tool_use_id: &str,
         _resume: Resume,
     ) -> Result<StepOutcome, DriverError> {
-        // The resumed run finishes cleanly after answering the parked tool.
+        // The resumed run finishes cleanly after answering the awaiting tool.
         Ok(StepOutcome {
             new_messages: vec![Message::text(Id("a2".into()), Role::Assistant, "done")],
             terminal: Terminal::Finished,
@@ -151,7 +151,7 @@ impl ProtocolRuntime for ResumeUsageRuntime {
 #[tokio::test]
 async fn the_resume_path_also_attaches_total_usage() {
     let app = awaken_protocol_ai_sdk::router::router(Arc::new(ResumeUsageRuntime));
-    // A decision-only body: the assistant `tool-*` part answers the parked `c1`,
+    // A decision-only body: the assistant `tool-*` part answers the awaiting `c1`,
     // and no new user/system message → `is_resume_only()` → the resume branch.
     let body = json!({
         "threadId": "t1",

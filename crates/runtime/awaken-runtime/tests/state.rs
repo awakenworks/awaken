@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::{Command as StateCommand, Key, MergePolicy, Scope};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
@@ -159,12 +159,12 @@ async fn tool_staged_state_is_committed_and_replayable() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 
     let committed = commit.committed();
     assert_eq!(committed.state.len(), 1, "the state command is committed");
 
-    // A StateChanged event is committed alongside the phase event.
+    // A StateChanged event is committed alongside the state event.
     assert!(
         committed
             .events
@@ -209,7 +209,7 @@ async fn exclusive_conflict_fails_closed_and_commits_no_state() {
 
     assert_eq!(
         outcome,
-        Phase::Ended(EndCause::Error(Failure::StateConflict)),
+        RunState::Ended(EndCause::Error(Failure::StateConflict)),
         "exclusive conflict fails closed"
     );
     let committed = commit.committed();
@@ -218,7 +218,7 @@ async fn exclusive_conflict_fails_closed_and_commits_no_state() {
         "a conflicting batch is never committed"
     );
     assert!(matches!(
-        committed.latest_run.unwrap().phase,
-        Phase::Ended(EndCause::Error(Failure::StateConflict))
+        committed.latest_run.unwrap().state,
+        RunState::Ended(EndCause::Error(Failure::StateConflict))
     ));
 }

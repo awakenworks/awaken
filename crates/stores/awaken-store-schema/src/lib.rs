@@ -1,10 +1,11 @@
 //! The durable commit schema, shared by every store backend.
 //!
 //! The commit tables are a faithful projection of the staged `ThreadCommit`
-//! (ADR-0008): the append-only commit/run-fact log (the phase authority and the
+//! (ADR-0008): the append-only commit/run-fact log (stored in the legacy `phase`
+//! column, but representing state authority and the
 //! fence, G31/G32), the message transcript, the state-command log, committed
 //! events, the run-record cache (a projection of the latest fact, G32), and
-//! active waiting tickets. The schema is one portable [`MigrationBundle`] using
+//! active awaiting tickets. The schema is one portable [`MigrationBundle`] using
 //! the migrator's dialect-neutral tokens, so the *same* bundle drives both the
 //! Postgres (`sqlx`) and SQLite (`rusqlite`) runners. This crate names no SQL
 //! driver — it owns the schema, the backends own the runner.
@@ -20,7 +21,7 @@ pub const COMMIT_BUNDLE_ID: &str = "awaken.runtime_commit";
 const COMMIT_SPECS: [(i64, &str, &str); 6] = [
     (
         1,
-        "commit log: run-fact phase authority and the monotonic fence",
+        "commit log: run-fact state authority and the monotonic fence",
         "CREATE TABLE {prefix}_commit (\
             sequence BIGINT PRIMARY KEY, \
             thread_id TEXT NOT NULL, \
@@ -50,7 +51,7 @@ const COMMIT_SPECS: [(i64, &str, &str); 6] = [
         4,
         "committed lifecycle/observability event stream (monotonic sequence); \
          NOT the message-truth source — messages live in {prefix}_message, state \
-         in {prefix}_state_command, phase authority/fence in {prefix}_commit",
+         in {prefix}_state_command, state authority/fence in {prefix}_commit",
         "CREATE TABLE {prefix}_event (\
             sequence BIGINT PRIMARY KEY, \
             run_id TEXT NOT NULL, \
@@ -68,7 +69,7 @@ const COMMIT_SPECS: [(i64, &str, &str); 6] = [
     ),
     (
         6,
-        "active waiting tickets, present only while a run is parked",
+        "active awaiting tickets, present only while a run is awaiting",
         "CREATE TABLE {prefix}_waiting (\
             run_id TEXT PRIMARY KEY, \
             ticket {json} NOT NULL)",
@@ -161,7 +162,7 @@ mod tests {
                     sql.contains("runtime_"),
                     "{{prefix}} expanded in {dialect:?}"
                 );
-                // `{json}` is on every table (phase / data / kind / payload / ticket).
+                // `{json}` is on every table (legacy phase column / data / kind / payload / ticket).
                 assert!(
                     sql.contains(json),
                     "{{json}} → {json} in {dialect:?}: {sql}"

@@ -213,7 +213,7 @@ impl SharedHost {
     }
 
     /// Add client-executed tools: those ids are model-visible but unregistered, so
-    /// a call parks and the client supplies the result.
+    /// a call awaits and the client supplies the result.
     pub fn with_client_tools(mut self, client_tools: HashSet<String>) -> Self {
         self.client_tools.extend(client_tools);
         self
@@ -321,8 +321,8 @@ impl SharedHost {
     }
 
     /// Persist every thread's committed truth to a durable SQLite database under
-    /// `dir` (one file per thread). A run parked on a thread survives a restart:
-    /// a host rebuilt over the same directory recovers the parked position and can
+    /// `dir` (one file per thread). A run awaiting on a thread survives a restart:
+    /// a host rebuilt over the same directory recovers the awaiting position and can
     /// resume it. Without this, sessions are in-memory and lost on restart.
     pub fn with_store_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.store_dir = Some(dir.into());

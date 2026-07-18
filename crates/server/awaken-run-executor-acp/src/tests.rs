@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Phase};
+use awaken_agent_contract::agent::run::{EndCause, RunState};
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error as CommitError};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_provisioning_contract::{ExitStatus, ProcessHandle, SandboxError, Signal};
@@ -130,7 +130,7 @@ fn exec(frames: Vec<String>) -> AcpRunExecutor {
 #[test]
 fn advertises_remote_abort_and_auth_wait() {
     // The supervisor interrupts the opaque CLI turn on cancel, and the ACP
-    // permission flow parks on an authorization decision (ADR-0055).
+    // permission flow awaits on an authorization decision (ADR-0055).
     let caps = exec(vec![]).capabilities();
     assert_eq!(caps.cancellation, Cancellation::RemoteAbort);
     assert_eq!(caps.wait, Wait::Auth);
@@ -151,7 +151,7 @@ impl LaunchObserver for RecordingObserver {
 #[tokio::test]
 async fn observer_sees_install_launch_and_ready_for_a_dynamic_install_backend() {
     // The fixture activation's backend_ref is `acp:claude` (an npx adapter), so the
-    // executor surfaces an Installing phase before launch, then Ready once the
+    // executor surfaces an Installing state before launch, then Ready once the
     // (newline-fixture) agent is live.
     let observer = Arc::new(RecordingObserver::default());
     let e = AcpRunExecutor::new(Arc::new(ScriptedSource {
@@ -204,7 +204,7 @@ async fn observer_sees_failed_when_the_launch_faults() {
             AcpLaunchStage::Launching,
             AcpLaunchStage::Failed,
         ],
-        "a spawn fault surfaces a Failed phase"
+        "a spawn fault surfaces a Failed state"
     );
 }
 
@@ -216,7 +216,7 @@ async fn drives_a_turn_commits_messages_and_returns_natural_end() {
         r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
     ]);
     let coord = Arc::new(RecordingCoordinator::default());
-    let phase = e
+    let state = e
         .execute(
             activation(),
             RuntimeRunContext::new().with_commit(coord.clone()),
@@ -224,14 +224,14 @@ async fn drives_a_turn_commits_messages_and_returns_natural_end() {
         .await
         .unwrap();
 
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     let commits = coord.commits.lock().unwrap();
     assert_eq!(commits.len(), 1);
     assert_eq!(commits[0].messages.len(), 2);
     assert_eq!(commits[0].messages[0].text_content(), "working");
     assert_eq!(
-        commits[0].run_fact.phase,
-        Phase::Ended(EndCause::NaturalEnd)
+        commits[0].run_state(),
+        RunState::Ended(EndCause::NaturalEnd)
     );
 }
 
@@ -252,7 +252,7 @@ async fn live_inbox_steer_folds_into_a_relaunched_turn() {
         Message::text(MessageId("client-id".into()), Role::User, "steer me"),
     );
     let coord = Arc::new(RecordingCoordinator::default());
-    let phase = e
+    let state = e
         .execute(
             activation(),
             RuntimeRunContext::new()
@@ -262,9 +262,9 @@ async fn live_inbox_steer_folds_into_a_relaunched_turn() {
         .await
         .unwrap();
 
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     let commits = coord.commits.lock().unwrap();
-    assert_eq!(commits.len(), 1, "one commit at the terminal phase");
+    assert_eq!(commits.len(), 1, "one commit at the terminal state");
     let steer = commits[0]
         .messages
         .iter()
@@ -277,12 +277,12 @@ async fn live_inbox_steer_folds_into_a_relaunched_turn() {
 }
 
 #[tokio::test]
-async fn a_requested_pause_parks_the_run_on_a_waiting_ticket() {
-    // ADR-0054 P5/U2: an operator pause requested by the next boundary parks the ACP
-    // run durably — `Phase::Waiting` on a no-tool `ManualPause` ticket — rather than
+async fn a_requested_pause_awaits_the_run_on_a_resume_ticket() {
+    // ADR-0054 P5/U2: an operator pause requested by the next boundary awaits the ACP
+    // run durably — `RunState::Awaiting` on a no-tool `ManualPause` ticket — rather than
     // ending, even though the turn reached a natural end. The turn's messages commit
-    // before the park (clean commit-then-park), mirroring the native engine.
-    use awaken_agent_contract::agent::waiting::WaitingReason;
+    // before the await (clean commit-then-await), mirroring the native engine.
+    use awaken_agent_contract::agent::awaiting::AwaitReason;
     use awaken_runtime_contract::pause::PauseSignal;
 
     let e = exec(vec![
@@ -292,7 +292,7 @@ async fn a_requested_pause_parks_the_run_on_a_waiting_ticket() {
     let pause = PauseSignal::new();
     pause.request();
     let coord = Arc::new(RecordingCoordinator::default());
-    let phase = e
+    let state = e
         .execute(
             activation(),
             RuntimeRunContext::new()
@@ -302,37 +302,40 @@ async fn a_requested_pause_parks_the_run_on_a_waiting_ticket() {
         .await
         .unwrap();
 
-    assert_eq!(phase, Phase::Waiting, "a requested pause parks, not ends");
+    assert_eq!(
+        state,
+        RunState::Awaiting,
+        "a requested pause awaits, not ends"
+    );
     let commits = coord.commits.lock().unwrap();
-    assert_eq!(commits.len(), 1, "one commit at the park boundary");
-    // The in-flight turn commits before the park.
+    assert_eq!(commits.len(), 1, "one commit at the await boundary");
+    // The in-flight turn commits before the await.
     assert!(
         commits[0]
             .messages
             .iter()
             .any(|m| m.text_content() == "turn"),
-        "the turn's assistant text commits before parking"
+        "the turn's assistant text commits before awaiting"
     );
     // A resumable no-tool `ManualPause` ticket rode the same commit.
     let ticket = commits[0]
-        .waiting
-        .as_ref()
-        .expect("a parked run commits its waiting ticket");
-    assert_eq!(ticket.reason, WaitingReason::ManualPause);
+        .resume_ticket()
+        .expect("an awaiting run commits its awaiting ticket");
+    assert_eq!(ticket.reason, AwaitReason::ManualPause);
     assert_eq!(ticket.run_id, RunId("run-1".into()));
     assert_eq!(ticket.thread_id, ThreadId("thread-1".into()));
     assert!(
         ticket.call_id.is_none() && ticket.pending_tool.is_none(),
-        "an operator pause parks on no tool"
+        "an operator pause awaits on no tool"
     );
 }
 
 #[tokio::test]
-async fn a_pause_commits_in_flight_steer_before_parking() {
+async fn a_pause_commits_in_flight_steer_before_awaiting() {
     // Pause preempts queued input, but the in-flight steer is not lost: it rides out
-    // with the park (fold) and commits before the run parks (boundary priority is
+    // with the await (fold) and commits before the run awaits (boundary priority is
     // pause > queued-input > idle).
-    use awaken_agent_contract::agent::waiting::WaitingReason;
+    use awaken_agent_contract::agent::awaiting::AwaitReason;
     use awaken_runtime_contract::live_inbox::{LiveInbox, MessageOrigin};
     use awaken_runtime_contract::pause::PauseSignal;
 
@@ -348,7 +351,7 @@ async fn a_pause_commits_in_flight_steer_before_parking() {
     let pause = PauseSignal::new();
     pause.request();
     let coord = Arc::new(RecordingCoordinator::default());
-    let phase = e
+    let state = e
         .execute(
             activation(),
             RuntimeRunContext::new()
@@ -359,18 +362,18 @@ async fn a_pause_commits_in_flight_steer_before_parking() {
         .await
         .unwrap();
 
-    assert_eq!(phase, Phase::Waiting, "pause preempts the queued input");
+    assert_eq!(state, RunState::Awaiting, "pause preempts the queued input");
     let commits = coord.commits.lock().unwrap();
     assert_eq!(commits.len(), 1);
     let steer = commits[0]
         .messages
         .iter()
         .find(|m| m.id.0 == "run-1-inbox-0")
-        .expect("in-flight steer rides out with the park and commits");
+        .expect("in-flight steer rides out with the await and commits");
     assert_eq!(steer.text_content(), "late steer");
     assert_eq!(
-        commits[0].waiting.as_ref().map(|t| &t.reason),
-        Some(&WaitingReason::ManualPause)
+        commits[0].resume_ticket().map(|t| &t.reason),
+        Some(&AwaitReason::ManualPause)
     );
     assert!(
         inbox.list().is_empty(),
@@ -687,7 +690,7 @@ async fn a_tool_call_and_its_result_commit_as_neutral_messages() {
         r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
     ]);
     let coord = Arc::new(RecordingCoordinator::default());
-    let phase = e
+    let state = e
         .execute(
             activation(),
             RuntimeRunContext::new().with_commit(coord.clone()),
@@ -695,7 +698,7 @@ async fn a_tool_call_and_its_result_commit_as_neutral_messages() {
         .await
         .unwrap();
 
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     let commits = coord.commits.lock().unwrap();
     let messages = &commits[0].messages;
     assert_eq!(messages.len(), 2, "the call and its result both commit");
@@ -783,7 +786,7 @@ async fn a_truncated_stream_is_classified_and_surfaces_an_error_prompt() {
     // Agent emits a message then closes without a turn_end → AcpError::Truncated.
     let e = exec(vec![r#"{"type":"message","text":"partial"}"#.into()]);
     let coord = Arc::new(RecordingCoordinator::default());
-    let phase = e
+    let state = e
         .execute(
             activation(),
             RuntimeRunContext::new().with_commit(coord.clone()),
@@ -791,7 +794,7 @@ async fn a_truncated_stream_is_classified_and_surfaces_an_error_prompt() {
         .await
         .unwrap();
 
-    assert!(matches!(phase, Phase::Ended(EndCause::Error(_))));
+    assert!(matches!(state, RunState::Ended(EndCause::Error(_))));
     let commits = coord.commits.lock().unwrap();
     // The partial message plus the appended classified error prompt were committed.
     let last = commits[0].messages.last().unwrap().text_content();
@@ -805,7 +808,7 @@ async fn a_launch_fault_classifies_at_initialize_and_commits_a_prompt() {
         open_error: Some("401 Unauthorized: invalid api key".into()),
     }));
     let coord = Arc::new(RecordingCoordinator::default());
-    let phase = e
+    let state = e
         .execute(
             activation(),
             RuntimeRunContext::new().with_commit(coord.clone()),
@@ -813,7 +816,7 @@ async fn a_launch_fault_classifies_at_initialize_and_commits_a_prompt() {
         .await
         .unwrap();
 
-    assert!(matches!(phase, Phase::Ended(EndCause::Error(_))));
+    assert!(matches!(state, RunState::Ended(EndCause::Error(_))));
     let commits = coord.commits.lock().unwrap();
     let prompt = commits[0].messages[0].text_content();
     // Credential-rejection prompt (auth error) surfaced to the run.
@@ -823,11 +826,11 @@ async fn a_launch_fault_classifies_at_initialize_and_commits_a_prompt() {
 #[tokio::test]
 async fn refusal_maps_to_stopped() {
     let e = exec(vec![r#"{"type":"turn_end","reason":"refusal"}"#.into()]);
-    let phase = e
+    let state = e
         .execute(activation(), RuntimeRunContext::new())
         .await
         .unwrap();
-    assert!(matches!(phase, Phase::Ended(EndCause::Stopped(_))));
+    assert!(matches!(state, RunState::Ended(EndCause::Stopped(_))));
 }
 
 // M12/T82: the driver-error seam `failure_cause` preserves a rate-limit (HARD-limit
@@ -898,7 +901,7 @@ async fn a_clean_error_turn_end_maps_to_error_not_natural_end() {
         r#"{"type":"turn_end","reason":"error"}"#.into(),
     ]);
     let coord = Arc::new(RecordingCoordinator::default());
-    let phase = e
+    let state = e
         .execute(
             activation(),
             RuntimeRunContext::new().with_commit(coord.clone()),
@@ -907,20 +910,20 @@ async fn a_clean_error_turn_end_maps_to_error_not_natural_end() {
         .unwrap();
 
     assert!(
-        matches!(phase, Phase::Ended(EndCause::Error(_))),
-        "a clean error turn must end in a terminal Error, got {phase:?}"
+        matches!(state, RunState::Ended(EndCause::Error(_))),
+        "a clean error turn must end in a terminal Error, got {state:?}"
     );
     assert_ne!(
-        phase,
-        Phase::Ended(EndCause::NaturalEnd),
+        state,
+        RunState::Ended(EndCause::NaturalEnd),
         "a reported error must never be recorded as a natural (successful) end"
     );
     // The committed run fact carries the same terminal Error — committed truth is not
     // a success either.
     let commits = coord.commits.lock().unwrap();
     assert!(matches!(
-        commits[0].run_fact.phase,
-        Phase::Ended(EndCause::Error(_))
+        commits[0].run_state(),
+        RunState::Ended(EndCause::Error(_))
     ));
 }
 
@@ -930,15 +933,15 @@ async fn a_clean_error_turn_end_maps_to_error_not_natural_end() {
 #[tokio::test]
 async fn a_timed_out_turn_end_maps_to_stopped_not_natural_end() {
     let e = exec(vec![r#"{"type":"turn_end","reason":"timed_out"}"#.into()]);
-    let phase = e
+    let state = e
         .execute(activation(), RuntimeRunContext::new())
         .await
         .unwrap();
     assert!(
-        matches!(phase, Phase::Ended(EndCause::Stopped(_))),
-        "a timed-out turn must end Stopped, got {phase:?}"
+        matches!(state, RunState::Ended(EndCause::Stopped(_))),
+        "a timed-out turn must end Stopped, got {state:?}"
     );
-    assert_ne!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_ne!(state, RunState::Ended(EndCause::NaturalEnd));
 }
 
 #[tokio::test]
@@ -948,14 +951,14 @@ async fn an_org_subscription_disabled_launch_fault_surfaces_a_credential_prompt(
         open_error: Some("Your organization has disabled Claude subscription access".into()),
     }));
     let coord = Arc::new(RecordingCoordinator::default());
-    let phase = e
+    let state = e
         .execute(
             activation(),
             RuntimeRunContext::new().with_commit(coord.clone()),
         )
         .await
         .unwrap();
-    assert!(matches!(phase, Phase::Ended(EndCause::Error(_))));
+    assert!(matches!(state, RunState::Ended(EndCause::Error(_))));
     let prompt = coord.commits.lock().unwrap()[0].messages[0].text_content();
     assert!(prompt.contains("credential"), "{prompt}");
 }
@@ -967,14 +970,14 @@ async fn a_login_required_launch_fault_surfaces_a_login_prompt() {
         open_error: Some("Please run /login to continue".into()),
     }));
     let coord = Arc::new(RecordingCoordinator::default());
-    let phase = e
+    let state = e
         .execute(
             activation(),
             RuntimeRunContext::new().with_commit(coord.clone()),
         )
         .await
         .unwrap();
-    assert!(matches!(phase, Phase::Ended(EndCause::Error(_))));
+    assert!(matches!(state, RunState::Ended(EndCause::Error(_))));
     let prompt = coord.commits.lock().unwrap()[0].messages[0]
         .text_content()
         .to_lowercase();
@@ -991,9 +994,9 @@ impl RunExecutor for Spy {
         &self,
         _a: RunActivation,
         _c: RuntimeRunContext,
-    ) -> awaken_runtime_contract::execution::Result<Phase> {
+    ) -> awaken_runtime_contract::execution::Result<RunState> {
         self.1.lock().unwrap().push(self.0);
-        Ok(Phase::Ended(EndCause::NaturalEnd))
+        Ok(RunState::Ended(EndCause::NaturalEnd))
     }
 }
 
@@ -1257,12 +1260,12 @@ async fn open_and_drive_inject_the_mcp_server_into_session_new_for_an_acp_sessio
     );
 
     let coord = Arc::new(RecordingCoordinator::default());
-    let phase = e
+    let state = e
         .execute(act, RuntimeRunContext::new().with_commit(coord.clone()))
         .await
         .unwrap();
 
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     let commits = coord.commits.lock().unwrap();
     let reply = commits[0].messages[0].text_content();
     assert_eq!(
@@ -1383,7 +1386,7 @@ async fn acp_session_id_is_carried_across_the_per_turn_relaunch() {
         Message::text(MessageId("steer".into()), Role::User, "keep going"),
     );
     let coord = Arc::new(RecordingCoordinator::default());
-    let phase = e
+    let state = e
         .execute(
             activation(),
             RuntimeRunContext::new()
@@ -1393,7 +1396,7 @@ async fn acp_session_id_is_carried_across_the_per_turn_relaunch() {
         .await
         .unwrap();
 
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     let commits = coord.commits.lock().unwrap();
     let texts: Vec<String> = commits[0]
         .messages
@@ -1475,7 +1478,7 @@ async fn a_cancelled_token_ends_the_run_cancelled() {
     let token = CancellationToken::new();
     token.cancel(); // pre-cancelled → the supervisor's cancel arm fires deterministically
     let coord = Arc::new(RecordingCoordinator::default());
-    let phase = AcpRunExecutor::new(Arc::new(HangingSource))
+    let state = AcpRunExecutor::new(Arc::new(HangingSource))
         .execute(
             activation(),
             RuntimeRunContext::new()
@@ -1485,7 +1488,7 @@ async fn a_cancelled_token_ends_the_run_cancelled() {
         .await
         .unwrap();
 
-    assert_eq!(phase, Phase::Ended(EndCause::Cancelled));
+    assert_eq!(state, RunState::Ended(EndCause::Cancelled));
 }
 
 /// Token usage is summed across relaunched turns: each launched turn emits a usage
@@ -1595,7 +1598,7 @@ async fn a_relaunch_open_failure_mid_run_classifies_and_ends() {
         Message::text(MessageId("s".into()), Role::User, "again"),
     );
     let coord = Arc::new(RecordingCoordinator::default());
-    let phase = AcpRunExecutor::new(Arc::new(FlakySource(opens.clone())))
+    let state = AcpRunExecutor::new(Arc::new(FlakySource(opens.clone())))
         .execute(
             activation(),
             RuntimeRunContext::new()
@@ -1606,8 +1609,8 @@ async fn a_relaunch_open_failure_mid_run_classifies_and_ends() {
         .unwrap();
 
     assert!(
-        matches!(phase, Phase::Ended(EndCause::Error(_))),
-        "a mid-run relaunch-open failure ends the run classified, got {phase:?}"
+        matches!(state, RunState::Ended(EndCause::Error(_))),
+        "a mid-run relaunch-open failure ends the run classified, got {state:?}"
     );
     assert_eq!(
         opens.load(Ordering::SeqCst),
@@ -1722,14 +1725,14 @@ async fn every_backend_row_drives_a_plain_turn_to_a_committed_reply() {
             ModelBinding::new("prov", "model", format!("acp:{}", row.id));
 
         let coord = Arc::new(RecordingCoordinator::default());
-        let phase = exec
+        let state = exec
             .execute(act, RuntimeRunContext::new().with_commit(coord.clone()))
             .await
             .unwrap_or_else(|e| panic!("{}: drive failed: {e:?}", row.id));
 
         assert_eq!(
-            phase,
-            Phase::Ended(EndCause::NaturalEnd),
+            state,
+            RunState::Ended(EndCause::NaturalEnd),
             "{}: a plain turn ends naturally",
             row.id
         );

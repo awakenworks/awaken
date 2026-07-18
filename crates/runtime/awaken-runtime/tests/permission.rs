@@ -1,7 +1,7 @@
 //! The permission axis end to end (ADR-0030): a `PermissionGate` backed by a
 //! `PermissionPolicy` gates every protected tool call. allow runs the tool; deny
 //! blocks it (and only permission can grant — visibility/registration do not,
-//! G9); ask parks on a decision ticket that a later allow resumes; every decision
+//! G9); ask awaits on a decision ticket that a later allow resumes; every decision
 //! is audited as a committed `PermissionDecided` event.
 
 use std::sync::Arc;
@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
 use awaken_runtime::memory::MemoryCommitCoordinator;
@@ -179,11 +179,11 @@ async fn allow_runs_the_tool_and_audits() {
     let runtime = runtime(ran.clone(), PermissionDecision::Allow);
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
-    let phase = runtime
+    let state = runtime
         .execute(activation(), context(&commit))
         .await
         .expect("runs");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(Ordering::SeqCst), 1, "allow ran the tool");
     assert_eq!(audited_decisions(&commit), vec!["allow"]);
 }
@@ -201,17 +201,17 @@ async fn deny_blocks_the_tool_and_only_permission_grants() {
     );
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
-    let phase = runtime
+    let state = runtime
         .execute(activation(), context(&commit))
         .await
         .expect("runs");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(Ordering::SeqCst), 0, "deny did not run the tool");
     assert_eq!(audited_decisions(&commit), vec!["deny"]);
 }
 
 #[tokio::test]
-async fn ask_parks_then_a_resumed_allow_runs_the_tool() {
+async fn ask_awaits_then_a_resumed_allow_runs_the_tool() {
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(
         ran.clone(),
@@ -221,16 +221,16 @@ async fn ask_parks_then_a_resumed_allow_runs_the_tool() {
     );
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
-    // Ask parks the run on a decision ticket; the tool has not run.
-    let phase = runtime
+    // Ask awaits the run on a decision ticket; the tool has not run.
+    let state = runtime
         .execute(activation(), context(&commit))
         .await
-        .expect("parks");
-    assert_eq!(phase, Phase::Waiting);
+        .expect("awaits");
+    assert_eq!(state, RunState::Awaiting);
     assert_eq!(ran.load(Ordering::SeqCst), 0);
     assert_eq!(audited_decisions(&commit), vec!["ask"]);
     let ticket = commit
-        .waiting_for(&RunId("run-1".to_string()))
+        .resume_ticket_for(&RunId("run-1".to_string()))
         .expect("a decision ticket is committed");
     assert_eq!(ticket.correlation_id, TICKET);
 
@@ -247,11 +247,11 @@ async fn ask_parks_then_a_resumed_allow_runs_the_tool() {
         },
         now_ms: 0,
     };
-    let phase = runtime
+    let state = runtime
         .resume(resume, commit.as_ref(), context(&commit))
         .await
         .expect("resume");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(Ordering::SeqCst), 1, "the approved tool ran once");
 }
 
@@ -348,8 +348,8 @@ async fn a_tool_alias_reverse_maps_to_canonical_before_the_permission_gate() {
     let mut act = activation();
     act.snapshot = snapshot_aliased();
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let phase = runtime.execute(act, context(&commit)).await.expect("runs");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    let state = runtime.execute(act, context(&commit)).await.expect("runs");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
     // The gate received the CANONICAL id and denied it, so the aliased call never ran.
     let seen = seen.lock().unwrap();

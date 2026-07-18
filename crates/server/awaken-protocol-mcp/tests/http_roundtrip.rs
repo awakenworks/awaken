@@ -231,8 +231,8 @@ async fn export_change_reaches_the_client_as_tools_list_changed() {
     assert_eq!(tools[0].name, "echo");
 }
 
-/// A gate that parks every call for out-of-band approval — the `ask`/HITL outcome
-/// a permission policy produces. An external MCP client has no run to park, so the
+/// A gate that awaits every call for out-of-band approval — the `ask`/HITL outcome
+/// a permission policy produces. An external MCP client has no run to await, so the
 /// service must fail this closed rather than execute the tool.
 struct SuspendGate;
 
@@ -247,7 +247,7 @@ impl ToolGateHook for SuspendGate {
 
 #[tokio::test]
 async fn an_approval_gated_tool_fails_closed_for_an_external_mcp_client() {
-    // HITL over MCP: a tool the gate would park (suspend) cannot be honored — an
+    // HITL over MCP: a tool the gate would await (suspend) cannot be honored — an
     // external client has no run to suspend — so `tools/call` returns a
     // model-visible error instead of running the effect (ADR-0035, fail closed).
     let service = McpToolService::new(

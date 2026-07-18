@@ -6,7 +6,7 @@
 //! the thread's pending input. Claim is a single transaction using
 //! `FOR UPDATE SKIP LOCKED`, so concurrent workers each take a distinct run
 //! (single owner per run) without a global lock. The claim policy — recover an
-//! expired lease, then wake a parked run with pending input, then a fresh run —
+//! expired lease, then wake an awaiting run with pending input, then a fresh run —
 //! matches [`MemoryDispatchStore`](crate::MemoryDispatchStore) exactly.
 
 use async_trait::async_trait;
@@ -18,7 +18,7 @@ use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 
 use crate::dispatch::{
-    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchQueue, DispatchStatus,
+    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
     DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, SettleOutcome,
     SubmitOptions,
 };
@@ -131,7 +131,7 @@ impl DispatchQueue for PostgresDispatchStore {
         let mut tx = self.pool.begin().await.map_err(reject)?;
 
         // Supersession: take the highest epoch on the thread and mark its prior
-        // pending/parked work superseded — the newest submission wins (ADR-0022).
+        // pending/awaiting work superseded — the newest submission wins (ADR-0022).
         let mut epoch = 0i64;
         if options.supersede {
             let max: Option<i64> = sqlx::query_scalar(&format!(
@@ -144,7 +144,7 @@ impl DispatchQueue for PostgresDispatchStore {
             epoch = max.unwrap_or(0) + 1;
             sqlx::query(&format!(
                 "UPDATE {p}_dispatch SET status = 'superseded', lease_owner = NULL, \
-                 lease_until = NULL WHERE thread_id = $1 AND status IN ('pending', 'parked')"
+                 lease_until = NULL WHERE thread_id = $1 AND status IN ('pending', 'awaiting')"
             ))
             .bind(&request.thread_id().0)
             .execute(&mut *tx)
@@ -184,7 +184,7 @@ impl DispatchQueue for PostgresDispatchStore {
         let p = NS;
         let mut tx = self.pool.begin().await.map_err(reject)?;
 
-        // Priority: recover an expired lease, then wake a parked run with pending
+        // Priority: recover an expired lease, then wake an awaiting run with pending
         // input, then a fresh pending run. Each locks its row, skipping rows a
         // concurrent worker already holds.
         let recovery = format!(
@@ -202,7 +202,7 @@ impl DispatchQueue for PostgresDispatchStore {
         );
         let wake = format!(
             "SELECT d.run_id, d.request, d.sandbox FROM {p}_dispatch d \
-             WHERE d.status = 'parked' AND EXISTS ( \
+             WHERE d.status = 'awaiting' AND EXISTS ( \
                  SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id \
                  AND (pe.available_at IS NULL OR pe.available_at <= $1)) \
              AND {not_running} \
@@ -420,8 +420,8 @@ impl DispatchQueue for PostgresDispatchStore {
             .await
             .map_err(reject)?
             .rows_affected(),
-            DispatchOutcome::Parked => sqlx::query(&format!(
-                "UPDATE {p}_dispatch SET status = 'parked', lease_owner = NULL, \
+            DispatchOutcome::Awaiting => sqlx::query(&format!(
+                "UPDATE {p}_dispatch SET status = 'awaiting', lease_owner = NULL, \
                  lease_until = NULL, attempt_count = 0 WHERE run_id = $1 AND lease_epoch = $2"
             ))
             .bind(&run_id.0)
@@ -451,7 +451,7 @@ impl DispatchQueue for PostgresDispatchStore {
                 .await
                 .map_err(reject)?;
             }
-            DispatchOutcome::Parked => {
+            DispatchOutcome::Awaiting => {
                 sqlx::query(&format!(
                     "DELETE FROM {p}_pending WHERE message_id = ANY($1)"
                 ))
@@ -503,7 +503,7 @@ impl DispatchQueue for PostgresDispatchStore {
                 Ok(DispatchSummary {
                     run_id: RunId(row.try_get("run_id").map_err(reject)?),
                     thread_id: ThreadId(row.try_get("thread_id").map_err(reject)?),
-                    status: DispatchStatus::from_db(
+                    state: DispatchState::from_db(
                         &row.try_get::<String, _>("status").map_err(reject)?,
                     ),
                     attempt_count: row.try_get::<i64, _>("attempt_count").map_err(reject)? as u64,
@@ -530,7 +530,7 @@ impl DispatchQueue for PostgresDispatchStore {
         let mut tx = self.pool.begin().await.map_err(reject)?;
         let thread: Option<String> = sqlx::query_scalar(&format!(
             "SELECT thread_id FROM {p}_dispatch \
-             WHERE run_id = $1 AND status IN ('pending', 'parked')"
+             WHERE run_id = $1 AND status IN ('pending', 'awaiting')"
         ))
         .bind(&run_id.0)
         .fetch_optional(&mut *tx)
@@ -552,10 +552,10 @@ impl DispatchQueue for PostgresDispatchStore {
         Ok(thread.map(ThreadId))
     }
 
-    async fn parked_run(&self, thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError> {
+    async fn awaiting_run(&self, thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError> {
         let p = NS;
         let run: Option<String> = sqlx::query_scalar(&format!(
-            "SELECT run_id FROM {p}_dispatch WHERE thread_id = $1 AND status = 'parked' \
+            "SELECT run_id FROM {p}_dispatch WHERE thread_id = $1 AND status = 'awaiting' \
              ORDER BY created_at LIMIT 1"
         ))
         .bind(&thread_id.0)

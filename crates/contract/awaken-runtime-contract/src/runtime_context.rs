@@ -61,7 +61,7 @@ pub struct RuntimeRunContext {
     /// Cooperative cancellation observed at step boundaries.
     pub cancellation: Option<CancellationToken>,
     /// Cooperative pause observed at safe loop boundaries (ADR-0054). When set and
-    /// requested, the next boundary parks the run (`WaitingReason::ManualPause`)
+    /// requested, the next boundary awaits the run (`AwaitReason::ManualPause`)
     /// instead of continuing — an operator pause, never a mid-step freeze. Absent
     /// means the attempt cannot be paused in flight.
     pub pause: Option<PauseSignal>,
@@ -142,7 +142,7 @@ impl RuntimeRunContext {
         self
     }
 
-    /// Provide the pause signal so an operator can park this attempt at its next
+    /// Provide the pause signal so an operator can await this attempt at its next
     /// safe boundary (ADR-0054).
     #[must_use]
     pub fn with_pause(mut self, pause: PauseSignal) -> Self {

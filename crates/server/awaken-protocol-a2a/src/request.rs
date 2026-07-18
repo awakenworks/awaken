@@ -17,7 +17,7 @@ fn next(prefix: &str) -> String {
 
 /// A decoded `message:send` request ready for the runtime: the A2A `contextId`
 /// maps to the neutral thread id, the message text is the turn input (or, when the
-/// thread has a parked run, the tool answer the router delivers on resume).
+/// thread has an awaiting run, the tool answer the router delivers on resume).
 pub struct Processed {
     pub thread_id: String,
     pub agent_id: Option<String>,

@@ -1,20 +1,20 @@
 //! The async agent execution loop.
 //!
-//! `execute` resolves the activation, runs the model/tool phase loop, stages a
-//! `ThreadCommit`, and commits durable truth. A run can park on a gate `Suspend`
-//! by committing a `WaitingTicket`, then `resume` validates a `ResumeCommand`
+//! `execute` resolves the activation, runs the model/tool step loop, stages a
+//! `ThreadCommit`, and commits durable truth. A run can await on a gate `Suspend`
+//! by committing a `ResumeTicket`, then `resume` validates a `ResumeCommand`
 //! against it and continues. Live progress is best-effort and never the replay
 //! source (G1/G13).
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::awaiting::{AwaitReason, PendingTool, ResumeTicket};
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::{
     Command as StateCommand, Scope, StateKey, Store, validate_batch,
 };
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::agent::waiting::{PendingTool, WaitingReason, WaitingTicket};
 use awaken_agent_contract::audit::draft::Draft as EventDraft;
 use awaken_agent_contract::audit::run_event::RunEvent;
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
@@ -22,7 +22,7 @@ use awaken_agent_contract::stream::checkpoint::{
     PartialToolCall, StreamCheckpoint, StreamCheckpointStore,
 };
 use awaken_agent_contract::stream::event::Event as StreamEvent;
-use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::agent_resolver::{AgentRequest, AgentStep};
@@ -64,7 +64,7 @@ impl RunExecutor for Runtime {
         &self,
         activation: RunActivation,
         context: RuntimeRunContext,
-    ) -> Result<Phase> {
+    ) -> Result<RunState> {
         // Track this run's cancellation token so live control can steer it, and
         // always deregister on the way out.
         let run_id = activation.run_id.clone();
@@ -85,7 +85,7 @@ pub(crate) async fn run_agent_loop(
     runtime: &Runtime,
     activation: RunActivation,
     context: RuntimeRunContext,
-) -> Result<Phase> {
+) -> Result<RunState> {
     // A database-less worker cannot warm-install the agent's published catalog, so
     // its per-session runtime has no catalog matching the run it just claimed. When
     // such a runtime trusts dispatched snapshots, adopt the one carried inline here
@@ -103,7 +103,8 @@ pub(crate) async fn run_agent_loop(
     // Cancellation observed before any model call: commit a terminal Cancelled
     // outcome instead of starting work.
     if context.is_cancelled() {
-        return finish(&context, &thread_id, run_id, Checkpoint::cancelled()).await;
+        let step = RunStepResult::cancelled(run_id.clone());
+        return finish(&context, &thread_id, run_id, step).await;
     }
 
     // Merge the active plugins under their capability bounds; a violation fails
@@ -111,7 +112,8 @@ pub(crate) async fn run_agent_loop(
     let env = match runtime.resolve_plugin_env(&resolved.spec) {
         Ok(env) => env,
         Err(_) => {
-            return finish(&context, &thread_id, run_id, Checkpoint::capability_bound()).await;
+            let step = RunStepResult::capability_bound(run_id.clone());
+            return finish(&context, &thread_id, run_id, step).await;
         }
     };
 
@@ -148,7 +150,7 @@ pub(crate) async fn run_agent_loop(
             .map(|reader| reader.committed_state(&thread_id))
             .unwrap_or_default(),
     );
-    let checkpoint = drive(
+    let step_result = drive(
         runtime,
         &resolved,
         &env,
@@ -162,53 +164,55 @@ pub(crate) async fn run_agent_loop(
         Vec::new(),
     )
     .await?;
-    finalize(&context, &thread_id, run_id, checkpoint).await
+    finalize(&context, &thread_id, run_id, step_result).await
 }
 
-/// Cancel a run that is not executing (a queued or parked run) by committing a
+/// Cancel a run that is not executing (a queued or awaiting run) by committing a
 /// terminal `Cancelled` fact through the one finish boundary (G31). This clears
-/// any waiting ticket, so a parked run can no longer be resumed. An in-flight run
+/// any awaiting ticket, so an awaiting run can no longer be resumed. An in-flight run
 /// is cancelled cooperatively through `LiveRunControl` instead, not here.
 pub(crate) async fn cancel_run(
     run_id: RunId,
     thread_id: ThreadId,
     context: RuntimeRunContext,
-) -> Result<Phase> {
-    finish(&context, &thread_id, run_id, Checkpoint::cancelled()).await
+) -> Result<RunState> {
+    let step = RunStepResult::cancelled(run_id.clone());
+    finish(&context, &thread_id, run_id, step).await
 }
 
 /// Stop a run by committing a terminal `Stopped(reason)` fact through the one
 /// finish boundary (G31) — a host stop policy (budget, step ceiling) making the
-/// run terminal. Like cancel, it clears any waiting ticket, so a later resume or
+/// run terminal. Like cancel, it clears any awaiting ticket, so a later resume or
 /// scheduled result for the run fails closed (RS-CTRL-002, ADR-0026).
 pub(crate) async fn stop_run(
     run_id: RunId,
     thread_id: ThreadId,
     reason: String,
     context: RuntimeRunContext,
-) -> Result<Phase> {
-    finish(&context, &thread_id, run_id, Checkpoint::stopped(reason)).await
+) -> Result<RunState> {
+    let step = RunStepResult::stopped(run_id.clone(), reason);
+    finish(&context, &thread_id, run_id, step).await
 }
 
-/// Perform a committed `ScheduledAction` (ADR-0020): the run is parked on a
+/// Perform a committed `ScheduledAction` (ADR-0020): the run is awaiting on a
 /// ticket whose reason is `ScheduledAction`, holding the deferred action as its
 /// pending tool. Performing it is an allow-resume of that committed action — the
 /// system runs the action and commits the resumed outcome, validated against the
-/// committed request and idempotent (RS-SCH-001/004). A run parked for any other
-/// reason, or not parked at all, fails closed.
+/// committed request and idempotent (RS-SCH-001/004). A run awaiting for any other
+/// reason, or not awaiting at all, fails closed.
 pub(crate) async fn perform_scheduled_action(
     runtime: &Runtime,
     run_id: &RunId,
     reader: &dyn ThreadReader,
     context: RuntimeRunContext,
     now_ms: u64,
-) -> Result<Phase> {
+) -> Result<RunState> {
     let ticket = reader
-        .waiting_ticket(run_id)
-        .ok_or_else(|| Error::Execution("run is not waiting".to_string()))?;
-    if ticket.reason != WaitingReason::ScheduledAction {
+        .resume_ticket(run_id)
+        .ok_or_else(|| Error::Execution("run is not awaiting".to_string()))?;
+    if ticket.reason != AwaitReason::ScheduledAction {
         return Err(Error::Execution(
-            "run is not parked on a scheduled action".to_string(),
+            "run is not awaiting on a scheduled action".to_string(),
         ));
     }
     let command = ResumeCommand {
@@ -226,18 +230,18 @@ pub(crate) async fn perform_scheduled_action(
     resume_run(runtime, command, reader, context).await
 }
 
-/// Resume a parked run: validate the resume against the committed ticket, rebuild
+/// Resume an awaiting run: validate the resume against the committed ticket, rebuild
 /// the transcript from committed messages, inject the resumed result, and drive
-/// the loop to a new terminal/parked state (G5/G28).
+/// the loop to a new terminal/awaiting state (G5/G28).
 pub(crate) async fn resume_run(
     runtime: &Runtime,
     command: ResumeCommand,
     reader: &dyn ThreadReader,
     context: RuntimeRunContext,
-) -> Result<Phase> {
+) -> Result<RunState> {
     let ticket = reader
-        .waiting_ticket(&command.run_id)
-        .ok_or_else(|| Error::Execution("run is not waiting".to_string()))?;
+        .resume_ticket(&command.run_id)
+        .ok_or_else(|| Error::Execution("run is not awaiting".to_string()))?;
     validate_resume(&ticket, &command).map_err(|err| Error::Execution(err.to_string()))?;
 
     let snapshot = runtime
@@ -251,16 +255,17 @@ pub(crate) async fn resume_run(
     let env = match runtime.resolve_plugin_env(&resolved.spec) {
         Ok(env) => env,
         Err(_) => {
-            return finish(&context, &thread_id, run_id, Checkpoint::capability_bound()).await;
+            let step = RunStepResult::capability_bound(run_id.clone());
+            return finish(&context, &thread_id, run_id, step).await;
         }
     };
 
     emit(&context, &run_id, AgentEvent::Fact(Fact::RunStarted)).await;
 
-    // A parked delegation resumes through the resolver, not the tool registry: the
+    // A awaiting delegation resumes through the resolver, not the tool registry: the
     // resolver runs one more step with the user's input and the run continues or
-    // re-parks.
-    if ticket.reason == WaitingReason::Delegation {
+    // re-awaits.
+    if ticket.reason == AwaitReason::Delegation {
         return resume_delegation(
             runtime,
             &ticket,
@@ -291,7 +296,7 @@ pub(crate) async fn resume_run(
 }
 
 /// Rebuild the transcript and state from committed truth, inject a resumed
-/// `result` for the parked ticket, and drive the loop to its next terminal/parked
+/// `result` for the awaiting ticket, and drive the loop to its next terminal/awaiting
 /// checkpoint. Shared by the two resume entries — a validated `ResumeCommand`
 /// (`resume_run`) and a delegate step folded back into the parent
 /// (`resume_delegation`) — so the rebuild/inject/drive/finalize glue lives once.
@@ -302,11 +307,11 @@ async fn drive_resumed(
     env: &ResolvedExecutionEnv,
     run_id: &RunId,
     thread_id: &ThreadId,
-    ticket: &WaitingTicket,
+    ticket: &ResumeTicket,
     result: ResumeResult,
     reader: &dyn ThreadReader,
     context: &RuntimeRunContext,
-) -> Result<Phase> {
+) -> Result<RunState> {
     let mut transcript = reader.committed_messages(thread_id);
     let mut store = store_from_commands(reader.committed_state(thread_id));
     let (resumed, seed_state) =
@@ -318,7 +323,7 @@ async fn drive_resumed(
         store.apply(command);
     }
     transcript.extend(resumed.iter().cloned());
-    let checkpoint = drive(
+    let step_result = drive(
         runtime,
         resolved,
         env,
@@ -332,7 +337,7 @@ async fn drive_resumed(
         seed_state,
     )
     .await?;
-    finalize(context, thread_id, run_id.clone(), checkpoint).await
+    finalize(context, thread_id, run_id.clone(), step_result).await
 }
 
 /// Validate the staged state batch, then commit. A conflict fails closed: the
@@ -342,72 +347,64 @@ async fn finalize(
     context: &RuntimeRunContext,
     thread_id: &ThreadId,
     run_id: RunId,
-    checkpoint: Checkpoint,
-) -> Result<Phase> {
-    if !checkpoint.staged_state.is_empty() && validate_batch(&checkpoint.staged_state).is_err() {
-        let failed = Checkpoint {
-            new_messages: checkpoint.new_messages,
+    step: RunStepResult,
+) -> Result<RunState> {
+    if !step.staged_state.is_empty() && validate_batch(&step.staged_state).is_err() {
+        let failed = RunStepResult {
+            new_messages: step.new_messages,
             staged_state: Vec::new(),
-            audit: checkpoint.audit,
-            end: End::Ended(EndCause::Error(Failure::StateConflict)),
+            audit: step.audit,
+            disposition: RunDisposition::ended(
+                run_id.clone(),
+                EndCause::Error(Failure::StateConflict),
+            ),
         };
         return finish(context, thread_id, run_id, failed).await;
     }
-    finish(context, thread_id, run_id, checkpoint).await
+    finish(context, thread_id, run_id, step).await
 }
 
 /// What one attempt at driving the loop resolved to, ready to commit: the new
 /// messages, the staged state, and where the run goes next.
-struct Checkpoint {
+struct RunStepResult {
     new_messages: Vec<Message>,
     staged_state: Vec<StateCommand>,
     /// Permission-audit drafts produced this attempt, committed with the run's
     /// facts so an authorization decision is explainable (ADR-0030).
     audit: Vec<EventDraft>,
-    end: End,
+    disposition: RunDisposition,
 }
 
-/// The terminal decision of one attempt. A paused run carries its ticket here;
-/// an ended run carries its cause. The two are mutually exclusive by
-/// construction, so the committed [`Phase`] can never disagree with the ticket.
-enum End {
-    /// The run paused; the ticket is committed alongside the checkpoint. Boxed
-    /// because the ticket is much larger than an `EndCause`.
-    Parked(Box<WaitingTicket>),
-    /// The run reached a terminus through one cause.
-    Ended(EndCause),
-}
-
-impl Checkpoint {
-    fn cancelled() -> Self {
-        Self::ended(EndCause::Cancelled)
+impl RunStepResult {
+    fn cancelled(run_id: RunId) -> Self {
+        Self::ended(run_id, EndCause::Cancelled)
     }
 
-    fn stopped(reason: String) -> Self {
-        Self::ended(EndCause::Stopped(reason))
+    fn stopped(run_id: RunId, reason: String) -> Self {
+        Self::ended(run_id, EndCause::Stopped(reason))
     }
 
-    fn capability_bound() -> Self {
-        Self::ended(EndCause::Error(Failure::CapabilityBound))
+    fn capability_bound(run_id: RunId) -> Self {
+        Self::ended(run_id, EndCause::Error(Failure::CapabilityBound))
     }
 
-    fn ended(cause: EndCause) -> Self {
+    fn ended(run_id: RunId, cause: EndCause) -> Self {
         Self {
             new_messages: Vec::new(),
             staged_state: Vec::new(),
             audit: Vec::new(),
-            end: End::Ended(cause),
+            disposition: RunDisposition::ended(run_id, cause),
         }
     }
 
-    /// A checkpoint that re-parks the run on `ticket` (no new messages) — used when
-    /// a resumed delegation parks again for more input.
-    fn parked(ticket: WaitingTicket) -> Self {
+    /// A step result that leaves the run awaiting on `ticket` (no new messages) — used when
+    /// a resumed delegation awaits again for more input.
+    fn awaiting(ticket: ResumeTicket) -> Self {
         Self {
             new_messages: Vec::new(),
             staged_state: Vec::new(),
             audit: Vec::new(),
-            end: End::Parked(Box::new(ticket)),
+            disposition: RunDisposition::awaiting(ticket),
         }
     }
 }
@@ -507,7 +504,7 @@ impl StepLedger {
     }
 
     /// Commit the tail beyond every watermark under a `Running` fact, then advance
-    /// the watermarks. `first` (the first delta) announces the phase change.
+    /// the watermarks. `first` (the first delta) announces the state change.
     async fn commit_delta(
         &mut self,
         context: &RuntimeRunContext,
@@ -531,14 +528,14 @@ impl StepLedger {
         Ok(())
     }
 
-    /// The tail beyond the watermarks, ready for the final commit: the checkpoint
+    /// The tail beyond the watermarks, ready for the final commit: the step result
     /// must never re-append what step commits already made durable.
-    fn into_checkpoint(mut self, end: End) -> Checkpoint {
-        Checkpoint {
+    fn into_step_result(mut self, disposition: RunDisposition) -> RunStepResult {
+        RunStepResult {
             new_messages: self.new_messages.split_off(self.committed_messages),
             staged_state: self.staged_state.split_off(self.committed_state),
             audit: self.audit.split_off(self.committed_audit),
-            end,
+            disposition,
         }
     }
 }
@@ -706,7 +703,7 @@ async fn drive(
     step_base: usize,
     mut store: Store,
     seed_state: Vec<StateCommand>,
-) -> Result<Checkpoint> {
+) -> Result<RunStepResult> {
     // The per-run model executor (ADR-0004) wins over the runtime's bound default:
     // the host resolves the run's model ref to an executor for this attempt and
     // injects it here, so a database-less worker runs the run's own configured model
@@ -726,8 +723,8 @@ async fn drive(
     // or re-committed.
     let mut ledger = StepLedger::new(transcript, new_messages, seed_state);
     // The loop's terminal decision. It stays `None` only if the loop runs to its
-    // step ceiling, which is itself a terminus (`MaxSteps`).
-    let mut end: Option<End> = None;
+    // step ceiling, which is itself an end (`MaxSteps`).
+    let mut disposition: Option<RunDisposition> = None;
     // Forwards streamed text chunks to the live stream during each inference.
     let delta_sink = StreamDeltaSink { context, run_id };
 
@@ -754,7 +751,7 @@ async fn drive(
     // `max_steps` remains the hard runaway backstop, since each steer costs a step.
     // Recovered from the committed transcript by counting this run's own steer
     // feedback messages, so the count (and thus the guard's budget) survives a
-    // park/resume mid-loop rather than restarting at zero.
+    // await/resume mid-loop rather than restarting at zero.
     // Recover the run's forced-continuation count from committed truth: the steer
     // messages already in the transcript. The id type classifies its own kind, so
     // the loop reads a fact rather than matching an id-string convention by hand.
@@ -789,14 +786,17 @@ async fn drive(
         if context.commit.is_some() && ledger.has_uncommitted() {
             if validate_batch(&ledger.staged_state).is_err() {
                 ledger.rollback_state();
-                end = Some(End::Ended(EndCause::Error(Failure::StateConflict)));
+                disposition = Some(RunDisposition::ended(
+                    run_id.clone(),
+                    EndCause::Error(Failure::StateConflict),
+                ));
                 break;
             }
             ledger.commit_delta(context, thread_id, run_id).await?;
         }
 
         if context.is_cancelled() {
-            end = Some(End::Ended(EndCause::Cancelled));
+            disposition = Some(RunDisposition::ended(run_id.clone(), EndCause::Cancelled));
             break;
         }
 
@@ -804,7 +804,7 @@ async fn drive(
         // dynamic plugin's tool face changed, else the resolved base.
         let env = live_env.current(runtime, resolved, env);
 
-        // Phase hooks stage state (G9/G30). A BeforeInference hook may also inject
+        // RunState hooks stage state (G9/G30). A BeforeInference hook may also inject
         // request-only context (e.g. recalled memories), prepended to this
         // inference and never committed.
         run_phase_hooks(
@@ -860,7 +860,7 @@ async fn drive(
             context,
         );
         // A cancel aborts a hung or long inference in flight rather than
-        // waiting for the step boundary. Dropping the inference future may
+        // awaiting for the step boundary. Dropping the inference future may
         // abandon a half-open breaker probe; recording that reopens the
         // circuit for a later re-probe without polluting the failure count.
         let inference = match &context.cancellation {
@@ -877,7 +877,7 @@ async fn drive(
             runtime
                 .circuit_breaker()
                 .record_abandoned_probe(&resolved.spec.model_binding.model_ref, runtime.metrics());
-            end = Some(End::Ended(EndCause::Cancelled));
+            disposition = Some(RunDisposition::ended(run_id.clone(), EndCause::Cancelled));
             break;
         };
         let response = match inference {
@@ -894,10 +894,13 @@ async fn drive(
                 if consecutive_inference_failures < runtime.max_consecutive_inference_failures() {
                     continue;
                 }
-                end = Some(End::Ended(EndCause::Error(Failure::Inference {
-                    code: err.code().to_string(),
-                    message: err.to_string(),
-                })));
+                disposition = Some(RunDisposition::ended(
+                    run_id.clone(),
+                    EndCause::Error(Failure::Inference {
+                        code: err.code().to_string(),
+                        message: err.to_string(),
+                    }),
+                ));
                 break;
             }
         };
@@ -930,7 +933,7 @@ async fn drive(
         // A cancel may have landed while inference was in flight; observe it at
         // this step boundary and discard the model output.
         if context.is_cancelled() {
-            end = Some(End::Ended(EndCause::Cancelled));
+            disposition = Some(RunDisposition::ended(run_id.clone(), EndCause::Cancelled));
             break;
         }
 
@@ -973,20 +976,20 @@ async fn drive(
                     }
                     continue;
                 }
-                BoundaryOutcome::Park { fold, reason } => {
+                BoundaryOutcome::Await { fold, reason } => {
                     // Commit the drained input first (so an in-flight steer is not
-                    // lost), then park on a no-tool ticket — an operator pause,
+                    // lost), then await on a no-tool ticket — an operator pause,
                     // resumed by an explicit resume, not a tool result.
                     for message in fold {
                         ledger.push_message(message);
                     }
-                    end = Some(End::Parked(Box::new(pause_ticket(
+                    disposition = Some(RunDisposition::awaiting(pause_ticket(
                         resolved, run_id, reason,
-                    ))));
+                    )));
                     emit(
                         context,
                         run_id,
-                        AgentEvent::Fact(Fact::Waiting {
+                        AgentEvent::Fact(Fact::Awaiting {
                             pending_tool_use_id: None,
                         }),
                     )
@@ -1038,18 +1041,18 @@ async fn drive(
                         }),
                     )
                     .await;
-                    end = Some(End::Ended(EndCause::NaturalEnd));
+                    disposition = Some(RunDisposition::ended(run_id.clone(), EndCause::NaturalEnd));
                     break;
                 }
                 RunEndOutcome::End => {
-                    end = Some(End::Ended(EndCause::NaturalEnd));
+                    disposition = Some(RunDisposition::ended(run_id.clone(), EndCause::NaturalEnd));
                     break;
                 }
             }
         }
 
         // Otherwise run each requested tool and feed the results back. A call that
-        // parks or fails the run returns the terminal `End` here, ending the step
+        // awaits or fails the run returns its disposition here, ending the step
         // loop; every call answered with a result returns `None` and the loop goes on.
         if let Some(reached) = dispatch::run_tool_calls(
             runtime,
@@ -1068,7 +1071,7 @@ async fn drive(
         )
         .await
         {
-            end = Some(reached);
+            disposition = Some(reached);
             break;
         }
 
@@ -1085,16 +1088,17 @@ async fn drive(
         .await;
     }
 
-    // No early terminus means the loop exhausted its step ceiling.
-    let end = end.unwrap_or(End::Ended(EndCause::MaxSteps));
-    Ok(ledger.into_checkpoint(end))
+    // No early end means the loop exhausted its step ceiling.
+    let disposition =
+        disposition.unwrap_or_else(|| RunDisposition::ended(run_id.clone(), EndCause::MaxSteps));
+    Ok(ledger.into_step_result(disposition))
 }
 
 /// Commit one step's staged delta under a `Running` fact — the durable record
 /// that the run is mid-flight with these steps completed. The first step
-/// commit also records the phase transition into `Running`; terminal and
-/// parked outcomes never come through here (they ride `finish`, where the
-/// phase and any waiting ticket commit atomically).
+/// commit also records the state transition into `Running`; terminal and
+/// awaiting outcomes never come through here (they ride `finish`, where the
+/// state and any awaiting ticket commit atomically).
 async fn commit_step_delta(
     context: &RuntimeRunContext,
     thread_id: &ThreadId,
@@ -1107,17 +1111,15 @@ async fn commit_step_delta(
     let Some(coordinator) = &context.commit else {
         return Ok(());
     };
-    // `first` is the per-step boundary's phase transition (nothing → Running); a
-    // later increment stays Running and emits no RunPhaseChanged.
+    // `first` is the per-step boundary's state transition (nothing → Running); a
+    // later increment stays Running and emits no RunStateChanged.
     coordinator
         .commit(ThreadCommit::assemble(
             thread_id.clone(),
-            run_id.clone(),
-            Phase::Running,
+            RunDisposition::running(run_id.clone()),
             first,
             messages,
             state,
-            None,
             audit,
         ))
         .await
@@ -1427,12 +1429,12 @@ fn feedback_message(run_id: &RunId, nth: usize, feedback: String) -> Message {
     }
 }
 
-/// A no-tool waiting ticket for an operator pause (ADR-0054): the run parks with
+/// A no-tool awaiting ticket for an operator pause (ADR-0054): the run awaits with
 /// no pending tool and no call id, correlated by run id, resumed by an explicit
 /// operator resume rather than a tool result. The drain/re-identify discipline
 /// this used to sit next to now lives in `awaken-runtime-contract::boundary`.
-fn pause_ticket(resolved: &ResolvedRun, run_id: &RunId, reason: WaitingReason) -> WaitingTicket {
-    WaitingTicket {
+fn pause_ticket(resolved: &ResolvedRun, run_id: &RunId, reason: AwaitReason) -> ResumeTicket {
+    ResumeTicket {
         correlation_id: run_id.0.clone(),
         run_id: run_id.clone(),
         thread_id: ThreadId(String::new()), // filled in finish via the commit thread id
@@ -1445,17 +1447,17 @@ fn pause_ticket(resolved: &ResolvedRun, run_id: &RunId, reason: WaitingReason) -
     }
 }
 
-/// Build the committed ticket for a parked tool call. `handle` carries opaque
-/// durable state for a parked delegation and is absent for ordinary tool waits.
-fn waiting_ticket(
+/// Build the committed ticket for an awaiting tool call. `handle` carries opaque
+/// durable state for an awaiting delegation and is absent for ordinary tool waits.
+fn resume_ticket(
     resolved: &ResolvedRun,
     run_id: &RunId,
     ticket_id: &str,
     call: &ToolCall,
-    reason: WaitingReason,
+    reason: AwaitReason,
     handle: Option<serde_json::Value>,
-) -> WaitingTicket {
-    WaitingTicket {
+) -> ResumeTicket {
+    ResumeTicket {
         correlation_id: ticket_id.to_string(),
         run_id: run_id.clone(),
         thread_id: ThreadId(String::new()), // filled in finish via the commit thread id
@@ -1482,14 +1484,14 @@ fn delegation_resume_input(result: &ResumeResult) -> String {
     }
 }
 
-/// Resume a parked delegation: run the resolver one more step with the user's
+/// Resume an awaiting delegation: run the resolver one more step with the user's
 /// input. On `Done`/error the result is injected as the delegate tool's output and
-/// the run drives on; on `Parked` the run re-parks on a fresh Delegation ticket
+/// the run drives on; on `Awaiting` the run re-awaits on a fresh Delegation ticket
 /// carrying the new handle.
 #[allow(clippy::too_many_arguments)]
 async fn resume_delegation(
     runtime: &Runtime,
-    ticket: &WaitingTicket,
+    ticket: &ResumeTicket,
     result: ResumeResult,
     resolved: &ResolvedRun,
     env: &ResolvedExecutionEnv,
@@ -1497,7 +1499,7 @@ async fn resume_delegation(
     thread_id: &ThreadId,
     reader: &dyn ThreadReader,
     context: &RuntimeRunContext,
-) -> Result<Phase> {
+) -> Result<RunState> {
     let call_id = ticket.call_id.clone().unwrap_or_default();
     let handle = ticket
         .pending_tool
@@ -1511,7 +1513,7 @@ async fn resume_delegation(
             context,
             thread_id,
             run_id.clone(),
-            Checkpoint::capability_bound(),
+            RunStepResult::capability_bound(run_id.clone()),
         )
         .await;
     };
@@ -1520,22 +1522,22 @@ async fn resume_delegation(
         .await;
 
     let synthetic = match step {
-        // Only remote (A2A) delegates park and resume, and their token spend is not
+        // Only remote (A2A) delegates await and resume, and their token spend is not
         // observable over the wire — so there is no usage to fold in here.
         Ok(AgentStep::Done { text, .. }) => {
             ResumeResult::ToolResult(ToolOutput::ok(&call_id, text))
         }
-        Ok(AgentStep::Parked { handle }) => {
-            // Re-park on a fresh Delegation ticket carrying the new handle.
-            let mut reparked = ticket.clone();
-            if let Some(pending) = reparked.pending_tool.as_mut() {
+        Ok(AgentStep::Awaiting { handle }) => {
+            // Re-await on a fresh Delegation ticket carrying the new handle.
+            let mut next_ticket = ticket.clone();
+            if let Some(pending) = next_ticket.pending_tool.as_mut() {
                 pending.resume_handle = Some(handle);
             }
             return finish(
                 context,
                 thread_id,
                 run_id.clone(),
-                Checkpoint::parked(reparked),
+                RunStepResult::awaiting(next_ticket),
             )
             .await;
         }
@@ -1557,7 +1559,7 @@ async fn resume_into_messages(
     runtime: &Runtime,
     env: &ResolvedExecutionEnv,
     run_id: &RunId,
-    ticket: &WaitingTicket,
+    ticket: &ResumeTicket,
     result: ResumeResult,
     store: &Store,
     context: &RuntimeRunContext,
@@ -1891,44 +1893,42 @@ async fn emit(context: &RuntimeRunContext, run_id: &RunId, kind: AgentEvent) {
     }
 }
 
-/// Stage and commit the terminal/parked checkpoint, emit `RunFinished`, and
+/// Stage and commit the terminal/awaiting step result, emit `RunFinished`, and
 /// return the outcome. Commit only runs when a coordinator is wired.
 async fn finish(
     context: &RuntimeRunContext,
     thread_id: &ThreadId,
     run_id: RunId,
-    checkpoint: Checkpoint,
-) -> Result<Phase> {
-    let Checkpoint {
+    step: RunStepResult,
+) -> Result<RunState> {
+    let RunStepResult {
         new_messages,
         staged_state,
         audit,
-        end,
-    } = checkpoint;
+        disposition,
+    } = step;
 
-    // Project the attempt's `End` onto the stored authority: a pause records
-    // `Phase::Waiting` and parks its ticket; a terminus records `Ended(cause)`
-    // with no ticket. The two cannot disagree because `End` made them exclusive.
-    let (phase, waiting) = match end {
-        End::Parked(mut ticket) => {
-            // The ticket carries the real thread id only at commit time.
+    // The awaiting disposition owns its resume ticket, so state and ticket cannot
+    // disagree. Fill the authoritative thread id at the commit boundary.
+    let disposition = match disposition {
+        RunDisposition::Awaiting(mut ticket) => {
             ticket.thread_id = thread_id.clone();
-            (Phase::Waiting, Some(*ticket))
+            RunDisposition::Awaiting(ticket)
         }
-        End::Ended(cause) => (Phase::Ended(cause), None),
+        other => other,
     };
+    debug_assert_eq!(disposition.run_id(), &run_id);
+    let run_state = disposition.state();
 
     if let Some(coordinator) = &context.commit {
-        // The finish boundary always transitions phase (to Ended/Waiting); the
+        // The finish boundary always transitions state (to Awaiting/Ended); the
         // permission-audit drafts ride the same commit as the run's facts (G1).
         let commit = ThreadCommit::assemble(
             thread_id.clone(),
-            run_id.clone(),
-            phase.clone(),
+            disposition,
             true,
             new_messages,
             staged_state,
-            waiting,
             audit,
         );
         coordinator
@@ -1940,7 +1940,7 @@ async fn finish(
     // A fault is announced before the close signal, so a live consumer can
     // categorize the failure by code while still keying stream teardown on
     // the single terminal `RunFinished`.
-    if let Phase::Ended(EndCause::Error(failure)) = &phase {
+    if let RunState::Ended(EndCause::Error(failure)) = &run_state {
         emit(
             context,
             &run_id,
@@ -1957,7 +1957,7 @@ async fn finish(
         AgentEvent::Fact(Fact::RunFinished { exhausted: false }),
     )
     .await;
-    Ok(phase)
+    Ok(run_state)
 }
 
 fn map_resolver_error(err: resolver::Error) -> Error {

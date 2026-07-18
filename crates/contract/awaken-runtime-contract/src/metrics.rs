@@ -47,7 +47,7 @@ pub trait MetricsRecorder: Send + Sync {
     fn record_dispatch_claimed(&self) {}
 
     /// One durable dispatch settled by a worker: `outcome` is `"done"` (the run
-    /// reached a terminus) or `"parked"` (it parked on a waiting ticket). Default
+    /// ended) or `"awaiting"` (it carries a resume ticket). Default
     /// no-op.
     fn record_dispatch_settled(&self, outcome: &str) {
         let _ = outcome;

@@ -11,9 +11,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
-use awaken_agent_contract::agent::waiting::WaitingReason;
 use awaken_runtime_contract::llm::{ChatMessage, ChatRequest};
 use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_runtime_examples::coding_agent::model::build_executor;
@@ -94,7 +94,7 @@ async fn minimax_agent_edits_a_real_file() {
 }
 
 /// The permission gate, live: the model tries to mutate the file, the caller
-/// denies, and the file is left untouched. Proves the gate parks mutating tools
+/// denies, and the file is left untouched. Proves the gate awaits mutating tools
 /// (ADR-0030) and a denial actually blocks the change against a real model.
 #[tokio::test]
 #[ignore = "requires MINIMAX_API_KEY and network"]
@@ -119,7 +119,7 @@ async fn minimax_agent_denied_edit_leaves_the_file_unchanged() {
     let messages = session
         .turn(&prompt, move |ticket| {
             asked_for.fetch_add(1, Ordering::SeqCst);
-            assert_eq!(ticket.reason, WaitingReason::ToolPermission);
+            assert_eq!(ticket.reason, AwaitReason::ToolPermission);
             Approval::Deny
         })
         .await

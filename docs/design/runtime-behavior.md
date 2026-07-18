@@ -1,6 +1,6 @@
 # Runtime Behavior, State, Effects, And Extensions
 
-This doc covers behavior inside the runtime core: run phases, state/effect
+This doc covers behavior inside the runtime core: run states, state/effect
 application, plugin hooks, stop/cancel semantics, scheduled work, context
 compaction, and runtime-facing observability. It is the development guide for
 features that change how a run executes without adding server or product
@@ -10,7 +10,7 @@ semantics.
 
 | Behavior | Owner |
 |---|---|
-| Run phase machine, tool-call lifecycle, cancellation, stop policy | Runtime Core |
+| Run state machine, tool-call lifecycle, cancellation, stop policy | Runtime Core |
 | Thread/run/message facts, state keys, snapshots, effects, neutral runtime events | Runtime Core and Store contracts |
 | Plugin registration, hook filtering, state-machine extension | Runtime Core extension seam |
 | Scheduled actions, reminders, deferred work | Runtime extension plus Dispatch / Server for durable wakeup |
@@ -33,8 +33,8 @@ RunActivation
 
 Implementation rules:
 
-- phase transitions are typed runtime states, not public protocol statuses;
-- every state-changing phase stages through the commit boundary;
+- state transitions are typed runtime states, not public protocol statuses;
+- every state-changing step stages through the commit boundary;
 - thread ownership serializes conflicting writes for the same thread;
 - pending input and resume commands enter through dispatch/server ingress, then
   become runtime commands;
@@ -54,25 +54,25 @@ messages, the latest run projection, and thread-scoped state.
 ```text
 RunActivation
   -> live runtime loop and StateStore
-  -> RunRecord { phase, run-scoped PersistedState }
+  -> RunRecord { state, run-scoped PersistedState }
   -> ThreadCommit { message write intent, run projection, thread-state snapshot }
   -> CommitCoordinator checkpoint
   -> ThreadResumeSnapshot { committed messages, message version, latest run, thread state }
 ```
 
-The committed run `Phase` is the single stored terminal authority — a sum type,
-not a flat status plus a separate outcome field. The runtime commits a phase only
-at a pause or a terminus; `Created` and `Running` are live, uncommitted states
+The committed run `RunState` is the single stored terminal authority — a sum type,
+not a flat status plus a separate outcome field. The runtime commits a state only
+at an await or an end; `Created` and `Running` are live, uncommitted states
 that never become a stored fact.
 
-| Committed `Phase` | Payload | Rule |
+| Committed `RunState` | Payload | Rule |
 |---|---|---|
-| `Waiting` | waiting ticket (in the checkpoint's waiting slot, not on the run fact) | parked on a structured reason; resumes only through ingress, dispatch, or recovery. A pause is not a terminus and carries no end cause |
+| `Awaiting` | resume ticket (in the checkpoint's awaiting slot, not on the run fact) | awaiting on a structured reason; resumes only through ingress, dispatch, or recovery. Awaiting is not an end and carries no end cause |
 | `Ended` | `EndCause` | the single terminal authority: `NaturalEnd`, `MaxSteps`, `Cancelled`, or `Error(Failure)`. Run status, the published outcome, and the error flag are *derived* from it and never stored beside it ([ADR-0005](../adr/0005-run-terminal-state-single-authority.md)) |
 
 `EndCause::Error` carries a `Failure` kind (`Inference`, `CapabilityBound`,
 `StateConflict`); the fault detail lives in the committed authority, not in a
-separate status string. The waiting ticket keeps same-run resume data structured;
+separate status string. The resume ticket keeps same-run resume data structured;
 its reason today is `ToolPermission`. Public status names, HTTP states, or product
 protocol names are adapter projections and do not replace these runtime values.
 
@@ -141,7 +141,7 @@ The model deliberately separates these concepts:
 
 | Concept | Role | Rule |
 |---|---|---|
-| Committed run `Phase` | durable run phase value on `RunRecord` | illegal combinations are unrepresentable; a waiting ticket lives only in `Waiting`, the `EndCause` authority only in `Ended`, and status/outcome are derived, never stored |
+| Committed run `RunState` | durable run state value on `RunRecord` | illegal combinations are unrepresentable; a resume ticket lives only in `Awaiting`, the `EndCause` authority only in `Ended`, and status/outcome are derived, never stored |
 | `StateKey` | typed extension-state identity | owns value/update types, validation, apply logic, merge policy, scope, and serde |
 | `StateCommand` | runtime command envelope | carries a state patch plus scheduled actions and effects from hooks or tools |
 | `MutationBatch` | atomic state patch | validates registered keys and base revision before applying all updates or none |
@@ -319,9 +319,9 @@ Use this split:
 |---|---|---|---|
 | Multi-agent delegation | tool-call, permission, child-run correlation, `RunIngress` / backend handoff | `agent_run` descriptor/tool, delegate roster config, local/remote execution adapter | core enables delegation safely; installed tools and target choices change agent behavior |
 | Message delivery | committed message write intent, append fence, resume snapshot, frozen input consumption | internal `send_message` tool/effect, external message adapter, durable pending queue, recovery tool | core commits messages; adapters/tools decide how pending input arrives |
-| Scheduled/background work | `ScheduledAction`, `RunWaitingState`, correlation/idempotency key, resume validation | action kinds, timers, concrete task tools, result adapters | no `BackgroundTask` umbrella; durable work is a committed request plus validated resume |
+| Scheduled/background work | `ScheduledAction`, `ResumeTicket`, correlation/idempotency key, resume validation | action kinds, timers, concrete task tools, result adapters | no `BackgroundTask` umbrella; durable work is a committed request plus validated resume |
 | Plugin mechanism | `Plugin` factory, `PluginManifest`, `CapabilityBound`, resolved `Contributions` (hook slots, tool gates, transform slots, key registry, output validation) | plugin packages, first-party extension bundles, product-selected active plugin scope | core resolves and bound-checks contributions; plugins decide behavior |
-| Client-executed tools | pending `RunWaitingState` (client-tool waiting reason), descriptor fingerprint, neutral resume command validated by the shared `ResumeValidator` | public wait/result projection and client adapter | public result ids are projections; runtime validates the pending call before resume |
+| Client-executed tools | pending `ResumeTicket` (client-tool await reason), descriptor fingerprint, neutral resume command validated by the shared `ResumeValidator` | public wait/result projection and client adapter | public result ids are projections; runtime validates the pending call before resume |
 | State-machine workflows | typed state/effect/action/guard mechanism and replay-safe commit path | plugin or first-party extension workflow semantics | workflow state lives in runtime state/facts, not a parallel workflow store |
 | Tool and capability expansion | `ToolDescriptor`, `ToolExecutor`, `ToolGateHook` contracts | tool package or MCP adapter | visibility and authorization remain separate decisions; tools run in-process |
 | Context and memory | committed messages/facts, `ContextCompaction` fact shape, lineage checks | selected compaction policy, memory/resource adapters | summaries are append-only facts with lineage; source messages remain truth |
@@ -359,7 +359,7 @@ internals or mutate runtime state directly.
 | let a model call another agent | model-visible `agent_run` descriptor from an extension | config publishes delegate roster; the sub-run executes in-process through `RunIngress` | target is in resolved roster, descriptor fingerprint matches, permission gate passes |
 | let agents or external callers send messages | shared target-thread pending append mechanism | internal `send_message` tool/effect or external message adapter; durable input buffer | message id idempotency, target thread binding, pending freeze before runtime consumption |
 | let plugins schedule later work | `ScheduledAction` request committed with the run/thread checkpoint | plugin registers action kinds and result adapter; server owns timer/wake | committed request exists, correlation/idempotency key matches, snapshot/fingerprint match |
-| let a client execute a tool | wait/resume channel (client-tool waiting reason) | protocol adapter projects wait/result; tool descriptor may come from per-run client config | pending wait exists, descriptor fingerprint matches, result is not duplicate/expired/mismatched |
+| let a client execute a tool | wait/resume channel (client-tool await reason) | protocol adapter projects wait/result; tool descriptor may come from per-run client config | pending wait exists, descriptor fingerprint matches, result is not duplicate/expired/mismatched |
 | let a service-backed tool execute work | `RawTool` adapter behind resolved descriptors | adapter package owns transport, auth, and result mapping inside its in-process `invoke` | capability satisfies requirements; result returns through tool output and commit path |
 | let a product expose public status | projection from committed facts/events and dispatch state | protocol/product adapter owns DTO names and cursors | live stream is not replay truth; public ids map back to neutral ids |
 
@@ -415,7 +415,7 @@ frozen input inside `RunActivation`:
 pending input outside runtime
   -> freeze at a safe run boundary
   -> RunActivation input
-  -> runtime phase loop
+  -> runtime step loop
   -> ThreadCommit message write intent
   -> committed message log
 ```
@@ -434,13 +434,13 @@ The runtime may wait on background-like work, but the mechanism is not a generic
 
 | Need | Model it as |
 |---|---|
-| resume this run when an external answer arrives | `RunWaitingState` plus a resume ticket |
+| resume this run when an external answer arrives | `ResumeTicket` plus a resume ticket |
 | ask for future runtime work after commit | `ScheduledAction` with correlation/idempotency key |
 | deliver or recover queued execution | durable ingress dispatch, lease, and wake state |
 | run a process or tool outside runtime | orchestration-layer / backend execution |
 | expose public job status | product projection over committed runtime and dispatch facts |
 
-`RunWaitingState::BackgroundTasks` is a waiting reason payload, not a scheduler
+`AwaitReason::BackgroundTasks` is a reason carried by `ResumeTicket`, not a scheduler
 or queue. The durable request must be committed before wake delivery, and the
 later result must match the committed correlation, run/thread binding, snapshot,
 and descriptor fingerprint.
@@ -467,7 +467,7 @@ configuration publication
   -> tool/effect returns StateCommand, child-run request, pending-message append,
      external wait, or ScheduledAction request
   -> runtime stages effects and messages in ThreadCommit
-  -> commit makes facts, pending outbox entries, waiting state, or scheduled
+  -> commit makes facts, pending outbox entries, awaiting state, or scheduled
      requests durable
   -> dispatch/server observes committed requests and wakes or resumes through
      RunIngress
@@ -494,7 +494,7 @@ it must not require two-phase commit.
 Scheduled/background-like work is the deferred-work path. A selected plugin or
 tool may request future work only by staging a `ScheduledAction` with a
 correlation/idempotency key, run/thread binding, snapshot, and descriptor
-fingerprint. The same commit may also park the run in `RunWaitingState`.
+fingerprint. The same commit may also await the run in `ResumeTicket`.
 Dispatch/server owns timers, retries, and wake delivery. The
 runtime accepts a later result only through ingress/resume and only after it
 matches the committed request. Do not add a `BackgroundTask` aggregate or a
@@ -502,7 +502,7 @@ background-task tool family; model-visible task tools, if any, belong to the
 builtin extension and produce ordinary runtime effects.
 
 There is no `BackgroundTask` recovery capability. Recoverability comes from the
-specific committed mechanism: `ScheduledAction` request records, waiting tickets
+specific committed mechanism: `ScheduledAction` request records, resume tickets
 and pending external results, durable pending input, dispatch leases, outboxes,
 and committed facts/events. An uncommitted candidate effect is not recoverable.
 A committed request can be recovered only by validating its correlation,
@@ -541,9 +541,9 @@ authority, extension activation, or replay-sensitive decisions.
 |---|---|---|---|---|---|---|
 | `RunActivation` | aggregate input value | prepared runtime input for one run attempt | resolved spec, thread/run ids, selected backend and tools | HTTP route state, product DTOs, live registry objects | runtime starts from adapter-shaped or mutable input | G2, G3; activation serde/API checks |
 | `RuntimeRunContext` | per-attempt live wiring | cancellation, input receiver, stream sink, commit source, pinned resolver scope, persistence mode, and thread context cache for one execution attempt | `RunExecutor`, ingress/runtime execution construction | durable request data, public DTOs, config records, immutable executable snapshot data | replay or durable dispatch depends on process-local handles | G2, G3, G5, G13; activation/context split tests |
-| Committed run `Phase` | durable run phase authority (`Waiting \| Ended(EndCause)`) | the single stored terminal authority; derived status/outcome/error projections | `RunRecord`, waiting ticket, `EndCause`/`Failure` | a stored status/outcome field, public protocol status, live control handles, thread serialization | a second stored notion of the end drifts, or adapter status becomes runtime truth | G1, G10, G31; terminal projection tests |
-| `RunRecord` | durable run projection | run identity, input/output ranges, the `Phase` authority, timing, token counters, run-scoped state | activation snapshot, message ranges, persisted state | thread message-log ownership, thread-scoped state authority, product session state | resume reads a run projection that cannot explain the committed thread state | G1, G13; run persist/resume tests |
-| `RunWaitingState` | durable waiting payload | structured reason, resume tickets, dispatch marker, wait message | tool-call suspension, ingress resume, recovery wake | terminal outcome, product pause labels, ad hoc status strings | waiting run cannot be safely resumed or recovered | G5, G9, G13; waiting reason and ticket validation tests |
+| Committed run `RunState` | durable run state authority (`Awaiting \| Ended(EndCause)`) | the single stored terminal authority; derived status/outcome/error projections | `RunRecord`, resume ticket, `EndCause`/`Failure` | a stored status/outcome field, public protocol status, live control handles, thread serialization | a second stored notion of the end drifts, or adapter status becomes runtime truth | G1, G10, G31; terminal projection tests |
+| `RunRecord` | durable run projection | run identity, input/output ranges, the `RunState` authority, timing, token counters, run-scoped state | activation snapshot, message ranges, persisted state | thread message-log ownership, thread-scoped state authority, product session state | resume reads a run projection that cannot explain the committed thread state | G1, G13; run persist/resume tests |
+| `ResumeTicket` | durable waiting payload | structured reason, resume tickets, dispatch marker, wait message | tool-call suspension, ingress resume, recovery wake | terminal outcome, product pause labels, ad hoc status strings | awaiting run cannot be safely resumed or recovered | G5, G9, G13; await reason and ticket validation tests |
 | `ThreadCommit` | atomic thread checkpoint plan | message write intent, append fence, latest run projection, optional thread-state snapshot | commit coordinator, persisted state exports, message delta | whole-log rewrite, unguarded message append, product outbox payloads | duplicate/reordered messages or split run/thread truth | G1, G13; append-fence and checkpoint atomicity tests |
 | `ThreadResumeSnapshot` | consistent resume read model | committed message view, message version, latest run, thread-scoped state | resume store, dispatch recovery, context builder | mutation authority, product session replay, live sink state | resume observes a torn mix of messages, run projection, and state | G1, G13; snapshot consistency tests |
 | `RuntimeResumeStore` | runtime read port | narrow resume reads needed by runtime execution | durable thread/run storage, committed message view | full CRUD/query surface, commit writes, product projections | runtime depends on server store internals or reconstructs state with torn reads | G1, G13; port-boundary and resume tests |
@@ -574,9 +574,9 @@ Cancellation and stop behavior are runtime commands with typed terminal reasons.
 |---|---|
 | Client cancel | Enter through ingress, mark runtime intent, commit terminal result |
 | Tool timeout | Convert to typed tool/backend failure or `Indeterminate` |
-| Stop policy hit | Stop at a phase boundary and commit the reason |
+| Stop policy hit | Stop at a safe step boundary and commit the reason |
 | Max attempts / no progress | Record typed diagnosis and expose read-only projection |
-| User or operator pause | Commit a waiting state, then resume through ingress |
+| User or operator pause | Commit `RunDisposition::Awaiting(ResumeTicket)`, then resume through ingress |
 
 Stop policies are configuration and runtime logic. Public error strings, HTTP
 status codes, and UI copy are adapter concerns.
@@ -593,7 +593,7 @@ delivery lease, product job, or background process:
 hook/tool output
   -> StateCommand { scheduled action request }
   -> runtime validates action kind, descriptor fingerprint, and idempotency key
-  -> ThreadCommit stages the request and any RunWaitingState atomically
+  -> ThreadCommit stages the request and any ResumeTicket atomically
   -> CommitCoordinator commits; work is visible only after commit succeeds
   -> durable ingress observes the committed request and schedules the wake
   -> server resumes runtime through RunIngress / LiveRunControl

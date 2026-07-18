@@ -116,7 +116,7 @@ impl Transcoder for AiSdkEncoder {
                     }]
                 }
             }
-            Fact::Waiting { .. } => {
+            Fact::Awaiting { .. } => {
                 vec![
                     UIStreamEvent::FinishStep,
                     UIStreamEvent::finish("tool-calls"),
@@ -194,7 +194,7 @@ pub fn encode_step(outcome: &StepOutcome) -> Vec<UIStreamEvent> {
         .map(|p| (p.tool_use_id.as_str(), p.client_executed));
     let mut events = vec![Fact::RunStarted];
     events.extend(fold_messages(&outcome.new_messages, pending));
-    // The terminal event owns the failed / parked / finished distinction — a fault
+    // The terminal event owns the failed / awaiting / finished distinction — a fault
     // becomes `RunFailed`, which transcodes to `error` + `finish("error")`.
     events.push(outcome.terminal_event());
     AiSdkEncoder::new().transcode_facts(&events)
@@ -471,7 +471,7 @@ mod tests {
     }
 
     /// Budget exhaustion (`Terminal::Exhausted` → `RunFinished{exhausted:true}`) is
-    /// a clean terminus on the AI-SDK wire: the protocol has no "exhausted" finish
+    /// a clean end on the AI-SDK wire: the protocol has no "exhausted" finish
     /// reason, so it closes with `finish("stop")` like a natural end — never an
     /// error frame. Pins that exhaustion doesn't leak as a fault.
     #[test]
@@ -546,7 +546,7 @@ mod tests {
     fn client_pending_tool_is_not_provider_executed() {
         let outcome = StepOutcome {
             new_messages: vec![assistant_tool("a1", "c1", "submit_answer", json!({}))],
-            terminal: Terminal::Waiting {
+            terminal: Terminal::Awaiting {
                 pending: Some(Pending {
                     tool_use_id: "c1".into(),
                     name: "submit_answer".into(),
@@ -591,7 +591,7 @@ mod tests {
                 Message::text(Id("a1".into()), Role::Assistant, "let me read"),
                 assistant_tool("a2", "c1", "read", json!({"path": "x"})),
             ],
-            terminal: Terminal::Waiting {
+            terminal: Terminal::Awaiting {
                 pending: Some(Pending {
                     tool_use_id: "c1".into(),
                     name: "read".into(),
@@ -717,8 +717,8 @@ mod tests {
     }
 
     #[test]
-    fn waiting_transcodes_to_finish_step_then_tool_calls_finish() {
-        let events = AiSdkEncoder::new().fact(&Fact::Waiting {
+    fn awaiting_transcodes_to_finish_step_then_tool_calls_finish() {
+        let events = AiSdkEncoder::new().fact(&Fact::Awaiting {
             pending_tool_use_id: Some("c1".into()),
         });
         assert!(matches!(events[0], UIStreamEvent::FinishStep));

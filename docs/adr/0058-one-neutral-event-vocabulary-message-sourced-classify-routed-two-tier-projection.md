@@ -26,7 +26,7 @@ The neutral event surface is split across **three parallel enums**, and the spli
 1. **Three producer vocabularies, overlapping.** `stream::event::Kind` (7 live-delta
    variants), `project::AgentEvent` (8 committed whole-unit variants), and
    `event::RunEvent` (5 audit-lifecycle variants) each redeclare
-   `RunStarted`/`Waiting`/`RunFinished`/`RunFailed`. Every protocol carries **two**
+   `RunStarted`/`Awaiting`/`RunFinished`/`RunFailed`. Every protocol carries **two**
    transcoders — a live one reading `stream::Kind` and a committed one reading
    `AgentEvent` — kept consistent only by hand (Managed reconciles `evt_N` ids between
    its preview and its committed events).
@@ -88,11 +88,11 @@ pub enum AgentEvent {
 pub enum Lifecycle {
     RunStarted,
     StepStart,                                   // multi-step tool loop boundary (was a RunStarted hack)
-    StepEnd { usage: Option<TokenUsage> },       // usage rides the terminus — no `InferenceComplete` variant
+    StepEnd { usage: Option<TokenUsage> },       // usage rides the end — no `InferenceComplete` variant
     AssistantMessage { id: String, content: Vec<ContentBlock> }, // content MAY now hold ContentBlock::Thinking
     ToolCall   { id: String, name: String, input: Value, disposition: ToolDisposition },
     ToolResult { id: String, content: Vec<ContentBlock>, is_error: bool },
-    Waiting      { pending_tool_use_id: Option<String> }, // = HITL: projects agent.tool_use{ask}
+    Awaiting      { pending_tool_use_id: Option<String> }, // = HITL: projects agent.tool_use{ask}
     Continuation { steered: bool, detail: Value },
     RunFinished  { exhausted: bool, usage: Option<TokenUsage> },
     RunFailed    { code: String, message: String },
@@ -112,7 +112,7 @@ the subagent five, `span.outcome_evaluation_*`, `agent.thread_context_compacted`
 minted by the **state layer from a `TurnOutcome`**, are not "what the agent emitted token by
 token," and belong to a separate `DomainEvent`/state vocabulary. Forcing them into
 `AgentEvent` would be the mistake. **HITL/permission is already covered**:
-`Waiting{pending_tool_use_id}` + `ToolDisposition::PendingBuiltin` projects
+`Awaiting{pending_tool_use_id}` + `ToolDisposition::PendingBuiltin` projects
 `agent.tool_use{evaluated_permission:"ask"}`, answered by inbound `user.tool_confirmation`.
 
 **The reasoning gap is double.** Today neither the increment (no `ReasoningDelta`) nor the
@@ -185,7 +185,7 @@ pub fn classify(e: &AgentEvent) -> Routing { /* the single source of routing tru
   `AssistantMessage` can only come from the fold and `TextDelta` only from the stream, a
   consumer never has to ask "is this `RunFinished` best-effort or authoritative?" It also
   **strengthens** G10/G13: the live stream now *structurally cannot* carry an
-  authoritative terminus. (Today `stream::Kind::RunFinished` exists and transcoders ignore
+  authoritative end. (Today `stream::Kind::RunFinished` exists and transcoders ignore
   it for the real finish — that best-effort lifecycle emission is deleted.)
 
 ### Axis 7 — Fidelity dial (optional here, coupled to ReplayLog).
@@ -274,7 +274,7 @@ segmenter. Keep the thinking channel, re-expressed as `Detail::ThinkingDelta`.
 
 - **G1/G13** — resume/query fold committed messages; `AgentEvent` never becomes stored truth
   (Axis 1).
-- **G10/G13** — live is best-effort; authoritative terminus only from the fold — now
+- **G10/G13** — live is best-effort; authoritative end only from the fold — now
   *structurally* enforced (Axis 6).
 - **G31/G32** — commit fence / phase authority untouched (Axis 1).
 - **ISP / bounded context** — protocol transcoders never match audit-only facts; audit is a

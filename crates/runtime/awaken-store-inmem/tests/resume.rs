@@ -4,11 +4,11 @@
 //! cross-restart form of this test lives in the fs/sqlite backends.
 
 use awaken_agent_contract::agent::message::{Id as MsgId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::draft::Draft;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
-use awaken_agent_contract::thread::commit::RunFact;
+use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
@@ -23,10 +23,7 @@ async fn fresh_reader_resumes_from_committed_facts() {
     store
         .commit(ThreadCommit {
             thread_id: thread.clone(),
-            run_fact: RunFact {
-                run_id: run.clone(),
-                phase: Phase::Ended(EndCause::NaturalEnd),
-            },
+            run: RunDisposition::ended(run.clone(), EndCause::NaturalEnd),
             messages: vec![Message::text(
                 MsgId("m1".to_string()),
                 Role::Assistant,
@@ -34,10 +31,9 @@ async fn fresh_reader_resumes_from_committed_facts() {
             )],
             state: Vec::new(),
             events: vec![Draft {
-                kind: EventKind::RunPhaseChanged,
+                kind: EventKind::RunStateChanged,
                 payload: serde_json::Value::Null,
             }],
-            waiting: None,
         })
         .await
         .expect("commit");
@@ -49,8 +45,8 @@ async fn fresh_reader_resumes_from_committed_facts() {
 
     assert_eq!(reader.committed_messages(&thread).len(), 1);
     assert_eq!(
-        reader.run(&run).map(|record| record.phase),
-        Some(Phase::Ended(EndCause::NaturalEnd)),
+        reader.run(&run).map(|record| record.state),
+        Some(RunState::Ended(EndCause::NaturalEnd)),
     );
     assert_eq!(
         reader.latest_run(&thread).map(|record| record.id),

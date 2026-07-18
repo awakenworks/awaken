@@ -17,7 +17,7 @@ use awaken_protocol_transport::{DriverError, ProtocolRuntime, Terminal};
 pub enum AcpStop {
     /// The turn ended naturally (ACP `end_turn`).
     EndTurn,
-    /// The run parked on a tool awaiting the client (ACP `requires_action`).
+    /// The run is awaiting on a tool result from the client (ACP `requires_action`).
     RequiresAction,
     /// The run exhausted its step budget (ACP `max_turn_requests`).
     MaxTurns,
@@ -94,7 +94,7 @@ impl AcpServeHost {
 /// Map a run's terminal flags onto the ACP stop reason (a pure decision).
 fn map_stop(terminal: &Terminal) -> AcpStop {
     match terminal {
-        Terminal::Waiting { .. } => AcpStop::RequiresAction,
+        Terminal::Awaiting { .. } => AcpStop::RequiresAction,
         Terminal::Exhausted => AcpStop::MaxTurns,
         // A natural end or a terminal fault both close the ACP turn (ACP has no
         // distinct fault stop reason; the failure rides the committed record).
@@ -176,7 +176,7 @@ mod tests {
         use awaken_protocol_transport::StepFailure;
         assert_eq!(map_stop(&Terminal::Finished), AcpStop::EndTurn);
         assert_eq!(
-            map_stop(&Terminal::Waiting { pending: None }),
+            map_stop(&Terminal::Awaiting { pending: None }),
             AcpStop::RequiresAction
         );
         assert_eq!(map_stop(&Terminal::Exhausted), AcpStop::MaxTurns);

@@ -2,7 +2,7 @@
 // exports, scraped from the real Prometheus `/metrics` endpoint.
 //
 // FINDING (observability gap): the durable dispatch/worker layer emits NO
-// operational counters. There is no runs-claimed / runs-settled / runs-parked
+// operational counters. There is no runs-claimed / runs-settled / runs-awaiting
 // counter, no queue-depth gauge, and no drive-duration histogram anywhere in the
 // dispatch pool or run-ingress crates. The ONLY metrics a server exports are:
 //
@@ -186,7 +186,7 @@ async function main() {
         'and they MOVE with durable work (active_streams, draining).',
     );
     console.log(
-      'GAP: no durable-dispatch operational counters exist — no runs-claimed/settled/parked ' +
+      'GAP: no durable-dispatch operational counters exist — no runs-claimed/settled/awaiting ' +
         'counter, no queue-depth gauge, no drive-duration histogram. See report / recommend adding.',
     );
   } finally {

@@ -65,8 +65,11 @@ or require non-Apache terms for implementing it.
 5. Check [requirements-coverage.md](requirements-coverage.md) to ensure the
    change fits the runtime-owned coverage target or is explicitly marked as a
    boundary concern outside the runtime package.
-6. Use the theme docs only for the area you are changing.
-7. Update [STATUS.md](STATUS.md) when a design slice becomes implemented or moves
+6. Run the executable Kani proofs and the bounded TLA+ model documented in
+   [../formal/README.md](../formal/README.md) when changing runtime/run-ingress
+   lifecycle rules.
+7. Use the theme docs only for the area you are changing.
+8. Update [STATUS.md](STATUS.md) when a design slice becomes implemented or moves
    out of scope.
 
 ## Decision Records (ADRs)
@@ -86,14 +89,14 @@ type rather than duplicate schemas, state machines, or role catalogs.
   — the three canonical resolver roles (`AgentResolver` / `Resolver` /
   `RunResolver`), their boundaries, and an open renaming question.
 - [adr/0003-deferred-work-mechanism-selection.md](adr/0003-deferred-work-mechanism-selection.md)
-  — which deferred-work mechanism to use (`ScheduledAction`, waiting ticket, or
+  — which deferred-work mechanism to use (`ScheduledAction`, resume ticket, or
   `RunDispatch`); why no `BackgroundTask` umbrella.
 - [adr/0004-plugin-factory-contributions-and-capability-bound.md](adr/0004-plugin-factory-contributions-and-capability-bound.md)
   — the `Plugin` factory, config-aware `resolve` to `Contributions`, the
   `ResolvedExecutionEnv` aggregate, and `CapabilityBound` as a fail-closed
   contribution ceiling that is never authorization.
 - [adr/0005-run-terminal-state-single-authority.md](adr/0005-run-terminal-state-single-authority.md)
-  — the committed run `Phase` (`Waiting | Ended(EndCause)`) as the one stored
+  — the committed run `RunState` (`Awaiting | Ended(EndCause)`) as the one stored
   terminal authority, with status/outcome/error derived, never stored.
 - [adr/0006-fact-authority-run-record-is-cache.md](adr/0006-fact-authority-run-record-is-cache.md)
   — the committed fact log as the run's read authority and the `RunRecord` as a

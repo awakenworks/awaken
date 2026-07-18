@@ -5,13 +5,13 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::{
-    CommittedThread, MemoryCommitCoordinator, MemoryStreamSink, replay_latest_phase,
+    CommittedThread, MemoryCommitCoordinator, MemoryStreamSink, replay_latest_state,
 };
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
@@ -43,11 +43,11 @@ impl LlmExecutor for TextLlm {
 }
 
 /// A public-style projection built only from committed event records.
-fn project_phase_events(committed: &CommittedThread) -> Vec<String> {
+fn project_state_events(committed: &CommittedThread) -> Vec<String> {
     committed
         .events
         .iter()
-        .filter(|record| matches!(record.kind, EventKind::RunPhaseChanged))
+        .filter(|record| matches!(record.kind, EventKind::RunStateChanged))
         .map(|record| record.payload.to_string())
         .collect()
 }
@@ -119,21 +119,21 @@ async fn projection_derives_from_committed_events_not_the_live_stream() {
     let committed = commit.committed();
 
     // The projection is built from committed event records: the transition
-    // into Running at the first step boundary, then the terminal phase.
-    let events = project_phase_events(&committed);
+    // into Running at the first step boundary, then the terminal state.
+    let events = project_state_events(&committed);
     assert_eq!(events.len(), 2);
     assert!(events[0].contains("Running"));
     assert!(events[1].contains("NaturalEnd"));
 
     // The same truth is reachable through the RunStore read port.
     let record = commit.get(&RunId("run-1".to_string())).expect("run record");
-    assert_eq!(record.phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(record.state, RunState::Ended(EndCause::NaturalEnd));
     assert!(commit.get(&RunId("missing".to_string())).is_none());
 
     // The record is a derived cache: it equals what replay derives from the
     // committed fact log, which is the authority (ADR-0006 D1/D2).
     assert_eq!(
-        replay_latest_phase(&committed, &RunId("run-1".to_string())),
-        Some(record.phase)
+        replay_latest_state(&committed, &RunId("run-1".to_string())),
+        Some(record.state)
     );
 }

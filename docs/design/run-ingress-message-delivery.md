@@ -136,7 +136,7 @@ roles: `RunIngress` / `DirectRunIngress` / `DurableRunIngress`,
 and the `PendingInbox` (idempotent append) backed by an in-memory reference store
 and a Postgres adapter. The worker decides execute-versus-resume from committed
 truth, so the queue never becomes a second authority. Pending input is keyed to
-the waiting-ticket correlation it answers, so a resume that committed before the
+the resume-ticket correlation it answers, so a resume that committed before the
 worker settled is never re-applied after a crash, without an atomic append+freeze
 ([ADR-0010](../adr/0010-idempotent-pending-consumption.md)). A `DispatchService`
 daemon drains the queue on a nudge or poll and recovers crashed leases on a
@@ -152,7 +152,7 @@ append-then-delete (no 2PC)
 is true ([ADR-0014](../adr/0014-scheduled-delivery.md)). A crash-retry budget
 dead-letters a poison run past `max_attempts` recoveries, with `dead_letters`/
 `requeue` ops ([ADR-0015](../adr/0015-crash-retry-budget-and-dead-letter.md)).
-A queued or parked run is cancelled durably — the dispatch is removed and a
+A queued or aawaiting run is cancelled durably — the dispatch is removed and a
 terminal `Cancelled` fact is committed through the one finish boundary
 ([ADR-0016](../adr/0016-durable-cancel.md)). The `send_message` builtin tool is
 backed by the outbox through a host adapter, addressed by thread
@@ -166,12 +166,12 @@ replaces the daemon's notify
 ([ADR-0019](../adr/0019-distributed-dispatch-and-wake-signal.md)).
 `ScheduledAction` (ADR-0003 mechanism #1 — a committed in-run deferred action,
 recovered from committed state for consistency, distinct from this layer's
-delayed *delivery*) is a `WaitingReason`, staged by a gate `Schedule` and
+delayed *delivery*) is a `AwaitReason`, staged by a gate `Schedule` and
 performed in-process by the worker
 ([ADR-0020](../adr/0020-scheduled-action.md)). A message to a thread with no
-parked run is staged as unbound input the thread's next run consumes
+aawaiting run is staged as unbound input the thread's next run consumes
 ([ADR-0021](../adr/0021-idle-thread-delivery.md)). A submission can supersede a
-thread's prior pending/parked work by epoch, newest-wins
+thread's prior pending/awaiting work by epoch, newest-wins
 ([ADR-0022](../adr/0022-epoch-supersession.md)). The daemon GCs dead-letters
 older than a configured ttl on its cadence
 ([ADR-0023](../adr/0023-dead-letter-ttl-gc.md)), a renewal heartbeat keeps a long

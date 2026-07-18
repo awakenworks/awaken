@@ -84,10 +84,6 @@ pub awaken_session_contract::McpProbeStatus::Valid
 pub enum awaken_session_contract::RunErrorKind
 pub awaken_session_contract::RunErrorKind::BadRequest
 pub awaken_session_contract::RunErrorKind::Internal
-pub enum awaken_session_contract::Terminus
-pub awaken_session_contract::Terminus::End
-pub awaken_session_contract::Terminus::Exhausted
-pub awaken_session_contract::Terminus::Parked
 pub enum awaken_session_contract::TokenEndpointAuthBinding
 pub awaken_session_contract::TokenEndpointAuthBinding::ClientSecretBasic
 pub awaken_session_contract::TokenEndpointAuthBinding::ClientSecretBasic::secret_ref: alloc::string::String
@@ -189,16 +185,16 @@ pub awaken_session_contract::SessionUsage::cache_creation_tokens: u64
 pub awaken_session_contract::SessionUsage::cache_read_tokens: u64
 pub awaken_session_contract::SessionUsage::input_tokens: u64
 pub awaken_session_contract::SessionUsage::output_tokens: u64
-pub struct awaken_session_contract::StepFailure
-pub awaken_session_contract::StepFailure::code: alloc::string::String
-pub awaken_session_contract::StepFailure::message: alloc::string::String
 pub struct awaken_session_contract::StepOutcome
 pub awaken_session_contract::StepOutcome::compacted: bool
-pub awaken_session_contract::StepOutcome::failure: core::option::Option<awaken_session_contract::StepFailure>
 pub awaken_session_contract::StepOutcome::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
-pub awaken_session_contract::StepOutcome::pending: core::option::Option<awaken_session_contract::Pending>
 pub awaken_session_contract::StepOutcome::rescheduled: bool
-pub awaken_session_contract::StepOutcome::stop: awaken_session_contract::Terminus
+impl awaken_session_contract::StepOutcome
+pub fn awaken_session_contract::StepOutcome::awaiting(alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, core::option::Option<awaken_session_contract::Pending>, bool, bool) -> Self
+pub fn awaken_session_contract::StepOutcome::ended(alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, awaken_agent_contract::agent::run::EndCause, bool, bool) -> Self
+pub fn awaken_session_contract::StepOutcome::failure(&self) -> core::option::Option<&awaken_agent_contract::agent::run::Failure>
+pub fn awaken_session_contract::StepOutcome::pending(&self) -> core::option::Option<&awaken_session_contract::Pending>
+pub fn awaken_session_contract::StepOutcome::state(&self) -> &awaken_agent_contract::agent::run::RunState
 pub trait awaken_session_contract::AgentConfigSource: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::AgentConfigSource::agent_view(&self, &str) -> core::option::Option<awaken_session_contract::AgentConfigView>
 pub trait awaken_session_contract::ManagedSessionRepository: core::marker::Send + core::marker::Sync

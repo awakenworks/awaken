@@ -2,7 +2,7 @@
 //! **discover → author → fork → /name** (ADR-0036).
 //!
 //!   discover — the model calls `list_skills`; the delivered catalog comes back.
-//!   author   — the model authors a new skill via `bash` (parks on the gate,
+//!   author   — the model authors a new skill via `bash` (awaits on the gate,
 //!              the client confirms); a live re-scan surfaces it (AgentCreated).
 //!   fork     — activating a `context: fork` skill runs a sub-agent whose reply
 //!              is returned as the tool result.
@@ -232,9 +232,9 @@ async fn discover_author_fork_and_slash_name_end_to_end() {
     assert!(catalog.contains("greet") && catalog.contains("review"));
     assert!(!catalog.contains("notes"), "notes not authored yet");
 
-    // 2) author — the model writes a skill via bash; it parks on the gate.
-    let parked = send_message(&app, &id, "please author").await;
-    let idle = last_idle(&parked);
+    // 2) author — the model writes a skill via bash; it awaits on the gate.
+    let awaiting = send_message(&app, &id, "please author").await;
+    let idle = last_idle(&awaiting);
     assert_eq!(idle["stop_reason"]["type"], "requires_action");
     assert_eq!(idle["stop_reason"]["event_ids"][0], "w");
     // Confirm → bash runs (rooted) → a re-scan surfaces the authored skill.
@@ -289,7 +289,7 @@ impl LlmExecutor for PathProbeModel {
                     if last_text.contains("rusty") {
                         AssistantOutput::text("DONE")
                     } else {
-                        // `read` is allowed (no park); the gate records its path.
+                        // `read` is allowed (no await); the gate records its path.
                         tool(
                             "rd",
                             "read",

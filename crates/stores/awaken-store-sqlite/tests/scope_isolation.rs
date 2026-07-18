@@ -5,23 +5,26 @@
 //! conformance suite does not exercise, because it uses one thread per store).
 
 use awaken_agent_contract::agent::message::{Id as MsgId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::draft::Draft;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
-use awaken_agent_contract::thread::commit::RunFact;
+use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
-fn ck(thread: &str, run: &str, text: &str, phase: Phase) -> ThreadCommit {
+fn ck(thread: &str, run: &str, text: &str, state: RunState) -> ThreadCommit {
+    let run_id = RunId(run.to_string());
+    let disposition = match state {
+        RunState::Running => RunDisposition::running(run_id),
+        RunState::Ended(cause) => RunDisposition::ended(run_id, cause),
+        RunState::Awaiting => panic!("test checkpoint requires an awaiting ticket"),
+    };
     ThreadCommit {
         thread_id: ThreadId(thread.to_string()),
-        run_fact: RunFact {
-            run_id: RunId(run.to_string()),
-            phase,
-        },
+        run: disposition,
         messages: vec![Message::text(
             MsgId(format!("m-{text}")),
             Role::Assistant,
@@ -29,10 +32,9 @@ fn ck(thread: &str, run: &str, text: &str, phase: Phase) -> ThreadCommit {
         )],
         state: Vec::new(),
         events: vec![Draft {
-            kind: EventKind::RunPhaseChanged,
+            kind: EventKind::RunStateChanged,
             payload: serde_json::json!({ "text": text }),
         }],
-        waiting: None,
     }
 }
 
@@ -51,12 +53,17 @@ async fn two_threads_in_one_store_do_not_leak_transcripts() {
             "t-a",
             "r-a",
             "alpha",
-            Phase::Ended(EndCause::NaturalEnd),
+            RunState::Ended(EndCause::NaturalEnd),
         ))
         .await
         .expect("A");
     store
-        .commit(ck("t-b", "r-b", "beta", Phase::Ended(EndCause::NaturalEnd)))
+        .commit(ck(
+            "t-b",
+            "r-b",
+            "beta",
+            RunState::Ended(EndCause::NaturalEnd),
+        ))
         .await
         .expect("B");
 
@@ -85,15 +92,20 @@ async fn event_scope_thread_isolates_across_threads() {
     let store = SqliteCommitCoordinator::open_in_memory().expect("open");
 
     store
-        .commit(ck("t-a", "r-a", "a1", Phase::Running))
+        .commit(ck("t-a", "r-a", "a1", RunState::Running))
         .await
         .expect("a1");
     store
-        .commit(ck("t-b", "r-b", "b1", Phase::Running))
+        .commit(ck("t-b", "r-b", "b1", RunState::Running))
         .await
         .expect("b1");
     store
-        .commit(ck("t-a", "r-a", "a2", Phase::Ended(EndCause::NaturalEnd)))
+        .commit(ck(
+            "t-a",
+            "r-a",
+            "a2",
+            RunState::Ended(EndCause::NaturalEnd),
+        ))
         .await
         .expect("a2");
 
@@ -130,7 +142,7 @@ async fn reopening_reruns_migrations_idempotently() {
     {
         let store = SqliteCommitCoordinator::open(&path).expect("open 1");
         store
-            .commit(ck("t1", "r1", "hi", Phase::Ended(EndCause::NaturalEnd)))
+            .commit(ck("t1", "r1", "hi", RunState::Ended(EndCause::NaturalEnd)))
             .await
             .expect("commit");
     }

@@ -6,11 +6,11 @@ use std::fs::OpenOptions;
 use std::io::Write;
 
 use awaken_agent_contract::agent::message::{Id as MsgId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::draft::Draft;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
-use awaken_agent_contract::thread::commit::RunFact;
+use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
@@ -20,10 +20,7 @@ use awaken_store_fs::FsCommitCoordinator;
 fn checkpoint(thread: &ThreadId, run: &RunId, text: &str) -> ThreadCommit {
     ThreadCommit {
         thread_id: thread.clone(),
-        run_fact: RunFact {
-            run_id: run.clone(),
-            phase: Phase::Ended(EndCause::NaturalEnd),
-        },
+        run: RunDisposition::ended(run.clone(), EndCause::NaturalEnd),
         messages: vec![Message::text(
             MsgId(format!("m-{text}")),
             Role::Assistant,
@@ -31,10 +28,9 @@ fn checkpoint(thread: &ThreadId, run: &RunId, text: &str) -> ThreadCommit {
         )],
         state: Vec::new(),
         events: vec![Draft {
-            kind: EventKind::RunPhaseChanged,
+            kind: EventKind::RunStateChanged,
             payload: serde_json::Value::Null,
         }],
-        waiting: None,
     }
 }
 
@@ -57,8 +53,8 @@ async fn reopen_replays_committed_facts() {
     let store = FsCommitCoordinator::open(&dir).await.expect("reopen");
     assert_eq!(store.committed_messages(&thread).len(), 1);
     assert_eq!(
-        store.run(&run).map(|record| record.phase),
-        Some(Phase::Ended(EndCause::NaturalEnd)),
+        store.run(&run).map(|record| record.state),
+        Some(RunState::Ended(EndCause::NaturalEnd)),
     );
     assert_eq!(store.list_events(&EventScope::Run(run), None, 10).len(), 1);
     let _ = std::fs::remove_dir_all(&dir);

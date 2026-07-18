@@ -203,17 +203,17 @@ async fn bundle_applies_on_real_postgres() {
     assert_eq!(applied.len(), 6, "all six migrations applied");
 
     // Column types rendered to Postgres forms (information_schema.columns).
-    let phase_type: String = sqlx::query(
+    let legacy_phase_type: String = sqlx::query(
         "SELECT data_type FROM information_schema.columns \
          WHERE table_schema=$1 AND table_name='runtime_commit' AND column_name='phase'",
     )
     .bind(schema)
     .fetch_one(&pool)
     .await
-    .expect("phase type")
+    .expect("legacy phase type")
     .get("data_type");
     assert_eq!(
-        phase_type, "jsonb",
+        legacy_phase_type, "jsonb",
         "{{json}} rendered to JSONB on Postgres"
     );
 

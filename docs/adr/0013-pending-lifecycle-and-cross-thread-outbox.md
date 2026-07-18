@@ -7,7 +7,7 @@
 ## Context
 
 The durable ingress slice (ADR-0009) shipped pending input as append-only,
-delivered to a parked run's ticket correlation (ADR-0010). Two pieces of the
+delivered to an aawaiting run's ticket correlation (ADR-0010). Two pieces of the
 run-ingress design remained: the thread-message *operations* over pending input
 (edit, retract, reorder under a revision check) and *cross-thread* message
 delivery (a sender on one thread delivering input to another thread, via outbox

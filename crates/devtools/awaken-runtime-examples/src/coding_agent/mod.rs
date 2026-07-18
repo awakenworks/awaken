@@ -21,9 +21,9 @@ pub mod tui;
 
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::agent::waiting::WaitingTicket;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_ext_builtin_tools::{Toolset, builtin_tools, executable_hand_tools};
 use awaken_ext_permission::{
@@ -70,7 +70,7 @@ pub fn coding_config(model_ref: &str) -> RunnableConfig {
 }
 
 /// The permission policy: read/glob/grep allowed, everything else (write, edit,
-/// bash) asked, so a mutation parks for the caller's approval (ADR-0030).
+/// bash) asked, so a mutation awaits for the caller's approval (ADR-0030).
 pub fn coding_policy() -> RulePermissionPolicy {
     let allow = |name: &str| {
         PermissionRule::new(
@@ -106,7 +106,7 @@ pub enum Approval {
 /// One coding conversation on a single thread. Turns share the commit coordinator
 /// (which is also the history reader), so each fresh run continues the
 /// conversation. This holds only the session's state — the runtime owns the
-/// install/register, id generation, and the park→resume loop.
+/// install/register, id generation, and the await→resume loop.
 pub struct CodingSession {
     runtime: Runtime,
     config: RunnableConfig,
@@ -139,7 +139,7 @@ impl CodingSession {
     /// tool. Returns the messages committed this turn.
     pub async fn turn<F>(&self, input: &str, mut approve: F) -> Result<Vec<Message>, Error>
     where
-        F: FnMut(&WaitingTicket) -> Approval,
+        F: FnMut(&ResumeTicket) -> Approval,
     {
         let before = self.commit.committed_messages(&self.thread_id).len();
         self.runtime
@@ -233,7 +233,7 @@ mod tests {
         for mutate in ["write", "edit", "bash"] {
             assert!(
                 matches!(decide(mutate).await, PermissionDecision::Ask { .. }),
-                "{mutate} should park for approval"
+                "{mutate} should await for approval"
             );
         }
     }
