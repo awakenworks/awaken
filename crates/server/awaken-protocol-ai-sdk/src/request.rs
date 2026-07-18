@@ -13,7 +13,7 @@ use crate::types::{AiSdkChatRequest, ToolDecisionPart, UIMessage, UIPart};
 
 static THREAD_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// A client's answer to a parked tool, before binding-specific translation.
+/// A client's answer to an awaiting tool, before binding-specific translation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DecisionKind {
     /// `output-available`: the tool produced a result.

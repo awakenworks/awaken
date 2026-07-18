@@ -30,9 +30,9 @@ const HUB_CAPACITY: usize = 256;
 pub enum ThreadEvent {
     /// Messages committed during one step (a turn or a resume).
     Committed(Vec<Message>),
-    /// The step reached a terminal position. `waiting` is true when the run
-    /// parked (awaiting a tool decision / client result), false on natural end.
-    StepEnded { waiting: bool },
+    /// The step reached a terminal position. `awaiting` is true when the run
+    /// awaits a tool decision / client result, false on natural end.
+    StepEnded { awaiting: bool },
     /// An external ACP agent's bring-up progressed (installing an npx adapter,
     /// launching the process, initializing the handshake, ready, or failed). A UI
     /// renders this as a "starting agent…" affordance while a dynamic install runs.
@@ -102,7 +102,7 @@ mod tests {
         let hub = ThreadEventHub::new();
         let mut a = hub.subscribe("a");
         let mut b = hub.subscribe("b");
-        hub.publish("a", ThreadEvent::StepEnded { waiting: false });
+        hub.publish("a", ThreadEvent::StepEnded { awaiting: false });
         assert!(a.try_recv().is_ok());
         assert!(b.try_recv().is_err());
     }
@@ -125,17 +125,17 @@ mod tests {
         // delivered, so an observer must attach before the turn it wants to watch. A
         // publish before the (first ever) subscribe is not replayed to the newcomer.
         let hub = ThreadEventHub::new();
-        hub.publish("t1", ThreadEvent::StepEnded { waiting: false });
+        hub.publish("t1", ThreadEvent::StepEnded { awaiting: false });
         let mut late = hub.subscribe("t1");
         assert!(
             late.try_recv().is_err(),
             "a subscriber attached after the publish sees nothing buffered for it"
         );
         // But it does see the NEXT event, proving the channel is live (not the wrong one).
-        hub.publish("t1", ThreadEvent::StepEnded { waiting: true });
+        hub.publish("t1", ThreadEvent::StepEnded { awaiting: true });
         assert!(matches!(
             late.try_recv(),
-            Ok(ThreadEvent::StepEnded { waiting: true })
+            Ok(ThreadEvent::StepEnded { awaiting: true })
         ));
     }
 
@@ -144,6 +144,6 @@ mod tests {
         // A submitter always publishes; a thread nobody observes must not error/panic
         // (the send result is deliberately swallowed).
         let hub = ThreadEventHub::new();
-        hub.publish("unobserved", ThreadEvent::StepEnded { waiting: false });
+        hub.publish("unobserved", ThreadEvent::StepEnded { awaiting: false });
     }
 }

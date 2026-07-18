@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_config_store::{
     AgentConfig, ConfigRegistry, DEFAULT_SCOPE, ModelSelection, PublicationState, ScopeId,
@@ -112,8 +112,8 @@ async fn config_compiles_stores_and_the_runtime_executes_the_snapshot() {
 
     // The snapshot's fingerprints match the installed catalog, so resolution
     // passes and the run completes — config produced what the runtime consumed.
-    let phase = runtime.execute(activation, ctx).await.expect("execute");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    let state = runtime.execute(activation, ctx).await.expect("execute");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     // Per-step durability: the input commits at the first step boundary
     // (under a Running fact), then the text-only terminal step commits
     // through finish.

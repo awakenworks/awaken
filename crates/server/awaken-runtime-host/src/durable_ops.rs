@@ -2,7 +2,7 @@
 //! exposed over HTTP, each operating on one thread's durable dispatch queue.
 //!
 //! - `supersede` (ADR-0022): a newest-wins turn over the thread's stale
-//!   pending/parked work; the superseded runs are observable via `superseded`.
+//!   pending/awaiting work; the superseded runs are observable via `superseded`.
 //! - `reconcile` (ADR-0011): reclaim and re-run any dispatch left runnable by a
 //!   crash.
 //! - `reap` / `dead-letters` / `dead-letters/purge` (ADR-0015): dead-letter a
@@ -35,7 +35,7 @@ use crate::worker_http::respond;
 impl SharedHost {
     /// Cancel a run by id through the durable live-control seam (ADR-0018, slice E
     /// follow-up): tries the runtime live channel first (in-flight runs), then the
-    /// dispatch store for a queued or parked run, committing a terminal `Cancelled`
+    /// dispatch store for a queued or awaiting run, committing a terminal `Cancelled`
     /// fact. Fail-closed: an unknown run id errors rather than silently succeeding.
     pub(crate) async fn cancel_durable(&self, thread: &str, run_id: &str) -> Result<(), HostError> {
         self.durable_ingress(thread)
@@ -56,12 +56,12 @@ impl SharedHost {
             .map_err(|e| HostError::bad_request(e.to_string()))
     }
 
-    /// Stage a durable cross-thread delivery answering `thread`'s parked run, then
-    /// let the daemon relay it (ADR-0017, slice E follow-up). Resolves the parked
-    /// run's waiting ticket from committed truth, stages a decision into the outbox
+    /// Stage a durable cross-thread delivery answering `thread`'s awaiting run, then
+    /// let the daemon relay it (ADR-0017, slice E follow-up). Resolves the awaiting
+    /// run's awaiting ticket from committed truth, stages a decision into the outbox
     /// via `DispatchService::send`, and the daemon relays it to the run's pending
     /// input and wakes it. Exercises the outbox stage→relay path. Requires the
-    /// daemon and a parked run.
+    /// daemon and an awaiting run.
     pub(crate) async fn stage_decision(
         &self,
         thread: &str,
@@ -70,10 +70,9 @@ impl SharedHost {
         let ctx = self.ctx_for(thread, None).await?;
         let pool = self.dispatch_pool_or_err()?;
         let thread_id = ThreadId(thread.to_string());
-        let (run_id, ticket) = ctx
-            .commit
-            .open_wait_for_thread(&thread_id)
-            .ok_or_else(|| HostError::bad_request("no parked run on this thread to deliver to"))?;
+        let (run_id, ticket) = ctx.commit.open_wait_for_thread(&thread_id).ok_or_else(|| {
+            HostError::bad_request("no awaiting run on this thread to deliver to")
+        })?;
         let input = awaken_run_ingress::PendingInput {
             message_id: format!("xthread-{}", BASE_SEQ.fetch_add(1, Ordering::SeqCst)),
             run_id: run_id.clone(),
@@ -149,7 +148,7 @@ async fn submit_background(
 }
 
 /// Cancel a run by id via the durable live-control seam (ADR-0018): live channel
-/// first, then a durable cancel of a queued/parked dispatch. `{ run_id }`.
+/// first, then a durable cancel of a queued/awaiting dispatch. `{ run_id }`.
 async fn cancel(
     State(host): State<Arc<SharedHost>>,
     Path(thread): Path<String>,
@@ -188,7 +187,7 @@ async fn wake(
     )
 }
 
-/// Stage a durable cross-thread decision for the thread's parked run; the daemon
+/// Stage a durable cross-thread decision for the thread's awaiting run; the daemon
 /// relays it from the outbox and wakes the run (ADR-0017). `{ allow: bool }`.
 async fn deliver(
     State(host): State<Arc<SharedHost>>,
@@ -229,7 +228,7 @@ async fn supersede(
             let turn = host.supersede_run(agent, &thread, vec![message]).await?;
             let superseded = host.superseded(&thread).await?;
             Ok(json!({
-                "phase": format!("{:?}", turn.phase),
+                "state": format!("{:?}", turn.state),
                 "superseded": superseded,
             }))
         }

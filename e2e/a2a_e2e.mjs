@@ -43,11 +43,11 @@ async function main() {
     pass('a2a multi-turn conversation');
   });
 
-  // --- HITL: a tool needing approval parks the task (input-required); a follow-up
+  // --- HITL: a tool needing approval awaits the task (input-required); a follow-up
   // message on the same context approves it and the task completes ---
   await withRealServer('probe', 38153, async (base) => {
     const client = await A2AClient.fromCardUrl(`${base}/v1/a2a/agent-card`);
-    const parked = await client.sendMessage({
+    const awaiting = await client.sendMessage({
       message: {
         messageId: 'm1',
         contextId: 'a2a-hitl',
@@ -57,9 +57,9 @@ async function main() {
       },
     });
     assert.equal(
-      parked.result?.status?.state,
+      awaiting.result?.status?.state,
       'input-required',
-      `expected the write tool to park: ${JSON.stringify(parked.result?.status)}`,
+      `expected the write tool to await: ${JSON.stringify(awaiting.result?.status)}`,
     );
     const done = await client.sendMessage({
       message: {
@@ -72,7 +72,7 @@ async function main() {
     });
     assert.equal(done.result?.status?.state, 'completed', `expected completion after approval`);
     assert.ok(replyText(done).includes('done'), `expected the run to finish: ${replyText(done)}`);
-    pass('a2a HITL approval (park -> approve -> complete)');
+    pass('a2a HITL approval (await -> approve -> complete)');
   });
 
   // --- multimodal: a `file` image part travels to the model ---

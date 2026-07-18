@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::{Command as StateCommand, Key, MergePolicy, Scope};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
@@ -190,7 +190,7 @@ async fn tool_with_no_state_commits_nothing_extra() {
         .execute(activation(&["plain"]), context)
         .await
         .expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 
     let committed = commit.committed();
     assert!(
@@ -244,7 +244,7 @@ async fn parallel_commutative_tool_writes_merge() {
         .execute(activation(&["mutate_a", "mutate_b"]), context)
         .await
         .expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 
     let committed = commit.committed();
     assert_eq!(committed.state.len(), 2, "both tool writes are committed");
@@ -303,7 +303,7 @@ async fn parallel_exclusive_tool_writes_conflict_fail_closed() {
 
     assert_eq!(
         outcome,
-        Phase::Ended(EndCause::Error(Failure::StateConflict)),
+        RunState::Ended(EndCause::Error(Failure::StateConflict)),
         "two exclusive writes to one key must fail closed"
     );
     let committed = commit.committed();

@@ -2,11 +2,11 @@
 //! the same database file resumes from committed facts (ADR-0039 2.5 / D4).
 
 use awaken_agent_contract::agent::message::{Id as MsgId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::draft::Draft;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
-use awaken_agent_contract::thread::commit::RunFact;
+use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
@@ -37,9 +37,9 @@ async fn conformance_terminal_run_is_fenced() {
 }
 
 #[tokio::test]
-async fn conformance_waiting_ticket_parks_then_clears() {
+async fn conformance_resume_ticket_awaits_then_clears() {
     let store = SqliteCommitCoordinator::open_in_memory().expect("open");
-    awaken_store_conformance::waiting_ticket_parks_then_clears(&store).await;
+    awaken_store_conformance::resume_ticket_awaits_then_clears(&store).await;
 }
 
 #[tokio::test]
@@ -89,10 +89,7 @@ async fn reopen_file_resumes_from_committed_facts() {
         store
             .commit(ThreadCommit {
                 thread_id: thread.clone(),
-                run_fact: RunFact {
-                    run_id: run.clone(),
-                    phase: Phase::Ended(EndCause::NaturalEnd),
-                },
+                run: RunDisposition::ended(run.clone(), EndCause::NaturalEnd),
                 messages: vec![Message::text(
                     MsgId("m1".to_string()),
                     Role::Assistant,
@@ -100,10 +97,9 @@ async fn reopen_file_resumes_from_committed_facts() {
                 )],
                 state: Vec::new(),
                 events: vec![Draft {
-                    kind: EventKind::RunPhaseChanged,
+                    kind: EventKind::RunStateChanged,
                     payload: serde_json::Value::Null,
                 }],
-                waiting: None,
             })
             .await
             .expect("commit");
@@ -113,8 +109,8 @@ async fn reopen_file_resumes_from_committed_facts() {
     let store = SqliteCommitCoordinator::open(path).expect("reopen");
     assert_eq!(store.committed_messages(&thread).len(), 1);
     assert_eq!(
-        store.run(&run).map(|record| record.phase),
-        Some(Phase::Ended(EndCause::NaturalEnd)),
+        store.run(&run).map(|record| record.state),
+        Some(RunState::Ended(EndCause::NaturalEnd)),
     );
     assert_eq!(
         store.latest_run(&thread).map(|record| record.id),
@@ -159,14 +155,10 @@ async fn reopen_file_replays_committed_state() {
         store
             .commit(ThreadCommit {
                 thread_id: thread.clone(),
-                run_fact: RunFact {
-                    run_id: RunId("r-state".to_string()),
-                    phase: Phase::Running,
-                },
+                run: RunDisposition::running(RunId("r-state".to_string())),
                 messages: Vec::new(),
                 state: commands.clone(),
                 events: Vec::new(),
-                waiting: None,
             })
             .await
             .expect("commit state");

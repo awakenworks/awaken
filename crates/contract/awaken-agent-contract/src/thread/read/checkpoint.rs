@@ -3,7 +3,7 @@
 //! `CheckpointReader` is the read side of the commit boundary (G1/G13): it never
 //! mutates truth, and it reads from committed facts so a durable run resumes after
 //! a process restart (ADR-0006 fact authority; ADR-0039 D4). It is the merged read
-//! repository over the older `ThreadReader` (transcript/state/waiting) and
+//! repository over the older `ThreadReader` (transcript/state/awaiting) and
 //! `RunStore` (run record) split — one aggregate, one repository (ADR-0039 D1).
 
 use crate::agent::run::{Id as RunId, Record as RunRecord};
@@ -20,7 +20,7 @@ pub enum EventScope {
 }
 
 /// The after-commit read repository. Extends [`ThreadReader`] (committed messages,
-/// state, waiting ticket) with the run record and committed-event reads that
+/// state, awaiting ticket) with the run record and committed-event reads that
 /// resume and projection need.
 pub trait CheckpointReader: ThreadReader {
     /// The committed run record for a run id, if any.

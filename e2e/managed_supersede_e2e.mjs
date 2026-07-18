@@ -1,9 +1,9 @@
 // Epoch supersession end-to-end (slice E, ADR-0022) via the Anthropic TS SDK plus
 // the durable operations surface.
 //
-// In durable mode a first turn parks on a tool confirmation, so its dispatch sits
-// `parked` in the thread's queue. We then POST a *superseding* turn to
-// /v1/durable/threads/:thread/supersede: the newest submission wins — the parked
+// In durable mode a first turn awaits on a tool confirmation, so its dispatch sits
+// `awaiting` in the thread's queue. We then POST a *superseding* turn to
+// /v1/durable/threads/:thread/supersede: the newest submission wins — the awaiting
 // run is marked superseded (never woken again) and the new run is driven. The
 // response lists the superseded run id, proving newest-wins semantics end to end.
 //
@@ -42,28 +42,28 @@ async function main() {
   const srv = spawnServer('real', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, AWAKEN_INGRESS: 'durable', ...realServerEnv('probe', upstream) });
   await waitForPort(PORT);
   try {
-    // A first turn parks on a tool confirmation — its dispatch is `parked`.
+    // A first turn awaits on a tool confirmation — its dispatch is `awaiting`.
     const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
     await client.beta.sessions.events.send(session.id, {
-      events: [{ type: 'user.message', content: [{ type: 'text', text: 'PARK-FIRST' }] }],
+      events: [{ type: 'user.message', content: [{ type: 'text', text: 'AWAIT-FIRST' }] }],
       betas: BETAS,
     });
-    const parked = await listEvents(session.id);
+    const awaiting = await listEvents(session.id);
     assert.equal(
-      parked.find((e) => e.type === 'session.status_idle').stop_reason.type,
+      awaiting.find((e) => e.type === 'session.status_idle').stop_reason.type,
       'requires_action',
-      'first run parked awaiting confirmation',
+      'first run awaiting awaiting confirmation',
     );
-    pass('first run parked (dispatch is parked in the durable queue)');
+    pass('first run awaiting (dispatch is awaiting in the durable queue)');
 
     // Before supersede: nothing superseded yet.
     const before = await fetch(`${BASE}/v1/durable/threads/${session.id}/superseded`).then((r) => r.json());
     assert.deepEqual(before.superseded, [], 'no runs superseded before the superseding submit');
 
-    // A superseding submit: the newest turn wins over the parked run.
-    const sup = await post(`/v1/durable/threads/${session.id}/supersede`, { text: 'SUPERSEDE-THE-PARKED-RUN' });
+    // A superseding submit: the newest turn wins over the awaiting run.
+    const sup = await post(`/v1/durable/threads/${session.id}/supersede`, { text: 'SUPERSEDE-THE-AWAITING-RUN' });
     assert.equal(sup.status, 200, 'supersede accepted');
-    assert.ok(Array.isArray(sup.body.superseded) && sup.body.superseded.length >= 1, 'the parked run was superseded');
+    assert.ok(Array.isArray(sup.body.superseded) && sup.body.superseded.length >= 1, 'the awaiting run was superseded');
     pass(`superseding submit marked ${sup.body.superseded.length} prior run(s) superseded: ${sup.body.superseded.join(', ')}`);
 
     // Fails closed on a non-durable server would be 400; here it must reject a

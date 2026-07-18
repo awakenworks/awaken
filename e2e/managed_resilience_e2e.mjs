@@ -7,7 +7,7 @@
 //   - duplicate tool_confirmation of a resolved tool -> fail closed (no double-run)
 //
 // Deterministic: echo mode (turns complete) for the first four, probe mode (a turn
-// parks on a tool) for the duplicate-confirmation case.
+// awaits on a tool) for the duplicate-confirmation case.
 //
 // Run: (from e2e/)  node managed_resilience_e2e.mjs
 
@@ -113,12 +113,12 @@ async function duplicateConfirmation(probeUp) {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'DUP-CONFIRM' }] }],
       betas: BETAS,
     });
-    const parked = (await listEvents(c, s.id)).find((e) => e.type === 'agent.tool_use');
-    assert.ok(parked, 'run parked on a tool_use');
+    const awaiting = (await listEvents(c, s.id)).find((e) => e.type === 'agent.tool_use');
+    assert.ok(awaiting, 'run awaiting on a tool_use');
 
     // First confirmation resolves the tool and completes the turn.
     await c.beta.sessions.events.send(s.id, {
-      events: [{ type: 'user.tool_confirmation', tool_use_id: parked.id, result: 'allow' }],
+      events: [{ type: 'user.tool_confirmation', tool_use_id: awaiting.id, result: 'allow' }],
       betas: BETAS,
     });
     const idle = [...(await listEvents(c, s.id))].reverse().find((e) => e.type === 'session.status_idle');
@@ -128,7 +128,7 @@ async function duplicateConfirmation(probeUp) {
     // double-run of the tool's side effect.
     const status = await statusOf(
       c.beta.sessions.events.send(s.id, {
-        events: [{ type: 'user.tool_confirmation', tool_use_id: parked.id, result: 'allow' }],
+        events: [{ type: 'user.tool_confirmation', tool_use_id: awaiting.id, result: 'allow' }],
         betas: BETAS,
       }),
       're-confirm resolved tool',

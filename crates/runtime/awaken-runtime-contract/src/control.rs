@@ -6,7 +6,7 @@ pub enum LiveCommand {
         run_id: awaken_agent_contract::agent::run::Id,
     },
     /// Cooperatively pause an in-flight run (ADR-0054): the runtime sets the run's
-    /// `PauseSignal`; the run parks durably at its next safe boundary. Resuming a
+    /// `PauseSignal`; the run awaits durably at its next safe boundary. Resuming a
     /// paused run is a durable re-admission through the ingress, not a live command.
     Pause {
         run_id: awaken_agent_contract::agent::run::Id,

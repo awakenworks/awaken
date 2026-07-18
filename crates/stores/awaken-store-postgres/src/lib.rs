@@ -3,7 +3,7 @@
 //! [`PostgresCommitCoordinator`] implements the neutral [`Coordinator`] write
 //! boundary (G1/G13) against Postgres: each `commit` writes the staged
 //! `ThreadCommit` — messages, state commands, events, the run fact, and the
-//! waiting-ticket transition — in one SQL transaction (ADR-0006). The committed
+//! awaiting-ticket transition — in one SQL transaction (ADR-0006). The committed
 //! fact log is the authority; the `run_record` table is a derived cache equal to
 //! the latest fact (G32).
 //!
@@ -17,11 +17,11 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::message::Message;
-use awaken_agent_contract::agent::run::{Id as RunId, Phase, Record as RunRecord};
+use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunState};
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::agent::waiting::WaitingTicket;
 use awaken_agent_contract::audit::record::Record as EventRecord;
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator as CommitCoordinator, Error};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
@@ -101,7 +101,7 @@ struct Projection {
     /// Committed events in commit order (for `list_events`), a fact-derived cache
     /// rebuilt from the durable event table on construction.
     events: Vec<EventRecord>,
-    waiting: HashMap<RunId, WaitingTicket>,
+    resume_tickets: HashMap<RunId, ResumeTicket>,
 }
 
 /// The component namespace for this runtime's tables. One runtime is one
@@ -202,12 +202,12 @@ impl PostgresCommitCoordinator {
             .unwrap_or_default()
     }
 
-    /// The active waiting ticket for a run, if it is currently parked.
-    pub fn waiting_for(&self, run_id: &RunId) -> Option<WaitingTicket> {
+    /// The active awaiting ticket for a run, if it is currently awaiting.
+    pub fn resume_ticket_for(&self, run_id: &RunId) -> Option<ResumeTicket> {
         self.projection
             .lock()
             .ok()
-            .and_then(|p| p.waiting.get(run_id).cloned())
+            .and_then(|p| p.resume_tickets.get(run_id).cloned())
     }
 
     /// Committed state commands for a thread, in commit order — served from the
@@ -234,9 +234,10 @@ impl CommitCoordinator for PostgresCommitCoordinator {
         commit
             .validate()
             .map_err(|e| Error::Rejected(e.to_string()))?;
-        let run_id = commit.run_fact.run_id.clone();
+        let run_id = commit.run_id().clone();
         let thread_id = commit.thread_id.clone();
-        let phase = commit.run_fact.phase.clone();
+        let run_state = commit.run_state();
+        let resume_ticket = commit.resume_ticket().cloned();
         let p = NS;
 
         let mut tx = self
@@ -259,14 +260,17 @@ impl CommitCoordinator for PostgresCommitCoordinator {
         // commit drops `tx` unread, rolling back and releasing the lock. When no row
         // exists (the run's first-ever commit) there is nothing to reject, so the
         // first commit — even a first `Ended` — lands.
-        let existing: Option<Json<Phase>> = sqlx::query_scalar(&format!(
+        let existing: Option<Json<RunState>> = sqlx::query_scalar(&format!(
             "SELECT phase FROM {p}_run_record WHERE run_id = $1 FOR UPDATE"
         ))
         .bind(&run_id.0)
         .fetch_optional(&mut *tx)
         .await
         .map_err(reject)?;
-        if matches!(existing, Some(Json(Phase::Ended(_)))) {
+        if existing
+            .as_ref()
+            .is_some_and(|Json(state)| !state.permits(&run_state))
+        {
             return Err(Error::Rejected(format!(
                 "run {} is already terminal; refusing post-terminal commit",
                 run_id.0
@@ -296,7 +300,7 @@ impl CommitCoordinator for PostgresCommitCoordinator {
         .bind(next as i64)
         .bind(&thread_id.0)
         .bind(&run_id.0)
-        .bind(Json(&phase))
+        .bind(Json(&run_state))
         .execute(&mut *tx)
         .await
         .map_err(reject)?;
@@ -353,17 +357,19 @@ impl CommitCoordinator for PostgresCommitCoordinator {
         ))
         .bind(&run_id.0)
         .bind(&thread_id.0)
-        .bind(Json(&phase))
+        .bind(Json(&run_state))
         .execute(&mut *tx)
         .await
         .map_err(reject)?;
 
-        // Park or clear the waiting ticket atomically with the checkpoint: a
-        // `Some` ticket on a `Waiting` phase parks the run; anything else clears
+        // Persist or clear the resume ticket atomically with the disposition: an
+        // `Awaiting` disposition owns a ticket; anything else clears
         // it so a resumed/terminal run can no longer be resumed (G5).
-        let parked = matches!((&commit.waiting, &phase), (Some(_), Phase::Waiting));
-        if parked {
-            let ticket = commit.waiting.as_ref().expect("parked has a ticket");
+        let awaiting = matches!(run_state, RunState::Awaiting);
+        if awaiting {
+            let ticket = resume_ticket
+                .as_ref()
+                .expect("awaiting disposition has a ticket");
             sqlx::query(&format!(
                 "INSERT INTO {p}_waiting (run_id, ticket) VALUES ($1, $2) \
                  ON CONFLICT (run_id) DO UPDATE SET ticket = EXCLUDED.ticket"
@@ -400,18 +406,19 @@ impl CommitCoordinator for PostgresCommitCoordinator {
         let record = RunRecord {
             id: run_id.clone(),
             thread_id: thread_id.clone(),
-            phase,
+            state: run_state,
         };
         projection
             .run_records
             .insert(run_id.clone(), record.clone());
         projection.latest_by_thread.insert(thread_id, record);
-        if parked {
-            projection
-                .waiting
-                .insert(run_id.clone(), commit.waiting.expect("parked has a ticket"));
+        if awaiting {
+            projection.resume_tickets.insert(
+                run_id.clone(),
+                resume_ticket.expect("awaiting has a ticket"),
+            );
         } else {
-            projection.waiting.remove(&run_id);
+            projection.resume_tickets.remove(&run_id);
         }
 
         Ok(CommitRecord { sequence: next })
@@ -432,8 +439,8 @@ impl ThreadReader for PostgresCommitCoordinator {
         PostgresCommitCoordinator::committed_messages(self, thread_id)
     }
 
-    fn waiting_ticket(&self, run_id: &RunId) -> Option<WaitingTicket> {
-        self.waiting_for(run_id)
+    fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket> {
+        self.resume_ticket_for(run_id)
     }
 
     fn committed_state(&self, thread_id: &ThreadId) -> Vec<StateCommand> {
@@ -533,11 +540,11 @@ async fn hydrate(pool: &PgPool) -> Result<Projection, sqlx::Error> {
     for row in commit_rows {
         let run_id: String = row.try_get("run_id")?;
         let thread_id: String = row.try_get("thread_id")?;
-        let Json(phase): Json<Phase> = row.try_get("phase")?;
+        let Json(state): Json<RunState> = row.try_get("phase")?;
         let record = RunRecord {
             id: RunId(run_id.clone()),
             thread_id: ThreadId(thread_id.clone()),
-            phase,
+            state,
         };
         projection.run_records.insert(RunId(run_id), record.clone());
         projection
@@ -565,13 +572,13 @@ async fn hydrate(pool: &PgPool) -> Result<Projection, sqlx::Error> {
         });
     }
 
-    let waiting_rows = sqlx::query(&format!("SELECT run_id, ticket FROM {NS}_waiting"))
+    let resume_ticket_rows = sqlx::query(&format!("SELECT run_id, ticket FROM {NS}_waiting"))
         .fetch_all(pool)
         .await?;
-    for row in waiting_rows {
+    for row in resume_ticket_rows {
         let run_id: String = row.try_get("run_id")?;
-        let Json(ticket): Json<WaitingTicket> = row.try_get("ticket")?;
-        projection.waiting.insert(RunId(run_id), ticket);
+        let Json(ticket): Json<ResumeTicket> = row.try_get("ticket")?;
+        projection.resume_tickets.insert(RunId(run_id), ticket);
     }
 
     Ok(projection)

@@ -2,9 +2,9 @@
 //!
 //! The extension owns the model-visible `send_message` tool over a neutral
 //! [`MessageSender`] port (ADR-0007); the host injects this adapter. It resolves
-//! the target run's parked waiting ticket and stages a durable cross-thread
+//! the target run's awaiting awaiting ticket and stages a durable cross-thread
 //! delivery into the outbox, which the daemon relays to the target's pending
-//! input (ADR-0017). When the thread has no parked run, the message is staged as
+//! input (ADR-0017). When the thread has no awaiting run, the message is staged as
 //! *unbound* input addressed to the thread; the thread's next run consumes it as
 //! new input (ADR-0021).
 
@@ -24,7 +24,7 @@ use crate::dispatch::{DispatchQueue, Outbox, PendingInput};
 /// Stages `send_message` deliveries into the durable outbox. Generic over the
 /// store so any backend (memory/Postgres/SQLite) can back the tool. Messages are
 /// addressed to a *thread* (the stable unit); the adapter resolves the run
-/// currently parked on it and the ticket that run is waiting on.
+/// currently awaiting on it and the ticket that run is awaiting on.
 pub struct OutboxMessageSender<S> {
     store: Arc<S>,
     reader: Arc<dyn ThreadReader>,
@@ -33,7 +33,7 @@ pub struct OutboxMessageSender<S> {
 
 impl<S: DispatchQueue + Outbox> OutboxMessageSender<S> {
     /// Build the adapter from the dispatch store (to resolve the target thread's
-    /// parked run and stage) and the commit boundary's read port (for its ticket).
+    /// awaiting run and stage) and the commit boundary's read port (for its ticket).
     pub fn new(store: Arc<S>, reader: Arc<dyn ThreadReader>) -> Self {
         Self {
             store,
@@ -50,15 +50,15 @@ impl<S: DispatchQueue + Outbox + 'static> MessageSender for OutboxMessageSender<
         let n = self.seq.fetch_add(1, Ordering::SeqCst);
         let message_id = format!("{target_thread}-msg-{n}");
 
-        // Bind to the run parked on the thread if there is one; otherwise stage
+        // Bind to the run awaiting on the thread if there is one; otherwise stage
         // an unbound delivery (empty run/correlation) the thread's next run
         // consumes as new input (ADR-0021).
         let input = match self
             .store
-            .parked_run(&thread)
+            .awaiting_run(&thread)
             .await
             .map_err(|err| ToolError::Execution(err.to_string()))?
-            .and_then(|run| self.reader.waiting_ticket(&run))
+            .and_then(|run| self.reader.resume_ticket(&run))
         {
             Some(ticket) => PendingInput {
                 message_id,

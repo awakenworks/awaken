@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Id(pub String);
 
-/// The committed phase of a run at a checkpoint: the single stored authority for
-/// where the run stands. A run is either paused on a waiting ticket, or ended
-/// through exactly one [`EndCause`].
+/// The committed lifecycle state of a run: the single stored authority for
+/// where the run stands. A run is either executing, awaiting with a resume
+/// ticket, or ended through exactly one [`EndCause`].
 ///
 /// Anything coarser — a published outcome, an `is_error` flag, a retry ruling —
 /// is *derived* from this value the moment a consumer needs it, never stored
@@ -13,17 +13,35 @@ pub struct Id(pub String);
 /// materialized; that keeps this enum the sole authority and makes a run record
 /// unable to drift from its own classification.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Phase {
+pub enum RunState {
     /// The run is executing. Committed at step boundaries so completed steps
     /// are durable (and visible to readers) before the run reaches a
-    /// terminus. Not a pause — a running run carries no waiting ticket and
+    /// end. A running run carries no resume ticket and
     /// cannot be resumed; a run left `Running` by a crashed process is an
     /// orphan a host terminalizes (cancel/stop) or redelivers.
     Running,
-    /// The run paused on a waiting ticket. A pause is not a terminus.
-    Waiting,
-    /// The run reached a terminus through one mechanism.
+    /// The run awaits external input under a resume ticket.
+    #[serde(alias = "Waiting")]
+    Awaiting,
+    /// The run ended through one mechanism.
     Ended(EndCause),
+}
+
+impl RunState {
+    /// Whether a committed run may accept another lifecycle commit.
+    ///
+    /// `Running` and `Awaiting` may move to any next state, while `Ended` is
+    /// absorbing. The relation is pure and total so it can be exhaustively
+    /// verified and reused by every persistence backend.
+    #[must_use]
+    pub fn permits(&self, _next: &Self) -> bool {
+        !matches!(self, Self::Ended(_))
+    }
+
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Ended(_))
+    }
 }
 
 /// The closed set of mechanisms by which a run ends. A run ends through exactly
@@ -93,7 +111,7 @@ impl Failure {
 pub struct Record {
     pub id: Id,
     pub thread_id: crate::agent::thread::Id,
-    pub phase: Phase,
+    pub state: RunState,
 }
 
 #[cfg(test)]
@@ -146,10 +164,94 @@ mod tests {
             EndCause::Error(Failure::CapabilityBound),
             EndCause::Indeterminate,
         ] {
-            let phase = Phase::Ended(cause.clone());
-            let json = serde_json::to_string(&phase).unwrap();
-            let back: Phase = serde_json::from_str(&json).unwrap();
-            assert_eq!(phase, back, "{cause:?} must survive a serde round trip");
+            let state = RunState::Ended(cause.clone());
+            let json = serde_json::to_string(&state).unwrap();
+            let back: RunState = serde_json::from_str(&json).unwrap();
+            assert_eq!(state, back, "{cause:?} must survive a serde round trip");
         }
+    }
+
+    fn model_states() -> Vec<RunState> {
+        vec![
+            RunState::Running,
+            RunState::Awaiting,
+            RunState::Ended(EndCause::NaturalEnd),
+            RunState::Ended(EndCause::MaxSteps),
+            RunState::Ended(EndCause::Cancelled),
+            RunState::Ended(EndCause::Stopped("budget".into())),
+            RunState::Ended(EndCause::Error(Failure::Inference {
+                code: "fault".into(),
+                message: "fault".into(),
+            })),
+            RunState::Ended(EndCause::Error(Failure::CapabilityBound)),
+            RunState::Ended(EndCause::Error(Failure::StateConflict)),
+            RunState::Ended(EndCause::Indeterminate),
+        ]
+    }
+
+    /// Exhaustive over every lifecycle class and every closed terminal cause.
+    #[test]
+    fn transition_relation_is_total_and_terminal_is_absorbing() {
+        let states = model_states();
+        for current in &states {
+            for next in &states {
+                assert_eq!(
+                    current.permits(next),
+                    !current.is_terminal(),
+                    "unexpected transition ruling: {current:?} -> {next:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_waiting_state_deserializes_as_awaiting_but_never_serializes_back() {
+        let state: RunState = serde_json::from_str("\"Waiting\"").unwrap();
+        assert_eq!(state, RunState::Awaiting);
+        assert_eq!(serde_json::to_string(&state).unwrap(), "\"Awaiting\"");
+    }
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    fn symbolic_failure(tag: u8) -> Failure {
+        match tag % 3 {
+            0 => Failure::Inference {
+                code: String::new(),
+                message: String::new(),
+            },
+            1 => Failure::CapabilityBound,
+            _ => Failure::StateConflict,
+        }
+    }
+
+    fn symbolic_end_cause(tag: u8, failure_tag: u8) -> EndCause {
+        match tag % 6 {
+            0 => EndCause::NaturalEnd,
+            1 => EndCause::MaxSteps,
+            2 => EndCause::Cancelled,
+            3 => EndCause::Stopped(String::new()),
+            4 => EndCause::Error(symbolic_failure(failure_tag)),
+            _ => EndCause::Indeterminate,
+        }
+    }
+
+    fn symbolic_state(state_tag: u8, cause_tag: u8, failure_tag: u8) -> RunState {
+        match state_tag % 3 {
+            0 => RunState::Running,
+            1 => RunState::Awaiting,
+            _ => RunState::Ended(symbolic_end_cause(cause_tag, failure_tag)),
+        }
+    }
+
+    /// Covers every lifecycle class, end cause, failure kind, and next-state
+    /// class against the production transition relation.
+    #[kani::proof]
+    fn ended_is_absorbing_for_every_next_state() {
+        let current = symbolic_state(kani::any(), kani::any(), kani::any());
+        let next = symbolic_state(kani::any(), kani::any(), kani::any());
+        assert_eq!(current.permits(&next), !current.is_terminal());
     }
 }

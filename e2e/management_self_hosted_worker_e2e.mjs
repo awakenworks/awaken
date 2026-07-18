@@ -6,7 +6,7 @@
 // environment is dispatched as a `session` work item. This e2e IS a worker — it
 // polls the environment's queue, claims the session work, drives the session,
 // and — the way a self-hosted worker executes the session's tool calls — RUNS the
-// agent's parked `submit_answer` tool and posts the result back. Full lifecycle:
+// agent's awaiting `submit_answer` tool and posts the result back. Full lifecycle:
 // poll -> ack -> heartbeat -> run tool call -> stop, over real HTTP.
 //
 // Run: (from e2e/)  node management_self_hosted_worker_e2e.mjs
@@ -106,7 +106,7 @@ async function main() {
         });
         assert.equal(hb.lease_extended, true, 'heartbeat extends the lease');
 
-        // Drive the session the worker just claimed: a turn parks on the agent's
+        // Drive the session the worker just claimed: a turn awaits on the agent's
         // client-executed `submit_answer` tool call.
         await client.beta.sessions.events.send(session.id, {
           betas: BETAS,
@@ -114,7 +114,7 @@ async function main() {
         });
         const events = await drain(client.beta.sessions.events.list(session.id, { betas: BETAS }));
         const toolUse = events.find((e) => e.type === 'agent.custom_tool_use');
-        assert.ok(toolUse, `session parked on a tool call, got ${events.map((e) => e.type)}`);
+        assert.ok(toolUse, `session awaiting on a tool call, got ${events.map((e) => e.type)}`);
         const idle = events.find((e) => e.type === 'session.status_idle');
         assert.equal(idle.stop_reason.type, 'requires_action', 'the session awaits the worker to run the tool');
 
@@ -130,7 +130,7 @@ async function main() {
           replies.some((m) => (m.content ?? []).some((c) => (c.text ?? '').includes('42'))),
           `the worker's tool result reached the model, replies: ${JSON.stringify(replies)}`,
         );
-        pass('worker runs the parked tool call and posts the result back');
+        pass('worker runs the awaiting tool call and posts the result back');
 
         // The two turns above (user.message + user.tool_result) drove the session
         // through the events API — they must NOT have enqueued any new work: the queue

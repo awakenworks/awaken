@@ -205,7 +205,7 @@ impl McpToolService {
     }
 
     /// Consult the gate; `None` means "allowed, execute". Outcomes that cannot
-    /// be honored over MCP (suspend/schedule park a *run*; an external client
+    /// be honored over MCP (suspend/schedule await a *run*; an external client
     /// has none) fail closed as model-visible errors.
     async fn gate_verdict(&self, call: &ToolCall) -> Option<Result<Value, ServerRequestError>> {
         let gate = self.gate.as_ref()?;
@@ -620,7 +620,7 @@ mod tests {
 
     #[tokio::test]
     async fn gate_schedule_fails_closed_like_suspend() {
-        // Schedule parks a *run*; an external MCP client has none, so — like
+        // Schedule awaits a *run*; an external MCP client has none, so — like
         // Suspend — it fails closed as a model-visible refusal (distinct enum arm).
         let source = StaticExports::new(vec![McpExportedTool::plain(
             descriptor("echo"),

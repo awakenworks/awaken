@@ -3,7 +3,7 @@
 //! The live stream is in-process and best-effort (G10/G13); it carries the one
 //! neutral event vocabulary directly — `Fact::RunStarted` opens the stream,
 //! then `Live` increments flow as the model produces them. The authoritative
-//! terminus always comes from the committed fold, never this channel, so there is
+//! end always comes from the committed fold, never this channel, so there is
 //! no separate live event enum (ADR-0058: `stream::Kind` folded into
 //! [`AgentEvent`]).
 

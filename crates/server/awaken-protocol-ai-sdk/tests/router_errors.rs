@@ -1,5 +1,5 @@
 //! Fail-closed resume over the real AI SDK router: a tool decision delivered when
-//! no run is parked yields an `error` stream frame, not a silent success.
+//! no run is awaiting yields an `error` stream frame, not a silent success.
 
 use std::sync::Arc;
 
@@ -12,10 +12,10 @@ use axum::http::Request;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-struct NoParkRuntime;
+struct NoAwaitingRuntime;
 
 #[async_trait::async_trait]
-impl ProtocolRuntime for NoParkRuntime {
+impl ProtocolRuntime for NoAwaitingRuntime {
     async fn run(
         &self,
         _thread: &str,
@@ -34,7 +34,7 @@ impl ProtocolRuntime for NoParkRuntime {
         _tool_use_id: &str,
         _resume: Resume,
     ) -> Result<StepOutcome, DriverError> {
-        unreachable!("nothing is parked, so resume must never be reached")
+        unreachable!("nothing is awaiting, so resume must never be reached")
     }
 
     async fn pending(&self, _thread: &str) -> Option<Pending> {
@@ -55,7 +55,7 @@ async fn frames(body: Value) -> Vec<Value> {
 }
 
 async fn frames_at(uri: &str, body: Value) -> Vec<Value> {
-    let app = awaken_protocol_ai_sdk::router::router(Arc::new(NoParkRuntime));
+    let app = awaken_protocol_ai_sdk::router::router(Arc::new(NoAwaitingRuntime));
     let response = app
         .oneshot(
             Request::builder()
@@ -77,8 +77,8 @@ async fn frames_at(uri: &str, body: Value) -> Vec<Value> {
 }
 
 #[tokio::test]
-async fn a_tool_decision_with_no_parked_run_yields_an_error_frame() {
-    // Resume-only input (an assistant tool decision, no new user turn) with nothing parked.
+async fn a_tool_decision_with_no_awaiting_run_yields_an_error_frame() {
+    // Resume-only input (an assistant tool decision, no new user turn) with nothing awaiting.
     let frames = frames(json!({
         "threadId": "t1",
         "messages": [{
@@ -125,11 +125,11 @@ async fn the_agent_scoped_run_route_streams_a_turn() {
     );
 }
 
-/// A runtime parked on a built-in tool `c1`; resume drives it to completion.
-struct ParkedRuntime;
+/// A runtime awaiting on a built-in tool `c1`; resume drives it to completion.
+struct AwaitingRuntime;
 
 #[async_trait::async_trait]
-impl ProtocolRuntime for ParkedRuntime {
+impl ProtocolRuntime for AwaitingRuntime {
     async fn run(
         &self,
         _thread: &str,
@@ -171,8 +171,8 @@ impl ProtocolRuntime for ParkedRuntime {
 }
 
 #[tokio::test]
-async fn a_matching_tool_decision_resumes_a_parked_run_to_a_finish() {
-    let app = awaken_protocol_ai_sdk::router::router(Arc::new(ParkedRuntime));
+async fn a_matching_tool_decision_resumes_an_awaiting_run_to_a_finish() {
+    let app = awaken_protocol_ai_sdk::router::router(Arc::new(AwaitingRuntime));
     let body = json!({
         "threadId": "t1",
         "messages": [{

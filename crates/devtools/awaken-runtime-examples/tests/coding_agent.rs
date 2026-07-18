@@ -1,5 +1,5 @@
 //! Offline smoke test for the coding agent: a scripted model reads a real file,
-//! edits it, and the edit parks for approval before it runs. Proves the agent
+//! edits it, and the edit awaits for approval before it runs. Proves the agent
 //! actually mutates code and that the permission gate (ADR-0030) gates mutations
 //! — no network, no API key.
 #![cfg(feature = "coding-agent")]
@@ -7,8 +7,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::message::Role;
-use awaken_agent_contract::agent::waiting::WaitingReason;
 use awaken_runtime_examples::coding_agent::{
     Approval, CodingSession, ScriptedCoder, build_runtime, coding_config,
 };
@@ -33,14 +33,14 @@ async fn agent_reads_then_edits_a_file_after_approval() {
     let new_messages = session
         .turn("Mark the status done.", move |ticket| {
             asked_for.fetch_add(1, Ordering::SeqCst);
-            assert_eq!(ticket.reason, WaitingReason::ToolPermission);
+            assert_eq!(ticket.reason, AwaitReason::ToolPermission);
             assert_eq!(ticket.call_id.as_deref(), Some("edit-1"));
             Approval::Allow
         })
         .await
         .expect("turn runs");
 
-    // The edit parked for approval exactly once (read did not).
+    // The edit awaiting for approval exactly once (read did not).
     assert_eq!(asked.load(Ordering::SeqCst), 1, "only the edit was asked");
 
     // The file was actually mutated.

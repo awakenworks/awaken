@@ -117,7 +117,7 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
     let base = format!("/v1/durable/threads/{thread}");
 
     // ── reap → dead-letter → purge, plus list_dispatches ─────────────────────
-    // A fresh run, claimed under a 1ms lease → Running.
+    // A fresh run, claimed under a 1ms lease → Leased.
     mem.enqueue(RunExecutionRequest::new(activation("run-A", thread)))
         .await
         .unwrap();
@@ -126,7 +126,7 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
         "the run is claimable"
     );
 
-    // list_dispatches (host verb → ingress → store) shows the Running row.
+    // list_dispatches (host verb → ingress → store) shows the Leased row.
     let (s, v) = call(&router, "GET", &format!("{base}/dispatches")).await;
     assert_eq!(s, StatusCode::OK);
     assert!(
@@ -134,8 +134,8 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|r| r["run_id"] == "run-A" && r["status"] == "Running"),
-        "dispatches shows run-A Running: {v}"
+            .any(|r| r["run_id"] == "run-A" && r["status"] == "Leased"),
+        "dispatches shows run-A Leased: {v}"
     );
 
     // reap as-of a clock past the 1ms lease → the crashed dispatch is dead-lettered.

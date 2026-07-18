@@ -10,7 +10,7 @@ timestamp: 2026-06-27T00:00:00+08:00
 
 Owner: [runtime-behavior.md](../design/runtime-behavior.md).
 
-## FACT-RUNTIME-001: Runtime phase names are neutral
+## FACT-RUNTIME-001: Runtime state names are neutral
 
 - Status: active
 - Owner: [Run lifecycle](../design/runtime-behavior.md#run-lifecycle)
@@ -66,11 +66,11 @@ Owner: [runtime-behavior.md](../design/runtime-behavior.md).
 - Links: guardrails G1, G8, and G13
 - Verification: run/thread export-import tests, unknown-key policy tests, and product-resource boundary tests.
 
-## FACT-RUNTIME-008: Run phase and thread checkpoint are separate axes
+## FACT-RUNTIME-008: Run state and thread commit are separate axes
 
 - Status: active
 - Owner: [Run and thread lifecycle boundary](../design/runtime-behavior.md#run-and-thread-lifecycle-boundary)
-- Fact: the durable run lifecycle value owns the execution phase on `RunRecord`, while `ThreadCommit` owns the thread checkpoint boundary for append-only messages, latest run projection, and optional thread-scoped state.
+- Fact: the durable run lifecycle value owns the execution state on `RunRecord`, while `ThreadCommit` owns the thread checkpoint boundary for append-only messages, latest run projection, and optional thread-scoped state.
 - Links: guardrails G1, G10, and G13
 - Verification: lifecycle validation, append-fence, checkpoint atomicity, and resume snapshot consistency tests.
 

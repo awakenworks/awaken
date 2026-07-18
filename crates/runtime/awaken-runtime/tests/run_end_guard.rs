@@ -9,7 +9,7 @@ use std::sync::Mutex;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Fact};
 use awaken_agent_contract::stream::event::Event;
@@ -235,13 +235,13 @@ async fn guard_steers_then_completes_and_surfaces_each_round() {
         .with_commit(commit.clone())
         .with_stream_sink(collector.clone());
 
-    let phase = runtime
+    let state = runtime
         .execute(activation(vec!["scripted".to_string()], 16), context)
         .await
         .expect("runs");
 
     // Two steers then a completion → the run ends naturally.
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     // The guard saw the run-scoped counter advance 0, 1, 2.
     assert_eq!(*seen_fc.lock().unwrap(), vec![0, 1, 2]);
     // Three rounds surfaced: steer, steer, complete.
@@ -292,12 +292,12 @@ async fn no_guard_ends_at_the_first_natural_end() {
         .with_stream_sink(collector.clone());
 
     // The plugin is installed but not selected → its guard is inert.
-    let phase = runtime
+    let state = runtime
         .execute(activation(Vec::new(), 16), context)
         .await
         .expect("runs");
 
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert!(seen_fc.lock().unwrap().is_empty());
     assert!(collector.events.lock().unwrap().is_empty());
     assert_eq!(count_user_text(&commit, "revise"), 0);
@@ -322,12 +322,12 @@ async fn an_always_steering_guard_is_bounded_by_max_steps() {
 
     // max_steps = 3: each step natural-ends and the guard steers, so the runaway
     // backstop terminates the run rather than looping forever.
-    let phase = runtime
+    let state = runtime
         .execute(activation(vec!["scripted".to_string()], 3), context)
         .await
         .expect("runs");
 
-    assert_eq!(phase, Phase::Ended(EndCause::MaxSteps));
+    assert_eq!(state, RunState::Ended(EndCause::MaxSteps));
     let events = collector.events.lock().unwrap();
     assert_eq!(
         events.len(),
@@ -347,14 +347,14 @@ async fn a_guard_outside_its_bound_fails_the_run_closed() {
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
-    let phase = runtime
+    let state = runtime
         .execute(activation(vec!["rogue".to_string()], 16), context)
         .await
         .expect("runs");
 
     assert_eq!(
-        phase,
-        Phase::Ended(EndCause::Error(
+        state,
+        RunState::Ended(EndCause::Error(
             awaken_agent_contract::agent::run::Failure::CapabilityBound
         )),
         "a run-end guard outside the declared bound fails closed (G30)"
@@ -463,7 +463,7 @@ async fn a_later_guards_steer_overrides_an_earlier_guards_completion() {
         .with_commit(commit.clone())
         .with_stream_sink(collector.clone());
 
-    let phase = runtime
+    let state = runtime
         .execute(
             activation(vec!["g1".to_string(), "g2".to_string()], 16),
             context,
@@ -471,7 +471,7 @@ async fn a_later_guards_steer_overrides_an_earlier_guards_completion() {
         .await
         .expect("runs");
 
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     let events = collector.events.lock().unwrap();
     // Two rounds steered by g2, then a completion.
     assert_eq!(events.len(), 3);
@@ -500,7 +500,7 @@ async fn all_completing_guards_end_with_the_last_guards_detail() {
         .with_commit(commit.clone())
         .with_stream_sink(collector.clone());
 
-    let phase = runtime
+    let state = runtime
         .execute(
             activation(vec!["g1".to_string(), "g2".to_string()], 16),
             context,
@@ -508,7 +508,7 @@ async fn all_completing_guards_end_with_the_last_guards_detail() {
         .await
         .expect("runs");
 
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     let events = collector.events.lock().unwrap();
     assert_eq!(events.len(), 1, "one completion round, no steers");
     assert!(!events[0].0);

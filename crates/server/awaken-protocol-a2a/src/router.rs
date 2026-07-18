@@ -1,6 +1,6 @@
 //! The axum router: A2A `message:send` + agent-card routes over a `ProtocolRuntime`.
 //!
-//! Handlers decode the request, drive one turn (or resume a parked run on the same
+//! Handlers decode the request, drive one turn (or resume an awaiting run on the same
 //! context) through the port, and project the committed step into an A2A `Task`.
 //! Errors are an HTTP status + A2A JSON error envelope — A2A `message:send` is
 //! request/response, so failures are not in-stream events.
@@ -88,7 +88,7 @@ async fn message_send_scoped(
 }
 
 /// The core send logic (shared by the HTTP+JSON and JSON-RPC bindings). A message
-/// on a thread with a parked run resumes it (delivering the text as the tool
+/// on a thread with an awaiting run resumes it (delivering the text as the tool
 /// answer); otherwise it is a fresh turn. Either way the committed step is
 /// projected into a `Task`.
 async fn run_send(
@@ -100,12 +100,12 @@ async fn run_send(
     let thread = processed.thread_id.clone();
 
     let step = match rt.pending(&thread).await {
-        // A parked run on this context → the message is the awaited input.
+        // A awaiting run on this context → the message is the awaited input.
         Some(pending) => {
             let resume = to_resume(&processed.text, &pending);
             rt.resume(&thread, &pending.tool_use_id, resume).await?
         }
-        // No parked run → a fresh turn.
+        // No awaiting run → a fresh turn.
         None => {
             rt.run(&thread, processed.agent_id.clone(), vec![processed.message])
                 .await?
@@ -125,7 +125,7 @@ async fn send(rt: Runtime, req: SendMessageRequest, path_agent: Option<String>) 
 }
 
 /// Project the current state of the task on the context recovered from `id`
-/// (`task-{thread}`): a parked run reads back as `input-required`, otherwise the
+/// (`task-{thread}`): an awaiting run reads back as `input-required`, otherwise the
 /// committed history is a `completed` task.
 async fn get_task(rt: &Runtime, id: &str) -> Task {
     let thread = id.strip_prefix("task-").unwrap_or(id).to_string();
@@ -134,7 +134,7 @@ async fn get_task(rt: &Runtime, id: &str) -> Task {
     let outcome = StepOutcome {
         new_messages: Vec::new(),
         terminal: if pending.is_some() {
-            Terminal::Waiting { pending }
+            Terminal::Awaiting { pending }
         } else {
             Terminal::Finished
         },
@@ -144,12 +144,12 @@ async fn get_task(rt: &Runtime, id: &str) -> Task {
 
 /// Cancel the task on the context recovered from `id` (`task-{thread}`). A2A has
 /// no in-band "deny" for a built-in tool approval; canceling the task is the
-/// protocol-native way to reject it: a parked run is denied (unblocked with
-/// `allow: false`) and the task reads back `canceled`. A task with nothing parked
+/// protocol-native way to reject it: an awaiting run is denied (unblocked with
+/// `allow: false`) and the task reads back `canceled`. A task with nothing awaiting
 /// is returned in its current state (not falsely canceled).
 async fn cancel_task(rt: &Runtime, id: &str) -> Task {
     let thread = id.strip_prefix("task-").unwrap_or(id).to_string();
-    let was_parked = if let Some(pending) = rt.pending(&thread).await {
+    let was_awaiting = if let Some(pending) = rt.pending(&thread).await {
         let _ = rt
             .resume(
                 &thread,
@@ -173,7 +173,7 @@ async fn cancel_task(rt: &Runtime, id: &str) -> Task {
             terminal: Terminal::Finished,
         },
     );
-    if was_parked {
+    if was_awaiting {
         task.status.state = TaskState::Canceled;
     }
     task
@@ -190,7 +190,7 @@ struct JsonRpcRequest {
 }
 
 /// The JSON-RPC endpoint: dispatch by `method`. `message/send` drives a turn;
-/// `tasks/get` reads a task's state; `tasks/cancel` cancels/denies a parked task;
+/// `tasks/get` reads a task's state; `tasks/cancel` cancels/denies an awaiting task;
 /// other methods return a JSON-RPC "method not found".
 async fn jsonrpc(State(rt): State<Runtime>, A2aJson(req): A2aJson<JsonRpcRequest>) -> Response {
     let id = req.id;

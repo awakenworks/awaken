@@ -22,7 +22,7 @@ built; ✅ exist today.
 ```text
  A  Managed protocol adapter   (anti-corruption; the only layer that speaks Anthropic)
  B  Dispatch / server          (RunIngress: direct or durable; resume delivery)
- C  Runtime kernel             (minimal; invokes RawTool by id; parks/resumes; commits)
+ C  Runtime kernel             (minimal; invokes RawTool by id; awaits/resumes; commits)
  D  Extensions                 (RawTools, permission gate, goal)
  E  Sandbox / tool relay       (host composition: per-environment isolation + MCP relay)
  F  Stores                     (commit coordinator, dispatch/inbox)
@@ -41,13 +41,13 @@ the doc that owns its authority.
 
 | Component | Owns | Does **not** know | Owner |
 |---|---|---|---|
-| `Runtime` + loop | consume `RunnableConfig`, run model/tool steps, invoke `RawTool` by id, park/resume, commit, terminate | relay, binding, placement, scheduling, protocol, session, outcome | [ADR-0034](../adr/0034-runtime-axis-model-and-orthogonality.md), [tool-and-capability.md](tool-and-capability.md) |
+| `Runtime` + loop | consume `RunnableConfig`, run model/tool steps, invoke `RawTool` by id, await/resume, commit, terminate | relay, binding, placement, scheduling, protocol, session, outcome | [ADR-0034](../adr/0034-runtime-axis-model-and-orthogonality.md), [tool-and-capability.md](tool-and-capability.md) |
 | `RawTool` / `Tool` ports | the neutral tool call boundary; `Tool` is the typed authoring API, **erased** to `RawTool` before the kernel | *where/how* a call runs (encapsulated in the impl) | [tool-and-capability.md](tool-and-capability.md), [ADR-0007](../adr/0007-runtime-owns-tool-execution.md) |
 | `PermissionGate` / `ToolGateHook` | authorization: allow / deny / **suspend** | concrete rules; why a suspend was requested | [permission-policy-axis.md](permission-policy-axis.md) |
-| `WaitingTicket` / `ResumeCommand` / `validate_resume` | park correlation + fail-closed resume validation | who supplies the answer, or its meaning | [runtime-behavior.md](runtime-behavior.md) |
+| `ResumeTicket` / `ResumeCommand` / `validate_resume` | await correlation + fail-closed resume validation | who supplies the answer, or its meaning | [runtime-behavior.md](runtime-behavior.md) |
 | `ResolvedSpec` / `RunResolver` | the model-visible decision surface + fingerprint gate | graph resolution (done at compile), provenance/pin | [config-to-run-execution-flow.md](config-to-run-execution-flow.md), [ADR-0034](../adr/0034-runtime-axis-model-and-orthogonality.md) |
 | `RunActivation` / `RuntimeRunContext` | neutral run input / per-attempt live wiring | protocol DTOs, durable data, placement | [runtime-interface-boundaries.md](runtime-interface-boundaries.md) |
-| `run` / `run_to_completion` / `execute` / `resume` | execution entries; `run_to_completion` drives park→decide→resume in-process | external scheduling (owned by ingress / coordinator) | [ADR-0033](../adr/0033-in-process-run-driver.md) |
+| `run` / `run_to_completion` / `execute` / `resume` | execution entries; `run_to_completion` drives await→decide→resume in-process | external scheduling (owned by ingress / coordinator) | [ADR-0033](../adr/0033-in-process-run-driver.md) |
 | `CommitCoordinator` / `EventRecord` / `StreamSink` | the single durable write boundary, after-commit events, live stream | protocol projection, public event names | [commit-fact-projection-taxonomy.md](commit-fact-projection-taxonomy.md) |
 
 The kernel's entire tool vocabulary is `RawTool::invoke(call) -> ToolOutput` by id.
@@ -86,7 +86,7 @@ feature.
 
 | Component | Owns |
 |---|---|
-| `RunIngress` (`Direct` / `Durable`) | synchronous vs durable delivery; durable supports park→later-resume |
+| `RunIngress` (`Direct` / `Durable`) | synchronous vs durable delivery; durable supports await→later-resume |
 | `LiveRunControl` | cancel / wake |
 | `DispatchService` / worker | durable queue, lease, recovery |
 
@@ -120,7 +120,7 @@ and [protocol-adapter-boundaries.md](protocol-adapter-boundaries.md).
    client POST .../events {user.message}
    adapter -> RunActivation (descriptors carry alias names) -> RunIngress
         · sync path:  run_to_completion(decide)
-        · async HTTP: DirectRunIngress.submit -> may park
+        · async HTTP: DirectRunIngress.submit -> may await
 
 ③ kernel loop (relay-agnostic)
    loop: infer -> model calls tool (by alias) -> PermissionGate decides
@@ -128,11 +128,11 @@ and [protocol-adapter-boundaries.md](protocol-adapter-boundaries.md).
       │          = relay RawTool -> MCP tools/call -> ToolRelayServer
       │          -> run native tool inside IsolatedRoot -> ToolOutput back
       ├ Ask (HITL) or client-executed -> gate returns Suspend
-      │          -> commit WaitingTicket
+      │          -> commit ResumeTicket
       └ each step commits facts/events
 
-④ HITL / custom tool (park -> answer -> resume)
-   WaitingTicket -> adapter projects SSE:
+④ HITL / custom tool (await -> answer -> resume)
+   ResumeTicket -> adapter projects SSE:
       agent.tool_use (builtin awaiting confirm) / agent.custom_tool_use (client-executed)
    client POST .../events {user.tool_confirmation | user.custom_tool_result}
    adapter -> ResumeCommand::from_ticket(ticket, ResumeResult::{Decision|ToolResult}, now)

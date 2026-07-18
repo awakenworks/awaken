@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::{
     Command as StateCommand, Key, MergePolicy, Scope, Store,
 };
@@ -330,12 +330,12 @@ async fn a_host_deny_masks_the_plugin_gate_chain() {
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
-    let phase = runtime
+    let state = runtime
         .execute(activation(vec!["recorder".to_string()]), context)
         .await
         .expect("runs");
 
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(
         ran.load(Ordering::SeqCst),
         0,
@@ -373,12 +373,12 @@ async fn a_plugin_tool_gate_narrows_an_absent_host_allow() {
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
-    let phase = runtime
+    let state = runtime
         .execute(activation(vec!["narrower".to_string()]), context)
         .await
         .expect("runs");
 
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(
         ran.load(Ordering::SeqCst),
         0,
@@ -410,7 +410,7 @@ async fn active_plugin_hook_stages_state_through_the_commit_path() {
         .execute(activation(vec!["mark".to_string()]), context)
         .await
         .expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 
     // The hook's state command was committed and is replayable.
     let store = replay_state(&commit.committed());
@@ -498,7 +498,7 @@ async fn out_of_bound_plugin_fails_the_run_closed() {
 
     assert_eq!(
         outcome,
-        Phase::Ended(EndCause::Error(Failure::CapabilityBound)),
+        RunState::Ended(EndCause::Error(Failure::CapabilityBound)),
         "a contribution outside the declared bound fails closed (G30)"
     );
 }

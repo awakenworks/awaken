@@ -2,17 +2,17 @@
 //!
 //! A session's commit coordinator is the source of committed truth. It is either
 //! an in-memory coordinator (tests, ephemeral sessions) or a durable one — SQLite
-//! or the filesystem append-log — behind which a parked run and its history
+//! or the filesystem append-log — behind which an awaiting run and its history
 //! survive a process restart. One concrete wrapper type keeps this a
 //! composition-root choice: it coerces to `Arc<dyn Coordinator>` / `&dyn
 //! ThreadReader` without trait upcasting, while exposing the two extra reads the
-//! host projects — the parked position (to recover a session after a restart) and
+//! host projects — the awaiting position (to recover a session after a restart) and
 //! the committed outcome rounds.
 
+use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::agent::waiting::WaitingTicket;
 use awaken_agent_contract::audit::kind::Kind;
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
@@ -50,21 +50,21 @@ pub(crate) enum HostCommit {
 /// `Arc<dyn HostStore>`. The remote worker boundary is write-only and is not a
 /// `HostStore`.
 pub(crate) trait HostStore: Coordinator + ThreadReader + RunStore + Send + Sync {
-    /// The parked run on `thread`, if any, recovered from committed truth.
-    fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, WaitingTicket)>;
+    /// The awaiting run on `thread`, if any, recovered from committed truth.
+    fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)>;
     /// Payloads of committed `Continuation` (outcome-round) events for `thread`, in
     /// commit order — projected from durable truth so round history survives a restart.
     fn continuation_payloads(&self, thread: &ThreadId) -> Vec<serde_json::Value>;
 }
 
-/// Recover the parked position from a durable backend's fact-derived read model
+/// Recover the awaiting position from a durable backend's fact-derived read model
 /// (`CheckpointReader`): the latest run on the thread plus its committed ticket.
-fn parked_from_reader<R: CheckpointReader>(
+fn awaiting_from_reader<R: CheckpointReader>(
     reader: &R,
     thread: &ThreadId,
-) -> Option<(RunId, WaitingTicket)> {
+) -> Option<(RunId, ResumeTicket)> {
     let run = reader.latest_run(thread)?;
-    let ticket = reader.waiting_ticket(&run.id)?;
+    let ticket = reader.resume_ticket(&run.id)?;
     (&ticket.thread_id == thread).then_some((run.id, ticket))
 }
 
@@ -82,9 +82,9 @@ fn continuation_from_reader<R: CheckpointReader>(
 }
 
 impl HostStore for MemoryCommitCoordinator {
-    fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, WaitingTicket)> {
+    fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
         let run = self.committed().latest_run?;
-        let ticket = self.waiting_for(&run.id)?;
+        let ticket = self.resume_ticket_for(&run.id)?;
         (&ticket.thread_id == thread).then_some((run.id, ticket))
     }
     fn continuation_payloads(&self, _thread: &ThreadId) -> Vec<serde_json::Value> {
@@ -98,7 +98,7 @@ impl HostStore for MemoryCommitCoordinator {
 }
 
 impl HostStore for SqliteCommitCoordinator {
-    fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, WaitingTicket)> {
+    fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
         // Inherent method wins over the trait method in resolution — not recursive.
         SqliteCommitCoordinator::open_wait_for_thread(self, thread)
     }
@@ -108,8 +108,8 @@ impl HostStore for SqliteCommitCoordinator {
 }
 
 impl HostStore for FsCommitCoordinator {
-    fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, WaitingTicket)> {
-        parked_from_reader(self, thread)
+    fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
+        awaiting_from_reader(self, thread)
     }
     fn continuation_payloads(&self, thread: &ThreadId) -> Vec<serde_json::Value> {
         continuation_from_reader(self, thread)
@@ -117,8 +117,8 @@ impl HostStore for FsCommitCoordinator {
 }
 
 impl HostStore for PostgresCommitCoordinator {
-    fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, WaitingTicket)> {
-        parked_from_reader(self, thread)
+    fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
+        awaiting_from_reader(self, thread)
     }
     fn continuation_payloads(&self, thread: &ThreadId) -> Vec<serde_json::Value> {
         continuation_from_reader(self, thread)
@@ -126,10 +126,10 @@ impl HostStore for PostgresCommitCoordinator {
 }
 
 impl HostCommit {
-    /// The parked run on `thread`, if any, recovered from committed truth. After a
+    /// The awaiting run on `thread`, if any, recovered from committed truth. After a
     /// restart the durable variants read their hydrated projection, so a rebuilt
-    /// session can restore its parked position and be resumed.
-    pub(crate) fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, WaitingTicket)> {
+    /// session can restore its awaiting position and be resumed.
+    pub(crate) fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
         match self {
             HostCommit::Local(store) => store.open_wait_for_thread(thread),
             HostCommit::Remote(_) => None,
@@ -165,9 +165,9 @@ impl ThreadReader for HostCommit {
         }
     }
 
-    fn waiting_ticket(&self, run_id: &RunId) -> Option<WaitingTicket> {
+    fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket> {
         match self {
-            HostCommit::Local(store) => store.waiting_ticket(run_id),
+            HostCommit::Local(store) => store.resume_ticket(run_id),
             HostCommit::Remote(_) => None,
         }
     }

@@ -3,17 +3,17 @@
 //! The worker is the only place that turns a durable dispatch into a runtime
 //! attempt. It is additive over runtime control (G6): it never reaches into the
 //! loop, it calls the same `RunExecutor`/`Runtime::resume` a direct caller would,
-//! and it decides execute-vs-resume from *committed truth* — the waiting ticket
+//! and it decides execute-vs-resume from *committed truth* — the awaiting ticket
 //! and the run record — not from a duplicated status in the queue. That keeps the
 //! DispatchQueue aggregate free of run-outcome truth.
 
 use std::sync::Arc;
 use std::time::Instant;
 
+use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{Id as RunId, Phase};
-use awaken_agent_contract::agent::waiting::WaitingReason;
+use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
@@ -178,7 +178,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         epoch: u64,
         now_ms: u64,
         model_executor: &Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>,
-    ) -> Result<Phase, Error> {
+    ) -> Result<RunState, Error> {
         Ok(self
             .runtime
             .perform_scheduled_action(
@@ -202,8 +202,8 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     }
 
     /// Claim and process at most one runnable dispatch. Returns the processed
-    /// run's id and resulting phase, or `None` when the queue is idle.
-    pub async fn tick(&self, now_ms: u64) -> Result<Option<(RunId, Phase)>, Error> {
+    /// run's id and resulting state, or `None` when the queue is idle.
+    pub async fn tick(&self, now_ms: u64) -> Result<Option<(RunId, RunState)>, Error> {
         let Some(claimed) = self.claim_one(now_ms).await? else {
             return Ok(None);
         };
@@ -214,12 +214,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// outcome on *this* worker's runtime and commit boundary, then settle it.
     /// Splitting claim from drive lets a process-level pool claim centrally and
     /// route each run to its owning session's worker, so the run executes with
-    /// its thread's model/tools/config. Returns the run's id and resulting phase.
+    /// its thread's model/tools/config. Returns the run's id and resulting state.
     pub async fn drive_claimed(
         &self,
         claimed: Claimed,
         now_ms: u64,
-    ) -> Result<Option<(RunId, Phase)>, Error> {
+    ) -> Result<Option<(RunId, RunState)>, Error> {
         // Operational metrics (off the critical path): count this claim and time the
         // whole drive on the SAME recorder the runtime meters model/tool calls with,
         // so `awaken.dispatch.*` exports on the one OTLP pipeline. The timer records
@@ -251,17 +251,17 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             .map(|p| p.message_id.clone())
             .collect();
 
-        let mut phase = match self.reader.waiting_ticket(&run_id) {
+        let mut state = match self.reader.resume_ticket(&run_id) {
             // A committed ScheduledAction (ADR-0020): the system performs the
             // deferred action, not waits for external input. This also covers a
-            // crash recovery of a scheduled park (no pending input is expected).
-            Some(ticket) if ticket.reason == WaitingReason::ScheduledAction => {
+            // crash recovery of a scheduled await (no pending input is expected).
+            Some(ticket) if ticket.reason == AwaitReason::ScheduledAction => {
                 match self
                     .perform_scheduled(&run_id, lease_epoch, now_ms, &model_executor)
                     .instrument(dispatch.clone())
                     .await
                 {
-                    Ok(phase) => phase,
+                    Ok(state) => state,
                     Err(err) => {
                         return self
                             .settle_if_terminal_or_raise(&run_id, lease_epoch, &all_pending, err)
@@ -269,7 +269,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     }
                 }
             }
-            // The run is parked. Deliver only input whose correlation matches the
+            // The run is awaiting. Deliver only input whose correlation matches the
             // committed ticket; input for a superseded ticket (stale) is dropped
             // without delivery. Input that already drove a committed resume left a
             // ticket with a different correlation (or none), so it is never
@@ -293,7 +293,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                             .instrument(dispatch.clone())
                             .await
                         {
-                            Ok(phase) => phase,
+                            Ok(state) => state,
                             Err(err) => {
                                 return self
                                     .settle_if_terminal_or_raise(
@@ -308,12 +308,17 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     }
                     None => {
                         // No input answers the current ticket; drop stale input
-                        // and leave the run parked for a later wake.
+                        // and leave the run awaiting for a later wake.
                         return Ok(self
-                            .settle(&run_id, lease_epoch, DispatchOutcome::Parked, &all_pending)
+                            .settle(
+                                &run_id,
+                                lease_epoch,
+                                DispatchOutcome::Awaiting,
+                                &all_pending,
+                            )
                             .await?
                             .applied()
-                            .then_some((run_id, Phase::Waiting)));
+                            .then_some((run_id, RunState::Awaiting)));
                     }
                 }
             }
@@ -321,7 +326,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             // The committed run record disambiguates so recovery never re-runs a
             // terminal run, and any orphan pending is dropped on settle.
             None => match self.runs.get(&run_id) {
-                Some(record) if matches!(record.phase, Phase::Ended(_)) => {
+                Some(record) if matches!(record.state, RunState::Ended(_)) => {
                     // A recovered fresh run that already committed a terminal record:
                     // its crashed prior attempt may have drained unbound idle-thread
                     // input (ADR-0021) into this run's committed transcript but died
@@ -356,7 +361,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                         .settle(&run_id, lease_epoch, DispatchOutcome::Done, &all_pending)
                         .await?
                         .applied()
-                        .then_some((run_id, record.phase)));
+                        .then_some((run_id, record.state)));
                 }
                 _ => {
                     // Drain the thread inbox: input addressed to this thread with
@@ -402,7 +407,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                         .instrument(dispatch.clone())
                         .await
                     {
-                        Ok(phase) => phase,
+                        Ok(state) => state,
                         Err(err) => {
                             return self
                                 .settle_if_terminal_or_raise(
@@ -420,15 +425,15 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
 
         // Drive any further scheduled actions to completion in-process: a run that
         // ends a step by committing a ScheduledAction is performed immediately,
-        // until it ends or parks on a wait that needs external input.
-        while phase == Phase::Waiting {
-            match self.reader.waiting_ticket(&run_id) {
-                Some(ticket) if ticket.reason == WaitingReason::ScheduledAction => {
-                    phase = match self
+        // until it ends or awaits on a wait that needs external input.
+        while state == RunState::Awaiting {
+            match self.reader.resume_ticket(&run_id) {
+                Some(ticket) if ticket.reason == AwaitReason::ScheduledAction => {
+                    state = match self
                         .perform_scheduled(&run_id, lease_epoch, now_ms, &model_executor)
                         .await
                     {
-                        Ok(phase) => phase,
+                        Ok(state) => state,
                         Err(err) => {
                             return self
                                 .settle_if_terminal_or_raise(
@@ -445,12 +450,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             }
         }
 
-        let outcome = settle_outcome(&phase)?;
+        let outcome = settle_outcome(&state)?;
         Ok(self
             .settle(&run_id, lease_epoch, outcome, &all_pending)
             .await?
             .applied()
-            .then_some((run_id, phase)))
+            .then_some((run_id, state)))
     }
 
     /// Settle a claimed dispatch and record the operational `runs.settled` counter
@@ -466,17 +471,17 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     ) -> Result<SettleOutcome, Error> {
         let label = match outcome {
             DispatchOutcome::Done => "done",
-            DispatchOutcome::Parked => "parked",
+            DispatchOutcome::Awaiting => "awaiting",
         };
         self.runtime.metrics().record_dispatch_settled(label);
         Ok(self.store.settle(run_id, epoch, outcome, consumed).await?)
     }
 
     /// Convert a runtime-drive failure into a benign already-done when committed
-    /// truth shows the run has reached a terminal phase.
+    /// truth shows the run has reached a terminal state.
     ///
     /// The commit coordinators enforce terminal-is-final: once a run's committed
-    /// phase is `Ended`, a later commit for that run is rejected. That fence keeps
+    /// state is `Ended`, a later commit for that run is rejected. That fence keeps
     /// the committed LOG exactly-once when a *stale* owner (slow-but-alive, its
     /// lease lapsed and superseded by a reclaimer that already drove the run to
     /// `Ended`) re-executes and tries to append a duplicate transcript — its commit
@@ -493,20 +498,20 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         epoch: u64,
         consumed: &[String],
         err: impl Into<Error>,
-    ) -> Result<Option<(RunId, Phase)>, Error> {
+    ) -> Result<Option<(RunId, RunState)>, Error> {
         match self.runs.get(run_id) {
-            Some(record) if matches!(record.phase, Phase::Ended(_)) => Ok(self
+            Some(record) if matches!(record.state, RunState::Ended(_)) => Ok(self
                 .settle(run_id, epoch, DispatchOutcome::Done, consumed)
                 .await?
                 .applied()
-                .then_some((run_id.clone(), record.phase))),
+                .then_some((run_id.clone(), record.state))),
             _ => Err(err.into()),
         }
     }
 
     /// Drain the queue until no dispatch is runnable, returning every processed
-    /// run and its phase. A settled run becomes non-runnable, so this terminates.
-    pub async fn run_until_idle(&self, now_ms: u64) -> Result<Vec<(RunId, Phase)>, Error> {
+    /// run and its state. A settled run becomes non-runnable, so this terminates.
+    pub async fn run_until_idle(&self, now_ms: u64) -> Result<Vec<(RunId, RunState)>, Error> {
         let mut processed = Vec::new();
         while let Some(result) = self.tick(now_ms).await? {
             processed.push(result);
@@ -539,20 +544,20 @@ impl Drop for DriveTimer<'_> {
     }
 }
 
-/// Map a settled executor phase to the dispatch outcome the worker commits.
+/// Map a settled executor state to the dispatch outcome the worker commits.
 ///
-/// `execute`/`resume` only ever return a parked or ended phase; `Running` exists
+/// `execute`/`resume` only ever return an awaiting or ended state; `Running` exists
 /// as durable mid-flight truth, never as an executor result. A `Running` result
 /// therefore signals a broken executor, and the worker fails loudly rather than
-/// settle a live run to a terminal (`Done`) or parked outcome — committed truth,
+/// settle a live run to a terminal (`Done`) or awaiting outcome — committed truth,
 /// not a bogus return, decides a run's fate (G1/G13).
-fn settle_outcome(phase: &Phase) -> Result<DispatchOutcome, Error> {
-    match phase {
-        Phase::Waiting => Ok(DispatchOutcome::Parked),
-        Phase::Ended(_) => Ok(DispatchOutcome::Done),
-        Phase::Running => Err(Error::Execution(
+fn settle_outcome(state: &RunState) -> Result<DispatchOutcome, Error> {
+    match state {
+        RunState::Awaiting => Ok(DispatchOutcome::Awaiting),
+        RunState::Ended(_) => Ok(DispatchOutcome::Done),
+        RunState::Running => Err(Error::Execution(
             awaken_runtime_contract::execution::Error::Execution(
-                "executor returned a non-settled Running phase".to_string(),
+                "executor returned a non-settled Running state".to_string(),
             ),
         )),
     }
@@ -561,18 +566,18 @@ fn settle_outcome(phase: &Phase) -> Result<DispatchOutcome, Error> {
 #[cfg(test)]
 mod tests {
     use super::settle_outcome;
-    use awaken_agent_contract::agent::run::{EndCause, Phase};
+    use awaken_agent_contract::agent::run::{EndCause, RunState};
 
     use crate::Error;
     use crate::dispatch::DispatchOutcome;
 
     // Behavior 1: an illegal `Running` executor result fails loudly — the worker
-    // must NOT settle a live run to Done/Parked. `settle_outcome` is the decision
+    // must NOT settle a live run to Done/Awaiting. `settle_outcome` is the decision
     // point `drive_claimed` consults before it calls `store.settle`, so proving it
     // errors on `Running` proves the worker never settles a mid-flight run.
     #[test]
-    fn running_phase_result_is_rejected_not_settled() {
-        let err = settle_outcome(&Phase::Running).expect_err("Running must fail loudly");
+    fn running_state_result_is_rejected_not_settled() {
+        let err = settle_outcome(&RunState::Running).expect_err("Running must fail loudly");
         // It is an execution error, not a dispatch/storage error — a broken executor
         // is not a queue fault.
         assert!(
@@ -582,14 +587,14 @@ mod tests {
     }
 
     #[test]
-    fn ended_settles_done_and_waiting_settles_parked() {
+    fn ended_settles_done_and_awaiting_settles_awaiting() {
         assert!(matches!(
-            settle_outcome(&Phase::Ended(EndCause::NaturalEnd)).unwrap(),
+            settle_outcome(&RunState::Ended(EndCause::NaturalEnd)).unwrap(),
             DispatchOutcome::Done
         ));
         assert!(matches!(
-            settle_outcome(&Phase::Waiting).unwrap(),
-            DispatchOutcome::Parked
+            settle_outcome(&RunState::Awaiting).unwrap(),
+            DispatchOutcome::Awaiting
         ));
     }
 }

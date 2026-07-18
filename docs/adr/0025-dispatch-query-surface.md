@@ -8,7 +8,7 @@
 
 `RunDispatch` exposed targeted operational reads — `dead_letters`, `superseded` —
 but no general view of the queue. Monitoring and maintenance (how many runs are
-parked, which are running, attempt counts) had no port. The design named a
+awaiting, which are running, attempt counts) had no port. The design named a
 `RunDispatch*` query/lifecycle role; this builds the read half.
 
 ## Decision
@@ -21,11 +21,11 @@ data, never a live handle or runtime truth (the run's *outcome* is the commit
 coordinator's `RunFact`, not this; ADR-0009 keeps run-outcome truth out of the
 dispatch aggregate). So a summary can be logged, rendered, and compared freely.
 
-### D2: A public `DispatchStatus`, mapped from each backend
+### D2: A public `DispatchState`, mapped from each backend
 
-`DispatchStatus` is the public lifecycle enum (Pending, Running, Parked,
+`DispatchState` is the public lifecycle enum (Pending, Running, Awaiting,
 DeadLetter, Superseded). The memory store maps its internal status to it; the SQL
-stores map their `status` text via `DispatchStatus::from_db`. The public enum is
+stores map their `status` text via `DispatchState::from_db`. The public enum is
 the one vocabulary every backend reports, so an operator reads the same states
 regardless of storage.
 

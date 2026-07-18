@@ -28,9 +28,9 @@ ports; the runtime core never names Postgres.
 ### D2: The schema is a faithful, minimal projection of the commit value
 
 One table per field of the staged `ThreadCommit`: an append-only commit log (the
-run-fact phase authority and the monotonic fence, G31/G32), the message
+run-fact state authority and the monotonic fence, G31/G32), the message
 transcript, the state-command log, committed events, a `run_record` cache (a
-projection of the latest fact, G32), and active waiting tickets. There is no
+projection of the latest fact, G32), and active resume tickets. There is no
 outbox, scope index, or idempotency table — those belong to a server layer above
 and are out of scope for the runtime commit contract. Each `commit` writes all of
 it in one SQL transaction, so the checkpoint is atomic (G1/G13).
@@ -54,7 +54,7 @@ blocking an async runtime inside them.
 
 ## Consequences
 
-- A run's facts, transcript, state, events, and waiting state survive a restart;
+- A run's facts, transcript, state, events, and awaiting state survive a restart;
   a fresh coordinator on the same database rehydrates them.
 - The durable `CommitCoordinator` backend that ADR-0006 D4 anticipated now exists,
   so the durable-ingress work it gated (a `DurableRunIngress` with a queue/worker)

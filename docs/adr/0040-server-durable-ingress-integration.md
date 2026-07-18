@@ -66,7 +66,7 @@ the server**, each with its own e2e:
 
 | ADR | Server feature | e2e |
 | --- | --- | --- |
-| ADR-0022 | `POST /v1/durable/threads/:t/supersede` — a newest-wins turn (`SharedHost::supersede_turn` → `submit_superseding`); `superseded` is observable | `managed_supersede_e2e` — a parked run is superseded end to end |
+| ADR-0022 | `POST /v1/durable/threads/:t/supersede` — a newest-wins turn (`SharedHost::supersede_turn` → `submit_superseding`); `superseded` is observable | `managed_supersede_e2e` — an aawaiting run is superseded end to end |
 | ADR-0020 | the `schedule` server mode: a gate defers tool calls as `ScheduledAction`s; the durable worker performs them out of band | `managed_scheduled_e2e` — write→read performed autonomously, no confirmation |
 | ADR-0011 | `POST /v1/durable/threads/:t/reconcile` — reclaim runnable work | `managed_durable_ops_e2e` — verb wired + fails closed off-durable |
 | ADR-0015 | `POST …/reap`, `GET …/dead-letters`, `POST …/dead-letters/purge` | `managed_durable_ops_e2e` — verbs wired + fail closed |
@@ -91,8 +91,8 @@ operator call.
   (durable submit through the worker, dispatch DB on disk, cross-restart
   continuity, startup `recover`).
 - Direct delivery remains the default; existing behavior and all foreground e2e
-  are unchanged. Durable HITL park→resume works because committed truth is the
-  authority; the parked dispatch row is settled by the foreground resume path (a
+  are unchanged. Durable HITL await→resume works because committed truth is the
+  authority; the awaiting dispatch row is settled by the foreground resume path (a
   benign no-daemon simplification — see the deferred reconciler surface above).
 - Exposing operational verbs / an autonomous reconciler daemon is a scoped
   follow-up, to be taken only alongside a feature that emits scheduled actions or

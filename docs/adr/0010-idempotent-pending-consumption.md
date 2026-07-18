@@ -23,10 +23,10 @@ committed truth*, which is exactly the authority G1/G13/G32 already establish.
 
 ### D1: Pending input is keyed to the ticket correlation it answers
 
-`PendingInput` carries a `correlation_id` — the `WaitingTicket` correlation it
+`PendingInput` carries a `correlation_id` — the `ResumeTicket` correlation it
 answers. The worker delivers an input only while the committed ticket still
 carries that same correlation. A resume that committed advanced the run, so the
-active ticket is gone (run ended) or carries a new correlation (a fresh park);
+active ticket is gone (run ended) or carries a new correlation (a fresh await);
 either way the old input no longer matches and is never re-applied. Input for a
 superseded ticket is likewise dropped without delivery.
 
@@ -45,7 +45,7 @@ cross-store transaction, no dual-write, no freeze lifecycle.
   append+freeze: a committed resume is never re-applied, and an uncommitted one
   is safely re-delivered.
 - Fixes a latent bug in the ADR-0009 slice: input was applied to whatever ticket
-  was current, so a stale answer could resolve the wrong park. Correlation
+  was current, so a stale answer could resolve the wrong await. Correlation
   matching makes that unrepresentable.
 - The dispatch queue holds strictly less state (no `frozen`), and the property is
   proven by a crash-injection test plus a stale-correlation test.
@@ -56,5 +56,5 @@ cross-store transaction, no dual-write, no freeze lifecycle.
 
 - [INVARIANTS.md](../INVARIANTS.md) — G1, G13, G32 (committed truth is the one
   authority).
-- ADR-0006 — the committed fact log and waiting ticket this derives from.
+- ADR-0006 — the committed fact log and resume ticket this derives from.
 - ADR-0009 — the durable ingress slice this hardens.

@@ -80,20 +80,20 @@ async function main() {
       await work.ack(item.id, { environment_id: env.id, betas: BETAS });
       await work.heartbeat(item.id, { environment_id: env.id, betas: BETAS });
 
-      // Drive the session; it parks on the agent's client-executed tool call.
+      // Drive the session; it awaits on the agent's client-executed tool call.
       await client.beta.sessions.events.send(sessionId, {
         betas: BETAS,
         events: [{ type: 'user.message', content: [{ type: 'text', text: 'do the task' }] }],
       });
-      const parked = (await events(client, sessionId)).find((e) => e.type === 'agent.custom_tool_use');
-      assert.ok(parked, `session ${sessionId} parked on a tool call`);
+      const awaiting = (await events(client, sessionId)).find((e) => e.type === 'agent.custom_tool_use');
+      assert.ok(awaiting, `session ${sessionId} awaiting on a tool call`);
 
       // The worker's OWN per-session tool logic: a result unique to this session,
       // proving the worker (not the server) computed it.
       const answer = `handled-${sessionId}`;
       await client.beta.sessions.events.send(sessionId, {
         betas: BETAS,
-        events: [{ type: 'user.tool_result', tool_use_id: parked.id, content: [{ type: 'text', text: answer }] }],
+        events: [{ type: 'user.tool_result', tool_use_id: awaiting.id, content: [{ type: 'text', text: answer }] }],
       });
       const replies = (await events(client, sessionId)).filter((e) => e.type === 'agent.message');
       assert.ok(

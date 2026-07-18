@@ -20,11 +20,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::message::Message;
-use awaken_agent_contract::agent::run::{Id as RunId, Phase, Record as RunRecord};
+use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunState};
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::agent::waiting::WaitingTicket;
 use awaken_agent_contract::audit::record::Record as EventRecord;
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator as CommitCoordinator, Error};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
@@ -62,7 +62,7 @@ struct Projection {
     /// Committed events in commit order (for `list_events`). A fact-derived cache
     /// rebuilt from the durable event table on construction.
     events: Vec<EventRecord>,
-    waiting: HashMap<RunId, WaitingTicket>,
+    resume_tickets: HashMap<RunId, ResumeTicket>,
 }
 
 /// The component namespace for this runtime's tables (see the Postgres store).
@@ -144,20 +144,20 @@ impl SqliteCommitCoordinator {
             .unwrap_or_default()
     }
 
-    /// The active waiting ticket for a run, if it is currently parked.
-    pub fn waiting_for(&self, run_id: &RunId) -> Option<WaitingTicket> {
+    /// The active awaiting ticket for a run, if it is currently awaiting.
+    pub fn resume_ticket_for(&self, run_id: &RunId) -> Option<ResumeTicket> {
         self.projection
             .lock()
             .ok()
-            .and_then(|p| p.waiting.get(run_id).cloned())
+            .and_then(|p| p.resume_tickets.get(run_id).cloned())
     }
 
-    /// The parked run on `thread`, if any, with its committed ticket. Read from
-    /// hydrated durable truth so a rebuilt session can recover its parked position
+    /// The awaiting run on `thread`, if any, with its committed ticket. Read from
+    /// hydrated durable truth so a rebuilt session can recover its awaiting position
     /// after a restart (G1/G13).
-    pub fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, WaitingTicket)> {
+    pub fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
         self.projection.lock().ok().and_then(|p| {
-            p.waiting
+            p.resume_tickets
                 .iter()
                 .find(|(_, ticket)| &ticket.thread_id == thread)
                 .map(|(run_id, ticket)| (run_id.clone(), ticket.clone()))
@@ -208,12 +208,12 @@ impl CommitCoordinator for SqliteCommitCoordinator {
         let _writing = self.write_lock.lock().await;
 
         // Terminal-is-final (exactly-once committed LOG under a stale reclaim):
-        // reject a post-terminal commit for a run whose committed phase is already
+        // reject a post-terminal commit for a run whose committed state is already
         // `Ended`. A stale owner whose lease lapsed mid-flight and was superseded by
         // a reclaimer that already drove the run to `Ended` would otherwise append a
         // duplicate transcript and a second terminal fact. The first `Ended` commit
         // lands (the run is not yet terminal); only a SUBSEQUENT commit is fenced.
-        // The phase is read from the same fact-derived projection that serves
+        // The state is read from the same fact-derived projection that serves
         // `run`/`latest_run`. (See the in-memory reference for the full rationale.)
         //
         // This read is process-LOCAL (the in-memory projection), which is correct
@@ -226,12 +226,12 @@ impl CommitCoordinator for SqliteCommitCoordinator {
             let projection = lock(&self.projection)?;
             if projection
                 .run_records
-                .get(&commit.run_fact.run_id)
-                .is_some_and(|record| matches!(record.phase, Phase::Ended(_)))
+                .get(commit.run_id())
+                .is_some_and(|record| !record.state.permits(&commit.run_state()))
             {
                 return Err(Error::Rejected(format!(
                     "run {} is already terminal; refusing post-terminal commit",
-                    commit.run_fact.run_id.0
+                    commit.run_id().0
                 )));
             }
         }
@@ -250,10 +250,11 @@ impl CommitCoordinator for SqliteCommitCoordinator {
         .map_err(|err| Error::Rejected(err.to_string()))??;
 
         // The transaction is durable; advance the in-memory projection to match.
-        let phase = commit.run_fact.phase.clone();
-        let run_id = commit.run_fact.run_id.clone();
+        let run_state = commit.run_state();
+        let run_id = commit.run_id().clone();
         let thread_id = commit.thread_id.clone();
-        let parked = matches!((&commit.waiting, &phase), (Some(_), Phase::Waiting));
+        let resume_ticket = commit.resume_ticket().cloned();
+        let awaiting = matches!((&resume_ticket, &run_state), (Some(_), RunState::Awaiting));
 
         let mut projection = lock(&self.projection)?;
         projection.sequence = next;
@@ -274,18 +275,18 @@ impl CommitCoordinator for SqliteCommitCoordinator {
         let record = RunRecord {
             id: run_id.clone(),
             thread_id: thread_id.clone(),
-            phase,
+            state: run_state,
         };
         projection
             .run_records
             .insert(run_id.clone(), record.clone());
         projection.latest_by_thread.insert(thread_id, record);
-        if parked {
+        if awaiting {
             projection
-                .waiting
-                .insert(run_id, commit.waiting.expect("parked has a ticket"));
+                .resume_tickets
+                .insert(run_id, resume_ticket.expect("awaiting has a ticket"));
         } else {
-            projection.waiting.remove(&run_id);
+            projection.resume_tickets.remove(&run_id);
         }
 
         Ok(CommitRecord { sequence: next })
@@ -306,8 +307,8 @@ impl ThreadReader for SqliteCommitCoordinator {
         SqliteCommitCoordinator::committed_messages(self, thread_id)
     }
 
-    fn waiting_ticket(&self, run_id: &RunId) -> Option<WaitingTicket> {
-        self.waiting_for(run_id)
+    fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket> {
+        self.resume_ticket_for(run_id)
     }
 
     fn committed_state(&self, thread_id: &ThreadId) -> Vec<StateCommand> {
@@ -364,9 +365,10 @@ fn lock(projection: &Mutex<Projection>) -> Result<std::sync::MutexGuard<'_, Proj
 /// TEXT on SQLite.
 fn write_commit(conn: &mut Connection, next: u64, commit: &ThreadCommit) -> Result<(), Error> {
     let p = NS;
-    let run_id = &commit.run_fact.run_id.0;
+    let run_id = &commit.run_id().0;
     let thread_id = &commit.thread_id.0;
-    let phase = json(&commit.run_fact.phase)?;
+    let run_state = commit.run_state();
+    let state_json = json(&run_state)?;
 
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -376,7 +378,7 @@ fn write_commit(conn: &mut Connection, next: u64, commit: &ThreadCommit) -> Resu
         &format!(
             "INSERT INTO {p}_commit (sequence, thread_id, run_id, phase) VALUES (?1,?2,?3,?4)"
         ),
-        params![next as i64, thread_id, run_id, phase],
+        params![next as i64, thread_id, run_id, state_json],
     )
     .map_err(reject)?;
 
@@ -422,17 +424,16 @@ fn write_commit(conn: &mut Connection, next: u64, commit: &ThreadCommit) -> Resu
              ON CONFLICT(run_id) DO UPDATE SET thread_id = excluded.thread_id, \
              phase = excluded.phase, updated_at = CURRENT_TIMESTAMP"
         ),
-        params![run_id, thread_id, phase],
+        params![run_id, thread_id, state_json],
     )
     .map_err(reject)?;
 
-    // Park or clear the waiting ticket atomically with the checkpoint (G5).
-    let parked = matches!(
-        (&commit.waiting, &commit.run_fact.phase),
-        (Some(_), Phase::Waiting)
-    );
-    if parked {
-        let ticket = commit.waiting.as_ref().expect("parked has a ticket");
+    // Await or clear the awaiting ticket atomically with the checkpoint (G5).
+    let awaiting = matches!(run_state, RunState::Awaiting);
+    if awaiting {
+        let ticket = commit
+            .resume_ticket()
+            .expect("awaiting checkpoint has a ticket");
         tx.execute(
             &format!(
                 "INSERT INTO {p}_waiting (run_id, ticket) VALUES (?1,?2) \
@@ -505,12 +506,12 @@ fn hydrate(conn: &Connection) -> Result<Projection, rusqlite::Error> {
         ))
     })?;
     for row in rows {
-        let (run_id, thread_id, phase) = row?;
-        if let Ok(phase) = serde_json::from_str::<Phase>(&phase) {
+        let (run_id, thread_id, state_json) = row?;
+        if let Ok(state) = serde_json::from_str::<RunState>(&state_json) {
             let record = RunRecord {
                 id: RunId(run_id.clone()),
                 thread_id: ThreadId(thread_id.clone()),
-                phase,
+                state,
             };
             projection.run_records.insert(RunId(run_id), record.clone());
             // Sequence order → the last commit on a thread wins as its latest run.
@@ -553,8 +554,8 @@ fn hydrate(conn: &Connection) -> Result<Projection, rusqlite::Error> {
     })?;
     for row in rows {
         let (run_id, ticket) = row?;
-        if let Ok(ticket) = serde_json::from_str::<WaitingTicket>(&ticket) {
-            projection.waiting.insert(RunId(run_id), ticket);
+        if let Ok(ticket) = serde_json::from_str::<ResumeTicket>(&ticket) {
+            projection.resume_tickets.insert(RunId(run_id), ticket);
         }
     }
 

@@ -6,7 +6,7 @@ mod harness;
 
 use std::sync::Arc;
 
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::stream::sink::Sink;
 use awaken_run_ingress::{
     Clock, DispatchQueue, DispatchWorker, DurableRunIngress, ManualClock, MemoryDispatchStore,
@@ -110,7 +110,7 @@ async fn worker_builders_attach_a_stream_sink_and_lease() {
         processed,
         Some((
             RunId("run-1".to_string()),
-            Phase::Ended(EndCause::NaturalEnd)
+            RunState::Ended(EndCause::NaturalEnd)
         ))
     );
     // The attached sink received live progress, proving the wiring is live.
@@ -151,7 +151,7 @@ async fn worker_resumes_a_durable_run_from_a_pre_seeded_checkpoint() {
         processed,
         Some((
             RunId("run-ckpt".to_string()),
-            Phase::Ended(EndCause::NaturalEnd)
+            RunState::Ended(EndCause::NaturalEnd)
         ))
     );
 
@@ -178,11 +178,11 @@ async fn durable_ingress_foreground_submit_and_cancel() {
 
     // Foreground submit executes inline through the runtime (additive, G6).
     let context = RuntimeRunContext::new().with_commit(commit.clone());
-    let phase = ingress
+    let state = ingress
         .submit(activation("run-fg"), context)
         .await
         .expect("foreground submit");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     // Per-step durability: input commit at the first step boundary, then the
     // terminal commit.
     assert_eq!(commit.commit_count(), 2);

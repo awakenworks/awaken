@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_agent_contract::agent::run::{Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
@@ -128,7 +128,7 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
     }
 
     /// A fail-closed live-control service over this ingress's worker (G18): cancel
-    /// a live/queued/parked run, or wake a live one, by correlation id (ADR-0018).
+    /// a live/queued/awaiting run, or wake a live one, by correlation id (ADR-0018).
     /// Shares the same worker/store/runtime, so it owns no second commit boundary.
     pub fn live_control(&self) -> LiveRunControlService<S> {
         LiveRunControlService::new(self.worker.clone())
@@ -146,11 +146,11 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         DispatchService::spawn(self.worker.clone(), clock, config)
     }
 
-    /// Submit a run that supersedes the thread's prior pending/parked work
+    /// Submit a run that supersedes the thread's prior pending/awaiting work
     /// (ADR-0022): the newest submission wins, the stale dispatches are marked
     /// superseded and never claimed again, then drive the new run. Superseded
     /// runs are observable via [`superseded`](Self::superseded).
-    pub async fn submit_superseding(&self, activation: RunActivation) -> Result<Phase, Error> {
+    pub async fn submit_superseding(&self, activation: RunActivation) -> Result<RunState, Error> {
         let run_id = activation.run_id.clone();
         self.worker
             .store()
@@ -164,7 +164,7 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
             )
             .await?;
         let processed = self.worker.run_until_idle(0).await?;
-        phase_of(&processed, &run_id).ok_or_else(|| {
+        state_of(&processed, &run_id).ok_or_else(|| {
             Error::from(ExecError::Execution(
                 "superseding run was not processed".into(),
             ))
@@ -182,29 +182,33 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         Ok(self.worker.store().list_dispatches().await?)
     }
 
-    /// Deliver durable input to a parked run and drive its resume. The input is
+    /// Deliver durable input to an awaiting run and drive its resume. The input is
     /// appended idempotently (duplicate `message_id` is a no-op), then the worker
     /// resumes against the committed ticket — but only if `input.correlation_id`
     /// matches the run's current ticket; input for a superseded or already-resumed
     /// ticket is dropped, never re-applied (ADR-0010). Returns the run's resulting
-    /// phase. Only runs submitted durably (with a dispatch row) can be woken this
+    /// state. Only runs submitted durably (with a dispatch row) can be woken this
     /// way.
-    pub async fn deliver_resume(&self, input: PendingInput, now_ms: u64) -> Result<Phase, Error> {
+    pub async fn deliver_resume(
+        &self,
+        input: PendingInput,
+        now_ms: u64,
+    ) -> Result<RunState, Error> {
         let run_id = input.run_id.clone();
         self.worker.store().append(input).await?;
         let processed = self.worker.run_until_idle(now_ms).await?;
-        phase_of(&processed, &run_id).ok_or_else(|| {
+        state_of(&processed, &run_id).ok_or_else(|| {
             Error::from(ExecError::Execution("resumed run was not processed".into()))
         })
     }
 
     /// Reclaim and re-run any dispatch whose lease expired (crash recovery), plus
-    /// any work that became runnable. Returns each processed run and its phase.
-    pub async fn recover(&self, now_ms: u64) -> Result<Vec<(RunId, Phase)>, Error> {
+    /// any work that became runnable. Returns each processed run and its state.
+    pub async fn recover(&self, now_ms: u64) -> Result<Vec<(RunId, RunState)>, Error> {
         self.worker.run_until_idle(now_ms).await
     }
 
-    /// Stage a cross-thread delivery to another thread's parked run (M3b). It is
+    /// Stage a cross-thread delivery to another thread's awaiting run (M3b). It is
     /// relayed by [`relay_outbox`](Self::relay_outbox) or the daemon. Returns
     /// whether it was newly staged (idempotent by `message_id`).
     pub async fn stage_cross_thread(&self, input: PendingInput) -> Result<bool, Error> {
@@ -212,8 +216,8 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
     }
 
     /// Relay staged cross-thread deliveries to their target pending input, then
-    /// drive any run that became wakeable. Returns each processed run and phase.
-    pub async fn relay_outbox(&self, now_ms: u64) -> Result<Vec<(RunId, Phase)>, Error> {
+    /// drive any run that became wakeable. Returns each processed run and state.
+    pub async fn relay_outbox(&self, now_ms: u64) -> Result<Vec<(RunId, RunState)>, Error> {
         self.worker.store().relay().await?;
         self.worker.run_until_idle(now_ms).await
     }
@@ -252,8 +256,8 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
     }
 
     /// Durably cancel a not-running run: remove its dispatch and pending input,
-    /// then commit a terminal `Cancelled` fact so its committed phase reflects the
-    /// cancellation (clearing any waiting ticket). Returns `true` if cancelled; a
+    /// then commit a terminal `Cancelled` fact so its committed state reflects the
+    /// cancellation (clearing any awaiting ticket). Returns `true` if cancelled; a
     /// currently-running run is not cancelled here — use `cancel` (live control).
     pub async fn cancel_durable(&self, run_id: &RunId) -> Result<bool, Error> {
         let Some(thread_id) = self.worker.store().cancel(run_id).await? else {
@@ -275,7 +279,7 @@ impl<S: Dispatch + 'static> RunIngress for DurableRunIngress<S> {
         &self,
         activation: RunActivation,
         context: RuntimeRunContext,
-    ) -> ExecResult<Phase> {
+    ) -> ExecResult<RunState> {
         use awaken_runtime_contract::execution::RunExecutor;
         self.worker.runtime().execute(activation, context).await
     }
@@ -283,7 +287,7 @@ impl<S: Dispatch + 'static> RunIngress for DurableRunIngress<S> {
     /// Durable submit: persist the accepted run first (so it survives a crash),
     /// then drive it. A direct ingress fails this closed; durable ingress does
     /// not (G5).
-    async fn submit_background(&self, activation: RunActivation) -> ExecResult<Phase> {
+    async fn submit_background(&self, activation: RunActivation) -> ExecResult<RunState> {
         let run_id = activation.run_id.clone();
         self.worker
             .store()
@@ -294,7 +298,7 @@ impl<S: Dispatch + 'static> RunIngress for DurableRunIngress<S> {
             .await
             .map_err(|err| ExecError::Execution(err.to_string()))?;
         let processed = self.worker.run_until_idle(0).await.map_err(exec_error)?;
-        phase_of(&processed, &run_id)
+        state_of(&processed, &run_id)
             .ok_or_else(|| ExecError::Execution("submitted run was not processed".into()))
     }
 
@@ -305,12 +309,12 @@ impl<S: Dispatch + 'static> RunIngress for DurableRunIngress<S> {
     }
 }
 
-fn phase_of(processed: &[(RunId, Phase)], run_id: &RunId) -> Option<Phase> {
+fn state_of(processed: &[(RunId, RunState)], run_id: &RunId) -> Option<RunState> {
     processed
         .iter()
         .rev()
         .find(|(id, _)| id == run_id)
-        .map(|(_, phase)| phase.clone())
+        .map(|(_, state)| state.clone())
 }
 
 fn exec_error(err: Error) -> ExecError {

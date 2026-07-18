@@ -1,7 +1,7 @@
 //! The autonomous dispatch daemon over the in-memory store (M2).
 //!
 //! These prove the daemon drains submitted work without a caller driving it,
-//! resumes a parked run on delivery, recovers a crashed lease on its own clock,
+//! resumes an awaiting run on delivery, recovers a crashed lease on its own clock,
 //! and shuts down cleanly.
 
 mod harness;
@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_run_ingress::{
@@ -23,10 +23,10 @@ use awaken_runtime_contract::resume::ResumeResult;
 use harness::{THREAD, TICKET, activation, text_runtime, tool_runtime};
 
 /// Poll a condition up to ~3s, yielding to the daemon between checks.
-/// The run's committed phase, if any — per-step commits make a run durable
-/// (as `Running`) before it parks or ends, so waits key on the phase itself.
-fn phase_of(commit: &MemoryCommitCoordinator, run: &str) -> Option<Phase> {
-    RunStore::get(commit, &RunId(run.to_string())).map(|r| r.phase)
+/// The run's committed state, if any — per-step commits make a run durable
+/// (as `Running`) before it awaits or ends, so waits key on the state itself.
+fn state_of(commit: &MemoryCommitCoordinator, run: &str) -> Option<RunState> {
+    RunStore::get(commit, &RunId(run.to_string())).map(|r| r.state)
 }
 
 async fn wait_for(cond: impl Fn() -> bool) -> bool {
@@ -67,18 +67,18 @@ async fn service_drains_submitted_runs_and_shuts_down() {
 }
 
 #[tokio::test]
-async fn service_resumes_a_parked_run_on_delivery() {
+async fn service_resumes_an_awaiting_run_on_delivery() {
     let (runtime, ran) = tool_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DurableRunIngress::new(runtime, store, commit.clone());
     let service = ingress.spawn_service(Arc::new(SystemClock), DispatchServiceConfig::default());
 
-    // The daemon runs the submission until it parks on the gate.
+    // The daemon runs the submission until it awaits on the gate.
     service.submit(activation("run-1")).await.expect("submit");
     assert!(
-        wait_for(|| phase_of(&commit, "run-1") == Some(Phase::Waiting)).await,
-        "the run parked"
+        wait_for(|| state_of(&commit, "run-1") == Some(RunState::Awaiting)).await,
+        "the run awaiting"
     );
     assert_eq!(ran.load(Ordering::SeqCst), 0);
 
@@ -95,12 +95,12 @@ async fn service_resumes_a_parked_run_on_delivery() {
         .await
         .expect("deliver");
     assert!(
-        wait_for(|| matches!(phase_of(&commit, "run-1"), Some(Phase::Ended(_)))).await,
+        wait_for(|| matches!(state_of(&commit, "run-1"), Some(RunState::Ended(_)))).await,
         "the daemon resumed the run"
     );
     assert_eq!(ran.load(Ordering::SeqCst), 1, "the pending tool ran once");
     let record = RunStore::get(commit.as_ref(), &RunId("run-1".to_string())).expect("record");
-    assert_eq!(record.phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(record.state, RunState::Ended(EndCause::NaturalEnd));
 
     service.shutdown().await;
 }
@@ -178,11 +178,11 @@ async fn service_fires_a_scheduled_delivery_when_due() {
 
     service.submit(activation("run-1")).await.expect("submit");
     assert!(
-        wait_for(|| phase_of(&commit, "run-1") == Some(Phase::Waiting)).await,
-        "run parked"
+        wait_for(|| state_of(&commit, "run-1") == Some(RunState::Awaiting)).await,
+        "run awaiting"
     );
     assert_eq!(ran.load(Ordering::SeqCst), 0);
-    let parked_commits = commit.commit_count();
+    let awaiting_commits = commit.commit_count();
 
     // Deliver an input scheduled for t=2000; at t=0 it must not fire.
     service
@@ -202,7 +202,7 @@ async fn service_fires_a_scheduled_delivery_when_due() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(
         commit.commit_count(),
-        parked_commits,
+        awaiting_commits,
         "a scheduled delivery does not fire early"
     );
     assert_eq!(ran.load(Ordering::SeqCst), 0);
@@ -211,7 +211,7 @@ async fn service_fires_a_scheduled_delivery_when_due() {
     clock.set(2_000);
     service.notify().await;
     assert!(
-        wait_for(|| matches!(phase_of(&commit, "run-1"), Some(Phase::Ended(_)))).await,
+        wait_for(|| matches!(state_of(&commit, "run-1"), Some(RunState::Ended(_)))).await,
         "fired when due"
     );
     assert_eq!(ran.load(Ordering::SeqCst), 1);
@@ -230,8 +230,8 @@ async fn service_relays_a_cross_thread_send() {
 
     service.submit(activation("run-1")).await.expect("submit");
     assert!(
-        wait_for(|| phase_of(&commit, "run-1") == Some(Phase::Waiting)).await,
-        "run parked"
+        wait_for(|| state_of(&commit, "run-1") == Some(RunState::Awaiting)).await,
+        "run awaiting"
     );
 
     // Stage a cross-thread delivery; the daemon relays then resumes the run.
@@ -247,7 +247,7 @@ async fn service_relays_a_cross_thread_send() {
         .await
         .expect("send");
     assert!(
-        wait_for(|| matches!(phase_of(&commit, "run-1"), Some(Phase::Ended(_)))).await,
+        wait_for(|| matches!(state_of(&commit, "run-1"), Some(RunState::Ended(_)))).await,
         "relayed + resumed"
     );
     assert_eq!(ran.load(Ordering::SeqCst), 1);

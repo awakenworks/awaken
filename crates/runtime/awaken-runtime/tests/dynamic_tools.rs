@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
@@ -248,7 +248,7 @@ async fn presentation_aliases_an_mcp_tool_and_dispatches_the_alias_to_canonical(
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime.execute(act, context).await.expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 
     // The model saw the ALIAS on the face — never the canonical MCP id.
     let seen = seen.lock().unwrap();
@@ -342,7 +342,7 @@ async fn a_deferred_tool_is_hidden_until_tool_open_then_callable() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime.execute(act, context).await.expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 
     let seen = seen.lock().unwrap();
     let open_id = awaken_runtime_contract::resolved::TOOL_OPEN_ID.to_string();
@@ -390,7 +390,7 @@ async fn dynamic_tool_is_visible_executes_and_refreshes_at_the_step_boundary() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 2, "two inferences");

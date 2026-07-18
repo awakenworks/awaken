@@ -7,7 +7,7 @@ impl SharedHost {
     /// All messages committed on `thread` so far (the source of history). Empty
     /// when the thread has not run yet. Resolves through `ctx_for`, so a durable
     /// thread is hydrated from its store on demand — a fresh process reads a
-    /// parked thread's committed transcript even before any session touches it
+    /// awaiting thread's committed transcript even before any session touches it
     /// (ADR-0039), enabling post-restart session rehydration.
     /// True when the durable store already holds `thread` — WITHOUT building a
     /// session context (the layout probe lives with the commit boundary in
@@ -36,21 +36,21 @@ impl SharedHost {
         ThreadUsage::from_committed_state(&ctx.commit.committed_state(&ctx.thread_id))
     }
 
-    /// True when `thread` has a run parked awaiting a decision.
-    pub async fn is_parked(&self, thread: &str) -> bool {
+    /// True when `thread` has a run awaiting a decision.
+    pub async fn is_awaiting(&self, thread: &str) -> bool {
         let ctx = match self.ctx_for(thread, None).await {
             Ok(ctx) => ctx,
             Err(_) => return false,
         };
-        ctx.state.lock().await.parked.is_some()
+        ctx.state.lock().await.awaiting_run.is_some()
     }
 
-    /// The tool a parked run on `thread` is waiting on, if any.
+    /// The tool an awaiting run on `thread` is awaiting on, if any.
     pub async fn pending_tool(&self, thread: &str) -> Option<PendingTool> {
         let ctx = self.ctx_for(thread, None).await.ok()?;
         let st = ctx.state.lock().await;
-        let run_id = st.parked.clone()?;
-        pending_from_ticket(&ctx.commit.waiting_ticket(&run_id)?, &self.client_tools)
+        let run_id = st.awaiting_run.clone()?;
+        pending_from_ticket(&ctx.commit.resume_ticket(&run_id)?, &self.client_tools)
     }
 
     /// Buffer a system message; it is prepended to the next turn's input.
@@ -74,7 +74,7 @@ impl SharedHost {
     }
 
     /// Run `thread` once: buffered system messages first, then `input`.
-    /// Runs to the first pause (a parked tool) or the natural end.
+    /// Runs to the first pause (an awaiting tool) or the natural end.
     #[tracing::instrument(
         name = "host.run",
         skip_all,
@@ -103,11 +103,11 @@ impl SharedHost {
             .await
     }
 
-    /// Submit a turn that *supersedes* the thread's prior pending/parked work
+    /// Submit a turn that *supersedes* the thread's prior pending/awaiting work
     /// (ADR-0022, slice E): the newest submission wins, stale dispatches are marked
     /// superseded and never claimed again, then the new run is driven. Requires
-    /// durable ingress. Unlike `run` it does not fail closed on a parked
-    /// thread — superseding a parked run is the point.
+    /// durable ingress. Unlike `run` it does not fail closed on an awaiting
+    /// thread — superseding an awaiting run is the point.
     pub(crate) async fn supersede_run(
         &self,
         agent: Option<&str>,
@@ -127,7 +127,7 @@ impl SharedHost {
     ) -> Result<RunResult, HostError> {
         let ctx = self.ctx_for(thread, agent).await?;
         let mut st = ctx.state.lock().await;
-        if st.parked.is_some() && !supersede {
+        if st.awaiting_run.is_some() && !supersede {
             return Err(HostError::bad_request("thread is awaiting a tool decision"));
         }
         if supersede && ctx.durable_ingress.is_none() {
@@ -160,7 +160,7 @@ impl SharedHost {
         let before = ctx.commit.committed_messages(&ctx.thread_id).len();
         // Baseline the compaction-fold count at the turn's start; a fold during the
         // turn grows it and the terminal step surfaces the marker. Set here (not on
-        // resume) so it spans a parked→resumed turn.
+        // resume) so it spans an awaiting→resumed turn.
         st.compactions_before =
             awaken_ext_compact::compaction_count(&ctx.commit.committed_state(&ctx.thread_id));
         // Prepare the activation (install catalog + register snapshot + mint ids),
@@ -191,36 +191,36 @@ impl SharedHost {
         }
         // Durable ingress queues the run through the dispatch store and drives it
         // via the worker (`submit_background`); a superseding submit first marks the
-        // thread's stale pending/parked dispatches superseded (ADR-0022); direct
-        // ingress runs it inline (`submit`). All drive to the same terminal/parked
-        // phase and commit through the same boundary, so `finish_step` is identical.
+        // thread's stale pending/awaiting dispatches superseded (ADR-0022); direct
+        // ingress runs it inline (`submit`). All drive to the same terminal/awaiting
+        // state and commit through the same boundary, so `finish_step` is identical.
         // R3/R4: route to the ACP executor for acp:* threads, else the native
         // ingress (direct / durable / superseding). See `crate::run_exec`.
-        let phase = self
+        let state = self
             .execute_activation(&ctx, thread, activation, supersede, sink)
             .await?;
-        let result = self.finish_step(&ctx, &mut st, run_id, phase, before, thread);
+        let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread);
         drop(st);
-        self.run_aux_after_step(&ctx, thread, &result.phase).await;
+        self.run_aux_after_step(&ctx, thread, &result.state).await;
         Ok(result)
     }
 
     /// Fire the out-of-band auxiliary agents (memory extraction) after a step reaches
-    /// a terminal phase. Shared by `run` and `resume`, so a turn that ended via a
+    /// a terminal state. Shared by `run` and `resume`, so a turn that ended via a
     /// tool/delegation resume gets the same treatment as one that ended directly.
-    /// No-op while the run is still parked. (Compaction is not out-of-band: it runs
+    /// No-op while the run is still awaiting. (Compaction is not out-of-band: it runs
     /// inline as the `compact` plugin's `BeforeInference` hook.)
-    async fn run_aux_after_step(&self, ctx: &Arc<SessionCtx>, thread: &str, phase: &Phase) {
-        self.maybe_extract_memory(ctx, thread, phase).await;
+    async fn run_aux_after_step(&self, ctx: &Arc<SessionCtx>, thread: &str, state: &RunState) {
+        self.maybe_extract_memory(ctx, thread, state).await;
     }
 
-    /// Fire out-of-band memory extraction when a turn reaches a terminal phase
-    /// (not parked) and memory is enabled. Seeds the extractor with only the
+    /// Fire out-of-band memory extraction when a turn reaches a terminal state
+    /// (not awaiting) and memory is enabled. Seeds the extractor with only the
     /// messages committed since the last extraction (a per-thread cursor), so a
     /// long conversation is not re-processed every turn. Fire-and-forget (drained
     /// at shutdown). The cursor advances optimistically on trigger.
-    async fn maybe_extract_memory(&self, ctx: &SessionCtx, thread: &str, phase: &Phase) {
-        if matches!(phase, Phase::Waiting) {
+    async fn maybe_extract_memory(&self, ctx: &SessionCtx, thread: &str, state: &RunState) {
+        if matches!(state, RunState::Awaiting) {
             return;
         }
         let Some(mem) = &self.memory else {
@@ -317,7 +317,7 @@ impl SharedHost {
             .map_err(|e| HostError::internal(e.to_string()))?;
         Ok(rows
             .into_iter()
-            .map(|d| (d.run_id.0, format!("{:?}", d.status), d.attempt_count))
+            .map(|d| (d.run_id.0, format!("{:?}", d.state), d.attempt_count))
             .collect())
     }
 
@@ -398,7 +398,7 @@ impl SharedHost {
         Ok(uid.0)
     }
 
-    /// Resume the run parked on `thread`, answering `tool_use_id` with `resume`.
+    /// Resume the run awaiting on `thread`, answering `tool_use_id` with `resume`.
     /// Fails closed unless `tool_use_id` names the pending tool and its binding
     /// (built-in vs client-executed) matches the resume variant.
     pub async fn resume(
@@ -410,18 +410,18 @@ impl SharedHost {
         let ctx = self.ctx_for(thread, None).await?;
         let mut st = ctx.state.lock().await;
         let run_id = st
-            .parked
+            .awaiting_run
             .clone()
-            .ok_or_else(|| HostError::bad_request("no parked run to resume"))?;
+            .ok_or_else(|| HostError::bad_request("no awaiting run to resume"))?;
         let ticket = ctx
             .commit
-            .waiting_ticket(&run_id)
-            .ok_or_else(|| HostError::internal("parked run has no waiting ticket"))?;
+            .resume_ticket(&run_id)
+            .ok_or_else(|| HostError::internal("awaiting run has no awaiting ticket"))?;
 
-        // A parked delegation resumes through the kernel resolver with the user's
+        // A awaiting delegation resumes through the kernel resolver with the user's
         // input; the kernel routes it (not the tool registry) and the run continues
-        // or re-parks.
-        if ticket.reason == WaitingReason::Delegation {
+        // or re-awaits.
+        if ticket.reason == AwaitReason::Delegation {
             if ticket.call_id.as_deref() != Some(tool_use_id) {
                 return Err(HostError::bad_request(format!(
                     "tool_use_id {tool_use_id:?} does not match the pending delegate"
@@ -433,14 +433,14 @@ impl SharedHost {
             };
             let before = ctx.commit.committed_messages(&ctx.thread_id).len();
             let command = ResumeCommand::from_ticket(&ticket, ResumeResult::Input(input), 0);
-            let phase = ctx
+            let state = ctx
                 .runtime
                 .resume(command, &*ctx.commit, ctx.context())
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?;
-            let result = self.finish_step(&ctx, &mut st, run_id, phase, before, thread);
+            let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread);
             drop(st);
-            self.run_aux_after_step(&ctx, thread, &result.phase).await;
+            self.run_aux_after_step(&ctx, thread, &result.state).await;
             return Ok(result);
         }
 
@@ -465,14 +465,14 @@ impl SharedHost {
         };
         let before = ctx.commit.committed_messages(&ctx.thread_id).len();
         let command = ResumeCommand::from_ticket(&ticket, result, 0);
-        let phase = ctx
+        let state = ctx
             .runtime
             .resume(command, &*ctx.commit, ctx.context())
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
-        let result = self.finish_step(&ctx, &mut st, run_id, phase, before, thread);
+        let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread);
         drop(st);
-        self.run_aux_after_step(&ctx, thread, &result.phase).await;
+        self.run_aux_after_step(&ctx, thread, &result.state).await;
         Ok(result)
     }
 
@@ -497,7 +497,7 @@ impl SharedHost {
         let goal_runtime = build_runtime(self.llm.clone(), &ctx.env)
             .with_plugin(Arc::new(GoalPlugin::new(goal, self.grader.clone())));
         // The goal run auto-approves tools to drive to a deliverable, so it does not
-        // advertise `agent_run` (which parks and is host-fulfilled, not auto-run).
+        // advertise `agent_run` (which awaits and is host-fulfilled, not auto-run).
         // The outcome/goal run does not offer skills (ADR-0036): it auto-approves
         // tools to drive a deliverable and does not register the `Skill` tool.
         let config = server_config(
@@ -513,7 +513,7 @@ impl SharedHost {
         // One run: the guard re-derives and grades the deliverable, then steers
         // revisions. Outcome rounds auto-approve tools. Empty input re-infers over
         // the committed history. A concurrent `interrupt` cancels this run.
-        let phase = goal_runtime
+        let state = goal_runtime
             .run_to_completion(
                 &config,
                 thread,
@@ -547,7 +547,7 @@ impl SharedHost {
         // An interrupted run ends `Cancelled` before the guard can conclude, so
         // no terminal `Continuation` was committed. Report the outcome as
         // `interrupted` — distinct from satisfied/failed/max_iterations.
-        if matches!(phase, Phase::Ended(EndCause::Cancelled)) {
+        if matches!(state, RunState::Ended(EndCause::Cancelled)) {
             iterations.push(HostOutcomeIteration {
                 messages: Vec::new(),
                 outcome_id: outcome_id.clone(),
@@ -559,30 +559,30 @@ impl SharedHost {
         Ok(HostOutcomeReport { iterations })
     }
 
-    /// Project the step's delta, update the parked position, and publish the
+    /// Project the step's delta, update the awaiting position, and publish the
     /// delta to the thread hub for any observing protocol.
     fn finish_step(
         &self,
         ctx: &SessionCtx,
         st: &mut SessionState,
         run_id: RunId,
-        phase: Phase,
+        state: RunState,
         before: usize,
         thread: &str,
     ) -> RunResult {
         let all = ctx.commit.committed_messages(&ctx.thread_id);
         let new_messages = all[before.min(all.len())..].to_vec();
-        let (pending, waiting) = match &phase {
-            Phase::Waiting => {
-                st.parked = Some(run_id.clone());
+        let (pending, awaiting) = match &state {
+            RunState::Awaiting => {
+                st.awaiting_run = Some(run_id.clone());
                 let pending = ctx
                     .commit
-                    .waiting_ticket(&run_id)
+                    .resume_ticket(&run_id)
                     .and_then(|t| pending_from_ticket(&t, &self.client_tools));
                 (pending, true)
             }
             _ => {
-                st.parked = None;
+                st.awaiting_run = None;
                 (None, false)
             }
         };
@@ -590,13 +590,14 @@ impl SharedHost {
             self.hub
                 .publish(thread, ThreadEvent::Committed(new_messages.clone()));
         }
-        self.hub.publish(thread, ThreadEvent::StepEnded { waiting });
+        self.hub
+            .publish(thread, ThreadEvent::StepEnded { awaiting });
         // A fold grows the committed compaction-marker count; compare the turn's
-        // start baseline (set in `deliver_run`, spanning a parked→resumed turn) to
+        // start baseline (set in `deliver_run`, spanning an awaiting→resumed turn) to
         // the terminal-step count so the marker surfaces exactly once. Count-based,
         // not run-id-based, so it works under durable ingress (where the worker
         // mints its own run id). The compact extension owns the key (G16).
-        let compacted = !waiting
+        let compacted = !awaiting
             && awaken_ext_compact::compaction_count(&ctx.commit.committed_state(&ctx.thread_id))
                 > st.compactions_before;
         // The run's transient-retry counter: non-zero ⇒ the inference seam
@@ -609,7 +610,7 @@ impl SharedHost {
             .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed) > 0);
         RunResult {
             new_messages,
-            phase,
+            state,
             pending,
             compacted,
             rescheduled,
@@ -622,7 +623,7 @@ impl SharedHost {
     /// only a built-in one.
     fn check_pending(
         &self,
-        ticket: &WaitingTicket,
+        ticket: &ResumeTicket,
         tool_use_id: &str,
         want_client: bool,
     ) -> Result<(), HostError> {
@@ -635,7 +636,7 @@ impl SharedHost {
             .pending_tool
             .as_ref()
             .map(|t| t.tool_id.as_str())
-            .ok_or_else(|| HostError::internal("parked run has no pending tool"))?;
+            .ok_or_else(|| HostError::internal("awaiting run has no pending tool"))?;
         let is_client = self.client_tools.contains(pending_tool_id);
         if is_client != want_client {
             let (got, expected) = if want_client {
@@ -660,18 +661,18 @@ fn detail_str(detail: &serde_json::Value, key: &str) -> String {
         .to_string()
 }
 
-/// Read the pending tool off a waiting ticket, classifying it client-executed
+/// Read the pending tool off an awaiting ticket, classifying it client-executed
 /// when its id is in `client_tools`.
 fn pending_from_ticket(
-    ticket: &WaitingTicket,
+    ticket: &ResumeTicket,
     client_tools: &HashSet<String>,
 ) -> Option<PendingTool> {
     let tool_use_id = ticket.call_id.clone()?;
     let tool = ticket.pending_tool.clone()?;
-    // A parked delegation is client-executed from the caller's view: the user
+    // A awaiting delegation is client-executed from the caller's view: the user
     // supplies the input, delivered back through `resume`.
     let client_executed =
-        ticket.reason == WaitingReason::Delegation || client_tools.contains(&tool.tool_id);
+        ticket.reason == AwaitReason::Delegation || client_tools.contains(&tool.tool_id);
     Some(PendingTool {
         tool_use_id,
         name: tool.tool_id,

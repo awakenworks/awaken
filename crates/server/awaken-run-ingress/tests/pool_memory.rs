@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_agent_contract::agent::run::Phase;
+use awaken_agent_contract::agent::run::RunState;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_run_ingress::{
@@ -322,14 +322,14 @@ async fn pool_signals_completion_sink_on_settle() {
 
     #[derive(Default)]
     struct RecordingSink {
-        settled: Mutex<Vec<(String, Phase)>>,
+        settled: Mutex<Vec<(String, RunState)>>,
     }
     impl CompletionSink for RecordingSink {
-        fn settled(&self, run_id: &RunId, phase: &Phase) {
+        fn settled(&self, run_id: &RunId, state: &RunState) {
             self.settled
                 .lock()
                 .unwrap()
-                .push((run_id.0.clone(), phase.clone()));
+                .push((run_id.0.clone(), state.clone()));
         }
     }
 
@@ -354,7 +354,7 @@ async fn pool_signals_completion_sink_on_settle() {
 
     pool.submit(activation("run-1")).await.unwrap();
 
-    // The sink is notified with the run and its settled (Ended) phase.
+    // The sink is notified with the run and its settled (Ended) state.
     assert!(
         wait_for(|| !sink.settled.lock().unwrap().is_empty()).await,
         "the pool signalled completion"
@@ -363,8 +363,8 @@ async fn pool_signals_completion_sink_on_settle() {
     assert_eq!(recorded.len(), 1);
     assert_eq!(recorded[0].0, "run-1");
     assert!(
-        matches!(recorded[0].1, Phase::Ended(_)),
-        "signalled the settled Ended phase, got {:?}",
+        matches!(recorded[0].1, RunState::Ended(_)),
+        "signalled the settled Ended state, got {:?}",
         recorded[0].1
     );
 
@@ -690,12 +690,12 @@ async fn shutdown_awaits_an_in_flight_drive() {
         wait_for(|| ran.load(Ordering::SeqCst) >= 1).await,
         "the drive reached and blocked in its tool (in-flight)"
     );
-    // The drive committed a mid-flight `Running` step but has NOT reached a terminus.
+    // The drive committed a mid-flight `Running` step but has NOT reached an end.
     let run = RunId("run-1".to_string());
     assert!(
         matches!(
-            RunStore::get(&*commit, &run).map(|r| r.phase),
-            Some(Phase::Running)
+            RunStore::get(&*commit, &run).map(|r| r.state),
+            Some(RunState::Running)
         ),
         "the run is in-flight (Running), not yet settled"
     );
@@ -717,34 +717,34 @@ async fn shutdown_awaits_an_in_flight_drive() {
         .expect("shutdown task did not panic");
     assert!(
         matches!(
-            RunStore::get(&*commit, &run).map(|r| r.phase),
-            Some(Phase::Ended(_))
+            RunStore::get(&*commit, &run).map(|r| r.state),
+            Some(RunState::Ended(_))
         ),
         "the in-flight run was driven to completion, not dropped by shutdown"
     );
 }
 
-/// The completion sink is signalled on EVERY settle — including a `Parked` re-park.
-/// A run that parks on a waiting ticket settles `Parked`, and the sink must be
-/// notified with the `Waiting` phase (not only on a terminal `Ended`).
+/// The completion sink is signalled on EVERY settle — including a `Awaiting` re-await.
+/// A run that awaits on an awaiting ticket settles `Awaiting`, and the sink must be
+/// notified with the `Awaiting` state (not only on a terminal `Ended`).
 #[tokio::test]
-async fn completion_sink_is_signalled_with_waiting_on_a_park() {
+async fn completion_sink_is_signalled_for_an_awaiting_run() {
     use std::sync::Mutex;
 
     #[derive(Default)]
     struct RecordingSink {
-        settled: Mutex<Vec<(String, Phase)>>,
+        settled: Mutex<Vec<(String, RunState)>>,
     }
     impl CompletionSink for RecordingSink {
-        fn settled(&self, run_id: &RunId, phase: &Phase) {
+        fn settled(&self, run_id: &RunId, state: &RunState) {
             self.settled
                 .lock()
                 .unwrap()
-                .push((run_id.0.clone(), phase.clone()));
+                .push((run_id.0.clone(), state.clone()));
         }
     }
 
-    let (runtime, _ran) = tool_runtime(); // parks on the suspend gate
+    let (runtime, _ran) = tool_runtime(); // awaits on the suspend gate
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = worker_over(runtime, store.clone(), commit.clone());
@@ -766,13 +766,13 @@ async fn completion_sink_is_signalled_with_waiting_on_a_park() {
     pool.submit(activation("run-1")).await.unwrap();
     assert!(
         wait_for(|| !sink.settled.lock().unwrap().is_empty()).await,
-        "the pool signalled completion for the parked run"
+        "the pool signalled completion for the awaiting run"
     );
     let recorded = sink.settled.lock().unwrap().clone();
     assert_eq!(recorded[0].0, "run-1");
     assert!(
-        matches!(recorded[0].1, Phase::Waiting),
-        "signalled the Waiting phase on a park, got {:?}",
+        matches!(recorded[0].1, RunState::Awaiting),
+        "signalled the Awaiting state on an await, got {:?}",
         recorded[0].1
     );
 
@@ -991,7 +991,7 @@ async fn begin_drain_stops_claiming_new_work() {
     let summaries = store.list_dispatches().await.unwrap();
     assert!(
         summaries.iter().any(|s| s.run_id.0 == "run-after"
-            && matches!(s.status, awaken_run_ingress::DispatchStatus::Pending)),
+            && matches!(s.state, awaken_run_ingress::DispatchState::Pending)),
         "the post-drain run stays PENDING (never claimed); got {summaries:?}"
     );
 

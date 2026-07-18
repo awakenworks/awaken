@@ -125,7 +125,7 @@ async fn run(rt: Runtime, input: RunAgentInput, agent_id: Option<String>) -> Res
     let run_id = processed.run_id.clone();
 
     if processed.messages.is_empty() {
-        // Resume answers a parked tool decision — one committed step, framed whole.
+        // Resume answers an awaiting tool decision — one committed step, framed whole.
         match resume_step(&rt, &thread, &processed.tool_results).await {
             Ok(outcome) => sse_response(encode_step(&outcome, &thread, &run_id)),
             Err(err) => sse_error(&thread, &run_id, err),
@@ -154,7 +154,7 @@ fn stream_turn(
         let sink: Arc<dyn StreamSink> = Arc::new(ChannelStreamSink::new(live_tx));
         // One transcoder instance for both tiers (ADR-0058 Axis 9): live `delta()`
         // for increments + `fact(RunStarted)` to open the stream. The authoritative
-        // terminus comes from the committed tail, not the live channel (G10/G13).
+        // the end comes from the committed tail, not the live channel (G10/G13).
         let mut transcoder = AgUiEncoder::new(thread.clone(), run_id.clone());
         let close_thread = thread.clone();
         // A handle kept out of the turn task so a client disconnect can cancel it.
@@ -198,8 +198,8 @@ fn stream_turn(
     stream_response(out_rx)
 }
 
-/// Resume the parked tool with the matching tool result. Fails closed when there
-/// is no parked tool or no matching result.
+/// Resume the awaiting tool with the matching tool result. Fails closed when there
+/// is no awaiting tool or no matching result.
 async fn resume_step(
     rt: &Runtime,
     thread: &str,
@@ -208,12 +208,12 @@ async fn resume_step(
     let pending = rt
         .pending(thread)
         .await
-        .ok_or_else(|| DriverError::BadRequest("no parked run to resume".into()))?;
+        .ok_or_else(|| DriverError::BadRequest("no awaiting run to resume".into()))?;
     let result = tool_results
         .iter()
         .find(|r| r.tool_call_id == pending.tool_use_id)
         .or_else(|| tool_results.first())
-        .ok_or_else(|| DriverError::BadRequest("no tool result for the parked tool".into()))?;
+        .ok_or_else(|| DriverError::BadRequest("no tool result for the awaiting tool".into()))?;
     let resume = to_resume(&result.content, result.error.as_deref(), &pending);
     rt.resume(thread, &pending.tool_use_id, resume).await
 }

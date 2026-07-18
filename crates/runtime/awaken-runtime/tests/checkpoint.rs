@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_runtime::Runtime;
@@ -95,7 +95,7 @@ const THREAD_ID: &str = "thread-1";
 async fn drive(
     llm: Arc<dyn LlmExecutor>,
     checkpoints: Arc<MemoryStreamCheckpointStore>,
-) -> (Phase, MemoryCommitCoordinator) {
+) -> (RunState, MemoryCommitCoordinator) {
     // A single retry with no backoff keeps the in-process recovery instant.
     let runtime = Runtime::new()
         .with_llm(llm)
@@ -156,8 +156,8 @@ async fn drive(
         }],
         model_ref_override: None,
     };
-    let phase = runtime.execute(activation, context).await.expect("runs");
-    (phase, Arc::try_unwrap(commit).unwrap_or_default())
+    let state = runtime.execute(activation, context).await.expect("runs");
+    (state, Arc::try_unwrap(commit).unwrap_or_default())
 }
 
 fn assistant_text(commit: &MemoryCommitCoordinator) -> String {
@@ -173,7 +173,7 @@ fn assistant_text(commit: &MemoryCommitCoordinator) -> String {
 #[tokio::test]
 async fn an_interrupted_step_recovers_in_process_and_leaves_no_checkpoint() {
     let checkpoints = Arc::new(MemoryStreamCheckpointStore::new());
-    let (phase, commit) = drive(
+    let (state, commit) = drive(
         Arc::new(DropOnceLlm {
             calls: Default::default(),
             first: "Hel",
@@ -183,7 +183,7 @@ async fn an_interrupted_step_recovers_in_process_and_leaves_no_checkpoint() {
     )
     .await;
 
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     // The committed turn is the whole text, continued across the drop.
     assert_eq!(assistant_text(&commit), "Hello world");
     // The run concluded in-process, so the checkpoint it flushed at the boundary
@@ -206,13 +206,13 @@ async fn a_pre_seeded_checkpoint_resumes_the_first_step() {
         })
         .await;
 
-    let (phase, commit) = drive(
+    let (state, commit) = drive(
         Arc::new(AlwaysLlm { text: "and done" }),
         checkpoints.clone(),
     )
     .await;
 
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     // The committed turn carries the recovered prefix stitched onto the fresh text.
     assert_eq!(assistant_text(&commit), "Resumed and done");
     // The consumed checkpoint is cleared once the step concludes.

@@ -44,7 +44,7 @@ Reading the map:
 - **Agent truth** is the center. It owns *what the agent did* — committed messages,
   run/state facts, and committed events. Only `CommitCoordinator` writes it (G1).
 - **Dispatch / run ingress** is a **separate bounded context**. It owns *operational
-  scheduling* — which runs are pending/claimed/parked, leases, pending input, and
+  scheduling* — which runs are pending/claimed/awaiting, leases, pending input, and
   cross-thread delivery. It depends on the kernel (it drives `run`/`resume` and
   records the terminal commit) but never owns agent truth. This is why dispatch and
   the agent-truth store are two domains, not one.
@@ -67,7 +67,7 @@ Reading the map:
 // write: the single durable boundary (G1). Extended so events + outbox intents
 // commit atomically with the checkpoint (G13, D3).
 trait CommitCoordinator { async fn commit(&self, plan: ThreadCommit) -> Result<CommitRecord>; }
-struct ThreadCommit { thread_id, run_fact, messages, state, events, outbox, waiting }
+struct ThreadCommit { thread_id, run: RunDisposition, messages, state, events }
 
 // read: the single after-commit repository. Subsumes today's ThreadReader + RunStore.
 trait CheckpointReader {
@@ -75,7 +75,7 @@ trait CheckpointReader {
     fn committed_state(&self, thread: &ThreadId) -> Vec<StateCommand>;
     fn run(&self, run: &RunId) -> Option<RunRecord>;
     fn latest_run(&self, thread: &ThreadId) -> Option<RunRecord>;
-    fn waiting_ticket(&self, run: &RunId) -> Option<WaitingTicket>;
+    fn resume_ticket(&self, run: &RunId) -> Option<ResumeTicket>;
     async fn list_events(&self, scope: EventScope, from: Option<Cursor>, limit: usize) -> EventPage;
 }
 
@@ -90,7 +90,7 @@ the host crate (G2). The traits are the current ones, renamed and grouped:
 
 ```rust
 trait DispatchQueue { /* enqueue, claim, renew_lease, settle, reap, cancel,
-                         parked_run, dead_letters, requeue, superseded, list */ }
+                         awaiting_run, dead_letters, requeue, superseded, list */ }
 trait Inbox         { /* append, list, edit, retract (pending input) */ }
 trait Outbox        { /* stage, relay (cross-thread delivery) */ }
 trait Dispatch: DispatchQueue + Inbox + Outbox {}

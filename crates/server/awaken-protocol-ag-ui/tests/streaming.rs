@@ -107,7 +107,7 @@ fn committed() -> StepOutcome {
                 input: json!({"path": "x"}),
             }],
         }],
-        terminal: Terminal::Waiting {
+        terminal: Terminal::Awaiting {
             pending: Some(Pending {
                 tool_use_id: "c1".into(),
                 name: "read".into(),

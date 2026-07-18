@@ -18,10 +18,9 @@ impl ManagedState {
         preview_ids: Vec<String>,
     ) -> Result<(), StateError> {
         let pending = outcome
-            .pending
-            .as_ref()
+            .pending()
             .map(|p| (p.tool_use_id.as_str(), p.client_executed));
-        let projected = project_step(&outcome.messages, outcome.stop, pending);
+        let projected = project_step(&outcome, pending);
         // Delegation runs inline as an `agent_run` tool call; each one spawns a
         // subagent child thread (ADR-0047 D4). Collect each delegate's name, the
         // input it was sent, and the reply it returned (matched by tool-use id),
@@ -103,11 +102,11 @@ impl ManagedState {
         // so a streaming/listing client observes the failure. The neutral fault's
         // `code` classifies the SDK error variant + retry status; its `message` is
         // carried through.
-        if let Some(failure) = &outcome.failure {
+        if let Some(failure) = outcome.failure() {
             record.events.push(Event {
                 id: self.next_event_id(),
                 kind: OutboundKind::SessionError {
-                    error: SessionError::classify(&failure.code, failure.message.clone()),
+                    error: SessionError::classify(failure.code(), failure.message()),
                 },
                 processed_at: Some(PROCESSED_AT.to_string()),
             });
@@ -244,7 +243,7 @@ impl ManagedState {
 
     /// `POST /v1/sessions/{id}/events`. Mints a receipt per inbound event and acts
     /// on `user.message` (run a turn) and `user.tool_confirmation` (resume a
-    /// parked run), appending the projected events.
+    /// awaiting run), appending the projected events.
     /// Resolve `session_id` (rehydrating from durable truth after a restart,
     /// like `send_events`) and fail closed when it names no session.
     async fn require_session(&self, session_id: &str) -> Result<(), StateError> {
@@ -318,7 +317,7 @@ impl ManagedState {
     ) -> Result<SendEventsResponse, StateError> {
         // Recover the session from durable truth if its in-memory record was lost
         // (a process restart) before resolving the agent — so a resume continues
-        // the parked run instead of failing closed (ADR-0039).
+        // the awaiting run instead of failing closed (ADR-0039).
         self.ensure_session(session_id).await?;
         // An archived session is terminal and read-only: refuse every inbound write
         // (message, resume, interrupt, outcome) with a 409, before touching the
@@ -389,8 +388,8 @@ impl ManagedState {
                     self.append_step(session_id, outcome, Vec::new())?;
                 }
                 // The generic `user.tool_result`: a client-provided result for a
-                // parked tool, keyed by `tool_use_id`. Same delivery as a custom
-                // tool result (the id addresses the parked tool either way).
+                // awaiting tool, keyed by `tool_use_id`. Same delivery as a custom
+                // tool result (the id addresses the awaiting tool either way).
                 InboundEvent::UserToolResult {
                     tool_use_id,
                     content,

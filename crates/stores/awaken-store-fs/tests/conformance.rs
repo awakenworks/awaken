@@ -29,8 +29,8 @@ async fn terminal_run_is_fenced() {
 }
 
 #[tokio::test]
-async fn waiting_ticket_parks_then_clears() {
-    awaken_store_conformance::waiting_ticket_parks_then_clears(&fresh("wait").await).await;
+async fn resume_ticket_awaits_then_clears() {
+    awaken_store_conformance::resume_ticket_awaits_then_clears(&fresh("wait").await).await;
 }
 
 #[tokio::test]
@@ -51,8 +51,8 @@ async fn committed_state_replays() {
 
 // The fs store reuses the thread-keyed in-memory reference as its read model, so two
 // threads committed to one store stay isolated — it runs the shared multi-thread
-// isolation case (as the SQLite / Postgres backends do). `thread_isolation_and_waiting.rs`
-// additionally proves isolation and the waiting ticket survive a drop + reopen.
+// isolation case (as the SQLite / Postgres backends do). `thread_isolation_and_awaiting.rs`
+// additionally proves isolation and the awaiting ticket survive a drop + reopen.
 #[tokio::test]
 async fn two_threads_in_one_store_are_isolated() {
     awaken_store_conformance::two_threads_in_one_store_are_isolated(&fresh("iso").await).await;

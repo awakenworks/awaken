@@ -25,7 +25,7 @@ async fn publish_wakes_a_waiter_on_another_connection() {
     let waiter = PgNotifyWake::new(pool.clone(), "awaken_dispatch_wake");
     let publisher = PgNotifyWake::new(pool.clone(), "awaken_dispatch_wake");
 
-    // Waiter parks; a publish on a *different* connection must wake it. The listener
+    // Waiter awaits; a publish on a *different* connection must wake it. The listener
     // needs a moment to establish its LISTEN before the notify fires.
     let wait_task = tokio::spawn(async move { waiter.wait().await });
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -76,7 +76,7 @@ async fn listener_reconnects_after_its_connection_is_dropped() {
     let publisher = PgNotifyWake::new(pool.clone(), channel);
 
     // Let the listener establish its LISTEN, then prove the hint path is live: a
-    // waiter parks, a cross-connection publish wakes it.
+    // waiter awaits, a cross-connection publish wakes it.
     tokio::time::sleep(Duration::from_millis(400)).await;
     {
         let probe = PgNotifyWake::new(pool.clone(), channel);
@@ -91,7 +91,7 @@ async fn listener_reconnects_after_its_connection_is_dropped() {
         );
     }
 
-    // Terminate every backend currently parked on a LISTEN — including this waiter's
+    // Terminate every backend currently awaiting on a LISTEN — including this waiter's
     // listener connection — forcing its `recv` to error and the loop to reconnect.
     sqlx::query(
         "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \

@@ -125,7 +125,7 @@ async fn a_remote_transport_failure_surfaces_as_a_tool_error() {
         Arc::new(A2aRemoteDelegate::new(Arc::new(BrokenTransport))),
     );
 
-    // The turn still completes: the delegate call parked, the remote failed, and
+    // The turn still completes: the delegate call awaiting, the remote failed, and
     // the parent resumed with the error as the tool result.
     host.run(None, "t", vec![user("u1", "research the answer")])
         .await
@@ -290,19 +290,19 @@ async fn a_parent_interrupt_cancels_the_remote_task() {
         "the remote task received tasks:cancel"
     );
     // The interrupt cancels the delegation and ends the run (kernel-observed), so
-    // the thread is not left parked or looping.
+    // the thread is not left awaiting or looping.
     assert!(
-        !host.is_parked("t").await,
-        "the run is not left parked after the interrupt"
+        !host.is_awaiting("t").await,
+        "the run is not left awaiting after the interrupt"
     );
 }
 
-/// A remote agent that asks for input parks the *parent* for the user (rather than
+/// A remote agent that asks for input awaits the *parent* for the user (rather than
 /// erroring): delivering input via `resume` forwards a follow-up `message:send`,
 /// and the remote then completes. Mirrors goal/awaken-next `InputRequired` →
 /// user-visible wait.
 #[tokio::test]
-async fn a_remote_input_required_parks_the_parent_then_resumes() {
+async fn a_remote_input_required_awaits_the_parent_then_resumes() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// First `message:send` → input-required; the second (the user's delivered
@@ -335,17 +335,17 @@ async fn a_remote_input_required_parks_the_parent_then_resumes() {
         }))),
     );
 
-    // The turn parks: the remote asked for input, so the parent waits for the user.
+    // The turn awaits: the remote asked for input, so the parent waits for the user.
     let turn = host
         .run(None, "t", vec![user("u1", "research the answer")])
         .await
         .unwrap();
     let pending = turn
         .pending
-        .expect("the parent parks awaiting remote input");
+        .expect("the parent awaits awaiting remote input");
     assert!(
         pending.client_executed,
-        "the park asks the user to supply input"
+        "the await asks the user to supply input"
     );
 
     // The user supplies the input; it is forwarded and the remote completes.

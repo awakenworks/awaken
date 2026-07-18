@@ -3,7 +3,7 @@
 //! A2A is a snapshot protocol: `message:send` returns the whole `Task` — its
 //! lifecycle `status` plus the conversation `history`. This module folds committed
 //! neutral `Message`s into A2A `Message`s and derives the `TaskState` from the step
-//! outcome (parked → input-required; step-budget exhausted → failed; else
+//! outcome (awaiting → input-required; step-budget exhausted → failed; else
 //! completed).
 
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -22,13 +22,13 @@ pub fn encode_task(thread: &str, history: &[AgentMessage], outcome: &StepOutcome
         .collect();
 
     let state = match &outcome.terminal {
-        Terminal::Waiting { .. } => TaskState::InputRequired,
+        Terminal::Awaiting { .. } => TaskState::InputRequired,
         Terminal::Failed(_) | Terminal::Exhausted => TaskState::Failed,
         Terminal::Finished => TaskState::Completed,
     };
 
     // The status message is what the agent last said. A terminal fault carries its
-    // message so the task explains why it failed; when parked on a tool, it is the
+    // message so the task explains why it failed; when awaiting on a tool, it is the
     // prompt for the input the task now requires.
     let status_message = if let Terminal::Failed(failure) = &outcome.terminal {
         Some(Message::agent_text(
@@ -133,11 +133,11 @@ mod tests {
         );
     }
 
-    fn outcome(waiting: bool, pending: Option<Pending>) -> StepOutcome {
+    fn outcome(awaiting: bool, pending: Option<Pending>) -> StepOutcome {
         StepOutcome {
             new_messages: Vec::new(),
-            terminal: if waiting {
-                Terminal::Waiting { pending }
+            terminal: if awaiting {
+                Terminal::Awaiting { pending }
             } else {
                 Terminal::Finished
             },
@@ -160,7 +160,7 @@ mod tests {
     }
 
     #[test]
-    fn parked_task_is_input_required_with_a_prompt() {
+    fn awaiting_task_is_input_required_with_a_prompt() {
         let history = [msg("u1", Role::User, "answer please")];
         let pending = Pending {
             tool_use_id: "c1".into(),
@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn exhausted_step_budget_projects_a_failed_task() {
-        // A run that hit its step ceiling (not parked) is a `failed` A2A task, and
+        // A run that hit its step ceiling (not awaiting) is a `failed` A2A task, and
         // still carries the transcript + last agent status.
         let history = [
             msg("u1", Role::User, "do a lot"),
@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn input_required_without_a_pending_falls_back_to_the_last_agent_message() {
-        // `waiting` with no `pending` (an edge the prompt branch can't cover): the
+        // `awaiting` with no `pending` (an edge the prompt branch can't cover): the
         // task is input-required but the status message is the last agent turn.
         let history = [
             msg("u1", Role::User, "question"),

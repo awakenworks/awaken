@@ -6,11 +6,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
+use awaken_agent_contract::agent::run::{EndCause, Failure, RunState};
 
 use crate::mcp_binding::McpRefreshBinding;
 use crate::resource::SessionResource;
 
-/// The tool a run parked on: its id, model-visible name/input, and whether it is
+/// The tool a run awaits: its id, model-visible name/input, and whether it is
 /// client-executed (projected as `agent.custom_tool_use`) or a built-in awaiting
 /// confirmation (`agent.tool_use{ask}`).
 pub struct Pending {
@@ -20,26 +21,15 @@ pub struct Pending {
     pub client_executed: bool,
 }
 
-/// The neutral terminus of a step — the runtime's outcome, free of any wire
-/// vocabulary (the managed adapter maps this + `pending` to the wire `StopReason`
-/// at projection time). `Parked` carries no ids here; the pending tool supplies
-/// them. Keeping the port neutral lets it live in a protocol-agnostic contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Terminus {
-    /// A natural end of turn (→ wire `end_turn`).
-    End,
-    /// The run parked awaiting a decision on `pending` (→ wire `requires_action`).
-    Parked,
-    /// The run gave up after exhausting its retries/steps (→ wire `retries_exhausted`).
-    Exhausted,
-}
-
-/// The result of running one step (a new turn, or a resume). `pending` is set when
-/// `stop` is `Parked`.
+/// The result of running one settled step (a new turn, or a resume).
+///
+/// `state` reuses the run's sole lifecycle authority instead of storing a second
+/// terminal classification. It is private: callers can construct only
+/// `Awaiting` or `Ended` outcomes, so `Running` cannot escape a step boundary.
 pub struct StepOutcome {
     pub messages: Vec<Message>,
-    pub stop: Terminus,
-    pub pending: Option<Pending>,
+    state: RunState,
+    pending: Option<Pending>,
     /// `true` when this turn folded its context — projected as an
     /// `agent.thread_context_compacted` event ahead of the turn's messages.
     pub compacted: bool,
@@ -47,18 +37,58 @@ pub struct StepOutcome {
     /// during this turn (auto-recovery) — projected as a `session.status_rescheduled`
     /// event ahead of the turn's messages, so a client observes the recovery.
     pub rescheduled: bool,
-    /// Set when the run ended in a terminal fault (the neutral `EndCause::Error`) —
-    /// projected as a `session.error` event before the turn goes idle, so a client
-    /// observes the failure. `None` on a normal completion.
-    pub failure: Option<StepFailure>,
 }
 
-/// A terminal run fault carried from the neutral `EndCause::Error` so the adapter
-/// can project `session.error`. Neutral (a stable `code` + human `message`), not
-/// managed-wire vocabulary.
-pub struct StepFailure {
-    pub code: String,
-    pub message: String,
+impl StepOutcome {
+    #[must_use]
+    pub fn awaiting(
+        messages: Vec<Message>,
+        pending: Option<Pending>,
+        compacted: bool,
+        rescheduled: bool,
+    ) -> Self {
+        Self {
+            messages,
+            state: RunState::Awaiting,
+            pending,
+            compacted,
+            rescheduled,
+        }
+    }
+
+    #[must_use]
+    pub fn ended(
+        messages: Vec<Message>,
+        cause: EndCause,
+        compacted: bool,
+        rescheduled: bool,
+    ) -> Self {
+        Self {
+            messages,
+            state: RunState::Ended(cause),
+            pending: None,
+            compacted,
+            rescheduled,
+        }
+    }
+
+    #[must_use]
+    pub fn state(&self) -> &RunState {
+        &self.state
+    }
+
+    #[must_use]
+    pub fn pending(&self) -> Option<&Pending> {
+        self.pending.as_ref()
+    }
+
+    #[must_use]
+    pub fn failure(&self) -> Option<&Failure> {
+        match &self.state {
+            RunState::Ended(EndCause::Error(failure)) => Some(failure),
+            RunState::Running | RunState::Awaiting | RunState::Ended(_) => None,
+        }
+    }
 }
 
 /// A human-in-the-loop tool decision, delivered by `user.tool_confirmation`.
@@ -88,7 +118,7 @@ pub struct AgentCapabilities {
 }
 
 /// One registered built-in tool: its name and whether calls require confirmation
-/// (`ask` = the permission gate parks the call for an approval).
+/// (`ask` = the permission gate awaits the call for an approval).
 pub struct BuiltinTool {
     pub name: String,
     pub ask: bool,
@@ -231,7 +261,7 @@ pub trait SessionRuntime: Send + Sync {
         self.run(agent, thread, content).await
     }
 
-    /// Answer a built-in tool the run parked on (allow/deny) and continue.
+    /// Answer a built-in tool the run awaits (allow/deny) and continue.
     /// `tool_use_id` is the client's asserted target; implementations must fail
     /// closed when it does not name the run's pending built-in tool.
     async fn resume(
@@ -241,7 +271,7 @@ pub trait SessionRuntime: Send + Sync {
         decision: Decision,
     ) -> Result<StepOutcome, RunError>;
 
-    /// Deliver a client-executed tool's result to the parked run and continue.
+    /// Deliver a client-executed tool's result to the awaiting run and continue.
     /// `tool_use_id` is the client's asserted target; implementations must fail
     /// closed when it does not name the run's pending client-executed tool.
     async fn resume_custom(
@@ -414,7 +444,7 @@ pub trait SessionRuntime: Send + Sync {
 }
 
 /// A runtime failure. `kind` classifies who is at fault so the router can map it
-/// to the right HTTP status: a `BadRequest` is the caller's (an unknown park, a
+/// to the right HTTP status: a `BadRequest` is the caller's (an unknown await, a
 /// mismatched id, a wrong-binding resume); `Internal` is the runtime's.
 #[derive(Debug, thiserror::Error)]
 #[error("run failed: {message}")]
@@ -438,7 +468,7 @@ impl RunError {
         }
     }
 
-    /// A caller-side failure (bad id, wrong binding, no park) — maps to `400`.
+    /// A caller-side failure (bad id, wrong binding, no await) — maps to `400`.
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
@@ -475,25 +505,18 @@ mod tests {
     /// The distinctive outcome `run` returns — used to prove `run_streaming` delegates
     /// to `run` identically (the default just ignores the sink).
     fn sample_outcome() -> StepOutcome {
-        StepOutcome {
-            messages: vec![
+        StepOutcome::ended(
+            vec![
                 Message::text(MessageId("m1".into()), Role::Assistant, "one"),
                 Message::text(MessageId("m2".into()), Role::Assistant, "two"),
             ],
-            stop: Terminus::Parked,
-            pending: Some(Pending {
-                tool_use_id: "call-1".into(),
-                name: "search".into(),
-                input: serde_json::json!({"q": 1}),
-                client_executed: true,
-            }),
-            compacted: true,
-            rescheduled: true,
-            failure: Some(StepFailure {
+            EndCause::Error(Failure::Inference {
                 code: "boom".into(),
                 message: "it failed".into(),
             }),
-        }
+            true,
+            true,
+        )
     }
 
     #[async_trait]
@@ -638,16 +661,16 @@ mod tests {
         // `StepOutcome` has no `PartialEq`; compare it field-by-field.
         assert_eq!(streamed.messages.len(), direct.messages.len());
         assert_eq!(streamed.messages, direct.messages);
-        assert_eq!(streamed.stop, direct.stop);
+        assert_eq!(streamed.state(), direct.state());
         assert_eq!(
-            streamed.pending.as_ref().map(|p| &p.tool_use_id),
-            direct.pending.as_ref().map(|p| &p.tool_use_id),
+            streamed.pending().map(|p| &p.tool_use_id),
+            direct.pending().map(|p| &p.tool_use_id),
         );
         assert_eq!(streamed.compacted, direct.compacted);
         assert_eq!(streamed.rescheduled, direct.rescheduled);
         assert_eq!(
-            streamed.failure.as_ref().map(|f| &f.code),
-            direct.failure.as_ref().map(|f| &f.code),
+            streamed.failure().map(Failure::code),
+            direct.failure().map(Failure::code),
         );
     }
 
@@ -677,8 +700,8 @@ mod tests {
         assert_eq!(internal.to_string(), "run failed: provider blew up");
         assert_eq!(internal.kind, RunErrorKind::Internal);
 
-        let bad = RunError::bad_request("no such park");
-        assert_eq!(bad.to_string(), "run failed: no such park");
+        let bad = RunError::bad_request("no such await");
+        assert_eq!(bad.to_string(), "run failed: no such await");
         assert_eq!(bad.kind, RunErrorKind::BadRequest);
 
         // The two kinds are distinct.
@@ -692,5 +715,33 @@ mod tests {
         assert!(!snap.active);
         assert_eq!(snap.version, 0);
         assert!(snap.messages.is_empty());
+    }
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn awaiting_constructor_cannot_create_a_terminal_or_failed_outcome() {
+        let outcome = StepOutcome::awaiting(Vec::new(), None, kani::any(), kani::any());
+        assert!(matches!(outcome.state(), RunState::Awaiting));
+        assert!(outcome.failure().is_none());
+        std::mem::forget(outcome);
+    }
+
+    #[kani::proof]
+    fn ended_constructor_carries_the_only_failure_authority_and_no_pending_tool() {
+        let cause = if kani::any::<bool>() {
+            EndCause::Error(Failure::CapabilityBound)
+        } else {
+            EndCause::NaturalEnd
+        };
+        let is_error = matches!(&cause, EndCause::Error(_));
+        let outcome = StepOutcome::ended(Vec::new(), cause, kani::any(), kani::any());
+        assert!(matches!(outcome.state(), RunState::Ended(_)));
+        assert!(outcome.pending().is_none());
+        assert_eq!(outcome.failure().is_some(), is_error);
+        std::mem::forget(outcome);
     }
 }

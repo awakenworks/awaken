@@ -5,7 +5,7 @@
 //! does not need it: every claim runs in a `BEGIN IMMEDIATE` transaction that
 //! takes the database write lock, so claims serialize and a run is owned by one
 //! worker at a time. The claim policy — recover an expired lease, then wake a
-//! parked run with pending input, then a fresh run — matches
+//! awaiting run with pending input, then a fresh run — matches
 //! [`MemoryDispatchStore`](crate::MemoryDispatchStore) exactly. The synchronous
 //! `rusqlite` driver runs each operation on a blocking thread.
 
@@ -18,7 +18,7 @@ use awaken_runtime_contract::resume::ResumeResult;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::dispatch::{
-    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchQueue, DispatchStatus,
+    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
     DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, SettleOutcome,
     SubmitOptions,
 };
@@ -124,7 +124,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 .map_err(reject)?;
 
             // Supersession: take the highest epoch on the thread and mark its
-            // prior pending/parked work superseded — newest wins (ADR-0022).
+            // prior pending/awaiting work superseded — newest wins (ADR-0022).
             let mut epoch = 0i64;
             if options.supersede {
                 epoch = tx
@@ -140,7 +140,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 tx.execute(
                     &format!(
                         "UPDATE {p}_dispatch SET status = 'superseded', lease_owner = NULL, \
-                         lease_until = NULL WHERE thread_id = ?1 AND status IN ('pending', 'parked')"
+                         lease_until = NULL WHERE thread_id = ?1 AND status IN ('pending', 'awaiting')"
                     ),
                     params![thread_id],
                 )
@@ -187,7 +187,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(reject)?;
 
-            // Priority: recover an expired lease, then wake a parked run with
+            // Priority: recover an expired lease, then wake an awaiting run with
             // pending input, then a fresh pending run. SQLite has no SKIP LOCKED;
             // the IMMEDIATE transaction is the single-owner guard.
             let recovery = format!(
@@ -204,7 +204,7 @@ impl DispatchQueue for SqliteDispatchStore {
             );
             let wake = format!(
                 "SELECT run_id, request, sandbox FROM {p}_dispatch d \
-                 WHERE d.status = 'parked' AND EXISTS ( \
+                 WHERE d.status = 'awaiting' AND EXISTS ( \
                      SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id \
                      AND (pe.available_at IS NULL OR pe.available_at <= ?1)) \
                  AND {not_running} \
@@ -433,10 +433,10 @@ impl DispatchQueue for SqliteDispatchStore {
                         params![run_id, epoch as i64],
                     )
                     .map_err(reject)?,
-                DispatchOutcome::Parked => tx
+                DispatchOutcome::Awaiting => tx
                     .execute(
                         &format!(
-                            "UPDATE {p}_dispatch SET status = 'parked', lease_owner = NULL, \
+                            "UPDATE {p}_dispatch SET status = 'awaiting', lease_owner = NULL, \
                              lease_until = NULL, attempt_count = 0 \
                              WHERE run_id = ?1 AND lease_epoch = ?2"
                         ),
@@ -468,7 +468,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         .map_err(reject)?;
                     }
                 }
-                DispatchOutcome::Parked => {
+                DispatchOutcome::Awaiting => {
                     for message_id in &consumed {
                         tx.execute(
                             &format!("DELETE FROM {p}_pending WHERE message_id = ?1"),
@@ -522,7 +522,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     Ok(DispatchSummary {
                         run_id: RunId(r.get::<_, String>(0)?),
                         thread_id: ThreadId(r.get::<_, String>(1)?),
-                        status: DispatchStatus::from_db(&r.get::<_, String>(2)?),
+                        state: DispatchState::from_db(&r.get::<_, String>(2)?),
                         attempt_count: r.get::<_, i64>(3)? as u64,
                     })
                 })
@@ -564,7 +564,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 .query_row(
                     &format!(
                         "SELECT thread_id FROM {p}_dispatch \
-                         WHERE run_id = ?1 AND status IN ('pending', 'parked')"
+                         WHERE run_id = ?1 AND status IN ('pending', 'awaiting')"
                     ),
                     params![run_id],
                     |r| r.get::<_, String>(0),
@@ -589,13 +589,13 @@ impl DispatchQueue for SqliteDispatchStore {
         .await
     }
 
-    async fn parked_run(&self, thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError> {
+    async fn awaiting_run(&self, thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError> {
         let thread_id = thread_id.0.clone();
         self.with_conn(move |conn, p| {
             let run: Option<String> = conn
                 .query_row(
                     &format!(
-                        "SELECT run_id FROM {p}_dispatch WHERE thread_id = ?1 AND status = 'parked' \
+                        "SELECT run_id FROM {p}_dispatch WHERE thread_id = ?1 AND status = 'awaiting' \
                          ORDER BY created_at LIMIT 1"
                     ),
                     params![thread_id],

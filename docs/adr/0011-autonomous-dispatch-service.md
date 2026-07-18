@@ -49,7 +49,7 @@ false until a durable timer lands.
 ## Consequences
 
 - A durable submit is now fire-and-forget: `DispatchService::submit` enqueues and
-  returns; the daemon runs it. `deliver` does the same for a parked run's input.
+  returns; the daemon runs it. `deliver` does the same for an aawaiting run's input.
 - Crashed leases are recovered automatically on the poll cadence, not only when a
   caller asks.
 - The deterministic worker plus the `Clock` port keep the daemon's tests fast and

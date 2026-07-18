@@ -8,14 +8,14 @@
 //!    as already-done) and the dispatch is left un-settled, so a later claim retries;
 //! 2. a failing `perform_scheduled` routes through the same terminal-or-raise fork;
 //! 3. a chain of consecutive ScheduledActions is performed to completion in ONE
-//!    `drive_claimed`, via the worker's `while phase == Waiting` loop.
+//!    `drive_claimed`, via the worker's `while state == Awaiting` loop.
 
 mod harness;
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_run_ingress::{
     DispatchQueue, DispatchWorker, Error, MemoryDispatchStore, RunExecutionRequest,
 };
@@ -58,8 +58,8 @@ async fn a_genuine_drive_failure_is_reraised_and_the_dispatch_is_left_unsettled(
     // Committed truth never reached a terminal record.
     assert!(
         !matches!(
-            inner.committed().latest_run.map(|r| r.phase),
-            Some(Phase::Ended(_))
+            inner.committed().latest_run.map(|r| r.state),
+            Some(RunState::Ended(_))
         ),
         "the run never committed a terminal record"
     );
@@ -85,7 +85,7 @@ async fn a_genuine_drive_failure_is_reraised_and_the_dispatch_is_left_unsettled(
 
 #[tokio::test]
 async fn a_failing_scheduled_action_is_reraised_and_left_unsettled() {
-    // A run parked on a committed ScheduledAction is driven by a worker whose commit
+    // A run awaiting on a committed ScheduledAction is driven by a worker whose commit
     // fails: performing the deferred action errors. The run is still non-terminal, so
     // the worker re-raises and leaves the dispatch un-settled — the scheduled path
     // obeys the same fork as the execute/resume paths.
@@ -93,13 +93,13 @@ async fn a_failing_scheduled_action_is_reraised_and_left_unsettled() {
     let store = Arc::new(MemoryDispatchStore::new());
     let inner = Arc::new(MemoryCommitCoordinator::new());
 
-    // Park the run on a ScheduledAction with a healthy commit boundary first.
+    // Await the run on a ScheduledAction with a healthy commit boundary first.
     let ctx = RuntimeRunContext::new().with_commit(inner.clone());
-    let parked = runtime.execute(activation("run-1"), ctx).await.unwrap();
+    let awaiting = runtime.execute(activation("run-1"), ctx).await.unwrap();
     assert_eq!(
-        parked,
-        Phase::Waiting,
-        "the run parked on a ScheduledAction"
+        awaiting,
+        RunState::Awaiting,
+        "the run awaiting on a ScheduledAction"
     );
 
     store
@@ -123,10 +123,10 @@ async fn a_failing_scheduled_action_is_reraised_and_left_unsettled() {
     // Still non-terminal and still un-settled — the dispatch is left for recovery.
     assert!(
         matches!(
-            inner.committed().latest_run.map(|r| r.phase),
-            Some(Phase::Waiting)
+            inner.committed().latest_run.map(|r| r.state),
+            Some(RunState::Awaiting)
         ),
-        "the run stays parked (non-terminal) after the failed action"
+        "the run stays awaiting (non-terminal) after the failed action"
     );
     assert_eq!(
         store.dispatch_count(),
@@ -140,9 +140,9 @@ async fn a_failing_scheduled_action_is_reraised_and_left_unsettled() {
 #[tokio::test]
 async fn a_chain_of_scheduled_actions_is_performed_to_completion_in_one_drive() {
     // A run that commits two consecutive ScheduledActions (schedule → perform →
-    // schedule → perform → end) must be driven to a terminus within a SINGLE
-    // drive_claimed: the worker's `while phase == Waiting` loop keeps performing the
-    // next committed action in-process until the run ends, never settling Parked
+    // schedule → perform → end) must be driven to an end within a SINGLE
+    // drive_claimed: the worker's `while state == Awaiting` loop keeps performing the
+    // next committed action in-process until the run ends, never settling Awaiting
     // between hops.
     let (runtime, ran) = schedule_n_runtime(2);
     let store = Arc::new(MemoryDispatchStore::new());
@@ -159,7 +159,7 @@ async fn a_chain_of_scheduled_actions_is_performed_to_completion_in_one_drive() 
         processed,
         Some((
             RunId("run-1".to_string()),
-            Phase::Ended(EndCause::NaturalEnd)
+            RunState::Ended(EndCause::NaturalEnd)
         )),
         "the chain drove to a natural end in one drive"
     );
@@ -171,6 +171,6 @@ async fn a_chain_of_scheduled_actions_is_performed_to_completion_in_one_drive() 
     assert_eq!(
         store.dispatch_count(),
         0,
-        "the run settled Done after the whole chain, not Parked mid-chain"
+        "the run settled Done after the whole chain, not Awaiting mid-chain"
     );
 }

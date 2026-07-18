@@ -1,16 +1,16 @@
 //! Tests for the SQLite commit boundary. SQLite is embedded, so these always
 //! run (no external server, no skip): an in-memory database covers commit, the
-//! fence, reads, and waiting tickets; a temp file covers rehydration on restart.
+//! fence, reads, and awaiting tickets; a temp file covers rehydration on restart.
 
+use awaken_agent_contract::agent::awaiting::{AwaitReason, ResumeTicket};
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::{Command as StateCommand, MergePolicy, Scope};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::agent::waiting::{WaitingReason, WaitingTicket};
 use awaken_agent_contract::audit::draft::Draft;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
-use awaken_agent_contract::thread::commit::RunFact;
+use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::run_store::RunStore;
@@ -25,42 +25,31 @@ fn message(id: &str, text: &str) -> Message {
     }
 }
 
-fn ended(run: &str) -> RunFact {
-    RunFact {
-        run_id: RunId(run.to_string()),
-        phase: Phase::Ended(EndCause::NaturalEnd),
-    }
+fn ended(run: &str) -> RunDisposition {
+    RunDisposition::ended(RunId(run.to_string()), EndCause::NaturalEnd)
 }
 
-fn waiting_fact(run: &str) -> RunFact {
-    RunFact {
-        run_id: RunId(run.to_string()),
-        phase: Phase::Waiting,
-    }
-}
-
-fn ticket(run: &str, thread: &str) -> WaitingTicket {
-    WaitingTicket {
+fn ticket(run: &str, thread: &str) -> ResumeTicket {
+    ResumeTicket {
         correlation_id: "corr-1".to_string(),
         run_id: RunId(run.to_string()),
         thread_id: ThreadId(thread.to_string()),
         snapshot_id: "snap-1".to_string(),
         catalog_fingerprint: "fp-1".to_string(),
-        reason: WaitingReason::ToolPermission,
+        reason: AwaitReason::ToolPermission,
         call_id: Some("call-1".to_string()),
         pending_tool: None,
         deadline_ms: None,
     }
 }
 
-fn empty_commit(thread: &str, fact: RunFact, waiting: Option<WaitingTicket>) -> ThreadCommit {
+fn empty_commit(thread: &str, run: RunDisposition) -> ThreadCommit {
     ThreadCommit {
         thread_id: ThreadId(thread.to_string()),
-        run_fact: fact,
+        run,
         messages: vec![],
         state: vec![],
         events: vec![],
-        waiting,
     }
 }
 
@@ -71,7 +60,7 @@ async fn commit_persists_facts_messages_and_serves_reads() {
 
     let commit = ThreadCommit {
         thread_id: thread.clone(),
-        run_fact: ended("run-1"),
+        run: ended("run-1"),
         messages: vec![message("m1", "hello"), message("m2", "world")],
         state: vec![StateCommand::set(
             Scope::Run,
@@ -80,10 +69,9 @@ async fn commit_persists_facts_messages_and_serves_reads() {
             serde_json::json!("v"),
         )],
         events: vec![Draft {
-            kind: EventKind::RunPhaseChanged,
+            kind: EventKind::RunStateChanged,
             payload: serde_json::json!({"n": 1}),
         }],
-        waiting: None,
     };
 
     let record = store.commit(commit).await.expect("commit");
@@ -91,7 +79,7 @@ async fn commit_persists_facts_messages_and_serves_reads() {
     assert_eq!(store.commit_count(), 1);
 
     let run = RunStore::get(&store, &RunId("run-1".to_string())).expect("run record");
-    assert_eq!(run.phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(run.state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(run.thread_id, thread);
 
     let messages = ThreadReader::committed_messages(&store, &thread);
@@ -109,11 +97,7 @@ async fn fence_increments_monotonically() {
     // commit; a run ends exactly once.)
     for expected in 1..=3u64 {
         let record = store
-            .commit(empty_commit(
-                "thread-1",
-                ended(&format!("run-{expected}")),
-                None,
-            ))
+            .commit(empty_commit("thread-1", ended(&format!("run-{expected}"))))
             .await
             .expect("commit");
         assert_eq!(record.sequence, expected);
@@ -122,26 +106,25 @@ async fn fence_increments_monotonically() {
 }
 
 #[tokio::test]
-async fn waiting_ticket_parks_then_clears() {
+async fn resume_ticket_awaits_then_clears() {
     let store = SqliteCommitCoordinator::open_in_memory().expect("open");
     let run = RunId("run-1".to_string());
 
     store
         .commit(empty_commit(
             "thread-1",
-            waiting_fact("run-1"),
-            Some(ticket("run-1", "thread-1")),
+            RunDisposition::awaiting(ticket("run-1", "thread-1")),
         ))
         .await
-        .expect("park");
-    assert!(ThreadReader::waiting_ticket(&store, &run).is_some());
+        .expect("await");
+    assert!(ThreadReader::resume_ticket(&store, &run).is_some());
 
     store
-        .commit(empty_commit("thread-1", ended("run-1"), None))
+        .commit(empty_commit("thread-1", ended("run-1")))
         .await
         .expect("resume to terminal");
     assert!(
-        ThreadReader::waiting_ticket(&store, &run).is_none(),
+        ThreadReader::resume_ticket(&store, &run).is_none(),
         "a terminal run clears its ticket (fail closed)"
     );
 }
@@ -160,11 +143,10 @@ async fn projection_rehydrates_from_a_file_after_reopen() {
         store
             .commit(ThreadCommit {
                 thread_id: ThreadId("thread-1".to_string()),
-                run_fact: waiting_fact("run-1"),
+                run: RunDisposition::awaiting(ticket("run-1", "thread-1")),
                 messages: vec![message("m1", "persisted")],
                 state: vec![],
                 events: vec![],
-                waiting: Some(ticket("run-1", "thread-1")),
             })
             .await
             .expect("commit");
@@ -180,7 +162,7 @@ async fn projection_rehydrates_from_a_file_after_reopen() {
     );
     assert!(RunStore::get(&restarted, &RunId("run-1".to_string())).is_some());
     assert!(
-        ThreadReader::waiting_ticket(&restarted, &RunId("run-1".to_string())).is_some(),
+        ThreadReader::resume_ticket(&restarted, &RunId("run-1".to_string())).is_some(),
         "the active ticket rehydrated"
     );
 
@@ -209,11 +191,10 @@ async fn g13_failed_commit_leaves_no_partial_state() {
     let err = store
         .commit(ThreadCommit {
             thread_id: ThreadId(String::new()),
-            run_fact: ended("run-1"),
+            run: ended("run-1"),
             messages: vec![],
             state: vec![],
             events: vec![],
-            waiting: None,
         })
         .await;
     assert!(err.is_err(), "invalid plan must be rejected");

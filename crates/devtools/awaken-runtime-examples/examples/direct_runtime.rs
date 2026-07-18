@@ -57,11 +57,11 @@ async fn main() {
     //    commit for a SQLite coordinator to persist across restarts.
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
-    let phase = runtime.run(&config, "Say hi.", context).await.expect("run");
+    let state = runtime.run(&config, "Say hi.", context).await.expect("run");
 
     // 5. Inspect the committed transcript.
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
-    println!("run finished: {phase:?}\n--- committed transcript ---");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+    println!("run finished: {state:?}\n--- committed transcript ---");
     for message in commit.committed().messages {
         println!("[{:?}] {}", message.role, message.text_content());
     }

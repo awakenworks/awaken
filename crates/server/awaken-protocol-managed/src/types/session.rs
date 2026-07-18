@@ -336,7 +336,7 @@ pub enum InboundEvent {
         #[serde(default)]
         is_error: bool,
     },
-    /// The generic client-provided result for a parked tool, keyed by the
+    /// The generic client-provided result for an awaiting tool, keyed by the
     /// `agent.tool_use` id from a `requires_action` `event_ids` — the SDK's
     /// `user.tool_result`. Handled like `user.custom_tool_result` (delivers a
     /// client tool's result), keyed by `tool_use_id` rather than `custom_tool_use_id`.

@@ -4,14 +4,14 @@
 //!   (logged and retried on the next tick), never killing the daemon; and
 //! - the worker meters the dispatch lifecycle — one `claim`, one `drive.duration`,
 //!   and exactly one `settled{outcome}` — on every drive exit path (a terminal Done,
-//!   a Parked re-park, and an early terminal-recovery return).
+//!   a Awaiting re-await, and an early terminal-recovery return).
 
 mod harness;
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_run_ingress::{
     DispatchQueue, DispatchService, DispatchServiceConfig, DispatchWorker, MemoryDispatchStore,
@@ -91,7 +91,7 @@ async fn a_terminal_drive_meters_one_claim_one_drive_and_one_done_settle() {
     let processed = worker.tick(0).await.unwrap();
     assert!(matches!(
         processed,
-        Some((_, Phase::Ended(EndCause::NaturalEnd)))
+        Some((_, RunState::Ended(EndCause::NaturalEnd)))
     ));
 
     assert_eq!(
@@ -110,14 +110,14 @@ async fn a_terminal_drive_meters_one_claim_one_drive_and_one_done_settle() {
         "exactly one done settle metered"
     );
     assert_eq!(
-        metrics.settled_parked.load(Ordering::SeqCst),
+        metrics.settled_awaiting.load(Ordering::SeqCst),
         0,
-        "no parked settle for a terminal run"
+        "no awaiting settle for a terminal run"
     );
 }
 
 #[tokio::test]
-async fn a_parking_drive_meters_one_claim_one_drive_and_one_parked_settle() {
+async fn an_awaiting_drive_meters_one_claim_one_drive_and_one_awaiting_settle() {
     let metrics = Arc::new(RecordingMetrics::default());
     let (runtime, _ran) = tool_runtime_with_metrics(metrics.clone() as Arc<_>);
     let store = Arc::new(MemoryDispatchStore::new());
@@ -129,7 +129,7 @@ async fn a_parking_drive_meters_one_claim_one_drive_and_one_parked_settle() {
         .unwrap();
     let worker = DispatchWorker::new(runtime, store, commit, "solo");
     let processed = worker.tick(0).await.unwrap();
-    assert!(matches!(processed, Some((_, Phase::Waiting))));
+    assert!(matches!(processed, Some((_, RunState::Awaiting))));
 
     assert_eq!(
         metrics.claimed.load(Ordering::SeqCst),
@@ -139,17 +139,17 @@ async fn a_parking_drive_meters_one_claim_one_drive_and_one_parked_settle() {
     assert_eq!(
         metrics.drives.load(Ordering::SeqCst),
         1,
-        "one drive.duration metered even though the run parked"
+        "one drive.duration metered even though the run awaiting"
     );
     assert_eq!(
-        metrics.settled_parked.load(Ordering::SeqCst),
+        metrics.settled_awaiting.load(Ordering::SeqCst),
         1,
-        "exactly one parked settle metered"
+        "exactly one awaiting settle metered"
     );
     assert_eq!(
         metrics.settled_done.load(Ordering::SeqCst),
         0,
-        "no done settle for a parked run"
+        "no done settle for an awaiting run"
     );
 }
 
@@ -170,11 +170,11 @@ async fn an_early_terminal_recovery_return_is_still_fully_metered() {
     let ctx = awaken_runtime_contract::runtime_context::RuntimeRunContext::new()
         .with_commit(commit.clone());
     use awaken_runtime_contract::execution::RunExecutor;
-    let phase = runtime.execute(activation("run-1"), ctx).await.unwrap();
-    assert!(matches!(phase, Phase::Ended(_)));
+    let state = runtime.execute(activation("run-1"), ctx).await.unwrap();
+    assert!(matches!(state, RunState::Ended(_)));
     assert!(matches!(
-        RunStore::get(&*commit, &run).map(|r| r.phase),
-        Some(Phase::Ended(_))
+        RunStore::get(&*commit, &run).map(|r| r.state),
+        Some(RunState::Ended(_))
     ));
     // Reset the metrics: we only want to measure the recovery drive below.
     metrics.claimed.store(0, Ordering::SeqCst);
@@ -188,7 +188,7 @@ async fn an_early_terminal_recovery_return_is_still_fully_metered() {
     let worker = DispatchWorker::new(runtime, store.clone(), commit, "recovery");
     let processed = worker.tick(0).await.unwrap();
     assert!(
-        matches!(processed, Some((_, Phase::Ended(_)))),
+        matches!(processed, Some((_, RunState::Ended(_)))),
         "the recovered terminal run settles Done without re-running"
     );
     // The dispatch was settled (removed), via the early recovery arm.

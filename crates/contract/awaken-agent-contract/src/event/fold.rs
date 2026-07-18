@@ -2,7 +2,7 @@
 //!
 //! This is the single shape every public protocol adapter projects from. A
 //! committed step (the messages committed during a turn or resume, plus the
-//! terminal phase) is folded into a sequence of neutral [`AgentEvent`]s by
+//! terminal state) is folded into a sequence of neutral [`AgentEvent`]s by
 //! [`fold_messages`] / [`fold_step`]; each protocol then implements one
 //! [`Transcoder`] that maps those events to its own wire vocabulary. The fold is
 //! shared; only the transcoder differs per protocol (static Strategy).
@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::agent::content::ContentBlock;
 use crate::agent::message::{Message, Role};
-use crate::agent::run::{EndCause, Phase};
+use crate::agent::run::{EndCause, RunState};
 use crate::event::{AgentEvent, Delta, Fact, ToolDisposition};
 
 /// Transcode neutral events into a protocol's wire events — one impl per protocol,
@@ -53,7 +53,7 @@ pub trait Transcoder {
 
 /// Fold a committed step's messages into per-message neutral events (no
 /// `RunStarted`, no terminal). `pending` is `(tool_use_id, client_executed)` of
-/// the tool the run parked on, when it parked — it classifies that tool's call.
+/// the tool the run awaiting on, when it awaiting — it classifies that tool's call.
 pub fn fold_messages(new_messages: &[Message], pending: Option<(&str, bool)>) -> Vec<Fact> {
     let mut out = Vec::new();
     for message in new_messages {
@@ -219,49 +219,49 @@ pub fn fold_history(messages: &[Message], sink: &mut impl HistorySink) {
 }
 
 /// Fold a full committed step (with boundaries): `RunStarted`, the message
-/// events, then a terminal event derived from `phase`.
+/// events, then a terminal event derived from `state`.
 pub fn fold_step(
     new_messages: &[Message],
-    phase: &Phase,
+    state: &RunState,
     pending: Option<(&str, bool)>,
 ) -> Vec<Fact> {
     let mut out = vec![Fact::RunStarted];
     out.extend(fold_messages(new_messages, pending));
-    out.push(terminal(phase, pending));
+    out.push(terminal(state, pending));
     out
 }
 
-/// The `Waiting` terminal event naming the pending tool. For callers that carry a
-/// protocol stop reason rather than a [`Phase`].
-pub fn terminal_waiting(pending_tool_use_id: Option<&str>) -> Fact {
-    Fact::Waiting {
+/// The `Awaiting` terminal event naming the pending tool. For callers that carry a
+/// protocol stop reason rather than a [`RunState`].
+pub fn terminal_awaiting(pending_tool_use_id: Option<&str>) -> Fact {
+    Fact::Awaiting {
         pending_tool_use_id: pending_tool_use_id.map(str::to_string),
     }
 }
 
-/// The terminal projection event for a phase. A fault projects as `RunFailed`
+/// The terminal projection event for a state. A fault projects as `RunFailed`
 /// carrying its classification code, so hosts can tell a failed run from a
-/// finished one without reading the committed phase.
-pub fn terminal(phase: &Phase, pending: Option<(&str, bool)>) -> Fact {
-    match phase {
-        // Not a terminus: a run committed mid-flight projects as its
-        // in-progress signal. Hosts normally project only parked/ended phases.
-        Phase::Running => Fact::RunStarted,
-        Phase::Waiting => Fact::Waiting {
+/// finished one without reading the committed state.
+pub fn terminal(state: &RunState, pending: Option<(&str, bool)>) -> Fact {
+    match state {
+        // Not an end: a run committed mid-flight projects as its
+        // in-progress signal. Hosts normally project only awaiting/ended phases.
+        RunState::Running => Fact::RunStarted,
+        RunState::Awaiting => Fact::Awaiting {
             pending_tool_use_id: pending.map(|p| p.0.to_string()),
         },
-        Phase::Ended(EndCause::MaxSteps) => Fact::RunFinished { exhausted: true },
-        Phase::Ended(EndCause::Error(failure)) => Fact::RunFailed {
+        RunState::Ended(EndCause::MaxSteps) => Fact::RunFinished { exhausted: true },
+        RunState::Ended(EndCause::Error(failure)) => Fact::RunFailed {
             code: failure.code().to_string(),
             message: failure.message(),
         },
         // G26: indeterminate remote execution is explicit; it is never silently
         // converted to success.
-        Phase::Ended(EndCause::Indeterminate) => Fact::RunFailed {
+        RunState::Ended(EndCause::Indeterminate) => Fact::RunFailed {
             code: "indeterminate".to_string(),
             message: "execution outcome could not be determined".to_string(),
         },
-        Phase::Ended(_) => Fact::RunFinished { exhausted: false },
+        RunState::Ended(_) => Fact::RunFinished { exhausted: false },
     }
 }
 
@@ -297,14 +297,14 @@ mod tests {
                 )],
             ),
         ];
-        for phase in [
-            Phase::Running,
-            Phase::Waiting,
-            Phase::Ended(EndCause::NaturalEnd),
-            Phase::Ended(EndCause::MaxSteps),
-            Phase::Ended(EndCause::Error(Failure::CapabilityBound)),
+        for state in [
+            RunState::Running,
+            RunState::Awaiting,
+            RunState::Ended(EndCause::NaturalEnd),
+            RunState::Ended(EndCause::MaxSteps),
+            RunState::Ended(EndCause::Error(Failure::CapabilityBound)),
         ] {
-            for fact in fold_step(&messages, &phase, Some(("c1", false))) {
+            for fact in fold_step(&messages, &state, Some(("c1", false))) {
                 assert_eq!(
                     classify(&AgentEvent::Fact(fact.clone())).tier,
                     Tier::Fact,
@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn error_terminal_projects_run_failed_with_the_fault_code() {
-        let inference = Phase::Ended(EndCause::Error(Failure::Inference {
+        let inference = RunState::Ended(EndCause::Error(Failure::Inference {
             code: "unauthorized".to_string(),
             message: "bad api key".to_string(),
         }));
@@ -328,7 +328,7 @@ mod tests {
             }
         );
 
-        let capability = Phase::Ended(EndCause::Error(Failure::CapabilityBound));
+        let capability = RunState::Ended(EndCause::Error(Failure::CapabilityBound));
         assert!(matches!(
             terminal(&capability, None),
             Fact::RunFailed { code, .. } if code == "capability_bound"
@@ -361,7 +361,7 @@ mod tests {
     #[test]
     fn step_wraps_with_start_and_terminal() {
         let msg = Message::text(Id("a1".into()), Role::Assistant, "hi");
-        let events = fold_step(&[msg], &Phase::Ended(EndCause::NaturalEnd), None);
+        let events = fold_step(&[msg], &RunState::Ended(EndCause::NaturalEnd), None);
         assert_eq!(events.first(), Some(&Fact::RunStarted));
         assert_eq!(events.last(), Some(&Fact::RunFinished { exhausted: false }));
     }
@@ -370,8 +370,8 @@ mod tests {
     // projected as success.
     #[test]
     fn indeterminate_projects_as_run_failed_not_run_finished() {
-        let phase = Phase::Ended(EndCause::Indeterminate);
-        let event = terminal(&phase, None);
+        let state = RunState::Ended(EndCause::Indeterminate);
+        let event = terminal(&state, None);
         assert!(
             matches!(&event, Fact::RunFailed { code, .. } if code == "indeterminate"),
             "Indeterminate must project to RunFailed, got {event:?}"
@@ -386,17 +386,17 @@ mod tests {
         assert_eq!(parsed, EndCause::Indeterminate);
     }
 
-    // --- terminal(): the remaining phase rows of the decision table ---
+    // --- terminal(): the remaining state rows of the decision table ---
 
     #[test]
-    fn running_phase_projects_as_run_started_not_a_terminus() {
-        assert_eq!(terminal(&Phase::Running, None), Fact::RunStarted);
+    fn running_state_projects_as_run_started_not_a_terminus() {
+        assert_eq!(terminal(&RunState::Running, None), Fact::RunStarted);
     }
 
     #[test]
     fn max_steps_projects_as_exhausted_run_finished() {
         assert_eq!(
-            terminal(&Phase::Ended(EndCause::MaxSteps), None),
+            terminal(&RunState::Ended(EndCause::MaxSteps), None),
             Fact::RunFinished { exhausted: true }
         );
     }
@@ -409,7 +409,7 @@ mod tests {
             EndCause::Stopped("budget".into()),
         ] {
             assert_eq!(
-                terminal(&Phase::Ended(cause.clone()), None),
+                terminal(&RunState::Ended(cause.clone()), None),
                 Fact::RunFinished { exhausted: false },
                 "{cause:?} must project as a non-exhausted finish"
             );
@@ -417,16 +417,16 @@ mod tests {
     }
 
     #[test]
-    fn waiting_phase_carries_the_pending_tool_id_or_none() {
+    fn awaiting_state_carries_the_pending_tool_id_or_none() {
         assert_eq!(
-            terminal(&Phase::Waiting, Some(("call-9", false))),
-            Fact::Waiting {
+            terminal(&RunState::Awaiting, Some(("call-9", false))),
+            Fact::Awaiting {
                 pending_tool_use_id: Some("call-9".into())
             }
         );
         assert_eq!(
-            terminal(&Phase::Waiting, None),
-            Fact::Waiting {
+            terminal(&RunState::Awaiting, None),
+            Fact::Awaiting {
                 pending_tool_use_id: None
             }
         );
@@ -434,24 +434,24 @@ mod tests {
 
     #[test]
     fn state_conflict_error_projects_its_code() {
-        let phase = Phase::Ended(EndCause::Error(Failure::StateConflict));
+        let state = RunState::Ended(EndCause::Error(Failure::StateConflict));
         assert!(matches!(
-            terminal(&phase, None),
+            terminal(&state, None),
             Fact::RunFailed { code, .. } if code == "state_conflict"
         ));
     }
 
     #[test]
-    fn terminal_waiting_helper_maps_the_id() {
+    fn terminal_awaiting_helper_maps_the_id() {
         assert_eq!(
-            terminal_waiting(Some("c1")),
-            Fact::Waiting {
+            terminal_awaiting(Some("c1")),
+            Fact::Awaiting {
                 pending_tool_use_id: Some("c1".into())
             }
         );
         assert_eq!(
-            terminal_waiting(None),
-            Fact::Waiting {
+            terminal_awaiting(None),
+            Fact::Awaiting {
                 pending_tool_use_id: None
             }
         );

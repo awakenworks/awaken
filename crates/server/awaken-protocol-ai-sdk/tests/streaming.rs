@@ -23,7 +23,7 @@ use tower::ServiceExt;
 
 /// A runtime that scripts a streamed turn: it pushes a text delta and three
 /// cumulative tool-argument snapshots onto the live sink, then returns the
-/// committed step (a parked client tool call with the parsed input).
+/// committed step (an awaiting client tool call with the parsed input).
 struct StreamingMock;
 
 #[async_trait::async_trait]
@@ -99,7 +99,7 @@ impl ProtocolRuntime for StreamingMock {
     }
 }
 
-/// The committed step: a client tool call the run parked on, with parsed input.
+/// The committed step: a client tool call the run awaiting on, with parsed input.
 fn committed() -> StepOutcome {
     StepOutcome {
         new_messages: vec![Message {
@@ -111,7 +111,7 @@ fn committed() -> StepOutcome {
                 input: json!({"path": "x"}),
             }],
         }],
-        terminal: Terminal::Waiting {
+        terminal: Terminal::Awaiting {
             pending: Some(Pending {
                 tool_use_id: "c1".into(),
                 name: "read".into(),

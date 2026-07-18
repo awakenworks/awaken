@@ -1,13 +1,13 @@
 //! Run-execution routing (R3/R4): drive a thread's activation on the native
 //! ingress or, when the session selected an ACP runtime, on the ACP executor.
 //!
-//! Both commit through the thread's coordinator and return a `Phase`, so the
+//! Both commit through the thread's coordinator and return a `RunState`, so the
 //! caller's `finish_step` projection is identical either way — the ACP brain is a
 //! peer `RunExecutor`, not a parallel code path.
 
 use std::sync::Arc;
 
-use awaken_agent_contract::agent::run::Phase;
+use awaken_agent_contract::agent::run::RunState;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
@@ -28,7 +28,7 @@ impl SharedHost {
         activation: RunActivation,
         supersede: bool,
         sink: Option<Arc<dyn StreamSink>>,
-    ) -> Result<Phase, HostError> {
+    ) -> Result<RunState, HostError> {
         // R3/R4: an ACP-selected thread runs on the external CLI (relaunched per
         // turn — R7), committing through the same coordinator as the native path.
         if let Some(acp) = &self.acp
@@ -61,7 +61,7 @@ impl SharedHost {
             // let the process pool drive it on this session's worker (O2).
             self.submit_durable_foreground(ctx, activation, true).await
         } else if ctx.durable {
-            // Durable: enqueue and await the pool driving it to a settled phase. The
+            // Durable: enqueue and await the pool driving it to a settled state. The
             // session's own worker must not claim (it would grab foreign threads'
             // runs on the shared queue); the pool is the sole claimer.
             self.submit_durable_foreground(ctx, activation, false).await

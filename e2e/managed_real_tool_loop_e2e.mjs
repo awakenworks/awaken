@@ -43,14 +43,14 @@ async function main() {
         betas: BETAS,
       });
 
-      // Round 1: the real model requests a tool; awaken parks it for confirmation.
+      // Round 1: the real model requests a tool; awaken awaits it for confirmation.
       const first = await listEvents(client, session.id);
       const toolUse = first.find((e) => e.type === 'agent.tool_use' && e.name === 'bash');
       assert.ok(toolUse, `expected a bash agent.tool_use, saw: ${[...new Set(first.map((e) => e.type))].join(', ')}`);
       assert.match(JSON.stringify(toolUse.input ?? {}), new RegExp(MARKER), 'bash command references the marker');
       const idle1 = first.filter((e) => e.type === 'session.status_idle').at(-1);
-      assert.equal(idle1?.stop_reason?.type, 'requires_action', 'built-in tool parks at requires_action');
-      pass('real model requested the bash tool; session parked at requires_action');
+      assert.equal(idle1?.stop_reason?.type, 'requires_action', 'built-in tool awaits at requires_action');
+      pass('real model requested the bash tool; session awaiting at requires_action');
 
       // Confirm the tool; awaken's sandbox runs it for real and feeds the result back.
       await client.beta.sessions.events.send(session.id, {

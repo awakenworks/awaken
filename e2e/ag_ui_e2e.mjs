@@ -53,14 +53,14 @@ async function main() {
     pass('ag-ui multimodal (image reached the model)');
   });
 
-  // --- HITL: a tool needing approval parks; delivering its result (approval) as a
+  // --- HITL: a tool needing approval awaits; delivering its result (approval) as a
   // `role: "tool"` message resumes the run to completion ---
   await withRealServer('probe', 38123, async (base) => {
     const agent = newAgent(base);
     agent.messages = [{ id: 'u1', role: 'user', content: 'remember this note' }];
     const r1 = await agent.runAgent();
     const call = (r1.newMessages ?? []).flatMap((m) => m.toolCalls ?? [])[0];
-    assert.ok(call, `expected a parked tool call: ${JSON.stringify(r1.newMessages)}`);
+    assert.ok(call, `expected an awaiting tool call: ${JSON.stringify(r1.newMessages)}`);
 
     agent.messages = [
       ...agent.messages,
@@ -72,7 +72,7 @@ async function main() {
       .map((m) => (typeof m.content === 'string' ? m.content : ''))
       .join('');
     assert.ok(text.includes('done'), `expected the run to finish after approval: ${text}`);
-    pass('ag-ui HITL approval (park -> approve -> complete)');
+    pass('ag-ui HITL approval (await -> approve -> complete)');
   });
 
   // --- streaming tool calls: a tool call is delivered mid-run as the AG-UI

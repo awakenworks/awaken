@@ -469,7 +469,7 @@ mod tests {
     /// `TaskState::AuthRequired` had ZERO coverage: no test pinned its wire token.
     /// The A2A JSON spelling is `"auth-required"` (hyphenated), with the proto token
     /// `TASK_STATE_AUTH_REQUIRED` accepted on input for back-compat. A rename would
-    /// silently break a remote agent that parks a task awaiting auth, so pin the full
+    /// silently break a remote agent that awaits a task awaiting auth, so pin the full
     /// round-trip plus the input alias.
     #[test]
     fn task_state_auth_required_round_trips_on_the_a2a_wire_token() {

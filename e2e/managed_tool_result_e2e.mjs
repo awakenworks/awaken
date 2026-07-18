@@ -1,7 +1,7 @@
 // The generic `user.tool_result` inbound event (SDK: sessions.events.send with a
-// `user.tool_result` param). A client tool call parks the run
+// `user.tool_result` param). A client tool call awaits the run
 // (`agent.custom_tool_use` + `requires_action`); the client returns the result via
-// `user.tool_result` keyed by the parked `tool_use_id` (rather than
+// `user.tool_result` keyed by the awaiting `tool_use_id` (rather than
 // `user.custom_tool_result`'s `custom_tool_use_id`), and the run resumes. Proves
 // the repo accepts the SDK's generic tool-result event, not only the custom one.
 //
@@ -30,7 +30,7 @@ async function main() {
       betas: BETAS,
     });
 
-    // Message -> the client tool call parks.
+    // Message -> the client tool call awaits.
     await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'solve it' }] }],
       betas: BETAS,
@@ -40,7 +40,7 @@ async function main() {
     assert.ok(toolUse, `expected agent.custom_tool_use, got: ${events.map((e) => e.type)}`);
     const idle = events.find((e) => e.type === 'session.status_idle');
     assert.equal(idle.stop_reason.type, 'requires_action');
-    assert.ok(idle.stop_reason.event_ids.includes(toolUse.id), 'the parked tool id is in event_ids');
+    assert.ok(idle.stop_reason.event_ids.includes(toolUse.id), 'the awaiting tool id is in event_ids');
 
     // Return the result via the GENERIC user.tool_result (keyed by tool_use_id).
     await client.beta.sessions.events.send(session.id, {
@@ -55,7 +55,7 @@ async function main() {
     const lastIdle = [...events].reverse().find((e) => e.type === 'session.status_idle');
     assert.equal(lastIdle.stop_reason.type, 'end_turn');
 
-    console.log('E2E PASS: generic user.tool_result round-trips a parked tool via TS SDK.');
+    console.log('E2E PASS: generic user.tool_result round-trips an awaiting tool via TS SDK.');
   });
 }
 

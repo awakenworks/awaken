@@ -80,10 +80,10 @@ block the run loop's thread; async keeps scheduling behind the port.
 
 **Placement lifecycle (G3).** A remote executor returned here *owns* whatever
 placement it acquired (e.g. a leased worker). It releases that **on drop** — when
-the run's `RuntimeRunContext` is dropped at turn end (or park), the executor's
+the run's `RuntimeRunContext` is dropped at turn end (or await), the executor's
 `Arc` drops and the driver reclaims the lease, with the lease's own TTL/epoch as
 the backstop. The port therefore needs **no** separate `release` call, keeping it
-minimal (G16); park/resume falls out for free (drop on park, a fresh `provide` on
+minimal (G16); await/resume falls out for free (drop on await, a fresh `provide` on
 resume).
 
 This mirrors the runtime's existing provider seams (`ExecutorProvider`,

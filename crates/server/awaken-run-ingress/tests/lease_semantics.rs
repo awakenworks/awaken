@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_run_ingress::{
     DispatchOutcome, DispatchQueue, DispatchWorker, MemoryDispatchStore, RunExecutionRequest,
@@ -119,7 +119,7 @@ async fn expired_lease_is_reclaimed_and_driven_exactly_once() {
         processed,
         Some((
             RunId("run-1".to_string()),
-            Phase::Ended(EndCause::NaturalEnd)
+            RunState::Ended(EndCause::NaturalEnd)
         )),
         "B reclaims the expired lease and drives the run to completion"
     );
@@ -161,11 +161,11 @@ async fn stale_reclaim_of_a_completed_run_settles_without_re_executing() {
     // exactly what its worker would have committed — but never calls settle.
     assert!(store.claim("owner-a", LEASE, 0).await.unwrap().is_some());
     let ctx = RuntimeRunContext::new().with_commit(commit.clone());
-    let phase = runtime.execute(activation("run-1"), ctx).await.unwrap();
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    let state = runtime.execute(activation("run-1"), ctx).await.unwrap();
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(infers.load(Ordering::SeqCst), 1, "A executed the run once");
     let record = RunStore::get(commit.as_ref(), &RunId("run-1".to_string())).expect("record");
-    assert_eq!(record.phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(record.state, RunState::Ended(EndCause::NaturalEnd));
 
     // B reclaims the still-Running dispatch (lease expired). The committed terminal
     // record is authority: the worker settles Done and does not re-run the model.
@@ -176,7 +176,7 @@ async fn stale_reclaim_of_a_completed_run_settles_without_re_executing() {
         processed,
         Some((
             RunId("run-1".to_string()),
-            Phase::Ended(EndCause::NaturalEnd)
+            RunState::Ended(EndCause::NaturalEnd)
         )),
         "B settles the completed run from committed truth"
     );
@@ -252,7 +252,7 @@ async fn mid_flight_reclaim_keeps_the_committed_log_exactly_once() {
     // The residual risk of lease-based recovery: a run reclaimed while its FIRST
     // execution is genuinely still in flight (owner slow, not dead; lease lapsed;
     // renewal failed) is RE-EXECUTED. owner-a claims and starts driving; its tool
-    // blocks after A has committed a `Running` fact (mid-step, no waiting ticket).
+    // blocks after A has committed a `Running` fact (mid-step, no awaiting ticket).
     // Its lease lapses with no renewal. owner-b reclaims — sees no ticket and a
     // non-terminal `Running` record, so it re-executes and drives the run to
     // `Ended`, running the tool a SECOND time.
@@ -309,16 +309,16 @@ async fn mid_flight_reclaim_keeps_the_committed_log_exactly_once() {
     assert!(frozen.is_ok(), "A reached and blocked in the tool");
     assert_eq!(ran.load(Ordering::SeqCst), 1, "the tool ran once (owner A)");
 
-    // A is mid-flight: it committed a `Running` fact and parked NO waiting ticket.
+    // A is mid-flight: it committed a `Running` fact and awaiting NO awaiting ticket.
     let record = RunStore::get(commit.as_ref(), &run).expect("record");
     assert_eq!(
-        record.phase,
-        Phase::Running,
+        record.state,
+        RunState::Running,
         "A committed a mid-flight Running fact"
     );
     assert!(
-        commit.waiting_for(&run).is_none(),
-        "and there is no waiting ticket — the reclaim hits the no-ticket branch"
+        commit.resume_ticket_for(&run).is_none(),
+        "and there is no awaiting ticket — the reclaim hits the no-ticket branch"
     );
 
     // B's lease-expired reclaim re-drives the SAME run to completion, running the
@@ -328,7 +328,7 @@ async fn mid_flight_reclaim_keeps_the_committed_log_exactly_once() {
     let processed = worker_b.tick(LEASE + 1).await.unwrap();
     assert_eq!(
         processed,
-        Some((run.clone(), Phase::Ended(EndCause::NaturalEnd))),
+        Some((run.clone(), RunState::Ended(EndCause::NaturalEnd))),
         "B reclaimed the still-running run and drove it to completion"
     );
 
@@ -366,7 +366,7 @@ async fn mid_flight_reclaim_keeps_the_committed_log_exactly_once() {
     let ended_facts = committed
         .run_facts
         .iter()
-        .filter(|fact| fact.run_id == run && matches!(fact.phase, Phase::Ended(_)))
+        .filter(|fact| fact.run_id == run && matches!(fact.state, RunState::Ended(_)))
         .count();
     assert_eq!(
         ended_facts, 1,
@@ -417,7 +417,7 @@ fn message_text(message: &awaken_agent_contract::agent::message::Message) -> Opt
 #[tokio::test]
 async fn fresh_claim_drives_a_run_to_completion() {
     // A minimal end-to-end sanity check that the worker under test drives a freshly
-    // claimed run to a terminal phase on a single owner (no contention).
+    // claimed run to a terminal state on a single owner (no contention).
     let runtime = text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -431,7 +431,7 @@ async fn fresh_claim_drives_a_run_to_completion() {
         processed,
         Some((
             RunId("run-1".to_string()),
-            Phase::Ended(EndCause::NaturalEnd)
+            RunState::Ended(EndCause::NaturalEnd)
         ))
     );
     assert_eq!(store.dispatch_count(), 0);

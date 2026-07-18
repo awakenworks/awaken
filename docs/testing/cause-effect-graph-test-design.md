@@ -31,7 +31,7 @@
 
 **判定表单元格**:`1`=因成立/果发生;`0`=因不成立/果不发生;`-`=无关(don't care)。列头 `T#` 为测试用例编号。
 
-**全局铁律(贯穿所有模块的 O 约束)**:一次 run 只能经由**恰好一个** `EndCause` 终结(`run.rs`)。`End` 枚举使 `Parked`(等待)与 `Ended`(终结)在构造上互斥,`finish` 永不可能把 `Phase::Waiting` 与终结原因同时提交(`engine/mod.rs:1912`)。凡涉及 run 终结的果,均隐含此 O 约束。
+**全局铁律(贯穿所有模块的 O 约束)**:一次 run 只能经由**恰好一个** `EndCause` 终结(`run.rs`)。`End` 枚举使 `Awaiting`(等待)与 `Ended`(终结)在构造上互斥,`finish` 永不可能把 `RunState::Awaiting` 与终结原因同时提交(`engine/mod.rs:1912`)。凡涉及 run 终结的果,均隐含此 O 约束。
 
 ---
 
@@ -61,7 +61,7 @@
 
 | ID | 果 | 代码锚点 |
 |---|---|---|
-| E1 | 提交 `Phase::Ended(Cancelled)` | mod.rs:106 |
+| E1 | 提交 `RunState::Ended(Cancelled)` | mod.rs:106 |
 | E2 | `EndCause::Error(Failure::CapabilityBound)` | mod.rs:114 |
 | E3 | `EndCause::Error(Failure::Inference{code,message})`(失败流终结) | mod.rs:897 |
 | E4 | `EndCause::NaturalEnd`(纯文本收尾 / guard Complete-End) | mod.rs:1041 |
@@ -618,7 +618,7 @@ C77 → E67     C78 → E68(Quarantine)     C79 → (Indeterminate, 不判成功
 | C83 | 停在 input 票上 且待处理输入相关性匹配 | worker.rs:277/281 |
 | C84 | 无票 且已提交 run 记录已 `Ended`(恢复的终态) | worker.rs:323 |
 | C85 | 过期租约的 running 行(恢复,花一次崩溃重试) | memory.rs:157 |
-| C86 | parked 行且到期待处理输入(唤醒)且线程未运行 | memory.rs:165 |
+| C86 | awaiting 行且到期待处理输入(唤醒)且线程未运行 | memory.rs:165 |
 | C87 | 线程已有运行中 run(单写者/线程,遮蔽 wake/fresh) | memory.rs:148 |
 | C88 | settle epoch ≠ 当前 lease_epoch → Fenced(否则 Applied) | memory.rs:385 |
 | C89 | 提交栅栏:不持当前 epoch → `CommitError::Rejected`;`current_epoch=None` fail-open | commit_fence.rs:64 |
@@ -629,9 +629,9 @@ C77 → E67     C78 → E68(Quarantine)     C79 → (Indeterminate, 不判成功
 | ID | 果 | 锚点 |
 |---|---|---|
 | E71 | 进程内执行调度动作(fenced ctx) | worker.rs:175 |
-| E72 | 从匹配输入恢复 parked run | worker.rs:285 |
+| E72 | 从匹配输入恢复 aawaiting run | worker.rs:285 |
 | E73 | settle Done(终态):移除派工 + 全部 pending | worker.rs:448 |
-| E74 | settle Parked(检查点):留行,`attempt_count=0`,仅弃 consumed | memory.rs:399 |
+| E74 | settle Awaiting(检查点):留行,`attempt_count=0`,仅弃 consumed | memory.rs:399 |
 | E75 | `Running` 结果→高声失败 `Error::Execution` | worker.rs:553 |
 | E76 | `SettleOutcome::Fenced`→陈旧属主放弃(遮蔽 E73/E74) | worker.rs:453 |
 | E77 | claim 返回 `Claimed{...}` 并递增 `lease_epoch`;恢复重claim `attempt_count+1` | memory.rs:277 |
@@ -646,7 +646,7 @@ Running结果 → E75
 ```
 
 - **O**{提交协调后端 fs/sqlite/pg 每部署};**O**{dispatch store memory/pg/transport};**O**{wake local/nats/pg-notify,pg-notify 要求 pg store}。
-- **R**:C86 wake 要求 parked ∧ 到期输入 ∧ 线程未运行(三者);C85 恢复 claim 唯一豁免"未运行"守卫(重owning 同行);C90 reap 要求过期 ∧ attempt 满(Parked 重置 attempt→检查点 run 永不死信);C89 栅栏要求后端暴露 `current_epoch`,None⇒fail-open。
+- **R**:C86 wake 要求 awaiting ∧ 到期输入 ∧ 线程未运行(三者);C85 恢复 claim 唯一豁免"未运行"守卫(重owning 同行);C90 reap 要求过期 ∧ attempt 满(Awaiting 重置 attempt→检查点 run 永不死信);C89 栅栏要求后端暴露 `current_epoch`,None⇒fail-open。
 - **M**:`Fenced` 遮蔽 E73–E75(reclaimer 状态不可侵);单写者/线程(C87)遮蔽 wake/fresh;enqueue 幂等/去重遮蔽新建行(至少一次投递→恰好一次效果);wake 丢失被 poll 兜底遮蔽(只延不丢)。
 
 ### 判定表 M10
@@ -662,7 +662,7 @@ Running结果 → E75
 | C88 epoch 不符 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 |
 | C90 reap 满预算 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 |
 | **E71 执行调度动作** | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **E72 恢复 parked** | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
+| **E72 恢复 awaiting** | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
 | **E73 良性已完成** | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 |
 | **E77 claim+attempt+1** | 0 | 0 | 0 | 1 | 1 | 0 | 0 | 0 |
 | **claim None(单写遮蔽)** | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 |
@@ -680,8 +680,8 @@ Running结果 → E75
 | ID | 因 | 锚点 |
 |---|---|---|
 | C91 | `commit.validate()` 失败(空 id / 跨 run\|thread 票) | fs:97 / sqlite:203 / pg:234 |
-| C92 | 终态即最终:先前已提交 phase = Ended → 拒后续提交 | fs:116 / sqlite:227 / pg:262 |
-| C93 | 提交带 waiting 且 phase=Waiting → 插等待票,否则删票 | sqlite:430 / pg:364 |
+| C92 | 终态即最终:先前已提交 state = Ended → 拒后续提交 | fs:116 / sqlite:227 / pg:262 |
+| C93 | 提交带 waiting 且 state=Awaiting → 插等待票,否则删票 | sqlite:430 / pg:364 |
 | C94 | open 时恢复:日志重放 / 尾行残断 | fs:54 |
 | C95 | 后端选择 fs(append+fsync)/ sqlite(write_lock)/ pg(FOR UPDATE) | — |
 | C96 | Stream 检查点 store 已接线 vs 未 | worker.rs:86 |
@@ -715,7 +715,7 @@ C94 → E82     C96 ∧ C97 → E85(resume)     C96 ∧ ~C97 → 整步重跑   
 |---|---|---|---|---|---|---|
 | C91 validate 失败 | 1 | 0 | 0 | 0 | 0 | 0 |
 | C92 已终态 | 0 | 1 | 0 | 0 | 0 | 0 |
-| C93 park 提交 | 0 | 0 | 1 | 0 | 0 | 0 |
+| C93 await 提交 | 0 | 0 | 1 | 0 | 0 | 0 |
 | C94 尾行残断恢复 | 0 | 0 | 0 | 1 | 0 | 0 |
 | C96∧C97 检查点在 | 0 | 0 | 0 | 0 | 1 | 0 |
 | 正常提交 | 0 | 0 | 0 | 0 | 0 | 1 |
@@ -772,10 +772,10 @@ C105=Block/Suspend → is_error(遮蔽执行)     C106 → E91     C107=2xx → 
 - **O/E**:协议前门按路径互斥,但**全收敛于单一 `ProtocolRuntime`**(跨协议共享宿主);后端路由 `Native ⊕ Acp ⊕ Remote`;`Codec::Newline ⊕ Codec::Acp`(Acp 需 `real-acp` feature)。`Terminal` 枚举使"waiting ∧ failed"/"pending ∧ finished"不可表示。
 - **已知缺口(M 遮蔽/功能空洞)**:
   - **A2A 无带内拒绝**——`to_resume` 把任何入站文本读作 `Confirm{allow:true}`,拒绝仅经 `tasks/cancel` 可达。
-  - **A2A 无流式/推送**——card `streaming=false,push_notifications=false`;`Working/InputRequired/AuthRequired` 遮为 `Indeterminate`(无法轮询/park)。
+  - **A2A 无流式/推送**——card `streaming=false,push_notifications=false`;`Working/InputRequired/AuthRequired` 遮为 `Indeterminate`(无法轮询/await)。
   - **AG-UI 错误通道仅单串**——拒绝/错误只经 `ToolMessage.error` 表达,无结构化故障通道。
   - **ACP `Ask`(HITL)遮蔽**——`NeutralPermissionResolver` 把策略 `Ask` 坍缩为 `Deny`(持轮内无同步应答)。
-  - **MCP `Suspend`/`Schedule` 遮蔽**——外部客户端无 park run,fail closed 为模型可见 `is_error`。
+  - **MCP `Suspend`/`Schedule` 遮蔽**——外部客户端无 await run,fail closed 为模型可见 `is_error`。
   - **webhook 重试遮蔽**——唯一成功谓词是 `2xx`;永久 4xx(404/410/422)如瞬态 5xx 般重试到耗尽;`300` 非 2xx 亦重试。
 
 ### 判定表 M12

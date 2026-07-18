@@ -1,5 +1,5 @@
 //! Integration: [`SandboxChannelSource`] launches a REAL agent process under
-//! bubblewrap and drives it over ACP to a terminal phase — and the egress policy
+//! bubblewrap and drives it over ACP to a terminal state — and the egress policy
 //! is enforced by the OS, not by convention: the same in-agent network probe that
 //! reaches a host loopback listener from an unrestricted sandbox cannot reach it
 //! from a deny-egress one (`--unshare-net` gives the agent its own, empty network
@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_run_executor_acp::AgentChannelSource;
 use awaken_run_executor_acp::{AcpLaunch, AcpRunExecutor};
@@ -92,8 +92,8 @@ async fn sandboxed_source_drives_a_real_acp_agent_to_natural_end() {
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ctx = RuntimeRunContext::new().with_commit(commit.clone());
-    let phase = exec.execute(activation("t-e2e"), ctx).await.expect("run");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    let state = exec.execute(activation("t-e2e"), ctx).await.expect("run");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert!(
         commit
             .committed()
@@ -117,8 +117,8 @@ async fn probe_reply(source: Arc<SandboxChannelSource>, thread: &str) -> String 
     let exec = AcpRunExecutor::new(source);
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ctx = RuntimeRunContext::new().with_commit(commit.clone());
-    let phase = exec.execute(activation(thread), ctx).await.expect("run");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    let state = exec.execute(activation(thread), ctx).await.expect("run");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     commit
         .committed()
         .messages

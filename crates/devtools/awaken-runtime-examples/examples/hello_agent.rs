@@ -45,14 +45,14 @@ async fn main() {
     let runtime = Runtime::new().with_llm(Arc::new(GreeterLlm));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
-    let phase = runtime
+    let state = runtime
         .run(&runnable, "Say hi.", context)
         .await
         .expect("run");
 
     // 4. Read the committed transcript.
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
-    println!("run finished: {phase:?}\n--- committed transcript ---");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+    println!("run finished: {state:?}\n--- committed transcript ---");
     for message in commit.committed().messages {
         println!("[{:?}] {}", message.role, message.text_content());
     }

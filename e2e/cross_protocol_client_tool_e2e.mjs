@@ -6,7 +6,7 @@
 //
 // Chain:
 //   AI-SDK : POST /v1/ai-sdk/threads/T/runs -> Runtime (custom: `submit_answer`
-//            client tool) -> Pending{client_executed} -> park
+//            client tool) -> Pending{client_executed} -> await
 //   AG-UI  : POST /v1/ag-ui/agents/assistant (role:"tool" content="42", no error)
 //            -> resume_step -> to_resume(client_executed) -> ClientResult{content}
 //            -> model replies `got: 42`
@@ -43,7 +43,7 @@ async function main() {
     const thread = `xclient-${randomBytes(4).toString('hex')}`;
 
     // Turn 1 on AI-SDK: the model calls the client-executed `submit_answer`, which
-    // parks awaiting the client's result.
+    // awaits awaiting the client's result.
     const r1 = await fetch(`${base}/v1/ai-sdk/threads/${thread}/runs`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -54,10 +54,10 @@ async function main() {
     });
     assert.equal(r1.status, 200);
     const s1 = await drain(r1);
-    const parked = s1.events.find((e) => e.toolCallId && (e.state === 'input-available' || e.type?.startsWith('tool-input')));
-    assert.ok(parked, `client tool parked (events: ${s1.events.map((e) => e.type).join(',')})`);
-    const toolCallId = parked.toolCallId;
-    pass(`client-executed tool parked on AI-SDK (toolCallId=${toolCallId})`);
+    const awaiting = s1.events.find((e) => e.toolCallId && (e.state === 'input-available' || e.type?.startsWith('tool-input')));
+    assert.ok(awaiting, `client tool awaiting (events: ${s1.events.map((e) => e.type).join(',')})`);
+    const toolCallId = awaiting.toolCallId;
+    pass(`client-executed tool awaiting on AI-SDK (toolCallId=${toolCallId})`);
 
     // Turn 2 on AG-UI: deliver the client's result on the OTHER wire.
     const r2 = await fetch(`${base}/v1/ag-ui/agents/assistant`, {
@@ -75,7 +75,7 @@ async function main() {
     });
     assert.equal(r2.status, 200, `ag-ui client-result resume accepted (${r2.status})`);
     await drain(r2);
-    pass('AG-UI delivered the client tool result for the AI-SDK-parked run');
+    pass('AG-UI delivered the client tool result for the AI-SDK-awaiting run');
 
     // The model consumed the cross-protocol client result: `got: <answer>`.
     const hist = await (await fetch(`${base}/v1/ai-sdk/threads/${thread}/messages`)).json();

@@ -19,8 +19,8 @@ consumption landed. The reference (`awaken-worktrees/goal`) bounds it with
 
 The dispatch row carries `attempt_count`. It increments **only** on a recovery
 re-claim (an expired-lease running row), never on a fresh claim or a normal
-park/wake — so a long-lived run that legitimately parks and wakes many times
-never spends the budget. A successful `settle(Parked)` resets it to zero: a run
+await/wake — so a long-lived run that legitimately awaits and wakes many times
+never spends the budget. A successful `settle(Awaiting)` resets it to zero: a run
 that reaches a checkpoint earned a fresh budget. So `attempt_count` is the count
 of *consecutive crashes without progress*, which is exactly what a retry budget
 should bound.
@@ -38,7 +38,7 @@ lists them and `requeue()` returns one to the queue at a fresh budget.
 
 - A poison run is dead-lettered after `max_attempts` crash-recoveries instead of
   looping forever; `DispatchServiceConfig.max_attempts` (default 5) tunes it.
-- The budget is spent only by crashes, not by ordinary parking, so HITL or
+- The budget is spent only by crashes, not by ordinary awaiting, so HITL or
   long-running runs are not penalised.
 - Dead-letter is a held state with `dead_letters`/`requeue` ops, proven across
   the memory, Postgres, and SQLite backends against one shared spec.

@@ -9,13 +9,13 @@
 //! 3. unbound idle-thread input is drained into a fresh run exactly once and
 //!    consumed on settle (a crash before settle would re-deliver) — including the
 //!    regression that a non-`Input` unbound row never desyncs the drain and panics;
-//! 4. input whose correlation does not match the committed waiting ticket is
-//!    dropped without delivery and the run is left parked.
+//! 4. input whose correlation does not match the committed awaiting ticket is
+//!    dropped without delivery and the run is left awaiting.
 //!
 //! Behavior 1 (an illegal non-settled `Running` executor result must fail loudly)
 //! is unit-tested at its decision point in `worker.rs::tests` — the worker binds a
 //! concrete `Runtime` (it routes a run to its thread's runtime), and a real runtime
-//! never returns `Running`, so the invariant is asserted where the phase is mapped.
+//! never returns `Running`, so the invariant is asserted where the state is mapped.
 
 mod harness;
 
@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use awaken_agent_contract::agent::message::Role;
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_run_ingress::{
     DispatchQueue, DispatchWorker, Inbox, MemoryDispatchStore, RunExecutionRequest,
@@ -76,7 +76,7 @@ async fn duplicate_submit_same_run_id_drives_exactly_once() {
         processed,
         Some((
             RunId("run-1".to_string()),
-            Phase::Ended(EndCause::NaturalEnd)
+            RunState::Ended(EndCause::NaturalEnd)
         )),
         "the single dispatch drives to completion"
     );
@@ -164,7 +164,7 @@ async fn unbound_inbox_input_is_delivered_once_and_consumed_on_settle() {
         processed,
         Some((
             RunId("run-1".to_string()),
-            Phase::Ended(EndCause::NaturalEnd)
+            RunState::Ended(EndCause::NaturalEnd)
         ))
     );
 
@@ -236,7 +236,7 @@ async fn a_non_input_unbound_row_does_not_desync_the_drain() {
         processed,
         Some((
             RunId("run-1".to_string()),
-            Phase::Ended(EndCause::NaturalEnd)
+            RunState::Ended(EndCause::NaturalEnd)
         )),
         "the fresh run drove to completion without a panic"
     );
@@ -266,10 +266,10 @@ async fn a_non_input_unbound_row_does_not_desync_the_drain() {
 // --- 4. Stale / superseded ticket input dropped ----------------------------
 
 #[tokio::test]
-async fn stale_correlation_input_is_dropped_and_the_run_stays_parked() {
-    // A parked run holds a committed waiting ticket. Input whose correlation does
+async fn stale_correlation_input_is_dropped_and_the_run_stays_awaiting() {
+    // A awaiting run holds a committed awaiting ticket. Input whose correlation does
     // NOT match that ticket is dropped without delivery — the tool never runs and
-    // the run stays parked — until the correctly-correlated input arrives.
+    // the run stays awaiting — until the correctly-correlated input arrives.
     let (runtime, ran) = tool_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -283,13 +283,13 @@ async fn stale_correlation_input_is_dropped_and_the_run_stays_parked() {
     let worker =
         DispatchWorker::new(runtime, store.clone(), commit.clone(), "solo").with_lease_ms(LEASE);
 
-    // The fresh run parks on the gate's ticket; the gated tool has not run.
-    let parked = worker.tick(0).await.unwrap();
-    assert_eq!(parked, Some((run.clone(), Phase::Waiting)));
+    // The fresh run awaits on the gate's ticket; the gated tool has not run.
+    let awaiting = worker.tick(0).await.unwrap();
+    assert_eq!(awaiting, Some((run.clone(), RunState::Awaiting)));
     assert_eq!(ran.load(Ordering::SeqCst), 0, "the gated tool has not run");
 
     // Deliver input with the WRONG correlation. The worker wakes, finds no input
-    // answering the committed ticket, and re-parks without applying it.
+    // answering the committed ticket, and re-awaits without applying it.
     store
         .append(harness::pending(
             "stale",
@@ -302,8 +302,8 @@ async fn stale_correlation_input_is_dropped_and_the_run_stays_parked() {
     let after_stale = worker.tick(1).await.unwrap();
     assert_eq!(
         after_stale,
-        Some((run.clone(), Phase::Waiting)),
-        "a stale input leaves the run parked"
+        Some((run.clone(), RunState::Awaiting)),
+        "a stale input leaves the run awaiting"
     );
     assert_eq!(
         ran.load(Ordering::SeqCst),
@@ -311,9 +311,9 @@ async fn stale_correlation_input_is_dropped_and_the_run_stays_parked() {
         "the stale input did not drive the tool"
     );
     assert_eq!(
-        store.parked_run(&thread).await.unwrap(),
+        store.awaiting_run(&thread).await.unwrap(),
         Some(run.clone()),
-        "the run is still parked on its thread"
+        "the run is still awaiting on its thread"
     );
     assert_eq!(
         store.pending_count(&run),
@@ -327,7 +327,7 @@ async fn stale_correlation_input_is_dropped_and_the_run_stays_parked() {
         .await
         .unwrap();
     let resumed = worker.tick(2).await.unwrap();
-    assert_eq!(resumed, Some((run, Phase::Ended(EndCause::NaturalEnd))));
+    assert_eq!(resumed, Some((run, RunState::Ended(EndCause::NaturalEnd))));
     assert_eq!(
         ran.load(Ordering::SeqCst),
         1,

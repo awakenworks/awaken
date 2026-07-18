@@ -34,7 +34,7 @@ impl ToolGateHook for PermissionGate {
     }
 
     async fn gate(&self, ctx: &PermissionContext, _state: &Store) -> GateOutcome {
-        // allow → execute; deny → a model-visible block; ask → park on a decision
+        // allow → execute; deny → a model-visible block; ask → await on a decision
         // ticket the operator resumes (ADR-0030 D1/D2).
         match self.policy.decide(ctx).await {
             PermissionDecision::Allow => GateOutcome::Allow,

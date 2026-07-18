@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::Store;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
@@ -39,7 +39,7 @@ const FINGERPRINT: &str = "catalog-a";
 const SNAPSHOT_ID: &str = "snapshot-1";
 const TICKET_ID: &str = "ticket-1";
 
-/// Calls `echo` once (which the suspend gate parks), then would end with text.
+/// Calls `echo` once (which the suspend gate awaits), then would end with text.
 struct ToolThenText {
     calls: AtomicUsize,
 }
@@ -85,7 +85,7 @@ impl ToolGateHook for SuspendGate {
     }
 }
 
-/// A no-op phase hook — the out-of-bound contribution the rogue plugin makes.
+/// A no-op state hook — the out-of-bound contribution the rogue plugin makes.
 struct NoopHook;
 #[async_trait::async_trait]
 impl PhaseHook for NoopHook {
@@ -103,7 +103,7 @@ impl PhaseHook for NoopHook {
 }
 
 /// A well-behaved plugin `p`: declares nothing and contributes nothing, so the
-/// initial run resolves its env cleanly and reaches the park.
+/// initial run resolves its env cleanly and reaches the await.
 struct NoopPlugin;
 impl Plugin for NoopPlugin {
     fn manifest(&self) -> PluginManifest {
@@ -119,7 +119,7 @@ impl Plugin for NoopPlugin {
     }
 }
 
-/// A rogue plugin under the same id `p`: contributes a phase hook it never declared
+/// A rogue plugin under the same id `p`: contributes a state hook it never declared
 /// in its (empty) bound, so `resolve_plugin_env` fails closed (G30).
 struct RoguePlugin;
 impl Plugin for RoguePlugin {
@@ -128,7 +128,7 @@ impl Plugin for RoguePlugin {
             id: "p".to_string(),
             requires: Vec::new(),
             config_sections: Vec::new(),
-            bound: CapabilityBound::default(), // declares no phase hook
+            bound: CapabilityBound::default(), // declares no state hook
         }
     }
     fn resolve(&self) -> Contributions {
@@ -214,37 +214,40 @@ fn resume_command() -> ResumeCommand {
     }
 }
 
-/// Park a run on a tool-permission ticket, returning the commit coordinator that
+/// Await a run on a tool-permission ticket, returning the commit coordinator that
 /// holds the committed ticket (the reader a resume validates against).
-async fn park(runtime: &Runtime, plugin_ids: Vec<String>) -> Arc<MemoryCommitCoordinator> {
+async fn begin_awaiting_run(
+    runtime: &Runtime,
+    plugin_ids: Vec<String>,
+) -> Arc<MemoryCommitCoordinator> {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
-    let phase = runtime
+    let state = runtime
         .execute(activation(plugin_ids), context)
         .await
-        .expect("initial run parks");
+        .expect("initial run awaits");
     assert_eq!(
-        phase,
-        Phase::Waiting,
-        "the run parked on a permission ticket"
+        state,
+        RunState::Awaiting,
+        "the run awaiting on a permission ticket"
     );
     commit
 }
 
 #[tokio::test]
 async fn resume_against_an_unregistered_snapshot_fails_closed() {
-    // RR3: a run parks with a committed ticket; a resume whose runtime no longer has
+    // RR3: a run awaits with a committed ticket; a resume whose runtime no longer has
     // that snapshot registered validates the ticket but cannot resolve the snapshot,
     // so it fails closed instead of guessing.
-    let parked = Runtime::new()
+    let awaiting = Runtime::new()
         .with_llm(Arc::new(ToolThenText {
             calls: AtomicUsize::new(0),
         }))
         .with_tool(Arc::new(EchoTool))
         .with_gate(Arc::new(SuspendGate));
-    install(&parked);
-    parked.register_snapshot(snapshot(Vec::new()));
-    let commit = park(&parked, Vec::new()).await;
+    install(&awaiting);
+    awaiting.register_snapshot(snapshot(Vec::new()));
+    let commit = begin_awaiting_run(&awaiting, Vec::new()).await;
 
     // A fresh runtime that never registered the snapshot.
     let bare = Runtime::new();
@@ -258,8 +261,12 @@ async fn resume_against_an_unregistered_snapshot_fails_closed() {
         err.to_string().contains("snapshot"),
         "expected a snapshot-resolution error, got {err}"
     );
-    // The run stays parked: the ticket is untouched.
-    assert!(commit.waiting_for(&RunId("run-1".to_string())).is_some());
+    // The run stays awaiting: the ticket is untouched.
+    assert!(
+        commit
+            .resume_ticket_for(&RunId("run-1".to_string()))
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -267,16 +274,16 @@ async fn resume_with_an_out_of_bound_plugin_fails_capability_bound() {
     // RR5: the resume path re-resolves the plugin env; a plugin that now violates
     // its capability bound fails the resumed run closed with CapabilityBound — the
     // same fail-closed altitude as the initial run (G30), reached via resume.
-    let parked = Runtime::new()
+    let awaiting = Runtime::new()
         .with_llm(Arc::new(ToolThenText {
             calls: AtomicUsize::new(0),
         }))
         .with_tool(Arc::new(EchoTool))
         .with_gate(Arc::new(SuspendGate))
         .with_plugin(Arc::new(NoopPlugin));
-    install(&parked);
-    parked.register_snapshot(snapshot(vec!["p".to_string()]));
-    let commit = park(&parked, vec!["p".to_string()]).await;
+    install(&awaiting);
+    awaiting.register_snapshot(snapshot(vec!["p".to_string()]));
+    let commit = begin_awaiting_run(&awaiting, vec!["p".to_string()]).await;
 
     // The resuming runtime has the same snapshot but a rogue plugin under id `p`.
     let rogue = Runtime::new()
@@ -288,13 +295,13 @@ async fn resume_with_an_out_of_bound_plugin_fails_capability_bound() {
     rogue.register_snapshot(snapshot(vec!["p".to_string()]));
 
     let context = RuntimeRunContext::new().with_commit(commit.clone());
-    let phase = rogue
+    let state = rogue
         .resume(resume_command(), commit.as_ref(), context)
         .await
         .expect("resume completes with a terminal fault");
     assert_eq!(
-        phase,
-        Phase::Ended(EndCause::Error(Failure::CapabilityBound)),
+        state,
+        RunState::Ended(EndCause::Error(Failure::CapabilityBound)),
         "an out-of-bound plugin fails the resumed run closed"
     );
 }

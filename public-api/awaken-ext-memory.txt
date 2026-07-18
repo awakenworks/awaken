@@ -17,7 +17,7 @@ impl awaken_ext_memory::localfs::MemoryDir
 pub fn awaken_ext_memory::localfs::MemoryDir::entries(&self) -> alloc::vec::Vec<awaken_ext_memory::localfs::Entry>
 pub fn awaken_ext_memory::localfs::MemoryDir::new(impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn awaken_ext_memory::localfs::MemoryDir::root(&self) -> &std::path::Path
-pub fn awaken_ext_memory::localfs::MemoryDir::write(&self, &str, &str) -> std::io::error::Result<std::path::PathBuf>
+pub fn awaken_ext_memory::localfs::MemoryDir::write(&self, &str, &str) -> core::io::error::Result<std::path::PathBuf>
 pub fn awaken_ext_memory::localfs::sanitize_stem(&str) -> alloc::string::String
 pub mod awaken_ext_memory::plugin
 pub struct awaken_ext_memory::plugin::MemoryPlugin
@@ -64,7 +64,7 @@ impl awaken_ext_memory::localfs::MemoryDir
 pub fn awaken_ext_memory::localfs::MemoryDir::entries(&self) -> alloc::vec::Vec<awaken_ext_memory::localfs::Entry>
 pub fn awaken_ext_memory::localfs::MemoryDir::new(impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn awaken_ext_memory::localfs::MemoryDir::root(&self) -> &std::path::Path
-pub fn awaken_ext_memory::localfs::MemoryDir::write(&self, &str, &str) -> std::io::error::Result<std::path::PathBuf>
+pub fn awaken_ext_memory::localfs::MemoryDir::write(&self, &str, &str) -> core::io::error::Result<std::path::PathBuf>
 pub struct awaken_ext_memory::MemoryPlugin
 impl awaken_ext_memory::plugin::MemoryPlugin
 pub fn awaken_ext_memory::plugin::MemoryPlugin::new(awaken_ext_memory::localfs::MemoryDir, awaken_ext_memory::recall::RecallBounds) -> Self

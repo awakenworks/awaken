@@ -2,15 +2,15 @@
 // stale-input drop (awaken-run-ingress `worker.rs`: input for a superseded ticket
 // is never delivered, and a superseded dispatch is never woken again).
 //
-// The sibling `managed_supersede_e2e.mjs` proves newest-wins: a parked run is
+// The sibling `managed_supersede_e2e.mjs` proves newest-wins: an awaiting run is
 // marked superseded and the new run drives. This proves the OTHER half — that the
 // superseded (stale) run is genuinely DROPPED, not merely re-labelled:
 //   * reconcile does NOT reclaim/re-drive the superseded run (it is not runnable),
-//   * the superseded dispatch stays `Superseded` over time (never Running/Parked-resumed),
+//   * the superseded dispatch stays `Superseded` over time (never Running/Awaiting-resumed),
 //   * committed truth never gains the stale run's effect (no double-commit).
 //
-// A durable run (probe model) parks on a tool (ticket T); a superseding submit wins
-// over it; then we assert the parked-on-T run is dropped for good.
+// A durable run (probe model) awaits on a tool (ticket T); a superseding submit wins
+// over it; then we assert the awaiting-on-T run is dropped for good.
 //
 // Run: node e2e/durable_worker_supersede_e2e.mjs
 
@@ -47,12 +47,12 @@ async function main() {
   await waitForPort(PORT);
   const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE });
   try {
-    // A first turn parks on a tool confirmation — its dispatch sits `Parked` on
+    // A first turn awaits on a tool confirmation — its dispatch sits `Awaiting` on
     // ticket T in the thread's queue.
     const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
     const T = session.id;
     await client.beta.sessions.events.send(T, {
-      events: [{ type: 'user.message', content: [{ type: 'text', text: 'PARK-ON-TICKET-T' }] }],
+      events: [{ type: 'user.message', content: [{ type: 'text', text: 'AWAIT-ON-TICKET-T' }] }],
       betas: BETAS,
     });
     let events = [];
@@ -60,26 +60,26 @@ async function main() {
     assert.equal(
       events.find((e) => e.type === 'session.status_idle').stop_reason.type,
       'requires_action',
-      'first run parked on ticket T (awaiting a tool confirmation)',
+      'first run awaiting on ticket T (awaiting a tool confirmation)',
     );
-    const parkedRow = (await get(`/v1/durable/threads/${T}/dispatches`)).dispatches.find((d) => d.status === 'Parked');
-    assert.ok(parkedRow, 'the parked run has a Parked dispatch row');
-    const staleRunId = parkedRow.run_id;
-    pass(`first run parked on ticket T (dispatch ${staleRunId} is Parked)`);
+    const awaitingRow = (await get(`/v1/durable/threads/${T}/dispatches`)).dispatches.find((d) => d.status === 'Awaiting');
+    assert.ok(awaitingRow, 'the awaiting run has a Awaiting dispatch row');
+    const staleRunId = awaitingRow.run_id;
+    pass(`first run awaiting on ticket T (dispatch ${staleRunId} is Awaiting)`);
 
     // Nothing superseded yet.
     assert.deepEqual((await get(`/v1/durable/threads/${T}/superseded`)).superseded, [], 'nothing superseded before');
 
-    // A superseding submit: the newest turn wins; the parked-on-T run is superseded.
-    const sup = await post(`/v1/durable/threads/${T}/supersede`, { text: 'SUPERSEDE-THE-PARKED-RUN' });
+    // A superseding submit: the newest turn wins; the awaiting-on-T run is superseded.
+    const sup = await post(`/v1/durable/threads/${T}/supersede`, { text: 'SUPERSEDE-THE-AWAITING-RUN' });
     assert.equal(sup.status, 200, 'supersede accepted');
-    assert.ok(Array.isArray(sup.body.superseded) && sup.body.superseded.includes(staleRunId), 'the parked-on-T run was superseded');
-    pass(`superseding submit marked the parked run superseded: ${sup.body.superseded.join(', ')}`);
+    assert.ok(Array.isArray(sup.body.superseded) && sup.body.superseded.includes(staleRunId), 'the awaiting-on-T run was superseded');
+    pass(`superseding submit marked the awaiting run superseded: ${sup.body.superseded.join(', ')}`);
 
     // The superseded run's dispatch is now `Superseded` in the queue.
     const afterSup = (await get(`/v1/durable/threads/${T}/dispatches`)).dispatches;
     assert.equal(afterSup.find((d) => d.run_id === staleRunId)?.status, 'Superseded', 'stale run is Superseded in the queue');
-    pass('stale (parked-on-T) dispatch is now Superseded');
+    pass('stale (awaiting-on-T) dispatch is now Superseded');
 
     // DROP GUARANTEE #1: reconcile reclaims RUNNABLE work only; a superseded run is
     // not runnable, so it is never re-driven (mirrors the worker never re-applying
@@ -90,7 +90,7 @@ async function main() {
     pass('reconcile does not reclaim the superseded run (stale input is dropped, never re-applied)');
 
     // DROP GUARANTEE #2 + #3: over time the superseded dispatch stays Superseded
-    // (never wakes back to Running/Parked-resumed) and committed truth never gains
+    // (never wakes back to Running/Awaiting-resumed) and committed truth never gains
     // the stale run's effect (no double-commit).
     const msgs1 = (await get(`/v1/durable/threads/${T}/messages`)).messages;
     await sleep(1500);

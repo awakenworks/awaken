@@ -125,7 +125,7 @@ impl MetricsRecorder for OtelMetricsRecorder {
     }
 
     fn record_dispatch_settled(&self, outcome: &str) {
-        // Structure-only label: the settle outcome class (`done`/`parked`).
+        // Structure-only label: the settle outcome class (`done`/`awaiting`).
         let labels = [KeyValue::new("outcome", outcome.to_owned())];
         self.dispatch_settled.add(1, &labels);
     }

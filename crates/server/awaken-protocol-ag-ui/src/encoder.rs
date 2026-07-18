@@ -128,7 +128,7 @@ impl Transcoder for AgUiEncoder {
                     content: blocks_text(content),
                 }]
             }
-            Fact::Waiting { .. } | Fact::RunFinished { .. } => {
+            Fact::Awaiting { .. } | Fact::RunFinished { .. } => {
                 vec![AgUiEvent::RunFinished {
                     thread_id: self.thread_id.clone(),
                     run_id: self.run_id.clone(),
@@ -204,7 +204,7 @@ pub fn encode_step(outcome: &StepOutcome, thread_id: &str, run_id: &str) -> Vec<
         .map(|p| (p.tool_use_id.as_str(), p.client_executed));
     let mut events = vec![Fact::RunStarted];
     events.extend(fold_messages(&outcome.new_messages, pending));
-    // The terminal event owns the failed / parked / finished distinction — a fault
+    // The terminal event owns the failed / awaiting / finished distinction — a fault
     // becomes `RunFailed`, which transcodes to `RUN_ERROR` instead of `RUN_FINISHED`.
     events.push(outcome.terminal_event());
     AgUiEncoder::new(thread_id, run_id).transcode_facts(&events)
@@ -456,7 +456,7 @@ mod tests {
                     }],
                 },
             ],
-            terminal: Terminal::Waiting {
+            terminal: Terminal::Awaiting {
                 pending: Some(Pending {
                     tool_use_id: "c1".into(),
                     name: "read".into(),
@@ -499,7 +499,7 @@ mod tests {
                     input: json!({"q": 1}),
                 }],
             }],
-            terminal: Terminal::Waiting {
+            terminal: Terminal::Awaiting {
                 pending: Some(Pending {
                     tool_use_id: "c1".into(),
                     name: "submit".into(),
@@ -535,11 +535,11 @@ mod tests {
     }
 
     #[test]
-    fn waiting_transcodes_to_a_run_finished_not_an_interrupt() {
-        // Documents the current shape: a parked built-in tool surfaces as a plain
+    fn awaiting_transcodes_to_a_run_finished_not_an_interrupt() {
+        // Documents the current shape: an awaiting built-in tool surfaces as a plain
         // RUN_FINISHED (no dedicated RUN_INTERRUPTED event exists in this adapter).
         let mut enc = AgUiEncoder::new("t1", "r1");
-        let events = enc.fact(&Fact::Waiting {
+        let events = enc.fact(&Fact::Awaiting {
             pending_tool_use_id: Some("c1".into()),
         });
         assert!(

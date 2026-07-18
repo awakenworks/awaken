@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_runtime::Runtime;
@@ -171,7 +171,7 @@ async fn allowed_tool_call_executes_and_feeds_result_back() {
     let context = RuntimeRunContext::new().with_commit(commit.clone());
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(Ordering::SeqCst), 1, "tool must run exactly once");
 
     let committed = commit.committed();
@@ -199,7 +199,7 @@ async fn denied_tool_call_never_executes_even_though_visible() {
     let context = RuntimeRunContext::new().with_commit(commit.clone());
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(
         ran.load(Ordering::SeqCst),
         0,
@@ -215,7 +215,7 @@ async fn denied_tool_call_never_executes_even_though_visible() {
 }
 
 #[tokio::test]
-async fn ask_decision_parks_the_run_in_waiting() {
+async fn ask_decision_puts_the_run_in_awaiting() {
     let runtime = Runtime::new()
         .with_llm(Arc::new(ToolThenText::new()))
         .with_tool(Arc::new(EchoTool {
@@ -230,7 +230,7 @@ async fn ask_decision_parks_the_run_in_waiting() {
         .execute(activation(), RuntimeRunContext::new())
         .await
         .expect("runs");
-    assert_eq!(outcome, Phase::Waiting);
+    assert_eq!(outcome, RunState::Awaiting);
 }
 
 /// A model that requests a specific tool id once, then ends with text.
@@ -302,7 +302,7 @@ async fn a_wired_tool_executor_replaces_the_in_process_path() {
         }));
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(
         local_ran.load(Ordering::SeqCst),
         0,
@@ -334,7 +334,7 @@ async fn unknown_tool_yields_a_model_visible_error_result() {
     let context = RuntimeRunContext::new().with_commit(commit.clone());
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 
     let committed = commit.committed();
     assert!(
@@ -358,7 +358,7 @@ async fn without_a_gate_an_authorized_tool_runs() {
         .execute(activation(), RuntimeRunContext::new())
         .await
         .expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(Ordering::SeqCst), 1);
 }
 
@@ -394,7 +394,7 @@ async fn invalid_arguments_yield_a_model_visible_error_result() {
     let context = RuntimeRunContext::new().with_commit(commit.clone());
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 
     let committed = commit.committed();
     assert!(
@@ -434,7 +434,7 @@ async fn an_execution_error_yields_a_model_visible_error_result_and_continues() 
     let context = RuntimeRunContext::new().with_commit(commit.clone());
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 
     let committed = commit.committed();
     assert!(
@@ -474,7 +474,7 @@ async fn a_panicking_tool_is_isolated_to_a_model_visible_error_and_the_run_conti
     let context = RuntimeRunContext::new().with_commit(commit.clone());
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 
     let committed = commit.committed();
     assert!(
@@ -591,10 +591,10 @@ async fn a_loop_that_never_ends_naturally_terminates_on_the_step_ceiling() {
     // The run ends on the step-ceiling guard, recorded as a single MaxSteps
     // authority — not mislabelled NaturalEnd, and carrying no fault.
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::MaxSteps));
+    assert_eq!(outcome, RunState::Ended(EndCause::MaxSteps));
     assert_eq!(
-        commit.committed().latest_run.unwrap().phase,
-        Phase::Ended(EndCause::MaxSteps)
+        commit.committed().latest_run.unwrap().state,
+        RunState::Ended(EndCause::MaxSteps)
     );
     assert!(
         ran.load(Ordering::SeqCst) >= 1,
@@ -625,7 +625,7 @@ async fn the_configured_step_ceiling_is_honored() {
         .execute(activation_with_steps(3), context)
         .await
         .expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::MaxSteps));
+    assert_eq!(outcome, RunState::Ended(EndCause::MaxSteps));
     assert_eq!(
         ran.load(Ordering::SeqCst),
         3,
@@ -676,7 +676,7 @@ async fn an_assistant_turn_interleaves_text_and_a_tool_call() {
     let context = RuntimeRunContext::new().with_commit(commit.clone());
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(
         ran.load(Ordering::SeqCst),
         1,
@@ -726,7 +726,7 @@ async fn a_tool_call_streams_to_the_live_sink() {
         .with_stream_sink(sink.clone());
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 
     // The tool call surfaced on the live stream as the run produced it, as
     // `ToolCallDelta` fragments whose args concatenate to the full input JSON.

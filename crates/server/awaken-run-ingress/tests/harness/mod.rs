@@ -1,7 +1,7 @@
 //! Shared runtime harness for the durable-ingress integration tests.
 //!
 //! It builds a real `Runtime` with deterministic model providers — a plain text
-//! model whose runs end naturally, and a tool-then-text model that parks on a
+//! model whose runs end naturally, and a tool-then-text model that awaits on a
 //! gate so the resume path can be driven. The commit coordinator and dispatch
 //! store are supplied by each test (in-memory or Postgres), so this harness is
 //! storage-agnostic and shared by every suite.
@@ -34,8 +34,8 @@ use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 
 use std::sync::atomic::AtomicBool;
 
+use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::run::Record as RunRecord;
-use awaken_agent_contract::agent::waiting::WaitingTicket;
 use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator as CommitCoordinator, Error as CommitError,
 };
@@ -62,7 +62,7 @@ impl LlmExecutor for TextLlm {
     }
 }
 
-/// Calls `echo` once, then ends with text — drives the park/resume path.
+/// Calls `echo` once, then ends with text — drives the await/resume path.
 struct ToolThenText {
     calls: AtomicUsize,
 }
@@ -219,7 +219,7 @@ pub fn input_echo_runtime() -> Arc<Runtime> {
     runtime
 }
 
-/// A runtime that parks on a tool gate, exposing the tool-run counter so a test
+/// A runtime that awaits on a tool gate, exposing the tool-run counter so a test
 /// can assert the pending tool runs exactly once on resume.
 pub fn tool_runtime() -> (Arc<Runtime>, Arc<AtomicUsize>) {
     let ran = Arc::new(AtomicUsize::new(0));
@@ -405,8 +405,8 @@ pub fn text_runtime_with_metrics(metrics: Arc<dyn MetricsRecorder>) -> Arc<Runti
     runtime
 }
 
-/// A park-on-gate runtime wired to a metrics recorder, so a test can assert a run
-/// that settles `Parked` meters a `parked` settle.
+/// A await-on-gate runtime wired to a metrics recorder, so a test can assert a run
+/// that settles `Awaiting` meters a `awaiting` settle.
 pub fn tool_runtime_with_metrics(
     metrics: Arc<dyn MetricsRecorder>,
 ) -> (Arc<Runtime>, Arc<AtomicUsize>) {
@@ -426,7 +426,7 @@ pub fn tool_runtime_with_metrics(
 
 /// A model that emits a `echo` tool call for its first `n` inferences, then ends
 /// with text. Paired with [`ScheduleGate`] it lets a run commit *several*
-/// consecutive ScheduledAction parks, so a test can drive the worker's
+/// consecutive ScheduledAction awaits, so a test can drive the worker's
 /// perform-scheduled while-loop across more than one hop.
 struct ToolNThenText {
     remaining: AtomicUsize,
@@ -454,7 +454,7 @@ impl LlmExecutor for ToolNThenText {
 }
 
 /// A runtime whose gate defers *every* tool call as a ScheduledAction, and whose
-/// model schedules `n` tool calls before ending — so a single durable drive parks
+/// model schedules `n` tool calls before ending — so a single durable drive awaits
 /// and performs `n` consecutive ScheduledActions in one `drive_claimed`, exercising
 /// the worker's chained perform-scheduled loop. Returns the tool-run counter.
 pub fn schedule_n_runtime(n: usize) -> (Arc<Runtime>, Arc<AtomicUsize>) {
@@ -472,7 +472,7 @@ pub fn schedule_n_runtime(n: usize) -> (Arc<Runtime>, Arc<AtomicUsize>) {
 }
 
 /// A commit boundary that rejects every `commit` while `fail` is set, delegating
-/// all *reads* (run record, transcript, waiting ticket) to a shared inner
+/// all *reads* (run record, transcript, awaiting ticket) to a shared inner
 /// [`MemoryCommitCoordinator`]. It is the fault-injection seam for the worker's
 /// genuine-drive-failure path: a real storage failure during `execute`/`resume`/
 /// `perform_scheduled` makes the drive return `Err` while committed truth still
@@ -519,8 +519,8 @@ impl ThreadReader for FailingCommit {
     fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
         self.inner.committed_messages(thread_id)
     }
-    fn waiting_ticket(&self, run_id: &RunId) -> Option<WaitingTicket> {
-        self.inner.waiting_ticket(run_id)
+    fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket> {
+        self.inner.resume_ticket(run_id)
     }
     fn committed_state(
         &self,
@@ -538,7 +538,7 @@ pub struct RecordingMetrics {
     pub claimed: AtomicUsize,
     pub drives: AtomicUsize,
     pub settled_done: AtomicUsize,
-    pub settled_parked: AtomicUsize,
+    pub settled_awaiting: AtomicUsize,
 }
 
 impl MetricsRecorder for RecordingMetrics {
@@ -550,7 +550,7 @@ impl MetricsRecorder for RecordingMetrics {
     fn record_dispatch_settled(&self, outcome: &str) {
         match outcome {
             "done" => self.settled_done.fetch_add(1, Ordering::SeqCst),
-            "parked" => self.settled_parked.fetch_add(1, Ordering::SeqCst),
+            "awaiting" => self.settled_awaiting.fetch_add(1, Ordering::SeqCst),
             _ => 0,
         };
     }
@@ -661,11 +661,11 @@ impl awaken_run_ingress::DispatchQueue for FlakyDispatchStore {
     ) -> Result<Option<ThreadId>, awaken_run_ingress::DispatchError> {
         self.inner.cancel(run_id).await
     }
-    async fn parked_run(
+    async fn awaiting_run(
         &self,
         thread_id: &ThreadId,
     ) -> Result<Option<RunId>, awaken_run_ingress::DispatchError> {
-        self.inner.parked_run(thread_id).await
+        self.inner.awaiting_run(thread_id).await
     }
     async fn purge_dead_letters(&self) -> Result<usize, awaken_run_ingress::DispatchError> {
         self.inner.purge_dead_letters().await
@@ -882,10 +882,10 @@ pub async fn assert_scheduled_due<S: awaken_run_ingress::Dispatch>(store: &S) {
         .enqueue(RunExecutionRequest::new(activation("run-1")))
         .await
         .unwrap();
-    // Claim the fresh run, then park it so it can be woken by a delivery.
+    // Claim the fresh run, then await it so it can be woken by a delivery.
     assert!(store.claim("w", 1_000, 0).await.unwrap().is_some());
     store
-        .settle(&run, 1, DispatchOutcome::Parked, &[])
+        .settle(&run, 1, DispatchOutcome::Awaiting, &[])
         .await
         .unwrap();
 
@@ -956,7 +956,7 @@ pub async fn assert_dead_letter<S: awaken_run_ingress::Dispatch>(store: &S) {
     );
 }
 
-/// Shared spec for durable cancel: a pending or parked dispatch is cancellable
+/// Shared spec for durable cancel: a pending or awaiting dispatch is cancellable
 /// (returns its thread id and is removed); a running one is not. Every backend
 /// must match.
 pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
@@ -1002,9 +1002,9 @@ pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
         .await
         .unwrap();
 
-    // A parked run on a thread is resolvable by thread (send_message addressing).
+    // A awaiting run on a thread is resolvable by thread (send_message addressing).
     let thread_id = ThreadId(THREAD.to_string());
-    assert!(store.parked_run(&thread_id).await.unwrap().is_none());
+    assert!(store.awaiting_run(&thread_id).await.unwrap().is_none());
     store
         .enqueue(RunExecutionRequest::new(activation("run-3")))
         .await
@@ -1014,13 +1014,13 @@ pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
         .settle(
             &RunId("run-3".to_string()),
             1,
-            awaken_run_ingress::DispatchOutcome::Parked,
+            awaken_run_ingress::DispatchOutcome::Awaiting,
             &[],
         )
         .await
         .unwrap();
     assert_eq!(
-        store.parked_run(&thread_id).await.unwrap(),
+        store.awaiting_run(&thread_id).await.unwrap(),
         Some(RunId("run-3".to_string()))
     );
 }
@@ -1124,7 +1124,7 @@ pub async fn assert_priority_dedupe_gc<S: awaken_run_ingress::Dispatch>(store: &
 /// Shared spec for the dispatch query surface (ADR-0025): list_dispatches reports
 /// each row's status and attempts. Every backend matches.
 pub async fn assert_list_dispatches<S: awaken_run_ingress::Dispatch>(store: &S) {
-    use awaken_run_ingress::{DispatchStatus, RunExecutionRequest};
+    use awaken_run_ingress::{DispatchState, RunExecutionRequest};
 
     // A fresh run is Pending; once claimed it is Running.
     store
@@ -1134,12 +1134,12 @@ pub async fn assert_list_dispatches<S: awaken_run_ingress::Dispatch>(store: &S) 
     let listed = store.list_dispatches().await.unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].run_id, RunId("r1".to_string()));
-    assert_eq!(listed[0].status, DispatchStatus::Pending);
+    assert_eq!(listed[0].state, DispatchState::Pending);
     assert_eq!(listed[0].attempt_count, 0);
 
     assert!(store.claim("w", 1_000, 0).await.unwrap().is_some());
     let listed = store.list_dispatches().await.unwrap();
-    assert_eq!(listed[0].status, DispatchStatus::Running);
+    assert_eq!(listed[0].state, DispatchState::Leased);
 }
 
 /// Shared spec for the daemon's bulk lease renewal (ADR-0024): renewing an owner's
@@ -1232,23 +1232,23 @@ pub async fn assert_dead_letter_ttl_gc<S: awaken_run_ingress::Dispatch>(store: &
 }
 
 /// Shared spec for epoch supersession (ADR-0022): a superseding submit abandons
-/// the thread's prior parked work; only the newest run stays claimable. Every
+/// the thread's prior awaiting work; only the newest run stays claimable. Every
 /// backend matches.
 pub async fn assert_supersession<S: awaken_run_ingress::Dispatch>(store: &S) {
     use awaken_run_ingress::{DispatchOutcome, RunExecutionRequest, SubmitOptions};
 
-    // An older run parks on the thread.
+    // An older run awaits on the thread.
     store
         .enqueue(RunExecutionRequest::new(activation("old")))
         .await
         .unwrap();
     assert!(store.claim("w", 1_000, 0).await.unwrap().is_some());
     store
-        .settle(&RunId("old".to_string()), 1, DispatchOutcome::Parked, &[])
+        .settle(&RunId("old".to_string()), 1, DispatchOutcome::Awaiting, &[])
         .await
         .unwrap();
 
-    // A superseding submit on the same thread supersedes the parked run.
+    // A superseding submit on the same thread supersedes the awaiting run.
     store
         .enqueue_with(
             RunExecutionRequest::new(activation("new")),
@@ -1264,7 +1264,7 @@ pub async fn assert_supersession<S: awaken_run_ingress::Dispatch>(store: &S) {
         vec![RunId("old".to_string())]
     );
 
-    // Only the newest run is claimable; the superseded parked run is never woken.
+    // Only the newest run is claimable; the superseded awaiting run is never woken.
     assert_eq!(
         store
             .claim("w", 1_000, 0)
@@ -1544,7 +1544,7 @@ pub async fn assert_current_epoch_tracks_the_fence<S: awaken_run_ingress::Dispat
     );
 }
 
-/// Shared spec (single-writer-per-thread, ADR-0022, on the WAKE path): a parked run
+/// Shared spec (single-writer-per-thread, ADR-0022, on the WAKE path): an awaiting run
 /// with due input is NOT woken while its own thread already has another run in
 /// flight — waking it would put two concurrent runs on one thread. The suppressed
 /// run becomes claimable only once the in-flight run settles and frees the thread.
@@ -1555,14 +1555,19 @@ pub async fn assert_wake_suppressed_while_thread_running<S: awaken_run_ingress::
     use awaken_run_ingress::{DispatchOutcome, RunExecutionRequest};
     use awaken_runtime_contract::resume::ResumeResult;
 
-    // run-1 parks on the thread.
+    // run-1 awaits on the thread.
     store
         .enqueue(RunExecutionRequest::new(activation("run-1")))
         .await
         .unwrap();
     assert!(store.claim("w", 10_000, 0).await.unwrap().is_some());
     store
-        .settle(&RunId("run-1".to_string()), 1, DispatchOutcome::Parked, &[])
+        .settle(
+            &RunId("run-1".to_string()),
+            1,
+            DispatchOutcome::Awaiting,
+            &[],
+        )
         .await
         .unwrap();
 
@@ -1576,7 +1581,7 @@ pub async fn assert_wake_suppressed_while_thread_running<S: awaken_run_ingress::
         "run-2 claims the free thread"
     );
 
-    // Deliver input that answers run-1's park. run-1 is now wakeable *by input* — but
+    // Deliver input that answers run-1's await. run-1 is now wakeable *by input* — but
     // its thread is running run-2, so a claim must NOT wake it (no second run/thread).
     assert!(
         store
@@ -1591,7 +1596,7 @@ pub async fn assert_wake_suppressed_while_thread_running<S: awaken_run_ingress::
     );
     assert!(
         store.claim("w", 10_000, 2).await.unwrap().is_none(),
-        "the parked run is not woken while its thread already runs another",
+        "the awaiting run is not woken while its thread already runs another",
     );
 
     // run-2 settles Done, freeing the thread; now the wake fires and hands run-1 its
@@ -1653,9 +1658,9 @@ where
     );
 }
 
-/// Shared spec: a `Parked` settle is fenced the same way — a stale owner cannot
-/// re-park (and reset the crash-retry budget / clear the lease) behind a reclaimer.
-pub async fn assert_parked_settle_fences_stale_epoch<S: awaken_run_ingress::Dispatch>(store: &S) {
+/// Shared spec: a `Awaiting` settle is fenced the same way — a stale owner cannot
+/// re-await (and reset the crash-retry budget / clear the lease) behind a reclaimer.
+pub async fn assert_awaiting_settle_fences_stale_epoch<S: awaken_run_ingress::Dispatch>(store: &S) {
     use awaken_run_ingress::{DispatchOutcome, RunExecutionRequest, SettleOutcome};
     let run = RunId("run-1".to_string());
     store
@@ -1675,24 +1680,24 @@ pub async fn assert_parked_settle_fences_stale_epoch<S: awaken_run_ingress::Disp
         .expect("B reclaims");
     assert!(b.lease.epoch > a.lease.epoch);
 
-    // A's stale Parked settle is fenced: it must not clear B's lease or reset the
+    // A's stale Awaiting settle is fenced: it must not clear B's lease or reset the
     // attempt budget of the row B is actively running.
     assert_eq!(
         store
-            .settle(&run, a.lease.epoch, DispatchOutcome::Parked, &[])
+            .settle(&run, a.lease.epoch, DispatchOutcome::Awaiting, &[])
             .await
             .unwrap(),
         SettleOutcome::Fenced,
     );
     assert!(
         store.claim("owner-c", 100, 250).await.unwrap().is_none(),
-        "the fenced Parked settle left B's running claim intact"
+        "the fenced Awaiting settle left B's running claim intact"
     );
 
-    // B parks under the current epoch: applied, and the run is now wakeable.
+    // B awaits under the current epoch: applied, and the run is now wakeable.
     assert_eq!(
         store
-            .settle(&run, b.lease.epoch, DispatchOutcome::Parked, &[])
+            .settle(&run, b.lease.epoch, DispatchOutcome::Awaiting, &[])
             .await
             .unwrap(),
         SettleOutcome::Applied,

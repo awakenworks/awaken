@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_connection_plan::{ChannelFactory, ConnectionPlan, TokioChannelFactory, bind_unix};
 use awaken_provisioning_contract as pc;
@@ -264,7 +264,7 @@ async fn brain_runs_its_tool_inside_a_sandbox_on_a_remote_hand() {
         .with_tool_executor(Arc::new(RemoteToolExecutor::new(brain_channel)));
 
     let outcome = brain().execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(
         ran.load(Ordering::SeqCst),
         1,

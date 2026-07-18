@@ -61,12 +61,11 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Phase};
-use awaken_protocol_managed::Terminus;
+use awaken_agent_contract::agent::run::{EndCause, RunState};
 use awaken_protocol_managed::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, OutcomeIteration, OutcomeReport, Pending, RunError, SessionRuntime,
-    StepFailure, StepOutcome,
+    StepOutcome,
 };
 use awaken_protocol_transport::{
     DriverError, Pending as PortPending, ProtocolRuntime, Resume as PortResume,
@@ -170,19 +169,8 @@ fn to_run_error(err: HostError) -> RunError {
     }
 }
 
-/// Map a neutral terminal phase to the Managed idle `stop_reason`. `RequiresAction`
+/// Map a neutral terminal state to the Managed idle `stop_reason`. `RequiresAction`
 /// carries no event ids here; the projection refills them from the pending tool.
-fn phase_to_terminus(phase: &Phase) -> Terminus {
-    match phase {
-        Phase::Waiting => Terminus::Parked,
-        // A step ceiling or a terminal fault both mean the run gave up rather than
-        // ending naturally — `Exhausted` (the fault also projects a `session.error`;
-        // the idle carries the exhausted stop reason).
-        Phase::Ended(EndCause::MaxSteps | EndCause::Error(_)) => Terminus::Exhausted,
-        _ => Terminus::End,
-    }
-}
-
 fn to_pending(pending: Option<PendingTool>) -> Option<Pending> {
     pending.map(|p| Pending {
         tool_use_id: p.tool_use_id,
@@ -192,23 +180,23 @@ fn to_pending(pending: Option<PendingTool>) -> Option<Pending> {
     })
 }
 
-fn to_step_outcome(result: RunResult) -> StepOutcome {
-    // Carry a terminal fault through so the adapter projects `session.error`; the
-    // neutral `Failure` owns the classification (code + message), not a string.
-    let failure = match &result.phase {
-        Phase::Ended(EndCause::Error(fault)) => Some(StepFailure {
-            code: fault.code().to_string(),
-            message: fault.message(),
-        }),
-        _ => None,
-    };
-    StepOutcome {
-        stop: phase_to_terminus(&result.phase),
-        messages: result.new_messages,
-        pending: to_pending(result.pending),
-        compacted: result.compacted,
-        rescheduled: result.rescheduled,
-        failure,
+fn to_step_outcome(result: RunResult) -> Result<StepOutcome, RunError> {
+    match result.state {
+        RunState::Awaiting => Ok(StepOutcome::awaiting(
+            result.new_messages,
+            to_pending(result.pending),
+            result.compacted,
+            result.rescheduled,
+        )),
+        RunState::Ended(cause) => Ok(StepOutcome::ended(
+            result.new_messages,
+            cause,
+            result.compacted,
+            result.rescheduled,
+        )),
+        RunState::Running => Err(RunError::internal(
+            "runtime returned an unsettled Running state at the session boundary",
+        )),
     }
 }
 
@@ -482,7 +470,7 @@ impl SessionRuntime for ManagedHost {
             .run(Some(agent), thread, vec![user_message(content)])
             .await
             .map_err(to_run_error)?;
-        Ok(to_step_outcome(result))
+        to_step_outcome(result)
     }
 
     async fn run_streaming(
@@ -499,7 +487,7 @@ impl SessionRuntime for ManagedHost {
             .run_streaming(Some(agent), thread, vec![user_message(content)], sink)
             .await
             .map_err(to_run_error)?;
-        Ok(to_step_outcome(result))
+        to_step_outcome(result)
     }
 
     async fn resume(
@@ -520,7 +508,7 @@ impl SessionRuntime for ManagedHost {
             )
             .await
             .map_err(to_run_error)?;
-        Ok(to_step_outcome(result))
+        to_step_outcome(result)
     }
 
     async fn resume_custom(
@@ -542,7 +530,7 @@ impl SessionRuntime for ManagedHost {
             )
             .await
             .map_err(to_run_error)?;
-        Ok(to_step_outcome(result))
+        to_step_outcome(result)
     }
 
     async fn live_inbox_snapshot(&self, thread: &str) -> LiveInboxSnapshot {
@@ -933,7 +921,7 @@ impl SessionRuntime for ManagedHost {
     }
 
     /// Committed transcript from durable truth, so the adapter can rehydrate a
-    /// session lost to a process restart and resume its parked run (ADR-0039).
+    /// session lost to a process restart and resume its awaiting run (ADR-0039).
     async fn committed_messages(&self, thread: &str) -> Vec<awaken_agent_contract::Message> {
         self.host.committed_messages(thread).await
     }
@@ -1006,16 +994,16 @@ fn to_port_pending(pending: Option<PendingTool>) -> Option<PortPending> {
 }
 
 fn to_port_step_outcome(result: RunResult) -> PortStepOutcome {
-    // The run's terminal `Phase` maps to exactly one `Terminal`. A `Phase::Ended(Error)`
+    // The run's terminal `RunState` maps to exactly one `Terminal`. A `RunState::Ended(Error)`
     // becomes `Terminal::Failed` — the neutral twin of `to_step_outcome`'s `PortStepFailure`
     // — so the wire adapter can surface a failed run (it is a successful `RunResult`,
     // not a `HostError`, so it never reaches the adapter as a `DriverError`).
-    let terminal = match &result.phase {
-        Phase::Waiting => Terminal::Waiting {
+    let terminal = match &result.state {
+        RunState::Awaiting => Terminal::Awaiting {
             pending: to_port_pending(result.pending),
         },
-        Phase::Ended(EndCause::MaxSteps) => Terminal::Exhausted,
-        Phase::Ended(EndCause::Error(fault)) => Terminal::Failed(PortStepFailure {
+        RunState::Ended(EndCause::MaxSteps) => Terminal::Exhausted,
+        RunState::Ended(EndCause::Error(fault)) => Terminal::Failed(PortStepFailure {
             code: fault.code().to_string(),
             message: fault.message(),
         }),

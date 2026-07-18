@@ -12,7 +12,7 @@
 //!
 //! - [`Fact`] — a discrete, complete event: something that definitively happened
 //!   (a whole message, a finished tool call, a run-lifecycle transition). Produced
-//!   only by the **fold** over committed messages/phase. The compiler forces every
+//!   only by the **fold** over committed messages/state. The compiler forces every
 //!   protocol to take a stance on each variant (exhaustive tier).
 //! - [`Delta`] — a streaming fragment of content still being produced. Best-effort,
 //!   high-frequency, from the live **stream**, never durable truth. A protocol opts
@@ -32,10 +32,10 @@ use crate::agent::content::ContentBlock;
 pub enum ToolDisposition {
     /// The tool ran server-side; a [`Fact::ToolResult`] follows.
     Executed,
-    /// A client-executed tool the run parked on; the client runs it and returns
+    /// A client-executed tool the run awaiting on; the client runs it and returns
     /// the result.
     PendingClient,
-    /// A built-in tool the run parked on, awaiting a permission decision.
+    /// A built-in tool the run awaiting on, awaiting a permission decision.
     PendingBuiltin,
 }
 
@@ -80,12 +80,12 @@ pub enum Fact {
         content: Vec<ContentBlock>,
         is_error: bool,
     },
-    /// The run parked awaiting a decision on the named pending tool.
-    Waiting { pending_tool_use_id: Option<String> },
+    /// The run awaits a decision on the named pending tool.
+    Awaiting { pending_tool_use_id: Option<String> },
     /// A run-end continuation guard decided one round. `steered` is whether the
     /// guard injected steering; `detail` is the guard's opaque payload.
     Continuation { steered: bool, detail: Value },
-    /// The run reached a natural or budget-exhausted terminus.
+    /// The run reached a natural or budget-exhausted end.
     RunFinished { exhausted: bool },
     /// The run ended on an execution fault. `code` is the fault's stable
     /// snake_case classification (e.g. `unauthorized`, `context_overflow`).

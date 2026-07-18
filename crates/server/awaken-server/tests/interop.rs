@@ -1,6 +1,6 @@
 //! Cross-protocol integration through the *real* kernel: the AI SDK v6 UI Message
 //! Stream surface, and the headline case — a run started by the AI SDK adapter
-//! that parks on a client-executed tool is resumed by the Managed Agents adapter
+//! that awaits on a client-executed tool is resumed by the Managed Agents adapter
 //! on the *same thread*, and the result is visible back through the AI SDK.
 //!
 //! Conformance matrix — every protocol adapter is held to the same six categories,
@@ -12,7 +12,7 @@
 //! |---|-----------------------------|---------|-----------------|----------------|----------------|
 //! | 1 | turn / streaming            | server  | echo_turn       | echo_turn      | a2a_turn       |
 //! | 2 | history read-back           | server  | history_reflects| cross-proto    | a2a_history    |
-//! | 3 | client-tool park + resume   | server  | parks_then_*    | parks_then_*   | a2a_parks_*    |
+//! | 3 | client-tool await + resume   | server  | awaits_then_*    | awaits_then_*   | a2a_awaits_*    |
 //! | 4 | driver error → wire format  | server  | driver_error    | driver_error   | router unit    |
 //! | 5 | malformed body → wire format| Managed | malformed_body  | malformed_body | a2a_malformed  |
 //! | 6 | interrupt                   | server  | (shared host)   | (shared host)  | (shared host)  |
@@ -129,12 +129,12 @@ async fn ai_sdk_history_reflects_committed_turn() {
 }
 
 /// The headline cross-protocol case. A managed session fixes the shared thread id;
-/// the AI SDK adapter drives a turn on that thread which parks on a client-executed
+/// the AI SDK adapter drives a turn on that thread which awaits on a client-executed
 /// tool; the Managed adapter delivers the tool result on the *same thread* and the
 /// run resumes; the final answer is visible back through the AI SDK.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "cross-protocol park/resume: same AI-SDK history-projection race as ai_sdk_history_reflects_committed_turn — needs cross-protocol shape/timing investigation"]
-async fn ai_sdk_parks_then_managed_resumes_same_thread() {
+#[ignore = "cross-protocol await/resume: same AI-SDK history-projection race as ai_sdk_history_reflects_committed_turn — needs cross-protocol shape/timing investigation"]
+async fn ai_sdk_awaits_then_managed_resumes_same_thread() {
     let app = build_custom_router();
 
     // 1. Managed creates the session; its id is the shared thread id.
@@ -149,7 +149,7 @@ async fn ai_sdk_parks_then_managed_resumes_same_thread() {
     let thread = session["id"].as_str().unwrap().to_string();
 
     // 2. AI SDK drives a turn on that thread; the model calls the client tool
-    //    `submit_answer` and the run parks.
+    //    `submit_answer` and the run awaits.
     let (status, body) = call(
         &app,
         "POST",
@@ -169,7 +169,7 @@ async fn ai_sdk_parks_then_managed_resumes_same_thread() {
         events
             .iter()
             .any(|e| e["type"] == "finish" && e["finishReason"] == "tool-calls"),
-        "parked run should finish the step with tool-calls: {body}"
+        "awaiting run should finish the step with tool-calls: {body}"
     );
 
     // 3. Managed delivers the client tool result on the SAME thread, resuming the
@@ -238,12 +238,12 @@ async fn ag_ui_echo_turn_streams_run_events() {
     );
 }
 
-/// The three-protocol case: AG-UI drives a turn that parks on a client tool, the
+/// The three-protocol case: AG-UI drives a turn that awaits on a client tool, the
 /// Managed adapter delivers the result on the same thread, and the resumed answer
 /// is visible back through the AI SDK — all three over one shared host/thread.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "cross-protocol park/resume: same AI-SDK history-projection race as ai_sdk_history_reflects_committed_turn — needs cross-protocol shape/timing investigation"]
-async fn ag_ui_parks_then_managed_resumes_visible_via_ai_sdk() {
+#[ignore = "cross-protocol await/resume: same AI-SDK history-projection race as ai_sdk_history_reflects_committed_turn — needs cross-protocol shape/timing investigation"]
+async fn ag_ui_awaits_then_managed_resumes_visible_via_ai_sdk() {
     let app = build_custom_router();
 
     let (_, created) = call(
@@ -274,7 +274,7 @@ async fn ag_ui_parks_then_managed_resumes_visible_via_ai_sdk() {
     );
     assert!(
         events.iter().any(|e| e["type"] == "RUN_FINISHED"),
-        "parked run should finish: {body}"
+        "awaiting run should finish: {body}"
     );
 
     // Managed delivers the client tool result on the SAME thread.
@@ -343,14 +343,14 @@ async fn ai_sdk_malformed_body_returns_stream_error() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ai_sdk_driver_error_returns_stream_error() {
-    // Empty messages on a fresh thread is a resume with no parked run — a driver
+    // Empty messages on a fresh thread is a resume with no awaiting run — a driver
     // error, which must also stream as an AI SDK error frame.
     let app = build_echo_router();
     let (status, body) = call(
         &app,
         "POST",
-        "/v1/ai-sdk/threads/t-noparked/runs",
-        json!({ "threadId": "t-noparked", "messages": [] }),
+        "/v1/ai-sdk/threads/t-noawaiting/runs",
+        json!({ "threadId": "t-noawaiting", "messages": [] }),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -376,14 +376,14 @@ async fn ag_ui_malformed_body_returns_run_error() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ag_ui_driver_error_returns_run_error() {
-    // A resume with no parked run is a driver error → RUN_ERROR (bracketed by the
+    // A resume with no awaiting run is a driver error → RUN_ERROR (bracketed by the
     // RUN_STARTED the run began with).
     let app = build_echo_router();
     let (status, body) = call(
         &app,
         "POST",
         "/v1/ag-ui",
-        json!({ "threadId": "ag-noparked", "runId": "r1", "messages": [] }),
+        json!({ "threadId": "ag-noawaiting", "runId": "r1", "messages": [] }),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -465,7 +465,7 @@ async fn a2a_history_accumulates_across_turns() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a2a_parks_input_required_then_resumes_completed() {
+async fn a2a_awaits_input_required_then_resumes_completed() {
     let app = build_custom_router();
     // A managed session fixes the shared context id.
     let (_, created) = call(
@@ -480,7 +480,7 @@ async fn a2a_parks_input_required_then_resumes_completed() {
         .unwrap()
         .to_string();
 
-    // A2A drives a turn; the model calls the client tool and the task parks.
+    // A2A drives a turn; the model calls the client tool and the task awaits.
     let (status, body) = call(
         &app,
         "POST",
@@ -492,7 +492,7 @@ async fn a2a_parks_input_required_then_resumes_completed() {
     let task = serde_json::from_str::<Value>(&body).unwrap()["task"].clone();
     assert_eq!(
         task["status"]["state"], "input-required",
-        "a client-tool park is input-required: {body}"
+        "a client-tool await is input-required: {body}"
     );
 
     // A2A delivers the awaited input on the SAME context; the run resumes to done.

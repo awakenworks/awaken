@@ -57,7 +57,7 @@ owns the role catalog; the flow document owns ordering and handoff rules.
 | Persistence | Runtime Core and Store contracts | runtime persistence policy, checkpoint access, `RuntimeResumeStore`, `CommitCoordinator` | split reader/writer pairs or side writes | read-only writes fail; read/write derives reader from coordinator |
 | Plugin extension | Runtime Core extension seam | `Plugin::resolve` contributions merged into `ResolvedExecutionEnv` | direct store mutation, unregistered hooks, product labels | duplicate owners fail; hook output is validated and committed or rejected |
 | Tool decision | Runtime Core plus permission extension | descriptor visibility, tool gate/policy decision, tool execution result | authorization hidden in visibility, selection, or backend location | visibility grants perception only; invocation still gates |
-| Wait/resume | Product adapter plus Runtime Core live control | neutral result for one pending parked run (e.g. a client-executed tool call) | public tool-use DTOs, config/admin writes, global catalog mutation | unknown, duplicate, expired, thread-mismatched, or descriptor-mismatched results fail closed |
+| Wait/resume | Product adapter plus Runtime Core live control | neutral result for one pending aawaiting run (e.g. a client-executed tool call) | public tool-use DTOs, config/admin writes, global catalog mutation | unknown, duplicate, expired, thread-mismatched, or descriptor-mismatched results fail closed |
 
 ## Role Split
 
@@ -289,7 +289,7 @@ observable, and extensible:
 | Resolution | consumes configuration publication and materializes an execution plan |
 | State | records live runtime mutations that execution may stage into commit |
 | Event | carries live stream output and committed projection source data |
-| Wait/resume | pauses execution on a structured waiting reason and resumes through live control after adapter projection |
+| Wait/resume | pauses execution on a structured await reason and resumes through live control after adapter projection |
 | Commit | turns staged runtime truth into durable facts; all projections derive after it |
 | Extension | contributes hooks, tools, transforms, guards, and state keys during resolution |
 
@@ -321,7 +321,7 @@ the `ThreadCommit`.
 | Execution | ordered runtime work over a resolved plan | `RunExecutor`, backend/model/tool invocations, phase hooks | live stream output, `ToolOutput`, `StateCommand`, event/fact drafts, commit plan | durable writes, authorization ownership, protocol projection |
 | State | live typed state mutation requested by execution | registered `StateKey` plus `StateCommand` | `MutationBatch`, live `StateStore`, `PersistedState` export | direct durable write, product/shared resource state |
 | Event | live and durable neutral runtime event shapes | `StreamEvent`, `EventDraft`, durable event staging | `EventRecord` after commit and event subscription source | public protocol names, commit authority |
-| Wait/resume | pending parked-run boundary (e.g. client-executed tool) | resolved pending request and later neutral resume command | pending `RunWaitingState`, validated resume input, result fact after commit | public result ids as truth, config/admin mutation |
+| Wait/resume | pending awaiting-run boundary (e.g. client-executed tool) | resolved pending request and later neutral resume command | pending `ResumeTicket`, validated resume input, result fact after commit | public result ids as truth, config/admin mutation |
 | Commit | durable runtime truth for thread/run/message/state/event records | `ThreadCommit` passed to `CommitCoordinator` | committed facts, events, messages, state, and resume-visible records | executing hooks/tools, protocol DTO projection, side writes |
 | Extension | installable runtime behavior contribution | `Plugin::resolve` during resolution | hooks, tools, gates, transforms, keys, handlers in `ResolvedExecutionEnv` | direct store mutation, permission bypass, product labels |
 
@@ -341,7 +341,7 @@ enters, where it changes hands, and which port is allowed to make the next value
 | Execution | resolved plan -> model capability check -> in-process loop -> LLM/tool calls -> stream output, state commands, event drafts, commit plan, final result | runtime owns loop orchestration; tool/model ports own invocation mechanics | execution ports do not grant authorization and do not own protocol projection |
 | State | registered keys -> seed/import persisted state -> hooks/tools return `StateCommand` -> `MutationBatch` -> live `StateStore` -> export `PersistedState` into commit | runtime owns live revisioned state; commit owns durability | product/shared state stays behind approved resource or product ports |
 | Event | execution emits `StreamEvent` to `StreamSink` -> optional `DurableEventSink` normalizes live events into `EventDraft` / `DurableEventDraft` values -> commit succeeds -> `EventRecord` / `DurableEvent` reaches `EventReader` or `EventSubscriber` for projection | stream sink owns live delivery; commit owns durable event visibility | live stream output cannot become replay truth |
-| Wait/resume | parked run records pending id, fingerprint, deadline, and authorization state (e.g. a client-executed tool call) -> adapter projects a public wait after commit -> adapter maps public result to neutral resume -> `LiveRunControl` wakes the pending boundary | runtime owns pending-request validation; adapter owns public event/result names | public result ids do not become runtime truth; inbound results cannot mutate config/admin/catalog state |
+| Wait/resume | aawaiting run records pending id, fingerprint, deadline, and authorization state (e.g. a client-executed tool call) -> adapter projects a public wait after commit -> adapter maps public result to neutral resume -> `LiveRunControl` wakes the pending boundary | runtime owns pending-request validation; adapter owns public event/result names | public result ids do not become runtime truth; inbound results cannot mutate config/admin/catalog state |
 | Commit | resume read via `RuntimeResumeStore` -> runtime resolves disabled/read-only/read-write persistence access -> stage `ThreadCommit` with messages, run projection, state export, and event drafts -> `CommitCoordinator` commits atomically -> facts/records become visible; durable ingress verifies same-source wiring at construction | runtime proposes a commit; coordinator owns the durable write mechanism; run ingress owns the same-source guard | read and write must come from the same commit source; no side writes |
 | Extension | selected plugin ids -> `Plugin::resolve` -> `Contributions` -> `ResolvedExecutionEnv` merge (uniqueness, declared order, `enforce_bound`) -> hooks, tools, guards, handlers, transforms, and keys run through declared surfaces -> outputs validate and stage | plugins declare behavior; runtime validates and stages the effects | plugins cannot mutate stores, bypass gates, exceed their bound, or introduce product labels |
 
@@ -365,7 +365,7 @@ not copy).
 | Execution | `RunExecutor`, run phases / terminal reason | [runtime-behavior.md](runtime-behavior.md) |
 | State | `StateStore` / `StateCommand` / `MutationBatch` | [runtime-behavior.md](runtime-behavior.md) |
 | Event | `StreamEvent` / `EventRecord` / `StreamSink` | [commit-fact-projection-taxonomy.md](commit-fact-projection-taxonomy.md) |
-| Wait/resume (scheduled, client-tool, decision) | `ScheduledAction`, `RunWaitingState` + `ResumeValidator`, durable dispatch | [ADR-0003](../adr/0003-deferred-work-mechanism-selection.md) |
+| Wait/resume (scheduled, client-tool, decision) | `ScheduledAction`, `ResumeTicket` + `ResumeValidator`, durable dispatch | [ADR-0003](../adr/0003-deferred-work-mechanism-selection.md) |
 | Commit | `ThreadCommit` / `CommitCoordinator` | [commit-fact-projection-taxonomy.md](commit-fact-projection-taxonomy.md) |
 | Extension | `Plugin` / `Contributions` / `ResolvedExecutionEnv` | [runtime-behavior.md](runtime-behavior.md) |
 
@@ -374,7 +374,7 @@ hands; the per-axis enforcing tests are in the guardrail index
 ([INVARIANTS.md](../INVARIANTS.md)).
 
 Cross-axis lifecycle values must name their owning axis. For example, a committed
-`ScheduledAction` waiting state is durable run state owned by execution and
+`ScheduledAction` awaiting state is durable run state owned by execution and
 commit, while the dispatch/server delivery lease that runs it is operational state
 outside runtime truth. If a value seems to belong to several rows, split the
 durable data from the live handle or operational projection before adding an API.

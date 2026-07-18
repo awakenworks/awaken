@@ -1,6 +1,6 @@
 //! The SQLite dispatch store and a fully-embedded durable loop. SQLite needs no
 //! external server, so these always run: store-level claim/lease/idempotency
-//! checks, plus an end-to-end durable submit -> park -> resume entirely on SQLite
+//! checks, plus an end-to-end durable submit -> await -> resume entirely on SQLite
 //! (dispatch queue *and* commit boundary).
 
 mod harness;
@@ -8,7 +8,7 @@ mod harness;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_run_ingress::{
     DispatchQueue, DurableRunIngress, Inbox, PendingInput, RunExecutionRequest, SqliteDispatchStore,
@@ -69,32 +69,32 @@ async fn durable_loop_runs_entirely_on_sqlite() {
     let commit = Arc::new(SqliteCommitCoordinator::open_in_memory().expect("commit"));
     let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
 
-    // Durable submit parks on the gate.
-    let phase = ingress
+    // Durable submit awaits on the gate.
+    let state = ingress
         .submit_background(activation("run-1"))
         .await
         .expect("submit");
-    assert_eq!(phase, Phase::Waiting);
+    assert_eq!(state, RunState::Awaiting);
     assert_eq!(ran.load(Ordering::SeqCst), 0);
 
     // Stale input (wrong correlation) does not resume.
-    let phase = ingress
+    let state = ingress
         .deliver_resume(pending("stale", "old-ticket", true), 0)
         .await
         .expect("stale");
-    assert_eq!(phase, Phase::Waiting);
+    assert_eq!(state, RunState::Awaiting);
     assert_eq!(ran.load(Ordering::SeqCst), 0);
 
     // The correctly-correlated input resumes the run to completion.
-    let phase = ingress
+    let state = ingress
         .deliver_resume(pending("good", TICKET, true), 0)
         .await
         .expect("resume");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(Ordering::SeqCst), 1, "the pending tool ran once");
 
     let record = RunStore::get(commit.as_ref(), &RunId("run-1".to_string())).expect("record");
-    assert_eq!(record.phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(record.state, RunState::Ended(EndCause::NaturalEnd));
 }
 
 #[tokio::test]
@@ -195,9 +195,9 @@ async fn concurrent_recovery_yields_one_winner_on_sqlite() {
 }
 
 #[tokio::test]
-async fn parked_settle_fences_stale_epoch_on_sqlite() {
+async fn awaiting_settle_fences_stale_epoch_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory().expect("open");
-    harness::assert_parked_settle_fences_stale_epoch(&store).await;
+    harness::assert_awaiting_settle_fences_stale_epoch(&store).await;
 }
 
 #[tokio::test]

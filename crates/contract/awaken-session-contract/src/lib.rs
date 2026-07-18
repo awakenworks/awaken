@@ -29,7 +29,7 @@ pub use resource::SessionResource;
 pub use session::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, McpServerBinding, OutcomeIteration, OutcomeReport, Pending, RunError,
-    RunErrorKind, SessionInit, SessionRuntime, SessionUsage, StepFailure, StepOutcome, Terminus,
+    RunErrorKind, SessionInit, SessionRuntime, SessionUsage, StepOutcome,
 };
 pub use session_repo::{
     ManagedSessionRepository, PersistedSession, ScopedSessionRepo, ScopedSessionStore,

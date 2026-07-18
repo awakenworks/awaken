@@ -16,7 +16,7 @@ impl SharedHost {
         })
     }
 
-    /// Submit a durable run and wait for the pool to drive it to a settled phase.
+    /// Submit a durable run and wait for the pool to drive it to a settled state.
     /// Under the shared queue a session's own worker must not claim (it would grab
     /// foreign threads' runs), so the foreground durable path enqueues, nudges the
     /// pool, and waits for the pool to signal completion — **by event**, not by
@@ -27,7 +27,7 @@ impl SharedHost {
         ctx: &Arc<SessionCtx>,
         activation: RunActivation,
         supersede: bool,
-    ) -> Result<awaken_agent_contract::agent::run::Phase, HostError> {
+    ) -> Result<awaken_agent_contract::agent::run::RunState, HostError> {
         let run_id = activation.run_id.clone();
         // Register for the settle event BEFORE enqueue, so the pool cannot drive and
         // settle the run before this caller is listening (no lost wakeup). The guard
@@ -73,13 +73,13 @@ impl SharedHost {
         &self,
         ctx: &Arc<SessionCtx>,
         run_id: &RunId,
-        settled: tokio::sync::oneshot::Receiver<Phase>,
-    ) -> Result<Phase, HostError> {
+        settled: tokio::sync::oneshot::Receiver<RunState>,
+    ) -> Result<RunState, HostError> {
         // ~60s ceiling — generous for a multi-step run's inference, bounded so a
         // stuck run surfaces as an error rather than hanging the request forever.
         match tokio::time::timeout(std::time::Duration::from_secs(60), settled).await {
-            // The pool signalled the settled phase the instant it settled.
-            Ok(Ok(phase)) => Ok(phase),
+            // The pool signalled the settled state the instant it settled.
+            Ok(Ok(state)) => Ok(state),
             // Sender dropped without sending (pool died) or the wait timed out: fall
             // back to one committed-truth read, else surface a hard error. The
             // waiter entry is cleaned up by the caller's `WaiterGuard` on return.
@@ -91,13 +91,13 @@ impl SharedHost {
         }
     }
 
-    /// One committed-truth read: the run's phase if it has settled (`Ended` or
-    /// `Waiting`), else `None`. The fallback path for `await_settled_event`.
-    fn read_settled_phase(&self, ctx: &Arc<SessionCtx>, run_id: &RunId) -> Option<Phase> {
+    /// One committed-truth read: the run's state if it has settled (`Ended` or
+    /// `Awaiting`), else `None`. The fallback path for `await_settled_event`.
+    fn read_settled_phase(&self, ctx: &Arc<SessionCtx>, run_id: &RunId) -> Option<RunState> {
         use awaken_agent_contract::thread::read::run_store::RunStore;
         match RunStore::get(&*ctx.commit, run_id) {
-            Some(record) if matches!(record.phase, Phase::Ended(_) | Phase::Waiting) => {
-                Some(record.phase)
+            Some(record) if matches!(record.state, RunState::Ended(_) | RunState::Awaiting) => {
+                Some(record.state)
             }
             _ => None,
         }
@@ -110,7 +110,7 @@ impl SharedHost {
 /// registered waiter (a fire-and-forget background submit) settles as a no-op.
 #[derive(Default)]
 pub(crate) struct CompletionRegistry {
-    waiters: std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<Phase>>>,
+    waiters: std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<RunState>>>,
 }
 
 impl CompletionRegistry {
@@ -122,7 +122,7 @@ impl CompletionRegistry {
     fn register(
         self: &Arc<Self>,
         run_id: &RunId,
-    ) -> (tokio::sync::oneshot::Receiver<Phase>, WaiterGuard) {
+    ) -> (tokio::sync::oneshot::Receiver<RunState>, WaiterGuard) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.waiters
             .lock()
@@ -156,7 +156,7 @@ impl Drop for WaiterGuard {
 }
 
 impl CompletionSink for CompletionRegistry {
-    fn settled(&self, run_id: &RunId, phase: &Phase) {
+    fn settled(&self, run_id: &RunId, state: &RunState) {
         if let Some(tx) = self
             .waiters
             .lock()
@@ -164,7 +164,7 @@ impl CompletionSink for CompletionRegistry {
             .remove(&run_id.0)
         {
             // The receiver may have already gone (timed out) — a dropped send is fine.
-            let _ = tx.send(phase.clone());
+            let _ = tx.send(state.clone());
         }
     }
 }
@@ -172,7 +172,7 @@ impl CompletionSink for CompletionRegistry {
 #[cfg(test)]
 mod completion_tests {
     use super::{CompletionRegistry, RunId};
-    use awaken_agent_contract::agent::run::Phase;
+    use awaken_agent_contract::agent::run::RunState;
     use awaken_run_ingress::CompletionSink;
     use std::sync::Arc;
 
@@ -191,14 +191,14 @@ mod completion_tests {
         );
     }
 
-    /// The happy path: `settled` delivers the phase to the waiter and clears the
+    /// The happy path: `settled` delivers the state to the waiter and clears the
     /// slot, so the later guard drop is a no-op.
     #[tokio::test]
-    async fn settled_delivers_the_phase_and_clears_the_slot() {
+    async fn settled_delivers_the_state_and_clears_the_slot() {
         let registry = Arc::new(CompletionRegistry::default());
         let (rx, _guard) = registry.register(&RunId("r".into()));
-        registry.settled(&RunId("r".into()), &Phase::Waiting);
-        assert!(matches!(rx.await, Ok(Phase::Waiting)));
+        registry.settled(&RunId("r".into()), &RunState::Awaiting);
+        assert!(matches!(rx.await, Ok(RunState::Awaiting)));
         assert!(registry.waiters.lock().unwrap().is_empty());
     }
 }

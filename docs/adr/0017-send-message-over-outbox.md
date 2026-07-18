@@ -20,20 +20,20 @@ A message targets a **thread id**, not a run id. A run is one ephemeral executio
 attempt; it is not a stable address. A thread is the durable, addressable unit and
 the consistency/shard key of the whole delivery design (`thread_id` is "the shard
 and consistency key"). The tool argument is `target_thread`; the adapter resolves
-the run currently parked on that thread.
+the run currently awaiting on that thread.
 
 ### D2: A host adapter bridges the tool port to the outbox
 
 `OutboxMessageSender` implements the extension's `MessageSender`. On `send`, it
-asks the dispatch store for the thread's parked run (`parked_run(thread_id)`),
-reads that run's committed waiting ticket for its correlation, and stages a
+asks the dispatch store for the thread's aawaiting run (`awaiting_run(thread_id)`),
+reads that run's committed resume ticket for its correlation, and stages a
 `PendingInput` (the message as `ResumeResult::Input`) into the outbox. The daemon
 then relays it to the run's pending input, which resumes the run with the message.
-Delivery to a thread with no waiting run fails closed.
+Delivery to a thread with no awaiting run fails closed.
 
-### D3: Delivery to a non-waiting thread is deferred
+### D3: Delivery to a non-awaiting thread is deferred
 
-Because delivery is keyed to a parked run's ticket correlation (ADR-0010), this
+Because delivery is keyed to an aawaiting run's ticket correlation (ADR-0010), this
 adapter delivers to a thread whose run is *waiting* (the HITL / inter-agent
 handoff case). Unsolicited delivery to an idle thread — a fresh input the thread
 consumes on its next run — needs new-input (not resume) semantics and a
@@ -45,7 +45,7 @@ thread-level pending queue independent of a ticket; that remains deferred.
   waiting on that thread, resuming it — the multi-agent handoff works end to end.
 - The extension owns the model-visible tool; the host owns the adapter and the
   outbox; the boundary (ADR-0007) holds.
-- `parked_run` is a new dispatch read port, proven across the three backends.
+- `awaiting_run` is a new dispatch read port, proven across the three backends.
 - Addressing is correct (thread, not run); unsolicited idle-thread delivery is a
   named, deferred extension.
 

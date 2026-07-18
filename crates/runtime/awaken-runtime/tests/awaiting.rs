@@ -1,4 +1,4 @@
-//! A gate Suspend parks the run on a committed waiting ticket; a validated
+//! A gate Suspend awaits the run on a committed awaiting ticket; a validated
 //! resume continues it, and a mismatched or stale resume fails closed (G5/G28).
 
 use std::sync::Arc;
@@ -6,11 +6,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::{MemoryCommitCoordinator, replay_latest_phase};
+use awaken_runtime::memory::{MemoryCommitCoordinator, replay_latest_state};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
@@ -175,7 +175,7 @@ fn resume_command(result: ResumeResult) -> ResumeCommand {
 async fn suspend(commit: &Arc<MemoryCommitCoordinator>, runtime: &Runtime) {
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome, Phase::Waiting);
+    assert_eq!(outcome, RunState::Awaiting);
 }
 
 #[tokio::test]
@@ -186,10 +186,10 @@ async fn suspend_commits_ticket_then_allow_resume_executes_and_completes() {
 
     suspend(&commit, &runtime).await;
 
-    // A waiting ticket and a RunWaiting event were committed; the tool has not run.
+    // A awaiting ticket and a RunAwaiting event were committed; the tool has not run.
     let ticket = commit
-        .waiting_for(&RunId("run-1".to_string()))
-        .expect("a waiting ticket is committed");
+        .resume_ticket_for(&RunId("run-1".to_string()))
+        .expect("an awaiting ticket is committed");
     assert_eq!(ticket.correlation_id, "ticket-1");
     assert_eq!(ticket.thread_id, ThreadId("thread-1".to_string()));
     assert!(
@@ -197,12 +197,12 @@ async fn suspend_commits_ticket_then_allow_resume_executes_and_completes() {
             .committed()
             .events
             .iter()
-            .any(|e| e.kind == EventKind::RunWaiting)
+            .any(|e| e.kind == EventKind::RunAwaiting)
     );
     assert_eq!(
         ran.load(Ordering::SeqCst),
         0,
-        "tool must not run while parked"
+        "tool must not run while awaiting"
     );
 
     // An allow decision resumes: the pending tool executes and the run completes.
@@ -218,7 +218,7 @@ async fn suspend_commits_ticket_then_allow_resume_executes_and_completes() {
         )
         .await
         .expect("resume runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(
         ran.load(Ordering::SeqCst),
         1,
@@ -233,30 +233,34 @@ async fn suspend_commits_ticket_then_allow_resume_executes_and_completes() {
             .any(|m| m.role == Role::Tool && m.text_content().contains("echoed"))
     );
     // The ticket is cleared once resumed.
-    assert!(commit.waiting_for(&RunId("run-1".to_string())).is_none());
+    assert!(
+        commit
+            .resume_ticket_for(&RunId("run-1".to_string()))
+            .is_none()
+    );
 
     // The fact log keeps the full progression in order — Running (input
-    // committed at the first step boundary), Waiting (parked), Running (the
+    // committed at the first step boundary), Awaiting (awaiting), Running (the
     // resumed result committed), Ended — and the latest fact is the authority
     // replay derives (ADR-0006 D1).
-    let phases: Vec<_> = committed
+    let states: Vec<_> = committed
         .run_facts
         .iter()
         .filter(|f| f.run_id == RunId("run-1".to_string()))
-        .map(|f| f.phase.clone())
+        .map(|f| f.state.clone())
         .collect();
     assert_eq!(
-        phases,
+        states,
         vec![
-            Phase::Running,
-            Phase::Waiting,
-            Phase::Running,
-            Phase::Ended(EndCause::NaturalEnd)
+            RunState::Running,
+            RunState::Awaiting,
+            RunState::Running,
+            RunState::Ended(EndCause::NaturalEnd)
         ]
     );
     assert_eq!(
-        replay_latest_phase(&committed, &RunId("run-1".to_string())),
-        Some(Phase::Ended(EndCause::NaturalEnd))
+        replay_latest_state(&committed, &RunId("run-1".to_string())),
+        Some(RunState::Ended(EndCause::NaturalEnd))
     );
 }
 
@@ -279,7 +283,7 @@ async fn deny_resume_feeds_a_blocked_result_without_running_the_tool() {
         )
         .await
         .expect("resume runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(Ordering::SeqCst), 0, "deny must not run the tool");
     assert!(
         commit
@@ -308,12 +312,16 @@ async fn resume_with_wrong_fingerprint_fails_closed() {
         .await
         .expect_err("mismatched fingerprint is rejected");
     assert!(err.to_string().contains("fingerprint"));
-    // The run stays parked: the ticket is untouched.
-    assert!(commit.waiting_for(&RunId("run-1".to_string())).is_some());
+    // The run stays awaiting: the ticket is untouched.
+    assert!(
+        commit
+            .resume_ticket_for(&RunId("run-1".to_string()))
+            .is_some()
+    );
 }
 
 #[tokio::test]
-async fn second_resume_after_completion_is_not_waiting() {
+async fn second_resume_after_completion_is_not_awaiting() {
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(ran);
     let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -345,7 +353,7 @@ async fn second_resume_after_completion_is_not_waiting() {
         )
         .await
         .expect_err("a stale resume is rejected");
-    assert!(err.to_string().contains("not waiting"));
+    assert!(err.to_string().contains("not awaiting"));
 }
 
 #[tokio::test]
@@ -367,7 +375,7 @@ async fn resume_with_a_client_tool_result_is_used_directly() {
         )
         .await
         .expect("resume runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     // The client's result is fed back verbatim; the host tool never ran.
     assert_eq!(ran.load(Ordering::SeqCst), 0);
     assert!(
@@ -395,7 +403,7 @@ async fn resume_with_input_injects_a_user_message() {
         )
         .await
         .expect("resume runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     assert!(
         commit
             .committed()

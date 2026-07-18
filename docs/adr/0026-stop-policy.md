@@ -25,14 +25,14 @@ just that it did.
 
 `Runtime::stop_run(run_id, thread_id, reason, context)` commits a terminal
 `Stopped` fact through the single finish boundary (G31), exactly as `cancel_run`
-commits `Cancelled` (ADR-0016). It clears any waiting ticket, so the run is no
+commits `Cancelled` (ADR-0016). It clears any resume ticket, so the run is no
 longer resumable. No second termination path is added — a stop is the same
 boundary with a different cause.
 
 ### D3: A late result after a stop fails closed
 
-Because the stop clears the waiting ticket, a resume or `perform_scheduled_action`
-arriving afterward finds no ticket and is rejected (`not waiting`) before it can
+Because the stop clears the resume ticket, a resume or `perform_scheduled_action`
+arriving afterward finds no ticket and is rejected (`not awaiting`) before it can
 run an action or commit a message (RS-CTRL-002). The terminal stop is the single
 authority; a stale deferred result never resurrects the run.
 

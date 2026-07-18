@@ -62,7 +62,7 @@ pub awaken_runtime_host::ThreadEvent::AgentLaunch::detail: core::option::Option<
 pub awaken_runtime_host::ThreadEvent::AgentLaunch::stage: alloc::string::String
 pub awaken_runtime_host::ThreadEvent::Committed(alloc::vec::Vec<awaken_agent_contract::agent::message::Message>)
 pub awaken_runtime_host::ThreadEvent::StepEnded
-pub awaken_runtime_host::ThreadEvent::StepEnded::waiting: bool
+pub awaken_runtime_host::ThreadEvent::StepEnded::awaiting: bool
 pub enum awaken_runtime_host::Wake
 pub awaken_runtime_host::Wake::Nats
 pub awaken_runtime_host::Wake::None
@@ -198,7 +198,7 @@ pub async fn awaken_runtime_host::SharedHost::committed_messages(&self, &str) ->
 pub async fn awaken_runtime_host::SharedHost::define_outcome(&self, &str, &str, &str, u32) -> core::result::Result<awaken_runtime_host::host::types::HostOutcomeReport, awaken_runtime_host::host::types::HostError>
 pub fn awaken_runtime_host::SharedHost::has_durable_thread(&self, &str) -> bool
 pub async fn awaken_runtime_host::SharedHost::interrupt(&self, &str) -> core::result::Result<(), awaken_runtime_host::host::types::HostError>
-pub async fn awaken_runtime_host::SharedHost::is_parked(&self, &str) -> bool
+pub async fn awaken_runtime_host::SharedHost::is_awaiting(&self, &str) -> bool
 pub async fn awaken_runtime_host::SharedHost::pending_tool(&self, &str) -> core::option::Option<awaken_runtime_host::host::types::PendingTool>
 pub async fn awaken_runtime_host::SharedHost::resume(&self, &str, &str, awaken_runtime_host::HostResume) -> core::result::Result<awaken_runtime_host::host::types::RunResult, awaken_runtime_host::host::types::HostError>
 pub async fn awaken_runtime_host::SharedHost::run(&self, core::option::Option<&str>, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::result::Result<awaken_runtime_host::host::types::RunResult, awaken_runtime_host::host::types::HostError>

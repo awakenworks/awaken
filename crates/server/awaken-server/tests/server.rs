@@ -1,5 +1,5 @@
 //! Server integration tests through the *real* kernel: the echo path, and a full
-//! HITL round-trip where a mutating tool parks for approval, is confirmed, runs
+//! HITL round-trip where a mutating tool awaits for approval, is confirmed, runs
 //! rooted in the session's sandbox, and the read-back proves isolation.
 
 use std::sync::Arc;
@@ -117,7 +117,7 @@ async fn echo_turn_end_to_end() {
 }
 
 /// Stateless probe: write the user's text to a relative `probe.txt`, read it back,
-/// reply. `write` is asked (parks); `read` is allowed (runs).
+/// reply. `write` is asked (awaits); `read` is allowed (runs).
 struct WriteReadProbe;
 
 #[async_trait::async_trait]
@@ -180,11 +180,11 @@ fn read_result_text(list: &serde_json::Value) -> String {
 }
 
 #[tokio::test]
-async fn hitl_write_parks_then_confirms_and_reads_rooted() {
+async fn hitl_write_awaits_then_confirms_and_reads_rooted() {
     let app = build_router(Arc::new(WriteReadProbe), "scripted");
     let id = create_session(&app).await;
 
-    // The write is asked -> the run parks.
+    // The write is asked -> the run awaits.
     let list = send_message(&app, &id, "HELLO-SANDBOX").await;
     assert_eq!(
         event_types(&list),
@@ -368,7 +368,7 @@ async fn custom_tool_use_through_real_kernel() {
     let app = build_custom_router();
     let id = create_session(&app).await;
 
-    // The model calls the client-executed tool `submit_answer` -> parks as custom.
+    // The model calls the client-executed tool `submit_answer` -> awaits as custom.
     let list = send_message(&app, &id, "solve it").await;
     assert_eq!(
         event_types(&list),
@@ -510,7 +510,7 @@ async fn post_status(app: &Router, uri: &str, body: serde_json::Value) -> Status
 async fn custom_result_fails_closed_on_mismatch() {
     let app = build_custom_router();
     let id = create_session(&app).await;
-    send_message(&app, &id, "solve it").await; // parks on submit_answer (id "c1")
+    send_message(&app, &id, "solve it").await; // awaits on submit_answer (id "c1")
 
     // A result naming the wrong tool_use_id is rejected...
     let status = post_status(
@@ -525,7 +525,7 @@ async fn custom_result_fails_closed_on_mismatch() {
         "mismatched id must fail closed"
     );
 
-    // ...and a `user.tool_confirmation` is rejected too (this park is
+    // ...and a `user.tool_confirmation` is rejected too (this await is
     // client-executed, not a built-in awaiting approval).
     let status = post_status(
         &app,
@@ -539,7 +539,7 @@ async fn custom_result_fails_closed_on_mismatch() {
         "wrong binding must fail closed"
     );
 
-    // The park survives both rejections; the correct result still resumes it.
+    // The await survives both rejections; the correct result still resumes it.
     json_call(
         &app,
         "POST",
@@ -569,11 +569,11 @@ async fn custom_result_fails_closed_on_mismatch() {
 
 #[tokio::test]
 async fn custom_result_cannot_fabricate_a_builtin_tools_output() {
-    // A run parked on the *built-in* `write` (HITL) must not be resumable with a
+    // A run awaiting on the *built-in* `write` (HITL) must not be resumable with a
     // `user.custom_tool_result`: that would bypass execution and the approval gate.
     let app = build_router(Arc::new(WriteReadProbe), "scripted");
     let id = create_session(&app).await;
-    send_message(&app, &id, "HELLO").await; // parks on write (id "w")
+    send_message(&app, &id, "HELLO").await; // awaits on write (id "w")
 
     let status = post_status(
         &app,
@@ -584,7 +584,7 @@ async fn custom_result_cannot_fabricate_a_builtin_tools_output() {
     assert_eq!(
         status,
         StatusCode::BAD_REQUEST,
-        "built-in park must reject a custom result"
+        "built-in await must reject a custom result"
     );
 
     // The proper confirmation path still runs the real tool.
@@ -611,7 +611,7 @@ async fn delegation_runs_a_subagent_and_returns_its_result() {
     let id = create_session(&app).await;
     let list = send_message(&app, &id, "research the answer").await;
 
-    // `agent_run` parks and the host fulfills it: a sub-run executes and its
+    // `agent_run` awaits and the host fulfills it: a sub-run executes and its
     // result flows back transparently within the turn.
     let msgs: Vec<&str> = list["data"]
         .as_array()

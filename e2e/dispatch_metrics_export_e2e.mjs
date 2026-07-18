@@ -6,7 +6,7 @@
 // the SAME injected recorder that meters model/tool calls (so it exports on the one
 // OTLP pipeline with no extra wiring):
 //   - `awaken.dispatch.runs.claimed`  (counter) per claimed dispatch driven,
-//   - `awaken.dispatch.runs.settled`  (counter, `outcome`=done|parked) per settle,
+//   - `awaken.dispatch.runs.settled`  (counter, `outcome`=done|awaiting) per settle,
 //   - `awaken.dispatch.drive.duration` (histogram, seconds) per drive_claimed.
 //
 // This test boots a DURABLE server (AWAKEN_INGRESS=durable) pointed at a fake

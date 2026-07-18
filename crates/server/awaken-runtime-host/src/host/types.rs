@@ -3,7 +3,7 @@
 
 use super::*;
 
-/// A tool a run parked on: its id, model-visible name/input, and whether it is
+/// A tool a run awaits: its id, model-visible name/input, and whether it is
 /// client-executed (the caller runs it and returns a result) or a built-in tool
 /// awaiting a permission decision.
 #[derive(Debug, Clone)]
@@ -15,14 +15,14 @@ pub struct PendingTool {
 }
 
 /// The neutral result of one step (a turn or a resume): the messages committed
-/// during the step, the terminal phase, and the pending tool when the run parked.
+/// during the step, the resulting state, and the pending tool when the run awaits.
 pub struct RunResult {
     pub new_messages: Vec<Message>,
-    pub phase: Phase,
+    pub state: RunState,
     pub pending: Option<PendingTool>,
     /// `true` when this turn folded its context (the compact plugin summarized
     /// older turns). Read from durable thread state at the terminal step, so a
-    /// parked→resumed turn reports it exactly once.
+    /// awaiting→resumed turn reports it exactly once.
     pub compacted: bool,
     /// `true` when the runtime transparently retried a transient inference failure
     /// during this turn (auto-recovery), read from the run's reschedule counter.
@@ -47,7 +47,7 @@ impl HostResume {
 }
 
 /// A host failure classified by fault: `BadRequest` is the caller's (bad id,
-/// wrong binding, no park), `Internal` is the runtime's. Each adapter maps this
+/// wrong binding, no await), `Internal` is the runtime's. Each adapter maps this
 /// to its own public error shape.
 #[derive(Debug, thiserror::Error)]
 #[error("{message}")]

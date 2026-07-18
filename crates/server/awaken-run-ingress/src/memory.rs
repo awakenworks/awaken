@@ -14,29 +14,29 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
-    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchQueue, DispatchStatus,
+    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
     DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, SettleOutcome,
     SubmitOptions,
 };
 use crate::request::RunExecutionRequest;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Status {
+enum RowState {
     Pending,
-    Running,
-    Parked,
+    Leased,
+    Awaiting,
     DeadLetter,
     Superseded,
 }
 
-impl Status {
-    fn public(self) -> DispatchStatus {
+impl RowState {
+    fn public(self) -> DispatchState {
         match self {
-            Status::Pending => DispatchStatus::Pending,
-            Status::Running => DispatchStatus::Running,
-            Status::Parked => DispatchStatus::Parked,
-            Status::DeadLetter => DispatchStatus::DeadLetter,
-            Status::Superseded => DispatchStatus::Superseded,
+            RowState::Pending => DispatchState::Pending,
+            RowState::Leased => DispatchState::Leased,
+            RowState::Awaiting => DispatchState::Awaiting,
+            RowState::DeadLetter => DispatchState::DeadLetter,
+            RowState::Superseded => DispatchState::Superseded,
         }
     }
 }
@@ -44,9 +44,9 @@ impl Status {
 #[derive(Debug, Clone)]
 struct Row {
     request: RunExecutionRequest,
-    status: Status,
+    state: RowState,
     lease: Option<Lease>,
-    /// Consecutive crash-recoveries without a settle; reset when the run parks.
+    /// Consecutive crash-recoveries without a settle; reset when the run awaits.
     attempt_count: u64,
     priority: i64,
     epoch: i64,
@@ -102,7 +102,7 @@ impl MemoryDispatchStore {
         let dead: Vec<RunId> = state
             .rows
             .iter()
-            .filter(|(_, row)| row.status == Status::DeadLetter && keep(row))
+            .filter(|(_, row)| row.state == RowState::DeadLetter && keep(row))
             .map(|(run, _)| run.clone())
             .collect();
         for run in &dead {
@@ -139,7 +139,7 @@ fn is_due(input: &PendingInput, now_ms: u64) -> bool {
 }
 
 /// Pick the next runnable run, oldest-first within each priority band: reclaim an
-/// expired lease (recovery), then wake a parked run with pending input, then a
+/// expired lease (recovery), then wake an awaiting run with pending input, then a
 /// fresh pending run. This is the claim policy the Postgres store must match.
 fn select(state: &State, now_ms: u64) -> Option<RunId> {
     // Single-writer-per-thread (ADR-0022): a wake or fresh pick must not start a
@@ -149,22 +149,22 @@ fn select(state: &State, now_ms: u64) -> Option<RunId> {
         state
             .rows
             .values()
-            .any(|r| r.status == Status::Running && r.request.thread_id() == thread)
+            .any(|r| r.state == RowState::Leased && r.request.thread_id() == thread)
     };
 
     // Recovery: re-own an expired-lease running row (first-match in enqueue order).
     for run in &state.order {
         if let Some(row) = state.rows.get(run)
-            && row.status == Status::Running
+            && row.state == RowState::Leased
             && row.lease.as_ref().is_some_and(|l| l.expires_ms <= now_ms)
         {
             return Some(run.clone());
         }
     }
-    // Wake: a parked run with due input whose thread is not already running.
+    // Wake: an awaiting run with due input whose thread is not already running.
     for run in &state.order {
         if let Some(row) = state.rows.get(run)
-            && row.status == Status::Parked
+            && row.state == RowState::Awaiting
             && state
                 .pending
                 .iter()
@@ -179,7 +179,7 @@ fn select(state: &State, now_ms: u64) -> Option<RunId> {
     let mut best: Option<(&RunId, i64)> = None;
     for run in &state.order {
         if let Some(row) = state.rows.get(run)
-            && row.status == Status::Pending
+            && row.state == RowState::Pending
             && !thread_running(row.request.thread_id())
             && best.is_none_or(|(_, p)| row.priority > p)
         {
@@ -207,12 +207,12 @@ impl DispatchQueue for MemoryDispatchStore {
             && state
                 .rows
                 .values()
-                .any(|r| r.dedupe_key.as_deref() == Some(key) && r.status != Status::DeadLetter)
+                .any(|r| r.dedupe_key.as_deref() == Some(key) && r.state != RowState::DeadLetter)
         {
             return Ok(());
         }
         // Supersession: take the highest epoch on the thread and mark its prior
-        // pending/parked work superseded — the newest submission wins (ADR-0022).
+        // pending/awaiting work superseded — the newest submission wins (ADR-0022).
         let thread = request.thread_id().clone();
         let mut epoch = 0;
         if options.supersede {
@@ -226,9 +226,9 @@ impl DispatchQueue for MemoryDispatchStore {
                 + 1;
             for row in state.rows.values_mut() {
                 if *row.request.thread_id() == thread
-                    && matches!(row.status, Status::Pending | Status::Parked)
+                    && matches!(row.state, RowState::Pending | RowState::Awaiting)
                 {
-                    row.status = Status::Superseded;
+                    row.state = RowState::Superseded;
                     row.lease = None;
                 }
             }
@@ -237,7 +237,7 @@ impl DispatchQueue for MemoryDispatchStore {
             run_id.clone(),
             Row {
                 request,
-                status: Status::Pending,
+                state: RowState::Pending,
                 lease: None,
                 attempt_count: 0,
                 priority: options.priority,
@@ -267,8 +267,8 @@ impl DispatchQueue for MemoryDispatchStore {
         // A recovery pick (an expired-lease running row) spends one crash-retry;
         // a fresh or wake pick does not.
         let was_recovery = matches!(
-            state.rows.get(&run_id).map(|r| r.status),
-            Some(Status::Running)
+            state.rows.get(&run_id).map(|r| r.state),
+            Some(RowState::Leased)
         );
         let (request, sandbox, lease) = {
             let row = state.rows.get_mut(&run_id).expect("picked row exists");
@@ -280,7 +280,7 @@ impl DispatchQueue for MemoryDispatchStore {
                 expires_ms: now_ms + lease_ms,
                 epoch: row.lease_epoch,
             };
-            row.status = Status::Running;
+            row.state = RowState::Leased;
             row.lease = Some(lease.clone());
             if was_recovery {
                 row.attempt_count += 1;
@@ -324,7 +324,7 @@ impl DispatchQueue for MemoryDispatchStore {
         let mut state = lock(&self.state)?;
         match state.rows.get_mut(run_id) {
             Some(row)
-                if row.status == Status::Running
+                if row.state == RowState::Leased
                     && row.lease.as_ref().is_some_and(|l| l.owner == owner) =>
             {
                 if let Some(lease) = row.lease.as_mut() {
@@ -348,7 +348,7 @@ impl DispatchQueue for MemoryDispatchStore {
         // out and is skipped until it approaches expiry (ADR-0024).
         let near_expiry = now_ms + lease_ms / 2;
         for row in state.rows.values_mut() {
-            if row.status == Status::Running
+            if row.state == RowState::Leased
                 && row
                     .lease
                     .as_ref()
@@ -396,9 +396,9 @@ impl DispatchQueue for MemoryDispatchStore {
                     &p.input.run_id != run_id && !consumed.contains(&p.input.message_id)
                 });
             }
-            DispatchOutcome::Parked => {
+            DispatchOutcome::Awaiting => {
                 if let Some(row) = state.rows.get_mut(run_id) {
-                    row.status = Status::Parked;
+                    row.state = RowState::Awaiting;
                     row.lease = None;
                     // Reaching a checkpoint refreshes the crash-retry budget.
                     row.attempt_count = 0;
@@ -417,10 +417,10 @@ impl DispatchQueue for MemoryDispatchStore {
         let mut state = lock(&self.state)?;
         let mut reaped = 0;
         for row in state.rows.values_mut() {
-            let expired = row.status == Status::Running
+            let expired = row.state == RowState::Leased
                 && row.lease.as_ref().is_some_and(|l| l.expires_ms <= now_ms);
             if expired && row.attempt_count >= max_attempts {
-                row.status = Status::DeadLetter;
+                row.state = RowState::DeadLetter;
                 row.lease = None;
                 row.dead_lettered_at = Some(now_ms);
                 reaped += 1;
@@ -436,8 +436,8 @@ impl DispatchQueue for MemoryDispatchStore {
             .iter()
             .filter(|run| {
                 matches!(
-                    state.rows.get(run).map(|r| r.status),
-                    Some(Status::DeadLetter)
+                    state.rows.get(run).map(|r| r.state),
+                    Some(RowState::DeadLetter)
                 )
             })
             .cloned()
@@ -451,8 +451,8 @@ impl DispatchQueue for MemoryDispatchStore {
             .iter()
             .filter(|run| {
                 matches!(
-                    state.rows.get(run).map(|r| r.status),
-                    Some(Status::Superseded)
+                    state.rows.get(run).map(|r| r.state),
+                    Some(RowState::Superseded)
                 )
             })
             .cloned()
@@ -468,7 +468,7 @@ impl DispatchQueue for MemoryDispatchStore {
                 state.rows.get(run).map(|row| DispatchSummary {
                     run_id: run.clone(),
                     thread_id: row.request.thread_id().clone(),
-                    status: row.status.public(),
+                    state: row.state.public(),
                     attempt_count: row.attempt_count,
                 })
             })
@@ -478,8 +478,8 @@ impl DispatchQueue for MemoryDispatchStore {
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {
         let mut state = lock(&self.state)?;
         match state.rows.get_mut(run_id) {
-            Some(row) if row.status == Status::DeadLetter => {
-                row.status = Status::Pending;
+            Some(row) if row.state == RowState::DeadLetter => {
+                row.state = RowState::Pending;
                 row.lease = None;
                 row.attempt_count = 0;
                 Ok(true)
@@ -491,8 +491,8 @@ impl DispatchQueue for MemoryDispatchStore {
     async fn cancel(&self, run_id: &RunId) -> Result<Option<ThreadId>, DispatchError> {
         let mut state = lock(&self.state)?;
         let cancellable = matches!(
-            state.rows.get(run_id).map(|r| r.status),
-            Some(Status::Pending | Status::Parked)
+            state.rows.get(run_id).map(|r| r.state),
+            Some(RowState::Pending | RowState::Awaiting)
         );
         if !cancellable {
             return Ok(None);
@@ -504,14 +504,14 @@ impl DispatchQueue for MemoryDispatchStore {
         Ok(Some(thread))
     }
 
-    async fn parked_run(&self, thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError> {
+    async fn awaiting_run(&self, thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError> {
         let state = lock(&self.state)?;
         Ok(state
             .order
             .iter()
             .find(|run| {
                 state.rows.get(*run).is_some_and(|row| {
-                    row.status == Status::Parked && row.request.thread_id() == thread_id
+                    row.state == RowState::Awaiting && row.request.thread_id() == thread_id
                 })
             })
             .cloned())

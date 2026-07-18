@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
-use awaken_protocol_managed::Terminus;
+use awaken_agent_contract::agent::run::EndCause;
 use awaken_protocol_managed::{
     LiveInboxEntry, LiveInboxError, LiveInboxSnapshot, ManagedState, OutcomeReport, RunError,
     SessionRuntime, StepOutcome, router,
@@ -86,14 +86,12 @@ impl SessionRuntime for QueueFake {
         _thread: &str,
         _content: Vec<ContentBlock>,
     ) -> Result<StepOutcome, RunError> {
-        Ok(StepOutcome {
-            messages: vec![Message::text(Id("a".into()), Role::Assistant, "ok")],
-            stop: Terminus::End,
-            pending: None,
-            compacted: false,
-            rescheduled: false,
-            failure: None,
-        })
+        Ok(StepOutcome::ended(
+            vec![Message::text(Id("a".into()), Role::Assistant, "ok")],
+            EndCause::NaturalEnd,
+            false,
+            false,
+        ))
     }
 
     async fn resume(

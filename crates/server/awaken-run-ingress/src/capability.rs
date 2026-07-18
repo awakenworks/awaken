@@ -16,7 +16,7 @@ pub struct RunIngressCapabilities {
     pub recoverable: bool,
     /// Committed facts can rebuild a run without the original live wiring.
     pub replayable: bool,
-    /// A parked run can be woken on a durable schedule.
+    /// A awaiting run can be woken on a durable schedule.
     pub scheduled_wake: bool,
 }
 

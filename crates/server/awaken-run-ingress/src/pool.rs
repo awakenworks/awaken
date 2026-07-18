@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_agent_contract::agent::run::{Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -63,8 +63,8 @@ pub trait WorkerResolver<S>: Send + Sync {
 /// its own run's completion by **event** rather than polling committed truth —
 /// removing the poll-interval latency floor from the durable foreground path.
 pub trait CompletionSink: Send + Sync {
-    /// The pool drove `run_id` to a settled `phase` (`Ended` or `Waiting`).
-    fn settled(&self, run_id: &RunId, phase: &Phase);
+    /// The pool drove `run_id` to a settled `state` (`Ended` or `Awaiting`).
+    fn settled(&self, run_id: &RunId, state: &RunState);
 }
 
 /// A running pool of drain tasks over one shared dispatch queue.
@@ -304,7 +304,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
 }
 
 /// One drain task: claim a runnable dispatch, route it to its owning session's
-/// worker, drive it, repeat until idle, then park on a wake or the poll timer.
+/// worker, drive it, repeat until idle, then await on a wake or the poll timer.
 #[allow(clippy::too_many_arguments)]
 async fn drain_loop<S: Dispatch + 'static>(
     store: Arc<S>,
@@ -378,11 +378,11 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     let run_agent_id = claimed.request.activation.snapshot.root_agent_id.0.clone();
     let agent_id = Some(run_agent_id).filter(|a| !a.is_empty());
     let worker = resolver.worker_for(&thread_id, agent_id.as_deref()).await?;
-    if let Some((run_id, phase)) = worker.drive_claimed(claimed, now).await?
+    if let Some((run_id, state)) = worker.drive_claimed(claimed, now).await?
         && let Some(sink) = completion
     {
         // Signal the foreground waiter (if any) the instant the run settles.
-        sink.settled(&run_id, &phase);
+        sink.settled(&run_id, &state);
     }
     Ok(true)
 }
@@ -407,7 +407,7 @@ async fn maintenance_loop<S: Dispatch + 'static>(
             let _ = store.purge_dead_letters_before(cutoff).await;
         }
         // A relay that moved staged deliveries into a thread's pending input made a
-        // parked run wakeable — nudge the drain tasks so they pick it up now rather
+        // awaiting run wakeable — nudge the drain tasks so they pick it up now rather
         // than at the next poll.
         if store.relay().await.unwrap_or(0) > 0 {
             let _ = wake.publish().await;

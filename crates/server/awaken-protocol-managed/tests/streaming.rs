@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
+use awaken_agent_contract::agent::run::EndCause;
 use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_agent_contract::stream::sink::Sink;
@@ -31,7 +32,7 @@ use awaken_protocol_managed::types::{
     OutboundKind, PreviewContent, PreviewDelta, PreviewFrame, SendEventsResponse, StreamFrame,
 };
 use awaken_protocol_managed::{
-    Decision, ManagedState, OutcomeReport, RunError, SessionRuntime, StepOutcome, Terminus, router,
+    Decision, ManagedState, OutcomeReport, RunError, SessionRuntime, StepOutcome, router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -231,14 +232,7 @@ impl SessionRuntime for DelegateFake {
 }
 
 fn end_turn(messages: Vec<Message>) -> StepOutcome {
-    StepOutcome {
-        messages,
-        stop: Terminus::End,
-        pending: None,
-        compacted: false,
-        rescheduled: false,
-        failure: None,
-    }
+    StepOutcome::ended(messages, EndCause::NaturalEnd, false, false)
 }
 
 // --- State-level helpers (deterministic broadcast driving) -------------------

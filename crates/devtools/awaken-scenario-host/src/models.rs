@@ -218,7 +218,7 @@ impl LlmExecutor for VisionProbeModel {
 }
 
 /// A deterministic probe model for the HITL e2e: it writes the user's text to a
-/// relative `probe.txt` (asked -> parks for confirmation), reads it back (allowed
+/// relative `probe.txt` (asked -> awaits for confirmation), reads it back (allowed
 /// -> runs), then replies. Stateless: it decides from the transcript.
 pub struct ProbeModel;
 

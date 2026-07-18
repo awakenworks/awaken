@@ -169,7 +169,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0051-tenancy-edge-aspect-one-opaque-scope-id.md` | Decision record | Not required | n/a |
 | `adr/0052-management-assistant-ordinary-agent-in-a-reserved-scope.md` | Decision record | Not required | n/a |
 | `adr/0053-memory-store-fuse-mount.md` | Decision record | Not required | n/a |
-| `adr/0054-safe-loop-boundary-shared-seam-and-pause-as-durable-park.md` | Decision record | Not required | n/a |
+| `adr/0054-safe-loop-boundary-shared-seam-and-pause-as-durable-await.md` | Decision record | Not required | n/a |
 | `adr/0055-typed-state-kernel-loop-actions-as-state.md` | Decision record | Not required | n/a |
 | `adr/0056-sandbox-reuse-two-orthogonal-volumes.md` | Decision record | Not required | n/a |
 | `adr/0057-unified-agent-configuration.md` | Decision record | Not required | n/a |
@@ -200,7 +200,7 @@ The following should not be implemented as broad subsystems from these docs alon
   `DirectRunIngress` plus durable `DurableRunIngress` (`awaken-run-ingress`,
   [ADR-0009](adr/0009-durable-run-ingress-slice.md)): a durable submit persists an
   accepted run, a worker claims and runs it under a single-owner lease, an expired
-  lease is recovered, and a parked run resumes through delivered input — all over
+  lease is recovered, and an aawaiting run resumes through delivered input — all over
   the durable `CommitCoordinator` backend ([ADR-0008](adr/0008-durable-postgres-commit-backend.md)).
   That slice is intentionally minimal: scheduled wake, lease renewal, cross-thread
   outbox, dispatch query/maintenance, supersession, and dead-letter are named as

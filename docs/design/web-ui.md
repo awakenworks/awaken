@@ -179,7 +179,7 @@ Composer:`user.message` + per-turn model 下拉;interrupt/pause/resume;define_ou
 
 ## 5. 设计系统
 
-基调:**无色中性 chrome + amber 强调(oklch 78)+ agent 紫(hue 300/270)+ 红 spark**;Inter 正文 + JetBrains Mono 只管 id/数据/代码;基准 14px、radii 4/6/8/10/pill、hairline ring 阴影、dawn glow 低调保留;动效仅 iaPulse/iaBlink/180ms 浮层。色彩纪律:amber=需要人、紫=agent 活动、红=阻塞、绿=通过/verified、蓝=角色/引用;chrome 不带情绪色。
+基调:**无色中性 chrome + amber 强调(oklch 78)+ agent 紫(hue 300/270)+ 红 sawait**;Inter 正文 + JetBrains Mono 只管 id/数据/代码;基准 14px、radii 4/6/8/10/pill、hairline ring 阴影、dawn glow 低调保留;动效仅 iaPulse/iaBlink/180ms 浮层。色彩纪律:amber=需要人、紫=agent 活动、红=阻塞、绿=通过/verified、蓝=角色/引用;chrome 不带情绪色。
 
 Token 工程:`design-tokens/*.tokens.json`(W3C)→ build 脚本 → 三层 CSS 变量(primitives → `--brand-*` 语义 → 短别名/`--aw-*`)+ manifest + token-contract 测试;`data-theme` 明暗持久化。品牌切换只动 4 个 themed 旋钮(accent/默认明暗/密度)。
 
@@ -199,7 +199,7 @@ Token 工程:`design-tokens/*.tokens.json`(W3C)→ build 脚本 → 三层 CSS �
 
 **P2 前置(会话面)**:
 1. ~~`GET /v1/sessions`~~ **已落地**:列表(project ingress 作用域 + `?status=` 派生过滤 idle/running/requires_action;wire status 保持 SDK 忠实)、`POST /v1/sessions/{id}`(title/metadata)、`POST /v1/sessions/{id}/archive`(标记不删除);会话聚合持久化 `project_id`/`archived_at`(SQLite 列迁移 best-effort)。
-2. ~~needs-attention 聚合~~ **已并入 1**(`?status=requires_action` 即聚合查询)。遗留:list 不重放 repo-only 行的转录,重启前 park 的会话在被打开前报 idle。
+2. ~~needs-attention 聚合~~ **已并入 1**(`?status=requires_action` 即聚合查询)。遗留:list 不重放 repo-only 行的转录,重启前 await 的会话在被打开前报 idle。
 
 **功能对齐(Observe/目录/沙箱/助手),按依赖排序**:
 3. ~~OpenAPI 契约~~ **已落地**(`contracts/openapi.generated.json`,19 路径/28 操作;IAM/durable 注册表扩展是后续增量)。

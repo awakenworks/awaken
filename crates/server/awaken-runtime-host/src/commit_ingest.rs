@@ -13,7 +13,7 @@ use axum::http::StatusCode;
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
-use awaken_agent_contract::agent::run::Phase;
+use awaken_agent_contract::agent::run::RunState;
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error as CommitError};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::run_store::RunStore;
@@ -39,12 +39,12 @@ async fn commit_ingest(
         let thread = commit.thread_id.0.clone();
         let ctx = host.ctx_for(&thread, None).await?;
         // Idempotent redelivery (at-least-once → exactly-once effect): if this run's
-        // fact is already committed to a terminal phase, an earlier delivery landed —
+        // fact is already committed to a terminal state, an earlier delivery landed —
         // return success without re-applying, so a worker's retry is a no-op instead
-        // of a rejected double-commit. A parked (`Waiting`) run is not terminal: a
+        // of a rejected double-commit. A awaiting (`Awaiting`) run is not terminal: a
         // later commit is its wake, so it is applied normally.
-        if let Some(existing) = RunStore::get(&*ctx.commit, &commit.run_fact.run_id)
-            && matches!(existing.phase, Phase::Ended(_))
+        if let Some(existing) = RunStore::get(&*ctx.commit, commit.run_id())
+            && matches!(existing.state, RunState::Ended(_))
         {
             return Ok(json!({ "sequence": 0 }));
         }

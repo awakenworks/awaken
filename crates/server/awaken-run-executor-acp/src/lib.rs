@@ -21,12 +21,13 @@ use awaken_agent_channel::AgentChannel;
 // Re-exported so a host composing an [`AgentSession`] can name the channel type without
 // a direct dependency on the foundational channel crate (crate-boundary compliant).
 pub use awaken_agent_channel::AgentChannel as AgentChannelType;
+use awaken_agent_contract::agent::awaiting::{AwaitReason, ResumeTicket};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_agent_contract::agent::run::{EndCause, Failure, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Failure, RunState};
 use awaken_agent_contract::agent::state::{Command as StateCommand, MergePolicy, Scope};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::agent::waiting::{WaitingReason, WaitingTicket};
+use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_protocol_acp::{
     AcpError, AcpFailure, AgentEvent, AllowAll, AppendError, Injection, LaunchSink, PermissionAsk,
     PermissionResolver, PermissionVerdict, RawAcpError, RunFactAppender, Stage, SupervisePolicy,
@@ -242,7 +243,7 @@ fn notify(sink: Option<LaunchSink<'_>>, event: AcpLaunchEvent) {
 }
 
 /// Whether the run's ACP backend installs dynamically on launch (an `npx` adapter),
-/// so the executor can surface an `Installing` phase before the process is usable.
+/// so the executor can surface an `Installing` state before the process is usable.
 fn dynamic_install_backend(activation: &RunActivation) -> bool {
     match Backend::from_ref(&activation.snapshot.resolved_spec.model_binding.backend_ref) {
         Backend::Acp { cli } => acp_cli(&cli).is_some_and(is_dynamic_install),
@@ -291,7 +292,7 @@ fn failure_cause(failure: &AcpFailure) -> EndCause {
 impl RunExecutor for AcpRunExecutor {
     fn capabilities(&self) -> ExecutorCapabilities {
         // The supervisor interrupts the opaque CLI turn when the cancel future
-        // resolves, and the ACP permission flow parks a turn on an authorization
+        // resolves, and the ACP permission flow awaits a turn on an authorization
         // decision. Mid-turn input steer is not delivered into the CLI, so `wait`
         // is `Auth`, not `Both`.
         ExecutorCapabilities {
@@ -304,7 +305,7 @@ impl RunExecutor for AcpRunExecutor {
         &self,
         activation: RunActivation,
         context: RuntimeRunContext,
-    ) -> Result<Phase> {
+    ) -> Result<RunState> {
         // Restore the CLI's portable session-home before launch and harvest it after,
         // so a local-dir CLI's session recovers across directories/machines. A
         // Gateway (server-side) or stateless adapter has no local session-home → the
@@ -360,7 +361,11 @@ impl AcpRunExecutor {
         ))
     }
 
-    async fn drive(&self, activation: RunActivation, context: RuntimeRunContext) -> Result<Phase> {
+    async fn drive(
+        &self,
+        activation: RunActivation,
+        context: RuntimeRunContext,
+    ) -> Result<RunState> {
         // Lifecycle bring-up (observed for UI progress): an npx-wrapped adapter may
         // dynamically install on a cold cache (the slow step) before it launches.
         // Scope events to the thread so a per-session UI channel routes them.
@@ -395,7 +400,7 @@ impl AcpRunExecutor {
         // `evaluate_boundary` drains any live-inbox steer; queued input becomes the
         // next turn's prompt and the CLI relaunches (ACP is per-turn — R7), so
         // steer/redirect reaches external-CLI runs. Messages accumulate and commit
-        // once at the terminal phase, matching the executor's single-commit model.
+        // once at the terminal state, matching the executor's single-commit model.
         let run_id = activation.run_id.clone();
         let model_ref = activation
             .snapshot
@@ -411,7 +416,7 @@ impl AcpRunExecutor {
         // `None`, so it always starts fresh, unchanged from before).
         let mut acp_session_id: Option<String> = None;
         // The run's token usage, accumulated across turns and committed as thread
-        // state at the terminal phase (matching the native engine's `__usage`).
+        // state at the terminal state (matching the native engine's `__usage`).
         let mut run_usage = TokenUsage::default();
 
         loop {
@@ -478,18 +483,18 @@ impl AcpRunExecutor {
                         Role::Assistant,
                         failure.prompt(),
                     ));
-                    let phase = Phase::Ended(failure_cause(&failure));
+                    let disposition =
+                        RunDisposition::ended(run_id.clone(), failure_cause(&failure));
+                    let state = disposition.state();
                     commit(
                         &context,
                         &activation.thread_id,
-                        run_id.clone(),
+                        disposition,
                         committed,
-                        &phase,
-                        None,
                         usage_state(&run_usage, &model_ref),
                     )
                     .await?;
-                    return Ok(phase);
+                    return Ok(state);
                 }
             };
             committed.extend(appender.messages);
@@ -506,55 +511,53 @@ impl AcpRunExecutor {
                         Err(open) => {
                             let failure =
                                 classify_error(Stage::Initialize, &RawAcpError::message(open.0));
-                            let phase = Phase::Ended(failure_cause(&failure));
+                            let disposition =
+                                RunDisposition::ended(run_id.clone(), failure_cause(&failure));
+                            let state = disposition.state();
                             commit(
                                 &context,
                                 &activation.thread_id,
-                                run_id.clone(),
+                                disposition,
                                 committed,
-                                &phase,
-                                None,
                                 usage_state(&run_usage, &model_ref),
                             )
                             .await?;
-                            return Ok(phase);
+                            return Ok(state);
                         }
                     };
                 }
                 // Operator pause (ADR-0054 P5/U2): commit any in-flight steer that
-                // rode out with the park, then park durably on a no-tool waiting
-                // ticket — the same clean commit-then-park the native engine does,
+                // rode out with the await, then await durably on a no-tool awaiting
+                // ticket — the same clean commit-then-await the native engine does,
                 // resumed by an explicit operator resume, not a tool result.
-                BoundaryOutcome::Park { fold, reason } => {
+                BoundaryOutcome::Await { fold, reason } => {
                     committed.extend(fold);
-                    let phase = Phase::Waiting;
                     let ticket = pause_ticket(&activation, &run_id, reason);
+                    let disposition = RunDisposition::awaiting(ticket);
+                    let state = disposition.state();
                     commit(
                         &context,
                         &activation.thread_id,
-                        run_id.clone(),
+                        disposition,
                         committed,
-                        &phase,
-                        Some(ticket),
                         usage_state(&run_usage, &model_ref),
                     )
                     .await?;
-                    return Ok(phase);
+                    return Ok(state);
                 }
                 // Idle: no queued input, no pause — the turn's own reason is terminal.
                 BoundaryOutcome::Idle => {
-                    let phase = Phase::Ended(end_cause(reason));
+                    let disposition = RunDisposition::ended(run_id.clone(), end_cause(reason));
+                    let state = disposition.state();
                     commit(
                         &context,
                         &activation.thread_id,
-                        run_id.clone(),
+                        disposition,
                         committed,
-                        &phase,
-                        None,
                         usage_state(&run_usage, &model_ref),
                     )
                     .await?;
-                    return Ok(phase);
+                    return Ok(state);
                 }
             }
         }
@@ -574,13 +577,14 @@ fn classify_from_acp_error(err: &AcpError) -> AcpFailure {
 }
 
 /// Commit a terminal failure that occurred before/instead of a turn (open fault):
-/// one assistant message with the prompt, plus the terminal phase.
+/// one assistant message with the prompt, plus the terminal state.
 async fn finish_failure(
     context: &RuntimeRunContext,
     activation: &RunActivation,
     failure: &AcpFailure,
-) -> Result<Phase> {
-    let phase = Phase::Ended(failure_cause(failure));
+) -> Result<RunState> {
+    let disposition = RunDisposition::ended(activation.run_id.clone(), failure_cause(failure));
+    let state = disposition.state();
     let messages = vec![Message::text(
         MessageId("acp-err-1".to_string()),
         Role::Assistant,
@@ -589,36 +593,28 @@ async fn finish_failure(
     commit(
         context,
         &activation.thread_id,
-        activation.run_id.clone(),
+        disposition,
         messages,
-        &phase,
-        None,
         Vec::new(),
     )
     .await?;
-    Ok(phase)
+    Ok(state)
 }
 
-/// Commit the turn's messages + terminal phase through the one boundary (G13). A
-/// `Phase::Waiting` park carries its resumable [`WaitingTicket`]; a terminus passes
-/// `None`. `state` carries the run's accumulated token usage (empty when none).
+/// Commit the turn's messages and disposition through the one boundary (G13).
 async fn commit(
     context: &RuntimeRunContext,
     thread_id: &ThreadId,
-    run_id: RunId,
+    disposition: RunDisposition,
     messages: Vec<Message>,
-    phase: &Phase,
-    waiting: Option<WaitingTicket>,
     state: Vec<StateCommand>,
 ) -> Result<()> {
     if let Some(coordinator) = &context.commit {
         awaken_agent_contract::thread::commit::commit_run(
             coordinator.as_ref(),
             thread_id,
-            &run_id,
+            disposition,
             messages,
-            phase.clone(),
-            waiting,
             state,
         )
         .await
@@ -645,16 +641,12 @@ fn usage_state(usage: &TokenUsage, model_ref: &str) -> Vec<StateCommand> {
     )]
 }
 
-/// A no-tool waiting ticket for an operator pause (ADR-0054): the ACP run parks
+/// A no-tool awaiting ticket for an operator pause (ADR-0054): the ACP run awaits
 /// with no pending tool and no call id, correlated by run id, resumed by an
 /// explicit operator resume rather than a tool result. Mirrors the native
 /// engine's `pause_ticket` so a paused ACP run is resumable identically.
-fn pause_ticket(
-    activation: &RunActivation,
-    run_id: &RunId,
-    reason: WaitingReason,
-) -> WaitingTicket {
-    WaitingTicket {
+fn pause_ticket(activation: &RunActivation, run_id: &RunId, reason: AwaitReason) -> ResumeTicket {
+    ResumeTicket {
         correlation_id: run_id.0.clone(),
         run_id: run_id.clone(),
         thread_id: activation.thread_id.clone(),
@@ -828,7 +820,7 @@ impl RunExecutor for DispatchRunExecutor {
         &self,
         activation: RunActivation,
         context: RuntimeRunContext,
-    ) -> Result<Phase> {
+    ) -> Result<RunState> {
         match Backend::from_ref(&activation.snapshot.resolved_spec.model_binding.backend_ref) {
             Backend::Native => self.native.execute(activation, context).await,
             Backend::Acp { .. } => self.acp.execute(activation, context).await,

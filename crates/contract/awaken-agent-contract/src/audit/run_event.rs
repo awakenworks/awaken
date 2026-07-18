@@ -6,7 +6,7 @@
 //! (`kind` + JSON `payload`) via `From` — the event log keeps a queryable `kind`
 //! column plus a flexible payload, while producers speak the rich domain type.
 
-use crate::agent::run::Phase;
+use crate::agent::run::RunState;
 use crate::audit::draft::Draft;
 use crate::audit::kind::Kind;
 
@@ -14,12 +14,12 @@ use crate::audit::kind::Kind;
 /// the durable event log.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RunEvent {
-    /// The run's phase transitioned (nothing→Running, Running→Ended/Waiting).
-    RunPhaseChanged { phase: Phase },
+    /// The run's state transitioned (nothing→Running, Running→Awaiting/Ended).
+    RunStateChanged { state: RunState },
     /// `commands` committed-state commands rode this checkpoint.
     StateChanged { commands: usize },
-    /// The run parked, keyed by `run_id`.
-    RunWaiting { run_id: String },
+    /// The run began awaiting, keyed by `run_id`.
+    RunAwaiting { run_id: String },
     /// A protected tool call passed the permission gate (ADR-0030 audit).
     PermissionDecided {
         tool_id: String,
@@ -34,15 +34,15 @@ pub enum RunEvent {
 impl From<RunEvent> for Draft {
     fn from(event: RunEvent) -> Self {
         let (kind, payload) = match event {
-            RunEvent::RunPhaseChanged { phase } => {
-                (Kind::RunPhaseChanged, serde_json::json!({ "phase": phase }))
+            RunEvent::RunStateChanged { state } => {
+                (Kind::RunStateChanged, serde_json::json!({ "state": state }))
             }
             RunEvent::StateChanged { commands } => (
                 Kind::StateChanged,
                 serde_json::json!({ "commands": commands }),
             ),
-            RunEvent::RunWaiting { run_id } => {
-                (Kind::RunWaiting, serde_json::json!({ "run_id": run_id }))
+            RunEvent::RunAwaiting { run_id } => {
+                (Kind::RunAwaiting, serde_json::json!({ "run_id": run_id }))
             }
             RunEvent::PermissionDecided {
                 tool_id,
@@ -68,11 +68,11 @@ mod tests {
         assert_eq!(d.kind, Kind::StateChanged);
         assert_eq!(d.payload, serde_json::json!({ "commands": 3 }));
 
-        let d: Draft = RunEvent::RunWaiting {
+        let d: Draft = RunEvent::RunAwaiting {
             run_id: "r1".into(),
         }
         .into();
-        assert_eq!(d.kind, Kind::RunWaiting);
+        assert_eq!(d.kind, Kind::RunAwaiting);
         assert_eq!(d.payload, serde_json::json!({ "run_id": "r1" }));
 
         let d: Draft = RunEvent::PermissionDecided {
@@ -98,19 +98,19 @@ mod tests {
     }
 
     #[test]
-    fn run_phase_changed_lowers_with_the_phase_in_its_payload() {
-        use crate::agent::run::{EndCause, Phase};
-        let d: Draft = RunEvent::RunPhaseChanged {
-            phase: Phase::Ended(EndCause::NaturalEnd),
+    fn run_state_changed_lowers_with_the_state_in_its_payload() {
+        use crate::agent::run::{EndCause, RunState};
+        let d: Draft = RunEvent::RunStateChanged {
+            state: RunState::Ended(EndCause::NaturalEnd),
         }
         .into();
-        assert_eq!(d.kind, Kind::RunPhaseChanged);
-        // The phase serializes under a "phase" key; a bare Running is the "Running"
+        assert_eq!(d.kind, Kind::RunStateChanged);
+        // The state serializes under a "state" key; a bare Running is the "Running"
         // string form pinned by the serde-boundary test.
-        let d2: Draft = RunEvent::RunPhaseChanged {
-            phase: Phase::Running,
+        let d2: Draft = RunEvent::RunStateChanged {
+            state: RunState::Running,
         }
         .into();
-        assert_eq!(d2.payload, serde_json::json!({ "phase": "Running" }));
+        assert_eq!(d2.payload, serde_json::json!({ "state": "Running" }));
     }
 }

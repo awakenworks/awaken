@@ -1,6 +1,6 @@
-// Durable HITL: under AWAKEN_INGRESS=durable a run parks on a tool needing
+// Durable HITL: under AWAKEN_INGRESS=durable a run awaits on a tool needing
 // approval, and after the client sends the confirmation the DISPATCH WORKER
-// resumes the parked run (not a foreground request). Drives the durable resume
+// resumes the awaiting run (not a foreground request). Drives the durable resume
 // path — engine::resume_run / resume_into_messages, SharedHost::resume, and the
 // worker's resume branch — that the direct-ingress HITL e2e does not reach.
 // Deterministic, CI-safe (probe model).
@@ -42,12 +42,12 @@ async function main() {
       betas: BETAS,
     });
 
-    // The durable run parks on a tool_use awaiting approval.
+    // The durable run awaits on a tool_use awaiting approval.
     const toolUse = await until(async () => (await listEvents(client, s.id)).find((e) => e.type === 'agent.tool_use'));
-    assert.ok(toolUse, 'the durable run parked on a tool_use awaiting approval');
-    pass('durable run parked on a tool_use (requires_action)');
+    assert.ok(toolUse, 'the durable run awaiting on a tool_use awaiting approval');
+    pass('durable run awaiting on a tool_use (requires_action)');
 
-    // Approve — the DISPATCH WORKER resumes the parked durable run out of band.
+    // Approve — the DISPATCH WORKER resumes the awaiting durable run out of band.
     await client.beta.sessions.events.send(s.id, {
       events: [{ type: 'user.tool_confirmation', tool_use_id: toolUse.id, result: 'allow' }],
       betas: BETAS,
@@ -56,10 +56,10 @@ async function main() {
       const evs = await listEvents(client, s.id);
       return evs.some((e) => e.type === 'agent.tool_result') ? evs : null;
     });
-    assert.ok(result, 'the dispatch worker resumed the parked run and ran the approved tool');
-    pass('durable ingress: a parked run resumed by the worker after approval (resume path)');
+    assert.ok(result, 'the dispatch worker resumed the awaiting run and ran the approved tool');
+    pass('durable ingress: an awaiting run resumed by the worker after approval (resume path)');
 
-    console.log('E2E PASS: durable HITL — the dispatch worker resumes a parked run after approval.');
+    console.log('E2E PASS: durable HITL — the dispatch worker resumes an awaiting run after approval.');
     process.exitCode = 0;
   } catch (err) {
     console.error('E2E FAIL:', err);

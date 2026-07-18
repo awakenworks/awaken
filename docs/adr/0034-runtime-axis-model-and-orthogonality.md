@@ -121,7 +121,7 @@ does not represent *where* or *how* a call runs. A tool's execution location —
 in-process, an MCP relay bound to a sandbox, a client-executed wait, or a
 delegated sub-run — is decided by **which `RawTool` the host composes into the
 run** and by host-installed gates (a suspending gate models client-executed use
-through the existing `WaitingTicket` / `ResumeResult::ToolResult` path). A relay
+through the existing `ResumeTicket` / `ResumeResult::ToolResult` path). A relay
 is fully encapsulated inside an extension `RawTool` whose `invoke` speaks MCP; the
 kernel never names a relay, an address, a binding, or a schedule. This makes
 [ADR-0007](0007-runtime-owns-tool-execution.md)'s "where a call runs is a

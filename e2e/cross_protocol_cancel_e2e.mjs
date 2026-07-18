@@ -1,11 +1,11 @@
-// Cross-protocol cancel e2e (scenario #4): a run PARKS on a tool approval on the
+// Cross-protocol cancel e2e (scenario #4): a run AWAITS on a tool approval on the
 // AI-SDK wire and is REJECTED by an A2A `tasks/cancel` on the SAME thread. A2A's
-// only in-band deny (cancel) reaches across the neutral seam: it denies the parked
-// tool (`Resume::Confirm{allow:false}`) and the AI-SDK-parked run reads back
+// only in-band deny (cancel) reaches across the neutral seam: it denies the awaiting
+// tool (`Resume::Confirm{allow:false}`) and the AI-SDK-awaiting run reads back
 // terminated with the write blocked.
 //
 // Chain:
-//   AI-SDK : POST /v1/ai-sdk/threads/T/runs -> Runtime (probe `write`) -> park
+//   AI-SDK : POST /v1/ai-sdk/threads/T/runs -> Runtime (probe `write`) -> await
 //   A2A    : POST /v1/a2a tasks/cancel {id: "task-T"} -> rt.pending(T) ->
 //            resume Confirm{allow:false} -> Task.state=canceled
 //   AI-SDK : GET /v1/ai-sdk/threads/T/messages -> terminal, no read-back of the note
@@ -48,8 +48,8 @@ async function rpc(base, method, params) {
   return body.result;
 }
 
-// Park a probe `write` on an AI-SDK thread carrying `note`; return the toolCallId.
-async function parkOnAiSdk(base, thread, note) {
+// Await a probe `write` on an AI-SDK thread carrying `note`; return the toolCallId.
+async function awaitOnAiSdk(base, thread, note) {
   const r = await fetch(`${base}/v1/ai-sdk/threads/${thread}/runs`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -57,9 +57,9 @@ async function parkOnAiSdk(base, thread, note) {
   });
   assert.equal(r.status, 200);
   const events = await drain(r);
-  const parked = events.find((e) => e.toolCallId && (e.state === 'input-available' || e.type?.startsWith('tool-input')));
-  assert.ok(parked, 'AI-SDK turn parked on the write tool');
-  return parked.toolCallId;
+  const awaiting = events.find((e) => e.toolCallId && (e.state === 'input-available' || e.type?.startsWith('tool-input')));
+  assert.ok(awaiting, 'AI-SDK turn awaiting on the write tool');
+  return awaiting.toolCallId;
 }
 
 // Count how many times `note` appears in the committed AI-SDK history JSON.
@@ -70,21 +70,21 @@ async function noteOccurrences(base, thread, note) {
 
 async function main() {
   await withServer('probe', PORT, async (base) => {
-    // --- The DENY thread: park on AI-SDK, cancel via A2A -------------------
+    // --- The DENY thread: await on AI-SDK, cancel via A2A -------------------
     const denyThread = `xcancel-deny-${randomBytes(4).toString('hex')}`;
     const denyNote = `DENY-${randomBytes(4).toString('hex')}`;
-    await parkOnAiSdk(base, denyThread, denyNote);
-    pass('parked on AI-SDK (deny thread)');
+    await awaitOnAiSdk(base, denyThread, denyNote);
+    pass('awaiting on AI-SDK (deny thread)');
 
     // A2A reads the SAME thread id as its context: cancel task-<thread>.
     const task = await rpc(base, 'tasks/cancel', { id: `task-${denyThread}` });
-    assert.equal(task?.status?.state, 'canceled', `A2A tasks/cancel denied+cancelled the parked run (got ${task?.status?.state})`);
-    pass('A2A tasks/cancel rejected the AI-SDK-parked run across the neutral seam');
+    assert.equal(task?.status?.state, 'canceled', `A2A tasks/cancel denied+cancelled the awaiting run (got ${task?.status?.state})`);
+    pass('A2A tasks/cancel rejected the AI-SDK-awaiting run across the neutral seam');
 
-    // --- The ALLOW baseline: park on AI-SDK, approve via A2A message/send --
+    // --- The ALLOW baseline: await on AI-SDK, approve via A2A message/send --
     const allowThread = `xcancel-allow-${randomBytes(4).toString('hex')}`;
     const allowNote = `ALLOW-${randomBytes(4).toString('hex')}`;
-    await parkOnAiSdk(base, allowThread, allowNote);
+    await awaitOnAiSdk(base, allowThread, allowNote);
     const approved = await rpc(base, 'message/send', {
       message: {
         messageId: `m-${randomBytes(4).toString('hex')}`,
@@ -94,20 +94,20 @@ async function main() {
         parts: [{ kind: 'text', text: 'approve' }],
       },
     });
-    assert.equal(approved?.status?.state, 'completed', `A2A message/send approved the parked run (got ${approved?.status?.state})`);
-    pass('A2A message/send approved the AI-SDK-parked run (allow baseline)');
+    assert.equal(approved?.status?.state, 'completed', `A2A message/send approved the awaiting run (got ${approved?.status?.state})`);
+    pass('A2A message/send approved the AI-SDK-awaiting run (allow baseline)');
 
     // --- The discriminator: a note appears (user + write-call args) twice; only
     //     a run whose write ACTUALLY executed adds a third occurrence via the
     //     read-back tool result. Deny must have strictly fewer than allow. -----
     const denyN = await noteOccurrences(base, denyThread, denyNote);
     const allowN = await noteOccurrences(base, allowThread, allowNote);
-    assert.equal(denyN, 2, `denied write: note appears only in the user msg + parked call args (got ${denyN})`);
+    assert.equal(denyN, 2, `denied write: note appears only in the user msg + awaiting call args (got ${denyN})`);
     assert.ok(allowN > denyN, `approved write executed and read the note back (allow=${allowN} > deny=${denyN})`);
     pass(`cross-protocol cancel blocked the write (deny=${denyN} occurrences < allow=${allowN}): the A2A cancel truly denied it`);
   });
 
-  console.log('E2E PASS: cross-protocol cancel (AI-SDK park -> A2A tasks/cancel -> denied; contrasted vs A2A allow).');
+  console.log('E2E PASS: cross-protocol cancel (AI-SDK await -> A2A tasks/cancel -> denied; contrasted vs A2A allow).');
 }
 
 main().catch((err) => {

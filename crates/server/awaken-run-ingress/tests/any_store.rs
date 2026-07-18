@@ -9,7 +9,7 @@ mod harness;
 
 use std::sync::Arc;
 
-use awaken_agent_contract::agent::run::Phase;
+use awaken_agent_contract::agent::run::RunState;
 use awaken_run_ingress::{
     AnyDispatchStore, DispatchOutcome, DispatchQueue, DurableRunIngress, Inbox, RunExecutionRequest,
 };
@@ -163,8 +163,8 @@ async fn any_delegates_inbox_append_idempotency() {
 #[tokio::test]
 async fn with_owner_drives_a_durable_run_over_any_sqlite() {
     // The unique-owner seam end to end: a DurableRunIngress built with an explicit
-    // owner over the AnyDispatchStore(sqlite) backend parks, then resumes to a
-    // committed terminal phase — proving both the owner param and the wrapper work
+    // owner over the AnyDispatchStore(sqlite) backend awaits, then resumes to a
+    // committed terminal state — proving both the owner param and the wrapper work
     // in the real ingress, not just at the store surface.
     let (runtime, ran) = tool_runtime();
     let store = Arc::new(any_in_memory());
@@ -172,17 +172,17 @@ async fn with_owner_drives_a_durable_run_over_any_sqlite() {
     let ingress =
         DurableRunIngress::with_owner(runtime, store.clone(), commit.clone(), "fleet-node-7", None);
 
-    let phase = ingress
+    let state = ingress
         .submit_background(activation("run-1"))
         .await
         .expect("submit");
-    assert_eq!(phase, Phase::Waiting, "the run parks on the gate");
+    assert_eq!(state, RunState::Awaiting, "the run awaits on the gate");
     assert_eq!(
         ran.load(std::sync::atomic::Ordering::SeqCst),
         0,
-        "the tool has not run while parked"
+        "the tool has not run while awaiting"
     );
-    // The run is now parked awaiting input over the AnyDispatchStore(sqlite)
+    // The run is now awaiting awaiting input over the AnyDispatchStore(sqlite)
     // backend, built with this process's unique claim owner — the with_owner +
     // wrapper path executed end to end in the real ingress.
     let _ = store;

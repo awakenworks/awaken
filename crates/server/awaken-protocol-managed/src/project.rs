@@ -10,10 +10,10 @@
 //! (`agent.tool_use{allow}`).
 
 use awaken_agent_contract::event::{
-    Fact, ToolDisposition, Transcoder, fold_messages as fold, terminal_waiting,
+    Fact, ToolDisposition, Transcoder, fold_messages as fold, terminal_awaiting,
 };
 
-use crate::state::{AgentCapabilities, CustomTool, OutcomeIteration, Terminus};
+use crate::state::{AgentCapabilities, CustomTool, OutcomeIteration, StepOutcome};
 use crate::types::{OutboundKind, StopReason};
 
 /// Reserved MCP tool-name prefix — a custom tool may not claim it.
@@ -288,7 +288,7 @@ impl Transcoder for ManagedEncoder {
                     is_error: None,
                 })]
             }
-            Fact::Waiting {
+            Fact::Awaiting {
                 pending_tool_use_id,
             } => vec![ProjectedEvent::minted(OutboundKind::SessionStatusIdle {
                 stop_reason: StopReason::RequiresAction {
@@ -322,7 +322,7 @@ impl Transcoder for ManagedEncoder {
 
 /// Project just the agent-visible events for a batch of committed messages (no
 /// terminal `session.status_idle`). Used by both a turn and an outcome iteration.
-/// `pending` is `(tool_use_id, client_executed)` of the tool the run parked on.
+/// `pending` is `(tool_use_id, client_executed)` of the tool the run awaits.
 pub fn project_messages(
     messages: &[awaken_agent_contract::agent::message::Message],
     pending: Option<(&str, bool)>,
@@ -333,24 +333,28 @@ pub fn project_messages(
 /// Project the messages committed during one step, then a terminal
 /// `session.status_idle` derived from `stop`. When `stop` is `RequiresAction` the
 /// pending tool's id populates `requires_action.event_ids`.
-pub fn project_step(
-    messages: &[awaken_agent_contract::agent::message::Message],
-    stop: Terminus,
+pub(crate) fn project_step(
+    outcome: &StepOutcome,
     pending: Option<(&str, bool)>,
 ) -> Vec<ProjectedEvent> {
-    let mut events = fold(messages, pending);
-    events.push(terminal_event(stop, pending));
+    let mut events = fold(&outcome.messages, pending);
+    events.push(terminal_event(outcome.state(), pending));
     ManagedEncoder::default().transcode_facts(&events)
 }
 
-/// The neutral terminal fact for a step's [`Terminus`]. `Parked`'s event ids are
-/// refilled from the pending tool; the encoder then re-derives the wire
-/// `stop_reason` from this fact, so the wire shape is unchanged.
-fn terminal_event(stop: Terminus, pending: Option<(&str, bool)>) -> Fact {
-    match stop {
-        Terminus::Parked => terminal_waiting(pending.map(|p| p.0)),
-        Terminus::Exhausted => Fact::RunFinished { exhausted: true },
-        Terminus::End => Fact::RunFinished { exhausted: false },
+/// Project the run's sole lifecycle authority to the Managed terminal fact.
+fn terminal_event(
+    state: &awaken_agent_contract::agent::run::RunState,
+    pending: Option<(&str, bool)>,
+) -> Fact {
+    use awaken_agent_contract::agent::run::{EndCause, RunState};
+    match state {
+        RunState::Awaiting => terminal_awaiting(pending.map(|p| p.0)),
+        RunState::Ended(EndCause::MaxSteps | EndCause::Error(_)) => {
+            Fact::RunFinished { exhausted: true }
+        }
+        RunState::Ended(_) => Fact::RunFinished { exhausted: false },
+        RunState::Running => unreachable!("StepOutcome cannot contain Running"),
     }
 }
 

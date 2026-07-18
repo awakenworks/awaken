@@ -440,7 +440,7 @@ mod tests {
             wired(Some(Arc::new(SlowHandler {
                 release: Mutex::new(Some(release_rx)),
             })));
-        // A request that will park in the handler...
+        // A request that will await in the handler...
         let slow = format!(
             "{}\n",
             json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {} })

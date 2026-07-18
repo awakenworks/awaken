@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Role;
-use awaken_agent_contract::agent::run::{EndCause, Phase};
+use awaken_agent_contract::agent::run::{EndCause, RunState};
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
@@ -42,8 +42,8 @@ async fn run_installs_and_executes_in_one_call() {
     let ctx = RuntimeRunContext::new().with_commit(commit.clone());
 
     // One call: installs the catalog, runs a fresh turn. No prior install_catalog.
-    let phase = runtime.run(&config, "Say hi.", ctx).await.expect("run");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    let state = runtime.run(&config, "Say hi.", ctx).await.expect("run");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
     let messages = commit.committed().messages;
     assert_eq!(messages[0].text_content(), "Say hi.");
@@ -73,8 +73,8 @@ async fn per_run_model_executor_override_wins_over_the_runtime_default() {
         // The per-run override: this attempt must use OVERRIDE, not DEFAULT.
         .with_model_executor(Arc::new(TextLlm("OVERRIDE")));
 
-    let phase = runtime.run(&config, "go", ctx).await.expect("run");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    let state = runtime.run(&config, "go", ctx).await.expect("run");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
     let messages = commit.committed().messages;
     assert!(
@@ -137,8 +137,8 @@ async fn with_neither_an_override_nor_a_bound_default_the_run_fails_closed() {
 
 #[tokio::test]
 async fn run_to_completion_drives_an_ungated_run_without_asking() {
-    // No gate → no park → `decide` is never called; the run reaches a terminal
-    // phase in one shot. (The gated park→resume path is covered by the coding-agent
+    // No gate → no await → `decide` is never called; the run reaches a terminal
+    // state in one shot. (The gated await→resume path is covered by the coding-agent
     // example's tests.)
     let runtime = Runtime::new().with_llm(Arc::new(TextLlm("done")));
     let config = RunnableConfig::builder("assistant")
@@ -150,13 +150,13 @@ async fn run_to_completion_drives_an_ungated_run_without_asking() {
         .with_commit(commit.clone())
         .with_reader(commit.clone());
 
-    let phase = runtime
+    let state = runtime
         .run_to_completion(&config, "thread-1", "hi", ctx, |_| {
-            unreachable!("an ungated run never parks")
+            unreachable!("an ungated run never awaits")
         })
         .await
         .expect("run to completion");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert!(
         commit
             .committed()

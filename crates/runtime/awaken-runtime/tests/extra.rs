@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime::Runtime;
@@ -57,7 +57,7 @@ fn thread_reader_returns_empty_for_unknown_ids() {
             .committed_messages(&ThreadId("nope".to_string()))
             .is_empty()
     );
-    assert!(commit.waiting_ticket(&RunId("nope".to_string())).is_none());
+    assert!(commit.resume_ticket(&RunId("nope".to_string())).is_none());
 }
 
 #[tokio::test]
@@ -121,5 +121,5 @@ async fn a_system_role_message_is_carried_into_inference() {
         .execute(activation, RuntimeRunContext::new())
         .await
         .expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 }

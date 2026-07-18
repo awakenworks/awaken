@@ -130,7 +130,7 @@ impl RunExecutionContext {
             .with_commit(self.commit.clone())
             .with_cancellation(cancel)
             // A fresh pause signal per attempt, registered by the executor so live
-            // control can park this run at its next safe boundary (ADR-0054).
+            // control can await this run at its next safe boundary (ADR-0054).
             .with_pause(PauseSignal::new());
         if let Some(reader) = &self.reader {
             context = context.with_reader(reader.clone());

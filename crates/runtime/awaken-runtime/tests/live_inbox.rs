@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime::Runtime;
@@ -133,8 +133,8 @@ async fn queued_messages_are_folded_in_before_the_run_ends() {
     let ctx = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_live_inbox(inbox.clone());
-    let phase = runtime.execute(turn("r1", "First."), ctx).await.unwrap();
-    assert!(matches!(phase, Phase::Ended(_)));
+    let state = runtime.execute(turn("r1", "First."), ctx).await.unwrap();
+    assert!(matches!(state, RunState::Ended(_)));
 
     let committed = commit.committed_messages(&ThreadId("thread-1".to_string()));
     // The injected turn is committed with a run-scoped id, not the client's.
@@ -161,9 +161,9 @@ async fn queued_messages_are_folded_in_before_the_run_ends() {
 }
 
 #[tokio::test]
-async fn a_requested_pause_parks_the_run_at_the_next_boundary() {
-    // ADR-0054: an operator pause is a durable park at the next safe boundary, not
-    // a mid-step freeze. The run commits its turn, then parks (not ends).
+async fn a_requested_pause_awaits_the_run_at_the_next_boundary() {
+    // ADR-0054: an operator pause is a durable await at the next safe boundary, not
+    // a mid-step freeze. The run commits its turn, then awaits (not ends).
     let runtime = runtime();
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let pause = PauseSignal::new();
@@ -172,16 +172,16 @@ async fn a_requested_pause_parks_the_run_at_the_next_boundary() {
     let ctx = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_pause(pause);
-    let phase = runtime.execute(turn("rp", "Work."), ctx).await.unwrap();
+    let state = runtime.execute(turn("rp", "Work."), ctx).await.unwrap();
     assert!(
-        matches!(phase, Phase::Waiting),
-        "a requested pause parks the run, got {phase:?}"
+        matches!(state, RunState::Awaiting),
+        "a requested pause awaits the run, got {state:?}"
     );
-    // Commit-then-park: the assistant turn is durable before the park.
+    // Commit-then-await: the assistant turn is durable before the await.
     let committed = commit.committed_messages(&ThreadId("thread-1".to_string()));
     assert!(
         committed.iter().any(|m| m.role == Role::Assistant),
-        "the turn committed before parking"
+        "the turn committed before awaiting"
     );
 }
 
@@ -224,15 +224,15 @@ async fn an_empty_or_absent_inbox_leaves_the_run_untouched() {
 
     // Absent inbox (the default context) — single echo turn, natural end.
     let ctx = RuntimeRunContext::new().with_commit(commit.clone());
-    let phase = runtime.execute(turn("r3", "Solo."), ctx).await.unwrap();
-    assert!(matches!(phase, Phase::Ended(_)));
+    let state = runtime.execute(turn("r3", "Solo."), ctx).await.unwrap();
+    assert!(matches!(state, RunState::Ended(_)));
 
     // Present but empty inbox — identical outcome.
     let ctx = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_live_inbox(LiveInbox::new());
-    let phase = runtime.execute(turn("r4", "Alone."), ctx).await.unwrap();
-    assert!(matches!(phase, Phase::Ended(_)));
+    let state = runtime.execute(turn("r4", "Alone."), ctx).await.unwrap();
+    assert!(matches!(state, RunState::Ended(_)));
 
     let committed = commit.committed_messages(&ThreadId("thread-1".to_string()));
     assert!(

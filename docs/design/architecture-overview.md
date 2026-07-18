@@ -173,7 +173,7 @@ Routes choose behavior from `RunIngressCapabilities` and fail closed when a
 durable-only operation is requested through the weak ingress.
 
 Runtime behavior that needs durable wakeup, such as scheduled actions,
-reminders, deferred tools, waiting runs, or cancellation from an external client,
+reminders, deferred tools, awaiting runs, or cancellation from an external client,
 enters through the same ingress boundary. The runtime owns the command semantics;
 the server owns durable delivery and wake reconciliation.
 

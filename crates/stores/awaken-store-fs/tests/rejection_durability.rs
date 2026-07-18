@@ -6,24 +6,27 @@
 //! the filesystem backend cannot diverge from the embedded one.
 
 use awaken_agent_contract::agent::message::{Id as MsgId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::draft::Draft;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
-use awaken_agent_contract::thread::commit::RunFact;
+use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_store_fs::FsCommitCoordinator;
 
-fn ck(thread: &str, run: &str, text: &str, phase: Phase) -> ThreadCommit {
+fn ck(thread: &str, run: &str, text: &str, state: RunState) -> ThreadCommit {
+    let run_id = RunId(run.to_string());
+    let disposition = match state {
+        RunState::Running => RunDisposition::running(run_id),
+        RunState::Ended(cause) => RunDisposition::ended(run_id, cause),
+        RunState::Awaiting => panic!("test checkpoint requires an awaiting ticket"),
+    };
     ThreadCommit {
         thread_id: ThreadId(thread.to_string()),
-        run_fact: RunFact {
-            run_id: RunId(run.to_string()),
-            phase,
-        },
+        run: disposition,
         messages: vec![Message::text(
             MsgId(format!("m-{text}")),
             Role::Assistant,
@@ -31,10 +34,9 @@ fn ck(thread: &str, run: &str, text: &str, phase: Phase) -> ThreadCommit {
         )],
         state: Vec::new(),
         events: vec![Draft {
-            kind: EventKind::RunPhaseChanged,
+            kind: EventKind::RunStateChanged,
             payload: serde_json::Value::Null,
         }],
-        waiting: None,
     }
 }
 
@@ -52,7 +54,7 @@ async fn fresh(name: &str) -> (std::path::PathBuf, FsCommitCoordinator) {
 async fn invalid_commit_leaves_the_log_reopenable_and_empty() {
     let (dir, store) = fresh("invalid").await;
 
-    let bad = ck("", "r1", "bad", Phase::Ended(EndCause::NaturalEnd));
+    let bad = ck("", "r1", "bad", RunState::Ended(EndCause::NaturalEnd));
     assert!(store.commit(bad).await.is_err(), "invalid plan rejected");
     drop(store); // simulate a restart
 
@@ -80,17 +82,22 @@ async fn post_terminal_commit_on_a_non_latest_run_is_fenced_without_corrupting_t
     let thread = ThreadId("t1".to_string());
 
     store
-        .commit(ck("t1", "A", "a", Phase::Ended(EndCause::NaturalEnd)))
+        .commit(ck("t1", "A", "a", RunState::Ended(EndCause::NaturalEnd)))
         .await
         .expect("run A ends");
     store
-        .commit(ck("t1", "B", "b", Phase::Ended(EndCause::NaturalEnd)))
+        .commit(ck("t1", "B", "b", RunState::Ended(EndCause::NaturalEnd)))
         .await
         .expect("run B ends and becomes latest");
 
     // Re-commit terminal run A (now non-latest): must be fenced.
     let fenced = store
-        .commit(ck("t1", "A", "a-again", Phase::Ended(EndCause::NaturalEnd)))
+        .commit(ck(
+            "t1",
+            "A",
+            "a-again",
+            RunState::Ended(EndCause::NaturalEnd),
+        ))
         .await;
     assert!(fenced.is_err(), "post-terminal commit on run A is fenced");
 
@@ -110,15 +117,20 @@ async fn events_keep_commit_order_across_a_reopen() {
     let (dir, store) = fresh("order").await;
 
     store
-        .commit(ck("t1", "r1", "one", Phase::Running))
+        .commit(ck("t1", "r1", "one", RunState::Running))
         .await
         .expect("commit 1");
     store
-        .commit(ck("t1", "r1", "two", Phase::Running))
+        .commit(ck("t1", "r1", "two", RunState::Running))
         .await
         .expect("commit 2");
     store
-        .commit(ck("t1", "r1", "three", Phase::Ended(EndCause::NaturalEnd)))
+        .commit(ck(
+            "t1",
+            "r1",
+            "three",
+            RunState::Ended(EndCause::NaturalEnd),
+        ))
         .await
         .expect("commit 3");
     drop(store);

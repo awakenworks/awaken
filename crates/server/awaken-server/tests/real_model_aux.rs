@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::Phase;
+use awaken_agent_contract::agent::run::RunState;
 use awaken_provider_genai::GenaiExecutor;
 use awaken_server::SharedHost;
 
@@ -50,14 +50,14 @@ async fn live_memory_extraction_writes_a_memory_file() {
     let host = host.with_memory(&mem_dir);
 
     // A turn stating a clear, durable preference the extractor should save.
-    let phase = host
+    let state = host
         .run(None, "mem-e2e",
             user("Please remember this for the future: my name is Ada, and I strongly prefer Rust over Python for all backend work. Reply with a brief acknowledgement."),
         )
         .await
         .expect("main turn");
     assert!(
-        matches!(phase.phase, Phase::Ended(_)),
+        matches!(state.state, RunState::Ended(_)),
         "main turn should end"
     );
 
@@ -119,13 +119,13 @@ async fn live_memory_is_generated_then_recalled_and_used_in_a_new_conversation()
 
     // Conversation 2 (a fresh thread, no shared transcript): the saved memory is
     // recalled into context and the live model uses it to answer.
-    let phase = host
+    let state = host
         .run(None, "conv-2",
             user("Based on what you remember about me, what is my favorite programming language? Answer with just the language name."),
         )
         .await
         .expect("conversation 2 turn");
-    let reply = phase
+    let reply = state
         .new_messages
         .iter()
         .rev()
@@ -172,13 +172,13 @@ async fn live_relevance_selection_picks_the_right_memory_via_the_selector_agent(
 
     // A pointed question: the selector sub-agent must pick the dog memory out of 13,
     // and the main model must answer from it.
-    let phase = host
+    let state = host
         .run(None, "select-e2e",
             user("Based on what you remember about me, what is my dog's name? Answer with just the name."),
         )
         .await
         .expect("turn");
-    let reply = phase
+    let reply = state
         .new_messages
         .iter()
         .rev()
@@ -233,7 +233,7 @@ async fn live_compaction_summarizes_and_the_conversation_continues() {
 
     // Several short turns to build history past the threshold.
     for i in 0..3 {
-        let phase = host
+        let state = host
             .run(
                 None,
                 "compact-e2e",
@@ -243,12 +243,12 @@ async fn live_compaction_summarizes_and_the_conversation_continues() {
             )
             .await
             .expect("turn");
-        assert!(matches!(phase.phase, Phase::Ended(_)));
+        assert!(matches!(state.state, RunState::Ended(_)));
     }
 
     // A follow-up turn still completes: the compact plugin summarized the older slice
     // inline (BeforeInference) and the windowed context is coherent for the live model.
-    let phase = host
+    let state = host
         .run(
             None,
             "compact-e2e",
@@ -257,10 +257,10 @@ async fn live_compaction_summarizes_and_the_conversation_continues() {
         .await
         .expect("follow-up turn");
     assert!(
-        matches!(phase.phase, Phase::Ended(_)),
+        matches!(state.state, RunState::Ended(_)),
         "the post-compaction turn should complete"
     );
-    let reply = phase
+    let reply = state
         .new_messages
         .iter()
         .rev()

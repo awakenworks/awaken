@@ -1,8 +1,8 @@
 // Durable HITL — the DENY path through the dispatch worker, plus exactly-once on
 // resume. The sibling `managed_durable_hitl_e2e.mjs` proves only APPROVE durably;
-// this proves the other half: under AWAKEN_INGRESS=durable a run parks on a tool
+// this proves the other half: under AWAKEN_INGRESS=durable a run awaits on a tool
 // needing approval, the client DENIES it, and the DISPATCH WORKER resumes the
-// parked run — the tool effect is refused (probe.txt is never written, so the
+// awaiting run — the tool effect is refused (probe.txt is never written, so the
 // read-back does not contain the text) yet the run still drives to a terminal
 // end_turn. We also assert exactly-once: the worker drives each tool exactly once
 // (no duplicate tool_use ids) and a re-delivered confirmation after the run ended
@@ -52,15 +52,15 @@ async function main() {
       betas: BETAS,
     });
 
-    // The durable run parks on the write tool_use awaiting approval.
+    // The durable run awaits on the write tool_use awaiting approval.
     const toolUse = await until(async () => (await listEvents(client, s.id)).find((e) => e.type === 'agent.tool_use'));
-    assert.ok(toolUse, 'the durable run parked on a tool_use awaiting approval');
-    assert.equal(toolUse.evaluated_permission, 'ask', 'the mutating write tool parked with an ask gate');
-    const parkedIdle = (await listEvents(client, s.id)).find((e) => e.type === 'session.status_idle');
-    assert.equal(parkedIdle.stop_reason.type, 'requires_action', 'run parked (requires_action) in the durable queue');
-    pass('durable run parked on the write tool_use (requires_action)');
+    assert.ok(toolUse, 'the durable run awaiting on a tool_use awaiting approval');
+    assert.equal(toolUse.evaluated_permission, 'ask', 'the mutating write tool awaiting with an ask gate');
+    const awaitingIdle = (await listEvents(client, s.id)).find((e) => e.type === 'session.status_idle');
+    assert.equal(awaitingIdle.stop_reason.type, 'requires_action', 'run awaiting (requires_action) in the durable queue');
+    pass('durable run awaiting on the write tool_use (requires_action)');
 
-    // DENY — the DISPATCH WORKER resumes the parked durable run and refuses the tool.
+    // DENY — the DISPATCH WORKER resumes the awaiting durable run and refuses the tool.
     await client.beta.sessions.events.send(s.id, {
       events: [{ type: 'user.tool_confirmation', tool_use_id: toolUse.id, result: 'deny', deny_message: 'not allowed' }],
       betas: BETAS,
@@ -73,7 +73,7 @@ async function main() {
       return lastIdle && lastIdle.stop_reason.type === 'end_turn' ? evs : null;
     });
     assert.ok(ended, 'the dispatch worker resumed the denied run and drove it to end_turn');
-    pass('durable ingress: worker resumed the parked run after DENY and reached end_turn');
+    pass('durable ingress: worker resumed the awaiting run after DENY and reached end_turn');
 
     // The effect is refused: probe.txt was never written, so the read-back tool
     // result does NOT contain the marker text.

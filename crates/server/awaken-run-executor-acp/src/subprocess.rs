@@ -670,7 +670,7 @@ impl ProcessHandle for ChildProcess {
 mod tests {
     use super::*;
     use crate::AcpRunExecutor;
-    use awaken_agent_contract::agent::run::{EndCause, Phase};
+    use awaken_agent_contract::agent::run::{EndCause, RunState};
     use awaken_runtime_contract::execution::RunExecutor;
 
     // Reuse the fixture activation from the crate tests.
@@ -932,10 +932,10 @@ mod tests {
             vec![],
         );
         let exec = AcpRunExecutor::new(Arc::new(SubprocessChannelSource::new(launch)));
-        let phase = exec
+        let state = exec
             .execute(activation(), Default::default())
             .await
             .unwrap();
-        assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+        assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     }
 }

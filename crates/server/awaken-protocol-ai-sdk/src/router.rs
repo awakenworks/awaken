@@ -119,7 +119,7 @@ async fn run(rt: Runtime, payload: AiSdkChatRequest) -> Response {
     let thread = processed.thread_id.clone();
 
     if processed.messages.is_empty() {
-        // Resume answers a parked tool decision — a single committed step, framed
+        // Resume answers an awaiting tool decision — a single committed step, framed
         // whole (no in-flight model output to stream).
         match resume_step(&rt, &thread, &processed.decisions).await {
             Ok(outcome) => {
@@ -156,7 +156,7 @@ fn stream_turn(
         let sink: Arc<dyn StreamSink> = Arc::new(ChannelStreamSink::new(live_tx));
         // One transcoder instance for both tiers (ADR-0058 Axis 9): live `delta()`
         // for increments + `fact(RunStarted)` to open the stream. The authoritative
-        // terminus comes from the committed tail, so terminal/whole-unit facts on
+        // the end comes from the committed tail, so terminal/whole-unit facts on
         // the live channel are not wired here (G10/G13).
         let mut transcoder = AiSdkEncoder::new();
         // Drive the turn on its own task so live events drain concurrently. The
@@ -203,8 +203,8 @@ fn stream_turn(
     stream_response(out_rx)
 }
 
-/// Translate the request's decisions into a resume against the parked tool and
-/// run it. Fails closed when there is no parked tool or no matching decision.
+/// Translate the request's decisions into a resume against the awaiting tool and
+/// run it. Fails closed when there is no awaiting tool or no matching decision.
 async fn resume_step(
     rt: &Runtime,
     thread: &str,
@@ -212,7 +212,7 @@ async fn resume_step(
 ) -> Result<StepOutcome, Response> {
     let Some(pending) = rt.pending(thread).await else {
         return Err(sse_error(DriverError::BadRequest(
-            "no parked run to resume".into(),
+            "no awaiting run to resume".into(),
         )));
     };
     let decision = decisions
@@ -221,7 +221,7 @@ async fn resume_step(
         .or_else(|| decisions.first())
         .ok_or_else(|| {
             sse_error(DriverError::BadRequest(
-                "no tool decision for the parked tool".into(),
+                "no tool decision for the awaiting tool".into(),
             ))
         })?;
     let resume = to_resume(&decision.kind, &pending);
@@ -309,7 +309,7 @@ fn sse_line(event: &UIStreamEvent) -> String {
 }
 
 /// A chunked SSE body fed from `out_rx`: each frame is flushed as the producer
-/// sends it, so `useChat` paints in-flight instead of waiting for the whole turn.
+/// sends it, so `useChat` paints in-flight instead of awaiting for the whole turn.
 fn stream_response(out_rx: mpsc::UnboundedReceiver<String>) -> Response {
     let stream = UnboundedReceiverStream::new(out_rx).map(Ok::<String, Infallible>);
     (StatusCode::OK, sse_headers(), Body::from_stream(stream)).into_response()

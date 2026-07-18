@@ -7,9 +7,9 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::thread::commit::RunFact;
+use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_runtime_contract::llm::{
@@ -33,10 +33,7 @@ impl LlmExecutor for OkModel {
 fn thread_commit() -> ThreadCommit {
     ThreadCommit {
         thread_id: ThreadId("t1".into()),
-        run_fact: RunFact {
-            run_id: RunId("run-A".into()),
-            phase: Phase::Ended(EndCause::NaturalEnd),
-        },
+        run: RunDisposition::ended(RunId("run-A".into()), EndCause::NaturalEnd),
         messages: vec![Message::text(
             MessageId("a1".into()),
             Role::Assistant,
@@ -44,7 +41,6 @@ fn thread_commit() -> ThreadCommit {
         )],
         state: vec![],
         events: vec![],
-        waiting: None,
     }
 }
 

@@ -3,14 +3,14 @@
 //! The recorded model responses are served by a scripted [`LlmExecutor`], so the
 //! run drives the true engine (`RunExecutor::execute`) — the harness contributes
 //! no execution logic of its own. The committed assistant text and the terminal
-//! phase are what the expectations are scored against.
+//! state are what the expectations are scored against.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
@@ -165,12 +165,12 @@ async fn replay(case: &Case) -> (String, bool, Vec<String>) {
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
-    let phase = runtime
+    let state = runtime
         .execute(activation, context)
         .await
         .expect("run executes");
 
-    let succeeded = matches!(phase, Phase::Ended(EndCause::NaturalEnd));
+    let succeeded = matches!(state, RunState::Ended(EndCause::NaturalEnd));
     let output = commit
         .committed()
         .messages

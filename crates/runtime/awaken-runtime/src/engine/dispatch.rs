@@ -9,7 +9,7 @@ use super::*;
 
 /// Run each requested tool call for one step, feeding each result back into the
 /// transcript and folding tool-outcome reactions into state and reminders. Returns
-/// `Some(End)` when a call parks the run (delegation/permission/scheduled) or fails
+/// `Some(RunDisposition)` when a call awaits input (delegation/permission/scheduled) or fails
 /// it closed (an unpermitted scheduled-action kind) — the caller ends the step loop
 /// with it; `None` when every call produced a result and the loop continues. The
 /// reserved `tool_open` meta-tool bypasses the gate and only mutates `opened`.
@@ -28,7 +28,7 @@ pub(super) async fn run_tool_calls(
     audit: &mut Vec<EventDraft>,
     store: &mut Store,
     opened: &mut std::collections::BTreeSet<String>,
-) -> Option<End> {
+) -> Option<RunDisposition> {
     for call in calls {
         // The reserved `tool_open` meta-tool (ADR-0053) loads a deferred tool for
         // later steps: it mutates this run's `opened` set and returns a result, so it
@@ -50,27 +50,27 @@ pub(super) async fn run_tool_calls(
                         merge_thread_usage(store, staged_state, &usage);
                         ToolOutput::ok(&call.call_id, text)
                     }
-                    // The delegate parked needing input: park the parent on a
+                    // The delegate awaiting needing input: await the parent on a
                     // Delegation ticket carrying the opaque handle (durable), resumed
                     // through the resolver.
-                    Some(Ok(AgentStep::Parked { handle })) => {
-                        let ticket = waiting_ticket(
+                    Some(Ok(AgentStep::Awaiting { handle })) => {
+                        let ticket = resume_ticket(
                             resolved,
                             run_id,
                             &call.call_id,
                             &call,
-                            WaitingReason::Delegation,
+                            AwaitReason::Delegation,
                             Some(handle),
                         );
                         emit(
                             context,
                             run_id,
-                            AgentEvent::Fact(Fact::Waiting {
+                            AgentEvent::Fact(Fact::Awaiting {
                                 pending_tool_use_id: ticket.call_id.clone(),
                             }),
                         )
                         .await;
-                        return Some(End::Parked(Box::new(ticket)));
+                        return Some(RunDisposition::awaiting(ticket));
                     }
                     Some(Err(err)) => ToolOutput::error(&call.call_id, err.to_string()),
                     None => execute_tool(runtime, Some(env), &call, context).await,
@@ -80,25 +80,25 @@ pub(super) async fn run_tool_calls(
                 }
                 GateOutcome::SetResult(output) => output,
                 GateOutcome::Suspend { ticket_id } => {
-                    // Park the run on a structured ticket carrying the pending
+                    // Await the run on a structured ticket carrying the pending
                     // call so an allow decision can run it later.
-                    let ticket = waiting_ticket(
+                    let ticket = resume_ticket(
                         resolved,
                         run_id,
                         &ticket_id,
                         &call,
-                        WaitingReason::ToolPermission,
+                        AwaitReason::ToolPermission,
                         None,
                     );
                     emit(
                         context,
                         run_id,
-                        AgentEvent::Fact(Fact::Waiting {
+                        AgentEvent::Fact(Fact::Awaiting {
                             pending_tool_use_id: ticket.call_id.clone(),
                         }),
                     )
                     .await;
-                    return Some(End::Parked(Box::new(ticket)));
+                    return Some(RunDisposition::awaiting(ticket));
                 }
                 GateOutcome::Schedule {
                     correlation_id,
@@ -110,27 +110,30 @@ pub(super) async fn run_tool_calls(
                     if let Some(kind) = &action_kind
                         && !env.permits_action_kind(kind)
                     {
-                        return Some(End::Ended(EndCause::Error(Failure::CapabilityBound)));
+                        return Some(RunDisposition::ended(
+                            run_id.clone(),
+                            EndCause::Error(Failure::CapabilityBound),
+                        ));
                     }
                     // Commit a ScheduledAction (ADR-0020): the call is deferred and
                     // performed later from the committed request, not decided.
-                    let ticket = waiting_ticket(
+                    let ticket = resume_ticket(
                         resolved,
                         run_id,
                         &correlation_id,
                         &call,
-                        WaitingReason::ScheduledAction,
+                        AwaitReason::ScheduledAction,
                         None,
                     );
                     emit(
                         context,
                         run_id,
-                        AgentEvent::Fact(Fact::Waiting {
+                        AgentEvent::Fact(Fact::Awaiting {
                             pending_tool_use_id: ticket.call_id.clone(),
                         }),
                     )
                     .await;
-                    return Some(End::Parked(Box::new(ticket)));
+                    return Some(RunDisposition::awaiting(ticket));
                 }
             }
         };

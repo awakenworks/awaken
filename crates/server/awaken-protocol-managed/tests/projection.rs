@@ -11,10 +11,10 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
-use awaken_protocol_managed::Terminus;
+use awaken_agent_contract::agent::run::{EndCause, Failure};
 use awaken_protocol_managed::{
-    Decision, ManagedState, OutcomeReport, RunError, SessionRuntime, SessionUsage, StepFailure,
-    StepOutcome, router,
+    Decision, ManagedState, OutcomeReport, RunError, SessionRuntime, SessionUsage, StepOutcome,
+    router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -169,28 +169,41 @@ fn assistant_text(id: &str, text: &str) -> Message {
     Message::text(Id(id.into()), Role::Assistant, text)
 }
 
+fn ended(messages: Vec<Message>) -> StepOutcome {
+    StepOutcome::ended(messages, EndCause::NaturalEnd, false, false)
+}
+
+fn ended_with_flags(messages: Vec<Message>, compacted: bool, rescheduled: bool) -> StepOutcome {
+    StepOutcome::ended(messages, EndCause::NaturalEnd, compacted, rescheduled)
+}
+
+fn failed(messages: Vec<Message>, code: &str, message: &str) -> StepOutcome {
+    StepOutcome::ended(
+        messages,
+        EndCause::Error(Failure::Inference {
+            code: code.into(),
+            message: message.into(),
+        }),
+        false,
+        false,
+    )
+}
+
 // --- CE: terminal run fault → session.error (never swallowed into success) ----
 
 /// CRITICAL bug-class guard: a terminal run fault must project a *distinct*
 /// `session.error` event carrying the fault message and `retry_status: exhausted`,
 /// so a streaming/listing client observes the failure — it is NOT collapsed into
-/// a bare success idle. The turn still idles afterward (the fault stays in the
-/// committed phase; the wire has no error stop reason), but the error channel is
-/// present.
+/// a bare success idle. The turn still idles afterward with `retries_exhausted`,
+/// derived from the same `EndCause::Error` that produces the error event.
 #[tokio::test]
 async fn a_terminal_run_fault_projects_session_error_before_idle() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
-        StepOutcome {
-            messages: vec![assistant_text("a", "partial work")],
-            stop: Terminus::End,
-            pending: None,
-            compacted: false,
-            rescheduled: false,
-            failure: Some(StepFailure {
-                code: "provider_unavailable".into(),
-                message: "upstream model timed out".into(),
-            }),
-        }
+        failed(
+            vec![assistant_text("a", "partial work")],
+            "provider_unavailable",
+            "upstream model timed out",
+        )
     }))));
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
@@ -219,9 +232,9 @@ async fn a_terminal_run_fault_projects_session_error_before_idle() {
         err["error"]["message"], "upstream model timed out",
         "the neutral fault message is carried through"
     );
-    // The idle is a plain end_turn — the failure did not masquerade as a different stop.
+    // The idle and error event derive from the same terminal authority.
     let idle = list["data"].as_array().unwrap().last().unwrap();
-    assert_eq!(idle["stop_reason"]["type"], "end_turn");
+    assert_eq!(idle["stop_reason"]["type"], "retries_exhausted");
 }
 
 /// A classified fault `code` selects the richer SDK error variant + retry status
@@ -235,17 +248,7 @@ async fn a_classified_fault_projects_the_matching_sdk_error_variant() {
         ("context_overflow", "model_request_failed_error", "terminal"),
     ] {
         let app = router(Arc::new(ManagedState::new(ScriptFake::new(move || {
-            StepOutcome {
-                messages: vec![assistant_text("a", "partial")],
-                stop: Terminus::End,
-                pending: None,
-                compacted: false,
-                rescheduled: false,
-                failure: Some(StepFailure {
-                    code: code.into(),
-                    message: "boom".into(),
-                }),
-            }
+            failed(vec![assistant_text("a", "partial")], code, "boom")
         }))));
         let id = create(&app).await;
         send_user(&app, &id, "go").await;
@@ -271,14 +274,7 @@ async fn a_classified_fault_projects_the_matching_sdk_error_variant() {
 #[tokio::test]
 async fn a_rescheduled_turn_projects_the_rescheduled_status() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
-        StepOutcome {
-            messages: vec![assistant_text("a", "after a retry")],
-            stop: Terminus::End,
-            pending: None,
-            compacted: false,
-            rescheduled: true,
-            failure: None,
-        }
+        ended_with_flags(vec![assistant_text("a", "after a retry")], false, true)
     }))));
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
@@ -302,14 +298,7 @@ async fn a_rescheduled_turn_projects_the_rescheduled_status() {
 #[tokio::test]
 async fn a_compacted_turn_projects_the_compaction_marker() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
-        StepOutcome {
-            messages: vec![assistant_text("a", "after compaction")],
-            stop: Terminus::End,
-            pending: None,
-            compacted: true,
-            rescheduled: false,
-            failure: None,
-        }
+        ended_with_flags(vec![assistant_text("a", "after compaction")], true, false)
     }))));
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
@@ -347,15 +336,7 @@ async fn session_usage_reflects_the_runtime_tally() {
         cache_creation_tokens: 12,
     };
     let app = router(Arc::new(ManagedState::new(
-        ScriptFake::new(|| StepOutcome {
-            messages: vec![assistant_text("a", "hi")],
-            stop: Terminus::End,
-            pending: None,
-            compacted: false,
-            rescheduled: false,
-            failure: None,
-        })
-        .with_usage(usage),
+        ScriptFake::new(|| ended(vec![assistant_text("a", "hi")])).with_usage(usage),
     )));
     let id = create(&app).await;
 
@@ -392,14 +373,7 @@ async fn session_usage_reflects_the_runtime_tally() {
 #[tokio::test]
 async fn an_all_empty_text_assistant_message_is_dropped() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
-        StepOutcome {
-            messages: vec![assistant_text("a", "")],
-            stop: Terminus::End,
-            pending: None,
-            compacted: false,
-            rescheduled: false,
-            failure: None,
-        }
+        ended(vec![assistant_text("a", "")])
     }))));
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
@@ -423,35 +397,28 @@ async fn an_all_empty_text_assistant_message_is_dropped() {
 #[tokio::test]
 async fn an_mcp_tool_call_projects_mcp_events() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
-        StepOutcome {
-            messages: vec![
-                Message::new(
-                    Id("a".into()),
-                    Role::Assistant,
-                    vec![
-                        ContentBlock::text("searching"),
-                        ContentBlock::ToolUse {
-                            id: "mc1".into(),
-                            name: "mcp__github__search".into(),
-                            input: serde_json::json!({ "q": "rust" }),
-                        },
-                    ],
-                ),
-                Message::new(
-                    Id("t".into()),
-                    Role::Tool,
-                    vec![ContentBlock::ToolResult {
-                        tool_use_id: "mc1".into(),
-                        content: vec![ContentBlock::text("3 hits")],
-                    }],
-                ),
-            ],
-            stop: Terminus::End,
-            pending: None,
-            compacted: false,
-            rescheduled: false,
-            failure: None,
-        }
+        ended(vec![
+            Message::new(
+                Id("a".into()),
+                Role::Assistant,
+                vec![
+                    ContentBlock::text("searching"),
+                    ContentBlock::ToolUse {
+                        id: "mc1".into(),
+                        name: "mcp__github__search".into(),
+                        input: serde_json::json!({ "q": "rust" }),
+                    },
+                ],
+            ),
+            Message::new(
+                Id("t".into()),
+                Role::Tool,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: "mc1".into(),
+                    content: vec![ContentBlock::text("3 hits")],
+                }],
+            ),
+        ])
     }))));
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
@@ -491,14 +458,12 @@ async fn an_mcp_tool_call_projects_mcp_events() {
 #[tokio::test]
 async fn a_retries_exhausted_turn_idles_with_that_stop_reason() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
-        StepOutcome {
-            messages: vec![assistant_text("a", "gave up")],
-            stop: Terminus::Exhausted,
-            pending: None,
-            compacted: false,
-            rescheduled: false,
-            failure: None,
-        }
+        StepOutcome::ended(
+            vec![assistant_text("a", "gave up")],
+            EndCause::MaxSteps,
+            false,
+            false,
+        )
     }))));
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
@@ -522,35 +487,28 @@ async fn a_retries_exhausted_turn_idles_with_that_stop_reason() {
 #[tokio::test]
 async fn a_delegation_projects_the_child_thread_lifecycle() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
-        StepOutcome {
-            messages: vec![
-                Message::new(
-                    Id("a".into()),
-                    Role::Assistant,
-                    vec![
-                        ContentBlock::text("delegating"),
-                        ContentBlock::ToolUse {
-                            id: "d1".into(),
-                            name: "agent_run".into(),
-                            input: serde_json::json!({ "agent_id": "researcher", "input": "find the docs" }),
-                        },
-                    ],
-                ),
-                Message::new(
-                    Id("t".into()),
-                    Role::Tool,
-                    vec![ContentBlock::ToolResult {
-                        tool_use_id: "d1".into(),
-                        content: vec![ContentBlock::text("here are the docs")],
-                    }],
-                ),
-            ],
-            stop: Terminus::End,
-            pending: None,
-            compacted: false,
-            rescheduled: false,
-            failure: None,
-        }
+        ended(vec![
+            Message::new(
+                Id("a".into()),
+                Role::Assistant,
+                vec![
+                    ContentBlock::text("delegating"),
+                    ContentBlock::ToolUse {
+                        id: "d1".into(),
+                        name: "agent_run".into(),
+                        input: serde_json::json!({ "agent_id": "researcher", "input": "find the docs" }),
+                    },
+                ],
+            ),
+            Message::new(
+                Id("t".into()),
+                Role::Tool,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: "d1".into(),
+                    content: vec![ContentBlock::text("here are the docs")],
+                }],
+            ),
+        ])
     }))));
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
@@ -620,14 +578,7 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
 #[tokio::test]
 async fn updating_a_session_commits_a_session_updated_event() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
-        StepOutcome {
-            messages: vec![assistant_text("a", "hi")],
-            stop: Terminus::End,
-            pending: None,
-            compacted: false,
-            rescheduled: false,
-            failure: None,
-        }
+        ended(vec![assistant_text("a", "hi")])
     }))));
     let id = create(&app).await;
     json_call(
@@ -657,14 +608,7 @@ async fn updating_a_session_commits_a_session_updated_event() {
 #[tokio::test]
 async fn archiving_commits_a_terminal_event_and_fences_writes() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
-        StepOutcome {
-            messages: vec![assistant_text("a", "hi")],
-            stop: Terminus::End,
-            pending: None,
-            compacted: false,
-            rescheduled: false,
-            failure: None,
-        }
+        ended(vec![assistant_text("a", "hi")])
     }))));
     let id = create(&app).await;
 

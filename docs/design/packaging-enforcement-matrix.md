@@ -33,7 +33,7 @@ each class must satisfy — and does not redefine those crates.
 | forbidden vocabulary | neutral packages | product hosting terms leaking into neutral code |
 | concrete tool ownership | neutral runtime and contract packages | builtin tool ids, concrete tool symbols, or concrete `Tool` / `RawTool` implementations entering core |
 | preferred tool API naming | neutral runtime and contract packages | `TypedTool` appears instead of `Tool` plus low-level `RawTool` |
-| deferred work mechanism naming | neutral runtime and contract packages | `BackgroundTask` umbrella reappears instead of `ScheduledAction`, waiting state, or durable dispatch |
+| deferred work mechanism naming | neutral runtime and contract packages | `BackgroundTask` umbrella reappears instead of `ScheduledAction`, awaiting state, or durable dispatch |
 | SPDX/license metadata | runtime spec, examples, conformance | non-Apache terms on runtime protocol material |
 | role catalog coverage | design docs | stable authority introduced without owner |
 | ownership index | design/wiki docs | source doc added without retrieval owner |

@@ -2,7 +2,7 @@
 //!
 //! These prove the durable slice end to end without a database: a durable submit
 //! persists then runs a fresh run; the durable-only operation fails closed on
-//! direct ingress (G5); enqueue and pending append are idempotent; a parked run
+//! direct ingress (G5); enqueue and pending append are idempotent; an awaiting run
 //! resumes through delivered input (#4); and an expired lease is recovered.
 
 mod harness;
@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use awaken_agent_contract::agent::message::Role;
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_ext_builtin_tools::MessageSender;
 use awaken_run_ingress::{
@@ -66,11 +66,11 @@ async fn durable_submit_persists_then_runs_to_completion() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
 
-    let phase = ingress
+    let state = ingress
         .submit_background(activation("run-1"))
         .await
         .expect("durable submit");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
     // Committed truth holds the run: the user turn then the assistant reply.
     // Per-step durability: the input commits at the first step boundary, the
@@ -119,11 +119,11 @@ async fn a_worker_routes_inference_through_the_resolved_model_executor() {
         Some(resolver),
     );
 
-    let phase = ingress
+    let state = ingress
         .submit_background(activation("run-resolved"))
         .await
         .expect("durable submit");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
     let messages = commit.committed().messages;
     assert_eq!(
@@ -173,11 +173,11 @@ async fn a_per_run_model_override_routes_the_worker_to_the_overridden_model() {
     );
 
     let over = activation("run-override").with_model_ref_override(Some("alt".into()));
-    let phase = ingress
+    let state = ingress
         .submit_background(over)
         .await
         .expect("durable submit");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
     let messages = commit.committed().messages;
     assert_eq!(
@@ -206,11 +206,11 @@ async fn durable_run_drains_live_inbox_steer_at_the_boundary() {
         Message::text(MessageId("client-id".into()), Role::User, "steer me"),
     );
 
-    let phase = ingress
+    let state = ingress
         .submit_background(activation("run-1"))
         .await
         .expect("durable submit");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
     let messages = commit.committed().messages;
     let steer = messages
@@ -257,35 +257,39 @@ async fn durable_submit_is_idempotent_per_run() {
         .expect("first submit");
     // Re-submitting the same run id is a no-op: the dispatch was already settled,
     // and re-enqueue does not create a second run or a second commit.
-    let phase = ingress
+    let state = ingress
         .submit_background(activation("run-1"))
         .await
         .expect("second submit");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     // Two commits (input + terminal) from the first submit; the re-submit
     // adds none.
     assert_eq!(commit.commit_count(), 2, "the run committed exactly once");
 }
 
 #[tokio::test]
-async fn parked_run_resumes_through_delivered_input() {
+async fn awaiting_run_resumes_through_delivered_input() {
     let (runtime, ran) = tool_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
 
-    // A durable submit parks on the gate.
-    let phase = ingress
+    // A durable submit awaits on the gate.
+    let state = ingress
         .submit_background(activation("run-1"))
         .await
-        .expect("submit parks");
-    assert_eq!(phase, Phase::Waiting);
+        .expect("submit awaits");
+    assert_eq!(state, RunState::Awaiting);
     assert_eq!(
         ran.load(Ordering::SeqCst),
         0,
-        "tool must not run while parked"
+        "tool must not run while awaiting"
     );
-    assert_eq!(store.dispatch_count(), 1, "the parked dispatch is retained");
+    assert_eq!(
+        store.dispatch_count(),
+        1,
+        "the awaiting dispatch is retained"
+    );
 
     // Delivering an allow decision wakes and resumes the run to completion.
     let resumed = ingress
@@ -302,7 +306,7 @@ async fn parked_run_resumes_through_delivered_input() {
         )
         .await
         .expect("resume");
-    assert_eq!(resumed, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(resumed, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(
         ran.load(Ordering::SeqCst),
         1,
@@ -396,7 +400,7 @@ async fn worker_recovery_runs_a_crashed_dispatch_to_completion() {
         processed,
         vec![(
             RunId("run-1".to_string()),
-            Phase::Ended(EndCause::NaturalEnd)
+            RunState::Ended(EndCause::NaturalEnd)
         )]
     );
     assert_eq!(
@@ -442,13 +446,13 @@ async fn committed_resume_is_not_reapplied_after_a_crash(/* M1 */) {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DurableRunIngress::new(runtime.clone(), store.clone(), commit.clone());
 
-    // Park, then deliver input WITHOUT driving (just append).
+    // Await, then deliver input WITHOUT driving (just append).
     assert_eq!(
         ingress
             .submit_background(activation("run-1"))
             .await
             .unwrap(),
-        Phase::Waiting
+        RunState::Awaiting
     );
     store
         .append(pending(
@@ -466,11 +470,11 @@ async fn committed_resume_is_not_reapplied_after_a_crash(/* M1 */) {
     // then crashed before settle. Drive those two steps by hand.
     let _claimed = store.claim("dead-worker", 1_000, 0).await.unwrap();
     let context = RuntimeRunContext::new().with_commit(commit.clone());
-    let phase = runtime
+    let state = runtime
         .resume(allow_command(), commit.as_ref(), context)
         .await
         .expect("resume commits");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(
         ran.load(Ordering::SeqCst),
         1,
@@ -484,7 +488,7 @@ async fn committed_resume_is_not_reapplied_after_a_crash(/* M1 */) {
         processed,
         vec![(
             RunId("run-1".to_string()),
-            Phase::Ended(EndCause::NaturalEnd)
+            RunState::Ended(EndCause::NaturalEnd)
         )]
     );
     assert_eq!(
@@ -499,7 +503,7 @@ async fn committed_resume_is_not_reapplied_after_a_crash(/* M1 */) {
 #[tokio::test]
 async fn input_for_a_superseded_ticket_is_not_delivered(/* M1 */) {
     // Input whose correlation does not match the run's committed ticket is stale;
-    // it is dropped without delivery, and the run stays parked until the right
+    // it is dropped without delivery, and the run stays awaiting until the right
     // input arrives.
     let (runtime, ran) = tool_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
@@ -511,11 +515,11 @@ async fn input_for_a_superseded_ticket_is_not_delivered(/* M1 */) {
             .submit_background(activation("run-1"))
             .await
             .unwrap(),
-        Phase::Waiting
+        RunState::Awaiting
     );
 
     // Stale input (wrong correlation) does not resume the run.
-    let phase = ingress
+    let state = ingress
         .deliver_resume(
             pending_for(
                 "stale",
@@ -530,7 +534,11 @@ async fn input_for_a_superseded_ticket_is_not_delivered(/* M1 */) {
         )
         .await
         .expect("stale delivery");
-    assert_eq!(phase, Phase::Waiting, "a stale input leaves the run parked");
+    assert_eq!(
+        state,
+        RunState::Awaiting,
+        "a stale input leaves the run awaiting"
+    );
     assert_eq!(ran.load(Ordering::SeqCst), 0, "the tool did not run");
     assert_eq!(
         store.pending_count(&RunId("run-1".to_string())),
@@ -539,7 +547,7 @@ async fn input_for_a_superseded_ticket_is_not_delivered(/* M1 */) {
     );
 
     // The correctly-correlated input resumes the run.
-    let phase = ingress
+    let state = ingress
         .deliver_resume(
             pending(
                 "good",
@@ -553,7 +561,7 @@ async fn input_for_a_superseded_ticket_is_not_delivered(/* M1 */) {
         )
         .await
         .expect("good delivery");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(Ordering::SeqCst), 1);
 }
 
@@ -569,8 +577,8 @@ async fn cross_thread_outbox_store_spec() {
 }
 
 #[tokio::test]
-async fn staged_delivery_relays_and_resumes_a_parked_run() {
-    // M3b end to end: a parked run is resumed by a cross-thread delivery that is
+async fn staged_delivery_relays_and_resumes_an_awaiting_run() {
+    // M3b end to end: an awaiting run is resumed by a cross-thread delivery that is
     // staged in the outbox and relayed to its pending input.
     let (runtime, ran) = tool_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
@@ -582,7 +590,7 @@ async fn staged_delivery_relays_and_resumes_a_parked_run() {
             .submit_background(activation("run-1"))
             .await
             .unwrap(),
-        Phase::Waiting
+        RunState::Awaiting
     );
 
     // Stage the delivery (as if from another thread); it is not pending yet.
@@ -606,7 +614,7 @@ async fn staged_delivery_relays_and_resumes_a_parked_run() {
         processed,
         vec![(
             RunId("run-1".to_string()),
-            Phase::Ended(EndCause::NaturalEnd)
+            RunState::Ended(EndCause::NaturalEnd)
         )]
     );
     assert_eq!(ran.load(Ordering::SeqCst), 1);
@@ -628,7 +636,7 @@ async fn cancel_store_spec() {
 }
 
 #[tokio::test]
-async fn cancel_durable_commits_cancelled_for_a_parked_run() {
+async fn cancel_durable_commits_cancelled_for_an_awaiting_run() {
     let (runtime, ran) = tool_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -639,9 +647,13 @@ async fn cancel_durable_commits_cancelled_for_a_parked_run() {
             .submit_background(activation("run-1"))
             .await
             .unwrap(),
-        Phase::Waiting
+        RunState::Awaiting
     );
-    assert!(commit.waiting_for(&RunId("run-1".to_string())).is_some());
+    assert!(
+        commit
+            .resume_ticket_for(&RunId("run-1".to_string()))
+            .is_some()
+    );
 
     // Durable cancel commits a terminal Cancelled and clears the ticket.
     assert!(
@@ -655,8 +667,12 @@ async fn cancel_durable_commits_cancelled_for_a_parked_run() {
         &RunId("run-1".to_string()),
     )
     .expect("run record");
-    assert_eq!(record.phase, Phase::Ended(EndCause::Cancelled));
-    assert!(commit.waiting_for(&RunId("run-1".to_string())).is_none());
+    assert_eq!(record.state, RunState::Ended(EndCause::Cancelled));
+    assert!(
+        commit
+            .resume_ticket_for(&RunId("run-1".to_string()))
+            .is_none()
+    );
     assert_eq!(store.dispatch_count(), 0);
     assert_eq!(ran.load(Ordering::SeqCst), 0);
 }
@@ -685,7 +701,7 @@ async fn cancel_durable_for_a_queued_run_that_never_ran() {
         &RunId("run-1".to_string()),
     )
     .expect("run record");
-    assert_eq!(record.phase, Phase::Ended(EndCause::Cancelled));
+    assert_eq!(record.state, RunState::Ended(EndCause::Cancelled));
     assert_eq!(store.dispatch_count(), 0);
 
     // Cancelling again is a no-op.
@@ -698,7 +714,7 @@ async fn cancel_durable_for_a_queued_run_that_never_ran() {
 }
 
 #[tokio::test]
-async fn send_message_delivers_to_a_threads_parked_run() {
+async fn send_message_delivers_to_a_threads_awaiting_run() {
     use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
     use awaken_ext_builtin_tools::MessageSender;
     use awaken_run_ingress::OutboxMessageSender;
@@ -708,13 +724,13 @@ async fn send_message_delivers_to_a_threads_parked_run() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
 
-    // A run parks on thread-1, waiting for input.
+    // A run awaits on thread-1, awaiting for input.
     assert_eq!(
         ingress
             .submit_background(activation("run-1"))
             .await
             .unwrap(),
-        Phase::Waiting
+        RunState::Awaiting
     );
 
     // The send_message host adapter, addressed by thread, stages a delivery.
@@ -722,21 +738,21 @@ async fn send_message_delivers_to_a_threads_parked_run() {
     sender
         .send("thread-1", "hello from another agent")
         .await
-        .expect("send to a waiting thread");
-    // Sending to a thread with no waiting run is staged unbound (ADR-0021), not
+        .expect("send to an awaiting thread");
+    // Sending to a thread with no awaiting run is staged unbound (ADR-0021), not
     // an error: it is held for that thread's next run.
     sender
         .send("thread-2", "for later")
         .await
         .expect("idle-thread send is queued");
 
-    // Relaying the outbox resumes the parked run with the message as input.
+    // Relaying the outbox resumes the awaiting run with the message as input.
     let processed = ingress.relay_outbox(0).await.expect("relay");
     assert_eq!(
         processed,
         vec![(
             RunId("run-1".to_string()),
-            Phase::Ended(EndCause::NaturalEnd)
+            RunState::Ended(EndCause::NaturalEnd)
         )]
     );
     assert_eq!(
@@ -813,18 +829,18 @@ async fn ingress_dead_letter_and_purge_ops() {
 #[tokio::test]
 async fn daemon_performs_a_scheduled_action_to_completion() {
     // RS-SCH-001 over the dispatch: a durably-submitted run whose gate defers the
-    // tool parks on a committed ScheduledAction; the worker performs it in-process
+    // tool awaits on a committed ScheduledAction; the worker performs it in-process
     // (no external input) and the run settles Done.
     let (runtime, ran) = schedule_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DurableRunIngress::new(runtime, store.clone(), commit);
 
-    let phase = ingress
+    let state = ingress
         .submit_background(activation("run-1"))
         .await
         .unwrap();
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(
         ran.load(Ordering::SeqCst),
         1,
@@ -833,23 +849,23 @@ async fn daemon_performs_a_scheduled_action_to_completion() {
     assert_eq!(
         store.dispatch_count(),
         0,
-        "the run settled Done, not Parked"
+        "the run settled Done, not Awaiting"
     );
 }
 
 #[tokio::test]
 async fn a_recovered_scheduled_action_is_performed() {
-    // RS-SCH-006: a run that committed a ScheduledAction park and then crashed
+    // RS-SCH-006: a run that committed a ScheduledAction await and then crashed
     // before performing it (dispatch left 'running' with an expired lease) is
     // recovered by another worker and performed from the committed request.
     let (runtime, ran) = schedule_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
-    // The run parked on a committed ScheduledAction (the action has not run).
+    // The run awaiting on a committed ScheduledAction (the action has not run).
     let ctx = RuntimeRunContext::new().with_commit(commit.clone());
-    let phase = runtime.execute(activation("run-1"), ctx).await.unwrap();
-    assert_eq!(phase, Phase::Waiting);
+    let state = runtime.execute(activation("run-1"), ctx).await.unwrap();
+    assert_eq!(state, RunState::Awaiting);
     assert_eq!(ran.load(Ordering::SeqCst), 0);
 
     // Its dispatch is a crashed in-flight claim: 'running', lease expired at 10,
@@ -867,7 +883,7 @@ async fn a_recovered_scheduled_action_is_performed() {
         processed,
         Some((
             RunId("run-1".to_string()),
-            Phase::Ended(EndCause::NaturalEnd)
+            RunState::Ended(EndCause::NaturalEnd)
         ))
     );
     assert_eq!(
@@ -880,7 +896,7 @@ async fn a_recovered_scheduled_action_is_performed() {
 
 #[tokio::test]
 async fn send_message_to_an_idle_thread_feeds_the_next_run() {
-    // ADR-0021: a message to a thread with no parked run is queued unbound, then
+    // ADR-0021: a message to a thread with no awaiting run is queued unbound, then
     // consumed by the thread's next run as new input.
     let runtime = input_echo_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
@@ -903,11 +919,11 @@ async fn send_message_to_an_idle_thread_feeds_the_next_run() {
     );
 
     // The thread's next run consumes the queued message as new input.
-    let phase = ingress
+    let state = ingress
         .submit_background(activation("run-1"))
         .await
         .expect("submit");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     let assistant = commit
         .committed()
         .messages
@@ -953,7 +969,7 @@ async fn a_superseded_owners_commit_is_fenced_while_the_current_owners_lands() {
     // durable boundary, while the current owner's write lands. This is the commit twin
     // of the already-covered settle fence.
     use awaken_agent_contract::thread::commit::coordinator::Coordinator;
-    use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+    use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
     use awaken_run_ingress::FencedCommitCoordinator;
 
     let store = Arc::new(MemoryDispatchStore::new());
@@ -979,12 +995,10 @@ async fn a_superseded_owners_commit_is_fenced_while_the_current_owners_lands() {
     let plan = |run: &RunId| {
         ThreadCommit::assemble(
             ThreadId(THREAD.to_string()),
-            run.clone(),
-            Phase::Running,
+            RunDisposition::running(run.clone()),
             true,
             Vec::new(),
             Vec::new(),
-            None,
             Vec::new(),
         )
     };
@@ -1033,25 +1047,25 @@ async fn concurrent_recovery_yields_one_winner_on_memory() {
 }
 
 #[tokio::test]
-async fn parked_settle_fences_stale_epoch_store_spec() {
-    harness::assert_parked_settle_fences_stale_epoch(&MemoryDispatchStore::new()).await;
+async fn awaiting_settle_fences_stale_epoch_store_spec() {
+    harness::assert_awaiting_settle_fences_stale_epoch(&MemoryDispatchStore::new()).await;
 }
 
 #[tokio::test]
 async fn submit_superseding_abandons_prior_thread_work() {
     // ADR-0022 at the ingress: a superseding submit supersedes the thread's
-    // parked run; only the newest run stays live.
+    // awaiting run; only the newest run stays live.
     let (runtime, _ran) = tool_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
 
-    // An older run parks on the thread.
+    // An older run awaits on the thread.
     assert_eq!(
         ingress.submit_background(activation("old")).await.unwrap(),
-        Phase::Waiting
+        RunState::Awaiting
     );
-    // A superseding submit on the same thread abandons the parked run.
+    // A superseding submit on the same thread abandons the awaiting run.
     ingress
         .submit_superseding(activation("new"))
         .await
@@ -1059,7 +1073,7 @@ async fn submit_superseding_abandons_prior_thread_work() {
     assert_eq!(
         ingress.superseded().await.unwrap(),
         vec![RunId("old".to_string())],
-        "the prior parked run is superseded"
+        "the prior awaiting run is superseded"
     );
     // The superseded run is never woken again: recovery does not process it.
     assert!(

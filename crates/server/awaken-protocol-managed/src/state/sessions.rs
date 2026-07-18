@@ -341,7 +341,7 @@ impl ManagedState {
     /// Recover a session whose in-memory record was lost from durable truth (a
     /// process restart, ADR-0039). If the store holds a committed transcript for
     /// `id`, rebuild the record — the projected history plus a reconstructed
-    /// session object — so a resume can continue the parked run. A thread with no
+    /// session object — so a resume can continue the awaiting run. A thread with no
     /// committed truth stays `NotFound` (fail closed): the store is authoritative.
     pub(crate) async fn ensure_session(&self, id: &str) -> Result<(), StateError> {
         if self.sessions.lock().unwrap().contains_key(id) {

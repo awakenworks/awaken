@@ -77,6 +77,10 @@ const FILES: &[(&str, &str)] = &[
         "V0013__dispatch_lease_epoch.sql",
         include_str!("migrations/V0013__dispatch_lease_epoch.sql"),
     ),
+    (
+        "V0014__normalize_awaiting_state.sql",
+        include_str!("migrations/V0014__normalize_awaiting_state.sql"),
+    ),
 ];
 
 /// Parse the version from a `Vnnnn__slug.sql` file name (`V0004__…` ⇒ 4). A name
@@ -138,7 +142,7 @@ mod tests {
         // claim/lease/pending queries, the sandbox-binding column (B-P3), then the
         // one-running-per-thread constraint (ADR-0022), numbered contiguously.
         let versions: Vec<i64> = bundle.migrations().iter().map(|m| m.version()).collect();
-        assert_eq!(versions, (1..=13).collect::<Vec<_>>());
+        assert_eq!(versions, (1..=14).collect::<Vec<_>>());
     }
 
     #[test]

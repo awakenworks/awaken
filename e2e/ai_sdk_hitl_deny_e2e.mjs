@@ -1,5 +1,5 @@
 // AI SDK HITL DENY path e2e (the gap the approve-only ai_sdk_e2e leaves open).
-// A mutating tool parks (state `input-available`); the client answers with the
+// A mutating tool awaits (state `input-available`); the client answers with the
 // AI SDK `output-denied` decision instead of a result. The real server decodes it
 // to a Cancel resume, the tool is NOT run, and the run still completes.
 //
@@ -47,16 +47,16 @@ async function readStreamText(res) {
 
 async function main() {
   await withRealServer('probe', 38147, async (base) => {
-    // Turn 1: drive the real park through the official Chat client.
+    // Turn 1: drive the real await through the official Chat client.
     const chat = new Chat({
       id: THREAD,
       transport: new DefaultChatTransport({ api: runsUrl(base, THREAD) }),
     });
     await chat.sendMessage({ text: NOTE });
     const toolPart = (chat.lastMessage?.parts ?? []).find((p) => p.toolCallId);
-    assert.ok(toolPart, `expected a parked tool part: ${JSON.stringify(chat.lastMessage?.parts)}`);
+    assert.ok(toolPart, `expected an awaiting tool part: ${JSON.stringify(chat.lastMessage?.parts)}`);
     assert.equal(toolPart.state, 'input-available', 'the mutating tool should await a decision');
-    pass('ai-sdk deny: mutating tool parked (input-available)');
+    pass('ai-sdk deny: mutating tool awaiting (input-available)');
 
     // Turn 2: answer with `output-denied` over the same real endpoint. The
     // assistant tool part carries the decision; no user/system content, so the
@@ -88,7 +88,7 @@ async function main() {
     assert.ok(text.includes('done'), `expected completion after deny, got: ${JSON.stringify(text)}`);
     // The write was blocked, so nothing echoes the note back.
     assert.ok(!text.includes(NOTE), `deny must block the write; leaked note in: ${JSON.stringify(text)}`);
-    pass('ai-sdk deny: tool blocked, run still completes (park -> output-denied -> complete)');
+    pass('ai-sdk deny: tool blocked, run still completes (await -> output-denied -> complete)');
   });
 
   console.log('E2E PASS: AI SDK HITL deny round-trip (output-denied) via the real endpoint.');

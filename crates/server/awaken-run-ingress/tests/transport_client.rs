@@ -335,7 +335,7 @@ async fn server_local_write_verbs_fail_closed() {
 
 // The server-local maintenance verbs FAIL CLOSED (`Rejected`) rather than pretend,
 // matching the module contract: a database-less worker must never silently no-op a
-// reap/dead-letter/purge/supersede/list/parked-run/relay it did not perform. The
+// reap/dead-letter/purge/supersede/list/awaiting-run/relay it did not perform. The
 // pool's maintenance loop still ticks reap/purge/relay, but discards the result
 // (`let _ =` / `unwrap_or(0)`), so the rejection is harmless there while surfacing
 // anywhere the return value is consumed. The single legitimate exception is
@@ -374,7 +374,7 @@ async fn maintenance_verbs_fail_closed_except_the_legitimate_inbox_list_readback
         Err(DispatchError::Rejected(_))
     ));
     assert!(matches!(
-        queue.parked_run(&thread).await,
+        queue.awaiting_run(&thread).await,
         Err(DispatchError::Rejected(_))
     ));
     assert!(matches!(

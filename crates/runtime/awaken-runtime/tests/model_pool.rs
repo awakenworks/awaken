@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{LlmRetryPolicy, Runtime};
@@ -185,7 +185,7 @@ async fn primary_failure_fails_over_to_the_next_candidate() {
 
     // The run ended naturally on the fallback, not in a failure.
     assert!(
-        matches!(outcome, Phase::Ended(EndCause::NaturalEnd)),
+        matches!(outcome, RunState::Ended(EndCause::NaturalEnd)),
         "expected a natural end after failover, got {outcome:?}"
     );
     // Both models were tried, primary first then fallback — in candidate order.
@@ -213,7 +213,7 @@ async fn a_committed_truncation_partial_does_not_fail_over_to_a_pool_model() {
         .expect("runs");
 
     assert!(
-        matches!(outcome, Phase::Ended(EndCause::Error(_))),
+        matches!(outcome, RunState::Ended(EndCause::Error(_))),
         "a post-partial failure is terminal, got {outcome:?}"
     );
     // Primary was asked twice (truncation, then the failing continuation); the
@@ -241,7 +241,7 @@ async fn single_model_agent_does_not_fail_over() {
 
     // No candidates → a failing primary is terminal, and only the primary was asked.
     assert!(
-        matches!(outcome, Phase::Ended(EndCause::Error(_))),
+        matches!(outcome, RunState::Ended(EndCause::Error(_))),
         "expected a terminal failure, got {outcome:?}"
     );
     assert_eq!(&*seen.lock().unwrap(), &["primary"]);
@@ -266,7 +266,7 @@ async fn all_candidates_failing_ends_in_terminal_failure_after_trying_each() {
         .expect("runs");
 
     assert!(
-        matches!(outcome, Phase::Ended(EndCause::Error(_))),
+        matches!(outcome, RunState::Ended(EndCause::Error(_))),
         "expected a terminal failure, got {outcome:?}"
     );
     // Every candidate was tried, in order, exactly once.

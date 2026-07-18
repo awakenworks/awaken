@@ -35,8 +35,8 @@ async fn hello_agent_example_runs_to_completion() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ctx = RuntimeRunContext::new().with_commit(commit.clone());
 
-    let phase = runtime.run(&runnable, "Say hi.", ctx).await.expect("run");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    let state = runtime.run(&runnable, "Say hi.", ctx).await.expect("run");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert!(
         commit
             .committed()

@@ -1,15 +1,15 @@
 //! A run-end guard's forced-continuation budget is run-scoped truth: it is
 //! recovered from the committed steer-feedback messages, so a run steered by a
-//! guard and then parked mid-loop resumes with the count intact rather than
+//! guard and then awaiting mid-loop resumes with the count intact rather than
 //! restarting at zero (CE-9). Without recovery a bounded guard would steer its
-//! whole budget again after every park.
+//! whole budget again after every await.
 
 use std::sync::Arc;
 use std::sync::Mutex;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
@@ -50,7 +50,7 @@ impl LlmExecutor for TextLlm {
 }
 
 /// Steers while `forced_continuations < steer_budget` (recording each value it
-/// saw), and requests a pause on its steering turn so the run parks at the very
+/// saw), and requests a pause on its steering turn so the run awaits at the very
 /// next boundary — after the steer feedback is committed. Once the budget is
 /// reached it completes.
 struct PauseGuard {
@@ -66,7 +66,7 @@ impl RunEndGuard for PauseGuard {
     async fn evaluate(&self, ctx: &RunEndContext<'_>) -> RunEndDecision {
         self.seen_fc.lock().unwrap().push(ctx.forced_continuations);
         if ctx.forced_continuations < self.steer_budget {
-            // Park at the next boundary, after this steer's feedback commits.
+            // Await at the next boundary, after this steer's feedback commits.
             self.pause.request();
             RunEndDecision::Steer {
                 feedback: "revise".to_string(),
@@ -178,7 +178,7 @@ fn resume_command() -> ResumeCommand {
 }
 
 #[tokio::test]
-async fn a_guards_forced_continuation_count_survives_a_park_and_resume() {
+async fn a_guards_forced_continuation_count_survives_a_await_and_resume() {
     let seen_fc = Arc::new(Mutex::new(Vec::new()));
     let pause = PauseSignal::new();
     let runtime = Runtime::new()
@@ -194,32 +194,32 @@ async fn a_guards_forced_continuation_count_survives_a_park_and_resume() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
     // First leg: the guard steers once (fc 0 -> 1) and requests a pause, so the run
-    // parks at the next boundary with one steer-feedback message committed.
+    // awaits at the next boundary with one steer-feedback message committed.
     let context = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_pause(pause.clone());
-    let phase = runtime
+    let state = runtime
         .execute(activation(), context)
         .await
         .expect("first leg runs");
-    assert_eq!(phase, Phase::Waiting, "the steered run parked");
+    assert_eq!(state, RunState::Awaiting, "the steered run awaiting");
     assert_eq!(*seen_fc.lock().unwrap(), vec![0], "the guard steered once");
 
     // Second leg: resume WITHOUT a pause. The forced-continuation count is recovered
     // from the committed steer message (= 1), so the bounded guard completes at once
     // rather than steering its whole budget again.
     let context = RuntimeRunContext::new().with_commit(commit.clone());
-    let phase = runtime
+    let state = runtime
         .resume(resume_command(), commit.as_ref(), context)
         .await
         .expect("resume runs");
-    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
-    // The guard observed 0 before the park and 1 after — the count was recovered,
+    // The guard observed 0 before the await and 1 after — the count was recovered,
     // not reset. A reset would show a second 0 (steering the budget over again).
     assert_eq!(
         *seen_fc.lock().unwrap(),
         vec![0, 1],
-        "forced_continuations was recovered across the park, not reset to 0"
+        "forced_continuations was recovered across the await, not reset to 0"
     );
 }

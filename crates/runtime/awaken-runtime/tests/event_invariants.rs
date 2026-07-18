@@ -6,14 +6,14 @@
 //!   * every committed event carries a strictly-increasing, unique `sequence`;
 //!   * a gated tool call is audited (a `PermissionDecided` event is committed);
 //!   * the run's committed authority ends in a terminal `Ended` phase, and a
-//!     `RunPhaseChanged` event rides the same commit.
+//!     `RunStateChanged` event rides the same commit.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
 use awaken_runtime::Runtime;
@@ -158,7 +158,7 @@ async fn gated_tool_run_commits_ordered_audited_terminal_events() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 
     let committed = commit.committed();
 
@@ -183,17 +183,17 @@ async fn gated_tool_run_commits_ordered_audited_terminal_events() {
         "a gated tool call must commit a PermissionDecided audit event"
     );
 
-    // Invariant 3: a RunPhaseChanged rides the commit and the stored authority is terminal.
+    // Invariant 3: a RunStateChanged rides the commit and the stored authority is terminal.
     assert!(
         committed
             .events
             .iter()
-            .any(|e| e.kind == EventKind::RunPhaseChanged),
-        "the terminal commit must carry a RunPhaseChanged event"
+            .any(|e| e.kind == EventKind::RunStateChanged),
+        "the terminal commit must carry a RunStateChanged event"
     );
     assert_eq!(
-        committed.latest_run.expect("a run fact is committed").phase,
-        Phase::Ended(EndCause::NaturalEnd),
+        committed.latest_run.expect("a run fact is committed").state,
+        RunState::Ended(EndCause::NaturalEnd),
         "the committed run authority must be terminal"
     );
 }

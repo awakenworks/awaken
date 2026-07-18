@@ -1,7 +1,7 @@
 //! Per-step durability: each completed step's messages/state/audit commit at
 //! the step boundary under a `Running` fact, so a crash loses at most the step
 //! in flight and readers see committed progress mid-run. The terminal step
-//! still commits atomically with the final phase (and any ticket) through the
+//! still commits atomically with the final state (and any ticket) through the
 //! single finish boundary.
 
 use std::sync::Arc;
@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::{Command as StateCommand, MergePolicy, Scope};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
@@ -31,8 +31,8 @@ use awaken_runtime_contract::snapshot::{
 };
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 
-/// (step, committed message count, committed phase) captured inside a step.
-type Observations = Arc<std::sync::Mutex<Vec<(usize, usize, Option<Phase>)>>>;
+/// (step, committed message count, committed state) captured inside a step.
+type Observations = Arc<std::sync::Mutex<Vec<(usize, usize, Option<RunState>)>>>;
 
 /// Emits `tool_steps` tool-call turns, then a final text turn.
 struct ToolStepsThenEnd {
@@ -83,7 +83,7 @@ impl RawTool for ProbeTool {
         self.observations.lock().unwrap().push((
             step,
             committed.messages.len(),
-            committed.latest_run.map(|r| r.phase),
+            committed.latest_run.map(|r| r.state),
         ));
         let mut output = ToolOutput::ok(&call.call_id, "probed");
         output.state = self.staged.clone();
@@ -176,7 +176,7 @@ async fn each_continuing_step_commits_under_a_running_fact() {
 
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 
     // The input commits at the first step boundary (the run is durable as
     // Running before any inference), the two tool steps commit at theirs,
@@ -184,32 +184,32 @@ async fn each_continuing_step_commits_under_a_running_fact() {
     assert_eq!(commit.commit_count(), 4);
 
     let committed = commit.committed();
-    // The durable phase history walked Running → Running → Ended.
-    let phases: Vec<Phase> = committed
+    // The durable state history walked Running → Running → Ended.
+    let states: Vec<RunState> = committed
         .run_facts
         .iter()
-        .map(|f| f.phase.clone())
+        .map(|f| f.state.clone())
         .collect();
     assert_eq!(
-        phases,
+        states,
         vec![
-            Phase::Running,
-            Phase::Running,
-            Phase::Running,
-            Phase::Ended(EndCause::NaturalEnd)
+            RunState::Running,
+            RunState::Running,
+            RunState::Running,
+            RunState::Ended(EndCause::NaturalEnd)
         ]
     );
     // The transition into Running is recorded exactly once, before the
-    // terminal phase event.
-    let phase_events: Vec<String> = committed
+    // terminal state event.
+    let state_events: Vec<String> = committed
         .events
         .iter()
-        .filter(|e| matches!(e.kind, EventKind::RunPhaseChanged))
-        .map(|e| e.payload["phase"].to_string())
+        .filter(|e| matches!(e.kind, EventKind::RunStateChanged))
+        .map(|e| e.payload["state"].to_string())
         .collect();
-    assert_eq!(phase_events.len(), 2, "one Running, one terminal");
-    assert!(phase_events[0].contains("Running"));
-    assert!(phase_events[1].contains("Ended"));
+    assert_eq!(state_events.len(), 2, "one Running, one terminal");
+    assert!(state_events[0].contains("Running"));
+    assert!(state_events[1].contains("Ended"));
 }
 
 #[tokio::test]
@@ -224,20 +224,20 @@ async fn committed_progress_is_visible_mid_run() {
     let observations = observations.lock().unwrap();
     // Already during step 0 the run's input is durable and the run reads as
     // Running: execution never begins without a durable trace.
-    let (_, visible_at_0, ref phase_at_0) = observations[0];
+    let (_, visible_at_0, ref state_at_0) = observations[0];
     assert_eq!(
         visible_at_0, 1,
         "the input is durable during the first step"
     );
-    assert_eq!(*phase_at_0, Some(Phase::Running));
+    assert_eq!(*state_at_0, Some(RunState::Running));
     // By the time step 1's tool runs, step 0 (assistant turn + tool result)
     // is durable too.
-    let (_, visible_at_1, ref phase_at_1) = observations[1];
+    let (_, visible_at_1, ref state_at_1) = observations[1];
     assert!(
         visible_at_1 >= 3,
         "step 0's messages are durable during step 1 (saw {visible_at_1})"
     );
-    assert_eq!(*phase_at_1, Some(Phase::Running));
+    assert_eq!(*state_at_1, Some(RunState::Running));
 }
 
 #[tokio::test]
@@ -259,15 +259,15 @@ async fn cross_step_state_conflict_ends_the_run_and_keeps_committed_steps() {
 
     assert_eq!(
         outcome,
-        Phase::Ended(EndCause::Error(Failure::StateConflict))
+        RunState::Ended(EndCause::Error(Failure::StateConflict))
     );
     let committed = commit.committed();
     // Step 0 was valid when it committed and stays committed; the conflicting
     // tail was dropped, so exactly one copy of the exclusive set is durable.
     assert_eq!(committed.state.len(), 1);
     assert_eq!(
-        committed.latest_run.unwrap().phase,
-        Phase::Ended(EndCause::Error(Failure::StateConflict))
+        committed.latest_run.unwrap().state,
+        RunState::Ended(EndCause::Error(Failure::StateConflict))
     );
 }
 
@@ -279,7 +279,7 @@ async fn text_only_run_commits_input_then_terminal() {
 
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     // A text-only run: the input commits at the first step boundary (durable
     // Running before inference), then the terminal turn commits via finish.
     assert_eq!(commit.commit_count(), 2);

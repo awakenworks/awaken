@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Fact};
 use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink};
@@ -242,7 +242,7 @@ async fn permanent_inference_error_commits_a_terminal_failed_reason() {
     // The fault carries the provider error's stable classification code, so a
     // host can categorize the unrecoverable failure without parsing messages.
     match &outcome {
-        Phase::Ended(EndCause::Error(Failure::Inference { code, message })) => {
+        RunState::Ended(EndCause::Error(Failure::Inference { code, message })) => {
             assert_eq!(code, "unauthorized");
             assert!(message.contains("bad api key"));
         }
@@ -253,24 +253,24 @@ async fn permanent_inference_error_commits_a_terminal_failed_reason() {
 
     let committed = commit.committed();
     assert!(matches!(
-        committed.latest_run.unwrap().phase,
-        Phase::Ended(EndCause::Error(Failure::Inference { .. }))
+        committed.latest_run.unwrap().state,
+        RunState::Ended(EndCause::Error(Failure::Inference { .. }))
     ));
-    // The terminal reason (with its code) is recorded in the phase event
-    // payload. The last phase event is the terminal one — the first records
+    // The terminal reason (with its code) is recorded in the state event
+    // payload. The last state event is the terminal one — the first records
     // the transition into Running at the initial step boundary.
-    let phase_event = committed
+    let state_event = committed
         .events
         .iter()
         .rev()
         .find(|e| {
             matches!(
                 e.kind,
-                awaken_agent_contract::audit::kind::Kind::RunPhaseChanged
+                awaken_agent_contract::audit::kind::Kind::RunStateChanged
             )
         })
-        .expect("a phase event");
-    let payload = phase_event.payload.to_string();
+        .expect("a state event");
+    let payload = state_event.payload.to_string();
     assert!(payload.contains("bad api key"));
     assert!(payload.contains("unauthorized"));
 }
@@ -290,7 +290,7 @@ async fn retryable_error_is_retried_until_exhausted_then_failed_with_code() {
     let outcome = runtime.execute(activation(), context).await.expect("runs");
 
     match &outcome {
-        Phase::Ended(EndCause::Error(Failure::Inference { code, .. })) => {
+        RunState::Ended(EndCause::Error(Failure::Inference { code, .. })) => {
             assert_eq!(code, "overloaded");
         }
         other => panic!("expected a classified inference failure, got {other:?}"),
@@ -313,7 +313,7 @@ async fn transient_error_then_success_recovers() {
     let context = RuntimeRunContext::new();
     let outcome = runtime.execute(activation(), context).await.expect("runs");
 
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     // One failure then one success.
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
@@ -331,7 +331,7 @@ async fn max_tokens_truncation_continues_in_place_and_recovers() {
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime.execute(activation(), context).await.expect("runs");
 
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     // The truncated turn plus one continuation round.
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 
@@ -381,7 +381,7 @@ async fn max_tokens_budget_exhausted_lets_the_partial_turn_stand() {
     let outcome = runtime.execute(activation(), context).await.expect("runs");
 
     // The still-truncated turn stands as a text-only natural end.
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     // 1 initial turn + 2 continuation rounds.
     assert_eq!(calls.load(Ordering::SeqCst), 3);
 }
@@ -398,7 +398,7 @@ async fn failed_run_emits_run_failed_on_the_live_stream_before_run_finished() {
     let sink = Arc::new(MemoryStreamSink::new());
     let context = RuntimeRunContext::new().with_stream_sink(sink.clone());
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert!(matches!(outcome, Phase::Ended(EndCause::Error(_))));
+    assert!(matches!(outcome, RunState::Ended(EndCause::Error(_))));
 
     let kinds: Vec<AgentEvent> = sink.events().into_iter().map(|e| e.kind).collect();
     let failed_at = kinds
@@ -437,7 +437,7 @@ async fn consecutive_failure_tolerance_absorbs_a_failed_step_until_success() {
 
     // Two failed steps are absorbed (below the threshold of 3); the third
     // step succeeds and the run ends naturally.
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(calls.load(Ordering::SeqCst), 3);
 }
 
@@ -457,7 +457,7 @@ async fn consecutive_failure_tolerance_exhausted_ends_with_the_last_error() {
 
     // The second consecutive failure is terminal, classified by its code.
     match &outcome {
-        Phase::Ended(EndCause::Error(Failure::Inference { code, .. })) => {
+        RunState::Ended(EndCause::Error(Failure::Inference { code, .. })) => {
             assert_eq!(code, "unauthorized");
         }
         other => panic!("expected a classified inference failure, got {other:?}"),
@@ -487,7 +487,7 @@ async fn circuit_breaker_opens_after_counted_failures_and_fails_fast() {
             .execute(activation(), RuntimeRunContext::new())
             .await
             .expect("runs");
-        assert!(matches!(outcome, Phase::Ended(EndCause::Error(_))));
+        assert!(matches!(outcome, RunState::Ended(EndCause::Error(_))));
     }
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 
@@ -497,7 +497,7 @@ async fn circuit_breaker_opens_after_counted_failures_and_fails_fast() {
         .await
         .expect("runs");
     match &outcome {
-        Phase::Ended(EndCause::Error(Failure::Inference { code, message })) => {
+        RunState::Ended(EndCause::Error(Failure::Inference { code, message })) => {
             assert_eq!(code, "provider_error");
             assert!(message.contains("circuit breaker"), "{message}");
         }
@@ -530,7 +530,7 @@ async fn permanent_failures_do_not_trip_the_circuit_breaker() {
             .expect("runs");
         assert!(matches!(
             outcome,
-            Phase::Ended(EndCause::Error(Failure::Inference { .. }))
+            RunState::Ended(EndCause::Error(Failure::Inference { .. }))
         ));
     }
     assert_eq!(calls.load(Ordering::SeqCst), 3);
@@ -548,7 +548,7 @@ async fn max_tokens_with_tool_calls_skips_continuation() {
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime.execute(activation(), context).await.expect("runs");
 
-    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     // The truncated-but-complete tool call executes normally (its result feeds
     // the next step); no continuation prompt is injected.
     let committed = commit.committed();
