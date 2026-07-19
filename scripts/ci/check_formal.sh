@@ -16,6 +16,11 @@ rendered_trace_dir="$formal_tmp_root/rendered-traces"
 
 python3 scripts/ci/check_formal_coverage.py
 
+# Explore the production in-memory worker registry's lock interleavings. This
+# feature swaps only its mutex for Loom's instrumented mutex; the transition
+# kernel and directory methods remain the production code.
+cargo test -p awaken-worker-registry --features loom --lib loom_tests
+
 AWAKEN_FORMAL_TRACE_DIR="$rust_trace_dir" \
   cargo test -p awaken-runtime --test formal_refinement
 python3 scripts/ci/render_runtime_refinement_traces.py \
@@ -114,6 +119,16 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness rejected_requests_never_enter_the_host
   cargo kani -p awaken-mcp-server-core \
     --harness cancellation_never_produces_a_success_result
+  cargo kani -p awaken-worker-contract \
+    --harness accepted_version_is_inside_worker_range
+  cargo kani -p awaken-worker-contract \
+    --harness non_ready_worker_never_accepts_work
+  cargo kani -p awaken-worker-contract \
+    --harness never_replace_rejects_every_replacement
+  cargo kani -p awaken-worker-contract \
+    --harness sandbox_continuity_authorizes_replacement_exactly_when_bound
+  cargo kani -p awaken-worker-contract \
+    --harness same_incarnation_never_spends_replacement_authority
 else
   echo "skipped Kani: install with 'cargo install --locked kani-verifier && cargo kani setup'"
   missing=1
@@ -214,6 +229,9 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/mcp-server" \
     -config formal/tla/McpServer.cfg formal/tla/McpServer.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/worker-replacement" \
+    -config formal/tla/WorkerReplacement.cfg formal/tla/WorkerReplacement.tla
   for trace_config in "$rendered_trace_dir"/RustTrace*.cfg; do
     trace_module="${trace_config%.cfg}.tla"
     trace_name="$(basename "$trace_module" .tla)"

@@ -1,225 +1,249 @@
-//! Dynamic hand placement (the ADR-0046 successor to the static
-//! [`ConfigToolExecutorProvider`](crate::placement)).
+//! Dynamic hand placement over the authoritative DWR worker directory.
 //!
-//! Placement is a scheduling decision over two attribute sets, decided in code —
-//! never a config table:
-//!
-//! - **agent attributes** — what a run needs (its identity, required capabilities,
-//!   an optional affinity key), read off the run's activation. The Tool being
-//!   invoked is NOT an input: a tool call is placement-agnostic, so the `Tool` layer
-//!   never learns where it runs.
-//! - **worker attributes** — what a hand offers (capability tags, zone, health, live
-//!   load), reported by the workers themselves into a [`WorkerRegistry`] via a
-//!   heartbeat.
-//!
-//! A [`Placement`] policy matches the two (a predicate: healthy + capabilities +
-//! affinity; then a priority: least-loaded, affinity-preferred) and yields a worker.
-//! [`DynamicToolExecutorProvider`] resolves that worker to its `ToolExecutor` channel
-//! — the seam demoted to a pure binding→channel resolver, with the decision upstream.
-//! A run no worker matches returns `None`, so the kernel's in-process
-//! `LocalToolExecutor` runs its tools (the same fail-safe as the static provider).
+//! Worker identity, incarnation, liveness, load, capabilities and eligibility
+//! are owned by `awaken-worker-contract` and `awaken-worker-registry`. This
+//! module deliberately stores only process-local executor channels. Keeping the
+//! two concerns separate prevents a channel cache from becoming a second,
+//! contradictory worker registry.
 
-use std::collections::BTreeSet;
-use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::tool::{ToolExecutor, ToolExecutorProvider};
+use awaken_runtime_contract::tool::{
+    ToolExecutor, ToolExecutorProvider, ToolExecutorSelectionError,
+};
+use awaken_worker_registry::{
+    ExecutionLocation, PlacementContext, PlacementError, PlacementPolicy, RankedWorker,
+    WorkerDirectory, WorkerIdentity, WorkerSnapshot, place,
+};
 
-/// What a run needs, for placement. Extracted from the activation by an
-/// [`AgentAttrsExtractor`]; the Tool being invoked is deliberately absent.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct AgentAttrs {
-    /// The run's root agent identity.
-    pub agent_id: String,
-    /// Capability tags the placed worker MUST offer (a subset check). Empty means
-    /// "no special requirement" — any healthy worker qualifies.
-    pub required_capabilities: BTreeSet<String>,
-    /// An optional affinity key (e.g. a tenant/zone/session pin). When set, only a
-    /// worker whose `zone` matches is eligible.
-    pub affinity: Option<String>,
-}
-
-/// What a hand offers, for placement. Reported by the worker into the registry and
-/// refreshed by its heartbeat.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkerAttrs {
-    /// Stable worker/hand id.
-    pub worker_id: String,
-    /// Capability tags this worker can serve.
-    pub capabilities: BTreeSet<String>,
-    /// The worker's zone/locality, matched against an agent's `affinity`.
-    pub zone: Option<String>,
-    /// Whether the worker is currently healthy (heartbeat fresh, not draining).
-    pub healthy: bool,
-    /// Live in-flight run count — the least-loaded priority signal.
-    pub in_flight: u32,
-}
-
-/// A registered worker: its attributes and the channel that reaches it.
-#[derive(Clone)]
-pub struct WorkerEntry {
-    pub attrs: WorkerAttrs,
-    pub executor: Arc<dyn ToolExecutor>,
-}
-
-impl std::fmt::Debug for WorkerEntry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WorkerEntry")
-            .field("attrs", &self.attrs)
-            .finish_non_exhaustive()
-    }
-}
-
-/// Extracts [`AgentAttrs`] from a run's activation. Pluggable so a host with richer
-/// capability metadata can supply its own; the default reads the root agent id and
-/// leaves requirements empty (every healthy worker qualifies).
-pub type AgentAttrsExtractor = Arc<dyn Fn(&RunActivation) -> AgentAttrs + Send + Sync>;
-
-/// The default extractor: identity only, no capability/affinity requirement. A run
-/// is placeable on any healthy worker.
-pub fn default_agent_attrs(activation: &RunActivation) -> AgentAttrs {
-    AgentAttrs {
-        agent_id: activation.snapshot.root_agent_id.0.clone(),
-        required_capabilities: BTreeSet::new(),
-        affinity: None,
-    }
-}
-
-/// The live roster of workers eligible for placement. Workers self-register and
-/// heartbeat; a placement policy reads a snapshot of the current roster. Thread-safe.
+/// Process-local channel cache keyed by a complete worker incarnation.
+/// Re-registering a logical worker never lets an old channel serve the new
+/// generation because generation and incarnation are part of the key.
 #[derive(Default)]
-pub struct WorkerRegistry {
-    workers: Mutex<Vec<WorkerEntry>>,
+pub struct WorkerExecutorDirectory {
+    channels: RwLock<HashMap<WorkerIdentity, Arc<dyn ToolExecutor>>>,
 }
 
-impl WorkerRegistry {
+impl WorkerExecutorDirectory {
     #[must_use]
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
     }
 
-    /// Register (or replace) a worker and the channel that reaches it.
-    pub fn register(&self, attrs: WorkerAttrs, executor: Arc<dyn ToolExecutor>) {
-        let mut workers = self.workers.lock().expect("registry poisoned");
-        workers.retain(|w| w.attrs.worker_id != attrs.worker_id);
-        workers.push(WorkerEntry { attrs, executor });
+    pub fn register(&self, identity: WorkerIdentity, executor: Arc<dyn ToolExecutor>) {
+        self.channels
+            .write()
+            .expect("worker executor directory poisoned")
+            .insert(identity, executor);
     }
 
-    /// Refresh a worker's liveness signals (health + load) from its heartbeat.
-    /// A heartbeat for an unknown worker is ignored (it must `register` first).
-    pub fn heartbeat(&self, worker_id: &str, healthy: bool, in_flight: u32) {
-        let mut workers = self.workers.lock().expect("registry poisoned");
-        if let Some(w) = workers.iter_mut().find(|w| w.attrs.worker_id == worker_id) {
-            w.attrs.healthy = healthy;
-            w.attrs.in_flight = in_flight;
-        }
+    pub fn deregister(&self, identity: &WorkerIdentity) -> Option<Arc<dyn ToolExecutor>> {
+        self.channels
+            .write()
+            .expect("worker executor directory poisoned")
+            .remove(identity)
     }
 
-    /// Remove a worker (deregistered / lease lapsed / drained away).
-    pub fn deregister(&self, worker_id: &str) {
-        self.workers
-            .lock()
-            .expect("registry poisoned")
-            .retain(|w| w.attrs.worker_id != worker_id);
-    }
-
-    /// A snapshot of the current roster, for a placement decision.
     #[must_use]
-    pub fn snapshot(&self) -> Vec<WorkerEntry> {
-        self.workers.lock().expect("registry poisoned").clone()
+    pub fn resolve(&self, identity: &WorkerIdentity) -> Option<Arc<dyn ToolExecutor>> {
+        self.channels
+            .read()
+            .expect("worker executor directory poisoned")
+            .get(identity)
+            .cloned()
     }
 }
 
-/// Decides which worker a run is placed on, from the agent's attributes and the live
-/// worker roster. Pure and synchronous — the decision, in code. Returns the chosen
-/// worker id, or `None` when no worker is eligible (→ in-process default).
-pub trait Placement: Send + Sync {
-    fn place(&self, agent: &AgentAttrs, workers: &[WorkerEntry]) -> Option<String>;
+/// Atomically replaceable policy slot. The immutable eligibility kernel remains
+/// outside the extension: a replacement may only rank the candidates already
+/// admitted by [`place`]. Replacing the slot affects the next decision; an
+/// executor already returned for a run remains pinned by its `Arc`.
+pub struct ReplaceablePlacementPolicy {
+    policy: RwLock<Arc<dyn PlacementPolicy>>,
 }
 
-/// The default policy: a capability/affinity/health **predicate**, then a
-/// least-loaded **priority** (fewest in-flight; ties broken by preferring a
-/// zone-affinity match, then the lexically-smallest worker id for determinism).
-#[derive(Debug, Default, Clone, Copy)]
-pub struct LeastLoadedPlacement;
+impl PlacementPolicy for ReplaceablePlacementPolicy {
+    fn id(&self) -> &str {
+        "replaceable"
+    }
 
-impl LeastLoadedPlacement {
-    /// Whether `worker` satisfies `agent`'s hard requirements.
-    fn eligible(agent: &AgentAttrs, worker: &WorkerAttrs) -> bool {
-        worker.healthy
-            // required capabilities ⊆ offered capabilities
-            && agent
-                .required_capabilities
-                .iter()
-                .all(|cap| worker.capabilities.contains(cap))
-            // affinity, when set, pins to the matching zone
-            && agent
-                .affinity
-                .as_ref()
-                .is_none_or(|a| worker.zone.as_deref() == Some(a.as_str()))
+    fn rank(
+        &self,
+        context: &PlacementContext,
+        eligible: &[WorkerSnapshot],
+    ) -> Result<Vec<RankedWorker>, PlacementError> {
+        self.policy
+            .read()
+            .expect("placement policy slot poisoned")
+            .rank(context, eligible)
     }
 }
 
-impl Placement for LeastLoadedPlacement {
-    fn place(&self, agent: &AgentAttrs, workers: &[WorkerEntry]) -> Option<String> {
-        workers
-            .iter()
-            .filter(|w| Self::eligible(agent, &w.attrs))
-            .min_by(|a, b| {
-                // Priority key: (in_flight asc, then worker_id asc for a stable tie-break).
-                a.attrs
-                    .in_flight
-                    .cmp(&b.attrs.in_flight)
-                    .then_with(|| a.attrs.worker_id.cmp(&b.attrs.worker_id))
-            })
-            .map(|w| w.attrs.worker_id.clone())
+static SHARED_POLICY: OnceLock<Arc<ReplaceablePlacementPolicy>> = OnceLock::new();
+
+/// Process-wide DWR policy slot used by the worker dispatch transport. Extension
+/// composition may replace it; the next ordinary claim observes the new policy.
+#[must_use]
+pub fn shared_worker_placement_policy() -> Arc<ReplaceablePlacementPolicy> {
+    SHARED_POLICY
+        .get_or_init(|| {
+            ReplaceablePlacementPolicy::new(Arc::new(awaken_worker_registry::LeastLoadedPolicy))
+        })
+        .clone()
+}
+
+impl ReplaceablePlacementPolicy {
+    #[must_use]
+    pub fn new(policy: Arc<dyn PlacementPolicy>) -> Arc<Self> {
+        Arc::new(Self {
+            policy: RwLock::new(policy),
+        })
+    }
+
+    #[must_use]
+    pub fn active_id(&self) -> String {
+        self.policy
+            .read()
+            .expect("placement policy slot poisoned")
+            .id()
+            .to_string()
+    }
+
+    pub fn replace(&self, policy: Arc<dyn PlacementPolicy>) -> Arc<dyn PlacementPolicy> {
+        std::mem::replace(
+            &mut *self.policy.write().expect("placement policy slot poisoned"),
+            policy,
+        )
+    }
+
+    fn select(
+        &self,
+        context: &PlacementContext,
+        workers: &[WorkerSnapshot],
+        now_ms: u64,
+    ) -> Result<RankedWorker, PlacementError> {
+        let policy = self.policy.read().expect("placement policy slot poisoned");
+        place(policy.as_ref(), context, workers, now_ms)
     }
 }
 
-/// The dynamic [`ToolExecutorProvider`]: on each run it extracts the agent's
-/// attributes, asks the [`Placement`] policy to choose a worker from the live
-/// registry, and resolves that worker to its `ToolExecutor` channel. The decision is
-/// upstream (in `Placement`); this provider is the binding→channel resolver. The
-/// Tool layer never learns any of it.
+pub type PlacementContextExtractor = Arc<dyn Fn(&RunActivation) -> PlacementContext + Send + Sync>;
+type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+#[must_use]
+pub fn default_placement_context(activation: &RunActivation) -> PlacementContext {
+    PlacementContext {
+        run_id: activation.run_id.0.clone(),
+        workspace_id: String::new(),
+        requirements: Default::default(),
+        recovered: false,
+        previous_worker: None,
+        attributes: Default::default(),
+    }
+}
+
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+/// Dynamic provider composed from the one durable worker directory, a thin
+/// executor-channel cache, and a replaceable ranking policy.
 pub struct DynamicToolExecutorProvider {
-    registry: Arc<WorkerRegistry>,
-    placement: Arc<dyn Placement>,
-    extractor: AgentAttrsExtractor,
+    workers: Arc<dyn WorkerDirectory>,
+    executors: Arc<WorkerExecutorDirectory>,
+    policy: Arc<ReplaceablePlacementPolicy>,
+    extractor: PlacementContextExtractor,
+    clock: Clock,
 }
 
 impl DynamicToolExecutorProvider {
-    /// Build a provider over `registry` using `placement`, with the default
-    /// agent-attribute extractor (identity only).
     #[must_use]
-    pub fn new(registry: Arc<WorkerRegistry>, placement: Arc<dyn Placement>) -> Self {
+    pub fn new(
+        workers: Arc<dyn WorkerDirectory>,
+        executors: Arc<WorkerExecutorDirectory>,
+        policy: Arc<ReplaceablePlacementPolicy>,
+    ) -> Self {
         Self {
-            registry,
-            placement,
-            extractor: Arc::new(default_agent_attrs),
+            workers,
+            executors,
+            policy,
+            extractor: Arc::new(default_placement_context),
+            clock: Arc::new(unix_time_ms),
         }
     }
 
-    /// Override how agent attributes are read from a run (e.g. a host that carries
-    /// capability requirements on its snapshots).
     #[must_use]
-    pub fn with_extractor(mut self, extractor: AgentAttrsExtractor) -> Self {
+    pub fn with_context_extractor(mut self, extractor: PlacementContextExtractor) -> Self {
         self.extractor = extractor;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_clock(mut self, clock: impl Fn() -> u64 + Send + Sync + 'static) -> Self {
+        self.clock = Arc::new(clock);
         self
     }
 }
 
 #[async_trait]
 impl ToolExecutorProvider for DynamicToolExecutorProvider {
-    async fn provide(&self, activation: &RunActivation) -> Option<Arc<dyn ToolExecutor>> {
-        let agent = (self.extractor)(activation);
-        let workers = self.registry.snapshot();
-        let chosen = self.placement.place(&agent, &workers)?;
-        // Resolve the placement decision to the worker's channel (binding→channel).
-        workers
+    async fn provide(
+        &self,
+        activation: &RunActivation,
+    ) -> Result<Option<Arc<dyn ToolExecutor>>, ToolExecutorSelectionError> {
+        let context = (self.extractor)(activation);
+        if matches!(context.requirements.location, ExecutionLocation::LocalOnly) {
+            return Ok(None);
+        }
+
+        let workers = self
+            .workers
+            .list()
+            .await
+            .map_err(|error| ToolExecutorSelectionError::Unavailable(error.to_string()))?
             .into_iter()
-            .find(|w| w.attrs.worker_id == chosen)
-            .map(|w| w.executor)
+            .map(|worker| worker.snapshot)
+            .collect::<Vec<_>>();
+        let selected = match self.policy.select(&context, &workers, (self.clock)()) {
+            Ok(selected) => selected,
+            Err(PlacementError::NoEligibleWorker)
+                if matches!(
+                    context.requirements.location,
+                    ExecutionLocation::RemotePreferred
+                ) =>
+            {
+                return Ok(None);
+            }
+            Err(PlacementError::NoEligibleWorker) => {
+                return Err(ToolExecutorSelectionError::Unavailable(
+                    "no eligible remote worker".to_string(),
+                ));
+            }
+            Err(error) => {
+                return Err(ToolExecutorSelectionError::Policy(error.to_string()));
+            }
+        };
+
+        self.executors
+            .resolve(&selected.identity)
+            .map(Some)
+            .ok_or_else(|| {
+                ToolExecutorSelectionError::Unavailable(format!(
+                    "selected worker channel is absent: {}:{}:{}",
+                    selected.identity.worker_id,
+                    selected.identity.generation,
+                    selected.identity.incarnation_id
+                ))
+            })
     }
 }
 
@@ -235,9 +259,13 @@ mod tests {
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
     };
     use awaken_runtime_contract::tool::{ToolError, ToolOutput};
+    use awaken_worker_registry::{
+        LeastLoadedPolicy, MemoryWorkerDirectory, PlacementRequirements, RegistryMutation,
+        WorkerHeartbeat, WorkerManifest, WorkerRegistration,
+    };
 
-    /// A `ToolExecutor` tagged so a test can tell which placed worker was resolved.
     struct TaggedExecutor(&'static str);
+
     #[async_trait]
     impl ToolExecutor for TaggedExecutor {
         async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
@@ -245,34 +273,38 @@ mod tests {
         }
     }
 
-    fn caps(items: &[&str]) -> BTreeSet<String> {
-        items.iter().map(|s| s.to_string()).collect()
-    }
+    struct MostLoadedPolicy;
 
-    fn worker(id: &str, capabilities: &[&str], zone: Option<&str>, in_flight: u32) -> WorkerAttrs {
-        WorkerAttrs {
-            worker_id: id.into(),
-            capabilities: caps(capabilities),
-            zone: zone.map(str::to_string),
-            healthy: true,
-            in_flight,
+    impl PlacementPolicy for MostLoadedPolicy {
+        fn id(&self) -> &str {
+            "test-most-loaded"
+        }
+
+        fn rank(
+            &self,
+            _context: &PlacementContext,
+            eligible: &[WorkerSnapshot],
+        ) -> Result<Vec<RankedWorker>, PlacementError> {
+            let mut eligible = eligible.to_vec();
+            eligible.sort_by_key(|worker| std::cmp::Reverse(worker.in_flight));
+            Ok(eligible
+                .into_iter()
+                .map(|worker| RankedWorker {
+                    identity: worker.identity,
+                    score: i64::from(worker.in_flight),
+                    reason: "test preference".to_string(),
+                })
+                .collect())
         }
     }
 
-    fn entry(attrs: WorkerAttrs, tag: &'static str) -> WorkerEntry {
-        WorkerEntry {
-            attrs,
-            executor: Arc::new(TaggedExecutor(tag)),
-        }
-    }
-
-    fn activation_for(agent_id: &str) -> RunActivation {
+    fn activation() -> RunActivation {
         RunActivation {
             run_id: RunId("r".into()),
             thread_id: ThreadId("t".into()),
             snapshot: ExecutableAgentSnapshot {
                 id: ExecutableAgentSnapshotId("s".into()),
-                root_agent_id: AgentId(agent_id.into()),
+                root_agent_id: AgentId("a".into()),
                 resolved_spec: ResolvedSpec {
                     model_candidates: Vec::new(),
                     catalog_fingerprint: CatalogFingerprint("fp".into()),
@@ -294,145 +326,140 @@ mod tests {
         }
     }
 
-    #[test]
-    fn least_loaded_wins_among_eligible_workers() {
-        let policy = LeastLoadedPlacement;
-        let workers = vec![
-            entry(worker("w-busy", &[], None, 9), "BUSY"),
-            entry(worker("w-idle", &[], None, 1), "IDLE"),
-        ];
-        let agent = AgentAttrs {
-            agent_id: "a".into(),
-            ..Default::default()
-        };
-        assert_eq!(policy.place(&agent, &workers).as_deref(), Some("w-idle"));
+    async fn ready_worker(
+        directory: &MemoryWorkerDirectory,
+        id: &str,
+        incarnation: &str,
+        in_flight: u32,
+    ) -> WorkerIdentity {
+        let mut manifest = WorkerManifest::default();
+        manifest.capacity.max_concurrent = 100;
+        let registered = directory
+            .register(
+                WorkerRegistration {
+                    worker_id: id.to_string(),
+                    incarnation_id: incarnation.to_string(),
+                    manifest,
+                },
+                10,
+                1_000,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            directory
+                .heartbeat(
+                    &registered.snapshot.identity,
+                    WorkerHeartbeat {
+                        sequence: 1,
+                        ready: true,
+                        in_flight,
+                    },
+                    11,
+                    1_000,
+                )
+                .await
+                .unwrap(),
+            RegistryMutation::Applied
+        );
+        registered.snapshot.identity
     }
 
-    #[test]
-    fn a_required_capability_filters_out_workers_that_lack_it() {
-        let policy = LeastLoadedPlacement;
-        let workers = vec![
-            entry(worker("w-cpu", &["cpu"], None, 0), "CPU"),
-            entry(worker("w-gpu", &["cpu", "gpu"], None, 5), "GPU"),
-        ];
-        // The run needs "gpu": only w-gpu qualifies, even though it is busier.
-        let agent = AgentAttrs {
-            agent_id: "a".into(),
-            required_capabilities: caps(&["gpu"]),
-            affinity: None,
-        };
-        assert_eq!(policy.place(&agent, &workers).as_deref(), Some("w-gpu"));
-    }
-
-    #[test]
-    fn affinity_pins_to_the_matching_zone_and_unhealthy_workers_are_skipped() {
-        let policy = LeastLoadedPlacement;
-        let mut eu = worker("w-eu", &[], Some("eu"), 0);
-        let us = worker("w-us", &[], Some("us"), 0);
-        let workers = vec![entry(eu.clone(), "EU"), entry(us, "US")];
-        let pinned = AgentAttrs {
-            agent_id: "a".into(),
-            required_capabilities: BTreeSet::new(),
-            affinity: Some("us".into()),
-        };
-        assert_eq!(policy.place(&pinned, &workers).as_deref(), Some("w-us"));
-
-        // An unhealthy worker is never chosen even if otherwise eligible.
-        eu.healthy = false;
-        let eu_only = vec![entry(eu, "EU")];
-        let any = AgentAttrs {
-            agent_id: "a".into(),
-            ..Default::default()
-        };
-        assert_eq!(policy.place(&any, &eu_only), None);
+    async fn output(executor: Arc<dyn ToolExecutor>) -> String {
+        executor
+            .invoke(&ToolCall {
+                call_id: "c".into(),
+                tool_id: "bash".into(),
+                arguments: serde_json::json!({}),
+            })
+            .await
+            .unwrap()
+            .content
     }
 
     #[tokio::test]
-    async fn provider_places_a_run_and_resolves_the_workers_channel() {
-        let registry = WorkerRegistry::new();
-        registry.register(worker("w1", &[], None, 3), Arc::new(TaggedExecutor("W1")));
-        registry.register(worker("w2", &[], None, 0), Arc::new(TaggedExecutor("W2")));
+    async fn hot_replacement_changes_future_placement_not_an_existing_binding() {
+        let workers = Arc::new(MemoryWorkerDirectory::new());
+        let w1 = ready_worker(&workers, "w1", "i1", 1).await;
+        let w2 = ready_worker(&workers, "w2", "i2", 9).await;
+        let executors = WorkerExecutorDirectory::new();
+        executors.register(w1, Arc::new(TaggedExecutor("least")));
+        executors.register(w2, Arc::new(TaggedExecutor("most")));
+        let policy = ReplaceablePlacementPolicy::new(Arc::new(LeastLoadedPolicy));
         let provider =
-            DynamicToolExecutorProvider::new(registry.clone(), Arc::new(LeastLoadedPlacement));
+            DynamicToolExecutorProvider::new(workers, executors, policy.clone()).with_clock(|| 12);
 
-        // The least-loaded worker (w2) is chosen and its channel resolved.
-        let placed = provider.provide(&activation_for("agent")).await.unwrap();
-        let out = placed
-            .invoke(&ToolCall {
-                call_id: "c".into(),
-                tool_id: "bash".into(),
-                arguments: serde_json::json!({}),
-            })
-            .await
-            .unwrap();
-        assert_eq!(out.content, "W2");
-
-        // A heartbeat that flips the load makes the SAME run place elsewhere next
-        // time — the decision is dynamic, read from the live registry per run.
-        registry.heartbeat("w2", true, 50);
-        registry.heartbeat("w1", true, 0);
-        let placed = provider.provide(&activation_for("agent")).await.unwrap();
-        let out = placed
-            .invoke(&ToolCall {
-                call_id: "c".into(),
-                tool_id: "bash".into(),
-                arguments: serde_json::json!({}),
-            })
-            .await
-            .unwrap();
-        assert_eq!(out.content, "W1", "placement followed the live load");
-    }
-
-    #[test]
-    fn registry_deregisters_a_worker_and_entries_are_debuggable() {
-        let registry = WorkerRegistry::new();
-        registry.register(worker("w1", &[], None, 0), Arc::new(TaggedExecutor("W1")));
-        registry.register(worker("w2", &[], None, 0), Arc::new(TaggedExecutor("W2")));
-        assert_eq!(registry.snapshot().len(), 2);
-
-        // A `WorkerEntry` is Debug (its executor is elided) — useful in placement logs.
-        let dbg = format!("{:?}", registry.snapshot()[0]);
-        assert!(
-            dbg.contains("WorkerEntry") && dbg.contains("attrs"),
-            "{dbg}"
+        let pinned = provider.provide(&activation()).await.unwrap().unwrap();
+        assert_eq!(output(pinned.clone()).await, "least");
+        let old = policy.replace(Arc::new(MostLoadedPolicy));
+        assert_eq!(old.id(), "least-loaded");
+        assert_eq!(policy.active_id(), "test-most-loaded");
+        assert_eq!(output(pinned).await, "least", "existing binding changed");
+        assert_eq!(
+            output(provider.provide(&activation()).await.unwrap().unwrap()).await,
+            "most"
         );
-
-        // Deregistering a worker removes exactly it (a lapsed lease / drained hand).
-        registry.deregister("w1");
-        let ids: Vec<_> = registry
-            .snapshot()
-            .into_iter()
-            .map(|w| w.attrs.worker_id)
-            .collect();
-        assert_eq!(ids, vec!["w2".to_string()], "only w1 was removed");
-        // Deregistering an unknown id is a harmless no-op.
-        registry.deregister("nope");
-        assert_eq!(registry.snapshot().len(), 1);
     }
 
     #[tokio::test]
-    async fn no_eligible_worker_returns_none_so_the_kernel_runs_in_process() {
-        let registry = WorkerRegistry::new();
-        // One worker, but the run requires a capability it lacks.
-        registry.register(
-            worker("w1", &["cpu"], None, 0),
-            Arc::new(TaggedExecutor("W1")),
-        );
-        let extractor: AgentAttrsExtractor = Arc::new(|_a: &RunActivation| AgentAttrs {
-            agent_id: "a".into(),
-            required_capabilities: caps(&["gpu"]),
-            affinity: None,
+    async fn required_remote_placement_fails_closed_but_preferred_may_fall_back() {
+        let workers = Arc::new(MemoryWorkerDirectory::new());
+        let executors = WorkerExecutorDirectory::new();
+        let policy = ReplaceablePlacementPolicy::new(Arc::new(LeastLoadedPolicy));
+        let required: PlacementContextExtractor = Arc::new(|activation| {
+            let mut context = default_placement_context(activation);
+            context.requirements.location = ExecutionLocation::RemoteRequired;
+            context
         });
-        let provider = DynamicToolExecutorProvider::new(registry, Arc::new(LeastLoadedPlacement))
-            .with_extractor(extractor);
-        assert!(
-            provider.provide(&activation_for("agent")).await.is_none(),
-            "no worker offers gpu → None → in-process LocalToolExecutor"
-        );
+        let provider =
+            DynamicToolExecutorProvider::new(workers.clone(), executors.clone(), policy.clone())
+                .with_context_extractor(required)
+                .with_clock(|| 12);
+        assert!(matches!(
+            provider.provide(&activation()).await,
+            Err(ToolExecutorSelectionError::Unavailable(_))
+        ));
 
-        // An empty registry also yields None.
-        let empty =
-            DynamicToolExecutorProvider::new(WorkerRegistry::new(), Arc::new(LeastLoadedPlacement));
-        assert!(empty.provide(&activation_for("agent")).await.is_none());
+        let preferred =
+            DynamicToolExecutorProvider::new(workers, executors, policy).with_clock(|| 12);
+        assert!(preferred.provide(&activation()).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn stale_incarnation_channel_cannot_serve_current_worker() {
+        let workers = Arc::new(MemoryWorkerDirectory::new());
+        let current = ready_worker(&workers, "w", "current", 0).await;
+        let stale = WorkerIdentity::new("w", "stale", current.generation.saturating_sub(1));
+        let executors = WorkerExecutorDirectory::new();
+        executors.register(stale, Arc::new(TaggedExecutor("stale")));
+        let provider = DynamicToolExecutorProvider::new(
+            workers,
+            executors,
+            ReplaceablePlacementPolicy::new(Arc::new(LeastLoadedPolicy)),
+        )
+        .with_clock(|| 12);
+        assert!(matches!(
+            provider.provide(&activation()).await,
+            Err(ToolExecutorSelectionError::Unavailable(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn local_only_never_consults_or_resolves_a_remote_worker() {
+        let context: PlacementContextExtractor = Arc::new(|activation| {
+            let mut context = default_placement_context(activation);
+            context.requirements = PlacementRequirements {
+                location: ExecutionLocation::LocalOnly,
+                ..Default::default()
+            };
+            context
+        });
+        let provider = DynamicToolExecutorProvider::new(
+            Arc::new(MemoryWorkerDirectory::new()),
+            WorkerExecutorDirectory::new(),
+            ReplaceablePlacementPolicy::new(Arc::new(LeastLoadedPolicy)),
+        )
+        .with_context_extractor(context);
+        assert!(provider.provide(&activation()).await.unwrap().is_none());
     }
 }

@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+loom = []
+
 [dependencies]
 awaken-worker-contract.workspace = true
 async-trait.workspace = true
@@ -16,6 +19,7 @@ awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundat
 awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9" }
 
 [dev-dependencies]
+loom = "0.7"
 proptest.workspace = true
 tempfile = "3"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

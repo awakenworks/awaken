@@ -134,10 +134,12 @@ impl SharedHost {
             model_resolver,
         );
         if let Some(upstream) = &self.upstream {
-            ingress = ingress.with_claimed_commit(Arc::new(
-                crate::commit_ingest::RemoteClaimedRunCommit::new(upstream.base_url())
-                    .with_client(upstream.client().clone()),
-            ));
+            let mut commit = crate::commit_ingest::RemoteClaimedRunCommit::new(upstream.base_url())
+                .with_client(upstream.client().clone());
+            if let Some(identity) = upstream.worker_identity() {
+                commit = commit.with_worker_identity(identity.clone());
+            }
+            ingress = ingress.with_claimed_commit(Arc::new(commit));
         }
         let ingress = Arc::new(ingress);
         // No per-session recovery sweep here: this session's worker shares one queue

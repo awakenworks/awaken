@@ -10,8 +10,8 @@
 //! 2024) will not compile. The faithful realization is therefore to launch this crate's
 //! own thin binary — a shell over `run()` — with `Command::env` (safe) and observe the
 //! composition through the admin surface it binds. This still stops short of the mjs
-//! e2e: the upstream is a DEAD port (nothing listening), so no real server or model is
-//! involved — readiness is purely a function of the pool's own state.
+//! e2e: the upstream implements only worker lifecycle and an empty claim response, so
+//! no real server, durable queue, or model is involved.
 //!
 //! This posture exercises the `gateway_only` branch (`AWAKEN_WORKER_GATEWAY_ONLY=1`,
 //! secretless: no vault/seal key), `ensure_dispatch_pool` over the injected
@@ -22,6 +22,9 @@
 use std::io::{Read, Write};
 use std::process::{Child, Command};
 use std::time::Duration;
+
+mod support;
+use support::FakeWorkerUpstream;
 
 /// Kills the worker subprocess when the test ends (even on an assertion panic), so no
 /// child leaks past the test.
@@ -79,13 +82,11 @@ fn poll_until(addr: &str, method: &str, path: &str, want: u16) -> bool {
 #[test]
 fn run_gateway_only_brings_readyz_up_then_drain_flips_it_down() {
     let admin_addr = format!("127.0.0.1:{}", free_port());
-    // A dead upstream: the pool's HTTP claim loop gets connection-refused, which does
-    // not affect readiness (that tracks the pool's own draining state).
-    let upstream = format!("http://127.0.0.1:{}", free_port());
+    let upstream = FakeWorkerUpstream::start();
 
     let worker = Worker(
         Command::new(env!("CARGO_BIN_EXE_awaken-worker"))
-            .env("AWAKEN_UPSTREAM_URL", &upstream)
+            .env("AWAKEN_UPSTREAM_URL", upstream.url())
             .env("AWAKEN_INGRESS", "durable") // the pool's enable gate
             .env("AWAKEN_WORKER_GATEWAY_ONLY", "1") // secretless: no vault/seal key
             .env("AWAKEN_WORKER_ADMIN_LISTEN", &admin_addr)

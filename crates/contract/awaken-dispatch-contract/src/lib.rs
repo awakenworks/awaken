@@ -11,13 +11,16 @@ pub mod dispatch;
 pub mod run_dispatch;
 
 pub use awaken_worker_contract::{
-    AssignmentRejection, RegisteredWorker, RegistryError, RegistryMutation, WorkerAssignment,
+    AssignmentRejection, LeastLoadedPolicy, PlacementContext, PlacementError, PlacementPolicy,
+    RankedWorker, RegisteredWorker, RegistryError, RegistryMutation, WorkerAssignment,
     WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerRecoveryMode,
-    WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim,
+    WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim, place_assignment,
 };
 pub use dispatch::{
     CasOutcome, Claimed, CommitEpochGuard, Dispatch, DispatchCompletion, DispatchError,
     DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, Inbox, Lease, Outbox,
     PendingInput, PendingRecord, RunClaim, SettleOutcome, SubmitOptions,
 };
-pub use run_dispatch::{ExecutionScopeRef, ModelAccessRef, PlacementRequirements, RunDispatch};
+pub use run_dispatch::{
+    ExecutionScopeRef, ModelAccessCandidate, ModelAccessRef, PlacementRequirements, RunDispatch,
+};

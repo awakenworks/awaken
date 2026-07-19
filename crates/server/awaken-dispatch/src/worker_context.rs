@@ -86,10 +86,15 @@ impl WorkerContext {
         &self,
         model_ref: &str,
         model_access: Option<&ModelAccessRef>,
-    ) -> Option<Arc<dyn LlmExecutor>> {
-        self.model_resolver
-            .as_ref()
-            .and_then(|resolve| resolve(model_ref, model_access))
+    ) -> awaken_runtime_contract::execution::Result<Option<Arc<dyn LlmExecutor>>> {
+        let Some(resolve) = &self.model_resolver else {
+            return Ok(None);
+        };
+        resolve(model_ref, model_access).map(Some).ok_or_else(|| {
+            awaken_runtime_contract::execution::Error::Resolution(format!(
+                "configured model resolver rejected pinned model {model_ref}"
+            ))
+        })
     }
 
     /// Provide the per-session live inbox so worker-driven runs drain mid-run
@@ -182,7 +187,7 @@ mod resolve_seam_tests {
         let l = labeled.clone();
         let c = ctx().with_model_resolver(Arc::new(move |_ref, _access| Some(l.clone())));
         assert!(Arc::ptr_eq(
-            &c.resolve_model("any-model", None).unwrap(),
+            &c.resolve_model("any-model", None).unwrap().unwrap(),
             &labeled
         ));
     }
@@ -190,12 +195,12 @@ mod resolve_seam_tests {
     #[test]
     fn is_none_without_a_resolver() {
         // No provider injected → None → the run uses the runtime's bound default.
-        assert!(ctx().resolve_model("any-model", None).is_none());
+        assert!(ctx().resolve_model("any-model", None).unwrap().is_none());
     }
 
     #[test]
     fn is_none_when_the_resolver_declines_the_ref() {
         let c = ctx().with_model_resolver(Arc::new(|_ref, _access| None));
-        assert!(c.resolve_model("unknown-model", None).is_none());
+        assert!(c.resolve_model("unknown-model", None).is_err());
     }
 }

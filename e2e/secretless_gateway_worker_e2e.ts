@@ -58,6 +58,51 @@ async function post(pathname: string, body: unknown, worker?: string): Promise<a
   return text ? JSON.parse(text) : {};
 }
 
+async function registerReadyWorker(workerId: string): Promise<any> {
+  const incarnationId = `${workerId}-${process.pid}`;
+  const registered = await post(
+    '/v1/worker/register',
+    {
+      registration: {
+        worker_id: workerId,
+        incarnation_id: incarnationId,
+        manifest: {
+          manifest_version: 1,
+          build_digest: 'secretless-gateway-e2e',
+          capabilities: ['host-executor/v1', 'native-runtime'],
+          zone: null,
+          architecture: process.arch,
+          sandbox: {
+            isolation: 'workdir',
+            tool_transparent: false,
+            path_fidelity: false,
+            enforced_readonly: false,
+            network_isolation: false,
+            secret_egress_substitution: false,
+            resource_limits: false,
+            custom_rootfs: false,
+          },
+          sandbox_backends: [],
+          dispatch_contract: { min: 1, max: 1 },
+          runtime_protocol: { min: 1, max: 1 },
+          checkpoint_formats: ['stream-v1'],
+          capacity: { max_concurrent: 1, resources: {} },
+        },
+      },
+    },
+    workerId,
+  );
+  const identity = registered.worker?.snapshot?.identity;
+  assert.ok(identity, 'seed worker registration returned a durable incarnation identity');
+  const heartbeat = await post(
+    '/v1/worker/heartbeat',
+    { identity, heartbeat: { sequence: 1, ready: true, in_flight: 0 } },
+    workerId,
+  );
+  assert.equal(heartbeat.mutation, 'applied', 'seed worker entered the ready state');
+  return identity;
+}
+
 async function waitForGatewayReply(timeoutMs = 30_000): Promise<any[]> {
   const deadline = Date.now() + timeoutMs;
   let observed: any[] = [];
@@ -88,14 +133,18 @@ async function main(): Promise<void> {
 
     // Obtain a real serialized activation from the server, then enqueue a second
     // stable dispatch carrying only an opaque gateway capability reference.
+    const seedIdentity = await registerReadyWorker('seed-worker');
     await post(`/v1/durable/threads/${THREAD}-seed/submit_background`, { text: 'seed activation' });
-    const seed = (await post('/v1/worker/dispatch/claim', {}, 'seed-worker')).claimed;
+    const seed = (
+      await post('/v1/worker/dispatch/claim', { identity: seedIdentity }, 'seed-worker')
+    ).claimed;
     assert.ok(seed, 'seed worker claimed the server-created activation');
     const request = structuredClone(seed.request);
     request.activation.run_id = `${seed.request.activation.run_id}-gateway`;
     request.activation.thread_id = THREAD;
     request.session_thread_id = THREAD;
     request.model_access = { scheme: 'cloud-gateway', reference: GRANT };
+    request.placement.required_capabilities = ['cloud-gateway', 'native-runtime'];
     await post('/v1/worker/dispatch/enqueue', { request }, 'seed-worker');
     const seedSettle = await post(
       '/v1/worker/dispatch/settle',
@@ -104,6 +153,7 @@ async function main(): Promise<void> {
         epoch: seed.lease.epoch,
         outcome: 'Done',
         consumed: [],
+        identity: seedIdentity,
       },
       'seed-worker',
     );
@@ -116,6 +166,7 @@ async function main(): Promise<void> {
       AWAKEN_UPSTREAM_URL: BASE,
       AWAKEN_INGRESS: 'durable',
       AWAKEN_WORKER_GATEWAY_ONLY: '1',
+      AWAKEN_WORKER_CAPABILITIES: 'cloud-gateway',
       AWAKEN_WORKER_ID: 'gateway-worker-ts',
       AWAKEN_WORKER_ADMIN_LISTEN: `127.0.0.1:${WORKER_ADMIN_PORT}`,
     });
@@ -124,7 +175,15 @@ async function main(): Promise<void> {
     worker.stderr.on('data', (chunk) => (workerOutput += chunk.toString()));
     await waitForPort(WORKER_ADMIN_PORT);
 
-    const messages = await waitForGatewayReply();
+    const messages = await waitForGatewayReply().catch((error) => {
+      return fetch(`${BASE}/v1/durable/threads/${THREAD}/dispatches`)
+        .then(async (response) => {
+          const dispatches = await response.text();
+          throw new Error(
+            `${error instanceof Error ? error.message : error}\ndispatches: ${dispatches}\nworker output:\n${workerOutput}`,
+          );
+        });
+    });
     assert.equal(
       messages.filter((message) => String(message.text ?? '').includes(`gateway-grant:${GRANT}`)).length,
       1,

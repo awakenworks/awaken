@@ -75,13 +75,13 @@ BIN=$(RUSTUP_TOOLCHAIN=1.96.0 cargo build -p awaken-scenario-host --bin awaken-s
 for l in sys.stdin:
  try:
   m=json.loads(l)
-  if m.get('executable') and m.get('target',{}).get('name')=='awaken-server': print(m['executable'])
+  if m.get('executable') and m.get('target',{}).get('name')=='awaken-scenario-host': print(m['executable'])
  except Exception: pass" | tail -1)
 [ -n "$BIN" ] || { echo 'could not resolve binary'; exit 1; }
 cp "$BIN" "$DEPLOY_DIR/awaken-server"
 
 log "2/5 build the topology image (copy-in, no in-container rust build)"
-docker build --load -q -t "$IMAGE" -f "$DEPLOY_DIR/Dockerfile" "$DEPLOY_DIR" >/dev/null
+docker build --load -q -t "$IMAGE" -f "$DEPLOY_DIR/Dockerfile.server" "$DEPLOY_DIR" >/dev/null
 
 log "3/5 create MULTI-node k3d cluster $CLUSTER (server + 2 agents)"
 k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || true

@@ -1,6 +1,6 @@
 // The cross-node db-less worker, POOL-DRIVEN, over two real processes.
 //
-//   - A coordinator-only cell server (AWAKEN_DISABLE_LOCAL_POOL=1): owns the
+//   - A coordinator-only cell server (AWAKEN_SERVER_RUN_LOCAL_POOL=false): owns the
 //     durable queue + store, serves HTTP, but runs NO local pool — so it never
 //     drives runs itself.
 //   - A database-less worker (AWAKEN_UPSTREAM_URL=<server>): its dispatch pool
@@ -57,17 +57,20 @@ async function main() {
   const { server } = spawnServer('echo', SERVER_PORT, {
     AWAKEN_INGRESS: 'durable',
     AWAKEN_STORAGE_DIR: STORAGE,
-    AWAKEN_DISABLE_LOCAL_POOL: '1',
+    AWAKEN_SERVER_RUN_LOCAL_POOL: 'false',
   });
-  // Database-less worker: drains the server's queue over HTTP (no port of its own).
-  const { server: worker } = spawnServer('echo', 0, {
-    AWAKEN_INGRESS: 'durable',
-    AWAKEN_UPSTREAM_URL: SERVER,
-    AWAKEN_HTTP_ADDR: '127.0.0.1:0',
-  });
+  let worker;
 
   try {
     await waitForPort(SERVER_PORT);
+    // Registration is an authority-changing boot operation, so start the worker
+    // only after the coordinator is accepting requests (the Kubernetes deployment
+    // obtains the same ordering through restart/readiness behavior).
+    worker = spawnServer('echo', 0, {
+      AWAKEN_INGRESS: 'durable',
+      AWAKEN_UPSTREAM_URL: SERVER,
+      AWAKEN_HTTP_ADDR: '127.0.0.1:0',
+    }).server;
     // Give the worker a moment to start its draining pool.
     await new Promise((r) => setTimeout(r, 2_000));
 
@@ -80,9 +83,10 @@ async function main() {
       replies.some((m) => (m.text ?? '').includes('drive me from a db-less worker')),
       `the remote worker drove the run and committed the echo reply: ${JSON.stringify(replies)}`,
     );
+    assert.equal(replies.length, 1, 'the remote worker committed exactly one assistant reply');
     pass('pool-driven cross-node worker: a coordinator-only server enqueued a run, a db-less worker claimed/drove/committed it, the reply read back from the server');
   } finally {
-    await stopServer(worker);
+    if (worker) await stopServer(worker);
     await stopServer(server);
   }
 
