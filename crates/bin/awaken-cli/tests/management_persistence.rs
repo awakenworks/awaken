@@ -9,6 +9,7 @@
 //! env vars, so the test cannot race other tests on process-global state.
 
 use awaken_cli::build_durable_management_router;
+use awaken_config_store::{ScopeId, ScopedConfigRegistry, SqliteConfigStore};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -52,11 +53,67 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
     {
         let app = build_durable_management_router(dir.path(), &KEY).await;
 
+        let audit_probe_body = serde_json::to_vec(&json!({
+            "id": "audit-probe", "slug": "audit-probe",
+            "display_name": "Audit Probe", "version": 1
+        }))
+        .unwrap();
+        let audit_probe = Request::builder()
+            .method("PUT")
+            .uri("/v1/config/providers/audit-probe")
+            .header("content-type", "application/json")
+            .header("x-request-id", "audit-request-1")
+            .body(Body::from(audit_probe_body.clone()))
+            .unwrap();
+        let response = app.clone().oneshot(audit_probe).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let replay = Request::builder()
+            .method("PUT")
+            .uri("/v1/config/providers/audit-probe")
+            .header("content-type", "application/json")
+            .header("x-request-id", "audit-request-1")
+            .body(Body::from(audit_probe_body))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(replay).await.unwrap().status(),
+            StatusCode::CONFLICT,
+            "an ambiguous stable-id retry must never repeat the business write"
+        );
+        let audit_store = SqliteConfigStore::open(dir.path().join("config.db").to_str().unwrap())
+            .expect("open durable audit store");
+        let audit_entry = audit_store
+            .get_management_audit_scoped(
+                &ScopeId::from("default"),
+                "http:PUT:/v1/config/providers/audit-probe",
+                "audit-request-1",
+            )
+            .await
+            .unwrap()
+            .expect("management mutation audit");
+        assert!(audit_entry.business_committed);
+
         let (s, _) = call(
             &app,
             "PUT",
             "/v1/config/providers/anthropic",
             Some(json!({ "id": "anthropic", "slug": "anthropic", "display_name": "Anthropic", "version": 1 })),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+
+        let (s, _) = call(
+            &app,
+            "PUT",
+            "/v1/config/agents/calc-agent/resources",
+            Some(json!({
+                "agent_id": "ignored-path-is-authoritative",
+                "resources": [{
+                    "kind": "memory_store", "resource_id": "memory-main",
+                    "mount_path": "/mnt/memory", "access": "read_write",
+                    "instructions": null
+                }],
+                "version": 1
+            })),
         )
         .await;
         assert_eq!(s, StatusCode::OK);
@@ -194,6 +251,14 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
     let (s, binding) = call(&app, "GET", "/v1/config/agents/calc-agent/mcp", None).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(binding["mcp_server_ids"], json!(["calc-def"]));
+
+    let (s, resources) = call(&app, "GET", "/v1/config/agents/calc-agent/resources", None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(resources["agent_id"], json!("calc-agent"));
+    assert_eq!(
+        resources["resources"][0]["resource_id"],
+        json!("memory-main")
+    );
 
     // The resolve arm works: the credential materializes from the sealed store.
     let (s, resolved) = call(

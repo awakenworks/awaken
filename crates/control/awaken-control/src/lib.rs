@@ -22,6 +22,7 @@ pub mod resource_owner;
 pub mod worker_stores;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use crate::admin_assistant::{
     CatalogCapabilityReader, ConfigServiceDraftStore, ConfigServiceDraftValidator,
@@ -50,6 +51,7 @@ use awaken_config_resolver::ResourceStore;
 use awaken_config_service::{
     ConfigPlane, ConfigService, ConfigServiceAgentSource, capabilities_router, config_router,
 };
+use awaken_config_store::{AuditedConfigWrite, DEFAULT_SCOPE, ManagementAuditRecord};
 use awaken_credential_vault::SecretStore;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_model_catalog::repo::CatalogRepo;
@@ -58,8 +60,98 @@ use awaken_protocol_managed::{
     agents_router, deployments_router, environments_router, user_profiles_router, vault_router,
 };
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_webhook_managed::{WebhookLifecycleSink, assemble};
+use awaken_tenancy::ScopeId;
+use awaken_webhook_managed::{WebhookLifecycleSink, assemble_with_session_repo};
 use axum::Router;
+use axum::body::{Body, to_bytes};
+use axum::http::{Method, Request, StatusCode};
+use axum::response::{IntoResponse, Response};
+use sha2::{Digest, Sha256};
+
+static AUDIT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const MAX_AUDITED_BODY: usize = 2 * 1024 * 1024;
+
+async fn durable_management_audit(
+    axum::extract::State(plane): axum::extract::State<ConfigPlane>,
+    request: Request<Body>,
+    next: axum::middleware::Next,
+) -> Response {
+    if matches!(
+        *request.method(),
+        Method::GET | Method::HEAD | Method::OPTIONS
+    ) {
+        return next.run(request).await;
+    }
+    let (parts, body) = request.into_parts();
+    let bytes = match to_bytes(body, MAX_AUDITED_BODY).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("audit body: {error}"),
+            )
+                .into_response();
+        }
+    };
+    let call_id = parts
+        .headers
+        .get("idempotency-key")
+        .or_else(|| parts.headers.get("x-request-id"))
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            let seq = AUDIT_SEQUENCE.fetch_add(1, Ordering::SeqCst);
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default();
+            format!("generated-{}-{timestamp}-{seq}", std::process::id())
+        });
+    let scope = parts
+        .extensions
+        .get::<awaken_tenancy::WorkspaceScope>()
+        .map(|workspace| ScopeId::from(workspace.0.clone()))
+        .unwrap_or_else(|| ScopeId::from(DEFAULT_SCOPE));
+    let body_hash = format!("{:x}", Sha256::digest(&bytes));
+    let audit = ManagementAuditRecord {
+        tool: format!("http:{}:{}", parts.method, parts.uri.path()),
+        call_id,
+        summary: format!("body_sha256={body_hash}"),
+    };
+    match plane.record_management_audit(&scope, &audit).await {
+        Ok(AuditedConfigWrite::Applied) => {}
+        Ok(AuditedConfigWrite::Replayed) => {
+            // The prior attempt may have committed business state and crashed
+            // before recording completion. Never execute an ambiguous retry.
+            return (
+                StatusCode::CONFLICT,
+                "management request id was already admitted; inspect its durable audit record",
+            )
+                .into_response();
+        }
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("durable management audit failed: {error}"),
+            )
+                .into_response();
+        }
+    }
+    let response = next
+        .run(Request::from_parts(parts, Body::from(bytes)))
+        .await;
+    if response.status().is_success()
+        && let Err(error) = plane
+            .mark_management_audit_committed(&scope, &audit.tool, &audit.call_id)
+            .await
+    {
+        // The business write already succeeded. Keep the durable pending audit
+        // visible for reconciliation instead of masking the real response.
+        eprintln!("management audit completion failed: {error}");
+    }
+    response
+}
 
 /// The stores + shared handles [`control_router`] needs to build the authoring
 /// plane. The composition root (`awaken-cli`) builds these, hands clones here for
@@ -78,6 +170,8 @@ pub struct ControlRouterInput {
     pub mcp_store: Arc<dyn McpStore>,
     /// Authored webhook endpoints (admin aggregate); the sink is returned for the data plane.
     pub webhook_store: Arc<dyn WebhookStore>,
+    /// Session aggregate plus lifecycle transactional outbox, shared with the data plane.
+    pub sessions: Arc<dyn awaken_protocol_managed::ManagedSessionRepository>,
     /// Per-agent resource bindings, shared with the config service (ADR-0038).
     pub resource_store: Arc<dyn ResourceStore>,
     /// The live credential probe (provider-backed), injected by the composition root.
@@ -112,6 +206,7 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
         profiles,
         mcp_store,
         webhook_store,
+        sessions,
         resource_store,
         probe,
         vault_state,
@@ -147,7 +242,8 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
     // the front door into the admin router BEFORE the ownership fence so
     // `/v1/config/webhook-subscriptions/{id}` is tenant-fenced like profiles/MCP; the
     // sink (fed the same store + secrets) fans committed session facts out-of-band.
-    let (webhook_sink, webhook_crud) = assemble(webhook_store, secrets.clone(), org_id);
+    let (webhook_sink, webhook_crud) =
+        assemble_with_session_repo(webhook_store, secrets.clone(), org_id, sessions);
     let admin = admin.merge(webhook_crud);
     // Tenant ownership for the id-addressed config resources (ADR-0051): MCP server
     // defs, inference profiles, and webhook subscriptions are fenced by the authoring
@@ -169,6 +265,7 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
     let environments = environments_router(env_state);
     // The config authoring plane (`/v1/config/agents/*`): the console authors the
     // rich `AgentConfig` here and `publish` compiles + installs it so sessions run it.
+    let audit_plane = plane.clone();
     let config_plane = config_router(plane);
     // `/v1/agents` projects the config plane it hosts: an agent published via
     // `/v1/config/agents` is retrievable as a managed-wire projection of that single
@@ -202,5 +299,9 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
             crate::authz::management_guard,
         ));
     }
+    mgmt = mgmt.layer(axum::middleware::from_fn_with_state(
+        audit_plane,
+        durable_management_audit,
+    ));
     (mgmt, webhook_sink)
 }

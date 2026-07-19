@@ -86,6 +86,10 @@ impl SecretStore for SealedAeadSecretStore {
     async fn delete(&self, r: &SecretRef) -> Result<(), CredentialError> {
         self.blobs.delete_blob(r).await
     }
+
+    async fn inventory(&self) -> Result<Vec<SecretRef>, CredentialError> {
+        self.blobs.inventory_blobs().await
+    }
 }
 
 /// Parse a seal-key hex string into the 32-byte AEAD key

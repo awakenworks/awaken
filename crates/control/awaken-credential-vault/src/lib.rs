@@ -305,6 +305,13 @@ pub trait SecretStore: Send + Sync {
     /// compensation edge when the secret write succeeds but the secret-free row
     /// cannot be committed.
     async fn delete(&self, r: &SecretRef) -> Result<(), CredentialError>;
+    /// Enumerate opaque references for reconciliation. Production stores must
+    /// implement this; adapters without inventory support fail closed.
+    async fn inventory(&self) -> Result<Vec<SecretRef>, CredentialError> {
+        Err(CredentialError::Storage(
+            "secret inventory is not supported by this store".to_string(),
+        ))
+    }
 }
 
 /// A credential-domain failure.
@@ -344,6 +351,11 @@ pub trait SealedBlobStore: Send + Sync {
     async fn put_blob(&self, r: &SecretRef, blob: Vec<u8>) -> Result<(), CredentialError>;
     async fn get_blob(&self, r: &SecretRef) -> Result<Vec<u8>, CredentialError>;
     async fn delete_blob(&self, r: &SecretRef) -> Result<(), CredentialError>;
+    async fn inventory_blobs(&self) -> Result<Vec<SecretRef>, CredentialError> {
+        Err(CredentialError::Storage(
+            "sealed-blob inventory is not supported by this store".to_string(),
+        ))
+    }
 }
 
 /// In-memory [`SealedBlobStore`] — the default behind
@@ -384,6 +396,17 @@ impl SealedBlobStore for InMemorySealedBlobStore {
         self.blobs.lock().expect("sealed blob mutex").remove(&r.0);
         Ok(())
     }
+
+    async fn inventory_blobs(&self) -> Result<Vec<SecretRef>, CredentialError> {
+        Ok(self
+            .blobs
+            .lock()
+            .expect("sealed blob mutex")
+            .keys()
+            .cloned()
+            .map(SecretRef)
+            .collect())
+    }
 }
 
 /// In-memory [`SecretStore`] (dev / tests). Real backends encrypt at rest.
@@ -422,6 +445,17 @@ impl SecretStore for InMemorySecretStore {
         self.map.lock().expect("secret store mutex").remove(&r.0);
         Ok(())
     }
+
+    async fn inventory(&self) -> Result<Vec<SecretRef>, CredentialError> {
+        Ok(self
+            .map
+            .lock()
+            .expect("secret store mutex")
+            .keys()
+            .cloned()
+            .map(SecretRef)
+            .collect())
+    }
 }
 
 /// Create a credential **secret-in / secret-free-out**: the secret is sealed into
@@ -431,27 +465,40 @@ pub async fn create_source(
     params: CredentialCreateParams,
     store: &dyn SecretStore,
 ) -> Result<CredentialSource, CredentialError> {
-    let id = CredentialSourceId(format!("cred:{}:{}", params.workspace_id, next_seq()));
-    let material_ref = match (params.kind, params.secret) {
+    let (source, secret) = prepare_source(params);
+    if let (Some(material_ref), Some(secret)) = (&source.material_ref, secret) {
+        store.put(material_ref, secret).await?;
+    }
+    Ok(source)
+}
+
+/// Mint the secret-free source and retain material separately so the repository
+/// can durably journal the reference before the first secret-store effect.
+pub(crate) fn prepare_source(
+    params: CredentialCreateParams,
+) -> (CredentialSource, Option<RedactedString>) {
+    let id = CredentialSourceId(format!("cred:{}:{}", params.workspace_id, next_id()));
+    let (material_ref, secret) = match (params.kind, params.secret) {
         (CredentialKind::Vault, Some(secret)) => {
-            let r = SecretRef(format!("sec:{}", id.0));
-            store.put(&r, secret).await?;
-            Some(r)
+            (Some(SecretRef(format!("sec:{}", id.0))), Some(secret))
         }
-        // `Env` never stores material; a stray secret is simply dropped (zeroized).
-        _ => None,
+        // `Env` never stores material; a stray secret is dropped with the params.
+        _ => (None, None),
     };
-    Ok(CredentialSource {
-        id,
-        workspace_id: params.workspace_id,
-        kind: params.kind,
-        provider_id: params.provider_id,
-        env_key: params.env_key,
-        material_ref,
-        oauth_command: params.oauth_command,
-        status: CredentialStatus::Active,
-        version: 1,
-    })
+    (
+        CredentialSource {
+            id,
+            workspace_id: params.workspace_id,
+            kind: params.kind,
+            provider_id: params.provider_id,
+            env_key: params.env_key,
+            material_ref,
+            oauth_command: params.oauth_command,
+            status: CredentialStatus::Active,
+            version: 1,
+        },
+        secret,
+    )
 }
 
 /// Materialize a source into an already-resolved [`RedactedString`] at the
@@ -507,10 +554,15 @@ pub async fn materialize(
     }
 }
 
-fn next_seq() -> u64 {
+fn next_id() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(1);
-    SEQ.fetch_add(1, Ordering::Relaxed)
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("{}-{timestamp}-{seq}", std::process::id())
 }
 
 #[cfg(test)]

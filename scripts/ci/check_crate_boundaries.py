@@ -1378,6 +1378,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "rusqlite",
         "async-trait",
         "serde_json",
+        # Secret-free, fixed-size request-body fingerprints for the durable
+        # management audit middleware. The body itself is never persisted.
+        "sha2",
         "tokio",
         "axum",
         # dev-only: the authz restart tests open a tempdir-backed iam.sqlite.

@@ -9,7 +9,8 @@ use awaken_tenancy::ScopeId;
 use crate::config::AgentConfig;
 use crate::schema::config_bundle;
 use crate::store::{
-    ConfigRegistry, ConfigStoreError, ConfigWrite, DEFAULT_SCOPE, ScopedConfigRegistry,
+    AuditedConfigWrite, ConfigRegistry, ConfigStoreError, ConfigWrite, DEFAULT_SCOPE,
+    ManagementAuditEntry, ManagementAuditRecord, ManagementEffect, ScopedConfigRegistry,
     StoredPublication, VersionedAgentConfig,
 };
 
@@ -78,6 +79,313 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         .execute(&self.pool)
         .await
         .map_err(reject)?;
+        Ok(())
+    }
+
+    async fn put_config_with_audit_scoped(
+        &self,
+        scope: &ScopeId,
+        config: &AgentConfig,
+        audit: &ManagementAuditRecord,
+    ) -> Result<AuditedConfigWrite, ConfigStoreError> {
+        let audit_key = format!("{}:{}", audit.tool, audit.call_id);
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let existing = sqlx::query(&format!(
+            "SELECT record, business_committed FROM {NS}_management_audit WHERE scope_id = $1 AND call_id = $2 FOR UPDATE"
+        ))
+        .bind(&scope.0)
+        .bind(&audit_key)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(reject)?;
+        if let Some(row) = existing {
+            let Json(existing): Json<ManagementAuditRecord> =
+                row.try_get("record").map_err(reject)?;
+            if existing != *audit {
+                return Err(ConfigStoreError(
+                    "stable audit call id was reused with different content".into(),
+                ));
+            }
+            let committed: i64 = row.try_get("business_committed").map_err(reject)?;
+            if committed != 0 {
+                return Ok(AuditedConfigWrite::Replayed);
+            }
+        } else {
+            sqlx::query(&format!(
+                "INSERT INTO {NS}_management_audit (scope_id, call_id, record) VALUES ($1, $2, $3)"
+            ))
+            .bind(&scope.0)
+            .bind(&audit_key)
+            .bind(Json(audit))
+            .execute(&mut *tx)
+            .await
+            .map_err(reject)?;
+        }
+        let changed = sqlx::query(&format!(
+            "INSERT INTO {NS}_agent (id, data, scope_id, generation) VALUES ($1, $2, $3, 1) \
+             ON CONFLICT (id) DO UPDATE SET data = excluded.data, \
+             generation = {NS}_agent.generation + 1 WHERE {NS}_agent.scope_id = excluded.scope_id"
+        ))
+        .bind(&config.id)
+        .bind(Json(config))
+        .bind(&scope.0)
+        .execute(&mut *tx)
+        .await
+        .map_err(reject)?;
+        if changed.rows_affected() != 1 {
+            return Err(ConfigStoreError(
+                "audited config write was fenced by another scope".into(),
+            ));
+        }
+        sqlx::query(&format!(
+            "UPDATE {NS}_management_audit SET business_committed = 1 WHERE scope_id = $1 AND call_id = $2"
+        ))
+        .bind(&scope.0)
+        .bind(&audit_key)
+        .execute(&mut *tx)
+        .await
+        .map_err(reject)?;
+        tx.commit().await.map_err(reject)?;
+        Ok(AuditedConfigWrite::Applied)
+    }
+
+    async fn put_config_with_audit_effect_scoped(
+        &self,
+        scope: &ScopeId,
+        config: &AgentConfig,
+        audit: &ManagementAuditRecord,
+        effect: Option<&ManagementEffect>,
+    ) -> Result<AuditedConfigWrite, ConfigStoreError> {
+        let audit_key = format!("{}:{}", audit.tool, audit.call_id);
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let existing = sqlx::query(&format!(
+            "SELECT record, business_committed FROM {NS}_management_audit \
+             WHERE scope_id = $1 AND call_id = $2 FOR UPDATE"
+        ))
+        .bind(&scope.0)
+        .bind(&audit_key)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(reject)?;
+        let replayed = if let Some(row) = existing {
+            let Json(existing): Json<ManagementAuditRecord> =
+                row.try_get("record").map_err(reject)?;
+            if existing != *audit {
+                return Err(ConfigStoreError(
+                    "stable audit call id was reused with different content".into(),
+                ));
+            }
+            let committed: i64 = row.try_get("business_committed").map_err(reject)?;
+            committed != 0
+        } else {
+            sqlx::query(&format!(
+                "INSERT INTO {NS}_management_audit (scope_id, call_id, record) \
+                 VALUES ($1, $2, $3)"
+            ))
+            .bind(&scope.0)
+            .bind(&audit_key)
+            .bind(Json(audit))
+            .execute(&mut *tx)
+            .await
+            .map_err(reject)?;
+            false
+        };
+        if let Some(effect) = effect {
+            let existing = sqlx::query(&format!(
+                "SELECT payload FROM {NS}_management_effect \
+                 WHERE scope_id = $1 AND kind = $2 AND effect_key = $3 FOR UPDATE"
+            ))
+            .bind(&scope.0)
+            .bind(&effect.kind)
+            .bind(&effect.key)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(reject)?;
+            if let Some(row) = existing {
+                let Json(payload): Json<serde_json::Value> =
+                    row.try_get("payload").map_err(reject)?;
+                if payload != effect.payload {
+                    return Err(ConfigStoreError(
+                        "stable management effect key was reused with different content".into(),
+                    ));
+                }
+            } else {
+                sqlx::query(&format!(
+                    "INSERT INTO {NS}_management_effect \
+                     (scope_id, kind, effect_key, payload) VALUES ($1, $2, $3, $4)"
+                ))
+                .bind(&scope.0)
+                .bind(&effect.kind)
+                .bind(&effect.key)
+                .bind(Json(&effect.payload))
+                .execute(&mut *tx)
+                .await
+                .map_err(reject)?;
+            }
+        }
+        if replayed {
+            tx.commit().await.map_err(reject)?;
+            return Ok(AuditedConfigWrite::Replayed);
+        }
+        let changed = sqlx::query(&format!(
+            "INSERT INTO {NS}_agent (id, data, scope_id, generation) VALUES ($1, $2, $3, 1) \
+             ON CONFLICT (id) DO UPDATE SET data = excluded.data, \
+             generation = {NS}_agent.generation + 1 \
+             WHERE {NS}_agent.scope_id = excluded.scope_id"
+        ))
+        .bind(&config.id)
+        .bind(Json(config))
+        .bind(&scope.0)
+        .execute(&mut *tx)
+        .await
+        .map_err(reject)?;
+        if changed.rows_affected() != 1 {
+            return Err(ConfigStoreError(
+                "audited config write was fenced by another scope".into(),
+            ));
+        }
+        sqlx::query(&format!(
+            "UPDATE {NS}_management_audit SET business_committed = 1 \
+             WHERE scope_id = $1 AND call_id = $2"
+        ))
+        .bind(&scope.0)
+        .bind(&audit_key)
+        .execute(&mut *tx)
+        .await
+        .map_err(reject)?;
+        tx.commit().await.map_err(reject)?;
+        Ok(AuditedConfigWrite::Applied)
+    }
+
+    async fn pending_management_effects_scoped(
+        &self,
+        scope: &ScopeId,
+    ) -> Result<Vec<ManagementEffect>, ConfigStoreError> {
+        sqlx::query(&format!(
+            "SELECT kind, effect_key, payload FROM {NS}_management_effect \
+             WHERE scope_id = $1 ORDER BY created_at, kind, effect_key"
+        ))
+        .bind(&scope.0)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(reject)?
+        .into_iter()
+        .map(|row| {
+            let Json(payload): Json<serde_json::Value> = row.try_get("payload").map_err(reject)?;
+            Ok(ManagementEffect {
+                kind: row.try_get("kind").map_err(reject)?,
+                key: row.try_get("effect_key").map_err(reject)?,
+                payload,
+            })
+        })
+        .collect()
+    }
+
+    async fn complete_management_effect_scoped(
+        &self,
+        scope: &ScopeId,
+        kind: &str,
+        key: &str,
+    ) -> Result<(), ConfigStoreError> {
+        sqlx::query(&format!(
+            "DELETE FROM {NS}_management_effect \
+             WHERE scope_id = $1 AND kind = $2 AND effect_key = $3"
+        ))
+        .bind(&scope.0)
+        .bind(kind)
+        .bind(key)
+        .execute(&self.pool)
+        .await
+        .map_err(reject)?;
+        Ok(())
+    }
+
+    async fn record_management_audit_scoped(
+        &self,
+        scope: &ScopeId,
+        audit: &ManagementAuditRecord,
+    ) -> Result<AuditedConfigWrite, ConfigStoreError> {
+        let audit_key = format!("{}:{}", audit.tool, audit.call_id);
+        let inserted = sqlx::query(&format!(
+            "INSERT INTO {NS}_management_audit (scope_id, call_id, record) VALUES ($1, $2, $3) \
+             ON CONFLICT (scope_id, call_id) DO NOTHING RETURNING call_id"
+        ))
+        .bind(&scope.0)
+        .bind(&audit_key)
+        .bind(Json(audit))
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(reject)?;
+        if inserted.is_some() {
+            return Ok(AuditedConfigWrite::Applied);
+        }
+        let row = sqlx::query(&format!(
+            "SELECT record FROM {NS}_management_audit WHERE scope_id = $1 AND call_id = $2"
+        ))
+        .bind(&scope.0)
+        .bind(&audit_key)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(reject)?;
+        let Json(existing): Json<ManagementAuditRecord> = row.try_get("record").map_err(reject)?;
+        if existing == *audit {
+            Ok(AuditedConfigWrite::Replayed)
+        } else {
+            Err(ConfigStoreError(
+                "stable audit call id was reused with different content".into(),
+            ))
+        }
+    }
+
+    async fn get_management_audit_scoped(
+        &self,
+        scope: &ScopeId,
+        tool: &str,
+        call_id: &str,
+    ) -> Result<Option<ManagementAuditEntry>, ConfigStoreError> {
+        let audit_key = format!("{tool}:{call_id}");
+        let row = sqlx::query(&format!(
+            "SELECT record, business_committed FROM {NS}_management_audit \
+             WHERE scope_id = $1 AND call_id = $2"
+        ))
+        .bind(&scope.0)
+        .bind(&audit_key)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(reject)?;
+        row.map(|row| {
+            let Json(record): Json<ManagementAuditRecord> =
+                row.try_get("record").map_err(reject)?;
+            let business_committed: i64 = row.try_get("business_committed").map_err(reject)?;
+            Ok(ManagementAuditEntry {
+                record,
+                business_committed: business_committed != 0,
+            })
+        })
+        .transpose()
+    }
+
+    async fn mark_management_audit_committed_scoped(
+        &self,
+        scope: &ScopeId,
+        tool: &str,
+        call_id: &str,
+    ) -> Result<(), ConfigStoreError> {
+        let audit_key = format!("{tool}:{call_id}");
+        let changed = sqlx::query(&format!(
+            "UPDATE {NS}_management_audit SET business_committed = 1 \
+             WHERE scope_id = $1 AND call_id = $2"
+        ))
+        .bind(&scope.0)
+        .bind(&audit_key)
+        .execute(&self.pool)
+        .await
+        .map_err(reject)?;
+        if changed.rows_affected() != 1 {
+            return Err(ConfigStoreError(
+                "management audit completion target was not found".into(),
+            ));
+        }
         Ok(())
     }
 

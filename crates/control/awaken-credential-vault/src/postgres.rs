@@ -15,7 +15,7 @@ use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 
-use crate::repo::CredentialRepo;
+use crate::repo::{CredentialCreationIntent, CredentialRepo};
 use crate::schema::credential_bundle;
 use crate::{
     CredentialError, CredentialPool, CredentialPoolId, CredentialSource, CredentialSourceId,
@@ -122,6 +122,85 @@ impl CredentialRepo for PostgresCredentialRepo {
                 Ok(source)
             })
             .collect()
+    }
+
+    async fn begin_creation(
+        &self,
+        intent: CredentialCreationIntent,
+    ) -> Result<(), CredentialError> {
+        sqlx::query(&format!(
+            "INSERT INTO {NS}_creation_intent (source_id, data) VALUES ($1, $2) \
+             ON CONFLICT (source_id) DO NOTHING"
+        ))
+        .bind(&intent.source.id.0)
+        .bind(Json(&intent))
+        .execute(&self.pool)
+        .await
+        .map_err(storage)?;
+        Ok(())
+    }
+
+    async fn commit_creation(&self, source: CredentialSource) -> Result<(), CredentialError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        sqlx::query(&format!(
+            "INSERT INTO {NS}_source (id, workspace_id, data) VALUES ($1, $2, $3) \
+             ON CONFLICT (id) DO UPDATE SET workspace_id = excluded.workspace_id, data = excluded.data"
+        ))
+        .bind(&source.id.0)
+        .bind(&source.workspace_id)
+        .bind(Json(&source))
+        .execute(&mut *tx)
+        .await
+        .map_err(storage)?;
+        sqlx::query(&format!(
+            "DELETE FROM {NS}_creation_intent WHERE source_id = $1"
+        ))
+        .bind(&source.id.0)
+        .execute(&mut *tx)
+        .await
+        .map_err(storage)?;
+        tx.commit().await.map_err(storage)
+    }
+
+    async fn pending_creations(&self) -> Result<Vec<CredentialCreationIntent>, CredentialError> {
+        sqlx::query(&format!(
+            "SELECT data FROM {NS}_creation_intent ORDER BY created_at, source_id"
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?
+        .into_iter()
+        .map(|row| {
+            let Json(intent): Json<CredentialCreationIntent> =
+                row.try_get("data").map_err(storage)?;
+            Ok(intent)
+        })
+        .collect()
+    }
+
+    async fn abort_creation(&self, id: &CredentialSourceId) -> Result<(), CredentialError> {
+        sqlx::query(&format!(
+            "DELETE FROM {NS}_creation_intent WHERE source_id = $1"
+        ))
+        .bind(&id.0)
+        .execute(&self.pool)
+        .await
+        .map_err(storage)?;
+        Ok(())
+    }
+
+    async fn material_refs(&self) -> Result<Vec<SecretRef>, CredentialError> {
+        let rows = sqlx::query(&format!("SELECT data FROM {NS}_source ORDER BY id"))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(storage)?;
+        rows.into_iter()
+            .map(|row| {
+                let Json(source): Json<CredentialSource> = row.try_get("data").map_err(storage)?;
+                Ok(source.material_ref)
+            })
+            .collect::<Result<Vec<_>, CredentialError>>()
+            .map(|items| items.into_iter().flatten().collect())
     }
 
     async fn put_pool(&self, pool: CredentialPool) -> Result<(), CredentialError> {
@@ -232,5 +311,15 @@ impl SealedBlobStore for PostgresSealedBlobStore {
             .await
             .map_err(storage)?;
         Ok(())
+    }
+
+    async fn inventory_blobs(&self) -> Result<Vec<SecretRef>, CredentialError> {
+        sqlx::query_scalar::<_, String>(&format!(
+            "SELECT secret_ref FROM {NS}_secret ORDER BY secret_ref"
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)
+        .map(|keys| keys.into_iter().map(SecretRef).collect())
     }
 }
