@@ -548,6 +548,6 @@ async fn a2a_agent_card_advertises_the_protocol() {
     let (status, body) = call(&app, "GET", "/v1/a2a/agent-card", Value::Null).await;
     assert_eq!(status, StatusCode::OK);
     let card = serde_json::from_str::<Value>(&body).unwrap();
-    assert_eq!(card["protocolVersion"], "1.0");
-    assert_eq!(card["capabilities"]["streaming"], false);
+    assert_eq!(card["protocolVersion"], "0.3.0");
+    assert_eq!(card["capabilities"]["streaming"], true);
 }
