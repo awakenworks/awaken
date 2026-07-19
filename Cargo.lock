@@ -1052,6 +1052,7 @@ dependencies = [
  "awaken-ext-builtin-tools",
  "awaken-observability",
  "awaken-dispatch-contract",
+ "awaken-dispatch-testkit",
  "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-scoped-migration",
@@ -1078,10 +1079,21 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-runtime-contract",
+ "awaken-tenancy",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "awaken-dispatch-testkit"
+version = "1.0.0-dev"
+dependencies = [
+ "awaken-agent-contract",
+ "awaken-dispatch-contract",
+ "awaken-runtime-contract",
+ "serde_json",
 ]
 
 [[package]]
@@ -1172,6 +1184,7 @@ dependencies = [
  "awaken-provisioning-contract",
  "awaken-run-executor-acp",
  "awaken-dispatch",
+ "awaken-dispatch-testkit",
  "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-sandbox-container",

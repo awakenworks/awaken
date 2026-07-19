@@ -37,7 +37,7 @@ pub use any::AnyDispatchStore;
 pub use capability::RunIngressCapabilities;
 // The database-less worker's HTTP dispatch client (drives claim/settle over the wire
 // to a cell server's dispatch_transport_router), extracted from awaken-session-executor.
-pub use awaken_dispatch_contract::RunDispatch;
+pub use awaken_dispatch_contract::{ExecutionScopeRef, ModelAccessRef, RunDispatch};
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
 pub use dispatch::{
