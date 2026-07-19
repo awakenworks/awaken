@@ -16,4 +16,12 @@ fn config_schema_is_derived_from_the_config_type() {
         text.contains("continuation"),
         "schema exposes the continuation field"
     );
+    let guide = schema["description"].as_str().expect("authoring guide");
+    assert!(guide.contains("INCLUDE THE DESTINATION"));
+    assert!(guide.contains("[read, written]"));
+    assert!(guide.contains("cooldown_steps"));
+    assert!(guide.contains("installed fact adapter"));
+
+    let write = &schema["examples"][0]["machines"][0]["transitions"][1];
+    assert_eq!(write["from"], serde_json::json!(["read", "written"]));
 }
