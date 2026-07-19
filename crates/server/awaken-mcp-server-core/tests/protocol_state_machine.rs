@@ -74,7 +74,14 @@ impl McpToolHost<()> for Host {
 
 fn post_headers() -> HeaderMap {
     let mut headers = HeaderMap::new();
-    headers.insert(header::ACCEPT, HeaderValue::from_static("application/json"));
+    headers.insert(
+        header::ACCEPT,
+        HeaderValue::from_static("application/json, text/event-stream"),
+    );
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
     headers
 }
 
@@ -129,10 +136,8 @@ async fn invalid_params_and_unsupported_header_never_call_the_host() {
         &NullSink,
     )
     .await;
-    let McpHttpBody::Json(unsupported) = unsupported.body else {
-        panic!("JSON response")
-    };
-    assert_eq!(unsupported["error"]["code"], -32602);
+    assert_eq!(unsupported.status, StatusCode::BAD_REQUEST);
+    assert!(matches!(unsupported.body, McpHttpBody::Text(_)));
     assert_eq!(server.host().calls.load(Ordering::SeqCst), 0);
 }
 
@@ -164,6 +169,10 @@ async fn accept_origin_get_and_method_rules_are_explicit() {
     let server = McpServer::new("test", "1", Host::default());
     let mut headers = HeaderMap::new();
     headers.insert(header::ACCEPT, HeaderValue::from_static("image/png"));
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
     let unacceptable = handle_streamable_http(
         &server,
         &(),
@@ -199,7 +208,106 @@ async fn accept_origin_get_and_method_rules_are_explicit() {
         &NullSink,
     )
     .await;
-    assert_eq!(get_without_sse.status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(get_without_sse.status, StatusCode::NOT_ACCEPTABLE);
+}
+
+#[tokio::test]
+async fn get_with_sse_accept_declares_a_standing_event_stream() {
+    let server = McpServer::new("test", "1", Host::default());
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::ACCEPT,
+        HeaderValue::from_static("text/event-stream"),
+    );
+    let reply = handle_streamable_http(
+        &server,
+        &(),
+        McpHttpMethod::Get,
+        &headers,
+        b"",
+        &AllowAllOrigins,
+        &NullSink,
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(reply.body, McpHttpBody::EventStream);
+    assert_eq!(
+        reply.headers.get(header::CONTENT_TYPE).unwrap(),
+        "text/event-stream"
+    );
+}
+
+#[tokio::test]
+async fn post_requires_json_content_type_and_both_response_media_types() {
+    let server = McpServer::new("test", "1", Host::default());
+    let body = br#"{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}"#;
+
+    let mut missing_type = HeaderMap::new();
+    missing_type.insert(
+        header::ACCEPT,
+        HeaderValue::from_static("application/json, text/event-stream"),
+    );
+    let reply = handle_streamable_http(
+        &server,
+        &(),
+        McpHttpMethod::Post,
+        &missing_type,
+        body,
+        &AllowAllOrigins,
+        &NullSink,
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+    for accept in [
+        "application/json",
+        "text/event-stream",
+        "*/*",
+        "application/json, text/event-stream;q=0",
+    ] {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT, HeaderValue::from_str(accept).unwrap());
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json; charset=utf-8"),
+        );
+        let reply = handle_streamable_http(
+            &server,
+            &(),
+            McpHttpMethod::Post,
+            &headers,
+            body,
+            &AllowAllOrigins,
+            &NullSink,
+        )
+        .await;
+        assert_eq!(reply.status, StatusCode::NOT_ACCEPTABLE, "Accept={accept}");
+    }
+}
+
+#[tokio::test]
+async fn malformed_jsonrpc_and_initialize_versions_are_http_bad_requests() {
+    let server = McpServer::new("test", "1", Host::default());
+    for body in [
+        br#"{"id":1,"method":"ping"}"#.as_slice(),
+        br#"{"jsonrpc":"1.0","id":1,"method":"ping"}"#.as_slice(),
+        br#"{"jsonrpc":"2.0","id":{},"method":"ping"}"#.as_slice(),
+        br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#.as_slice(),
+        br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1900-01-01"}}"#.as_slice(),
+    ] {
+        let reply = handle_streamable_http(
+            &server,
+            &(),
+            McpHttpMethod::Post,
+            &post_headers(),
+            body,
+            &AllowAllOrigins,
+            &NullSink,
+        )
+        .await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "body={:?}", body);
+    }
+    assert_eq!(server.host().calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

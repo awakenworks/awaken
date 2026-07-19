@@ -61,13 +61,15 @@ impl McpToolService {
         version: impl Into<String>,
         source: Arc<dyn ToolExportSource>,
     ) -> Self {
+        let tools_list_changed = source.changes().is_some();
         let host = Arc::new(AwakenMcpHost {
             source: Arc::clone(&source),
             gate: RwLock::new(None),
             next_call_id: AtomicU64::new(1),
         });
         Self {
-            core: McpServer::new(name, version, Arc::clone(&host)),
+            core: McpServer::new(name, version, Arc::clone(&host))
+                .with_tools_list_changed(tools_list_changed),
             host,
             context: AwakenMcpContext::default(),
             source,
@@ -292,7 +294,7 @@ fn call_result(output: &ToolOutput) -> CallToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::export::{ProgressRawTool, StaticExports};
+    use crate::export::{ProgressRawTool, SharedExports, StaticExports};
     use awaken_runtime_contract::resolved::ToolDescriptor;
     use awaken_runtime_contract::tool::RawTool;
     use std::sync::Mutex;
@@ -403,7 +405,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn initialize_advertises_tools_with_list_changed() {
+    async fn initialize_does_not_advertise_list_changed_for_static_tools() {
         let result = handle(
             &service(),
             "initialize",
@@ -412,8 +414,25 @@ mod tests {
         .await
         .expect("initializes");
         assert_eq!(result["protocolVersion"], "2025-06-18");
-        assert_eq!(result["capabilities"]["tools"]["listChanged"], true);
+        assert_eq!(result["capabilities"]["tools"]["listChanged"], false);
         assert_eq!(result["serverInfo"]["name"], "test-server");
+    }
+
+    #[tokio::test]
+    async fn initialize_advertises_list_changed_for_a_watchable_tool_source() {
+        let source = SharedExports::new(vec![McpExportedTool::plain(
+            descriptor("echo"),
+            Arc::new(EchoTool),
+        )]);
+        let service = McpToolService::new("dynamic", "1", Arc::new(source));
+        let result = handle(
+            &service,
+            "initialize",
+            json!({ "protocolVersion": "2025-06-18" }),
+        )
+        .await
+        .expect("dynamic server initializes");
+        assert_eq!(result["capabilities"]["tools"]["listChanged"], true);
     }
 
     #[tokio::test]
@@ -691,11 +710,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn initialize_without_a_version_echoes_the_server_default() {
-        let result = handle(&service(), "initialize", json!({}))
+    async fn initialize_without_a_version_is_invalid_params() {
+        let error = handle(&service(), "initialize", json!({}))
             .await
-            .expect("initializes without a requested version");
-        assert_eq!(result["protocolVersion"], mcp::MCP_PROTOCOL_VERSION);
+            .expect_err("a version is required for exact negotiation");
+        assert_eq!(error.code, -32602);
+        assert!(error.message.contains("protocolVersion"));
     }
 
     #[tokio::test]
@@ -853,16 +873,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn initialize_with_a_non_string_version_falls_back_to_the_default() {
-        // A `protocolVersion` that is present but not a string cannot be echoed;
-        // the server answers with its own default rather than a malformed value.
-        let result = handle(
+    async fn initialize_with_a_non_string_version_is_invalid_params() {
+        let error = handle(
             &service(),
             "initialize",
             json!({ "protocolVersion": 20_250_618 }),
         )
         .await
-        .expect("initializes");
-        assert_eq!(result["protocolVersion"], mcp::MCP_PROTOCOL_VERSION);
+        .expect_err("a non-string version cannot be negotiated");
+        assert_eq!(error.code, -32602);
+        assert!(error.message.contains("protocolVersion"));
     }
 }

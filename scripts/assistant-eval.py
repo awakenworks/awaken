@@ -6,13 +6,45 @@ natural-language authoring requests, K times each, and scores the PERSISTED draf
 against a per-case rubric. Reports task-success, compile rate, and — the metric that
 matters for a structured-authoring skill — CONSISTENCY across repetitions.
 
-Usage: python3 assistant-eval.py [K]        # K reps per case (default 3)
-Prints a scorecard; exit 0 always (measurement, not a gate).
-"""
-import json, sys, time, urllib.request, urllib.error
+Usage:
+  python3 assistant-eval.py [K]             # measurement only (default)
+  python3 assistant-eval.py [K] --gate      # fail when a quality floor is missed
+  python3 assistant-eval.py --self-test     # deterministic gate-logic check
 
-B = "http://127.0.0.1:38080"
-K = int(sys.argv[1]) if len(sys.argv) > 1 else 3
+The live-model result is not a proof: it is a repeated golden-set measurement.
+Gate mode turns that measurement into an explicit CI/release signal while the
+default remains non-blocking for exploratory runs.
+"""
+import argparse
+import json
+import sys
+import time
+import urllib.error
+import urllib.request
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("repetitions", nargs="?", type=int, default=3)
+    parser.add_argument("--base-url", default="http://127.0.0.1:38080")
+    parser.add_argument("--gate", action="store_true")
+    parser.add_argument("--min-criteria", type=float, default=0.90)
+    parser.add_argument("--min-fully-correct", type=float, default=0.80)
+    parser.add_argument("--min-persisted", type=float, default=1.0)
+    parser.add_argument("--self-test", action="store_true")
+    args = parser.parse_args(argv)
+    if args.repetitions < 1:
+        parser.error("repetitions must be at least 1")
+    for name in ("min_criteria", "min_fully_correct", "min_persisted"):
+        value = getattr(args, name)
+        if not 0.0 <= value <= 1.0:
+            parser.error(f"--{name.replace('_', '-')} must be between 0 and 1")
+    return args
+
+
+ARGS = parse_args(sys.argv[1:])
+B = ARGS.base_url.rstrip("/")
+K = ARGS.repetitions
 
 
 def _req(method, path, body=None):
@@ -122,7 +154,47 @@ def _compact_instructions(cc):
     return cc.get("instructions") or cc.get("prompt")
 
 
+def gate_failures(grand, args):
+    """Return stable, human-readable quality-floor failures."""
+    rates = {
+        "criteria": grand["crit_pass"] / grand["crit_total"],
+        "fully-correct": grand["case_full"] / grand["case_runs"],
+        "persisted": grand["persist"] / grand["case_runs"],
+    }
+    floors = {
+        "criteria": args.min_criteria,
+        "fully-correct": args.min_fully_correct,
+        "persisted": args.min_persisted,
+    }
+    return [
+        f"{name} rate {rates[name]:.3f} is below required {floor:.3f}"
+        for name, floor in floors.items()
+        if rates[name] < floor
+    ]
+
+
+def self_test():
+    thresholds = argparse.Namespace(
+        min_criteria=0.90,
+        min_fully_correct=0.80,
+        min_persisted=1.0,
+    )
+    passing = {
+        "crit_pass": 9, "crit_total": 10,
+        "case_full": 4, "case_runs": 5, "persist": 5,
+    }
+    assert gate_failures(passing, thresholds) == []
+    failing = dict(passing, crit_pass=8, case_full=3, persist=4)
+    assert [failure.split(" rate", 1)[0] for failure in gate_failures(failing, thresholds)] == [
+        "criteria", "fully-correct", "persisted"
+    ]
+    print("OK - assistant eval gate thresholds fail closed")
+    return 0
+
+
 def main():
+    if ARGS.self_test:
+        return self_test()
     print(f"# Admin Assistant authoring skill — eval (K={K} reps/case)\n")
     grand = {"crit_pass": 0, "crit_total": 0, "case_full": 0, "case_runs": 0, "persist": 0}
     for cid, prompt, rubric in CASES:
@@ -159,7 +231,17 @@ def main():
           f"= {100*grand['case_full']/grand['case_runs']:.0f}%")
     print(f"   persisted (compiled): {grand['persist']}/{grand['case_runs']} "
           f"= {100*grand['persist']/grand['case_runs']:.0f}%")
+    if not ARGS.gate:
+        return 0
+    failures = gate_failures(grand, ARGS)
+    if failures:
+        print("\n# GATE FAILED", file=sys.stderr)
+        for failure in failures:
+            print(f"   - {failure}", file=sys.stderr)
+        return 1
+    print("\n# GATE PASSED")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

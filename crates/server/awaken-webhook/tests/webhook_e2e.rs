@@ -6,13 +6,16 @@
 //! verification accepts. No mocks in the transport.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use awaken_webhook::{
     ReqwestSender, ResolvedSubscription, SubscriptionSource, WebhookDispatcher, WebhookEvent,
     verify,
 };
 use axum::{Router, extract::State, http::HeaderMap, routing::post};
+use tokio::io::AsyncReadExt;
 
 const SECRET: &str = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"; // awaken-allow: secret (test sample key)
 
@@ -133,4 +136,150 @@ async fn a_committed_fact_is_delivered_signed_and_scoped_to_a_real_receiver() {
     assert_eq!(v["data"]["id"], "sesn_e2e");
     assert_eq!(v["data"]["workspace_id"], "wrkspc_acme");
     assert!(v["data"].get("organization_id").is_none());
+}
+
+fn event(id: &str) -> WebhookEvent {
+    WebhookEvent::new(
+        id,
+        "2026-07-09T12:00:00Z",
+        "session.status_idled",
+        "sesn_e2e",
+        "wrkspc_acme",
+        None,
+    )
+}
+
+async fn serve_status_sequence(
+    statuses: Vec<axum::http::StatusCode>,
+) -> (String, Arc<AtomicUsize>) {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let state = (Arc::new(statuses), attempts.clone());
+    let app = Router::new()
+        .route(
+            "/hook",
+            post(
+                |State((statuses, attempts)): State<(
+                    Arc<Vec<axum::http::StatusCode>>,
+                    Arc<AtomicUsize>,
+                )>| async move {
+                    let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                    statuses
+                        .get(attempt)
+                        .copied()
+                        .unwrap_or(*statuses.last().expect("at least one status"))
+                },
+            ),
+        )
+        .with_state(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/hook", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (url, attempts)
+}
+
+fn dispatcher(url: String, timeout: Duration, max_attempts: u32) -> WebhookDispatcher {
+    WebhookDispatcher::new(
+        Arc::new(OneSub(ResolvedSubscription {
+            id: "wh_fault".into(),
+            url,
+            secret: SECRET.into(),
+        })),
+        Arc::new(ReqwestSender::with_timeout(timeout)),
+    )
+    .with_thresholds(max_attempts, 20)
+}
+
+#[tokio::test]
+async fn real_http_429_is_retried_and_a_later_204_retires_the_delivery() {
+    let (url, attempts) = serve_status_sequence(vec![
+        axum::http::StatusCode::TOO_MANY_REQUESTS,
+        axum::http::StatusCode::NO_CONTENT,
+    ])
+    .await;
+    let report = dispatcher(url, Duration::from_secs(1), 3)
+        .dispatch(&event("event_429"), 1_752_000_000)
+        .await;
+    assert_eq!(report.delivered, vec!["wh_fault"]);
+    assert!(report.failed.is_empty());
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn real_http_500_exhausts_the_attempt_budget_and_stays_failed() {
+    let (url, attempts) =
+        serve_status_sequence(vec![axum::http::StatusCode::INTERNAL_SERVER_ERROR]).await;
+    let report = dispatcher(url, Duration::from_secs(1), 3)
+        .dispatch(&event("event_500"), 1_752_000_000)
+        .await;
+    assert!(report.delivered.is_empty());
+    assert_eq!(report.failed, vec!["wh_fault"]);
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn a_hung_receiver_is_bounded_by_the_attempt_timeout() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/hook", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        for _ in 0..2 {
+            let (socket, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                let _socket = socket;
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            });
+        }
+    });
+    let started = tokio::time::Instant::now();
+    let report = dispatcher(url, Duration::from_millis(40), 2)
+        .dispatch(&event("event_timeout"), 1_752_000_000)
+        .await;
+    assert_eq!(report.failed, vec!["wh_fault"]);
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "two timed-out attempts must remain bounded"
+    );
+}
+
+#[tokio::test]
+async fn response_loss_retries_with_the_same_webhook_identity() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/hook", listener.local_addr().unwrap());
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let server_seen = seen.clone();
+    tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            while !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                let mut chunk = [0_u8; 1024];
+                let read = socket.read(&mut chunk).await.unwrap();
+                assert!(read > 0, "request closed before its headers");
+                bytes.extend_from_slice(&chunk[..read]);
+            }
+            let request = String::from_utf8_lossy(&bytes);
+            let webhook_id = request
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("webhook-id")
+                            .then(|| value.trim().to_string())
+                    })
+                })
+                .expect("webhook-id header");
+            server_seen.lock().unwrap().push(webhook_id);
+            // Drop after accepting the request but before writing an HTTP
+            // response: the sender cannot know whether the receiver committed.
+        }
+    });
+    let report = dispatcher(url, Duration::from_secs(1), 2)
+        .dispatch(&event("event_response_lost"), 1_752_000_000)
+        .await;
+    assert_eq!(report.failed, vec!["wh_fault"]);
+    assert_eq!(
+        seen.lock().unwrap().clone(),
+        vec![
+            "event_response_lost".to_string(),
+            "event_response_lost".to_string()
+        ]
+    );
 }

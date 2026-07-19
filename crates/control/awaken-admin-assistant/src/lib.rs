@@ -32,7 +32,7 @@ use awaken_runtime_contract::resolved::{ContextPolicy, ToolDescriptor};
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 use serde::{Deserialize, Serialize};
 
-/// The four management tool ids. They are namespaced `admin_*` and are only ever
+/// The five management tool ids. They are namespaced `admin_*` and are only ever
 /// nameable in the reserved scope (the fence is the scope-keyed catalog projection,
 /// ADR-0052 D3 — enforced in the host, not here).
 pub const CAPABILITIES_TOOL: &str = "admin_get_platform_capabilities";
@@ -63,7 +63,7 @@ pub fn admin_tool_ids() -> Vec<String> {
 }
 
 /// The seed [`AgentConfig`] for the management assistant (ADR-0052 D1/D3/D4): an
-/// **ordinary** config — instructions + the four admin tool ids + an `Auto` model
+/// **ordinary** config — instructions + the five admin tool ids + an `Auto` model
 /// binding — with the native backend (no sandbox). The host publishes it into the
 /// reserved scope through the ordinary publish path, so it becomes a compiled,
 /// content-addressed `RunnableConfig` like any agent (no builder bypass).
@@ -297,9 +297,9 @@ pub struct PluginInfo {
     pub config_schema: Option<serde_json::Value>,
 }
 
-// ---- The four descriptors --------------------------------------------------------
+// ---- The five descriptors --------------------------------------------------------
 
-/// The four management tool descriptors (D3). These are handed to the host's
+/// The five management tool descriptors (D3). These are handed to the host's
 /// scope-keyed catalog so they are nameable **only** in the reserved scope; a config
 /// in any other scope that names one hits `UnknownTool` at compile (fail-closed).
 #[must_use]
@@ -464,7 +464,7 @@ pub fn admin_tool_descriptors() -> Vec<ToolDescriptor> {
     ]
 }
 
-/// The four executable management tools, erased for runtime registration (D3). The
+/// The five executable management tools, erased for runtime registration (D3). The
 /// host registers these globally (the runtime tool registry stays global); the
 /// compile-time scope projection is what fences them to the reserved scope.
 #[must_use]
