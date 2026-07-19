@@ -110,6 +110,9 @@ async fn exact_claim_recovery_and_fencing(
         .enqueue(dispatch(ns, "target", "target-thread"))
         .await
         .expect("enqueue exact-claim target");
+    if let Some(depth) = store.runnable_depth(0).await.expect("query runnable depth") {
+        assert_eq!(depth, 2, "both freshly enqueued runs are claimable");
+    }
 
     let first = store
         .claim_run(&target, "conformance-a", LEASE_MS, 0)
@@ -118,6 +121,7 @@ async fn exact_claim_recovery_and_fencing(
         .expect("target is runnable");
     assert_eq!(first.request.run_id(), &target);
     assert_eq!(first.lease.owner, "conformance-a");
+    assert!(!first.recovered, "a fresh exact claim is not recovery");
     assert!(first.lease.epoch > 0, "a claimed lease has a fence epoch");
 
     let other = store
@@ -149,6 +153,7 @@ async fn exact_claim_recovery_and_fencing(
         .await
         .expect("recovery claim succeeds")
         .expect("expired target is recoverable");
+    assert!(recovered.recovered, "an expired running lease is recovery");
     assert_eq!(recovered.lease.epoch, first.lease.epoch + 1);
     assert_eq!(
         store
@@ -329,6 +334,7 @@ async fn sandbox_binding_survives_recovery(
         .expect("recover sandbox run")
         .expect("expired sandbox run is recoverable");
     assert_eq!(recovered.sandbox.as_deref(), Some(sandbox_ref.as_str()));
+    assert!(recovered.recovered);
     assert_eq!(
         store
             .settle(&run, recovered.lease.epoch, DispatchOutcome::Done, &[],)

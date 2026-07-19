@@ -5,12 +5,13 @@
 //! installed by [`init_meters`], mirroring the tracer wiring in `otel.rs`.
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use awaken_runtime_contract::metrics::{InferenceMetric, MetricsRecorder};
 use opentelemetry::KeyValue;
 use opentelemetry::global;
-use opentelemetry::metrics::{Counter, Histogram};
+use opentelemetry::metrics::{Counter, Histogram, ObservableGauge, UpDownCounter};
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 
 use crate::config::{OtelConfig, OtelProtocol};
@@ -34,6 +35,13 @@ pub struct OtelMetricsRecorder {
     dispatch_claimed: Counter<u64>,
     dispatch_settled: Counter<u64>,
     dispatch_drive: Histogram<f64>,
+    dispatch_recovered: Counter<u64>,
+    dispatch_commit: Counter<u64>,
+    dispatch_commit_duration: Histogram<f64>,
+    dispatch_fenced: Counter<u64>,
+    dispatch_in_flight: UpDownCounter<i64>,
+    dispatch_queue_depth_value: std::sync::Arc<AtomicU64>,
+    _dispatch_queue_depth: ObservableGauge<u64>,
 }
 
 impl OtelMetricsRecorder {
@@ -43,6 +51,15 @@ impl OtelMetricsRecorder {
     #[must_use]
     pub fn new() -> Self {
         let meter = global::meter("awaken-observability");
+        let dispatch_queue_depth_value = std::sync::Arc::new(AtomicU64::new(0));
+        let observed_queue_depth = dispatch_queue_depth_value.clone();
+        let dispatch_queue_depth = meter
+            .u64_observable_gauge("awaken.dispatch.queue.depth")
+            .with_description("Dispatches currently claimable from the durable authority.")
+            .with_callback(move |observer| {
+                observer.observe(observed_queue_depth.load(Ordering::Relaxed), &[]);
+            })
+            .build();
         Self {
             op_count: meter
                 .u64_counter("gen_ai.client.operation.count")
@@ -83,6 +100,29 @@ impl OtelMetricsRecorder {
                 .with_unit("s")
                 .with_description("Wall-clock time a worker spent driving one claimed dispatch.")
                 .build(),
+            dispatch_recovered: meter
+                .u64_counter("awaken.dispatch.runs.recovered")
+                .with_description("Expired dispatch leases reclaimed by replacement workers.")
+                .build(),
+            dispatch_commit: meter
+                .u64_counter("awaken.dispatch.commits")
+                .with_description("Dispatch settlement commits, by applied/fenced/error outcome.")
+                .build(),
+            dispatch_commit_duration: meter
+                .f64_histogram("awaken.dispatch.commit.duration")
+                .with_unit("s")
+                .with_description("Wall-clock duration of a dispatch settlement commit.")
+                .build(),
+            dispatch_fenced: meter
+                .u64_counter("awaken.dispatch.commits.fenced")
+                .with_description("Stale dispatch settlements rejected by claim epoch fencing.")
+                .build(),
+            dispatch_in_flight: meter
+                .i64_up_down_counter("awaken.dispatch.runs.in_flight")
+                .with_description("Claims currently being driven by this process.")
+                .build(),
+            dispatch_queue_depth_value,
+            _dispatch_queue_depth: dispatch_queue_depth,
         }
     }
 }
@@ -132,6 +172,30 @@ impl MetricsRecorder for OtelMetricsRecorder {
 
     fn record_dispatch_drive(&self, duration: Duration) {
         self.dispatch_drive.record(duration.as_secs_f64(), &[]);
+    }
+
+    fn record_dispatch_queue_depth(&self, depth: u64) {
+        self.dispatch_queue_depth_value
+            .store(depth, Ordering::Relaxed);
+    }
+
+    fn record_dispatch_recovered(&self) {
+        self.dispatch_recovered.add(1, &[]);
+    }
+
+    fn record_dispatch_commit(&self, outcome: &str, duration: Duration) {
+        let labels = [KeyValue::new("outcome", outcome.to_owned())];
+        self.dispatch_commit.add(1, &labels);
+        self.dispatch_commit_duration
+            .record(duration.as_secs_f64(), &labels);
+    }
+
+    fn record_dispatch_fenced(&self) {
+        self.dispatch_fenced.add(1, &[]);
+    }
+
+    fn record_dispatch_in_flight(&self, delta: i64) {
+        self.dispatch_in_flight.add(delta, &[]);
     }
 }
 
@@ -301,7 +365,12 @@ mod meter_tests {
         });
         recorder.record_tool("oracle-tool", "ok", Duration::from_millis(3));
         recorder.record_dispatch_claimed();
+        recorder.record_dispatch_queue_depth(3);
+        recorder.record_dispatch_recovered();
         recorder.record_dispatch_settled("done");
+        recorder.record_dispatch_commit("applied", Duration::from_millis(2));
+        recorder.record_dispatch_fenced();
+        recorder.record_dispatch_in_flight(1);
         recorder.record_dispatch_drive(Duration::from_millis(9));
 
         let scrape = render_prometheus();
@@ -318,6 +387,12 @@ mod meter_tests {
             "awaken_tool_execution_duration",
             "awaken_dispatch_runs_claimed",
             "awaken_dispatch_runs_settled",
+            "awaken_dispatch_queue_depth",
+            "awaken_dispatch_runs_recovered",
+            "awaken_dispatch_commits",
+            "awaken_dispatch_commit_duration",
+            "awaken_dispatch_commits_fenced",
+            "awaken_dispatch_runs_in_flight",
             "awaken_dispatch_drive_duration",
         ] {
             assert!(
