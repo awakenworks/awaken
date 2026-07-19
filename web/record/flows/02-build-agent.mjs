@@ -11,12 +11,15 @@ const SYSTEM =
 const ASK =
   "Draft release notes for: #482 add dark mode, #491 fix crash on export, #500 drop Node 18";
 
-export async function run({ page, goto, say, clearCaption, click, type, wait }) {
+export async function run({ page, goto, say, clearCaption, intro, checkpoint, aha, expect, click, type, wait }) {
   // Fresh start (idempotent): drop any prior agent so the walkthrough always creates.
   await page.request.delete(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}`).catch(() => {});
 
   await goto("/w/default/agents/new");
-  await say("An agent is configured, not coded. Start from an empty definition.", 3800);
+  await intro(
+    "Convert a repeatable job into a governed agent without writing orchestration code.",
+    "Configure behavior, publish an exact diff, then prove the installed agent against a live model.",
+  );
 
   await type(page.getByPlaceholder("coding-agent"), AGENT_ID);
   await say("Pick a model from the catalog — only credentialed models are offered.", 3600);
@@ -36,6 +39,13 @@ export async function run({ page, goto, say, clearCaption, click, type, wait }) 
 
   await click(page.getByRole("button", { name: "Save", exact: true }));
   await wait(1200);
+  await checkpoint("the draft is persisted with the selected model", async () => {
+    const response = await page.request.get(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}`);
+    expect(response.ok()).toBeTruthy();
+    const config = await response.json();
+    expect(config.id).toBe(AGENT_ID);
+    expect(config.model?.id).toBe("kimi-for-coding");
+  });
 
   await say("Publish previews the exact config diff — domain-labeled, nothing hidden.", 4200);
   await click(page.getByRole("button", { name: /Publish/ }));
@@ -55,15 +65,15 @@ export async function run({ page, goto, say, clearCaption, click, type, wait }) 
   await say("The runtime resolves model → offering → credential → a real KIMI executor.", 4200);
   await ask.press("Enter");
   // Wait for the live reply to render (poll for assistant text, up to 60s).
-  await page
-    .waitForFunction(
+  await checkpoint("the published agent returns structured release notes from the live model", async () => {
+    await page.waitForFunction(
       () => /Features|Fixes|Breaking|release/i.test(document.body.innerText),
       null,
       { timeout: 60000 },
-    )
-    .catch(() => {});
+    );
+  });
   await wait(2500);
-  await say("A real reply — grouped release notes, live from the model. Not a mock.", 4600);
+  await aha("One config became a live, versioned specialist—and the answer on screen is from the real model.");
   await wait(1500);
   await clearCaption();
 }

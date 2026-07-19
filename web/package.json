@@ -7,7 +7,10 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "record": "node record/harness.mjs",
+    "record:test": "node --test record/contract.test.mjs",
+    "record:review": "node record/review.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.62.0",
