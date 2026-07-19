@@ -12,7 +12,7 @@
 //! stand-in ([`crate::AcpBridge`]) — a `session/update` becomes the same
 //! [`AgentEvent`], so nothing downstream (the store, the executor) sees ACP
 //! vocabulary. A `session/request_permission` is decided by the injected
-//! [`crate::PermissionResolver`] (the neutral `PermissionPolicy` behind an executor
+//! [`crate::PermissionResolver`] (the neutral `ToolPermissionPolicy` behind an executor
 //! adapter) and projected back onto the agent's own allow/reject option. We
 //! advertise no `fs`/`terminal` capabilities, so those agent requests still get
 //! `method_not_found` — tool execution is the hand's job, never proxied over ACP.
@@ -412,7 +412,7 @@ async fn project_notification(
 }
 
 /// Answer an agent→client request: a permission request is decided by `resolver`
-/// (the neutral `PermissionPolicy`) and projected back onto the agent's own
+/// (the neutral `ToolPermissionPolicy`) and projected back onto the agent's own
 /// offered option — allow or reject, once-preferred over always; `cancelled` when
 /// no matching option is offered. Every other method — the `fs`/`terminal`
 /// capabilities we never advertised — gets `method_not_found`, because tool
@@ -560,7 +560,7 @@ mod tests {
         }
     }
 
-    /// A resolver that denies every ask — stands in for a `PermissionPolicy` that
+    /// A resolver that denies every ask — stands in for a `ToolPermissionPolicy` that
     /// refuses the CLI's tool.
     struct DenyAll;
     #[async_trait]

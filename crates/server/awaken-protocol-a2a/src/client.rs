@@ -184,11 +184,20 @@ pub async fn get_task(transport: &dyn Transport, task_id: &str) -> Result<Task, 
     read_task(&response.body)
 }
 
-/// Best-effort cancel of a task (`tasks:cancel`); failures are ignored.
-pub async fn cancel_task(transport: &dyn Transport, task_id: &str) {
-    let _ = transport
+/// Cancel a task (`tasks:cancel`) and surface delivery failure so a durable
+/// caller can retain and retry its cancellation intent.
+pub async fn try_cancel_task(transport: &dyn Transport, task_id: &str) -> Result<(), ClientError> {
+    let response = transport
         .request("POST", &task_cancel_path(task_id), None)
-        .await;
+        .await
+        .map_err(ClientError::Transport)?;
+    ok_status(&response, "tasks:cancel")
+}
+
+/// Best-effort compatibility wrapper for callers that have no durable retry
+/// owner. Delegation uses [`try_cancel_task`] instead.
+pub async fn cancel_task(transport: &dyn Transport, task_id: &str) {
+    let _ = try_cancel_task(transport, task_id).await;
 }
 
 /// Fetch the remote agent's discovery card (`agent-card`).

@@ -11,7 +11,7 @@
 // trailing /v1/, the genai anthropic adapter appends `messages` to it)
 //   ANTHROPIC_API_KEY=sk-kimi-... \
 //   ANTHROPIC_BASE_URL=https://api.kimi.com/coding/v1/ \
-//   ANTHROPIC_MODEL=kimi-k2-0711-preview \
+//   ANTHROPIC_MODEL=kimi-for-coding \
 //   node managed_reconnect_real_e2e.mjs
 // `real` mode also accepts the KIMI_API_KEY/KIMI_BASE_URL/KIMI_MODEL aliases.
 

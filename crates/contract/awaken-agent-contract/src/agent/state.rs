@@ -266,12 +266,33 @@ pub trait StateKey {
 
     /// Produce a whole-value `Command` from an already-computed value.
     fn write(value: &Self::Value) -> Command {
-        Command::set(
+        Self::try_write(value).unwrap_or_else(|error| {
+            panic!("typed state serialization violated its contract: {error}")
+        })
+    }
+
+    /// Fallible form for boundaries that can propagate serialization failure.
+    /// A failed serializer must never be replaced by JSON `null`, because that
+    /// would turn an implementation fault into apparently committed state.
+    fn try_write(value: &Self::Value) -> Result<Command, StateError> {
+        let serialized = serde_json::to_value(value).map_err(|error| StateError {
+            key: Self::KEY.to_string(),
+            scope: Self::SCOPE,
+            detail: error.to_string(),
+        })?;
+        Ok(Command::set(
             Self::SCOPE,
             Self::MERGE,
             Self::KEY,
-            serde_json::to_value(value).unwrap_or(serde_json::Value::Null),
-        )
+            serialized,
+        ))
+    }
+
+    /// Remove this typed cell. This is the inverse of [`StateKey::write`] and
+    /// avoids retaining empty delivery/inbox values after their last item is
+    /// consumed.
+    fn remove() -> Command {
+        Command::remove(Self::SCOPE, Self::MERGE, Self::KEY)
     }
 }
 
@@ -297,6 +318,28 @@ pub trait FoldStateKey: StateKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default, Deserialize)]
+    struct FailingValue;
+
+    impl Serialize for FailingValue {
+        fn serialize<S: serde::Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
+            Err(serde::ser::Error::custom("intentional test failure"))
+        }
+    }
+
+    struct FailingKey;
+
+    impl StateKey for FailingKey {
+        const KEY: &'static str = "test.failing-serializer";
+        const SCOPE: Scope = Scope::Run;
+        type Value = FailingValue;
+    }
+
+    #[test]
+    fn state_serialization_failure_never_becomes_json_null() {
+        assert!(FailingKey::try_write(&FailingValue).is_err());
+    }
 
     #[test]
     fn rebuild_replays_set_and_remove_in_order() {

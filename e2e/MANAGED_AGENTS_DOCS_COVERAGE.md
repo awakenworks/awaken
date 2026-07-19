@@ -119,7 +119,7 @@ The goal's cleanup clause ("is the uncovered code redundant/duplicate — if so,
 
 The `real` server mode backs the managed session with a live model (`GenaiExecutor`,
 `ANTHROPIC_API_KEY/BASE_URL/MODEL`). Validated against the KIMI Anthropic-dialect
-endpoint (`https://api.kimi.com/coding/v1/`, `kimi-k2-0711-preview`):
+endpoint (`https://api.kimi.com/coding/v1/`, `kimi-for-coding`):
 
 | Doc behavior | Suite | Result |
 |---|---|---|

@@ -7,8 +7,8 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_agent_contract::agent::run::EndCause;
 use awaken_protocol_managed::{
-    AgentCapabilities, BuiltinTool, CustomTool, Decision, ManagedState, OutcomeIteration,
-    OutcomeReport, Pending, RunError, RunErrorKind, SessionRuntime, StepOutcome, router,
+    AgentCapabilities, BuiltinTool, CustomTool, ManagedState, OutcomeIteration, OutcomeReport,
+    Pending, RunError, RunErrorKind, SessionRuntime, StepOutcome, ToolPermissionDecision, router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -84,7 +84,7 @@ impl SessionRuntime for EchoFake {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _decision: Decision,
+        _decision: ToolPermissionDecision,
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no awaiting run"))
     }
@@ -130,7 +130,12 @@ impl SessionRuntime for FailingFake {
             RunErrorKind::Internal => RunError::internal("boom"),
         })
     }
-    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<StepOutcome, RunError> {
+    async fn resume(
+        &self,
+        _t: &str,
+        _tid: &str,
+        _d: ToolPermissionDecision,
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no resume"))
     }
     async fn resume_custom(
@@ -296,7 +301,12 @@ impl SessionRuntime for CapableFake {
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
-    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<StepOutcome, RunError> {
+    async fn resume(
+        &self,
+        _t: &str,
+        _tid: &str,
+        _d: ToolPermissionDecision,
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
     async fn resume_custom(
@@ -475,7 +485,7 @@ impl SessionRuntime for AwaitingFake {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        decision: Decision,
+        decision: ToolPermissionDecision,
     ) -> Result<StepOutcome, RunError> {
         assert!(decision.allow);
         Ok(ended(vec![
@@ -529,7 +539,12 @@ impl SessionRuntime for OutcomeFake {
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no turn"))
     }
-    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<StepOutcome, RunError> {
+    async fn resume(
+        &self,
+        _t: &str,
+        _tid: &str,
+        _d: ToolPermissionDecision,
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no resume"))
     }
     async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
@@ -760,7 +775,12 @@ impl SessionRuntime for CustomToolFake {
             false,
         ))
     }
-    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<StepOutcome, RunError> {
+    async fn resume(
+        &self,
+        _t: &str,
+        _tid: &str,
+        _d: ToolPermissionDecision,
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("expected custom result"))
     }
     async fn resume_custom(
@@ -983,7 +1003,12 @@ impl SessionRuntime for RecordingFake {
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
-    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<StepOutcome, RunError> {
+    async fn resume(
+        &self,
+        _t: &str,
+        _tid: &str,
+        _d: ToolPermissionDecision,
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
     async fn resume_custom(
@@ -1077,7 +1102,12 @@ impl SessionRuntime for InterruptRedirectFake {
             format!("on it: {text}"),
         )]))
     }
-    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<StepOutcome, RunError> {
+    async fn resume(
+        &self,
+        _t: &str,
+        _tid: &str,
+        _d: ToolPermissionDecision,
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
     async fn resume_custom(

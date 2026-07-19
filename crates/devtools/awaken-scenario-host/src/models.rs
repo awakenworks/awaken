@@ -119,7 +119,7 @@ impl LlmExecutor for MemoryProbeModel {
             .collect::<Vec<_>>()
             .join(" | ");
         // The extractor sub-run: save one deterministic memory, then finish.
-        if system_text.contains("memory extraction sub-agent") {
+        if system_text.contains("memory extraction Agent") {
             let already_saved = request.messages.iter().any(|m| m.role == Role::Tool);
             if already_saved {
                 return Ok(ChatResponse {
@@ -860,7 +860,7 @@ mod tests {
     async fn memory_probe_names_a_memory_after_a_fact_tag_else_falls_back() {
         let extractor = |text: &str| {
             req(vec![
-                msg(Role::System, "you are a memory extraction sub-agent"),
+                msg(Role::System, "you are a memory extraction Agent"),
                 msg(Role::User, text),
             ])
         };
@@ -879,7 +879,7 @@ mod tests {
         let saved = infer(
             &MemoryProbeModel,
             req(vec![
-                msg(Role::System, "you are a memory extraction sub-agent"),
+                msg(Role::System, "you are a memory extraction Agent"),
                 msg(Role::User, "remember fact-blue"),
                 tool_result("memwrite-1", "ok"),
             ]),

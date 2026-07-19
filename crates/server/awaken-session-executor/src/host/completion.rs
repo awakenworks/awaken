@@ -48,7 +48,7 @@ impl SharedHost {
                 .worker()
                 .store()
                 .enqueue_with(
-                    RunExecutionRequest::new(activation),
+                    RunDispatch::new(activation),
                     SubmitOptions {
                         supersede: true,
                         ..Default::default()

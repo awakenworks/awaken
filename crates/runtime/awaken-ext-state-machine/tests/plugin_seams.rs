@@ -10,12 +10,12 @@ use awaken_ext_state_machine::{
     ContinuationSettings, FsmTransition, Metrics, RunInstances, StateMachineConfig,
     StateMachinePlugin, ThreadInstances, ViolationLog,
 };
-use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
+use awaken_runtime_contract::permission::{GateOutcome, ToolCall};
 use awaken_runtime_contract::plugin::{
     AfterToolContext, HookReaction, PhaseContext, PhaseHook, PhaseKind, Plugin, RunEndContext,
     RunEndDecision, enforce_bound,
 };
-use awaken_runtime_contract::tool::{ToolCall, ToolOutput};
+use awaken_runtime_contract::tool::ToolOutput;
 use serde_json::json;
 
 /// Drive the state-machine observer (now a `PhaseHook` at `AfterTool`, ADR-0055)
@@ -49,8 +49,8 @@ fn plugin(config: &str) -> StateMachinePlugin {
     StateMachinePlugin::from_config(StateMachineConfig::from_json_str(config).unwrap()).unwrap()
 }
 
-fn ctx(tool: &str, args: serde_json::Value) -> PermissionContext {
-    PermissionContext {
+fn ctx(tool: &str, args: serde_json::Value) -> ToolCall {
+    ToolCall {
         tool_id: tool.to_string(),
         call_id: "call-1".to_string(),
         arguments: args,
@@ -216,7 +216,9 @@ async fn gate_suspends_on_ask() {
         .gate(&ctx("Write", json!({"file_path": "a.rs"})), &store)
         .await
     {
-        GateOutcome::Suspend { ticket_id } => assert_eq!(ticket_id, "fsm-call-1"),
+        GateOutcome::RequireConfirmation { correlation_id } => {
+            assert_eq!(correlation_id, "fsm-call-1")
+        }
         other => panic!("expected suspend, got {other:?}"),
     }
 }

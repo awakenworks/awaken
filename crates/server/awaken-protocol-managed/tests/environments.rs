@@ -48,6 +48,25 @@ async fn make_env(app: &Router) -> String {
     e["id"].as_str().unwrap().to_string()
 }
 
+async fn call_with_worker(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    worker_id: &str,
+) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("anthropic-worker-id", worker_id)
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, value)
+}
+
 /// The environment projects to the official `BetaEnvironment` shape: ownership is
 /// credential-implicit, so the object carries NO `scope` — and a `scope` sent in
 /// the create body is ignored (non-official field), keeping the response byte-
@@ -100,6 +119,86 @@ async fn environment_carries_no_scope_and_ignores_a_body_scope() {
         scoped.get("scope").is_none(),
         "a body scope is ignored, not echoed"
     );
+}
+
+#[tokio::test]
+async fn official_worker_header_and_heartbeat_cas_are_wired() {
+    let app = app();
+    let id = make_env(&app).await;
+    let (status, work) = call_with_worker(
+        &app,
+        "GET",
+        &format!("/v1/environments/{id}/work/poll"),
+        "worker-cas",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let wid = work["id"].as_str().unwrap();
+
+    let (_, stats) = call(
+        &app,
+        "GET",
+        &format!("/v1/environments/{id}/work/stats"),
+        None,
+    )
+    .await;
+    assert_eq!(stats["workers_polling"], 1);
+
+    // Before any heartbeat receipt exists, the claim owner is still authority:
+    // another worker cannot win the otherwise-shared NO_HEARTBEAT condition.
+    let (status, _) = call_with_worker(
+        &app,
+        "POST",
+        &format!("/v1/environments/{id}/work/{wid}/heartbeat?expected_last_heartbeat=NO_HEARTBEAT"),
+        "worker-other",
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+
+    let (status, first) = call_with_worker(
+        &app,
+        "POST",
+        &format!(
+            "/v1/environments/{id}/work/{wid}/heartbeat?expected_last_heartbeat=NO_HEARTBEAT&desired_ttl_seconds=7"
+        ),
+        "worker-cas",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(first["ttl_seconds"], 7);
+    let first_token = first["last_heartbeat"].as_str().unwrap();
+
+    let (status, _) = call_with_worker(
+        &app,
+        "POST",
+        &format!("/v1/environments/{id}/work/{wid}/heartbeat?expected_last_heartbeat=NO_HEARTBEAT"),
+        "worker-cas",
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+
+    let (status, second) = call_with_worker(
+        &app,
+        "POST",
+        &format!(
+            "/v1/environments/{id}/work/{wid}/heartbeat?expected_last_heartbeat={first_token}"
+        ),
+        "worker-cas",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_ne!(second["last_heartbeat"], first["last_heartbeat"]);
+
+    let (status, _) = call_with_worker(
+        &app,
+        "POST",
+        &format!(
+            "/v1/environments/{id}/work/{wid}/heartbeat?expected_last_heartbeat={first_token}"
+        ),
+        "worker-cas",
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED);
 }
 
 /// `deny_egress` reflects the environment's networking policy: a `limited` or `none`

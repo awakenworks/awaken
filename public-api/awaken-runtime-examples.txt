@@ -16,7 +16,7 @@ pub use awaken_runtime_examples::prelude::PermissionRule
 pub use awaken_runtime_examples::prelude::PermissionRuleset
 pub use awaken_runtime_examples::prelude::ResolvedSpec
 pub use awaken_runtime_examples::prelude::Role
-pub use awaken_runtime_examples::prelude::RulePermissionPolicy
+pub use awaken_runtime_examples::prelude::RuleBasedToolPermissionPolicy
 pub use awaken_runtime_examples::prelude::RunActivation
 pub use awaken_runtime_examples::prelude::RunExecutor
 pub use awaken_runtime_examples::prelude::RunId

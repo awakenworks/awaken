@@ -9,6 +9,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_protocol_a2a::client::{self as a2a, Transport};
 use awaken_protocol_a2a::{Task, TaskState};
 use awaken_runtime_contract::CancellationToken;
@@ -61,6 +62,26 @@ impl RemoteAgent for A2aRemoteAgent {
             .map_err(|e| DelegationExecutionError::new(e.to_string()))?;
         serde_json::to_value(card).map_err(|e| DelegationExecutionError::new(e.to_string()))
     }
+
+    async fn cancel(
+        &self,
+        _agent_id: &str,
+        _child_run_id: &RunId,
+        execution_reference: Option<&Value>,
+    ) -> Result<(), DelegationExecutionError> {
+        let task_id = execution_reference
+            .and_then(|reference| reference.get("task_id"))
+            .and_then(Value::as_str)
+            .filter(|task_id| !task_id.is_empty())
+            .ok_or_else(|| {
+                DelegationExecutionError::new(
+                    "remote A2A cancellation is missing its durable task_id",
+                )
+            })?;
+        a2a::try_cancel_task(self.transport.as_ref(), task_id)
+            .await
+            .map_err(|error| DelegationExecutionError::new(error.to_string()))
+    }
 }
 
 fn completed_reply(task: &Task) -> String {
@@ -80,6 +101,22 @@ fn completed_reply(task: &Task) -> String {
         }
     }
     reply
+}
+
+fn execution_error(error: a2a::ClientError) -> DelegationExecutionError {
+    let retryable = matches!(
+        error,
+        a2a::ClientError::Transport(_)
+            | a2a::ClientError::Http {
+                status: 500..=599,
+                ..
+            }
+    );
+    if retryable {
+        DelegationExecutionError::retryable(error.to_string())
+    } else {
+        DelegationExecutionError::new(error.to_string())
+    }
 }
 
 /// Map a non-working task to a delegation step: completed → done; input/auth
@@ -122,7 +159,7 @@ async fn remote_run(
     let message_id = format!("delegation-message-{request_id}");
     let mut task = a2a::send_message(transport, Some(agent_id), &context_id, &message_id, input)
         .await
-        .map_err(|e| DelegationExecutionError::new(e.to_string()))?;
+        .map_err(execution_error)?;
 
     let mut polls = 0usize;
     while matches!(task.status.state, TaskState::Working) {
@@ -138,7 +175,7 @@ async fn remote_run(
         polls += 1;
         task = a2a::get_task(transport, &task.id)
             .await
-            .map_err(|e| DelegationExecutionError::new(e.to_string()))?;
+            .map_err(execution_error)?;
         if matches!(task.status.state, TaskState::Working) {
             match cancellation {
                 Some(token) => {
@@ -222,5 +259,86 @@ mod tests {
         });
         let delegate = A2aRemoteAgent::new(transport);
         assert!(delegate.card("flaky").await.is_err());
+    }
+
+    #[test]
+    fn remote_transport_and_server_outages_are_retryable_child_interruptions() {
+        assert!(execution_error(a2a::ClientError::Transport("down".into())).is_retryable());
+        assert!(
+            execution_error(a2a::ClientError::Http {
+                what: "message:send",
+                status: 503,
+                message: "later".into(),
+            })
+            .is_retryable()
+        );
+        assert!(
+            !execution_error(a2a::ClientError::Http {
+                what: "message:send",
+                status: 400,
+                message: "bad request".into(),
+            })
+            .is_retryable()
+        );
+    }
+
+    #[tokio::test]
+    async fn durable_cancellation_uses_the_persisted_remote_task_id() {
+        let transport = Arc::new(MockTransport {
+            seen: Mutex::new(Vec::new()),
+            status: 204,
+            reply: String::new(),
+        });
+        let delegate = A2aRemoteAgent::new(transport.clone());
+        delegate
+            .cancel(
+                "researcher",
+                &RunId("child-1".into()),
+                Some(&json!({"task_id": "remote-task-7"})),
+            )
+            .await
+            .expect("cancel is delivered");
+        assert_eq!(
+            transport.seen.lock().unwrap().as_slice(),
+            &[("POST".into(), "/v1/a2a/tasks/remote-task-7:cancel".into())]
+        );
+    }
+
+    #[tokio::test]
+    async fn durable_cancellation_fails_closed_without_an_address() {
+        let transport = Arc::new(MockTransport {
+            seen: Mutex::new(Vec::new()),
+            status: 204,
+            reply: String::new(),
+        });
+        let delegate = A2aRemoteAgent::new(transport.clone());
+        assert!(
+            delegate
+                .cancel("researcher", &RunId("child-1".into()), None)
+                .await
+                .is_err()
+        );
+        assert!(transport.seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn durable_cancellation_surfaces_transport_rejection_for_retry() {
+        let transport = Arc::new(MockTransport {
+            seen: Mutex::new(Vec::new()),
+            status: 503,
+            reply: r#"{"error":{"message":"temporarily unavailable"}}"#.into(),
+        });
+        let delegate = A2aRemoteAgent::new(transport.clone());
+        assert!(
+            delegate
+                .cancel(
+                    "researcher",
+                    &RunId("child-1".into()),
+                    Some(&json!({"task_id": "remote-task-7"})),
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(transport.seen.lock().unwrap().len(), 1);
     }
 }

@@ -30,7 +30,7 @@ RuntimeAssumptions ==
 
 ASSUME RuntimeAssumptions
 
-TicketKinds == {"None", "Approval", "Delegation"}
+TicketKinds == {"None", "ToolPermission", "Delegation"}
 DispatchStates == {"Pending", "Leased", "Awaiting", "Removed"}
 
 VARIABLES
@@ -121,7 +121,7 @@ Reclaim(candidate) ==
                     endedOnce>>
     /\ Committed
 
-RequestApproval(c) ==
+RequestToolPermission(c) ==
     /\ c \in Calls
     /\ runState = "Running"
     /\ dispatchState = "Leased"
@@ -129,11 +129,11 @@ RequestApproval(c) ==
     /\ callState[c] = "Requested"
     /\ \A d \in Calls: callState[d] # "Executing"
     /\ runState' = "Awaiting"
-    /\ ticketKind' = "Approval"
+    /\ ticketKind' = "ToolPermission"
     /\ ticketCall' = c
     /\ dispatchState' = "Awaiting"
     /\ owner' = NoOwner
-    /\ callState' = [callState EXCEPT ![c] = "AwaitingApproval"]
+    /\ callState' = [callState EXCEPT ![c] = "AwaitingToolPermission"]
     /\ UNCHANGED <<leaseEpoch, attempts, invokedAttempt, decision, published,
                     childState, linkStatus,
                     inboxCount, endedOnce>>
@@ -144,9 +144,9 @@ Approve(c, candidate) ==
     /\ candidate \in Owners
     /\ runState = "Awaiting"
     /\ dispatchState = "Awaiting"
-    /\ ticketKind = "Approval"
+    /\ ticketKind = "ToolPermission"
     /\ ticketCall = c
-    /\ callState[c] = "AwaitingApproval"
+    /\ callState[c] = "AwaitingToolPermission"
     /\ attempts[c] < MaxAttempts
     /\ leaseEpoch < MaxEpoch
     /\ runState' = "Running"
@@ -166,9 +166,9 @@ Deny(c, candidate) ==
     /\ candidate \in Owners
     /\ runState = "Awaiting"
     /\ dispatchState = "Awaiting"
-    /\ ticketKind = "Approval"
+    /\ ticketKind = "ToolPermission"
     /\ ticketCall = c
-    /\ callState[c] = "AwaitingApproval"
+    /\ callState[c] = "AwaitingToolPermission"
     /\ leaseEpoch < MaxEpoch
     /\ runState' = "Running"
     /\ ticketKind' = "None"
@@ -188,9 +188,9 @@ SupplyResult(c, candidate) ==
     /\ candidate \in Owners
     /\ runState = "Awaiting"
     /\ dispatchState = "Awaiting"
-    /\ ticketKind = "Approval"
+    /\ ticketKind = "ToolPermission"
     /\ ticketCall = c
-    /\ callState[c] = "AwaitingApproval"
+    /\ callState[c] = "AwaitingToolPermission"
     /\ leaseEpoch < MaxEpoch
     /\ runState' = "Running"
     /\ ticketKind' = "None"
@@ -414,7 +414,7 @@ StaleSettle(candidate, epoch) ==
 Next ==
     \/ \E candidate \in Owners: Claim(candidate)
     \/ \E candidate \in Owners: Reclaim(candidate)
-    \/ \E c \in Calls: RequestApproval(c)
+    \/ \E c \in Calls: RequestToolPermission(c)
     \/ \E c \in Calls, candidate \in Owners: Approve(c, candidate)
     \/ \E c \in Calls, candidate \in Owners: Deny(c, candidate)
     \/ \E c \in Calls, candidate \in Owners: SupplyResult(c, candidate)
@@ -467,8 +467,8 @@ RunDispatchCoherence ==
 TicketCoherence ==
     /\ (ticketKind = "None") \equiv (ticketCall = NoCall)
     /\ (runState = "Awaiting") \equiv (ticketKind # "None")
-    /\ (ticketKind = "Approval") =>
-          callState[ticketCall] = "AwaitingApproval"
+    /\ (ticketKind = "ToolPermission") =>
+          callState[ticketCall] = "AwaitingToolPermission"
     /\ (ticketKind = "Delegation") =>
           (ticketCall = AgentCall /\ childState \in {"Running", "Awaiting"}
            /\ linkStatus = "Open")
@@ -481,9 +481,9 @@ ExecutionWasCommitted ==
 AttemptsAreCommitted ==
     \A c \in Calls: attempts[c] > 0 => commitVersion > 0
 
-ApprovalCannotBeBypassed ==
+ToolPermissionCannotBeBypassed ==
     \A c \in Calls:
-        callState[c] = "AwaitingApproval" =>
+        callState[c] = "AwaitingToolPermission" =>
             /\ attempts[c] = 0
             /\ invokedAttempt[c] = 0
             /\ decision[c] = "None"
@@ -520,7 +520,7 @@ CancellationIsDurable ==
 MessagesCannotApprove ==
     \A c \in Calls:
         decision[c] = "Approved" =>
-            (attempts[c] > 0 /\ callState[c] # "AwaitingApproval")
+            (attempts[c] > 0 /\ callState[c] # "AwaitingToolPermission")
 
 EndedIsAbsorbing == endedOnce => runState = "Ended"
 
@@ -530,7 +530,7 @@ Safety ==
     /\ TicketCoherence
     /\ ExecutionWasCommitted
     /\ AttemptsAreCommitted
-    /\ ApprovalCannotBeBypassed
+    /\ ToolPermissionCannotBeBypassed
     /\ DeniedCallsNeverRun
     /\ RequestedCallsAreFresh
     /\ DeniedCallsAreTerminal

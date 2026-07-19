@@ -115,7 +115,7 @@ async fn a_system_role_message_is_carried_into_inference() {
                 content: vec![ContentBlock::text("hi")],
             },
         ],
-        initiator: None,
+        delegation_origin: None,
         model_ref_override: None,
     };
 

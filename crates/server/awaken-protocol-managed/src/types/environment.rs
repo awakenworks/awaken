@@ -125,7 +125,7 @@ pub struct WorkQueueStats {
 pub struct WorkHeartbeat {
     #[serde(rename = "type")]
     pub object_type: &'static str,
-    pub last_heartbeat: &'static str,
+    pub last_heartbeat: String,
     pub lease_extended: bool,
     pub state: &'static str,
     pub ttl_seconds: u64,

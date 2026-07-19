@@ -147,7 +147,7 @@ impl LlmExecutor for MemoryHostModel {
         let is_extractor = request.messages.iter().any(|m| {
             m.role == Role::System
                 && m.content.iter().any(|b| match b {
-                    ContentBlock::Text { text } => text.contains("memory extraction sub-agent"),
+                    ContentBlock::Text { text } => text.contains("memory extraction Agent"),
                     _ => false,
                 })
         });
@@ -197,7 +197,7 @@ impl LlmExecutor for CompactHostModel {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let reply = if system_text.contains("conversation-compaction sub-agent") {
+        let reply = if system_text.contains("conversation-compaction Agent") {
             "COMPACTED".to_string()
         } else if system_text.contains("Summary of earlier conversation") {
             "seen-summary".to_string()
@@ -264,7 +264,7 @@ impl LlmExecutor for MemLoopModel {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        if system_text.contains("memory extraction sub-agent") {
+        if system_text.contains("memory extraction Agent") {
             let already = request.messages.iter().any(|m| {
                 m.role == Role::Tool
                     && m.content.iter().any(|b| match b {
@@ -368,7 +368,7 @@ impl LlmExecutor for ResumeMemModel {
         let is_extractor = request.messages.iter().any(|m| {
             m.role == Role::System
                 && m.content.iter().any(|b| match b {
-                    ContentBlock::Text { text } => text.contains("memory extraction sub-agent"),
+                    ContentBlock::Text { text } => text.contains("memory extraction Agent"),
                     _ => false,
                 })
         });
@@ -425,7 +425,7 @@ async fn resume_ended_turn_triggers_memory_extraction() {
         .resume(
             "t-res",
             &pending.tool_use_id,
-            HostResume::Confirm {
+            HostResume::ToolPermission {
                 allow: true,
                 note: None,
             },
@@ -456,7 +456,7 @@ impl LlmExecutor for CursorModel {
         let is_extractor = request.messages.iter().any(|m| {
             m.role == Role::System
                 && m.content.iter().any(|b| match b {
-                    ContentBlock::Text { text } => text.contains("memory extraction sub-agent"),
+                    ContentBlock::Text { text } => text.contains("memory extraction Agent"),
                     _ => false,
                 })
         });
@@ -1383,7 +1383,7 @@ async fn run_on_an_awaiting_thread_fails_closed() {
         .resume(
             "t-awaiting",
             "w1",
-            HostResume::Confirm {
+            HostResume::ToolPermission {
                 allow: true,
                 note: None,
             },
@@ -1402,7 +1402,7 @@ async fn resume_with_no_awaiting_run_fails_closed() {
         .resume(
             "t-idle",
             "w1",
-            HostResume::Confirm {
+            HostResume::ToolPermission {
                 allow: true,
                 note: None,
             },
@@ -1434,7 +1434,7 @@ async fn resume_with_a_wrong_tool_use_id_fails_closed() {
         .resume(
             "t-wrongid",
             "not-the-pending-id",
-            HostResume::Confirm {
+            HostResume::ToolPermission {
                 allow: true,
                 note: None,
             },
@@ -1454,7 +1454,7 @@ async fn resume_with_a_wrong_tool_use_id_fails_closed() {
         .resume(
             "t-wrongid",
             &r1.pending.expect("a pending tool").tool_use_id,
-            HostResume::Confirm {
+            HostResume::ToolPermission {
                 allow: true,
                 note: None,
             },
@@ -1508,7 +1508,7 @@ async fn confirm_cannot_answer_a_client_tool() {
         .resume(
             "t-bind2",
             &pending.tool_use_id,
-            HostResume::Confirm {
+            HostResume::ToolPermission {
                 allow: true,
                 note: None,
             },
@@ -1647,4 +1647,135 @@ async fn end_session_disposes_the_threads_sandbox() {
         .end_session("never-existed")
         .await
         .expect("end_session is a no-op for an unknown thread");
+}
+
+struct AwaitRemoteChildModel {
+    calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for AwaitRemoteChildModel {
+    async fn infer(
+        &self,
+        _request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let output = if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            AssistantOutput::from_tool_calls(vec![awaken_runtime_contract::llm::ToolCall {
+                call_id: "remote-child-call".into(),
+                tool_id: awaken_ext_builtin_tools::AGENT_RUN.into(),
+                arguments: serde_json::json!({
+                    "agent_id": "researcher",
+                    "input": "investigate"
+                }),
+            }])
+        } else {
+            AssistantOutput::text("done")
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+#[derive(Default)]
+struct RecoverableRemoteChild {
+    cancellations: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl awaken_runtime_contract::delegation::RemoteAgent for RecoverableRemoteChild {
+    async fn run(
+        &self,
+        _agent_id: &str,
+        _request_id: &str,
+        _input: &str,
+        _cancellation: Option<&CancellationToken>,
+    ) -> Result<
+        awaken_runtime_contract::delegation::DelegationStep,
+        awaken_runtime_contract::delegation::DelegationExecutionError,
+    > {
+        Ok(
+            awaken_runtime_contract::delegation::DelegationStep::Awaiting {
+                continuation: serde_json::json!({"task_id": "remote-task-9"}),
+            },
+        )
+    }
+
+    async fn card(
+        &self,
+        _agent_id: &str,
+    ) -> Result<serde_json::Value, awaken_runtime_contract::delegation::DelegationExecutionError>
+    {
+        Ok(serde_json::json!({"name": "researcher"}))
+    }
+
+    async fn cancel(
+        &self,
+        _agent_id: &str,
+        _child_run_id: &RunId,
+        execution_reference: Option<&serde_json::Value>,
+    ) -> Result<(), awaken_runtime_contract::delegation::DelegationExecutionError> {
+        assert_eq!(
+            execution_reference.and_then(|value| value["task_id"].as_str()),
+            Some("remote-task-9")
+        );
+        self.cancellations.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn rebuilt_host_redelivers_an_awaiting_remote_child_cancellation() {
+    let storage = tempfile::tempdir().expect("temporary durable host store");
+    let remote = Arc::new(RecoverableRemoteChild::default());
+    let host = SharedHost::new(
+        Arc::new(AwaitRemoteChildModel {
+            calls: AtomicUsize::new(0),
+        }),
+        "stub",
+    )
+    .with_store_dir(storage.path())
+    .with_remote_agent("researcher", remote.clone());
+
+    let result = host
+        .run(None, "cancel-recovery", user("start child"))
+        .await
+        .expect("parent awaits remote child");
+    assert_eq!(result.state, RunState::Awaiting);
+    let ctx = host
+        .ctx_for("cancel-recovery", None)
+        .await
+        .expect("session context");
+    let parent_run_id = ctx
+        .state
+        .lock()
+        .await
+        .awaiting_run
+        .clone()
+        .expect("awaiting parent id");
+    ctx.runtime
+        .cancel_run(
+            parent_run_id,
+            ctx.thread_id.clone(),
+            RuntimeRunContext::new()
+                .with_commit(ctx.commit.clone())
+                .with_reader(ctx.commit.clone()),
+        )
+        .await
+        .expect("terminal parent commit and first cancellation delivery");
+    assert_eq!(remote.cancellations.load(Ordering::SeqCst), 1);
+
+    drop(ctx);
+    drop(host);
+    let replacement = SharedHost::new(Arc::new(OkModel), "stub")
+        .with_store_dir(storage.path())
+        .with_remote_agent("researcher", remote.clone());
+    replacement.committed_messages("cancel-recovery").await;
+    assert_eq!(
+        remote.cancellations.load(Ordering::SeqCst),
+        2,
+        "a new process has no ephemeral receipt and redelivers the durable intent"
+    );
 }

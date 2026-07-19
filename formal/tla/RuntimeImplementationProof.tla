@@ -24,11 +24,11 @@ BY Z3T(10) DEF ApplyClaim, ABS!Claim, ABS!Next
 LEMMA ApplyReclaimRefines == ApplyReclaim => ABS!Next
 BY Z3T(10) DEF ApplyReclaim, ABS!Reclaim, ABS!Next
 
-LEMMA ApplyRequestApprovalRefines == ApplyRequestApproval => ABS!Next
-<1>1. ApplyRequestApproval => pendingCall \in Calls
-    BY DEF ApplyRequestApproval, ABS!RequestApproval
-<1>2. ApplyRequestApproval => ABS!RequestApproval(pendingCall)
-    BY DEF ApplyRequestApproval
+LEMMA ApplyRequestToolPermissionRefines == ApplyRequestToolPermission => ABS!Next
+<1>1. ApplyRequestToolPermission => pendingCall \in Calls
+    BY DEF ApplyRequestToolPermission, ABS!RequestToolPermission
+<1>2. ApplyRequestToolPermission => ABS!RequestToolPermission(pendingCall)
+    BY DEF ApplyRequestToolPermission
 <1>. QED BY <1>1, <1>2 DEF ABS!Next
 
 LEMMA ApplyApproveRefines == ApplyApprove => ABS!Next
@@ -132,7 +132,7 @@ BY Z3T(10) DEF ApplyStaleSettle, ABS!StaleSettle, ABS!Next
 
 LEMMA NextRefines == Next => ABS!Next \/ UNCHANGED implVars
 BY PrepareStutters, CrashPreparedStutters, ApplyClaimRefines,
-   ApplyReclaimRefines, ApplyRequestApprovalRefines, ApplyApproveRefines,
+   ApplyReclaimRefines, ApplyRequestToolPermissionRefines, ApplyApproveRefines,
    ApplyDenyRefines, ApplySupplyResultRefines, ApplyDirectStartRefines,
    ApplyCompleteImmediateRefines, InvokeRefines, ApplyCompleteRefines,
    ApplyRecoverReplaySafeRefines,

@@ -1,6 +1,6 @@
 //! A declarative, Claude-Code-compatible permission policy.
 //!
-//! This extension implements the runtime's [`PermissionPolicy`] port with rules
+//! This extension implements the runtime's [`ToolPermissionPolicy`] port with rules
 //! that match a tool call by name and arguments, returning allow / ask / deny
 //! (ADR-0030). The runtime owns the *axis* (the gate, the decision ticket, the
 //! audit); this crate owns the concrete *policy*.
@@ -19,9 +19,7 @@
 //! deny is absolute and a more specific allow overrides a broader ask.
 
 use async_trait::async_trait;
-use awaken_runtime_contract::permission::{
-    PermissionContext, PermissionDecision, PermissionPolicy,
-};
+use awaken_runtime_contract::permission::{ToolCall, ToolPermissionPolicy, ToolPermissionVerdict};
 use awaken_tool_pattern::{
     ArgMatcher, MatchOp, MatchResult, Specificity, ToolMatcher, parse_pattern, pattern_matches,
 };
@@ -92,7 +90,8 @@ fn ensure_glob_only(pattern: &awaken_tool_pattern::ToolCallPattern) -> Result<()
 #[serde(rename_all = "lowercase")]
 pub enum ToolPermissionBehavior {
     Allow,
-    Ask,
+    #[serde(rename = "ask")]
+    RequireConfirmation,
     Deny,
 }
 
@@ -154,7 +153,7 @@ pub struct PermissionRuleset {
 impl Default for PermissionRuleset {
     fn default() -> Self {
         Self {
-            default_behavior: ToolPermissionBehavior::Ask,
+            default_behavior: ToolPermissionBehavior::RequireConfirmation,
             mode: Mode::Default,
             rules: Vec::new(),
         }
@@ -192,30 +191,32 @@ impl PermissionRuleset {
     }
 }
 
-/// The runtime [`PermissionPolicy`] backed by a [`PermissionRuleset`].
-pub struct RulePermissionPolicy {
+/// The runtime [`ToolPermissionPolicy`] backed by a [`PermissionRuleset`].
+pub struct RuleBasedToolPermissionPolicy {
     ruleset: PermissionRuleset,
 }
 
-impl RulePermissionPolicy {
+impl RuleBasedToolPermissionPolicy {
     pub fn new(ruleset: PermissionRuleset) -> Self {
         Self { ruleset }
     }
 }
 
 #[async_trait]
-impl PermissionPolicy for RulePermissionPolicy {
-    async fn decide(&self, ctx: &PermissionContext) -> PermissionDecision {
-        match self.ruleset.decide(&ctx.tool_id, &ctx.arguments) {
-            ToolPermissionBehavior::Allow => PermissionDecision::Allow,
-            ToolPermissionBehavior::Deny => PermissionDecision::Deny {
-                reason: format!("tool {} denied by policy", ctx.tool_id),
+impl ToolPermissionPolicy for RuleBasedToolPermissionPolicy {
+    async fn evaluate(&self, call: &ToolCall) -> ToolPermissionVerdict {
+        match self.ruleset.decide(&call.tool_id, &call.arguments) {
+            ToolPermissionBehavior::Allow => ToolPermissionVerdict::Allow,
+            ToolPermissionBehavior::Deny => ToolPermissionVerdict::Deny {
+                reason: format!("tool {} denied by policy", call.tool_id),
             },
             // The ask ticket is correlated to this call, so the operator's later
             // decision resumes exactly this invocation (ADR-0030 D2).
-            ToolPermissionBehavior::Ask => PermissionDecision::Ask {
-                ticket_id: format!("perm-{}", ctx.call_id),
-            },
+            ToolPermissionBehavior::RequireConfirmation => {
+                ToolPermissionVerdict::RequireConfirmation {
+                    correlation_id: format!("perm-{}", call.call_id),
+                }
+            }
         }
     }
 }
@@ -244,7 +245,7 @@ pub struct RuleConfig {
 }
 
 fn default_ask() -> ToolPermissionBehavior {
-    ToolPermissionBehavior::Ask
+    ToolPermissionBehavior::RequireConfirmation
 }
 
 /// Parse an agent's `permission` config section into a [`PermissionRuleset`].
@@ -341,7 +342,10 @@ mod tests {
     #[test]
     fn parse_ruleset_defaults_to_ask_when_unspecified() {
         let rs = parse_ruleset(&json!({})).unwrap();
-        assert_eq!(rs.default_behavior, ToolPermissionBehavior::Ask);
+        assert_eq!(
+            rs.default_behavior,
+            ToolPermissionBehavior::RequireConfirmation
+        );
         assert!(rs.rules.is_empty());
     }
 
@@ -389,7 +393,7 @@ mod tests {
     #[test]
     fn deny_is_absolute_over_allow() {
         let set = PermissionRuleset {
-            default_behavior: ToolPermissionBehavior::Ask,
+            default_behavior: ToolPermissionBehavior::RequireConfirmation,
             mode: Mode::Default,
             rules: vec![
                 rule("Bash", ToolPermissionBehavior::Allow),
@@ -413,7 +417,7 @@ mod tests {
             default_behavior: ToolPermissionBehavior::Deny,
             mode: Mode::Default,
             rules: vec![
-                rule("Bash", ToolPermissionBehavior::Ask),
+                rule("Bash", ToolPermissionBehavior::RequireConfirmation),
                 rule("Bash(npm test*)", ToolPermissionBehavior::Allow),
             ],
         };
@@ -424,36 +428,38 @@ mod tests {
         );
         assert_eq!(
             set.decide("Bash", &json!({"command": "ls"})),
-            ToolPermissionBehavior::Ask
+            ToolPermissionBehavior::RequireConfirmation
         );
     }
 
     #[tokio::test]
     async fn policy_maps_behavior_to_decision() {
-        use awaken_runtime_contract::permission::PermissionContext;
-        let policy = RulePermissionPolicy::new(PermissionRuleset {
-            default_behavior: ToolPermissionBehavior::Ask,
+        use awaken_runtime_contract::permission::ToolCall;
+        let policy = RuleBasedToolPermissionPolicy::new(PermissionRuleset {
+            default_behavior: ToolPermissionBehavior::RequireConfirmation,
             mode: Mode::Default,
             rules: vec![
                 rule("Read", ToolPermissionBehavior::Allow),
                 rule("Bash(*rm*)", ToolPermissionBehavior::Deny),
             ],
         });
-        let ctx = |tool: &str, args| PermissionContext {
+        let ctx = |tool: &str, args| ToolCall {
             tool_id: tool.to_string(),
             call_id: "c1".to_string(),
             arguments: args,
         };
         assert!(matches!(
-            policy.decide(&ctx("Read", json!({}))).await,
-            PermissionDecision::Allow
+            policy.evaluate(&ctx("Read", json!({}))).await,
+            ToolPermissionVerdict::Allow
         ));
         assert!(matches!(
-            policy.decide(&ctx("Bash", json!({"c": "x rm y"}))).await,
-            PermissionDecision::Deny { .. }
+            policy.evaluate(&ctx("Bash", json!({"c": "x rm y"}))).await,
+            ToolPermissionVerdict::Deny { .. }
         ));
-        match policy.decide(&ctx("Other", json!({}))).await {
-            PermissionDecision::Ask { ticket_id } => assert_eq!(ticket_id, "perm-c1"),
+        match policy.evaluate(&ctx("Other", json!({}))).await {
+            ToolPermissionVerdict::RequireConfirmation { correlation_id } => {
+                assert_eq!(correlation_id, "perm-c1")
+            }
             other => panic!("expected ask, got {other:?}"),
         }
     }
@@ -474,7 +480,7 @@ mod tests {
         );
 
         let plan = PermissionRuleset {
-            default_behavior: ToolPermissionBehavior::Ask,
+            default_behavior: ToolPermissionBehavior::RequireConfirmation,
             mode: Mode::Plan,
             rules: base.clone(),
         };
@@ -488,13 +494,13 @@ mod tests {
         );
 
         let default = PermissionRuleset {
-            default_behavior: ToolPermissionBehavior::Ask,
+            default_behavior: ToolPermissionBehavior::RequireConfirmation,
             mode: Mode::Default,
             rules: base,
         };
         assert_eq!(
             default.decide("Bash", &unmatched()),
-            ToolPermissionBehavior::Ask
+            ToolPermissionBehavior::RequireConfirmation
         );
     }
 }

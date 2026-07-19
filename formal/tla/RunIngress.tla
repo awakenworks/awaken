@@ -1,7 +1,8 @@
 ------------------------------ MODULE RunIngress ------------------------------
 EXTENDS Naturals, RuntimeVocabulary
 
-\* Runtime/run-ingress lifecycle model. WorkQueue is deliberately out of scope.
+\* Runtime/run-ingress lifecycle model. Managed environment WorkQueue is a
+\* distinct aggregate modeled in WorkQueue.tla.
 CONSTANTS Owners, NoOwner, MaxEpoch
 
 DispatchStates == {

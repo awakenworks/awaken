@@ -11,8 +11,8 @@ pub awaken_ext_permission::PermissionRuleScope::Session
 pub awaken_ext_permission::PermissionRuleScope::User
 pub enum awaken_ext_permission::ToolPermissionBehavior
 pub awaken_ext_permission::ToolPermissionBehavior::Allow
-pub awaken_ext_permission::ToolPermissionBehavior::Ask
 pub awaken_ext_permission::ToolPermissionBehavior::Deny
+pub awaken_ext_permission::ToolPermissionBehavior::RequireConfirmation
 pub struct awaken_ext_permission::PermissionRule
 pub awaken_ext_permission::PermissionRule::behavior: awaken_ext_permission::ToolPermissionBehavior
 pub awaken_ext_permission::PermissionRule::pattern: awaken_ext_permission::ToolCallPattern
@@ -27,14 +27,14 @@ impl awaken_ext_permission::PermissionRuleset
 pub fn awaken_ext_permission::PermissionRuleset::decide(&self, &str, &serde_json::value::Value) -> awaken_ext_permission::ToolPermissionBehavior
 impl core::default::Default for awaken_ext_permission::PermissionRuleset
 pub fn awaken_ext_permission::PermissionRuleset::default() -> Self
+pub struct awaken_ext_permission::RuleBasedToolPermissionPolicy
+impl awaken_ext_permission::RuleBasedToolPermissionPolicy
+pub fn awaken_ext_permission::RuleBasedToolPermissionPolicy::new(awaken_ext_permission::PermissionRuleset) -> Self
+impl awaken_runtime_contract::permission::ToolPermissionPolicy for awaken_ext_permission::RuleBasedToolPermissionPolicy
+pub fn awaken_ext_permission::RuleBasedToolPermissionPolicy::evaluate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::ToolPermissionVerdict> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_ext_permission::RuleConfig
 pub awaken_ext_permission::RuleConfig::behavior: awaken_ext_permission::ToolPermissionBehavior
 pub awaken_ext_permission::RuleConfig::pattern: alloc::string::String
-pub struct awaken_ext_permission::RulePermissionPolicy
-impl awaken_ext_permission::RulePermissionPolicy
-pub fn awaken_ext_permission::RulePermissionPolicy::new(awaken_ext_permission::PermissionRuleset) -> Self
-impl awaken_runtime_contract::permission::PermissionPolicy for awaken_ext_permission::RulePermissionPolicy
-pub fn awaken_ext_permission::RulePermissionPolicy::decide<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::permission::PermissionContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::PermissionDecision> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_ext_permission::RulesConfig
 pub awaken_ext_permission::RulesConfig::default_behavior: awaken_ext_permission::ToolPermissionBehavior
 pub awaken_ext_permission::RulesConfig::mode: awaken_ext_permission::Mode

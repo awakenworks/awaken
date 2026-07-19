@@ -40,7 +40,7 @@ function kimiFromBashrc() {
   if (!key || !base) return null;
   // The claude ACP adapter (Claude Code) appends `/v1/messages` itself, so
   // ANTHROPIC_BASE_URL is the ROOT (no `/v1`) — the raw ~/.bashrc value.
-  return { key, base, model: 'kimi-k2-0711-preview' };
+  return { key, base, model: 'kimi-for-coding' };
 }
 
 async function listEvents(client, id) {

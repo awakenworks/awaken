@@ -128,8 +128,9 @@ impl McpStdioServer {
 mod tests {
     use super::*;
     use crate::export::{McpExportedTool, SharedExports, StaticExports};
+    use awaken_runtime_contract::permission::ToolCall;
     use awaken_runtime_contract::resolved::ToolDescriptor;
-    use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
+    use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
     use std::time::Duration;
 
     struct EchoTool;
@@ -205,14 +206,14 @@ mod tests {
     #[tokio::test]
     async fn a_suspend_gate_fails_closed_over_stdio() {
         use awaken_agent_contract::agent::state::Store;
-        use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
+        use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
 
         struct SuspendGate;
         #[async_trait]
         impl ToolGateHook for SuspendGate {
-            async fn gate(&self, _ctx: &PermissionContext, _state: &Store) -> GateOutcome {
-                GateOutcome::Suspend {
-                    ticket_id: "t".into(),
+            async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateOutcome {
+                GateOutcome::RequireConfirmation {
+                    correlation_id: "t".into(),
                 }
             }
         }

@@ -11,7 +11,7 @@
 //
 // Gated: skips without a real key. Run: (from e2e/, with KIMI env)
 //   ANTHROPIC_API_KEY=sk-kimi-... ANTHROPIC_BASE_URL=https://api.kimi.com/coding/v1/ \
-//   ANTHROPIC_MODEL=kimi-k2-0711-preview node managed_real_thinking_e2e.mjs
+//   ANTHROPIC_MODEL=kimi-for-coding node managed_real_thinking_e2e.mjs
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';

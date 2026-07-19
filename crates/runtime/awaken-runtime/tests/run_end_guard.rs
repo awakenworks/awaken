@@ -206,7 +206,7 @@ fn activation(plugin_ids: Vec<String>, max_steps: usize) -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
-        initiator: None,
+        delegation_origin: None,
         model_ref_override: None,
     }
 }

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::permission::{
-    GateOutcome, PermissionContext, PermissionDecision, PermissionPolicy, ToolGateHook,
+    GateOutcome, ToolGateHook, ToolPermissionPolicy, ToolPermissionVerdict,
 };
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolExecutor, ToolOutput};
 
@@ -24,27 +24,29 @@ impl RawTool for EchoTool {
 struct AllowAll;
 
 #[async_trait::async_trait]
-impl PermissionPolicy for AllowAll {
-    async fn decide(&self, _ctx: &PermissionContext) -> PermissionDecision {
-        PermissionDecision::Allow
+impl ToolPermissionPolicy for AllowAll {
+    async fn evaluate(&self, _ctx: &ToolCall) -> ToolPermissionVerdict {
+        ToolPermissionVerdict::Allow
     }
 }
 
 /// A gate that consults a policy and maps the decision to an outcome — the
 /// canonical relationship between the two ports.
-struct PolicyGate(Arc<dyn PermissionPolicy>);
+struct PolicyGate(Arc<dyn ToolPermissionPolicy>);
 
 #[async_trait::async_trait]
 impl ToolGateHook for PolicyGate {
     async fn gate(
         &self,
-        ctx: &PermissionContext,
+        ctx: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> GateOutcome {
-        match self.0.decide(ctx).await {
-            PermissionDecision::Allow => GateOutcome::Allow,
-            PermissionDecision::Deny { reason } => GateOutcome::Block { reason },
-            PermissionDecision::Ask { ticket_id } => GateOutcome::Suspend { ticket_id },
+        match self.0.evaluate(ctx).await {
+            ToolPermissionVerdict::Allow => GateOutcome::Allow,
+            ToolPermissionVerdict::Deny { reason } => GateOutcome::Block { reason },
+            ToolPermissionVerdict::RequireConfirmation { correlation_id } => {
+                GateOutcome::RequireConfirmation { correlation_id }
+            }
         }
     }
 }
@@ -68,7 +70,7 @@ async fn raw_tool_is_dyn_dispatchable() {
 #[tokio::test]
 async fn policy_backed_gate_allows() {
     let gate = PolicyGate(Arc::new(AllowAll));
-    let ctx = PermissionContext {
+    let ctx = ToolCall {
         tool_id: "echo".to_string(),
         call_id: "c1".to_string(),
         arguments: serde_json::json!({}),
@@ -79,11 +81,11 @@ async fn policy_backed_gate_allows() {
 
 #[test]
 fn permission_decision_round_trips() {
-    let decision = PermissionDecision::Deny {
+    let decision = ToolPermissionVerdict::Deny {
         reason: "nope".to_string(),
     };
     let json = serde_json::to_string(&decision).expect("serialize");
-    let back: PermissionDecision = serde_json::from_str(&json).expect("deserialize");
+    let back: ToolPermissionVerdict = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(decision, back);
 }
 

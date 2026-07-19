@@ -16,7 +16,7 @@
 // base ends in /v1/, the probe posts to {base_url}messages):
 //   ANTHROPIC_API_KEY=sk-kimi-... \
 //   ANTHROPIC_BASE_URL=https://api.kimi.com/coding/v1/ \
-//   ANTHROPIC_MODEL=kimi-k2-0711-preview \
+//   ANTHROPIC_MODEL=kimi-for-coding \
 //   node managed_config_resolve_real_e2e.mjs
 
 import assert from 'node:assert/strict';
@@ -26,8 +26,11 @@ const PORT = Number(process.env.E2E_PORT ?? 38155);
 const WS = 'ws';
 
 const KEY = process.env.ANTHROPIC_API_KEY ?? process.env.KIMI_API_KEY;
-const BASE = process.env.ANTHROPIC_BASE_URL ?? process.env.KIMI_BASE_URL ?? 'https://api.kimi.com/coding/v1/';
-const MODEL = process.env.ANTHROPIC_MODEL ?? process.env.KIMI_MODEL ?? 'kimi-k2-0711-preview';
+const RAW_BASE = process.env.ANTHROPIC_BASE_URL ?? process.env.KIMI_BASE_URL ?? 'https://api.kimi.com/coding/v1/';
+const BASE = RAW_BASE.includes('api.kimi.com/coding') && !RAW_BASE.replace(/\/$/, '').endsWith('/v1')
+  ? `${RAW_BASE.replace(/\/$/, '')}/v1/`
+  : RAW_BASE;
+const MODEL = process.env.ANTHROPIC_MODEL ?? process.env.KIMI_MODEL ?? 'kimi-for-coding';
 
 async function main() {
   if (!KEY) {

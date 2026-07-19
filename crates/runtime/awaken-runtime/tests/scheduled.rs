@@ -21,7 +21,7 @@ use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
-use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
+use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
 };
@@ -76,7 +76,7 @@ struct ScheduleGate;
 impl ToolGateHook for ScheduleGate {
     async fn gate(
         &self,
-        _c: &PermissionContext,
+        _c: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> GateOutcome {
         GateOutcome::Schedule {
@@ -92,7 +92,7 @@ struct UnknownKindGate;
 impl ToolGateHook for UnknownKindGate {
     async fn gate(
         &self,
-        _c: &PermissionContext,
+        _c: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> GateOutcome {
         GateOutcome::Schedule {
@@ -107,11 +107,11 @@ struct SuspendGate;
 impl ToolGateHook for SuspendGate {
     async fn gate(
         &self,
-        _c: &PermissionContext,
+        _c: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> GateOutcome {
-        GateOutcome::Suspend {
-            ticket_id: "perm-1".to_string(),
+        GateOutcome::RequireConfirmation {
+            correlation_id: "perm-1".to_string(),
         }
     }
 }
@@ -185,7 +185,7 @@ fn activation() -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
-        initiator: None,
+        delegation_origin: None,
         model_ref_override: None,
     }
 }

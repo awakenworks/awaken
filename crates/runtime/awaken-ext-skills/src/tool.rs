@@ -17,10 +17,9 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::state::Store;
-use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
+use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_contract::subagent_runner::{SubagentRequest, SubagentRunner};
-use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
+use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput, invoke_raw_tool};
 
 use crate::registry::SkillRegistry;
 use crate::spec::{SkillContext, SkillSpec, truncate_chars};
@@ -89,7 +88,7 @@ impl RecordingGate {
 
 #[async_trait]
 impl ToolGateHook for RecordingGate {
-    async fn gate(&self, ctx: &PermissionContext, state: &Store) -> GateOutcome {
+    async fn gate(&self, ctx: &ToolCall, state: &Store) -> GateOutcome {
         for key in ["path", "pattern"] {
             if let Some(path) = ctx.arguments.get(key).and_then(|v| v.as_str()) {
                 self.activations.record(path);
@@ -368,7 +367,7 @@ impl RawTool for ListSkillsTool {
 pub struct SkillTool {
     registry: Arc<dyn SkillRegistry>,
     session_id: Option<String>,
-    fork_runner: Option<Arc<dyn SubagentRunner>>,
+    agent_tool: Option<Arc<dyn RawTool>>,
 }
 
 impl SkillTool {
@@ -376,7 +375,7 @@ impl SkillTool {
         Self {
             registry,
             session_id: None,
-            fork_runner: None,
+            agent_tool: None,
         }
     }
 
@@ -390,8 +389,8 @@ impl SkillTool {
     /// Wire the runner used for `context: fork` skills. Without it, a fork skill
     /// falls back to inline activation.
     #[must_use]
-    pub fn with_fork_runner(mut self, runner: Arc<dyn SubagentRunner>) -> Self {
-        self.fork_runner = Some(runner);
+    pub fn with_agent_tool(mut self, tool: Arc<dyn RawTool>) -> Self {
+        self.agent_tool = Some(tool);
         self
     }
 
@@ -450,23 +449,29 @@ impl RawTool for SkillTool {
         // A `context: fork` skill runs as a sub-agent (when a runner is wired),
         // returning its reply as the tool result; otherwise it falls back to inline.
         if skill.context == SkillContext::Fork
-            && let Some(runner) = &self.fork_runner
+            && let Some(agent_tool) = &self.agent_tool
         {
             let (prompt, _) = resolved_body(&skill, args, session);
-            // The fork runs through the neutral aux-run port (shared with the goal
-            // judge and compactor): the skill id names the sub-run and its resolved
-            // body seeds the fresh window.
-            let request = SubagentRequest {
-                agent_id: skill.id.clone(),
-                seed: vec![Message::text(
-                    MessageId(format!("skill-fork-{}", skill.id)),
-                    Role::User,
-                    prompt,
-                )],
-                cancellation: None,
-            };
-            return Ok(match runner.run(request).await {
-                Ok(reply) => ToolOutput::ok(call.call_id, reply.text.unwrap_or_default()),
+            let result = invoke_raw_tool(
+                agent_tool.as_ref(),
+                ToolCall {
+                    call_id: format!("skill-fork-{}", skill.id),
+                    tool_id: agent_tool.id().to_string(),
+                    arguments: serde_json::json!({
+                        "agent_id": skill.id,
+                        "seed": vec![Message::text(
+                            MessageId(format!("skill-fork-{}", skill.id)),
+                            Role::User,
+                            prompt,
+                        )],
+                    }),
+                },
+                None,
+            )
+            .await;
+            return Ok(match result {
+                Ok(output) if !output.is_error => ToolOutput::ok(call.call_id, output.content),
+                Ok(output) => ToolOutput::error(call.call_id, output.content),
                 Err(err) => ToolOutput::error(call.call_id, format!("skill fork failed: {err}")),
             });
         }
@@ -843,22 +848,21 @@ mod tests {
 
     struct EchoRunner;
     #[async_trait]
-    impl SubagentRunner for EchoRunner {
-        async fn run(
-            &self,
-            request: SubagentRequest,
-        ) -> Result<
-            awaken_runtime_contract::subagent_runner::SubagentReply,
-            awaken_runtime_contract::subagent_runner::SubagentError,
-        > {
-            let prompt = request
-                .seed
-                .first()
-                .map(|m| m.text_content())
-                .unwrap_or_default();
-            Ok(awaken_runtime_contract::subagent_runner::SubagentReply {
-                text: Some(format!("forked[{}]: {prompt}", request.agent_id)),
-            })
+    impl RawTool for EchoRunner {
+        fn id(&self) -> &str {
+            "test_agent"
+        }
+        async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+            let agent_id = call.arguments["agent_id"]
+                .as_str()
+                .ok_or_else(|| ToolError::InvalidArguments("agent_id is missing".into()))?;
+            let seed: Vec<Message> = serde_json::from_value(call.arguments["seed"].clone())
+                .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
+            let prompt = seed.first().map(|m| m.text_content()).unwrap_or_default();
+            Ok(ToolOutput::ok(
+                call.call_id,
+                format!("forked[{agent_id}]: {prompt}"),
+            ))
         }
     }
 
@@ -872,7 +876,7 @@ mod tests {
         )
         .with_context(SkillContext::Fork)]));
         let out = SkillTool::new(registry)
-            .with_fork_runner(Arc::new(EchoRunner))
+            .with_agent_tool(Arc::new(EchoRunner))
             .invoke(call(
                 SKILL_TOOL_ID,
                 serde_json::json!({ "skill": "review", "args": "PR-7" }),
@@ -890,17 +894,12 @@ mod tests {
         // becomes a model-visible error result (never a panic or a silent success).
         struct FailingRunner;
         #[async_trait]
-        impl SubagentRunner for FailingRunner {
-            async fn run(
-                &self,
-                _request: SubagentRequest,
-            ) -> Result<
-                awaken_runtime_contract::subagent_runner::SubagentReply,
-                awaken_runtime_contract::subagent_runner::SubagentError,
-            > {
-                Err(awaken_runtime_contract::subagent_runner::SubagentError(
-                    "runner boom".to_string(),
-                ))
+        impl RawTool for FailingRunner {
+            fn id(&self) -> &str {
+                "test_agent"
+            }
+            async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
+                Err(ToolError::Execution("runner boom".to_string()))
             }
         }
 
@@ -912,7 +911,7 @@ mod tests {
         )
         .with_context(SkillContext::Fork)]));
         let out = SkillTool::new(registry)
-            .with_fork_runner(Arc::new(FailingRunner))
+            .with_agent_tool(Arc::new(FailingRunner))
             .invoke(call(
                 SKILL_TOOL_ID,
                 serde_json::json!({ "skill": "review", "args": "PR-7" }),
@@ -981,13 +980,13 @@ mod tests {
     struct AllowGate;
     #[async_trait]
     impl ToolGateHook for AllowGate {
-        async fn gate(&self, _ctx: &PermissionContext, _state: &Store) -> GateOutcome {
+        async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateOutcome {
             GateOutcome::Allow
         }
     }
 
-    fn ctx(tool_id: &str, args: serde_json::Value) -> PermissionContext {
-        PermissionContext {
+    fn ctx(tool_id: &str, args: serde_json::Value) -> ToolCall {
+        ToolCall {
             tool_id: tool_id.into(),
             call_id: "c1".into(),
             arguments: args,

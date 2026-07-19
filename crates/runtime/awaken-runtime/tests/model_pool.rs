@@ -153,7 +153,7 @@ fn activation(primary: &str, fallbacks: &[&str]) -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
-        initiator: None,
+        delegation_origin: None,
         model_ref_override: None,
     }
 }

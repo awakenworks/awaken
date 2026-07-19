@@ -20,7 +20,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
 use serde::{Deserialize, Serialize};
 
-use crate::request::RunExecutionRequest;
+use crate::run_dispatch::RunDispatch;
 
 /// A durable-store failure. Commit-time agent truth uses the commit coordinator's
 /// own error; this is only the dispatch queue's own storage failure.
@@ -70,11 +70,32 @@ pub struct Lease {
     pub epoch: u64,
 }
 
+/// Durable execution authority for one claimed Run.
+///
+/// Keeping the run, owner, and fencing epoch together prevents commit, settle,
+/// and cancellation code from accidentally mixing fields from different claims.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunClaim {
+    pub run_id: RunId,
+    pub owner: String,
+    pub epoch: u64,
+}
+
+impl From<&Lease> for RunClaim {
+    fn from(lease: &Lease) -> Self {
+        Self {
+            run_id: lease.run_id.clone(),
+            owner: lease.owner.clone(),
+            epoch: lease.epoch,
+        }
+    }
+}
+
 /// A claimed, ready-to-run dispatch and the run's undelivered pending input.
 /// `pending` is empty for a fresh run and non-empty for a wake.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Claimed {
-    pub request: RunExecutionRequest,
+    pub request: RunDispatch,
     pub lease: Lease,
     /// The run's undelivered pending input. The worker decides execute-vs-resume
     /// from committed truth (the awaiting ticket), not from this field, and tells
@@ -111,6 +132,23 @@ pub enum SettleOutcome {
     Fenced,
 }
 
+/// Opaque backend guard which keeps a dispatch epoch stable until it is dropped.
+/// PostgreSQL stores a row-locking transaction in it; SQLite stores its shared
+/// single-process authority mutex guard. The ingress layer needs only the
+/// lifetime, never the backend-specific value.
+pub struct CommitEpochGuard {
+    _held: Box<dyn Send>,
+}
+
+impl CommitEpochGuard {
+    #[must_use]
+    pub fn new(held: impl Send + 'static) -> Self {
+        Self {
+            _held: Box::new(held),
+        }
+    }
+}
+
 impl SettleOutcome {
     /// Whether the settle was applied (vs. fenced off as a stale owner's).
     pub fn applied(self) -> bool {
@@ -135,15 +173,17 @@ pub enum DispatchState {
 
 impl DispatchState {
     /// Map the stored status text (the SQL backends' `status` column) to the
-    /// public status. An unknown value maps to `Pending` (never observed).
-    pub fn from_db(s: &str) -> Self {
-        match s {
+    /// public status. Unknown durable vocabulary is rejected rather than turned
+    /// into claimable `Pending` work.
+    pub fn from_db(s: &str) -> Option<Self> {
+        Some(match s {
+            "pending" => Self::Pending,
             "running" => Self::Leased,
             "awaiting" => Self::Awaiting,
             "dead_letter" => Self::DeadLetter,
             "superseded" => Self::Superseded,
-            _ => Self::Pending,
-        }
+            _ => return None,
+        })
     }
 }
 
@@ -181,7 +221,7 @@ pub trait DispatchQueue: Send + Sync {
     /// Idempotently record an accepted run at default options. Re-enqueueing the
     /// same run id is a no-op, so an at-least-once submit has an exactly-once
     /// effect per run.
-    async fn enqueue(&self, request: RunExecutionRequest) -> Result<(), DispatchError> {
+    async fn enqueue(&self, request: RunDispatch) -> Result<(), DispatchError> {
         self.enqueue_with(request, SubmitOptions::default()).await
     }
 
@@ -189,9 +229,40 @@ pub trait DispatchQueue: Send + Sync {
     /// dedupe key already live makes this a no-op.
     async fn enqueue_with(
         &self,
-        request: RunExecutionRequest,
+        request: RunDispatch,
         options: SubmitOptions,
     ) -> Result<(), DispatchError>;
+
+    /// Atomically record and claim one newly admitted Run.
+    ///
+    /// Parent-mediated child creation uses this command so the process-wide
+    /// dispatcher cannot claim the new row between a separate enqueue and exact
+    /// claim. Existing rows remain idempotent: an existing runnable row may be
+    /// claimed under the ordinary exact-claim rules; an already leased or settled
+    /// row returns `None`. The returned lease is otherwise identical to
+    /// [`claim`](Self::claim), including its fencing epoch.
+    async fn claim_new_run(
+        &self,
+        request: RunDispatch,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError>;
+
+    /// Atomically append one idempotent input and claim its exact Run.
+    ///
+    /// This is the resume-side twin of [`claim_new_run`](Self::claim_new_run): a
+    /// general pool cannot observe the newly runnable awaiting row before the
+    /// parent-mediated caller receives its lease. A duplicate `message_id` is a
+    /// no-op, and the ordinary correlation, due-time, thread writer, recovery,
+    /// lease, and epoch rules still apply.
+    async fn deliver_and_claim(
+        &self,
+        input: PendingInput,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError>;
 
     /// Claim one runnable dispatch for `owner`, single owner per run: a fresh
     /// `pending` run, an awaiting run with pending input (a wake), or a running
@@ -199,6 +270,21 @@ pub trait DispatchQueue: Send + Sync {
     /// runnable, and the run's current pending input in the returned [`Claimed`].
     async fn claim(
         &self,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError>;
+
+    /// Claim one specific runnable Run without consuming unrelated queue work.
+    ///
+    /// Parent-mediated child Runs use this operation after durably scheduling a
+    /// known child identity. It applies exactly the same pending/wake/recovery,
+    /// single-writer-per-thread, lease, and epoch rules as [`claim`](Self::claim);
+    /// the only difference is selection. `None` means that Run is not currently
+    /// runnable or another owner/thread execution blocks it.
+    async fn claim_run(
+        &self,
+        run_id: &RunId,
         owner: &str,
         lease_ms: u64,
         now_ms: u64,
@@ -258,37 +344,15 @@ pub trait DispatchQueue: Send + Sync {
         consumed: &[String],
     ) -> Result<SettleOutcome, DispatchError>;
 
-    /// The run's current lease epoch — the fence token bumped on every claim (see
-    /// [`Lease::epoch`]). `Some(epoch)` while a dispatch row exists for the run;
-    /// `None` when none does (settled, cancelled, or never enqueued). A caller that
-    /// holds a LOWER epoch than this has been superseded: a peer reclaimed the lapsed
-    /// lease under a higher epoch, so the caller's in-flight writes must be fenced.
+    /// Hold a claim's exact epoch stable across a `ThreadCommit`.
     ///
-    /// This is the read the *commit* fence uses, the twin of the epoch [`settle`]
-    /// already fences on. It is a REQUIRED method with no default: opting a backend
-    /// out of the commit fence must be a conscious choice (return `Ok(None)`, which
-    /// makes [`holds_current_epoch`](Self::holds_current_epoch) fail OPEN), never an
-    /// inherited default a new backend silently gets. A backend that cannot cheaply
-    /// read the fence (e.g. a remote transport that does not proxy it) returns
-    /// `Ok(None)` explicitly; every durable store returns the row's `lease_epoch`.
-    async fn current_epoch(&self, run_id: &RunId) -> Result<Option<u64>, DispatchError>;
-
-    /// Whether a caller holding `epoch` may still commit for `run_id`: `true` while it
-    /// holds the current fence, `false` only when a strictly higher epoch has
-    /// superseded it. The commit fence checks this before each durable write so a
-    /// slow-but-alive owner cannot double-apply side effects after a peer reclaimed
-    /// the run.
-    ///
-    /// A gone row (`current_epoch` is `None`) is fail-OPEN: a run settles its own row
-    /// as its final act, and fencing that would reject the legitimate terminal commit.
-    /// A backend that cannot read the epoch is likewise fail-open (preserving prior
-    /// behaviour) — the fence only ever *rejects* on a definite, observed supersession.
-    async fn holds_current_epoch(&self, run_id: &RunId, epoch: u64) -> Result<bool, DispatchError> {
-        Ok(match self.current_epoch(run_id).await? {
-            Some(current) => epoch >= current,
-            None => true,
-        })
-    }
+    /// `Some` means the claim remains authoritative while the guard lives;
+    /// `None` means the row is gone or its epoch/owner no longer matches. This is
+    /// required: a durable adapter may not degrade to a check-then-commit sequence.
+    async fn lock_commit_epoch(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<Option<CommitEpochGuard>, DispatchError>;
 
     /// Dead-letter every *crashed* dispatch — one whose lease expired without a
     /// settle — that has used up its crash-retry budget (`attempt_count >=
@@ -441,7 +505,7 @@ mod tests {
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
     };
 
-    fn a_request() -> RunExecutionRequest {
+    fn a_request() -> RunDispatch {
         let activation = RunActivation::new(
             RunId("run-1".into()),
             ThreadId("thrd-1".into()),
@@ -465,28 +529,32 @@ mod tests {
             },
             vec![Message::text(MessageId("u1".into()), Role::User, "go")],
         );
-        RunExecutionRequest::new(activation)
+        RunDispatch::new(activation)
     }
 
     /// The SQL backends' `status` column maps to the public enum, and any value
-    /// outside the known set (a typo, a future status this build predates) falls
-    /// back to `Pending` rather than panicking or mis-rendering the monitor.
+    /// outside the known set is rejected rather than becoming runnable.
     #[test]
-    fn dispatch_status_from_db_maps_known_values_and_falls_back() {
-        assert_eq!(DispatchState::from_db("running"), DispatchState::Leased);
+    fn dispatch_status_from_db_maps_known_values_and_rejects_unknowns() {
+        assert_eq!(
+            DispatchState::from_db("running"),
+            Some(DispatchState::Leased)
+        );
         assert_eq!(
             DispatchState::from_db("dead_letter"),
-            DispatchState::DeadLetter
+            Some(DispatchState::DeadLetter)
         );
         assert_eq!(
             DispatchState::from_db("superseded"),
-            DispatchState::Superseded
+            Some(DispatchState::Superseded)
         );
-        // "pending" is explicit; an unknown token and the empty string both fall back.
-        assert_eq!(DispatchState::from_db("pending"), DispatchState::Pending);
-        assert_eq!(DispatchState::from_db("Running"), DispatchState::Pending); // case-sensitive
-        assert_eq!(DispatchState::from_db("bogus"), DispatchState::Pending);
-        assert_eq!(DispatchState::from_db(""), DispatchState::Pending);
+        assert_eq!(
+            DispatchState::from_db("pending"),
+            Some(DispatchState::Pending)
+        );
+        assert_eq!(DispatchState::from_db("Running"), None); // case-sensitive
+        assert_eq!(DispatchState::from_db("bogus"), None);
+        assert_eq!(DispatchState::from_db(""), None);
     }
 
     /// The neutral submit default every existing caller inherits: ordinary priority,
@@ -620,22 +688,55 @@ mod tests {
 
     /// A `DispatchQueue` that records the options its `enqueue_with` was called with,
     /// to prove the default `enqueue` delegates at `SubmitOptions::default()` and that
-    /// `bind_sandbox` defaults to a no-op `Ok(())`. Every other method is out of scope
-    /// for this test and left `unimplemented!()`.
+    /// `bind_sandbox` defaults to a no-op `Ok(())`. Every other method fails with an
+    /// explicit typed error, so extending the test cannot introduce a panic path.
     #[derive(Default)]
     struct CapturingQueue {
         last_options: Mutex<Option<SubmitOptions>>,
     }
 
+    impl CapturingQueue {
+        fn unsupported<T>() -> Result<T, DispatchError> {
+            Err(DispatchError::Rejected(
+                "operation is outside the CapturingQueue test scope".to_string(),
+            ))
+        }
+    }
+
     #[async_trait]
     impl DispatchQueue for CapturingQueue {
+        async fn lock_commit_epoch(
+            &self,
+            _claim: &RunClaim,
+        ) -> Result<Option<CommitEpochGuard>, DispatchError> {
+            Self::unsupported()
+        }
+
         async fn enqueue_with(
             &self,
-            _request: RunExecutionRequest,
+            _request: RunDispatch,
             options: SubmitOptions,
         ) -> Result<(), DispatchError> {
             *self.last_options.lock().unwrap() = Some(options);
             Ok(())
+        }
+        async fn claim_new_run(
+            &self,
+            _request: RunDispatch,
+            _owner: &str,
+            _lease_ms: u64,
+            _now_ms: u64,
+        ) -> Result<Option<Claimed>, DispatchError> {
+            Self::unsupported()
+        }
+        async fn deliver_and_claim(
+            &self,
+            _input: PendingInput,
+            _owner: &str,
+            _lease_ms: u64,
+            _now_ms: u64,
+        ) -> Result<Option<Claimed>, DispatchError> {
+            Self::unsupported()
         }
         async fn claim(
             &self,
@@ -643,7 +744,17 @@ mod tests {
             _lease_ms: u64,
             _now_ms: u64,
         ) -> Result<Option<Claimed>, DispatchError> {
-            unimplemented!()
+            Self::unsupported()
+        }
+
+        async fn claim_run(
+            &self,
+            _run_id: &RunId,
+            _owner: &str,
+            _lease_ms: u64,
+            _now_ms: u64,
+        ) -> Result<Option<Claimed>, DispatchError> {
+            Self::unsupported()
         }
         async fn renew_lease(
             &self,
@@ -652,7 +763,7 @@ mod tests {
             _lease_ms: u64,
             _now_ms: u64,
         ) -> Result<bool, DispatchError> {
-            unimplemented!()
+            Self::unsupported()
         }
         async fn renew_owned_leases(
             &self,
@@ -660,7 +771,7 @@ mod tests {
             _lease_ms: u64,
             _now_ms: u64,
         ) -> Result<usize, DispatchError> {
-            unimplemented!()
+            Self::unsupported()
         }
         async fn settle(
             &self,
@@ -669,41 +780,37 @@ mod tests {
             _outcome: DispatchOutcome,
             _consumed: &[String],
         ) -> Result<SettleOutcome, DispatchError> {
-            unimplemented!()
-        }
-        async fn current_epoch(&self, _run_id: &RunId) -> Result<Option<u64>, DispatchError> {
-            // A submit-only capture double: no fence, fail-open by explicit choice.
-            Ok(None)
+            Self::unsupported()
         }
         async fn reap(&self, _max_attempts: u64, _now_ms: u64) -> Result<usize, DispatchError> {
-            unimplemented!()
+            Self::unsupported()
         }
         async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
-            unimplemented!()
+            Self::unsupported()
         }
         async fn requeue(&self, _run_id: &RunId) -> Result<bool, DispatchError> {
-            unimplemented!()
+            Self::unsupported()
         }
         async fn cancel(&self, _run_id: &RunId) -> Result<Option<ThreadId>, DispatchError> {
-            unimplemented!()
+            Self::unsupported()
         }
         async fn awaiting_run(
             &self,
             _thread_id: &ThreadId,
         ) -> Result<Option<RunId>, DispatchError> {
-            unimplemented!()
+            Self::unsupported()
         }
         async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
-            unimplemented!()
+            Self::unsupported()
         }
         async fn purge_dead_letters_before(&self, _cutoff_ms: u64) -> Result<usize, DispatchError> {
-            unimplemented!()
+            Self::unsupported()
         }
         async fn superseded(&self) -> Result<Vec<RunId>, DispatchError> {
-            unimplemented!()
+            Self::unsupported()
         }
         async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError> {
-            unimplemented!()
+            Self::unsupported()
         }
     }
 
@@ -726,133 +833,6 @@ mod tests {
             q.bind_sandbox(&RunId("run-1".into()), "sbx-ref")
                 .await
                 .is_ok()
-        );
-    }
-
-    /// A `DispatchQueue` whose only wired read is `current_epoch`, returning a fixed
-    /// value, so the *default* `holds_current_epoch` fence logic can be exercised in
-    /// isolation. Every other method is out of scope and left `unimplemented!()`.
-    struct FixedEpochQueue(Option<u64>);
-
-    #[async_trait]
-    impl DispatchQueue for FixedEpochQueue {
-        async fn current_epoch(&self, _run_id: &RunId) -> Result<Option<u64>, DispatchError> {
-            Ok(self.0)
-        }
-        async fn enqueue_with(
-            &self,
-            _request: RunExecutionRequest,
-            _options: SubmitOptions,
-        ) -> Result<(), DispatchError> {
-            unimplemented!()
-        }
-        async fn claim(
-            &self,
-            _owner: &str,
-            _lease_ms: u64,
-            _now_ms: u64,
-        ) -> Result<Option<Claimed>, DispatchError> {
-            unimplemented!()
-        }
-        async fn renew_lease(
-            &self,
-            _run_id: &RunId,
-            _owner: &str,
-            _lease_ms: u64,
-            _now_ms: u64,
-        ) -> Result<bool, DispatchError> {
-            unimplemented!()
-        }
-        async fn renew_owned_leases(
-            &self,
-            _owner: &str,
-            _lease_ms: u64,
-            _now_ms: u64,
-        ) -> Result<usize, DispatchError> {
-            unimplemented!()
-        }
-        async fn settle(
-            &self,
-            _run_id: &RunId,
-            _epoch: u64,
-            _outcome: DispatchOutcome,
-            _consumed: &[String],
-        ) -> Result<SettleOutcome, DispatchError> {
-            unimplemented!()
-        }
-        async fn reap(&self, _max_attempts: u64, _now_ms: u64) -> Result<usize, DispatchError> {
-            unimplemented!()
-        }
-        async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
-            unimplemented!()
-        }
-        async fn requeue(&self, _run_id: &RunId) -> Result<bool, DispatchError> {
-            unimplemented!()
-        }
-        async fn cancel(&self, _run_id: &RunId) -> Result<Option<ThreadId>, DispatchError> {
-            unimplemented!()
-        }
-        async fn awaiting_run(
-            &self,
-            _thread_id: &ThreadId,
-        ) -> Result<Option<RunId>, DispatchError> {
-            unimplemented!()
-        }
-        async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
-            unimplemented!()
-        }
-        async fn purge_dead_letters_before(&self, _cutoff_ms: u64) -> Result<usize, DispatchError> {
-            unimplemented!()
-        }
-        async fn superseded(&self) -> Result<Vec<RunId>, DispatchError> {
-            unimplemented!()
-        }
-        async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError> {
-            unimplemented!()
-        }
-    }
-
-    /// The commit fence's default `holds_current_epoch` is a safety invariant that
-    /// lives entirely in this contract layer, yet it was never asserted directly.
-    /// Pin all three arms of the default:
-    ///
-    /// - A GONE row (`current_epoch == None`) is fail-OPEN → `true`. This is
-    ///   deliberate (documented on the trait): a run settles its own dispatch row as
-    ///   its final act, so fencing a gone row would reject the legitimate terminal
-    ///   commit. NOT a bug — the fence only ever *rejects* on an observed, strictly
-    ///   higher epoch, never on absence.
-    /// - Equal or higher held epoch → `true` (the caller still holds the fence).
-    /// - A strictly HIGHER current epoch → `false` (a peer reclaimed the lapsed
-    ///   lease; the slow-but-alive owner is fenced off).
-    #[tokio::test]
-    async fn holds_current_epoch_fails_open_on_a_gone_row_and_fences_only_a_higher_epoch() {
-        let run = RunId("run-1".into());
-
-        // Gone row: fail-open regardless of the epoch the caller holds.
-        let gone = FixedEpochQueue(None);
-        assert!(
-            gone.holds_current_epoch(&run, 0).await.unwrap(),
-            "a gone row lets a terminal commit through (fail-open by design)"
-        );
-        assert!(
-            gone.holds_current_epoch(&run, 99).await.unwrap(),
-            "fail-open holds for any caller epoch on a gone row"
-        );
-
-        // Live row at epoch 5: equal or higher held epoch still holds the fence.
-        let live = FixedEpochQueue(Some(5));
-        assert!(
-            live.holds_current_epoch(&run, 5).await.unwrap(),
-            "the current holder (equal epoch) still commits"
-        );
-        assert!(
-            live.holds_current_epoch(&run, 6).await.unwrap(),
-            "a caller at a higher epoch holds the fence"
-        );
-        // Strictly higher CURRENT epoch supersedes the caller → fenced off.
-        assert!(
-            !live.holds_current_epoch(&run, 4).await.unwrap(),
-            "a strictly-higher current epoch fences the stale owner"
         );
     }
 }

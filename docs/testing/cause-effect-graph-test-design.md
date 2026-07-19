@@ -132,7 +132,7 @@ C11 → E11                       C12=Steer → E12             C13 → E6
 | C15 | 消息条数阈值触发:`committed_len > threshold`(`max_tokens=None`) | fold.rs:10 |
 | C16 | `keep_last` 覆盖整段会话(可折叠段为 0) | fold.rs:30 |
 | C17 | 本 run 已评估过压缩(`ContextMessages` 含 `COMPACT_PLUGIN_ID`) | plugin.rs:225 |
-| C18 | 无 SubagentRunner / 摘要空 / 摘要 Err | plugin.rs:159 / 197 |
+| C18 | 无 Agent 工具 / 摘要空 / 摘要 Err | plugin.rs:159 / 197 |
 | C19 | 折叠成功产出摘要 | plugin.rs:233 |
 
 ### 果(E13–E16)
@@ -621,7 +621,7 @@ C77 → E67     C78 → E68(Quarantine)     C79 → (Indeterminate, 不判成功
 | C86 | awaiting 行且到期待处理输入(唤醒)且线程未运行 | memory.rs:165 |
 | C87 | 线程已有运行中 run(单写者/线程,遮蔽 wake/fresh) | memory.rs:148 |
 | C88 | settle epoch ≠ 当前 lease_epoch → Fenced(否则 Applied) | memory.rs:385 |
-| C89 | 提交栅栏:不持当前 epoch → `CommitError::Rejected`;`current_epoch=None` fail-open | commit_fence.rs:64 |
+| C89 | 提交栅栏:完整 `RunClaim(run, owner, epoch)` 不匹配 → `CommitError::Rejected` | commit_fence.rs:64 |
 | C90 | reap:过期 且 `attempt_count ≥ max_attempts` → 死信 | memory.rs:420 |
 
 ### 果(E71–E78)
@@ -646,7 +646,7 @@ Running结果 → E75
 ```
 
 - **O**{提交协调后端 fs/sqlite/pg 每部署};**O**{dispatch store memory/pg/transport};**O**{wake local/nats/pg-notify,pg-notify 要求 pg store}。
-- **R**:C86 wake 要求 awaiting ∧ 到期输入 ∧ 线程未运行(三者);C85 恢复 claim 唯一豁免"未运行"守卫(重owning 同行);C90 reap 要求过期 ∧ attempt 满(Awaiting 重置 attempt→检查点 run 永不死信);C89 栅栏要求后端暴露 `current_epoch`,None⇒fail-open。
+- **R**:C86 wake 要求 awaiting ∧ 到期输入 ∧ 线程未运行(三者);C85 恢复 claim 唯一豁免"未运行"守卫(重owning 同行);C90 reap 要求过期 ∧ attempt 满(Awaiting 重置 attempt→检查点 run 永不死信);C89 以同一后端事务锁定完整 `RunClaim` 并提交，不再暴露可产生 TOCTOU 的 epoch 观测接口。
 - **M**:`Fenced` 遮蔽 E73–E75(reclaimer 状态不可侵);单写者/线程(C87)遮蔽 wake/fresh;enqueue 幂等/去重遮蔽新建行(至少一次投递→恰好一次效果);wake 丢失被 poll 兜底遮蔽(只延不丢)。
 
 ### 判定表 M10

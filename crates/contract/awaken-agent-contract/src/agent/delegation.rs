@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 
 use crate::agent::run::Id as RunId;
 
@@ -31,17 +31,6 @@ impl DelegationId {
     #[must_use]
     pub fn child_run_id(&self) -> RunId {
         RunId(format!("child-run:{}:{}", self.0.len(), self.0))
-    }
-}
-
-/// Stable identity of the one terminal tool result for a child Run.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct DelegationResultId(pub String);
-
-impl DelegationResultId {
-    #[must_use]
-    pub fn for_delegation(id: &DelegationId) -> Self {
-        Self(format!("delegation-result:{}:{}", id.0.len(), id.0))
     }
 }
 
@@ -131,11 +120,6 @@ impl DelegationOrigin {
     pub fn child_run_id(&self) -> RunId {
         self.delegation_id.child_run_id()
     }
-
-    #[must_use]
-    pub fn result_id(&self) -> DelegationResultId {
-        DelegationResultId::for_delegation(&self.delegation_id)
-    }
 }
 
 /// Run-scoped delegation budget.
@@ -157,6 +141,55 @@ impl DelegationLimits {
     }
 }
 
+/// Heap-free admission kernel shared by the aggregate and Kani. Identity/index
+/// conflicts are checked by the aggregate first; this function owns only the
+/// parent lifecycle, depth, cycle, parallel, and total-budget predicates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdmissionError {
+    ParentEnded,
+    DepthOverflow,
+    DepthExceeded { depth: u16, limit: u16 },
+    Cycle,
+    ParallelLimit { limit: u16 },
+    BudgetExhausted { limit: u32 },
+}
+
+fn admit_new_delegation(
+    parent_ended: bool,
+    parent_depth: u16,
+    limits: DelegationLimits,
+    creates_cycle: bool,
+    active_count: usize,
+    total_started: u32,
+) -> Result<u16, AdmissionError> {
+    if parent_ended {
+        return Err(AdmissionError::ParentEnded);
+    }
+    let depth = parent_depth
+        .checked_add(1)
+        .ok_or(AdmissionError::DepthOverflow)?;
+    if depth > limits.max_depth {
+        return Err(AdmissionError::DepthExceeded {
+            depth,
+            limit: limits.max_depth,
+        });
+    }
+    if creates_cycle {
+        return Err(AdmissionError::Cycle);
+    }
+    if active_count >= usize::from(limits.max_parallel) {
+        return Err(AdmissionError::ParallelLimit {
+            limit: limits.max_parallel,
+        });
+    }
+    if total_started >= limits.max_total {
+        return Err(AdmissionError::BudgetExhausted {
+            limit: limits.max_total,
+        });
+    }
+    Ok(depth)
+}
+
 impl Default for DelegationLimits {
     fn default() -> Self {
         Self::new(8, 8, 64)
@@ -176,6 +209,10 @@ impl DelegationStatus {
     pub const fn occupies_parallel_slot(self) -> bool {
         matches!(self, Self::Open | Self::CancelRequested)
     }
+}
+
+const fn requires_cancellation_delivery(status: DelegationStatus) -> bool {
+    matches!(status, DelegationStatus::CancelRequested)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,6 +249,24 @@ pub struct Delegation {
     pub child_run_id: RunId,
     pub depth: u16,
     pub status: DelegationStatus,
+    /// Opaque execution reference needed to address an awaiting child outside
+    /// this process. The relationship owns it because cancellation must survive
+    /// the parent process that first received the remote continuation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancellation_reference: Option<serde_json::Value>,
+}
+
+/// Durable instruction for an adapter to cancel one delegated child Run.
+/// Delivery is deliberately idempotent: the relationship remains
+/// `CancelRequested`, so a recovering process may submit the same instruction
+/// again until the remote system reflects cancellation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChildRunCancellation {
+    pub delegation_id: DelegationId,
+    pub child_run_id: RunId,
+    pub target_agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_reference: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -257,7 +312,7 @@ pub enum DelegationError {
 }
 
 /// Run-scoped registry committed through ordinary thread state.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DelegationRegistry {
     parent_run_id: RunId,
     parent_agent_id: String,
@@ -268,6 +323,38 @@ pub struct DelegationRegistry {
     total_started: u32,
     delegations: BTreeMap<DelegationId, Delegation>,
     calls: BTreeMap<String, DelegationId>,
+}
+
+#[derive(Deserialize)]
+struct DelegationRegistryWire {
+    parent_run_id: RunId,
+    parent_agent_id: String,
+    lineage: Vec<String>,
+    parent_depth: u16,
+    limits: DelegationLimits,
+    parent_ended: bool,
+    total_started: u32,
+    delegations: BTreeMap<DelegationId, Delegation>,
+    calls: BTreeMap<String, DelegationId>,
+}
+
+impl<'de> Deserialize<'de> for DelegationRegistry {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = DelegationRegistryWire::deserialize(deserializer)?;
+        let registry = Self {
+            parent_run_id: wire.parent_run_id,
+            parent_agent_id: wire.parent_agent_id,
+            lineage: wire.lineage,
+            parent_depth: wire.parent_depth,
+            limits: wire.limits,
+            parent_ended: wire.parent_ended,
+            total_started: wire.total_started,
+            delegations: wire.delegations,
+            calls: wire.calls,
+        };
+        registry.validate().map_err(D::Error::custom)?;
+        Ok(registry)
+    }
 }
 
 impl DelegationRegistry {
@@ -326,10 +413,11 @@ impl DelegationRegistry {
             return Err(DelegationError::ParentEnded);
         }
         if let Some(existing_id) = self.calls.get(&request.parent_call_id) {
-            let existing = self
-                .delegations
-                .get(existing_id)
-                .expect("call index points at an existing delegation");
+            let existing = self.delegations.get(existing_id).ok_or_else(|| {
+                DelegationError::InvalidPersistedState(
+                    "call index points at a missing delegation".into(),
+                )
+            })?;
             return if existing.id == request.id
                 && existing.target_agent_id == request.target_agent_id
                 && existing.child_run_id == request.child_run_id
@@ -349,31 +437,27 @@ impl DelegationRegistry {
         {
             return Err(DelegationError::ChildRunConflict);
         }
-        let depth = self
-            .parent_depth
-            .checked_add(1)
-            .ok_or(DelegationError::DepthOverflow)?;
-        if depth > self.limits.max_depth {
-            return Err(DelegationError::DepthExceeded {
-                depth,
-                limit: self.limits.max_depth,
-            });
-        }
-        if self.lineage.contains(&request.target_agent_id) {
-            return Err(DelegationError::Cycle {
-                agent_id: request.target_agent_id,
-            });
-        }
-        if self.active_count() >= usize::from(self.limits.max_parallel) {
-            return Err(DelegationError::ParallelLimit {
-                limit: self.limits.max_parallel,
-            });
-        }
-        if self.total_started >= self.limits.max_total {
-            return Err(DelegationError::BudgetExhausted {
-                limit: self.limits.max_total,
-            });
-        }
+        let creates_cycle = self.lineage.contains(&request.target_agent_id);
+        let depth = admit_new_delegation(
+            self.parent_ended,
+            self.parent_depth,
+            self.limits,
+            creates_cycle,
+            self.active_count(),
+            self.total_started,
+        )
+        .map_err(|error| match error {
+            AdmissionError::ParentEnded => DelegationError::ParentEnded,
+            AdmissionError::DepthOverflow => DelegationError::DepthOverflow,
+            AdmissionError::DepthExceeded { depth, limit } => {
+                DelegationError::DepthExceeded { depth, limit }
+            }
+            AdmissionError::Cycle => DelegationError::Cycle {
+                agent_id: request.target_agent_id.clone(),
+            },
+            AdmissionError::ParallelLimit { limit } => DelegationError::ParallelLimit { limit },
+            AdmissionError::BudgetExhausted { limit } => DelegationError::BudgetExhausted { limit },
+        })?;
 
         let id = request.id.clone();
         let call_id = request.parent_call_id.clone();
@@ -387,6 +471,7 @@ impl DelegationRegistry {
                 child_run_id: request.child_run_id,
                 depth,
                 status: DelegationStatus::Open,
+                cancellation_reference: None,
             },
         );
         self.calls.insert(call_id, id);
@@ -402,11 +487,36 @@ impl DelegationRegistry {
         let (status, result) =
             transition_relationship(delegation.status, RelationshipTransition::Complete)?;
         delegation.status = status;
+        if result == TransitionResult::Applied {
+            delegation.cancellation_reference = None;
+        }
         Ok(result)
     }
 
+    /// Remember how an adapter can address an awaiting child. Repeating the
+    /// same reference is idempotent; changing it is legal when a resumed child
+    /// reaches a new remote wait boundary.
+    pub fn record_cancellation_reference(
+        &mut self,
+        id: &DelegationId,
+        reference: serde_json::Value,
+    ) -> Result<TransitionResult, DelegationError> {
+        let delegation = self
+            .delegations
+            .get_mut(id)
+            .ok_or(DelegationError::NotFound)?;
+        if delegation.status != DelegationStatus::Open {
+            return Err(DelegationError::InvalidTransition);
+        }
+        if delegation.cancellation_reference.as_ref() == Some(&reference) {
+            return Ok(TransitionResult::Duplicate);
+        }
+        delegation.cancellation_reference = Some(reference);
+        Ok(TransitionResult::Applied)
+    }
+
     /// Persist cancellation intent before an adapter attempts delivery.
-    pub fn end_parent(&mut self) -> Vec<RunId> {
+    pub fn end_parent(&mut self) -> Vec<ChildRunCancellation> {
         if self.parent_ended {
             return Vec::new();
         }
@@ -420,32 +530,104 @@ impl DelegationRegistry {
             };
             delegation.status = status;
             if result == TransitionResult::Applied {
-                children.push(delegation.child_run_id.clone());
+                children.push(ChildRunCancellation {
+                    delegation_id: delegation.id.clone(),
+                    child_run_id: delegation.child_run_id.clone(),
+                    target_agent_id: delegation.target_agent_id.clone(),
+                    execution_reference: delegation.cancellation_reference.clone(),
+                });
             }
         }
         children
     }
 
+    /// Every durable cancellation still requiring idempotent delivery. This is
+    /// the recovery view used after a process restart.
+    pub fn pending_cancellations(&self) -> impl Iterator<Item = ChildRunCancellation> + '_ {
+        self.delegations
+            .values()
+            .filter(|delegation| requires_cancellation_delivery(delegation.status))
+            .map(|delegation| ChildRunCancellation {
+                delegation_id: delegation.id.clone(),
+                child_run_id: delegation.child_run_id.clone(),
+                target_agent_id: delegation.target_agent_id.clone(),
+                execution_reference: delegation.cancellation_reference.clone(),
+            })
+    }
+
     pub fn validate(&self) -> Result<(), DelegationError> {
+        if self.limits.max_depth == 0 || self.limits.max_parallel == 0 || self.limits.max_total == 0
+        {
+            return Err(DelegationError::InvalidPersistedState(
+                "delegation limits must be non-zero".into(),
+            ));
+        }
+        if self.parent_depth >= self.limits.max_depth {
+            return Err(DelegationError::InvalidPersistedState(
+                "parent depth leaves no legal child depth".into(),
+            ));
+        }
         if self.lineage.last() != Some(&self.parent_agent_id) {
             return Err(DelegationError::InvalidPersistedState(
                 "lineage must end with parent agent".into(),
             ));
         }
-        if self.total_started != self.delegations.len() as u32
+        if usize::try_from(self.total_started).ok() != Some(self.delegations.len())
             || self.calls.len() != self.delegations.len()
         {
             return Err(DelegationError::InvalidPersistedState(
                 "indexes and total must match relationships".into(),
             ));
         }
+        if self.total_started > self.limits.max_total {
+            return Err(DelegationError::InvalidPersistedState(
+                "started delegation count exceeds its budget".into(),
+            ));
+        }
+        if self.active_count() > usize::from(self.limits.max_parallel) {
+            return Err(DelegationError::InvalidPersistedState(
+                "active delegation count exceeds its parallel budget".into(),
+            ));
+        }
+        if self.parent_ended
+            && self
+                .delegations
+                .values()
+                .any(|delegation| delegation.status == DelegationStatus::Open)
+        {
+            return Err(DelegationError::InvalidPersistedState(
+                "an ended parent cannot retain an open relationship".into(),
+            ));
+        }
+        let expected_depth = self.parent_depth.checked_add(1).ok_or_else(|| {
+            DelegationError::InvalidPersistedState("delegation depth overflowed".into())
+        })?;
+        let mut child_runs = std::collections::HashSet::new();
         for (id, delegation) in &self.delegations {
             if id != &delegation.id
                 || delegation.parent_run_id != self.parent_run_id
                 || self.calls.get(&delegation.parent_call_id) != Some(id)
+                || delegation.depth != expected_depth
             {
                 return Err(DelegationError::InvalidPersistedState(
                     "relationship identity or call index mismatch".into(),
+                ));
+            }
+            if self.lineage.contains(&delegation.target_agent_id) {
+                return Err(DelegationError::InvalidPersistedState(
+                    "persisted relationship creates an Agent cycle".into(),
+                ));
+            }
+            if !child_runs.insert(&delegation.child_run_id.0) {
+                return Err(DelegationError::InvalidPersistedState(
+                    "child Run id is shared by multiple relationships".into(),
+                ));
+            }
+            if delegation.status == DelegationStatus::Completed
+                && delegation.cancellation_reference.is_some()
+            {
+                return Err(DelegationError::InvalidPersistedState(
+                    "a completed relationship cannot retain a cancellation reference".into(),
                 ));
             }
         }
@@ -516,7 +698,15 @@ mod tests {
     fn parent_end_persists_idempotent_cancellation_intent() {
         let mut registry = registry(2, 2);
         registry.request(request(1, "researcher")).unwrap();
-        assert_eq!(registry.end_parent(), vec![RunId("r1".into())]);
+        assert_eq!(
+            registry.end_parent(),
+            vec![ChildRunCancellation {
+                delegation_id: DelegationId("d1".into()),
+                child_run_id: RunId("r1".into()),
+                target_agent_id: "researcher".into(),
+                execution_reference: None,
+            }]
+        );
         assert_eq!(
             registry.get(&DelegationId("d1".into())).unwrap().status,
             DelegationStatus::CancelRequested
@@ -538,6 +728,15 @@ mod tests {
         .unwrap();
         assert_eq!(nested.depth, 2);
         assert_eq!(nested.agent_lineage, vec!["root", "researcher"]);
+    }
+
+    #[test]
+    fn persisted_registry_with_a_broken_call_index_is_rejected_at_decode() {
+        let mut registry = registry(2, 2);
+        registry.request(request(1, "researcher")).unwrap();
+        let mut value = serde_json::to_value(registry).unwrap();
+        value["calls"] = serde_json::json!({"c1": "missing"});
+        assert!(serde_json::from_value::<DelegationRegistry>(value).is_err());
     }
 }
 
@@ -594,5 +793,47 @@ mod verification {
         if let Ok((next, TransitionResult::Duplicate)) = result {
             assert_eq!(next, status);
         }
+    }
+
+    #[kani::proof]
+    fn delegation_admission_requires_every_budget_and_lineage_guard() {
+        let parent_ended: bool = kani::any();
+        let parent_depth: u16 = kani::any();
+        let limits = DelegationLimits::new(kani::any(), kani::any(), kani::any());
+        let creates_cycle: bool = kani::any();
+        let active_count: usize = kani::any();
+        let total_started: u32 = kani::any();
+        let result = admit_new_delegation(
+            parent_ended,
+            parent_depth,
+            limits,
+            creates_cycle,
+            active_count,
+            total_started,
+        );
+        let expected = !parent_ended
+            && parent_depth
+                .checked_add(1)
+                .is_some_and(|depth| depth <= limits.max_depth)
+            && !creates_cycle
+            && active_count < usize::from(limits.max_parallel)
+            && total_started < limits.max_total;
+        assert_eq!(result.is_ok(), expected);
+        if let Ok(depth) = result {
+            assert_eq!(Some(depth), parent_depth.checked_add(1));
+        }
+    }
+
+    #[kani::proof]
+    fn cancellation_delivery_is_enabled_only_by_durable_intent() {
+        let status = match kani::any::<u8>() % 3 {
+            0 => DelegationStatus::Open,
+            1 => DelegationStatus::Completed,
+            _ => DelegationStatus::CancelRequested,
+        };
+        assert_eq!(
+            requires_cancellation_delivery(status),
+            status == DelegationStatus::CancelRequested
+        );
     }
 }

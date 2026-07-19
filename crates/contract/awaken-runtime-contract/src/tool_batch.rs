@@ -6,7 +6,7 @@
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::state::{MergePolicy, Scope, StateKey};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 
 use crate::llm::ToolCall;
 use crate::tool::{ToolOutput, ToolRecoveryPolicy};
@@ -36,11 +36,12 @@ pub enum ToolCallPhase {
     Indeterminate { reason: String },
 }
 
-/// The typed reason one call is waiting. Approval is deliberately not encoded as
-/// a generic message: it must match the Run's committed ResumeTicket.
+/// The typed reason one call is waiting. Tool permission is deliberately not
+/// encoded as a generic message: it must match the Run's committed ResumeTicket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolWaitKind {
-    Approval,
+    #[serde(alias = "Approval")]
+    ToolPermission,
     Delegation,
     ScheduledAction,
     ExternalResult,
@@ -80,12 +81,34 @@ pub enum ToolBatchPhase {
     Finalized,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ToolBatch {
     pub id: ToolBatchId,
     pub run_id: RunId,
     pub calls: Vec<DurableToolCall>,
     pub phase: ToolBatchPhase,
+}
+
+#[derive(Deserialize)]
+struct ToolBatchWire {
+    id: ToolBatchId,
+    run_id: RunId,
+    calls: Vec<DurableToolCall>,
+    phase: ToolBatchPhase,
+}
+
+impl<'de> Deserialize<'de> for ToolBatch {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = ToolBatchWire::deserialize(deserializer)?;
+        let batch = Self {
+            id: wire.id,
+            run_id: wire.run_id,
+            calls: wire.calls,
+            phase: wire.phase,
+        };
+        batch.validate().map_err(D::Error::custom)?;
+        Ok(batch)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -106,6 +129,8 @@ pub enum ToolBatchError {
     WaitMismatch,
     #[error("tool batch still contains non-terminal calls")]
     Incomplete,
+    #[error("persisted tool batch is invalid: {0}")]
+    InvalidPersistedState(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,6 +258,60 @@ impl ToolBatch {
             calls,
             phase: ToolBatchPhase::Open,
         })
+    }
+
+    /// Validate the complete persisted aggregate before recovery can act on it.
+    /// Custom deserialization calls this automatically, so corrupted indexes,
+    /// attempts, waits, or publication state fail closed at the state boundary.
+    pub fn validate(&self) -> Result<(), ToolBatchError> {
+        if self.calls.is_empty() {
+            return Err(ToolBatchError::Empty);
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        for entry in &self.calls {
+            let call_id = &entry.call.call_id;
+            if !ids.insert(call_id) {
+                return Err(ToolBatchError::DuplicateCall(call_id.clone()));
+            }
+            if entry.recovery_policy.max_attempts == 0 {
+                return Err(ToolBatchError::InvalidPersistedState(format!(
+                    "call {call_id} has a zero attempt budget"
+                )));
+            }
+            match &entry.phase {
+                ToolCallPhase::Executing { attempt }
+                    if *attempt == 0 || *attempt > entry.recovery_policy.max_attempts =>
+                {
+                    return Err(ToolBatchError::InvalidPersistedState(format!(
+                        "call {call_id} has an out-of-budget execution attempt"
+                    )));
+                }
+                ToolCallPhase::Awaiting { wait } if wait.correlation_id.is_empty() => {
+                    return Err(ToolBatchError::InvalidPersistedState(format!(
+                        "call {call_id} has an empty wait correlation"
+                    )));
+                }
+                ToolCallPhase::Completed(output) if output.call_id != *call_id => {
+                    return Err(ToolBatchError::InvalidPersistedState(format!(
+                        "call {call_id} contains another call's output"
+                    )));
+                }
+                _ => {}
+            }
+            if (!entry.result_messages.is_empty() || !entry.result_state.is_empty())
+                && !entry.phase.is_terminal()
+            {
+                return Err(ToolBatchError::InvalidPersistedState(format!(
+                    "call {call_id} publishes staged effects before a terminal result"
+                )));
+            }
+        }
+        if self.phase == ToolBatchPhase::Finalized && !self.is_complete() {
+            return Err(ToolBatchError::InvalidPersistedState(
+                "a finalized batch contains a non-terminal call".into(),
+            ));
+        }
+        Ok(())
     }
 
     #[must_use]
@@ -505,10 +584,10 @@ mod tests {
     fn approval_must_match_the_committed_wait() {
         let mut batch = batch();
         batch
-            .mark_awaiting("c", ToolWaitKind::Approval, "approval-1")
+            .mark_awaiting("c", ToolWaitKind::ToolPermission, "approval-1")
             .unwrap();
         assert_eq!(
-            batch.resume_executing("c", ToolWaitKind::Approval, "stale"),
+            batch.resume_executing("c", ToolWaitKind::ToolPermission, "stale"),
             Err(ToolBatchError::WaitMismatch)
         );
         assert_eq!(
@@ -516,7 +595,7 @@ mod tests {
             Err(ToolBatchError::WaitMismatch)
         );
         assert_eq!(
-            batch.resume_executing("c", ToolWaitKind::Approval, "approval-1"),
+            batch.resume_executing("c", ToolWaitKind::ToolPermission, "approval-1"),
             Ok(1)
         );
     }
@@ -536,6 +615,23 @@ mod tests {
         let sealed = batch.clone();
         batch.seal_on_run_end("different retry reason");
         assert_eq!(batch, sealed);
+    }
+
+    #[test]
+    fn persisted_finalized_batch_with_requested_work_is_rejected_at_decode() {
+        let mut value = serde_json::to_value(batch()).unwrap();
+        value["phase"] = serde_json::json!("Finalized");
+        assert!(serde_json::from_value::<ToolBatch>(value).is_err());
+    }
+
+    #[test]
+    fn persisted_completed_call_cannot_contain_another_calls_output() {
+        let mut batch = batch();
+        batch.mark_executing("c").unwrap();
+        batch.complete(ToolOutput::ok("c", "ok")).unwrap();
+        let mut value = serde_json::to_value(batch).unwrap();
+        value["calls"][0]["phase"]["Completed"]["call_id"] = serde_json::json!("different-call");
+        assert!(serde_json::from_value::<ToolBatch>(value).is_err());
     }
 }
 
@@ -560,7 +656,7 @@ mod verification {
         let correct_kind: bool = kani::any();
         let correct_correlation: bool = kani::any();
         let actual_kind = if correct_kind {
-            ToolWaitKind::Approval
+            ToolWaitKind::ToolPermission
         } else {
             ToolWaitKind::Delegation
         };
@@ -568,7 +664,7 @@ mod verification {
             CallPhaseView::Awaiting(actual_kind),
             1,
             ExecutionRequest::Resume {
-                expected_kind: ToolWaitKind::Approval,
+                expected_kind: ToolWaitKind::ToolPermission,
                 correlation_matches: correct_correlation,
             },
         )
@@ -580,7 +676,7 @@ mod verification {
         match tag % 5 {
             0 => CallPhaseView::Requested,
             1 => CallPhaseView::Executing(1),
-            2 => CallPhaseView::Awaiting(ToolWaitKind::Approval),
+            2 => CallPhaseView::Awaiting(ToolWaitKind::ToolPermission),
             3 => CallPhaseView::Completed,
             _ => CallPhaseView::Indeterminate,
         }

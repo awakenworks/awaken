@@ -569,10 +569,13 @@ pub fn build_acp_sandboxed_router() -> Router {
 pub async fn build_acp_container_router() -> Router {
     // The deterministic in-container agent: busybox `nc` listens on the container's
     // agent port (8080, the tier's fixed internal port) and, per connection, reads the
-    // prompt line and replies with a fixed marker over the newline wire.
+    // prompt line and replies with a fixed marker over the newline wire. Keep the
+    // socket alive briefly after the terminal frame: BusyBox `nc -k -e` can otherwise
+    // reset the connection while the host is still draining that frame.
     let script = "read _p; \
         printf '%s\\n' '{\"type\":\"message\",\"text\":\"CONTAINER-AGENT-OK\"}'; \
-        printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
+        printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'; \
+        sleep 0.1";
     let launch = awaken_run_executor_acp::AcpLaunch::custom(
         vec![
             "nc".into(),
@@ -661,9 +664,10 @@ pub fn scenario_model(
             let base = std::env::var("ANTHROPIC_BASE_URL")
                 .or_else(|_| std::env::var("KIMI_BASE_URL"))
                 .expect("AWAKEN_MODEL_SOURCE=http requires ANTHROPIC_BASE_URL");
+            let base = normalize_anthropic_compatible_base(base);
             let model = std::env::var("ANTHROPIC_MODEL")
                 .or_else(|_| std::env::var("KIMI_MODEL"))
-                .unwrap_or_else(|_| "fake-haiku".to_string());
+                .unwrap_or_else(|_| default_anthropic_compatible_model(&base).to_string());
             (
                 Arc::new(GenaiExecutor::anthropic_compatible(base, key)),
                 model,
@@ -685,6 +689,29 @@ pub fn scenario_model(
     }
 }
 
+/// Choose a usable model only when an operator omitted the explicit model. Kimi's
+/// Anthropic-compatible coding endpoint does not accept Anthropic model ids; all
+/// other endpoints retain the ordinary Anthropic default.
+fn default_anthropic_compatible_model(base_url: &str) -> &'static str {
+    if base_url.contains("api.kimi.com/coding") {
+        "kimi-for-coding"
+    } else {
+        "claude-3-5-haiku-latest"
+    }
+}
+
+/// Claude Code accepts Kimi's `/coding/` root and appends `/v1` itself, while
+/// `GenaiExecutor` expects the Anthropic Messages API base. Accept both operator
+/// forms and canonicalize only the known Kimi coding endpoint.
+fn normalize_anthropic_compatible_base(base_url: String) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    if trimmed.contains("api.kimi.com/coding") && !trimmed.ends_with("/v1") {
+        format!("{trimmed}/v1/")
+    } else {
+        format!("{trimmed}/")
+    }
+}
+
 /// A server backed by a **live** Anthropic-compatible model, configured from the
 /// environment: `ANTHROPIC_API_KEY` (or `KIMI_API_KEY`), `ANTHROPIC_BASE_URL` (or
 /// `KIMI_BASE_URL`), `ANTHROPIC_MODEL` (or `KIMI_MODEL`). This is the same
@@ -699,9 +726,10 @@ pub fn build_real_router() -> Router {
     let base = std::env::var("ANTHROPIC_BASE_URL")
         .or_else(|_| std::env::var("KIMI_BASE_URL"))
         .unwrap_or_else(|_| "https://api.anthropic.com/v1/".to_string());
+    let base = normalize_anthropic_compatible_base(base);
     let model = std::env::var("ANTHROPIC_MODEL")
         .or_else(|_| std::env::var("KIMI_MODEL"))
-        .unwrap_or_else(|_| "claude-3-5-haiku-latest".to_string());
+        .unwrap_or_else(|_| default_anthropic_compatible_model(&base).to_string());
     let executor = GenaiExecutor::anthropic_compatible(base, key);
     build_router(Arc::new(executor), model)
 }
@@ -762,9 +790,10 @@ pub async fn build_resolved_real_router() -> Router {
     let base = std::env::var("ANTHROPIC_BASE_URL")
         .or_else(|_| std::env::var("KIMI_BASE_URL"))
         .unwrap_or_else(|_| "https://api.anthropic.com/v1/".to_string());
+    let base = normalize_anthropic_compatible_base(base);
     let model = std::env::var("ANTHROPIC_MODEL")
         .or_else(|_| std::env::var("KIMI_MODEL"))
-        .unwrap_or_else(|_| "claude-3-5-haiku-latest".to_string());
+        .unwrap_or_else(|_| default_anthropic_compatible_model(&base).to_string());
 
     // Author the catalog: one provider + endpoint + offering for `model`.
     let catalog_repo = InMemoryCatalogRepo::new();
@@ -1206,7 +1235,7 @@ struct ScheduleGate;
 impl awaken_runtime_contract::permission::ToolGateHook for ScheduleGate {
     async fn gate(
         &self,
-        ctx: &awaken_runtime_contract::permission::PermissionContext,
+        ctx: &awaken_runtime_contract::permission::ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> awaken_runtime_contract::permission::GateOutcome {
         awaken_runtime_contract::permission::GateOutcome::Schedule {
@@ -1461,7 +1490,7 @@ struct AllowAllGate;
 impl awaken_runtime_contract::permission::ToolGateHook for AllowAllGate {
     async fn gate(
         &self,
-        _ctx: &awaken_runtime_contract::permission::PermissionContext,
+        _ctx: &awaken_runtime_contract::permission::ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> awaken_runtime_contract::permission::GateOutcome {
         awaken_runtime_contract::permission::GateOutcome::Allow
@@ -1535,5 +1564,34 @@ fn connect_nats_executor_blocking(url: &str, subject: String) -> NatsToolExecuto
         client,
         subject,
         next_id: std::sync::atomic::AtomicU64::new(1),
+    }
+}
+
+#[cfg(test)]
+mod compatible_endpoint_tests {
+    use super::{default_anthropic_compatible_model, normalize_anthropic_compatible_base};
+
+    #[test]
+    fn kimi_coding_root_is_canonicalized_for_the_messages_provider() {
+        assert_eq!(
+            normalize_anthropic_compatible_base("https://api.kimi.com/coding/".into()),
+            "https://api.kimi.com/coding/v1/"
+        );
+        assert_eq!(
+            normalize_anthropic_compatible_base("https://api.kimi.com/coding/v1/".into()),
+            "https://api.kimi.com/coding/v1/"
+        );
+    }
+
+    #[test]
+    fn omitted_model_uses_the_endpoint_vocabulary() {
+        assert_eq!(
+            default_anthropic_compatible_model("https://api.kimi.com/coding/v1/"),
+            "kimi-for-coding"
+        );
+        assert_eq!(
+            default_anthropic_compatible_model("https://api.anthropic.com/v1/"),
+            "claude-3-5-haiku-latest"
+        );
     }
 }

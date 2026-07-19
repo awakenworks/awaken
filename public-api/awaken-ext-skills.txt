@@ -39,7 +39,7 @@ pub struct awaken_ext_skills::RecordingGate
 impl awaken_ext_skills::RecordingGate
 pub fn awaken_ext_skills::RecordingGate::new(alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>, awaken_ext_skills::PathActivations) -> Self
 impl awaken_runtime_contract::permission::ToolGateHook for awaken_ext_skills::RecordingGate
-pub fn awaken_ext_skills::RecordingGate::gate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::permission::PermissionContext, &'life2 awaken_agent_contract::agent::state::Store) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::GateOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_ext_skills::RecordingGate::gate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_agent_contract::agent::state::Store) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::GateOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub struct awaken_ext_skills::SkillFile
 pub awaken_ext_skills::SkillFile::content: alloc::string::String
 pub awaken_ext_skills::SkillFile::dir: core::option::Option<alloc::string::String>
@@ -75,7 +75,7 @@ pub struct awaken_ext_skills::SkillTool
 impl awaken_ext_skills::SkillTool
 pub fn awaken_ext_skills::SkillTool::descriptor(&self) -> awaken_runtime_contract::resolved::ToolDescriptor
 pub fn awaken_ext_skills::SkillTool::new(alloc::sync::Arc<dyn awaken_ext_skills::SkillRegistry>) -> Self
-pub fn awaken_ext_skills::SkillTool::with_fork_runner(self, alloc::sync::Arc<dyn awaken_runtime_contract::subagent_runner::SubagentRunner>) -> Self
+pub fn awaken_ext_skills::SkillTool::with_agent_tool(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>) -> Self
 pub fn awaken_ext_skills::SkillTool::with_session_id(self, impl core::convert::Into<alloc::string::String>) -> Self
 impl awaken_runtime_contract::tool::RawTool for awaken_ext_skills::SkillTool
 pub fn awaken_ext_skills::SkillTool::id(&self) -> &str

@@ -6,13 +6,15 @@
 //! Why this exists and what it drives: the Phase-1 `proptest` properties fuzz the *one*
 //! in-memory backend. This suite LIFTS the same invariants to the PORT: it asserts the
 //! sqlite backend is observably identical to the reference on the safety-critical
-//! semantics — the single-active-lease cap (exactly-once dispatch), reclaim-at-TTL,
+//! semantics — the single-active-lease cap, reclaim-at-TTL,
 //! environment isolation, stop-frees-next, and remove_env-purges. A divergence here is a
 //! real parity bug (the kind that ships a run twice on one deployment mode but not
 //! another); making it a checked contract forces the backends to agree by construction.
 //! Postgres joins the same suite behind its DB harness (`pg_tests.sh`).
 
-use awaken_session_contract::work_queue::{WorkQueue, WorkState};
+use awaken_session_contract::work_queue::{
+    HeartbeatCondition, HeartbeatResult, LeaseHeartbeat, WorkQueue, WorkState,
+};
 use awaken_work_store::{InMemoryWorkQueue, LEASE_TTL_MS, SqliteWorkQueue};
 
 fn block<F: std::future::Future>(f: F) -> F::Output {
@@ -25,7 +27,7 @@ fn block<F: std::future::Future>(f: F) -> F::Output {
 // ── The port contract, trait-generic over any WorkQueue backend ──────────────────
 
 /// The single-active-lease cap: with items queued, repeated claims at one instant hand
-/// out exactly ONE lease, and exactly one item is Active. (Exactly-once dispatch.)
+/// out exactly ONE lease, and exactly one item is Active.
 async fn single_active_cap<Q: WorkQueue>(q: &Q) {
     for i in 0..5 {
         q.enqueue_session("env", &format!("s{i}")).await;
@@ -117,6 +119,94 @@ async fn remove_env_purges<Q: WorkQueue>(q: &Q) {
     );
 }
 
+/// The official heartbeat compare token is an atomic CAS: first succeeds once,
+/// the returned token advances monotonically, and a stale token cannot extend
+/// the lease after a newer heartbeat has committed.
+async fn heartbeat_compare_and_extend<Q: WorkQueue>(q: &Q) {
+    let id = q.enqueue_session("env", "s0").await;
+    q.claim("env", "worker", 0).await.expect("claim");
+
+    assert!(matches!(
+        q.heartbeat(
+            "env",
+            &id,
+            "other-worker",
+            1,
+            LeaseHeartbeat {
+                condition: HeartbeatCondition::First,
+                desired_ttl_seconds: None,
+            },
+        )
+        .await,
+        HeartbeatResult::PreconditionFailed
+    ));
+
+    let first = match q
+        .heartbeat(
+            "env",
+            &id,
+            "worker",
+            1,
+            LeaseHeartbeat {
+                condition: HeartbeatCondition::First,
+                desired_ttl_seconds: Some(7),
+            },
+        )
+        .await
+    {
+        HeartbeatResult::Accepted(receipt) => receipt,
+        other => panic!("first heartbeat rejected: {other:?}"),
+    };
+    assert!(first.lease_extended);
+    assert_eq!(first.ttl_seconds, 7);
+
+    assert!(matches!(
+        q.heartbeat(
+            "env",
+            &id,
+            "worker",
+            2,
+            LeaseHeartbeat {
+                condition: HeartbeatCondition::First,
+                desired_ttl_seconds: None,
+            },
+        )
+        .await,
+        HeartbeatResult::PreconditionFailed
+    ));
+
+    let second = q
+        .heartbeat(
+            "env",
+            &id,
+            "worker",
+            2,
+            LeaseHeartbeat {
+                condition: HeartbeatCondition::Matching(first.last_heartbeat.clone()),
+                desired_ttl_seconds: None,
+            },
+        )
+        .await
+        .into_receipt()
+        .expect("matching heartbeat");
+    assert_ne!(second.last_heartbeat, first.last_heartbeat);
+
+    assert!(matches!(
+        q.heartbeat(
+            "env",
+            &id,
+            "worker",
+            3,
+            LeaseHeartbeat {
+                condition: HeartbeatCondition::Matching(first.last_heartbeat),
+                desired_ttl_seconds: None,
+            },
+        )
+        .await,
+        HeartbeatResult::PreconditionFailed
+    ));
+}
+
 /// Run the whole contract against a freshly-built backend `Q`.
 async fn run_suite<Q: WorkQueue>(fresh: impl Fn() -> Q) {
     single_active_cap(&fresh()).await;
@@ -124,6 +214,7 @@ async fn run_suite<Q: WorkQueue>(fresh: impl Fn() -> Q) {
     env_isolation(&fresh()).await;
     stop_frees_next(&fresh()).await;
     remove_env_purges(&fresh()).await;
+    heartbeat_compare_and_extend(&fresh()).await;
 }
 
 // ── Backend rows: each must pass the identical suite ─────────────────────────────
