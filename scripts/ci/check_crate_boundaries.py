@@ -1027,6 +1027,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-mcp-server-core",
         "awaken-mcp-wire",
         "async-trait",
+        # Shared HTTP conformance replies use the framework-neutral status and
+        # header types directly; no axum/hyper runtime enters the testkit.
+        "http",
         "serde_json",
         "tokio",
     },

@@ -7,4 +7,9 @@ pub fn awaken_mcp_server_testkit::RecordingSink::notify<'life0, 'life1, 'async_t
 pub trait awaken_mcp_server_testkit::McpConformanceDriver: core::marker::Send + core::marker::Sync
 pub fn awaken_mcp_server_testkit::McpConformanceDriver::host_call_count(&self) -> usize
 pub fn awaken_mcp_server_testkit::McpConformanceDriver::request<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value, &'life2 dyn awaken_mcp_server_core::server::NotifySink) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::jsonrpc::ServerRequestError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_mcp_server_testkit::McpConformanceDriver::tools_list_changed_capability(&self) -> bool
+pub trait awaken_mcp_server_testkit::McpHttpConformanceDriver: core::marker::Send + core::marker::Sync
+pub fn awaken_mcp_server_testkit::McpHttpConformanceDriver::exchange<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(&'life0 self, awaken_mcp_server_core::http::McpHttpMethod, &'life1 [(&'life2 str, &'life3 str)], &'life4 [u8]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_mcp_server_core::http::McpHttpReply> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait
+pub fn awaken_mcp_server_testkit::McpHttpConformanceDriver::host_call_count(&self) -> usize
+pub async fn awaken_mcp_server_testkit::assert_mcp_http_transport_conformance(&dyn awaken_mcp_server_testkit::McpHttpConformanceDriver)
 pub async fn awaken_mcp_server_testkit::assert_mcp_server_conformance(&dyn awaken_mcp_server_testkit::McpConformanceDriver)

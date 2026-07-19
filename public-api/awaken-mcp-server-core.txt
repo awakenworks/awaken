@@ -12,6 +12,7 @@ impl core::fmt::Display for awaken_mcp_server_core::McpHostError
 pub fn awaken_mcp_server_core::McpHostError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum awaken_mcp_server_core::McpHttpBody
 pub awaken_mcp_server_core::McpHttpBody::Empty
+pub awaken_mcp_server_core::McpHttpBody::EventStream
 pub awaken_mcp_server_core::McpHttpBody::Json(serde_json::value::Value)
 pub awaken_mcp_server_core::McpHttpBody::Sse(alloc::vec::Vec<serde_json::value::Value>)
 pub awaken_mcp_server_core::McpHttpBody::Text(alloc::string::String)
@@ -45,6 +46,7 @@ pub async fn awaken_mcp_server_core::McpServer<H, C>::handle_notification(&self,
 pub async fn awaken_mcp_server_core::McpServer<H, C>::handle_request(&self, &C, core::option::Option<&serde_json::value::Value>, &str, serde_json::value::Value, &dyn awaken_mcp_server_core::NotifySink) -> core::result::Result<serde_json::value::Value, awaken_mcp_wire::jsonrpc::ServerRequestError>
 pub fn awaken_mcp_server_core::McpServer<H, C>::host(&self) -> &H
 pub fn awaken_mcp_server_core::McpServer<H, C>::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, H) -> Self
+pub fn awaken_mcp_server_core::McpServer<H, C>::with_tools_list_changed(self, bool) -> Self
 pub struct awaken_mcp_server_core::NullSink
 impl awaken_mcp_server_core::NotifySink for awaken_mcp_server_core::NullSink
 pub fn awaken_mcp_server_core::NullSink::notify<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -74,4 +76,5 @@ pub fn awaken_mcp_server_core::jsonrpc_reply(serde_json::value::Value, core::res
 pub async fn awaken_mcp_server_core::notify_tools_list_changed(&dyn awaken_mcp_server_core::NotifySink)
 pub fn awaken_mcp_server_core::tools_list_changed_notification() -> serde_json::value::Value
 pub fn awaken_mcp_server_core::validate_protocol_version(&http::header::map::HeaderMap, bool) -> core::option::Option<awaken_mcp_server_core::McpHttpReply>
+pub fn awaken_mcp_server_core::validate_streamable_http_message(&http::header::map::HeaderMap, &serde_json::value::Value) -> core::option::Option<awaken_mcp_server_core::McpHttpReply>
 pub fn awaken_mcp_server_core::validate_streamable_http_request(awaken_mcp_server_core::McpHttpMethod, &http::header::map::HeaderMap, &dyn awaken_mcp_server_core::OriginPolicy) -> core::option::Option<awaken_mcp_server_core::McpHttpReply>

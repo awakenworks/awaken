@@ -13,7 +13,7 @@ mod server;
 pub use http::{
     AllowAllOrigins, HttpContextError, McpHttpBody, McpHttpContextProvider, McpHttpMethod,
     McpHttpReply, OriginPolicy, handle_streamable_http, validate_protocol_version,
-    validate_streamable_http_request,
+    validate_streamable_http_message, validate_streamable_http_request,
 };
 pub use server::{
     McpCall, McpHostError, McpServer, McpToolHost, NotifySink, NullSink,

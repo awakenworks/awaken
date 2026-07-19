@@ -18,6 +18,7 @@ pub awaken_webhook::DispatchReport::failed: alloc::vec::Vec<alloc::string::Strin
 pub struct awaken_webhook::ReqwestSender
 impl awaken_webhook::ReqwestSender
 pub fn awaken_webhook::ReqwestSender::guarded() -> Self
+pub fn awaken_webhook::ReqwestSender::with_timeout(core::time::Duration) -> Self
 impl awaken_webhook::WebhookSender for awaken_webhook::ReqwestSender
 pub fn awaken_webhook::ReqwestSender::post<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<u16, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl core::default::Default for awaken_webhook::ReqwestSender
