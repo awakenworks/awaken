@@ -434,16 +434,17 @@ The runtime may wait on background-like work, but the mechanism is not a generic
 
 | Need | Model it as |
 |---|---|
-| resume this run when an external answer arrives | `ResumeTicket` plus a resume ticket |
+| resume this run when an external answer arrives | `ResumeTicket` with the precise typed `AwaitReason` |
 | ask for future runtime work after commit | `ScheduledAction` with correlation/idempotency key |
 | deliver or recover queued execution | durable ingress dispatch, lease, and wake state |
 | run a process or tool outside runtime | orchestration-layer / backend execution |
 | expose public job status | product projection over committed runtime and dispatch facts |
 
-`AwaitReason::BackgroundTasks` is a reason carried by `ResumeTicket`, not a scheduler
-or queue. The durable request must be committed before wake delivery, and the
-later result must match the committed correlation, run/thread binding, snapshot,
-and descriptor fingerprint.
+There is no catch-all `AwaitReason::BackgroundTasks`. Approval, delegation,
+scheduled action, user input, and external result each keep their own typed
+reason and correlation. The durable request must be committed before wake
+delivery, and the later result must match the committed correlation, run/thread
+binding, snapshot, and descriptor fingerprint.
 
 ### Multi-Agent, Message, And Scheduled-Work Flow
 

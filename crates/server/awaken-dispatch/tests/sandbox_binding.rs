@@ -52,6 +52,7 @@ fn activation(run: &str, thread: &str) -> RunActivation {
                 catalog_fingerprint: fp.clone(),
                 instructions: String::new(),
                 max_steps: 8,
+                delegation_limits: Default::default(),
                 model_binding: ModelBinding {
                     provider_identity_ref: "p".into(),
                     model_ref: "m".into(),
@@ -66,6 +67,7 @@ fn activation(run: &str, thread: &str) -> RunActivation {
             fingerprint: fp,
         },
         input: vec![],
+        initiator: None,
         model_ref_override: None,
     }
 }

@@ -74,6 +74,12 @@ async fn conformance_committed_state_replays() {
 }
 
 #[tokio::test]
+async fn conformance_delegation_and_tool_state_commit_atomically() {
+    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    awaken_store_conformance::delegation_and_tool_state_commit_atomically(&store).await;
+}
+
+#[tokio::test]
 async fn reopen_file_resumes_from_committed_facts() {
     let dir = std::env::temp_dir().join("awaken_store_sqlite_reopen");
     let _ = std::fs::remove_dir_all(&dir);

@@ -657,6 +657,7 @@ fn pause_ticket(activation: &RunActivation, run_id: &RunId, reason: AwaitReason)
             .catalog_fingerprint
             .0
             .clone(),
+        initiator: activation.initiator.clone(),
         reason,
         call_id: None,
         pending_tool: None,

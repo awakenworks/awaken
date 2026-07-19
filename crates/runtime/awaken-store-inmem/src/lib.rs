@@ -235,6 +235,10 @@ impl ThreadReader for MemoryCommitCoordinator {
         self.resume_ticket_for(run_id)
     }
 
+    fn run_state(&self, run_id: &RunId) -> Option<RunState> {
+        CheckpointReader::run(self, run_id).map(|record| record.state)
+    }
+
     fn committed_state(
         &self,
         thread_id: &ThreadId,

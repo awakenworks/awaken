@@ -15,6 +15,108 @@ use thiserror::Error;
 
 pub use crate::llm::ToolCall;
 
+/// What an implementation can safely do after the owner died while an invocation
+/// was in flight. This is a trusted property of the executable tool, not a claim
+/// supplied by the model or by an agent configuration.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolRecoveryCapability {
+    /// The external outcome cannot be determined and the call must not be replayed.
+    #[default]
+    NonRecoverable,
+    /// Repeating the call is observationally equivalent to executing it once.
+    ReplaySafe,
+    /// Repeating the call with the same stable call id is idempotent.
+    Idempotent,
+    /// The call creates or addresses a durable request by stable identity; recovery
+    /// reconnects to that request instead of creating another one.
+    DurableRequest,
+}
+
+/// The recovery behavior selected for one tool in an executable agent snapshot.
+/// `NeverReplay` is always legal; every other mode requires the matching trusted
+/// [`ToolRecoveryCapability`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolRecoveryMode {
+    #[default]
+    NeverReplay,
+    ReplaySafe,
+    Idempotent,
+    DurableRequest,
+}
+
+impl ToolRecoveryMode {
+    /// Fail closed when configuration attempts to widen what the implementation
+    /// actually guarantees. A deployment may always choose `NeverReplay`.
+    #[must_use]
+    pub const fn is_supported_by(self, capability: ToolRecoveryCapability) -> bool {
+        matches!(
+            (self, capability),
+            (Self::NeverReplay, _)
+                | (Self::ReplaySafe, ToolRecoveryCapability::ReplaySafe)
+                | (Self::Idempotent, ToolRecoveryCapability::Idempotent)
+                | (Self::DurableRequest, ToolRecoveryCapability::DurableRequest)
+        )
+    }
+}
+
+/// Per-tool operational recovery settings pinned into the resolved snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolRecoveryPolicy {
+    #[serde(default)]
+    pub mode: ToolRecoveryMode,
+    #[serde(default = "default_max_attempts")]
+    pub max_attempts: u16,
+}
+
+const fn default_max_attempts() -> u16 {
+    3
+}
+
+impl Default for ToolRecoveryPolicy {
+    fn default() -> Self {
+        Self {
+            mode: ToolRecoveryMode::NeverReplay,
+            max_attempts: default_max_attempts(),
+        }
+    }
+}
+
+impl ToolRecoveryPolicy {
+    #[must_use]
+    pub const fn durable_request() -> Self {
+        Self {
+            mode: ToolRecoveryMode::DurableRequest,
+            max_attempts: default_max_attempts(),
+        }
+    }
+
+    pub fn validate(&self, capability: ToolRecoveryCapability) -> Result<(), ToolRecoveryError> {
+        if self.max_attempts == 0 {
+            return Err(ToolRecoveryError::ZeroAttempts);
+        }
+        if !self.mode.is_supported_by(capability) {
+            return Err(ToolRecoveryError::Unsupported {
+                mode: self.mode,
+                capability,
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ToolRecoveryError {
+    #[error("tool recovery max_attempts must be greater than zero")]
+    ZeroAttempts,
+    #[error("recovery mode {mode:?} exceeds executable capability {capability:?}")]
+    Unsupported {
+        mode: ToolRecoveryMode,
+        capability: ToolRecoveryCapability,
+    },
+}
+
 /// Neutral result of one tool invocation. `is_error` lets a tool return a
 /// model-visible failure without aborting the run; `state` carries any state
 /// transitions the tool wants staged onto the commit boundary (never a direct
@@ -71,6 +173,9 @@ pub enum ToolError {
 #[async_trait]
 pub trait RawTool: Send + Sync {
     fn id(&self) -> &str;
+    fn recovery_capability(&self) -> ToolRecoveryCapability {
+        ToolRecoveryCapability::NonRecoverable
+    }
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError>;
 }
 
@@ -82,6 +187,9 @@ pub trait Tool: Send + Sync {
     type Output: Serialize + Send;
 
     fn id(&self) -> &str;
+    fn recovery_capability(&self) -> ToolRecoveryCapability {
+        ToolRecoveryCapability::NonRecoverable
+    }
     async fn call(&self, args: Self::Args) -> Result<Self::Output, ToolError>;
 }
 
@@ -90,6 +198,12 @@ pub trait Tool: Send + Sync {
 /// (the orchestration layer above), not the runtime core.
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {
+    /// Trusted recovery capability of the concrete executor for `tool_id`.
+    /// Remote/general executors fail closed unless they explicitly advertise one.
+    fn recovery_capability(&self, _tool_id: &str) -> ToolRecoveryCapability {
+        ToolRecoveryCapability::NonRecoverable
+    }
+
     async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError>;
 }
 
@@ -121,4 +235,36 @@ pub trait ToolExecutorProvider: Send + Sync {
         &self,
         activation: &crate::activation::RunActivation,
     ) -> Option<Arc<dyn ToolExecutor>>;
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    #[test]
+    fn configuration_can_only_match_or_reduce_capability() {
+        assert!(
+            ToolRecoveryMode::NeverReplay.is_supported_by(ToolRecoveryCapability::DurableRequest)
+        );
+        assert!(
+            ToolRecoveryMode::DurableRequest
+                .is_supported_by(ToolRecoveryCapability::DurableRequest)
+        );
+        assert!(
+            !ToolRecoveryMode::ReplaySafe.is_supported_by(ToolRecoveryCapability::NonRecoverable)
+        );
+        assert!(!ToolRecoveryMode::Idempotent.is_supported_by(ToolRecoveryCapability::ReplaySafe));
+    }
+
+    #[test]
+    fn zero_attempt_budget_fails_closed() {
+        let policy = ToolRecoveryPolicy {
+            max_attempts: 0,
+            ..ToolRecoveryPolicy::default()
+        };
+        assert_eq!(
+            policy.validate(ToolRecoveryCapability::NonRecoverable),
+            Err(ToolRecoveryError::ZeroAttempts)
+        );
+    }
 }

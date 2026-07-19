@@ -155,6 +155,7 @@ impl HostDelegationExecutor {
         &self,
         agent_id: &str,
         child_run_id: &awaken_agent_contract::agent::run::Id,
+        origin: awaken_agent_contract::agent::delegation::DelegationOrigin,
         input: &str,
         context: awaken_runtime_contract::runtime_context::RuntimeRunContext,
     ) -> Result<DelegationStep, DelegationExecutionError> {
@@ -188,7 +189,7 @@ impl HostDelegationExecutor {
                 context: Some(context),
             },
             sandbox,
-            crate::subagent::AgentRunIdentity::child(child_run_id),
+            crate::subagent::AgentRunIdentity::child(child_run_id, origin),
             input,
             None,
             crate::subagent::UsageRollup::FoldIntoParent,
@@ -217,11 +218,22 @@ impl DelegationExecutor for HostDelegationExecutor {
         }
         if let Some(remote) = self.delegates.remotes.get(&agent_id) {
             return remote
-                .run(&agent_id, &input, request.context.cancellation.as_ref())
+                .run(
+                    &agent_id,
+                    &request.child_run_id.0,
+                    &input,
+                    request.context.cancellation.as_ref(),
+                )
                 .await;
         }
-        self.native_run(&agent_id, &request.child_run_id, &input, request.context)
-            .await
+        self.native_run(
+            &agent_id,
+            &request.child_run_id,
+            request.origin,
+            &input,
+            request.context,
+        )
+        .await
     }
 
     async fn resume(
@@ -243,6 +255,7 @@ impl DelegationExecutor for HostDelegationExecutor {
         remote
             .run(
                 agent_id,
+                &request.child_run_id.0,
                 &request.input,
                 request.context.cancellation.as_ref(),
             )

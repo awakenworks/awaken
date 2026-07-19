@@ -3,6 +3,7 @@ pub async fn awaken_store_conformance::commit_then_read<S: awaken_agent_contract
 pub async fn awaken_store_conformance::commits_accumulate<S: awaken_agent_contract::thread::commit::coordinator::Coordinator + awaken_agent_contract::thread::read::checkpoint::CheckpointReader>(&S)
 pub async fn awaken_store_conformance::committed_state_replays<S: awaken_agent_contract::thread::commit::coordinator::Coordinator + awaken_agent_contract::thread::read::checkpoint::CheckpointReader>(&S)
 pub async fn awaken_store_conformance::concurrent_appends_are_dense_and_distinct<S: awaken_agent_contract::thread::commit::coordinator::Coordinator + awaken_agent_contract::thread::read::checkpoint::CheckpointReader>(&S)
+pub async fn awaken_store_conformance::delegation_and_tool_state_commit_atomically<S: awaken_agent_contract::thread::commit::coordinator::Coordinator + awaken_agent_contract::thread::read::checkpoint::CheckpointReader>(&S)
 pub async fn awaken_store_conformance::empty_store_reads_are_absent<S: awaken_agent_contract::thread::commit::coordinator::Coordinator + awaken_agent_contract::thread::read::checkpoint::CheckpointReader>(&S)
 pub async fn awaken_store_conformance::events_ordered_and_paged<S: awaken_agent_contract::thread::commit::coordinator::Coordinator + awaken_agent_contract::thread::read::checkpoint::CheckpointReader>(&S)
 pub async fn awaken_store_conformance::resume_ticket_awaits_then_clears<S: awaken_agent_contract::thread::commit::coordinator::Coordinator + awaken_agent_contract::thread::read::checkpoint::CheckpointReader>(&S)

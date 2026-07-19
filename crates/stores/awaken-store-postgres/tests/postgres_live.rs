@@ -100,6 +100,7 @@ fn ticket(run: &str, thread: &str) -> ResumeTicket {
         thread_id: ThreadId(thread.to_string()),
         snapshot_id: "snap-1".to_string(),
         catalog_fingerprint: "fp-1".to_string(),
+        initiator: None,
         reason: AwaitReason::ToolPermission,
         call_id: Some("call-1".to_string()),
         pending_tool: None,
@@ -200,6 +201,14 @@ async fn conformance_committed_state_replays() {
         return;
     };
     awaken_store_conformance::committed_state_replays(&store).await;
+}
+
+#[tokio::test]
+async fn conformance_delegation_and_tool_state_commit_atomically() {
+    let Some(store) = conformance_store("t_c_delegation_atomic").await else {
+        return;
+    };
+    awaken_store_conformance::delegation_and_tool_state_commit_atomically(&store).await;
 }
 
 // Durable state replay across a reconnect: committed state commands are served back

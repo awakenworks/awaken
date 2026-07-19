@@ -1,10 +1,9 @@
 ------------------------------ MODULE RunIngress ------------------------------
-EXTENDS Naturals
+EXTENDS Naturals, RuntimeVocabulary
 
 \* Runtime/run-ingress lifecycle model. WorkQueue is deliberately out of scope.
 CONSTANTS Owners, NoOwner, MaxEpoch
 
-RunStates == {"Running", "Awaiting", "Ended"}
 DispatchStates == {
     "Pending",
     "Leased",
@@ -143,7 +142,7 @@ Next ==
 Spec == Init /\ [][Next]_vars
 
 TypeOK ==
-    /\ runState \in RunStates
+    /\ runState \in CoreRunStates
     /\ hasTicket \in BOOLEAN
     /\ dispatchState \in DispatchStates
     /\ owner \in Owners \cup {NoOwner}

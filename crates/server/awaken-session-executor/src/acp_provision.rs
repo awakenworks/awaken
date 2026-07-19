@@ -221,6 +221,7 @@ mod tests {
                     catalog_fingerprint: CatalogFingerprint("fp".into()),
                     instructions: String::new(),
                     max_steps: 4,
+                    delegation_limits: Default::default(),
                     model_binding: ModelBinding::new("p", "run-model", "acp:claude"),
                     tool_descriptors: Vec::new(),
                     plugin_ids: Vec::new(),
@@ -231,6 +232,7 @@ mod tests {
                 fingerprint: CatalogFingerprint("fp".into()),
             },
             input: Vec::new(),
+            initiator: None,
             model_ref_override: None,
         };
         assert_eq!(r.model(&act).unwrap().model, "run-model");

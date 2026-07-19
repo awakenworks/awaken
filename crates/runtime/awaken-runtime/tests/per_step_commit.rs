@@ -121,6 +121,7 @@ fn activation() -> RunActivation {
                 catalog_fingerprint: fingerprint.clone(),
                 instructions: String::new(),
                 max_steps: 16,
+                delegation_limits: Default::default(),
                 model_binding: ModelBinding {
                     provider_identity_ref: "p".to_string(),
                     model_ref: "m".to_string(),
@@ -144,6 +145,7 @@ fn activation() -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
+        initiator: None,
         model_ref_override: None,
     }
 }
@@ -178,10 +180,10 @@ async fn each_continuing_step_commits_under_a_running_fact() {
     let outcome = runtime.execute(activation(), context).await.expect("runs");
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 
-    // The input commits at the first step boundary (the run is durable as
-    // Running before any inference), the two tool steps commit at theirs,
-    // and the terminal text step commits through finish: four commits.
-    assert_eq!(commit.commit_count(), 4);
+    // The input commits first. Each tool step then commits Requested before any
+    // executor entry, Executing before the side effect, and Finalized with its
+    // result; the terminal text step commits through finish.
+    assert_eq!(commit.commit_count(), 8);
 
     let committed = commit.committed();
     // The durable state history walked Running → Running → Ended.
@@ -192,12 +194,10 @@ async fn each_continuing_step_commits_under_a_running_fact() {
         .collect();
     assert_eq!(
         states,
-        vec![
-            RunState::Running,
-            RunState::Running,
-            RunState::Running,
-            RunState::Ended(EndCause::NaturalEnd)
-        ]
+        vec![RunState::Running; 7]
+            .into_iter()
+            .chain([RunState::Ended(EndCause::NaturalEnd)])
+            .collect::<Vec<_>>()
     );
     // The transition into Running is recorded exactly once, before the
     // terminal state event.
@@ -226,8 +226,8 @@ async fn committed_progress_is_visible_mid_run() {
     // Running: execution never begins without a durable trace.
     let (_, visible_at_0, ref state_at_0) = observations[0];
     assert_eq!(
-        visible_at_0, 1,
-        "the input is durable during the first step"
+        visible_at_0, 2,
+        "the input and requested tool call are durable before executor entry"
     );
     assert_eq!(*state_at_0, Some(RunState::Running));
     // By the time step 1's tool runs, step 0 (assistant turn + tool result)
@@ -264,7 +264,15 @@ async fn cross_step_state_conflict_ends_the_run_and_keeps_committed_steps() {
     let committed = commit.committed();
     // Step 0 was valid when it committed and stays committed; the conflicting
     // tail was dropped, so exactly one copy of the exclusive set is durable.
-    assert_eq!(committed.state.len(), 1);
+    assert_eq!(
+        committed
+            .state
+            .iter()
+            .filter(|command| command.key.0 == "lock")
+            .count(),
+        1,
+        "exactly one user exclusive write committed; ToolBatch checkpoints are separate Run state"
+    );
     assert_eq!(
         committed.latest_run.unwrap().state,
         RunState::Ended(EndCause::Error(Failure::StateConflict))

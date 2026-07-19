@@ -2,6 +2,12 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+fn is_default_delegation_limits(
+    limits: &awaken_agent_contract::agent::delegation::DelegationLimits,
+) -> bool {
+    limits == &awaken_agent_contract::agent::delegation::DelegationLimits::default()
+}
+
 /// The content address of a resolved catalog: `sha256` of the canonical config.
 /// It is **derived, not chosen** — a producer (`awaken-config-store::compile`)
 /// computes it and stamps it into the snapshot and the install; the runtime only
@@ -24,6 +30,10 @@ pub struct ResolvedSpec {
     /// of the resolved decision surface (data-only, G3); the config side owns a
     /// sensible value, the runtime only honors it.
     pub max_steps: usize,
+    /// Run-scoped depth, parallelism, and total child limits. The target Agent's
+    /// own resolved value applies when that child delegates again.
+    #[serde(default, skip_serializing_if = "is_default_delegation_limits")]
+    pub delegation_limits: awaken_agent_contract::agent::delegation::DelegationLimits,
     pub model_binding: ModelBinding,
     /// Ordered pool fallbacks tried *after* [`model_binding`](Self::model_binding)
     /// when a candidate fails cleanly (retryable-exhausted or its circuit is open)
@@ -185,6 +195,15 @@ pub struct ToolDescriptor {
     /// against this; an empty object means "no declared parameters".
     pub parameters: serde_json::Value,
     pub content_hash: String,
+    /// Execution-only recovery policy. It is never projected into the model's
+    /// tool schema; the runtime validates it against the executable tool's
+    /// trusted capability before any recovery action.
+    #[serde(default, skip_serializing_if = "is_default_tool_recovery")]
+    pub recovery_policy: crate::tool::ToolRecoveryPolicy,
+}
+
+fn is_default_tool_recovery(policy: &crate::tool::ToolRecoveryPolicy) -> bool {
+    policy == &crate::tool::ToolRecoveryPolicy::default()
 }
 
 impl ToolDescriptor {
@@ -205,7 +224,22 @@ impl ToolDescriptor {
             description,
             parameters,
             content_hash,
+            recovery_policy: crate::tool::ToolRecoveryPolicy::default(),
         }
+    }
+
+    /// Pin an execution recovery policy without changing the model-visible
+    /// schema. The policy still enters the content address so changing recovery
+    /// semantics produces a different resolved snapshot.
+    #[must_use]
+    pub fn with_recovery(mut self, recovery: crate::tool::ToolRecoveryPolicy) -> Self {
+        if self.recovery_policy == recovery {
+            return self;
+        }
+        let encoded = serde_json::to_string(&recovery).unwrap_or_default();
+        self.content_hash = format!("{}:recovery:{encoded}", self.content_hash);
+        self.recovery_policy = recovery;
+        self
     }
 }
 
@@ -411,6 +445,7 @@ fn content_hash(
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResolvedRun {
     pub snapshot_id: crate::snapshot::ExecutableAgentSnapshotId,
+    pub agent_id: crate::snapshot::AgentId,
     pub spec: ResolvedSpec,
 }
 

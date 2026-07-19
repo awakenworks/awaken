@@ -10,6 +10,10 @@ pub enum Error {
     Execution(String),
     #[error("runtime commit failed: {0}")]
     Commit(String),
+    /// Internal signal consumed by the runtime loop and converted into the
+    /// terminal `Failure::StateConflict`; it must not escape `RunExecutor`.
+    #[error("runtime state batch conflicts")]
+    StateConflict,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

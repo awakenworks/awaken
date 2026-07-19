@@ -167,6 +167,7 @@ impl MemoryExtraction {
                     None,
                     None,
                     None,
+                    None,
                     UsageRollup::Isolated,
                 )
                 .await;

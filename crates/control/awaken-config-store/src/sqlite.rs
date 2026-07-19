@@ -274,6 +274,7 @@ mod scope_tests {
             id: id.to_string(),
             instructions: "be helpful".to_string(),
             max_steps: 8,
+            delegation_limits: Default::default(),
             model_binding: crate::config::ModelSelection::pinned("p", "m", "b"),
             tool_ids: Vec::new(),
             model_candidates: Vec::new(),

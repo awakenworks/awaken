@@ -11,14 +11,9 @@
 //!    settles Done without re-executing (committed truth is authority);
 //! 4. lease renewal keeps a slow-but-alive owner from being stolen across many
 //!    lease periods (the exact fence that stops a fleet double-drive); and
-//! 5. the residual case: a run reclaimed while its first execution is *genuinely
-//!    still in flight* (owner slow, lease lapsed, renewal failed) IS re-executed —
-//!    but the durable COMMITTED LOG stays exactly-once. The commit coordinators
-//!    enforce terminal-is-final, so once a reclaimer drives the run to `Ended` the
-//!    slow owner's late duplicate commit is fenced (no double end, no duplicate
-//!    assistant turn). Test 5 pins that guarantee and documents the two inherent
-//!    residuals it does NOT fix (the tool side effect ran twice; the input is
-//!    duplicated with an orphan `Running` fact from re-executing the activation).
+//! 5. a run reclaimed while a non-recoverable tool is genuinely in flight does
+//!    NOT replay the tool: its committed Executing phase becomes an Indeterminate
+//!    result, while the stale owner's late commit remains fenced.
 
 mod harness;
 
@@ -248,35 +243,11 @@ async fn renewal_keeps_a_slow_owner_across_multiple_lease_periods() {
 // --- 5. Mid-flight reclaim — the committed LOG stays exactly-once ------------
 
 #[tokio::test]
-async fn mid_flight_reclaim_keeps_the_committed_log_exactly_once() {
-    // The residual risk of lease-based recovery: a run reclaimed while its FIRST
-    // execution is genuinely still in flight (owner slow, not dead; lease lapsed;
-    // renewal failed) is RE-EXECUTED. owner-a claims and starts driving; its tool
-    // blocks after A has committed a `Running` fact (mid-step, no awaiting ticket).
-    // Its lease lapses with no renewal. owner-b reclaims — sees no ticket and a
-    // non-terminal `Running` record, so it re-executes and drives the run to
-    // `Ended`, running the tool a SECOND time.
-    //
-    // The achievable guarantee this test pins: the durable COMMITTED LOG stays
-    // exactly-once. The commit coordinators enforce terminal-is-final — once a run
-    // is committed `Ended`, any later commit for it is rejected. So when the slow
-    // owner A finally unblocks and re-drives the (now-terminal) run, its duplicate
-    // commit is FENCED: the transcript never gets a second terminal `Ended` fact or
-    // a duplicate final assistant message. The worker absorbs the rejected commit
-    // as an already-done settle (a benign lost race), so A's tick still resolves
-    // cleanly and the dispatch is not stranded.
-    //
-    // The one INHERENT residual of lease-based recovery, NOT fixable here: the
-    // external tool SIDE EFFECT ran twice (`ran == 2`) — an at-least-once effect;
-    // the tool runs during `execute`, before any commit, so it cannot be un-run.
-    // Only lease renewal (test 4) fences the common case.
-    //
-    // What IS fixed: the reclaimed run's input is no longer replayed. A committed
-    // "go" as its first step delta, so B's re-execute seeds it from committed
-    // history and drops the activation copy (idempotent by stable message id) — the
-    // input is committed exactly once, not twice. (A's fenced partial still leaves
-    // an orphan `Running` fact — transcript noise, not a duplicated turn or double
-    // end.)
+async fn mid_flight_reclaim_applies_never_replay_policy() {
+    // Owner A commits Requested -> Executing before entering the blocking tool.
+    // When its lease lapses, owner B recovers that durable phase. The descriptor's
+    // conservative default is NeverReplay, so B publishes an Indeterminate tool
+    // result and continues without entering the external tool a second time.
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let (runtime, ran) = blocking_tool_runtime(release.clone());
     let store = Arc::new(MemoryDispatchStore::new());
@@ -321,8 +292,7 @@ async fn mid_flight_reclaim_keeps_the_committed_log_exactly_once() {
         "and there is no awaiting ticket — the reclaim hits the no-ticket branch"
     );
 
-    // B's lease-expired reclaim re-drives the SAME run to completion, running the
-    // tool a SECOND time (the inherent double side effect).
+    // B's lease-expired reclaim drives the same Run to completion without replay.
     let worker_b =
         DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-b").with_lease_ms(LEASE);
     let processed = worker_b.tick(LEASE + 1).await.unwrap();
@@ -352,15 +322,15 @@ async fn mid_flight_reclaim_keeps_the_committed_log_exactly_once() {
          settles nothing and abandons, rather than reporting a completion it did not own"
     );
 
-    // Residual (documented): the tool side effect ran twice.
+    // The policy guarantee: the unknown external side effect is not repeated.
     assert_eq!(
         ran.load(Ordering::SeqCst),
-        2,
-        "the tool ran twice — an at-least-once external effect inherent to recovery"
+        1,
+        "NeverReplay prevents a second external invocation"
     );
 
-    // THE guarantee: the committed LOG is exactly-once. Despite two executions and
-    // A's fenced re-commit, the run has exactly ONE terminal `Ended` fact and the
+    // The committed log is also exactly-once. Despite A's fenced late commit, the
+    // run has exactly ONE terminal `Ended` fact and the
     // transcript carries exactly ONE final "all done" assistant message.
     let committed = commit.committed();
     let ended_facts = committed

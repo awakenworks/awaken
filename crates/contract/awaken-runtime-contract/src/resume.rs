@@ -95,6 +95,10 @@ pub enum ResumeError {
     FingerprintMismatch,
     #[error("resume is past the ticket deadline")]
     Expired,
+    #[error("resume result kind is incompatible with the committed wait reason")]
+    ResultKindMismatch,
+    #[error("tool result call id does not match the committed ticket")]
+    ToolCallMismatch,
 }
 
 /// Validate a resume against the committed ticket. Every identity must match and
@@ -122,6 +126,19 @@ pub fn validate_resume(ticket: &ResumeTicket, command: &ResumeCommand) -> Result
     {
         return Err(ResumeError::Expired);
     }
+    if matches!(
+        ticket.reason,
+        awaken_agent_contract::agent::awaiting::AwaitReason::ToolPermission
+            | awaken_agent_contract::agent::awaiting::AwaitReason::ScheduledAction
+    ) && matches!(command.result, ResumeResult::Input(_))
+    {
+        return Err(ResumeError::ResultKindMismatch);
+    }
+    if let ResumeResult::ToolResult(output) = &command.result
+        && ticket.call_id.as_deref() != Some(output.call_id.as_str())
+    {
+        return Err(ResumeError::ToolCallMismatch);
+    }
     Ok(())
 }
 
@@ -137,6 +154,7 @@ mod tests {
             thread_id: ThreadId("thread-1".to_string()),
             snapshot_id: "snap-1".to_string(),
             catalog_fingerprint: "fp-1".to_string(),
+            initiator: None,
             reason: AwaitReason::ToolPermission,
             call_id: Some("call-1".to_string()),
             pending_tool: None,
@@ -162,6 +180,27 @@ mod tests {
     #[test]
     fn matching_resume_is_accepted() {
         assert!(validate_resume(&ticket(), &command()).is_ok());
+    }
+
+    #[test]
+    fn tool_wait_rejects_chat_input_and_mismatched_tool_results() {
+        let input = ResumeCommand {
+            result: ResumeResult::Input("not an approval".into()),
+            ..command()
+        };
+        assert_eq!(
+            validate_resume(&ticket(), &input),
+            Err(ResumeError::ResultKindMismatch)
+        );
+
+        let wrong_call = ResumeCommand {
+            result: ResumeResult::ToolResult(ToolOutput::ok("other-call", "done")),
+            ..command()
+        };
+        assert_eq!(
+            validate_resume(&ticket(), &wrong_call),
+            Err(ResumeError::ToolCallMismatch)
+        );
     }
 
     #[test]

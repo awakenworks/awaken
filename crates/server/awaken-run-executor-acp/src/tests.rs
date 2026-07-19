@@ -106,6 +106,7 @@ pub(crate) fn activation() -> RunActivation {
                 catalog_fingerprint: CatalogFingerprint("fp".into()),
                 instructions: "be helpful".into(),
                 max_steps: 8,
+                delegation_limits: Default::default(),
                 model_binding: ModelBinding::new("prov", "model", "acp:claude"),
                 tool_descriptors: Vec::new(),
                 plugin_ids: Vec::new(),
@@ -116,6 +117,7 @@ pub(crate) fn activation() -> RunActivation {
             fingerprint: CatalogFingerprint("fp".into()),
         },
         input: vec![Message::text(MessageId("u1".into()), Role::User, "do it")],
+        initiator: None,
         model_ref_override: None,
     }
 }

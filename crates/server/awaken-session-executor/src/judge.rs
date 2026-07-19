@@ -74,6 +74,7 @@ impl SubagentRunner for HostSubagentRunner {
             None,
             None,
             None,
+            None,
             crate::subagent::UsageRollup::Isolated,
         )
         .await

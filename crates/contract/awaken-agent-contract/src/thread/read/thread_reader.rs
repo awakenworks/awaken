@@ -6,7 +6,7 @@
 
 use crate::agent::awaiting::ResumeTicket;
 use crate::agent::message::Message;
-use crate::agent::run::Id as RunId;
+use crate::agent::run::{Id as RunId, RunState};
 use crate::agent::state::Command as StateCommand;
 use crate::agent::thread::Id as ThreadId;
 
@@ -18,6 +18,13 @@ pub trait ThreadReader: Send + Sync {
     /// that has reached a terminal or resumed state returns `None`, so a stale
     /// resume against an old correlation fails closed.
     fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket>;
+
+    /// Latest committed lifecycle state for this Run. Used by stable-identity
+    /// durable requests to reconnect to an existing child instead of creating a
+    /// second execution. Readers without a run projection fail closed with None.
+    fn run_state(&self, _run_id: &RunId) -> Option<RunState> {
+        None
+    }
 
     /// Committed state commands for a thread, in commit order. A run rebuilds the
     /// materialized `Store` from these to read accumulated state during

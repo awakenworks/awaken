@@ -25,6 +25,8 @@ pub enum CompileError {
     /// tool is rejected at compile, not silently dropped.
     #[error("agent {agent} has an invalid tool override: {reason}")]
     InvalidToolOverride { agent: String, reason: String },
+    #[error("agent {agent} has an invalid tool recovery policy: {reason}")]
+    InvalidToolRecovery { agent: String, reason: String },
     /// The config declares a capability its execution kind cannot honor (ADR-0057 D2):
     /// an A2A (remote) agent owns its own skills/MCP on the far side, so declaring them
     /// locally is a silent no-op at runtime — rejected at publish instead. `axis` is the
@@ -43,6 +45,7 @@ impl CompileError {
             CompileError::UnknownTool { .. } => "tools",
             CompileError::UnresolvedModel { .. } => "model",
             CompileError::InvalidToolOverride { .. } => "tool_overrides",
+            CompileError::InvalidToolRecovery { .. } => "recovery_policies",
             CompileError::UnsupportedCapability { axis, .. } => axis,
             CompileError::Serialize(_) => "",
         }
@@ -108,6 +111,26 @@ pub fn compile_with_resource_prompts(
             descriptors.push(descriptor.clone());
             seen.insert(descriptor.id.clone());
         }
+    }
+
+    // Execution recovery is keyed by canonical identity and is resolved into the
+    // descriptor carried by the executable snapshot. Capability is intentionally
+    // not trusted here: only the executor can attest it, so runtime resolution/
+    // recovery performs the fail-closed capability check.
+    for (target, policy) in &config.recovery_policies {
+        if policy.max_attempts == 0 {
+            return Err(CompileError::InvalidToolRecovery {
+                agent: config.id.clone(),
+                reason: format!("tool {target:?} has max_attempts = 0"),
+            });
+        }
+        let Some(index) = descriptors.iter().position(|d| &d.id == target) else {
+            return Err(CompileError::InvalidToolRecovery {
+                agent: config.id.clone(),
+                reason: format!("target {target:?} is not a selected static tool"),
+            });
+        };
+        descriptors[index] = descriptors[index].clone().with_recovery(policy.clone());
     }
 
     // Tool presentation (ADR-0053): validate each override and project it into the
@@ -199,6 +222,7 @@ pub fn compile_with_resource_prompts(
         .model(model)
         .model_candidates(config.model_candidates.clone())
         .max_steps(config.max_steps)
+        .delegation_limits(config.delegation_limits)
         .tools(descriptors)
         .plugins(config.plugin_ids.clone())
         .plugin_config(config.plugin_config.clone())
@@ -275,6 +299,7 @@ fn fingerprint_of(
 mod tests {
     use super::*;
     use awaken_runtime_contract::resolved::ModelBinding;
+    use awaken_runtime_contract::tool::{ToolRecoveryMode, ToolRecoveryPolicy};
 
     use crate::config::ModelSelection;
 
@@ -283,6 +308,7 @@ mod tests {
             id: "agent-1".to_string(),
             instructions: "be helpful".to_string(),
             max_steps: 8,
+            delegation_limits: Default::default(),
             model_binding: ModelSelection::pinned("p", "m", "b"),
             tool_ids: tools.iter().map(|s| s.to_string()).collect(),
             model_candidates: Vec::new(),
@@ -296,6 +322,55 @@ mod tests {
 
     fn tool(id: &str) -> ToolDescriptor {
         ToolDescriptor::pinned("test", id, "a tool", serde_json::json!({"type": "object"}))
+    }
+
+    #[test]
+    fn recovery_policy_is_pinned_and_invalid_targets_fail_closed() {
+        let tools = vec![tool("echo")];
+        let mut cfg = config(&["echo"]);
+        cfg.recovery_policies.insert(
+            "echo".into(),
+            ToolRecoveryPolicy {
+                mode: ToolRecoveryMode::Idempotent,
+                max_attempts: 5,
+            },
+        );
+        let compiled = compile(&cfg, &tools).unwrap();
+        assert_eq!(
+            compiled.snapshot().resolved_spec.tool_descriptors[0].recovery_policy,
+            cfg.recovery_policies["echo"]
+        );
+
+        cfg.recovery_policies
+            .insert("ghost".into(), ToolRecoveryPolicy::default());
+        let error = compile(&cfg, &tools).unwrap_err();
+        assert!(matches!(error, CompileError::InvalidToolRecovery { .. }));
+        assert_eq!(error.field_path(), "recovery_policies");
+
+        cfg.recovery_policies.remove("ghost");
+        cfg.recovery_policies.get_mut("echo").unwrap().max_attempts = 0;
+        assert!(matches!(
+            compile(&cfg, &tools),
+            Err(CompileError::InvalidToolRecovery { .. })
+        ));
+    }
+
+    #[test]
+    fn delegation_limits_are_resolved_and_enter_the_fingerprint() {
+        let base = config(&[]);
+        let base_compiled = compile(&base, &[]).unwrap();
+        let mut bounded = base;
+        bounded.delegation_limits =
+            awaken_runtime_contract::delegation::DelegationLimits::new(2, 3, 5);
+        let bounded_compiled = compile(&bounded, &[]).unwrap();
+        assert_eq!(
+            bounded_compiled.snapshot().resolved_spec.delegation_limits,
+            bounded.delegation_limits
+        );
+        assert_ne!(
+            bounded_compiled.snapshot().fingerprint,
+            base_compiled.snapshot().fingerprint
+        );
     }
 
     #[test]
